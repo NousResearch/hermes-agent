@@ -1,79 +1,65 @@
 # Workstation roadmap
 
 
-## Upstream Reliability Hardening Intake (2026-09-18) — ACTIVE P0 HARDENING LANE
+## Upstream Reliability Hardening Intake (2026-09-18) — P0 IMPLEMENTED & VALIDATED; P1 PLANNED
 
 Canonical implementation plan:
 [context/UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md](context/UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md).
 
 The 2026-09-18 upstream sweep found several failure modes that map directly onto
-the Workstation reliability boundary. This is **not** a feature-expansion gate and
-does not replace the active Adaptive Execution correction. It is a focused
-hardening lane: transplant invariants/regression tests and only the smallest code
-patch that fits the canonical Work owners.
+the Workstation reliability boundary. All confirmed P0 gaps have been implemented
+and hardened on branch `fix/workstation-upstream-reliability-p0` without introducing
+parallel state engines or breaking existing Workstation owners.
 
-Immediate order:
+Completed P0 implementation order:
 
-1. **P0.0 — revalidate/extend native Browser truth (#114964-derived):**
-   reuse the existing H004 real Electron `BrowserWindow`/`WebContentsView`
-   probe and H013 integrated Desktop/Browser E2E rather than creating a new
-   harness. Extend current-main evidence with timer/input/scroll survival, a real
-   post-hide/park `browser_*` controller action and an explicit no-fallback
-   assertion. H004 already proves same live WebContents identity across
-   `hide/show` and `park/show`; the remaining purpose is to decide whether
-   BrowserTask is actually the blocker or whether control should move directly
-   to Adaptive Execution/TaskCompiler admission.
-2. **P0.1 — recovery/resync correctness (#115068 + #115085):**
-   port the live-tail journal fix and preserve unacknowledged optimistic user
-   messages during background resync.
-3. **P0.2 — one canonical session writer (#111493):**
-   extend active-session ownership to reject a second live writer for the same
-   session, make foreign resume an observer/read-only path, fence lease transfer,
-   and fail closed when ownership cannot be proven.
-4. **P0.3 — Kanban truth/provenance (#114785 + #114793 + #114904):**
-   validate session provenance against `state.db` and request-scoped context;
-   make heartbeat success mean persisted claim+worker writes; fence delegated
-   children; add durable worker-exit evidence so classification does not depend
-   on which dispatcher process reaped the PID.
-5. **P0.4 — bounded browser fallback recovery (#114897):**
-   cap post-attach CDP reconnect failures in `tools/browser_supervisor.py`,
-   evict the exhausted supervisor from the registry, and allow a later request
-   to create a fresh one.
-6. **P1 after P0 is green:** design one Durable Delivery Rail from the common
-   invariants in #115009/#115010/#114780 and delegation-completion work; then
-   benchmark snapshot quality using #115056. Do not create parallel queues or a
-   second browser snapshot authority.
+1. **P0.0 — revalidate/extend native Browser truth (#114964-derived): [DONE]**
+   Reused existing H004 probe (`probes/h004-native-browser-task-smoke.mjs`) and
+   extended it with deterministic discriminators: live WebContents id, continuous
+   timer advance, input persistence, scroll persistence, and loopback controller
+   action execution (`browser_snapshot`, `electron-chromium`). Explicit failure
+   if external fallback occurs.
+2. **P0.1 — recovery/resync correctness (#115068 + #115085): [DONE]**
+   Ported live-tail journal selection via `findLastIndex` with duplicate interim
+   row protection in `inflight-turn-journal.ts` (39 vitest tests). Preserved
+   unacknowledged optimistic user messages during background resync in
+   `use-background-sync.ts` and `wiring.tsx` (17 vitest tests).
+3. **P0.2 — one canonical session writer (#111493): [DONE]**
+   Enforced single-writer exclusivity per `session_id` in `active_sessions.py`,
+   fenced transfers against foreign live writers, implemented `mode="observer"`
+   read-only resume in `cli.py`, and failed closed on registry corruption.
+   (7 tests in `test_cli_resume_read_only_owner.py`).
+4. **P0.3 — Kanban truth/provenance (#114785 + #114793 + #114904): [DONE]**
+   Validated session provenance against SessionDB (`state.db`) and request-scoped
+   `HERMES_SESSION_ID` ContextVar; made heartbeat require both claim and worker
+   writes to persist; fenced delegated child tasks; added durable worker-exit
+   trailers (`HERMES_WORKER_EXIT_TRAILER_V1`) for topology-independent exit
+   classification in `kanban_db.py` / `cli.py`.
+   (7 tests in `test_kanban_provenance_and_exit_evidence.py`).
+5. **P0.4 — bounded browser fallback recovery (#114897): [DONE]**
+   Capped post-attach CDP reconnect attempts at 5 in `tools/browser_supervisor.py`,
+   evicted exhausted supervisor from registry, reset failure budget on successful
+   attach, and redacted credentials in warning logs.
+   (3 tests in `test_browser_supervisor_reconnect_cap.py`).
+6. **P1 next steps (after P0 PR review):**
+   Design one Durable Delivery Rail from the common invariants in #115009/#115010/#114780
+   and delegation-completion work; then benchmark snapshot quality using #115056.
+   Do not create parallel queues or a second browser snapshot authority.
 
 Explicit dispositions:
 
-- **#114964:** production invariant is already implemented in BrowserTask; import
-  the real regression scenario, not the upstream pane implementation.
+- **#114964:** production invariant is already implemented in BrowserTask; probe
+  re-validated with extended real discriminators.
 - **#114986 phantom turn lease:** no direct port now because this downstream
-  `gateway.ts` does not contain the upstream `turnLeases` mechanism. Keep the
-  invariant on the rebase watchlist.
+  `gateway.ts` does not contain the upstream `turnLeases` mechanism. Keep on
+  rebase watchlist.
 - **#115056:** native Work inventory is already one principal
-  `webContents.executeJavaScript(...)` observation; P1 should import
-  hit-test/freshness/benchmark ideas only.
+  `webContents.executeJavaScript(...)` observation; P1 will benchmark and import
+  hit-test/freshness ideas only.
 - **computer-use provider seam / desktop bridge:** defer until native OS-control
   is an active milestone.
 - **browser vault / Bot Screen / workflow-record:** P2; security, platform and
   RecipeStore boundaries take precedence.
-
-This lane may run alongside the Adaptive Execution correction because it removes
-false state, lost intent, phantom ownership and unbounded recovery. It must not
-weaken the Canonical Execution Reliability Gate or add a second SessionDB, Kanban,
-BrowserTask, delivery ledger, ArtifactStore or Memory owner.
-
-**Implementation evidence refinement (2026-09-18):** direct code comparison
-confirmed open downstream gaps for #114897, #111493, #115068, #115085, #114785
-and #114793. #114904 is partial: the current fork already has stronger
-protocol-violation/rate-limit/crash policy, but exit classification is still
-process-local when no durable exit record exists. #114964 is now diagnostic
-revalidation because H004/H013 already provide native Browser evidence. #114986
-remains watchlist-only because its upstream `turnLeases` mechanism is absent
-from this downstream `gateway.ts`. #115056 remains P1 because the native browser
-already performs its principal inventory in one `webContents.executeJavaScript`
-round trip.
 
 
 ## Adaptive Execution & Progressive Compilation Gate (2026-09-18) — IMPLEMENTED / CONTRACT VERIFIED; NATIVE GATE OPEN

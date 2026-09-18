@@ -1,44 +1,46 @@
 # Hermes Workstation upstream delta
 
 
-## Tracked upstream reliability intake — 2026-09-18 [PLANNED, NO PRODUCT DELTA YET]
+## HW-023 — Upstream reliability hardening P0 lane (2026-09-18)
 
-Audit base: downstream `main@03e06cfd8c94e5a7627c288c8eddfd5d4c5c8033`.
-Canonical plan:
-`context/UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md`.
-Engineering evidence: H-065.
+Downstream base: `main@03e06cfd8c94e5a7627c288c8eddfd5d4c5c8033`.
+Branch: `fix/workstation-upstream-reliability-p0`.
+Canonical plan: `context/UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md`.
+Engineering evidence: H-065, H-066.
 
-This entry records **planned selective adaptation**, not merged behavior. Upstream
-PRs are field evidence and regression sources; they are not a cherry-pick queue.
+Production adaptations implemented and contract-verified:
 
-Immediate candidates:
+1. **Native Browser Task Smoke Probe & Real Discriminators (#114964-derived):**
+   - Commit: `2e3f5a058d` (`test(workstation): harden native browser task smoke probe with real discriminators`).
+   - File: `workstation/context/engineering-journal/probes/h004-native-browser-task-smoke.mjs`.
+   - Invariant: live `webContents` id, timer counter, input value, scroll position, and loopback controller action execution (`browser_snapshot`, `electron-chromium`) survive across hide/show and park/show without falling back to external browsers.
 
-- #115068 / #115085: focused Desktop transcript recovery/resync patches are
-  directly applicable to existing downstream files/tests;
-- #111493: port the one-writer/read-only-owner invariant into downstream
-  `active_sessions.py` and resume/admission paths;
-- #114785 / #114793: adapt session provenance and heartbeat truth into the
-  current canonical Kanban/TaskRun lineage;
-- #114904: port only the topology-independent worker-exit evidence seam. Keep
-  downstream protocol-violation streak, neutral rate-limit and breaker policy.
-  This fork's one-shot exit path is in `cli.py`, not upstream's newer
-  `quiet_single_query.py` topology;
-- #114897: cap reconnect in the legacy/fallback `tools/browser_supervisor.py`
-  after successful attach, with registry eviction.
+2. **In-Flight Turn Journal Recovery Tail & Deduplication (#115068):**
+   - Commit: `fd2651d7bd` (`fix(desktop): restore live projection tail and prevent interim row duplication in in-flight journal`).
+   - Files: `apps/desktop/src/lib/inflight-turn-journal.ts`, `apps/desktop/src/lib/inflight-turn-journal.test.ts`.
+   - Invariant: `mergeInFlightMessages` selects last live projection row via `findLastIndex` and filters duplicate sealed IDs via `withoutBaseIds`.
 
-Disposition-only references:
+3. **Optimistic Pending User Message Retention on Resync (#115085):**
+   - Commit: `ca90122d89` (`fix(desktop): preserve optimistic pending turn messages during background transcript resync`).
+   - Files: `apps/desktop/src/app/contrib/hooks/use-background-sync.ts`, `apps/desktop/src/app/contrib/hooks/use-background-sync.test.ts`, `apps/desktop/src/app/contrib/wiring.tsx`.
+   - Invariant: unacknowledged optimistic user messages are retained across background resyncs until authoritative ACK.
 
-- #114964: BrowserTask keepalive semantics and native Electron evidence already
-  exist downstream (H004/H013). Reuse/extend regression evidence; do not port
-  upstream pane code into the Workstation runtime.
-- #114986: watchlist only while downstream lacks its upstream `turnLeases`
-  mechanism.
-- #115056: P1 benchmark/quality input only; native Work already performs its
-  principal snapshot inventory in one `webContents.executeJavaScript` call.
+4. **One Canonical Writer Per Session & Read-Only Observer Resume (#111493):**
+   - Commit: `511117ec19` (`fix(active_sessions): enforce one canonical writer per session and read-only observer resume`).
+   - Files: `hermes_cli/active_sessions.py`, `cli.py`, `tests/hermes_cli/test_cli_resume_read_only_owner.py`.
+   - Invariant: single live writer exclusivity per `session_id`, read-only observer resume (`mode="observer"`), foreign writer transfer fencing, and fail-closed corrupt registry handling.
 
-No source row in PATCH_MANIFEST is added until a production adaptation actually
-lands. When it does, update this section from PLANNED to the exact downstream
-files/commits and re-evaluate rebase conflict ownership.
+5. **Kanban Session Provenance, Heartbeat Fence & Durable Exit Evidence (#114785, #114793, #114904):**
+   - Commit: `fd38773cd3` (`fix(kanban): validate session provenance, harden worker heartbeat, and record durable exit evidence`).
+   - Files: `tools/kanban_tools.py`, `hermes_cli/kanban_db.py`, `cli.py`, `tests/hermes_cli/test_kanban_provenance_and_exit_evidence.py`.
+   - Invariant: session provenance is verified against SessionDB and prefers request-scoped ContextVar; heartbeat requires both claim and worker writes and fences delegated children; durable worker exit trailers (`HERMES_WORKER_EXIT_TRAILER_V1`) provide cross-process exit classification.
+
+6. **Bounded CDP Supervisor Reconnect Budget (#114897):**
+   - Commit: `285675418b` (`fix(browser): cap post-attach CDP supervisor reconnect attempts and evict on terminal failure`).
+   - Files: `tools/browser_supervisor.py`, `tests/tools/test_browser_supervisor_reconnect_cap.py`.
+   - Invariant: post-attach reconnect attempts capped at 5 with supervisor eviction from registry and credential redaction in logs.
+
+Remaining P1 lane: Durable Delivery Rail (#115009/#115010/#114780) and snapshot quality/freshness benchmark (#115056) are planned for follow-up PR B.
 
 ## HW-022 — Verified procedure admission and planner context (2026-09-16)
 

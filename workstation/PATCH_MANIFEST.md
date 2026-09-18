@@ -1,5 +1,35 @@
 # Hermes Workstation foundation patch manifest
 
+## HW-023 — Upstream reliability hardening (P0 lane)
+
+Hardens the Workstation reliability boundary by adapting upstream field evidence
+and proven invariants directly into existing downstream owners without adding
+parallel state machines or duplicate engines:
+
+- **Desktop transcript recovery & resync:** `apps/desktop/src/lib/inflight-turn-journal.ts`
+  selects true live tail via `findLastIndex` and filters duplicate sealed rows;
+  `apps/desktop/src/app/contrib/hooks/use-background-sync.ts` and `wiring.tsx`
+  preserve unacknowledged optimistic user messages during background transcript resync.
+- **Single live session writer:** `hermes_cli/active_sessions.py` and `cli.py`
+  enforce 1 writer per `session_id`, read-only observer resume (`mode="observer"`),
+  transfer fencing, and fail-closed corrupt registry detection (`RegistryUnreadableError`).
+- **Kanban provenance & exit truth:** `tools/kanban_tools.py` validates session provenance
+  against SessionDB (`state.db`) and prioritizes request-scoped `HERMES_SESSION_ID`
+  ContextVar; enforces heartbeat writes and delegated child fences; `hermes_cli/kanban_db.py`
+  and `cli.py` add durable `HERMES_WORKER_EXIT_TRAILER_V1` exit evidence for cross-process
+  dispatcher observation.
+- **CDP supervisor reconnect budget:** `tools/browser_supervisor.py` caps post-attach
+  reconnect failures at 5, evicts exhausted supervisor from registry, and redacts credentials.
+- **Native browser task smoke probe:** `workstation/context/engineering-journal/probes/h004-native-browser-task-smoke.mjs`
+  extended with WebContents identity, continuous timer, input, scroll, and loopback
+  controller snapshot discriminators.
+
+Behavior contracts: `tests/hermes_cli/test_cli_resume_read_only_owner.py`,
+`tests/hermes_cli/test_kanban_provenance_and_exit_evidence.py`,
+`tests/tools/test_browser_supervisor_reconnect_cap.py`,
+`apps/desktop/src/lib/inflight-turn-journal.test.ts`,
+`apps/desktop/src/app/contrib/hooks/use-background-sync.test.ts`.
+
 ## HW-022 — Verified recipes, canary gate and durable continuation
 
 Extends HW-021 in the existing compiler, phase checkpoints and operational ledger.

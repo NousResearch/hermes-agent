@@ -51,48 +51,44 @@ authority store, or globally bypassing work_execute.
 **Canonical design:** 
 [ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
 
-## KI-012 — Upstream-derived ownership/resync/Kanban/recovery gaps [OPEN — 2026-09-18]
+## KI-012 — Upstream-derived ownership/resync/Kanban/recovery gaps [RESOLVED IN WORK P0 HARNESS — 2026-09-18]
 
-A direct comparison of high-value upstream PRs with current Hermes Work found
-several concrete downstream gaps that are independent of KI-011's compiler-policy
-obstruction. They share one failure class: canonical work can be correct locally
-while ownership, resync, liveness, provenance or recovery at an adjacent boundary
-lies or loses state.
+**Resolution:** All confirmed P0 upstream reliability gaps have been resolved and
+validated with dedicated RED/GREEN regression tests on branch
+`fix/workstation-upstream-reliability-p0`.
 
-**Confirmed open code gaps:**
+**Evidence:**
+- Focused Python regressions: 17 passed in 4.03s (`test_cli_resume_read_only_owner.py`,
+  `test_kanban_provenance_and_exit_evidence.py`, `test_browser_supervisor_reconnect_cap.py`);
+- Workstation Python suite: 492 passed, 2 skipped in 315.16s;
+- Work100 reliability suite: 30 PASS / 0 FAIL;
+- Desktop Vitest UI suite: 593 files passed, 5676 tests passed;
+- Desktop Vitest Platforms: 126 files passed, 1783 tests passed;
+- Native browser probe `h004-native-browser-task-smoke.mjs` hardened with timer,
+  input, scroll, and loopback controller discriminators.
 
-- `tools/browser_supervisor.py`: post-attach CDP reconnect is unbounded
-  (#114897);
-- `hermes_cli/active_sessions.py`: no strict one-writer-per-`session_id`
-  invariant and no foreign-owner transfer fence/read-only resume (#111493);
-- `apps/desktop/src/lib/inflight-turn-journal.ts`: recovery can choose an
-  earlier sealed stream-looking row instead of the last live projection
-  (#115068);
-- `use-background-sync.ts`: background reconciliation can drop an
-  unacknowledged optimistic user row (#115085);
-- Kanban task provenance can still accept an ambient session id without proving
-  persistence in the active profile's SessionDB/request context (#114785);
-- automatic Kanban heartbeat reports attempt rather than requiring durable
-  success and does not yet fence delegated-child liveness (#114793);
-- worker exit classification has strong downstream policy but its reaped exit
-  evidence is process-local, so a different dispatcher can classify the same
-  death differently (#114904).
+**Implemented resolutions:**
 
-**Important non-root-causes / non-actions:**
+- `tools/browser_supervisor.py`: capped post-attach CDP reconnect failures at 5,
+  evicted exhausted supervisor from registry, and redacted credentials in logs (#114897);
+- `hermes_cli/active_sessions.py` & `cli.py`: enforced single live writer exclusivity
+  per `session_id`, supported observer resume (`mode="observer"`), fenced lease transfer,
+  and failed closed on corrupt registry (#111493);
+- `apps/desktop/src/lib/inflight-turn-journal.ts`: selected true live tail via
+  `findLastIndex` and deduplicated sealed interim rows via `withoutBaseIds` (#115068);
+- `use-background-sync.ts`: preserved unacknowledged optimistic user messages during
+  background transcript resync until gateway ACK (#115085);
+- `tools/kanban_tools.py`: validated session provenance against SessionDB (`state.db`)
+  and prioritized request-scoped `HERMES_SESSION_ID` ContextVar over ambient env (#114785);
+- `tools/kanban_tools.py`: required both claim extension and worker heartbeat writes
+  to succeed, and fenced delegated child tasks from heartbeating parent workers (#114793);
+- `hermes_cli/kanban_db.py` & `cli.py`: added durable `HERMES_WORKER_EXIT_TRAILER_V1`
+  evidence and fallback classification for cross-process dispatcher observation (#114904).
 
-- Do not treat #114964 as proof BrowserTask keepalive is missing. H004 already
-  proves real Electron WebContents identity across hide/show and park/show and
-  H013 covers the integrated path. Reuse/extend those probes instead of creating
-  another browser owner/harness.
-- Do not port #114986 while the downstream Desktop gateway lacks the upstream
-  `turnLeases` mechanism it fixes.
-- Do not port #115056 as a second native snapshot system; the Electron runtime
-  already performs its principal inventory in one `executeJavaScript` call.
-
-**Required action:** implement in P0.0 → P0.4 order from
-[UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md](UPSTREAM_RELIABILITY_HARDENING_2026-09-18.md)
-and close each sub-gap only with the focused regression named there. H-065 in
-the engineering journal is the anti-repeat evidence ledger.
+**Watchlist / Deferred references:**
+- #114964 was verified as an existing invariant and re-validated with extended probes;
+- #114986 remains watchlist-only (affected upstream `turnLeases` absent downstream);
+- #115056 and Durable Delivery Rail remain planned for P1.
 
 
 This file records observed/reproduced gaps and the evidence boundary around them. A listed symptom is **not** permission to assume a root cause; verify current `main` and any explicitly named candidate before changing code.

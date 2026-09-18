@@ -28,15 +28,24 @@ import cron.{store}
 """
 
 _OCCURRENCES_SKEW_SCRIPT = """
+from datetime import datetime, timedelta, timezone
 import cron.jobs as jobs
 
-# Model a daemon that loaded cron.jobs before this constant existed, then
+# Model a daemon that loaded cron.jobs before these constants existed, then
 # lazy-loads the newer occurrences module from disk during a due scan.
 jobs.__dict__.pop("FIRE_CLAIM_SKEW_SECONDS", None)
+jobs.__dict__.pop("FIRE_CLAIM_TTL_SECONDS", None)
 
-from cron.occurrences import completed_occurrence
+from cron.occurrences import completed_occurrence, unclaimed_pending_slot
 
 assert not completed_occurrence({"id": "job"}, "2026-01-01T00:00:00+00:00")
+
+# A slot stamped by another owner whose lease has lapsed is restored: the TTL comparison runs.
+now = datetime.now(timezone.utc)
+stale = (now - timedelta(hours=1)).isoformat()
+job = {"id": "job", "schedule": {"kind": "interval"},
+       "pending_slot": {"scheduled_at": stale, "at": stale, "by": "other-machine"}}
+assert unclaimed_pending_slot(job, now) == stale
 """
 
 

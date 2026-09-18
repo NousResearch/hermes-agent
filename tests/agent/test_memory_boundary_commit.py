@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, List
 
-from agent.memory_manager import MemoryManager
+from agent.memory_manager import MemoryManager, memory_session_context
 from agent.memory_provider import MemoryProvider
 
 
@@ -23,6 +24,7 @@ class _RecordingProvider(MemoryProvider):
         self.calls: List[tuple] = []
         self._end_delay = end_delay
         self._caller_thread_ids: List[int] = []
+        self.switch_kwargs: List[Dict[str, Any]] = []
 
     # Required ABC surface (minimal no-ops)
     @property
@@ -51,6 +53,7 @@ class _RecordingProvider(MemoryProvider):
         self.calls.append(("end", list(messages)))
 
     def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+        self.switch_kwargs.append(dict(kwargs))
         self.calls.append(("switch", new_session_id, kwargs.get("reset")))
 
 
@@ -96,8 +99,6 @@ def test_boundary_commit_delivers_end_strictly_before_switch():
     assert provider._caller_thread_ids[0] != threading.get_ident()
 
 
-
-
 def test_boundary_commit_switch_still_fires_when_end_raises():
     """A failing provider extraction must not strand providers on the old sid."""
 
@@ -114,3 +115,85 @@ def test_boundary_commit_switch_still_fires_when_end_raises():
     assert ("switch", "new-sid", True) in provider.calls
 
 
+def test_boundary_commit_captures_target_context_before_queued_switch():
+    provider = _RecordingProvider(end_delay=0.15)
+    mm = _make_manager(provider)
+    stored = {"title": "Target title", "source": "user"}
+    agent = SimpleNamespace(
+        _session_db=SimpleNamespace(
+            get_session_title=lambda _sid: stored["title"],
+            get_session_title_source=lambda _sid: stored["source"],
+        ),
+        _session_title_hint=None,
+        _session_title_source=None,
+    )
+    context = memory_session_context(agent, "new-sid", cwd="/target/project")
+
+    mm.commit_session_boundary_async(
+        [{"role": "user", "content": "old"}],
+        new_session_id="new-sid",
+        **context,
+    )
+    stored.update(title="Later title", source="llm")
+    context.update(cwd="/later/project", session_title="Later title", session_title_source="llm")
+    assert mm.flush_pending(timeout=30)
+
+    assert provider.switch_kwargs == [{
+        "parent_session_id": "",
+        "reset": True,
+        "reason": "new_session",
+        "cwd": "/target/project",
+        "session_title": "Target title",
+        "session_title_source": "user",
+    }]
+
+
+def test_replacement_context_clears_stale_title_and_cwd():
+    provider = _RecordingProvider()
+    mm = _make_manager(provider)
+    session_db = SimpleNamespace(
+        get_session_title=lambda _sid: None,
+        get_session_title_source=lambda _sid: None,
+    )
+    agent = SimpleNamespace(
+        _session_db=session_db,
+        _session_title_hint="Old title",
+        _session_title_source="user",
+    )
+
+    context = memory_session_context(agent, "untitled-session", cwd=None)
+    mm.on_session_switch("untitled-session", reset=True, **context)
+
+    assert context == {"cwd": None, "session_title": None, "session_title_source": None}
+    assert agent._session_title_hint is None
+    assert agent._session_title_source is None
+    assert {
+        key: provider.switch_kwargs[0][key]
+        for key in ("cwd", "session_title", "session_title_source")
+    } == context
+
+
+def test_session_context_preserves_nonempty_cwd_verbatim():
+    agent = SimpleNamespace(_session_db=None)
+
+    assert memory_session_context(agent, "sid", cwd=" /project with spaces/ ")["cwd"] == " /project with spaces/ "
+    assert memory_session_context(agent, "sid", cwd="")["cwd"] is None
+
+
+def test_narrow_legacy_switch_signature_remains_compatible():
+    class _LegacyProvider(_RecordingProvider):
+        def on_session_switch(self, new_session_id: str) -> None:
+            self.calls.append(("legacy-switch", new_session_id))
+
+    provider = _LegacyProvider()
+    mm = _make_manager(provider)
+
+    mm.on_session_switch(
+        "new-sid",
+        cwd="/project",
+        session_title="Title",
+        session_title_source="user",
+        reason="resume",
+    )
+
+    assert provider.calls == [("legacy-switch", "new-sid")]

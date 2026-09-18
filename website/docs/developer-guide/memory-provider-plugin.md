@@ -101,23 +101,24 @@ class MyMemoryProvider(MemoryProvider):
 ### Initialization context
 
 `AIAgent` passes session context through `MemoryManager.initialize_all()` to
-`initialize(session_id, **kwargs)`. Accept `**kwargs` and tolerate missing optional
-fields; callers may initialize a provider without an agent or a session database.
+`initialize(session_id, **kwargs)`. Accept `**kwargs`: the three context keys
+below are always present (possibly `None`), while other optional fields may be
+absent when a caller has no agent or session database.
 
 | Keyword | Meaning |
 |---|---|
 | `hermes_home` | Active profile's storage directory. |
 | `platform` | Session surface, such as `cli`, `gui`, `acp`, or `telegram`. |
-| `session_title` | Stored session title, when available. A display label is not necessarily a user-selected identity. |
-| `session_title_source` | Stored title provenance, when available: `derived`, `llm`, or `user`. Automatic sources must not be mistaken for explicit identity overrides; missing provenance retains a provider's legacy behavior. Shared constants live in `hermes_state_common.py`. |
-| `cwd` | Non-empty logical workspace supplied as `AIAgent(cwd=...)`, available before provider initialization. Omitted for `None` or an empty string. |
+| `session_title` | Effective session title or `None`. An explicit construction-time hint wins over the stored row. A display label is not necessarily a user-selected identity. |
+| `session_title_source` | Effective title provenance or `None`: `derived`, `llm`, or `user`. Automatic sources must not be mistaken for explicit identity overrides. Shared constants live in `hermes_state_common.py`. |
+| `cwd` | Logical workspace supplied by the host, or `None` when unpinned. |
 | `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
 | `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
 | `agent_identity` | Active profile name, when available. |
 | `agent_workspace`, `agent_context` | Runtime agent scope (`hermes` and `primary` for the main agent). |
 
 Do not assume `os.getcwd()` identifies the conversation's workspace: one Desktop
-or gateway backend can serve several sessions. If `cwd` is absent and directory
+or gateway backend can serve several sessions. If `cwd` is `None` and directory
 routing is needed, `agent.runtime_cwd.resolve_agent_cwd()` honors the session cwd
 context, then scoped `terminal.cwd` (carried internally as `TERMINAL_CWD`), then
 the launch directory. Construction-time workspace metadata does not require
@@ -160,9 +161,16 @@ workspace; absent or empty cwd remains unpinned.
 | `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
+| `on_session_switch(new_session_id, **kwargs)` | Same-process session change | Rebind to the full replacement context |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+`on_session_switch()` receives `cwd`, `session_title`, and
+`session_title_source` on every call. Treat them as a replacement snapshot,
+not a patch: each key may be `None` to clear state from the previous session.
+Accept `**kwargs` for forward compatibility. At `/new` boundaries Hermes runs
+the old session's `on_session_end()` before delivering the replacement snapshot.
 
 ### Oversized prefetch results
 

@@ -82,7 +82,7 @@ class MemoryProvider(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Short identifier for this provider (e.g. 'builtin', 'honcho', 'hindsight')."""
+        """Short identifier for this provider (for example, ``builtin`` or ``honcho``)."""
 
     # -- Core lifecycle (implement these) ------------------------------------
 
@@ -94,10 +94,13 @@ class MemoryProvider(ABC):
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize once at agent startup (connections, resources, threads).
 
-        kwargs always include ``hermes_home`` (profile-scoped storage; never hardcode
-        ``~/.hermes``) and ``platform``; may include ``agent_context`` ("primary" |
+        ``kwargs`` always includes ``hermes_home`` (profile-scoped storage; never
+        hardcode ``~/.hermes``), ``platform``, and the full session-context snapshot:
+        ``cwd``, ``session_title``, and ``session_title_source``. Snapshot values may
+        be ``None``. Additional fields may include ``agent_context`` ("primary" |
         "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
-        ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``, ``user_id_alt``.
+        ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``,
+        and ``user_id_alt``.
         """
 
     def unavailable_reason(self) -> str:
@@ -159,10 +162,11 @@ class MemoryProvider(ABC):
     def on_session_switch(
         self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, rewound: bool = False, **kwargs,
     ) -> None:
-        """session_id reassigned mid-process (/resume, /branch, /reset, /new, compression)
-        without teardown: rebind per-session state so later writes land in the right record.
-        ``reset`` is True only for a genuinely new conversation (flush buffers); ``rewound``:
-        same id but the transcript was truncated."""
+        """Rebind after an in-process session change (/resume, /branch, /reset,
+        /new, compression). ``kwargs`` contains a full replacement snapshot:
+        ``cwd``, ``session_title``, and ``session_title_source`` are always present
+        and may be ``None`` to clear prior state. ``reset`` is true only for a new
+        conversation; ``rewound`` means the same id's transcript was truncated."""
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Extract insights from ``messages`` about to be compressed, fed into the summary prompt."""

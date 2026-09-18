@@ -1214,32 +1214,30 @@ def _apply_display_config(agent, _agent_cfg, platform):
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
+    from agent.memory_manager import memory_session_context
+
     kwargs = {
         "session_id": agent.session_id,
         "platform": platform or "cli",
         "hermes_home": str(get_hermes_home()),
         "agent_context": "primary",
+        **memory_session_context(
+            agent,
+            agent.session_id,
+            session_title_hint=agent._session_title_hint,
+            session_title_source=agent._session_title_source,
+            cwd=agent.session_cwd,
+        ),
     }
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
         kwargs["status_callback"] = agent._emit_status
-    # Session title (e.g. honcho derives chat-scoped session keys from it).
-    if agent._session_db:
-        with suppress(Exception):
-            _st = agent._session_db.get_session_title(agent.session_id)
-            if _st:
-                kwargs["session_title"] = _st
-                _source = agent._session_db.get_session_title_source(agent.session_id)
-                if _source:
-                    kwargs["session_title_source"] = _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
-    # Honcho session isolation).
+    # session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
         _val = getattr(agent, f"_{_ident}")
         if _val:
             kwargs[_ident] = _val
-    if agent.session_cwd:
-        kwargs["cwd"] = agent.session_cwd
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name
@@ -1367,8 +1365,6 @@ def _apply_agent_section(agent, _agent_cfg):
             from tools.env_probe import warm_environment_probe_async
             warm_environment_probe_async()
 
-    # "Bot Chat" gate hint for hosts that defer the DB title write past the first prompt build.
-    agent._session_title_hint = None
 
     # platform_hints: <platform>: {append|replace}, stored verbatim (agent/system_prompt.py).
     agent._platform_hint_overrides = _cfg_dict(_agent_cfg, "platform_hints")
@@ -2244,6 +2240,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
+    session_title_hint: Optional[str] = None, session_title_source: Optional[str] = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
@@ -2252,6 +2249,8 @@ def init_agent(
       requested_provider: provider identity before runtime canonicalization.
       cwd: logical session workspace, available to memory providers during construction;
         None or empty leaves the runtime cwd resolver unpinned.
+      session_title_hint/session_title_source: construction-time session identity for
+        memory providers; a non-empty hint takes precedence over the session database.
       openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
       clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
@@ -2268,6 +2267,10 @@ def init_agent(
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
     agent.session_cwd = cwd or None
+    # Must exist before memory-provider initialization. The resolver replaces these
+    # with the effective explicit-or-stored title and Bot Mode reuses the same hint.
+    agent._session_title_hint = str(session_title_hint or "").strip() or None
+    agent._session_title_source = str(session_title_source or "").strip() or None
     # Shared iteration budget: parent creates, children inherit.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's

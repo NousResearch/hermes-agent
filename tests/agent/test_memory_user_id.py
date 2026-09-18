@@ -143,6 +143,52 @@ class TestMemoryManagerUserIdThreading:
             == "agent:main:telegram:dm:42"
         )
         assert provider._init_kwargs["cwd"] == str(tmp_path)
+        assert agent._session_title_hint == "Generated title"
+        agent.close()
+
+    def test_explicit_title_hint_precedes_stored_title_at_provider_init(self):
+        from run_agent import AIAgent
+
+        provider = RecordingProvider()
+        session_db = MagicMock()
+        session_db.get_session_title.return_value = "Stored title"
+        session_db.get_session_title_source.return_value = "llm"
+
+        with patch(
+            "model_tools.get_tool_definitions",
+            return_value=[],
+        ), patch(
+            "model_tools.check_toolset_requirements",
+            return_value={},
+        ), patch(
+            "agent.process_bootstrap.OpenAI",
+        ), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"memory": {"provider": "recording"}},
+        ), patch(
+            "plugins.memory.load_memory_provider",
+            return_value=provider,
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                session_id="pending-title-session",
+                session_db=session_db,
+                session_title_hint="User title",
+                session_title_source="user",
+            )
+
+        assert {
+            key: provider._init_kwargs[key]
+            for key in ("cwd", "session_title", "session_title_source")
+        } == {
+            "cwd": None,
+            "session_title": "User title",
+            "session_title_source": "user",
+        }
+        assert agent._session_title_hint == "User title"
         agent.close()
 
 # ---------------------------------------------------------------------------

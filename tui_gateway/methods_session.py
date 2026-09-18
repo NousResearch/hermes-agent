@@ -1014,7 +1014,7 @@ def _(rid, params: dict, session: dict, db) -> dict:
     else:
         try:
             if db.set_session_title(key, title):
-                pending, value = False, title
+                pending, value = False, db.get_session_title(key) or title
             # rowcount == 0 can mean "same value" as well as "missing row".
             elif existing_row := db.get_session(key):
                 pending, value = False, existing_row.get("title") or title
@@ -1025,11 +1025,16 @@ def _(rid, params: dict, session: dict, db) -> dict:
                 _ensure_session_db_row(session)
                 with _session_db(session) as scoped_db:
                     pending, value = not (scoped_db is not None and scoped_db.set_session_title(key, title)), title
+            if not pending:
+                value = db.get_session_title(key) or value
         except ValueError as e:
             return _err(rid, 4022, str(e))
         except Exception as e:
             return _err(rid, 5007, str(e))
         session["pending_title"] = value if pending else None
+        if not pending and (agent := session.get("agent")) is not None:
+            agent._session_title_hint = value
+            agent._session_title_source = "user"
         result = {"pending": pending, "title": value}
     _emit_session_info_for_session(params.get("session_id", ""), session)
     return _ok(rid, result)

@@ -91,6 +91,25 @@ class TestHandleTitleCommand:
 
 
     @pytest.mark.asyncio
+    async def test_set_title_evicts_cached_agent(self, tmp_path):
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+        runner = _make_runner(session_db=db)
+        session_key = "telegram:12345:67890"
+        runner.session_store._generate_session_key.return_value = session_key
+        runner._agent_cache_lock = None
+        runner._agent_cache = {session_key: _AGENT_PENDING_SENTINEL}
+
+        await runner._handle_title_command(_make_event(text="/title Fresh title"))
+
+        assert session_key not in runner._agent_cache
+        db.close()
+
+
+    @pytest.mark.asyncio
     async def test_set_title_propagates_to_telegram_topic_rename(self, tmp_path):
         """/title <name> also renames the visible Telegram topic, not just the DB."""
         from hermes_state import SessionDB

@@ -777,10 +777,14 @@ def _cmd_undo(rid, params, session, name, arg):
     agent = session.get("agent")
     if agent is not None:
         # See #6672 + #21910.
+        from agent.memory_manager import memory_session_context
+        context = memory_session_context(
+            agent, session_key, cwd=getattr(agent, "session_cwd", None),
+        )
         mm = getattr(agent, "_memory_manager", None)
         for step in (
             lambda: mm is not None and mm.on_session_switch(
-                session_key, parent_session_id="", reset=False, rewound=True),
+                session_key, parent_session_id="", reset=False, rewound=True, **context),
             lambda: hasattr(agent, "_invalidate_system_prompt") and agent._invalidate_system_prompt(),
             lambda: hasattr(agent, "_last_flushed_db_idx") and setattr(agent, "_last_flushed_db_idx", len(active)),
         ):

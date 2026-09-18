@@ -1515,9 +1515,14 @@ def _adopt_live_compression_child(
             with contextlib.suppress(Exception):
                 bind_state(session_db=session_db, session_id=child_session_id)
     with _swallow('memory manager compression-child adoption failed: %s'):
+        from agent.memory_manager import memory_session_context
+        context = memory_session_context(
+            agent, child_session_id, cwd=getattr(agent, "session_cwd", None),
+        )
         if agent._memory_manager:
             agent._memory_manager.on_session_switch(
-                child_session_id, parent_session_id=parent_session_id, reset=False, reason="compression"
+                child_session_id, parent_session_id=parent_session_id,
+                reset=False, reason="compression", **context,
             )
     return recovered
 
@@ -3204,10 +3209,16 @@ def _finish_compaction_boundary(
     # Providers refresh cached per-session state; reset=False, conversation goes on.
     # Fires in BOTH modes so buffers don't double-count dropped turns in-place.
     with _swallow('memory manager on_session_switch (compression): %s'):
-        if (bool(_old_sid) or in_place) and agent._memory_manager:
-            agent._memory_manager.on_session_switch(
-                agent.session_id or "", parent_session_id=_boundary_parent, reset=False, reason="compression"
+        if bool(_old_sid) or in_place:
+            from agent.memory_manager import memory_session_context
+            context = memory_session_context(
+                agent, agent.session_id or "", cwd=getattr(agent, "session_cwd", None),
             )
+            if agent._memory_manager:
+                agent._memory_manager.on_session_switch(
+                    agent.session_id or "", parent_session_id=_boundary_parent,
+                    reset=False, reason="compression", **context,
+                )
 
     # Route via _emit_status so the warning reaches gateway platforms; store it on
     # _compression_warning so a late-bound status_callback can replay it.

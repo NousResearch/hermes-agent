@@ -59,6 +59,39 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
     return _has_var_kwargs(params) or kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
 
 
+def memory_session_context(
+    agent: Any, session_id: str, *, session_title_hint: Optional[str] = None,
+    session_title_source: Optional[str] = None, cwd: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """Resolve and install the full provider context for ``session_id``.
+
+    An explicit construction-time title wins over the stored row. Every result is a
+    replacement snapshot: missing values remain ``None`` so a switch clears stale state.
+    """
+    title = str(session_title_hint or "").strip() or None
+    source = (str(session_title_source or "").strip() or None) if title else None
+    session_db = getattr(agent, "_session_db", None)
+    if title is None and session_db is not None:
+        try:
+            title = str(session_db.get_session_title(session_id) or "").strip() or None
+        except Exception:
+            title = None
+        if title:
+            try:
+                source = str(session_db.get_session_title_source(session_id) or "").strip() or None
+            except Exception:
+                source = None
+    context = {
+        "cwd": (str(cwd) or None) if cwd is not None else None,
+        "session_title": title,
+        "session_title_source": source,
+    }
+    # Existing Bot Mode gates read this hint before consulting SQLite. Replace it at
+    # every boundary so the prior session can never outrank the target row.
+    agent._session_title_hint = title
+    agent._session_title_source = source
+    return context
+
 # -- Tool-schema plumbing -----------------------------------------------------
 
 def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
@@ -611,8 +644,12 @@ class MemoryManager:
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
 
-    def commit_session_boundary_async(self, messages: List[Dict[str, Any]], *, new_session_id: str,
-                                      parent_session_id: str = "", reason: str = "new_session") -> None:
+    def commit_session_boundary_async(
+        self, messages: List[Dict[str, Any]], *, new_session_id: str,
+        parent_session_id: str = "", reason: str = "new_session",
+        cwd: Optional[str] = None, session_title: Optional[str] = None,
+        session_title_source: Optional[str] = None,
+    ) -> None:
         """Queue old-session extraction + provider rebinding as ONE serialized task.
 
         ``on_session_end`` (LLM-bound, seconds) must run strictly BEFORE ``on_session_switch`` rebinds
@@ -631,6 +668,11 @@ class MemoryManager:
         if not self._providers:
             return
         snapshot = list(messages or [])
+        target_context = {
+            "cwd": cwd,
+            "session_title": session_title,
+            "session_title_source": session_title_source,
+        }
 
         def _run() -> None:  # both hooks already guard per-provider
             try:
@@ -638,7 +680,10 @@ class MemoryManager:
             except Exception as e:  # pragma: no cover
                 logger.warning("Session-boundary extraction failed: %s", e)
             try:
-                self.on_session_switch(new_session_id, parent_session_id=parent_session_id, reset=True, reason=reason)
+                self.on_session_switch(
+                    new_session_id, parent_session_id=parent_session_id, reset=True,
+                    reason=reason, **target_context,
+                )
             except Exception as e:  # pragma: no cover
                 logger.warning("Session-boundary switch failed: %s", e)
 
@@ -651,12 +696,25 @@ class MemoryManager:
         (``/undo``): same id, truncated transcript."""
         if not new_session_id:
             return
-        if rewound:  # forward only when set so it never pollutes providers' **kwargs
-            kwargs["rewound"] = True
-        self._each_provider(
-            "on_session_switch failed",
-            lambda p: p.on_session_switch(new_session_id, parent_session_id=parent_session_id, reset=reset, **kwargs),
-        )
+        kwargs.update({
+            "cwd": kwargs.get("cwd"),
+            "session_title": kwargs.get("session_title"),
+            "session_title_source": kwargs.get("session_title_source"),
+        })
+        optional = {"parent_session_id": parent_session_id, "reset": reset, **kwargs}
+        if rewound:
+            optional["rewound"] = True
+
+        def _switch(provider: MemoryProvider) -> None:
+            params = _signature_params(provider.on_session_switch)
+            accepted = (
+                optional
+                if params is None or _has_var_kwargs(params)
+                else {key: value for key, value in optional.items() if key in params}
+            )
+            provider.on_session_switch(new_session_id, **accepted)
+
+        self._each_provider("on_session_switch failed", _switch)
 
     @staticmethod
     def _checkpoint_api_version(provider: MemoryProvider) -> Optional[int]:
@@ -832,5 +890,7 @@ class MemoryManager:
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
+        for key in ("cwd", "session_title", "session_title_source"):
+            kwargs.setdefault(key, None)
         self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
                             level=logging.WARNING)

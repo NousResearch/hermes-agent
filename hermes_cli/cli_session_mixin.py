@@ -573,14 +573,20 @@ class CLISessionMixin:
             # end strictly before switch, without blocking /new. No history → switch inline.
             _mm = getattr(self.agent, "_memory_manager", None)
             with contextlib.suppress(Exception):
+                from agent.memory_manager import memory_session_context
+                context = memory_session_context(
+                    self.agent, self.session_id, cwd=getattr(self.agent, "session_cwd", None),
+                )
                 if _mm is not None and _boundary_snapshot:
                     _mm.commit_session_boundary_async(
                         _boundary_snapshot, new_session_id=self.session_id,
-                        parent_session_id=old_session_id or "", reason="new_session")
+                        parent_session_id=old_session_id or "", reason="new_session", **context,
+                    )
                 elif _mm is not None:
                     _mm.on_session_switch(
                         self.session_id, parent_session_id=old_session_id or "",
-                        reset=True, reason="new_session")
+                        reset=True, reason="new_session", **context,
+                    )
             self._notify_session_boundary("on_session_reset")
 
         if not silent:
@@ -806,11 +812,18 @@ class CLISessionMixin:
         # Publish only after the durable rewind succeeds (or no store exists).
         self._publish_truncated_history(truncated, invalidate_prompt=True)
         # Same hook /branch fires; rewound=True invalidates per-turn document caches.
-        _mm = getattr(self.agent, "_memory_manager", None)
         # See #21910, #6672.
-        if _mm is not None and self.session_id:
+        if self.session_id:
             with contextlib.suppress(Exception):
-                _mm.on_session_switch(self.session_id, parent_session_id="", reset=False, rewound=True)
+                from agent.memory_manager import memory_session_context
+                context = memory_session_context(
+                    self.agent, self.session_id, cwd=getattr(self.agent, "session_cwd", None),
+                )
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None:
+                    _mm.on_session_switch(
+                        self.session_id, parent_session_id="", reset=False, rewound=True, **context,
+                    )
 
         turn_word = "turn" if turns_undone == 1 else "turns"
         print(

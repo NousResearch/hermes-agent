@@ -264,3 +264,52 @@ class TestResumeFlushesBeforeEndSession:
             conversation_history=[{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}],
         )
         cli_obj._session_db.end_session.assert_called_once()
+
+
+def test_session_switch_clears_title_hint_without_memory_manager():
+    from hermes_cli.cli_commands_mixin import _sync_agent_to_session
+
+    session_db = SimpleNamespace(
+        get_session_title=lambda _sid: None,
+        get_session_title_source=lambda _sid: None,
+    )
+    agent = SimpleNamespace(
+        session_id="old-session",
+        session_cwd="/old/project",
+        _session_db=session_db,
+        _memory_manager=None,
+        _session_title_hint="Old title",
+        _session_title_source="user",
+        reset_session_state=lambda: None,
+    )
+    cli_obj = SimpleNamespace(agent=agent, conversation_history=[])
+
+    _sync_agent_to_session(
+        cli_obj,
+        "new-session",
+        parent_session_id="old-session",
+        reason="resume",
+        session_cwd=None,
+    )
+
+    assert agent.session_id == "new-session"
+    assert agent.session_cwd is None
+    assert agent._session_title_hint is None
+    assert agent._session_title_source is None
+
+
+def test_live_title_rename_refreshes_agent_title_context():
+    cli_obj = _make_cli()
+    cli_obj._status_bar_title_checked_at = 1.0
+    cli_obj.agent = SimpleNamespace(
+        _session_title_hint="Old title",
+        _session_title_source="llm",
+    )
+    cli_obj._session_db.get_session.return_value = {"id": cli_obj.session_id}
+    cli_obj._session_db.set_session_title.return_value = True
+
+    with patch("cli._cprint"):
+        cli_obj._cmd_title("/title New title")
+
+    from tools.bot_mode_dm import _session_title
+    assert _session_title(cli_obj.agent) == "New title"

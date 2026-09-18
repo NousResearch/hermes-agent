@@ -149,6 +149,9 @@ class CLILoopsMixin:
             try:
                 if self._session_db.set_session_title(self.session_id, new_title):
                     self._status_bar_title_checked_at = 0.0
+                    if self.agent:
+                        self.agent._session_title_hint = new_title
+                        self.agent._session_title_source = "user"
                     _cprint(f"  Session title set: {new_title}")
                 else:
                     _cprint("  Session not found in database.")

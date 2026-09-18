@@ -315,13 +315,16 @@ def _end_current_session(cli, reason: str) -> None:
         cli._session_db.end_session(cli.session_id, reason)
 
 
-def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:
+def _sync_agent_to_session(
+    cli, session_id: str, *, parent_session_id: str, reason: str, session_cwd: str | None,
+) -> None:
     """Point an already-built agent at ``session_id`` after a /resume or /branch switch: reset
     per-session state, re-anchor the DB flush index, and notify memory providers with
     reset=False (their state stays valid and just targets the new id; parent keeps lineage)."""
     if not cli.agent:
         return
     cli.agent.session_id = session_id
+    cli.agent.session_cwd = session_cwd or None
     cli.agent.reset_session_state()
     if hasattr(cli.agent, "_last_flushed_db_idx"):
         cli.agent._last_flushed_db_idx = len(cli.conversation_history)
@@ -332,23 +335,19 @@ def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reas
     if hasattr(cli.agent, "_invalidate_system_prompt"):
         cli.agent._invalidate_system_prompt()
     with suppress(Exception):
+        from agent.memory_manager import memory_session_context
+        context = memory_session_context(
+            cli.agent, session_id, cwd=cli.agent.session_cwd,
+        )
         _mm = getattr(cli.agent, "_memory_manager", None)
-        # Notify memory providers that session_id rotated to a fresh conversation. reset=True signals
-        # providers to flush accumulated per-session state (_session_turns, _turn_counter, _document_id).
-        # Fires BEFORE the plugin on_session_reset hook (shell hooks only see the new id; Python providers
-        # see the transition). See #6672. When the old session has history, end-of-session extraction
-        # (LLM-bound, seconds) and this switch are queued as ONE task on the memory manager's serialized
-        # worker — end strictly before switch, without blocking /new (#16454). With no history there is
-        # nothing to extract; switch inline as before.
-        # Notify memory providers that session_id rotated to a resumed session. reset=False — the provider's
-        # accumulated state is still valid; it just needs to target the new session_id for subsequent
-        # writes. See #6672.
-        # Notify memory providers that session_id forked to a new branch. reset=False — the branched session
-        # carries the transcript forward, so provider state tracks the lineage. parent_session_id links the
-        # branch back to the original. See #6672.
+        # Resume and branch replace provider context wholesale. Resolve the target
+        # even without a provider so Bot Mode cannot retain the previous session's
+        # title hint.
         if _mm is not None:
             _mm.on_session_switch(
-                session_id, parent_session_id=parent_session_id or "", reset=False, reason=reason)
+                session_id, parent_session_id=parent_session_id or "",
+                reset=False, reason=reason, **context,
+            )
 
 
 def _without_session_meta(messages) -> list:
@@ -1301,7 +1300,10 @@ class CLICommandsMixin:
         self._resume_display_history = _without_session_meta(display_history)
         with suppress(Exception):  # re-open the target session so it's not marked as ended
             self._session_db.reopen_session(target_id)
-        _sync_agent_to_session(self, target_id, parent_session_id=old_session_id, reason="resume")
+        _sync_agent_to_session(
+            self, target_id, parent_session_id=old_session_id, reason="resume",
+            session_cwd=session_meta.get("cwd"),
+        )
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         from agent.context_compressor import is_user_originated_turn
         # Count only user-originated turns: legacy compaction handoffs are durable role=user rows
@@ -1407,7 +1409,13 @@ class CLICommandsMixin:
                  **{k: msg.get(k) for k in _BRANCH_COPY_KEYS}}
                 for msg in self.conversation_history], chunk_rows=500)
         with suppress(Exception):
-            self._session_db.set_session_title(new_session_id, branch_title)
+            if branch_name:
+                self._session_db.set_session_title(new_session_id, branch_title)
+            else:
+                self._session_db.set_auto_title(
+                    new_session_id, branch_title,
+                    source=self._session_db.TITLE_SOURCE_DERIVED,
+                )
         # Switch to the new session
         self._transfer_session_yolo(self.session_id, new_session_id)
         self.session_id, self.session_start, self._pending_title = new_session_id, now, None
@@ -1415,7 +1423,10 @@ class CLICommandsMixin:
         _sync_process_session_id(new_session_id)
         if self.agent:
             self.agent.session_start = now
-        _sync_agent_to_session(self, new_session_id, parent_session_id=parent_session_id, reason="branch")
+        _sync_agent_to_session(
+            self, new_session_id, parent_session_id=parent_session_id, reason="branch",
+            session_cwd=getattr(self.agent, "session_cwd", None),
+        )
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
         _cp(f"  ⑂ Branched session \"{branch_title}\" ({_plural(msg_count, 'user message')})",
             f"  Original session: {parent_session_id}", f"  Branch session:   {new_session_id}")

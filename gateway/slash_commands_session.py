@@ -789,6 +789,7 @@ class GatewaySessionCommandsMixin:
                 return t("gateway.title.not_found")
         except ValueError as e:
             return t("gateway.shared.warn_passthrough", error=e)
+        self._evict_cached_agent(self._session_key_for_source(source))
         # Mirror the title onto the Telegram forum topic name (auto titles already do this).
         try:
             await asyncio.to_thread(self._schedule_telegram_topic_title_rename, source, session_id, sanitized)

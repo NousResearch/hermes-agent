@@ -9,18 +9,31 @@ from acp_adapter import entry
 
 
 def test_main_enables_unstable_protocol(monkeypatch):
-    calls = {}
+    calls = {"order": []}
 
     async def fake_run_agent(agent, **kwargs):
         calls["kwargs"] = kwargs
+        calls["order"].append("run")
 
     monkeypatch.setattr(entry, "_setup_logging", lambda: None)
     monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr(entry, "_preload_stdin_sensitive_dependencies", lambda: calls["order"].append("preload"))
     monkeypatch.setattr(acp, "run_agent", fake_run_agent)
 
     entry.main([])
 
     assert calls["kwargs"]["use_unstable_protocol"] is True
+    assert calls["order"] == ["preload", "run"]
+
+
+def test_preloads_numpy_only_for_holographic_memory(monkeypatch):
+    imported = []
+    monkeypatch.setattr("plugins.memory._get_active_memory_provider", lambda: "holographic")
+    monkeypatch.setattr(entry.importlib, "import_module", imported.append)
+
+    entry._preload_stdin_sensitive_dependencies()
+
+    assert imported == ["numpy"]
 
 
 def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):

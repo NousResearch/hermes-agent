@@ -201,6 +201,10 @@ def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
     global _contract_repair_attempted
     if contract.get("ready") or _contract_repair_attempted or os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() or not contract.get("binary"):
         return contract
+    from hermes_constants import is_wsl
+    from tools.computer_use.cua_backend_driver import is_windows_driver
+    if sys.platform == "linux" and is_wsl() and is_windows_driver(contract.get("binary")):
+        return contract  # Windows installation/UAC from WSL must be explicitly requested.
     _contract_repair_attempted = True
     logger.info("computer_use: installed cua-driver is not usable (%s); attempting automatic repair",
                 contract.get("reason") or "runtime contract is incomplete")

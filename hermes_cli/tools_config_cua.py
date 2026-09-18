@@ -138,8 +138,10 @@ def _cua_driver_contract_status(binary: Optional[str] = None) -> dict:
 
 def _cua_driver_install_ready() -> bool:
     """Return whether an existing driver needs no install-time repair."""
+    from tools.computer_use.cua_backend_driver import is_windows_driver
     return bool(_cua_driver_contract_status().get("ready")) and (
-        sys.platform != "win32" or _cua_driver_autostart_registered_windows())
+        (sys.platform != "win32" and not is_windows_driver(_resolved_cua_driver_cmd()))
+        or _cua_driver_autostart_registered_windows())
 
 
 def _pip_install(args: List[str], *, timeout: int = 300, capture_output: bool = True):
@@ -256,12 +258,60 @@ def _report_repair_or_upgrade(ok: bool, *, repair_existing: bool, binary, before
     return ok
 
 
+def _install_wsl_windows_driver(*, upgrade: bool, unattended: bool) -> bool:
+    """Explicit host installation uses Windows' installer and autostart, never POSIX cleanup."""
+    from tools.computer_use.cua_backend import sanitized_cua_driver_env
+    from tools.computer_use.cua_backend_driver import _wsl_windows_install_paths
+    binary = _resolved_cua_driver_cmd()
+    contract = _cua_driver_contract_status(binary) if binary else {}
+    if os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() and (not contract.get("ready") or upgrade):
+        return _fail("    Fix/update HERMES_CUA_DRIVER_CMD or unset it before installing the Windows driver.")
+    if unattended:
+        ready = bool(contract.get("ready")) and _cua_driver_autostart_registered_windows()
+        if not ready:
+            _print_warning("    Windows driver/autostart needs repair; run hermes computer-use install explicitly.")
+        return ready  # never download or elevate on an unattended cross-OS update
+    if contract.get("ready") and not upgrade:
+        return _repair_cua_driver_autostart_windows(binary, verbose=False)
+    powershell = shutil.which("powershell.exe")
+    if not powershell:
+        return _fail("    Windows PowerShell is unavailable through WSL interop; no Linux fallback was attempted.")
+    script = (f"$ErrorActionPreference='Stop'; $s=irm {_CUA_INSTALL_PS1_URL}; "
+              "& ([scriptblock]::Create($s))")
+    try:
+        result = _run_text([powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-Command", script], timeout=_CUA_INSTALLER_TIMEOUT,
+                           stdin=subprocess.DEVNULL, env=sanitized_cua_driver_env())
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _fail(f"    Windows-host installer failed: {exc}")
+    if result.returncode:
+        _print_output_tail(result)
+        return _fail("    Windows-host installer failed; no Linux fallback was attempted.")
+    _wsl_windows_install_paths.cache_clear()
+    binary = _resolved_cua_driver_cmd()
+    if not binary or not _cua_driver_contract_status(binary).get("ready"):
+        return _fail("    Windows installer exited, but the selected Windows driver is not usable.")
+    if not _repair_cua_driver_autostart_windows(binary, verbose=False):
+        return False
+    _print_success(f"    Windows-host cua-driver ready: {binary}. Restart the WSL backend after changing target.")
+    return True
+
+
 def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = False,
                        show_installer_progress: bool = True) -> bool:
     """Install or refresh the cua-driver binary used by Computer Use.
     Re-running the upstream installer (always the latest release tag) is the canonical upgrade.
     ``upgrade=False`` (toolset enable flow) keeps a compatible installation, repairs an
     old/incomplete one and installs when missing; ``upgrade=True`` always refreshes."""
+    from hermes_constants import is_wsl
+    from tools.computer_use.cua_backend_driver import computer_use_target, is_windows_driver
+    try:
+        target = computer_use_target()
+        if sys.platform == "linux" and is_wsl() and (
+                target == "windows" or is_windows_driver(_resolved_cua_driver_cmd())):
+            return _install_wsl_windows_driver(upgrade=upgrade, unattended=require_confirmed_update)
+    except ValueError as exc:
+        return _fail(str(exc))
     system = platform.system()
     if system not in ("Darwin", "Windows", "Linux"):
         if not upgrade:  # silent under `hermes update`, which calls this for every user
@@ -498,7 +548,8 @@ def _ps_single_quote(value: str) -> str:
 
 def _cua_driver_autostart_registered_windows() -> bool:
     """Return whether the Windows cua-driver scheduled task is registered."""
-    if sys.platform != "win32":
+    from hermes_constants import is_wsl
+    if sys.platform != "win32" and not is_wsl():
         return False
     try:
         return subprocess.run(["schtasks.exe", "/Query", "/TN", "cua-driver-serve"],
@@ -513,25 +564,40 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     Older install.ps1 builds interpolated the binary path into a PowerShell command string, which
     split at the first space. If the scheduled task is missing, retry via Start-Process's
     structured ``-FilePath`` / ``-ArgumentList`` parameters instead."""
-    if sys.platform != "win32" or _cua_driver_autostart_registered_windows():
+    from hermes_constants import is_wsl
+    wsl = sys.platform == "linux" and is_wsl()
+    if (sys.platform != "win32" and not wsl) or _cua_driver_autostart_registered_windows():
         return True
     binary = shutil.which(driver_cmd)
     if not binary:
         return False
-    ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
+    if wsl:
+        try:
+            converted = _run_text(["wslpath", "-w", os.path.realpath(binary)], timeout=3,
+                                  stdin=subprocess.DEVNULL)
+            binary = (converted.stdout or "").strip()
+            if converted.returncode or not binary or "\n" in binary:
+                return _fail("    Cannot translate the Windows driver path for autostart repair.")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _fail(f"    Cannot translate the Windows driver path: {exc}")
+    ps = (shutil.which("powershell.exe") if wsl else
+          shutil.which("powershell") or shutil.which("powershell.exe") or "powershell")
+    if not ps:
+        return _fail("    Windows PowerShell is unavailable for autostart repair.")
     ps_cmd = (f"$exe = {_ps_single_quote(binary)}; "
               "$proc = Start-Process -FilePath $exe -ArgumentList @('autostart','enable') "
               "-Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $proc.ExitCode")
     _print_info("    Registering cua-driver auto-start..." if verbose
                 else "    Repairing cua-driver auto-start registration...")
+    from tools.computer_use.cua_backend import sanitized_cua_driver_env
     try:
         result = _run_text([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                           timeout=300, env=_cua_driver_env())
+                           timeout=300, env=sanitized_cua_driver_env() if wsl else _cua_driver_env())
     except subprocess.TimeoutExpired:
         return _fail("    cua-driver autostart registration timed out.")
     except Exception as exc:
         return _fail(f"    cua-driver autostart registration failed: {exc}")
-    if result.returncode == 0:
+    if result.returncode == 0 and (not wsl or _cua_driver_autostart_registered_windows()):
         return True
     _print_warning("    cua-driver autostart registration failed.")
     _print_output_tail(result)

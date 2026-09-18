@@ -451,6 +451,7 @@ export const arChrome = {
       cron: 'المهام',
       openCron: 'فتح المهام المجدولة',
       turnRunning: 'الدور يعمل',
+      cacheTtl: t => `تنتهي صلاحية ذاكرة التخزين المؤقت للموجه خلال ${t}`,
       contextUsage: 'استخدام السياق',
       compressions: count => `مرات الضغط: ${count}`,
       focusedSince: 'منذ التركيز',

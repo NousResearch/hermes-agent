@@ -92,7 +92,7 @@ describe('skillTouchedInMessages', () => {
 
   it('matches qualified skill names (category/name, plugin:name)', () => {
     expect(
-      skillTouchedInMessages('hermes-agent-dev', [toolCall('skill_view', { name: 'github/hermes-agent-dev' })])
+      skillTouchedInMessages('mock-skill', [toolCall('skill_view', { name: 'github/mock-skill' })])
     ).toBe(true)
     expect(
       skillTouchedInMessages('writing-plans', [toolCall('skill_view', { name: 'superpowers:writing-plans' })])

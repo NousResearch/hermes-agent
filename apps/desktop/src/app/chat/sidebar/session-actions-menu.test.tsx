@@ -18,6 +18,11 @@ import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
 
+// The stamp menu's emoji panel searches the bundled catalog, which in jsdom is
+// neither fetched nor needed: the panel's own behaviour (when it searches, what
+// it paints, what a tap writes) is what these cases are about.
+const { searchEmojiMock } = vi.hoisted(() => ({ searchEmojiMock: vi.fn() }))
+
 beforeEach(() => {
   vi.clearAllMocks()
   // The stamp menu's titles and colours are localStorage-backed, so they outlive
@@ -26,6 +31,10 @@ beforeEach(() => {
   $stampTitlePrefs.set({ added: [], deleted: [] })
   $stampColorOverrides.set({})
   window.localStorage.clear()
+  searchEmojiMock.mockResolvedValue([
+    { code: 'octopus', emoji: '🐙', haystack: ['octopus'] },
+    { code: 'unicorn', emoji: '🦄', haystack: ['unicorn'] }
+  ])
 })
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
@@ -97,6 +106,10 @@ vi.mock('@/i18n', () => ({
           stampRestore: 'Restore deleted stamp titles',
           stampAdd: 'Add stamp title…',
           stampAddPlaceholder: 'e.g. Blocked',
+          stampEmoji: 'Emoji…',
+          stampEmojiEmpty: 'No emoji found',
+          stampEmojiPick: (label: string) => `Stamp with ${label}`,
+          stampEmojiSearch: 'Search emoji',
           stampColor: (label: string) => `Color of “${label}”`,
           stampColorReset: 'Default color',
           unpin: 'Unpin',
@@ -108,6 +121,10 @@ vi.mock('@/i18n', () => ({
   })
 }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
+vi.mock('@/lib/emoji-index', () => ({
+  isEmojiIndexLoaded: () => true,
+  searchEmoji: searchEmojiMock
+}))
 // A short palette, not an empty one: the title colour test has to click a
 // swatch, and an empty list makes every button match a lookup by swatch name.
 vi.mock('@/lib/profile-color', () => ({ PROFILE_SWATCHES: ['hsl(0 68% 58%)', 'hsl(120 68% 58%)'] }))
@@ -561,5 +578,87 @@ describe('session menu — Stamp submenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Review' }))
 
     await waitFor(() => expect(toggleSessionStamp).toHaveBeenCalledWith('s1', undefined, 'Review'))
+  })
+
+  it('stamps with an emoji off the curated grid, and keeps the emoji as a title', async () => {
+    renderStampMenu()
+    await openKebab()
+    await openStampSubmenu()
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Emoji…' }))
+
+    // The curated grid stands in before anything is typed, so reaching for the
+    // catalog is not the price of a common emoji.
+    await screen.findByLabelText('Search emoji')
+    expect(searchEmojiMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stamp with 🔥' }))
+
+    await waitFor(() => expect(toggleSessionStamp).toHaveBeenCalledWith('s1', 'p1', '🔥'))
+    // Tapping is "Add stamp title…" with a chooser: the emoji joins the menu's
+    // own titles, so it is ONE tap next time, and the submenu stays open for a
+    // second pick.
+    expect($stampPresets.get()).toContain('🔥')
+    expect(screen.getByRole('button', { name: 'Stamp with ✅' })).toBeTruthy()
+  })
+
+  it('searches the whole catalog for an emoji the grid does not carry', async () => {
+    renderStampMenu()
+    await openKebab()
+    await openStampSubmenu()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Emoji…' }))
+
+    const search = await screen.findByLabelText('Search emoji')
+    fireEvent.change(search, { target: { value: 'octo' } })
+
+    // Typing filters by the catalog's own shortcodes/labels, and the grid is
+    // replaced by the hits (a bounded paint budget, not the whole catalog).
+    await waitFor(() => expect(searchEmojiMock).toHaveBeenCalledWith('octo', expect.any(Number)))
+    expect(await screen.findByRole('button', { name: 'Stamp with 🐙' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stamp with 🐙' }))
+
+    await waitFor(() => expect(toggleSessionStamp).toHaveBeenCalledWith('s1', 'p1', '🐙'))
+  })
+
+  it('says so when a search finds nothing, rather than painting an empty grid', async () => {
+    searchEmojiMock.mockResolvedValue([])
+    renderStampMenu()
+    await openKebab()
+    await openStampSubmenu()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Emoji…' }))
+
+    fireEvent.change(await screen.findByLabelText('Search emoji'), { target: { value: 'zzzz' } })
+
+    expect(await screen.findByText('No emoji found')).toBeTruthy()
+  })
+
+  it('leaves an emoji title no colour door, and still offers a way to take it off', async () => {
+    // A colour emoji is drawn by the platform's own emoji font: a colour picker
+    // for it would be a control that changes nothing visible.
+    $stampTitlePrefs.set({ added: ['🔥'], deleted: [] })
+    renderStampMenu(['🔥'])
+    await openKebab()
+    await openStampSubmenu()
+
+    expect(await screen.findByRole('menuitem', { name: '🔥' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Color of “🔥”' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Delete “🔥” from the stamp menu' })).toBeTruthy()
+  })
+
+  it('goes inert at the cap like the other doors that ADD, while a carried emoji still toggles off', async () => {
+    $stampTitlePrefs.set({ added: ['🔥'], deleted: [] })
+    renderStampMenu(['🔥', 'WIP', 'Review'])
+    await openKebab()
+    await openStampSubmenu()
+
+    // The panel exists to ADD an emoji, so a full session cannot open it ...
+    expect((await screen.findByRole('menuitem', { name: 'Emoji…' })).getAttribute('aria-disabled')).toBe('true')
+
+    // ... and the emoji the session wears is a row of its own, so it still comes
+    // off (a full session is not a locked one).
+    fireEvent.click(screen.getByRole('menuitem', { name: '🔥' }))
+
+    await waitFor(() => expect(toggleSessionStamp).toHaveBeenCalledWith('s1', 'p1', '🔥'))
   })
 })

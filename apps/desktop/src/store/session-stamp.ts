@@ -27,6 +27,26 @@ import { $cronSessions, $messagingSessions, $sessions, sessionMatchesStoredId } 
 export const SESSION_STAMP_PRESETS = ['Merged', 'WIP', 'Review', 'Handoff', 'Hold'] as const
 
 /**
+ * The Emoji panel's one-tap grid, shown before anything is typed. A curation,
+ * not a whitelist: the panel searches the WHOLE bundled emoji catalog, and any
+ * emoji reached that way becomes a menu title of its own (see `addStampTitle`).
+ * These are just the ones a session list wants most often, one tap away with no
+ * typing: state (🔥 in flight, ✅ done, 🚧 blocked, 💤 parked, ⏳ waiting), role
+ * (👀 review, 🐛 bug, 📦 packaging, 🔍 investigating, 🔒 security), and outcome
+ * (🚀 shipped, 🏁 finished, 🥇 best).
+ */
+export const SESSION_STAMP_EMOJI = [
+  '🔥', '✅', '🚧', '👀', '🐛', '💤', '⏳', '🚀',
+  '🎯', '⚠️', '🧪', '📌', '💡', '🧹', '❄️', '⭐',
+  '🛠️', '📦', '🔍', '💬', '🧠', '🏁', '🔒', '📝'
+] as const
+
+/** How many search hits the Emoji panel paints at once. The grid scrolls, so
+ *  this is a paint budget: enough to recognize a target by sight, few enough
+ *  that a one-letter query does not mount the whole catalog. */
+export const SESSION_STAMP_EMOJI_SEARCH_LIMIT = 48
+
+/**
  * The Stamp submenu's EDITABLE title list, per CLIENT (localStorage — like the
  * sidebar's density). Two sides: `added` (titles the user created, in order) and
  * `deleted` (titles they took off the menu, stock or their own).
@@ -209,11 +229,53 @@ export const SESSION_STAMP_LIMIT = 3
 
 /** Trim, collapse whitespace runs, cap the length. `''`, `null` and `undefined`
  *  all mean "no stamp". The ONE normalizer shared by the writer, the chip and
- *  the menu's custom-text input. */
+ *  the menu's custom-text input.
+ *
+ *  The cap counts CODE POINTS, not UTF-16 units: a stamp may legitimately be an
+ *  emoji (👨‍👩‍👧 is five code points, eight units), and a plain `slice(0, 24)`
+ *  cuts the pair in half when the cut lands inside one — the backend then stores
+ *  a lone surrogate and the chip paints a replacement glyph. Cutting on points
+ *  can only ever drop a whole character. */
 export function normalizeSessionStamp(raw: null | string | undefined): null | string {
   const value = (raw ?? '').trim().replace(/\s+/g, ' ')
 
-  return value ? value.slice(0, SESSION_STAMP_MAX_LENGTH) : null
+  if (!value) {
+    return null
+  }
+
+  const points = Array.from(value)
+
+  return points.length > SESSION_STAMP_MAX_LENGTH ? points.slice(0, SESSION_STAMP_MAX_LENGTH).join('') : value
+}
+
+/**
+ * A stamp that is nothing but emoji (one glyph, a ZWJ sequence like 👨‍👩‍👧, a
+ * skin-toned 👍🏽, a flag, or several of them in a row).
+ *
+ * It matters because an emoji is drawn by the platform's colour emoji font,
+ * which a CSS `color` cannot tint — so an emoji stamp paints as the glyph itself
+ * (larger, no wash) and the menu offers it no colour choice. The test requires
+ * at least one Extended_Pictographic, so a plain digit or `#` never reads as
+ * emoji; the tail covers the joiners, variation selectors, keycap marks and skin
+ * tones that make one emoji out of several points, and flags are their own
+ * regional-indicator pair.
+ *
+ * Written as an alternation rather than a character class: a class holding a ZWJ
+ * or a variation selector is exactly what `no-misleading-character-class` exists
+ * to catch, and spelling the points out says what is allowed.
+ */
+const EMOJI_TAIL = '(?:\\u200D|\\uFE0F|\\u20E3|\\u{1F3FB}|\\u{1F3FC}|\\u{1F3FD}|\\u{1F3FE}|\\u{1F3FF})*'
+const EMOJI_STAMP_RE = new RegExp(`^(?:\\p{Extended_Pictographic}${EMOJI_TAIL})+$`, 'u')
+const FLAG_STAMP_RE = /^\p{Regional_Indicator}{2}$/u
+
+export function isEmojiStamp(label: null | string | undefined): boolean {
+  const value = normalizeSessionStamp(label)
+
+  if (!value) {
+    return false
+  }
+
+  return EMOJI_STAMP_RE.test(value) || FLAG_STAMP_RE.test(value)
 }
 
 /**

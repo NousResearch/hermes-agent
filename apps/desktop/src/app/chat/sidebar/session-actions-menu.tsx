@@ -28,6 +28,7 @@ import { DropdownMenuSearch } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { searchEmoji } from '@/lib/emoji-index'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
@@ -56,9 +57,12 @@ import {
   applySessionStamps,
   deleteStampPreset,
   hasStampLabel,
+  isEmojiStamp,
   normalizeSessionStamp,
   normalizeSessionStamps,
   restoreStampPresets,
+  SESSION_STAMP_EMOJI,
+  SESSION_STAMP_EMOJI_SEARCH_LIMIT,
   SESSION_STAMP_LIMIT,
   SESSION_STAMP_MAX_LENGTH,
   setStampColor,
@@ -238,9 +242,14 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
 const STAMP_ROW_ACTION =
   'shrink-0 rounded p-0.5 text-(--ui-text-tertiary) opacity-0 transition-opacity group-focus-within/stamp:opacity-100 group-hover/stamp:opacity-100 hover:text-foreground focus-visible:opacity-100'
 
-/** Which in-menu panel is open: a title's colours, a new title, or a one-off
- *  custom label for this session. */
-type StampPanel = { kind: 'add' } | { kind: 'color'; label: string } | { kind: 'custom' } | null
+/** Which in-menu panel is open: a title's colours, a new title, an emoji picked
+ *  off the bundled catalog, or a one-off custom label for this session. */
+type StampPanel =
+  | { kind: 'add' }
+  | { kind: 'color'; label: string }
+  | { kind: 'custom' }
+  | { kind: 'emoji' }
+  | null
 
 /** A nested control inside a menu row: the ROW must not take the press. Radix
  *  resolves a click from the pointer sequence, not from `click` alone, so the
@@ -274,7 +283,48 @@ function SessionStampItems({
   const colors = useStore($stampColorOverrides)
   const [panel, setPanel] = useState<StampPanel>(null)
   const [typed, setTyped] = useState('')
+  // The Emoji panel's query and, once a query exists, its hits over the bundled
+  // catalog. `null` while the first answer is in flight — the panel says so
+  // rather than flashing an empty grid.
+  const [emojiQuery, setEmojiQuery] = useState('')
+  const [emojiHits, setEmojiHits] = useState<null | string[]>(null)
   const full = current.length >= SESSION_STAMP_LIMIT
+
+  useEffect(() => {
+    const query = emojiQuery.trim()
+
+    if (panel?.kind !== 'emoji' || !query) {
+      setEmojiHits(null)
+
+      return
+    }
+
+    // Bounded window per keystroke: a search that is no longer the latest must
+    // not paint over the newer one (the index is in memory after the first
+    // load, but the FIRST one reads a bundled JSON file off disk).
+    let live = true
+
+    const timer = window.setTimeout(() => {
+      searchEmoji(query, SESSION_STAMP_EMOJI_SEARCH_LIMIT)
+        .then(entries => {
+          if (live) {
+            setEmojiHits(entries.map(entry => entry.emoji))
+          }
+        })
+        .catch(() => {
+          // An unreadable catalog is an empty result, not a spinner that never
+          // resolves: the curated grid is one Escape away.
+          if (live) {
+            setEmojiHits([])
+          }
+        })
+    }, 120)
+
+    return () => {
+      live = false
+      window.clearTimeout(timer)
+    }
+  }, [emojiQuery, panel?.kind])
 
   const commitTyped = (kind: 'add' | 'custom') => {
     const next = normalizeSessionStamp(typed)
@@ -323,6 +373,98 @@ function SessionStampItems({
     />
   )
 
+  /**
+   * Tapping an emoji goes on this session NOW and joins the menu's own titles,
+   * so the emoji actually in use are one tap next time. That is "Add stamp
+   * title…" with a chooser — the panel IS that door, drawn instead of typed —
+   * and it shares the ONE write path, so the haptic, the notification and the
+   * optimistic row patch are identical to a title row's.
+   */
+  const commitEmoji = (emoji: string) => {
+    addStampTitle(emoji)
+    void toggleStamp(sessionId, profile, emoji, current, r)
+  }
+
+  // The Emoji panel: a search over the bundled catalog (offline — lib/emoji-index
+  // is also what the composer's `:shortcode:` completions read) and a grid of what
+  // it found, with the curated set standing in before anything is typed.
+  //
+  // Buttons, not menu items: a row per emoji would put the whole catalog into the
+  // menu's keyboard navigation, and Radix leaves a plain child of the menu content
+  // alone — so a tap here stamps without closing the submenu (the colour swatches
+  // above are the same shape). That is what makes picking two emoji in a row
+  // painless, and it is why a picked emoji shows its own state in place instead of
+  // the row's trailing check.
+  const query = emojiQuery.trim()
+  const emojiGrid = query ? emojiHits : [...SESSION_STAMP_EMOJI]
+
+  const emojiPanel = (
+    <>
+      <DropdownMenuSearch
+        aria-label={r.stampEmojiSearch}
+        key="emoji"
+        onKeyDown={event => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            setPanel(null)
+            setEmojiQuery('')
+          } else if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+            // Enter belongs to the query, not to the menu row highlighted behind
+            // it: a stopped key never reaches Radix's own Enter handling.
+            event.preventDefault()
+            event.stopPropagation()
+          }
+        }}
+        onValueChange={setEmojiQuery}
+        placeholder={r.stampEmojiSearch}
+        value={emojiQuery}
+      />
+      {emojiGrid !== null && emojiGrid.length > 0 && (
+        <div
+          className="dt-portal-scrollbar grid max-h-40 grid-cols-8 gap-0.5 overflow-y-auto px-2 pt-1 pb-1.5"
+          data-stamp-emoji-grid
+        >
+          {emojiGrid.map(emoji => {
+            const isCurrent = hasStampLabel(current, emoji)
+
+            return (
+              <button
+                // Names the emoji it stamps with, so the grid is answerable to a
+                // screen reader and to a test by a stable label.
+                aria-label={r.stampEmojiPick(emoji)}
+                aria-pressed={isCurrent}
+                className={cn(
+                  'grid size-7 place-items-center rounded-md text-[1.0625rem] leading-none transition hover:bg-(--ui-control-hover-background)',
+                  isCurrent && 'bg-[color-mix(in_srgb,var(--ui-accent)_18%,transparent)]'
+                )}
+                // A full session still shows what it carries; only ADDING is out
+                // of reach (the hint row above says why).
+                disabled={full && !isCurrent}
+                key={emoji}
+                onClick={() => commitEmoji(emoji)}
+                title={emoji}
+                type="button"
+              >
+                {emoji}
+              </button>
+            )
+          })}
+        </div>
+      )}
+      {query && !emojiGrid && (
+        <div className="px-2 pt-0.5 pb-1.5 text-[0.6875rem] text-(--ui-text-tertiary)" data-stamp-emoji-loading>
+          {t.common.loading}
+        </div>
+      )}
+      {query && emojiGrid?.length === 0 && (
+        <div className="px-2 pt-0.5 pb-1.5 text-[0.6875rem] text-(--ui-text-tertiary)" data-stamp-emoji-empty>
+          {r.stampEmojiEmpty}
+        </div>
+      )}
+    </>
+  )
+
   return (
     <>
       {full && (
@@ -336,6 +478,10 @@ function SessionStampItems({
         const isCurrent = hasStampLabel(current, preset)
         const color = stampColorFor(preset, colors)
         const panelOpen = panel?.kind === 'color' && panel.label === preset
+        // An emoji title gets no colour control: the glyph is drawn by the
+        // platform's colour emoji font, so a picked colour would be a choice the
+        // user cannot see. The ✕ to take it off the menu stays.
+        const emojiTitle = isEmojiStamp(preset)
 
         return (
           <Fragment key={preset}>
@@ -359,28 +505,31 @@ function SessionStampItems({
               {isCurrent && (
                 <Codicon className="ml-auto shrink-0 text-(--ui-accent)" name="check" size="0.8rem" />
               )}
-              <button
-                aria-label={r.stampColor(preset)}
-                aria-pressed={panelOpen}
-                className={cn(STAMP_ROW_ACTION, !isCurrent && 'ml-auto', panelOpen && 'opacity-100')}
-                onClick={event => {
-                  stopRowSelect(event)
-                  triggerHaptic('selection')
-                  setPanel(panelOpen ? null : { kind: 'color', label: preset })
-                }}
-                onPointerDown={stopRowSelect}
-                onPointerUp={stopRowSelect}
-                title={r.stampColor(preset)}
-                type="button"
-              >
-                <span
-                  className={cn('block size-2 rounded-full bg-current', !color && stampHueClass(preset))}
-                  style={color ? { color } : undefined}
-                />
-              </button>
+              {!emojiTitle && (
+                <button
+                  aria-label={r.stampColor(preset)}
+                  aria-pressed={panelOpen}
+                  className={cn(STAMP_ROW_ACTION, !isCurrent && 'ml-auto', panelOpen && 'opacity-100')}
+                  onClick={event => {
+                    stopRowSelect(event)
+                    triggerHaptic('selection')
+                    setPanel(panelOpen ? null : { kind: 'color', label: preset })
+                  }}
+                  onPointerDown={stopRowSelect}
+                  onPointerUp={stopRowSelect}
+                  title={r.stampColor(preset)}
+                  type="button"
+                >
+                  <span
+                    className={cn('block size-2 rounded-full bg-current', !color && stampHueClass(preset))}
+                    style={color ? { color } : undefined}
+                  />
+                </button>
+              )}
               <button
                 aria-label={r.stampRemove(preset)}
-                className={STAMP_ROW_ACTION}
+                // No colour button to carry the right-alignment on an emoji row.
+                className={cn(STAMP_ROW_ACTION, !isCurrent && emojiTitle && 'ml-auto')}
                 onClick={event => {
                   stopRowSelect(event)
                   triggerHaptic('selection')
@@ -421,6 +570,22 @@ function SessionStampItems({
         >
           <Codicon name="add" size="0.875rem" />
           <span>{r.stampAdd}</span>
+        </kit.Item>
+      )}
+      {panel?.kind === 'emoji' ? (
+        emojiPanel
+      ) : (
+        <kit.Item
+          disabled={full}
+          onSelect={event => {
+            event.preventDefault()
+            triggerHaptic('selection')
+            setEmojiQuery('')
+            setPanel({ kind: 'emoji' })
+          }}
+        >
+          <Codicon name="smiley" size="0.875rem" />
+          <span>{r.stampEmoji}</span>
         </kit.Item>
       )}
       {deleted.length > 0 && (

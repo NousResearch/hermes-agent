@@ -28,10 +28,13 @@ import {
   applySessionStamps,
   deleteStampPreset,
   hasStampLabel,
+  isEmojiStamp,
   normalizeSessionStamp,
   normalizeSessionStamps,
   restoreStampPresets,
+  SESSION_STAMP_EMOJI,
   SESSION_STAMP_LIMIT,
+  SESSION_STAMP_MAX_LENGTH,
   SESSION_STAMP_PRESETS,
   setStampColor,
   STAMP_SWATCHES,
@@ -73,6 +76,50 @@ describe('normalizeSessionStamp', () => {
     expect(normalizeSessionStamp('   ')).toBeNull()
     expect(normalizeSessionStamp(null)).toBeNull()
     expect(normalizeSessionStamp(undefined)).toBeNull()
+  })
+
+  it('caps on code points, so an emoji at the edge is never cut in half', () => {
+    // Twenty-five fire glyphs are 50 UTF-16 units but 25 characters. A unit-based
+    // slice keeps 24 units — twelve glyphs, and the boundary lands INSIDE a pair,
+    // storing a lone surrogate that the backend keeps and the chip paints as a
+    // replacement glyph.
+    const capped = normalizeSessionStamp('🔥'.repeat(25)) as string
+
+    expect(capped).toBe('🔥'.repeat(24))
+    // `u` is load-bearing: without it the surrogate range matches the halves of
+    // every astral character, so a correct string reads as broken.
+    expect(/[\uD800-\uDFFF]/u.test(capped)).toBe(false)
+    // And a stamp that is over the cap in UNITS while under it in characters is
+    // not truncated at all (thirteen glyphs are 26 units, 13 characters).
+    expect(normalizeSessionStamp('🔥'.repeat(13))).toBe('🔥'.repeat(13))
+  })
+
+  it('leaves an emoji stamp under the cap exactly as it was written', () => {
+    // A ZWJ family is five code points and eight units: neither the count nor the
+    // characters may be touched.
+    expect(normalizeSessionStamp(' 👨‍👩‍👧 ')).toBe('👨‍👩‍👧')
+    expect(normalizeSessionStamp('🔥')).toBe('🔥')
+  })
+})
+
+describe('isEmojiStamp', () => {
+  it('reads an emoji-only label as an emoji stamp, however the glyph is assembled', () => {
+    expect(isEmojiStamp('🔥')).toBe(true)
+    expect(isEmojiStamp('👍🏽')).toBe(true) // skin tone
+    expect(isEmojiStamp('👨‍👩‍👧')).toBe(true) // ZWJ sequence
+    expect(isEmojiStamp('🇺🇸')).toBe(true) // regional-indicator flag
+    expect(isEmojiStamp('🔥✅')).toBe(true) // a row of them
+  })
+
+  it('leaves text, digits and mixed labels alone', () => {
+    // A digit is not an emoji even though Unicode counts it as a component: a
+    // numeric label must keep painting in the text chip.
+    expect(isEmojiStamp('WIP')).toBe(false)
+    expect(isEmojiStamp('123')).toBe(false)
+    expect(isEmojiStamp('1🔥')).toBe(false)
+    expect(isEmojiStamp('🔥 WIP')).toBe(false)
+    expect(isEmojiStamp('')).toBe(false)
+    expect(isEmojiStamp(null)).toBe(false)
   })
 })
 
@@ -338,6 +385,32 @@ describe('the titles the Stamp submenu offers', () => {
     restoreStampPresets()
 
     expect($stampPresets.get()).toEqual([...SESSION_STAMP_PRESETS, 'Blocked'])
+  })
+})
+
+describe('the emoji the Emoji panel offers', () => {
+  it('offers emoji only, one glyph each, with no repeats', () => {
+    expect(SESSION_STAMP_EMOJI.length).toBeGreaterThan(0)
+    // The wire contract: every entry has to read as an emoji stamp, or the grid
+    // would paint a button whose label renders in the text chip.
+    expect(SESSION_STAMP_EMOJI.every(emoji => isEmojiStamp(emoji))).toBe(true)
+    // A stamp is a mark beside a title, not a phrase.
+    expect(SESSION_STAMP_EMOJI.every(emoji => Array.from(emoji).length <= SESSION_STAMP_MAX_LENGTH)).toBe(true)
+    expect(new Set(SESSION_STAMP_EMOJI).size).toBe(SESSION_STAMP_EMOJI.length)
+  })
+
+  it('lets a picked emoji become a menu title of its own, and be taken off again', () => {
+    // This is what tapping in the panel does: the emoji joins the user's own
+    // titles, so the ones actually in use are one tap next time.
+    addStampTitle('🦄')
+
+    expect($stampPresets.get()).toEqual([...SESSION_STAMP_PRESETS, '🦄'])
+
+    deleteStampPreset('🦄')
+
+    expect($stampPresets.get()).not.toContain('🦄')
+    // Off the MENU, still a valid label: a session already stamped 🦄 keeps it.
+    expect(normalizeSessionStamp('🦄')).toBe('🦄')
   })
 })
 

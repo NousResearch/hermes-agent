@@ -19,6 +19,7 @@ import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/s
 import {
   $sessionStamps,
   $stampColorOverrides,
+  isEmojiStamp,
   normalizeSessionStamp,
   SESSION_STAMP_LIMIT,
   stampColorFor,
@@ -49,6 +50,14 @@ const STAMP_HUES: Record<string, string> = {
 const STAMP_CHIP =
   'inline-flex max-w-28 shrink-0 items-center truncate rounded-[3px] bg-[color-mix(in_srgb,currentColor_14%,transparent)] px-1 text-[0.5625rem] font-medium leading-[1.6] tracking-[0.01em] normal-case'
 
+// An EMOJI stamp is the glyph alone: bigger, no wash, no hue. A colour emoji is
+// drawn by the platform's own emoji font (Apple Color Emoji on macOS), which
+// ignores `color` — so a tinted capsule behind it would claim a colour choice
+// the user cannot see, and 9px text sizing would shrink a stamp that IS the
+// whole mark. `max-w-28` + truncate still rail an absurd multi-emoji label.
+const STAMP_EMOJI_CHIP =
+  'inline-flex max-w-28 shrink-0 items-center truncate px-0.5 text-[0.8125rem] leading-[1.15] normal-case'
+
 // The group owning the room the chips may take. No width cap of its own: wherever
 // stamps share a row with a title (sidebar rows, session tabs, the ⌘ switcher) the
 // TITLE yields first, so a chip is never clipped by the surface around it — only the
@@ -64,11 +73,14 @@ export function SessionStamp({ className, stamp }: { className?: string; stamp: 
     return null
   }
 
-  const color = stampColorFor(label, overrides)
+  const emoji = isEmojiStamp(label)
+  // An emoji wears no colour: the glyph is the stamp, and the platform's colour
+  // font ignores `color` anyway (the menu hides the choice for the same reason).
+  const color = emoji ? null : stampColorFor(label, overrides)
 
   return (
     <span
-      className={cn(STAMP_CHIP, !color && stampHueClass(label), className)}
+      className={cn(emoji ? STAMP_EMOJI_CHIP : STAMP_CHIP, !color && !emoji && stampHueClass(label), className)}
       data-session-stamp={label}
       // A picked colour rides `currentColor`, so the chip's wash
       // (`color-mix(currentColor …)`) follows the label instead of the theme.

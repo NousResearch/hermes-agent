@@ -2530,6 +2530,10 @@ export interface Translations {
       stampRestore: string
       stampAdd: string
       stampAddPlaceholder: string
+      stampEmoji: string
+      stampEmojiEmpty: string
+      stampEmojiPick: (label: string) => string
+      stampEmojiSearch: string
       stampColor: (label: string) => string
       stampColorReset: string
       deleteTitle: string

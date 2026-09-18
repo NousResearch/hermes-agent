@@ -9,6 +9,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 import { $cronSessions, $selectedStoredSessionId, $sessions } from '@/store/session'
+import { setStampColor } from '@/store/session-stamp'
 
 import { SessionStamp, SessionStamps, SessionTabStamp } from './session-stamp'
 
@@ -21,6 +22,12 @@ beforeEach(() => {
 })
 
 const chip = (container: HTMLElement, label: string) => container.querySelector<HTMLElement>(`[data-session-stamp="${label}"]`)
+
+// jsdom's selector engine cannot match an ATTRIBUTE VALUE holding an astral
+// character (`[data-session-stamp="🔥"]` returns null over correct DOM), so an
+// emoji chip is found by its text. The bubble the app itself paints is unaffected.
+const emojiChip = (container: HTMLElement, label: string) =>
+  [...container.querySelectorAll<HTMLElement>('[data-session-stamp]')].find(node => node.textContent === label)
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -46,6 +53,34 @@ describe('SessionStamp', () => {
     // transforms inherit: without `normal-case` on the chip itself, "mrg" reads
     // as "MRG" in the strip while the session list shows "mrg".
     expect(chip(render(<SessionStamp stamp="mrg" />).container, 'mrg')?.className).toContain('normal-case')
+  })
+
+  it('paints an emoji stamp as the GLYPH — no capsule, no hue', () => {
+    // A colour emoji is drawn by the platform's own emoji font (Apple Color Emoji
+    // on macOS, Segoe UI Emoji on Windows), so a tinted capsule would claim a
+    // colour choice nobody can see and 9px text sizing would shrink the mark. The
+    // chip is the emoji at its own size; the text chip keeps both.
+    const emoji = emojiChip(render(<SessionStamp stamp="🔥" />).container, '🔥') as HTMLElement
+    const text = chip(render(<SessionStamp stamp="Merged" />).container, 'Merged') as HTMLElement
+
+    expect(emoji.className).toContain('text-[0.8125rem]')
+    expect(emoji.className).not.toContain('color-mix')
+    expect(emoji.className).not.toContain('--ui-accent')
+    expect(text.className).toContain('color-mix')
+    expect(text.className).toContain('--ui-green')
+  })
+
+  it('never tints an emoji, even with a colour stored for that label', () => {
+    // The menu hides the colour door for an emoji title for the same reason; a
+    // stale override (written before the emoji was a stamp) must not resurrect it.
+    setStampColor('🔥', 'hsl(0 68% 58%)')
+
+    const emoji = emojiChip(render(<SessionStamp stamp="🔥" />).container, '🔥') as HTMLElement
+
+    expect(emoji.style.color).toBe('')
+    expect(emoji.className).not.toContain('color-mix')
+
+    setStampColor('🔥', null)
   })
 })
 

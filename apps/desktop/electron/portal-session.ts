@@ -12,6 +12,16 @@ interface PortalSessionDependencies {
   rememberLog: (message: string) => void
 }
 
+interface CookieWindowOptions {
+  kind: string
+  title: string
+  show: boolean
+  pollMs: number
+  deadlineMs?: number
+}
+
+type CookieWindowOutcome = 'landed' | 'closed' | 'timeout' | Error
+
 // Portal credentials belong to NAS, independently of the selected gateway.
 // Read the jar on every operation so provider changes never latch in Desktop.
 export function createPortalSession({
@@ -90,20 +100,8 @@ export function createPortalSession({
     return access.some(cookie => !previous.some(old => old.name === cookie.name && old.value === cookie.value))
   }
 
-  interface CookieWindowOptions {
-    kind: string
-    title: string
-    show: boolean
-    pollMs: number
-    deadlineMs?: number
-  }
-
-  type CookieWindowOutcome = 'landed' | 'closed' | 'timeout' | Error
-
-  // Load the portal root in the OAuth partition and settle once a new access
-  // cookie lands, the window closes, the deadline passes, or the window cannot
-  // be created/loaded. The portal owns provider selection, provisioning and
-  // refresh redirects; Desktop only watches the jar.
+  // The portal owns provider selection, provisioning and refresh redirects;
+  // Desktop only watches the jar for a new access cookie.
   function driveCookieWindow(sess: Session, previous: PortalCookie[], options: CookieWindowOptions) {
     const portalBaseUrl = resolvePortalBaseUrl()
 
@@ -128,11 +126,12 @@ export function createPortalSession({
           clearTimeout(deadlineTimer)
         }
 
+        // Settle first: a destroy() that throws must not leave the caller hanging.
+        resolve(outcome)
+
         if (win && !win.isDestroyed()) {
           win.destroy()
         }
-
-        resolve(outcome)
       }
 
       const checkCookie = async () => {

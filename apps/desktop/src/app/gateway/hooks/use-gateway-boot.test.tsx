@@ -546,8 +546,9 @@ describe('primary failure foreground isolation', () => {
     // about it from where they are — without the foreground being hijacked.
     expect(isActivePrimary()).toBe(false)
     expect($desktopBoot.get().error).toBeNull()
-    const toast = $notifications.get().find(entry => entry.kind === 'error')
-    expect(toast?.action?.label).toBe('Open Gateways')
+    const toasts = $notifications.get().filter(entry => entry.kind === 'error')
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].action?.label).toBe('Open Gateways')
   })
 
   it.each(['progress', 'reconnect'] as const)(

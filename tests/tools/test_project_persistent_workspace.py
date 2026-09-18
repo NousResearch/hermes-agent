@@ -55,3 +55,24 @@ def test_unresolved_project_keeps_existing_session_fallback(tmp_path, monkeypatc
     monkeypatch.setattr(terminal_tool, "_session_scope", lambda: terminal_tool._SessionScope("docker", True))
     terminal_tool.record_session_cwd("default", str(tmp_path / "unregistered"))
     assert terminal_tool._resolve_container_task_id(None) == "default"
+
+
+def test_explicit_shared_key_precedes_project_workspace_for_two_profiles(tmp_path, monkeypatch):
+    repo = _project_db(tmp_path, monkeypatch, profile="one")
+    monkeypatch.setattr(terminal_tool, "_session_scope", lambda: terminal_tool._SessionScope("docker", True))
+    monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team")
+    terminal_tool.record_session_cwd("default", str(repo))
+
+    monkeypatch.setattr(terminal_tool, "_current_session_profile", lambda: "one")
+    first = terminal_tool._resolve_container_task_id(None)
+
+    other_db = tmp_path / "two" / "projects.db"
+    other_db.parent.mkdir()
+    monkeypatch.setattr(projects_db, "projects_db_path", lambda: other_db)
+    conn = projects_db.connect(other_db)
+    projects_db.create_project(conn, name="My App", slug="my-app", primary_path=str(repo))
+    conn.close()
+    monkeypatch.setattr(terminal_tool, "_current_session_profile", lambda: "two")
+    second = terminal_tool._resolve_container_task_id(None)
+
+    assert first == second == "shared:team"

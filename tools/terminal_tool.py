@@ -546,6 +546,13 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     if shared:
         return f"shared:{shared}"
 
+    # An explicit shared-container key is authoritative, including when the
+    # workspace is registered to a project. This preserves the opt-in contract
+    # for trusted profiles while project scoping remains the default.
+    shared = _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip() if scope.docker_profile_scoped else ""
+    if shared:
+        return f"shared:{shared}"
+
     # Persistent non-local backends reuse one environment per registered project.
     # Resolve the raw session cwd first so delegation and ACP workspace overrides
     # are honored without consulting the shared container's mutable cwd.

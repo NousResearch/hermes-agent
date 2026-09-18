@@ -1,0 +1,5 @@
+name: darkbloom-provider
+kind: model-provider
+version: 1.0.0
+description: DarkBloom (private inference on verified Apple Silicon Macs)
+author: Ben

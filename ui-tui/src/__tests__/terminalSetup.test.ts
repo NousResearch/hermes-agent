@@ -31,18 +31,23 @@ describe('terminalSetup helpers', () => {
   })
 
   it('computes VS Code style config dirs cross-platform', () => {
-    expect(getVSCodeStyleConfigDir('Code', 'darwin', {} as NodeJS.ProcessEnv, '/home/me')).toBe(
+    // join() renders with the host OS separator; assert on a normalized form
+    // so the expectation holds on Windows runners too.
+    const norm = (p: null | string) => p?.split(/[\\/]/).join('/')
+    expect(norm(getVSCodeStyleConfigDir('Code', 'darwin', {} as NodeJS.ProcessEnv, '/home/me'))).toBe(
       '/home/me/Library/Application Support/Code/User'
     )
-    expect(getVSCodeStyleConfigDir('Code', 'linux', {} as NodeJS.ProcessEnv, '/home/me')).toBe(
+    expect(norm(getVSCodeStyleConfigDir('Code', 'linux', {} as NodeJS.ProcessEnv, '/home/me'))).toBe(
       '/home/me/.config/Code/User'
     )
     expect(
-      getVSCodeStyleConfigDir(
-        'Code',
-        'win32',
-        { APPDATA: 'C:/Users/me/AppData/Roaming' } as NodeJS.ProcessEnv,
-        '/home/me'
+      norm(
+        getVSCodeStyleConfigDir(
+          'Code',
+          'win32',
+          { APPDATA: 'C:/Users/me/AppData/Roaming' } as NodeJS.ProcessEnv,
+          '/home/me'
+        )
       )
     ).toBe('C:/Users/me/AppData/Roaming/Code/User')
   })
@@ -340,7 +345,12 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readMissing }
+        fileOps: { readFile: readMissing },
+        // The default platform resolves the config dir via APPDATA/registry
+        // quirks on Windows; pin POSIX so the fixture asserts the shared
+        // path-walk logic on every OS.
+        platform: 'linux',
+        homeDir: '/home/me'
       })
     ).resolves.toBe(true)
 
@@ -388,7 +398,9 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readComplete }
+        fileOps: { readFile: readComplete },
+        platform: 'linux',
+        homeDir: '/home/me'
       })
     ).resolves.toBe(false)
   })
@@ -448,7 +460,9 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readLegacy }
+        fileOps: { readFile: readLegacy },
+        platform: 'linux',
+        homeDir: '/home/me'
       })
     ).resolves.toBe(true)
   })

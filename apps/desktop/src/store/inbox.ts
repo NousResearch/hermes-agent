@@ -45,6 +45,9 @@ export interface InboxPendingClarify {
 }
 
 export interface InboxItem {
+  background_task_count: number
+  background_task_count_unavailable: boolean
+  categories: string[]
   cwd: string
   heartbeat: Record<string, unknown> | null
   goal: Record<string, unknown> | null
@@ -54,6 +57,8 @@ export interface InboxItem {
   pending_clarify: InboxPendingClarify | null
   session_key: string
   source: string
+  subagent_count: number
+  subagent_count_unavailable: boolean
   title: string
 }
 
@@ -77,6 +82,69 @@ export interface InboxEntry {
   error: string | null
   loading: boolean
   snapshot: InboxSnapshot | null
+}
+
+// ── request detail types (inbox.requests) ─────────────────────────────────────
+
+export type InboxCategory = 'all' | 'goals' | 'loops' | 'heartbeats' | 'background_tasks' | 'subagents' | 'other'
+
+export interface InboxRequestApproval {
+  allow_permanent: boolean | null
+  allow_session: boolean | null
+  choices: string[]
+  command: string
+  description: string
+  request_id: string
+  smart_denied: boolean | null
+  tool_name: string | null
+}
+
+export interface InboxRequestClarifyQuestion {
+  multi_select: boolean
+  qid: string
+  question: string
+  choices: string[] | null
+}
+
+export interface InboxRequestClarifyParams {
+  answers: Record<string, string> | null
+  choices: string[] | null
+  multi_select: boolean | null
+  question: string | null
+  questions: InboxRequestClarifyQuestion[] | null
+}
+
+export interface InboxRequestClarification {
+  kind: string
+  params: InboxRequestClarifyParams
+  request_id: string
+}
+
+export interface InboxRequestSessionDetail {
+  approvals: InboxRequestApproval[]
+  clarifications: InboxRequestClarification[]
+  live_session_ids: string[]
+}
+
+export interface InboxRequestsCoverage {
+  approval_count: number
+  clarification_count: number
+  context_anchor: string
+  errors: string[]
+  live_session_count: number
+  profile: string
+  session_key: string
+}
+
+export interface InboxRequestDetails {
+  coverage: InboxRequestsCoverage
+  sessions: InboxRequestSessionDetail[]
+}
+
+export interface InboxRequestDetailsEntry {
+  details: InboxRequestDetails | null
+  error: string | null
+  loading: boolean
 }
 
 type UnknownRecord = Record<string, unknown>
@@ -167,7 +235,14 @@ function parseItem(value: unknown): InboxItem | null {
     return null
   }
 
+  const categories = Array.isArray(value.categories) && value.categories.every(c => typeof c === 'string')
+    ? (value.categories as string[])
+    : []
+
   return {
+    background_task_count: typeof value.background_task_count === 'number' ? value.background_task_count : 0,
+    background_task_count_unavailable: value.background_task_count_unavailable === true,
+    categories,
     cwd: asString(value.cwd),
     goal: value.goal === null ? null : isRecord(value.goal) ? value.goal : null,
     heartbeat: value.heartbeat === null ? null : isRecord(value.heartbeat) ? value.heartbeat : null,
@@ -177,6 +252,8 @@ function parseItem(value: unknown): InboxItem | null {
     pending_clarify: pendingClarify,
     session_key: asString(value.session_key),
     source: asString(value.source),
+    subagent_count: typeof value.subagent_count === 'number' ? value.subagent_count : 0,
+    subagent_count_unavailable: value.subagent_count_unavailable === true,
     title: asString(value.title)
   }
 }
@@ -281,6 +358,243 @@ export function clearInbox(): void {
   invalidateInboxRequests()
   inboxRequestInFlight = null
   publishEntry({ capability: 'unknown', error: null, loading: false, snapshot: null })
+  clearAllRequestDetails()
+}
+
+// ── request details (inbox.requests) ──────────────────────────────────────────
+
+export const $inboxRequestDetails = atom<Record<string, InboxRequestDetailsEntry>>({})
+
+let detailRequestGeneration = 0
+
+function publishRequestDetails(key: string, entry: InboxRequestDetailsEntry): void {
+  const all = $inboxRequestDetails.get()
+  const prev = all[key]
+
+  if (prev && prev.loading === entry.loading && prev.error === entry.error && prev.details === entry.details) {return}
+  $inboxRequestDetails.set({ ...all, [key]: entry })
+}
+
+export function clearAllRequestDetails(): void {
+  detailRequestGeneration += 1
+  $inboxRequestDetails.set({})
+}
+
+function parseRequestApproval(value: unknown): InboxRequestApproval | null {
+  if (!isRecord(value)) {return null}
+
+  return {
+    allow_permanent: typeof value.allow_permanent === 'boolean' ? value.allow_permanent : null,
+    allow_session: typeof value.allow_session === 'boolean' ? value.allow_session : null,
+    choices: Array.isArray(value.choices) ? (value.choices as string[]) : [],
+    command: asString(value.command),
+    description: asString(value.description),
+    request_id: asString(value.request_id),
+    smart_denied: typeof value.smart_denied === 'boolean' ? value.smart_denied : null,
+    tool_name: typeof value.tool_name === 'string' ? value.tool_name : null
+  }
+}
+
+function parseClarifyQuestion(value: unknown): InboxRequestClarifyQuestion | null {
+  if (!isRecord(value)) {return null}
+
+  return {
+    multi_select: value.multi_select === true,
+    qid: asString(value.qid),
+    question: asString(value.question),
+    choices: Array.isArray(value.choices) ? (value.choices as string[]) : null
+  }
+}
+
+function parseClarifyParams(value: unknown): InboxRequestClarifyParams | null {
+  if (!isRecord(value)) {return null}
+  const rawQuestions = value.questions
+
+  const questions = Array.isArray(rawQuestions)
+    ? rawQuestions.map(parseClarifyQuestion).filter((q): q is InboxRequestClarifyQuestion => q !== null)
+    : null
+
+  return {
+    answers: isRecord(value.answers) ? (value.answers as Record<string, string>) : null,
+    choices: Array.isArray(value.choices) ? (value.choices as string[]) : null,
+    multi_select: typeof value.multi_select === 'boolean' ? value.multi_select : null,
+    question: typeof value.question === 'string' ? value.question : null,
+    questions
+  }
+}
+
+function parseClarification(value: unknown): InboxRequestClarification | null {
+  if (!isRecord(value)) {return null}
+  const params = parseClarifyParams(value.params)
+
+  if (!params) {return null}
+
+  return {
+    kind: asString(value.kind) || 'single',
+    params,
+    request_id: asString(value.request_id)
+  }
+}
+
+function parseRequestSessionDetail(value: unknown): InboxRequestSessionDetail | null {
+  if (!isRecord(value)) {return null}
+
+  const approvals = Array.isArray(value.approvals)
+    ? (value.approvals as unknown[]).map(parseRequestApproval).filter((a): a is InboxRequestApproval => a !== null)
+    : []
+
+  const clarifications = Array.isArray(value.clarifications)
+    ? (value.clarifications as unknown[]).map(parseClarification).filter((c): c is InboxRequestClarification => c !== null)
+    : []
+
+  const live_session_ids = Array.isArray(value.live_session_ids)
+    ? (value.live_session_ids as unknown[]).filter((id): id is string => typeof id === 'string')
+    : []
+
+  return { approvals, clarifications, live_session_ids }
+}
+
+function parseRequestDetails(value: unknown): InboxRequestDetails | null {
+  if (!isRecord(value)) {return null}
+
+  const sessions = Array.isArray(value.sessions)
+    ? (value.sessions as unknown[]).map(parseRequestSessionDetail).filter((s): s is InboxRequestSessionDetail => s !== null)
+    : []
+
+  const rawCoverage = value.coverage
+
+  const coverage: InboxRequestsCoverage = isRecord(rawCoverage) ? {
+    approval_count: typeof rawCoverage.approval_count === 'number' ? rawCoverage.approval_count : 0,
+    clarification_count: typeof rawCoverage.clarification_count === 'number' ? rawCoverage.clarification_count : 0,
+    context_anchor: asString(rawCoverage.context_anchor),
+    errors: Array.isArray(rawCoverage.errors) ? (rawCoverage.errors as string[]) : [],
+    live_session_count: typeof rawCoverage.live_session_count === 'number' ? rawCoverage.live_session_count : 0,
+    profile: asString(rawCoverage.profile),
+    session_key: asString(rawCoverage.session_key)
+  } : {
+    approval_count: 0, clarification_count: 0, context_anchor: '', errors: [],
+    live_session_count: 0, profile: '', session_key: ''
+  }
+
+  return { coverage, sessions }
+}
+
+export async function fetchInboxRequestDetails(
+  sessionKey: string,
+  profile: string,
+  request: InboxRequest = defaultInboxRequest
+): Promise<InboxRequestDetails | null> {
+  // Capture the generation at call time so a mid-flight clearInbox (scope
+  // switch) causes the late response to be dropped instead of repopulating
+  // with stale data from the old backend/profile.
+  const generation = ++detailRequestGeneration
+  publishRequestDetails(sessionKey, { details: null, error: null, loading: true })
+
+  try {
+    const response = await request('inbox.requests', { session_key: sessionKey, ...(profile ? { profile } : {}) })
+
+    if (generation !== detailRequestGeneration) {
+      // A scope switch happened while we were in flight — drop the result.
+      return null
+    }
+
+    const details = parseRequestDetails(response)
+
+    if (!details) {
+      publishRequestDetails(sessionKey, { details: null, error: 'Invalid inbox.requests response', loading: false })
+
+      return null
+    }
+
+    // Validate that the response belongs to the profile we asked for.
+    if (profile && details.coverage.profile && details.coverage.profile !== profile) {
+      publishRequestDetails(sessionKey, { details: null, error: 'Response from wrong profile', loading: false })
+
+      return null
+    }
+
+    publishRequestDetails(sessionKey, { details, error: null, loading: false })
+
+    return details
+  } catch (error) {
+    if (generation !== detailRequestGeneration) {
+      return null
+    }
+
+    publishRequestDetails(sessionKey, { details: null, error: boundedError(error), loading: false })
+
+    return null
+  }
+}
+
+export interface ApprovalRespondResult {
+  resolved: number
+}
+
+export async function respondToApproval(params: {
+  choice: string
+  liveSessionId: string
+  profile?: string
+  requestId?: string
+  request?: InboxRequest
+}): Promise<ApprovalRespondResult> {
+  const { choice, liveSessionId, profile, requestId, request: rpc = defaultInboxRequest } = params
+
+  const result = await rpc('approval.respond', {
+    session_id: liveSessionId,
+    choice,
+    all: false,
+    ...(requestId ? { request_id: requestId } : {}),
+    ...(profile ? { profile } : {})
+  }) as ApprovalRespondResult
+
+  return result
+}
+
+export interface ClarifyAnswerResult {
+  status: string
+}
+
+export async function answerClarifySingle(params: {
+  answer: string
+  profile?: string
+  requestId: string
+  request?: InboxRequest
+}): Promise<ClarifyAnswerResult> {
+  const { answer, profile, requestId, request: rpc = defaultInboxRequest } = params
+
+  const result = await rpc('request.answer', {
+    id: requestId,
+    result: { answer },
+    ...(profile ? { profile } : {})
+  }) as ClarifyAnswerResult
+
+  return result
+}
+
+export async function answerClarifyBatch(params: {
+  answers: Record<string, string>
+  profile?: string
+  questions: InboxRequestClarifyQuestion[]
+  requestId: string
+  request?: InboxRequest
+}): Promise<ClarifyAnswerResult> {
+  const { answers, profile, questions, requestId, request: rpc = defaultInboxRequest } = params
+  let lastResult: ClarifyAnswerResult = { status: 'ok' }
+
+  for (const q of questions) {
+    const answer = answers[q.qid] ?? ''
+    lastResult = await rpc('clarify.lock', {
+      request_id: requestId,
+      question_id: q.qid,
+      answer,
+      ...(profile ? { profile } : {})
+    }) as ClarifyAnswerResult
+
+    if (lastResult.status === 'expired') {break}
+  }
+
+  return lastResult
 }
 
 // ── refresh ──────────────────────────────────────────────────────────────────
@@ -403,4 +717,40 @@ export function selectInboxBadge(entry: InboxEntry): InboxBadge {
   if (selectInboxNeedsCount(entry) > 0) {return 'amber'}
 
   return 'none'
+}
+
+// ── category filtering ────────────────────────────────────────────────────────
+
+const RECOGNIZED_CATEGORIES = new Set(['goals', 'loops', 'heartbeats', 'subagents', 'background_tasks'])
+
+export function filterByCategory(items: InboxItem[], category: InboxCategory): InboxItem[] {
+  if (category === 'all') {return items}
+
+  if (category === 'other') {
+    return items.filter(item => !item.categories.some(c => RECOGNIZED_CATEGORIES.has(c)))
+  }
+
+  return items.filter(item => item.categories.includes(category))
+}
+
+/** Items with needs_you lane, used for the "Needs attention" nav lane. */
+export function filterNeedsAttention(items: InboxItem[]): InboxItem[] {
+  return items.filter(item => item.lanes.includes('needs_you'))
+}
+
+/** Count items in a category (for nav badges). */
+export function countByCategory(items: InboxItem[], category: InboxCategory): number {
+  return filterByCategory(items, category).length
+}
+
+/** Search scope: 'section' filters within category, 'all' bypasses category. */
+export function searchInboxItems(
+  items: InboxItem[],
+  query: string,
+  category: InboxCategory,
+  scope: 'all' | 'section'
+): InboxItem[] {
+  const filtered = scope === 'all' ? items : filterByCategory(items, category)
+
+  return filterInboxItems(filtered, query)
 }

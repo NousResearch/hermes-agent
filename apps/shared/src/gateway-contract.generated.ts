@@ -1382,6 +1382,7 @@ export interface InboxListResult {
 export interface InboxResult {
   items?: InboxItem[]
   counts?: InboxCounts
+  categories?: InboxCategoryCounts
   badge?: string
   coverage?: InboxCoverage
 }
@@ -1396,6 +1397,11 @@ export interface InboxItem {
   heartbeat?: unknown
   pending_approval?: InboxPendingApproval | null
   pending_clarify?: PendingClarify | null
+  categories?: string[]
+  subagent_count?: number
+  subagent_count_unavailable?: boolean
+  background_task_count?: number
+  background_task_count_unavailable?: boolean
 }
 export interface InboxPendingApproval {
   count: number
@@ -1412,6 +1418,14 @@ export interface InboxCounts {
   scheduled?: number
   total?: number
 }
+export interface InboxCategoryCounts {
+  goals?: number
+  loops?: number
+  heartbeats?: number
+  subagents?: number
+  background_tasks?: number
+  other?: number
+}
 export interface InboxCoverage {
   profile?: string
   connection_scope?: string
@@ -1419,6 +1433,56 @@ export interface InboxCoverage {
   partial?: boolean
   approval_scope?: string
   clarify_scope?: string
+  errors?: string[]
+}
+export interface InboxRequestsParams {
+  profile?: string | null
+  session_key: string
+}
+export interface InboxRequestsResult {
+  sessions?: InboxRequestSessionDetail[]
+  coverage?: InboxRequestsCoverage
+}
+export interface InboxRequestSessionDetail {
+  live_session_ids?: string[]
+  approvals?: InboxRequestApproval[]
+  clarifications?: InboxRequestClarification[]
+}
+export interface InboxRequestApproval {
+  request_id?: string
+  command?: string
+  description?: string
+  choices?: string[]
+  allow_permanent?: boolean | null
+  allow_session?: boolean | null
+  smart_denied?: boolean | null
+  tool_name?: string | null
+}
+export interface InboxRequestClarification {
+  request_id?: string
+  kind?: string
+  params?: InboxRequestClarifyParams
+}
+export interface InboxRequestClarifyParams {
+  question?: string | null
+  choices?: string[] | null
+  multi_select?: boolean | null
+  questions?: InboxRequestClarifyQuestion[] | null
+  answers?: Record<string, string> | null
+}
+export interface InboxRequestClarifyQuestion {
+  qid?: string
+  question?: string
+  choices?: string[] | null
+  multi_select?: boolean
+}
+export interface InboxRequestsCoverage {
+  profile?: string
+  session_key?: string
+  live_session_count?: number
+  approval_count?: number
+  clarification_count?: number
+  context_anchor?: string
   errors?: string[]
 }
 export type PingParams = Record<string, never>
@@ -4377,6 +4441,8 @@ export interface RpcMethods {
   'image.generate': { params: ImageGenerateParams; result: ImageGenerateResult }
   /** Read-only cross-session inbox aggregation for the active profile. */
   'inbox.list': { params: InboxParams; result: InboxListResult }
+  /** Read-only scoped request details for a specific session (approvals + clarifications). */
+  'inbox.requests': { params: InboxRequestsParams; result: InboxRequestsResult }
   /** Recognise a terminal file drop pasted into the composer and turn it into an attachment. */
   'input.detect_drop': { params: InputDetectDropParams; result: InputDetectDropResult }
   /** Session/message counts over the last ``days`` for the (optionally scoped) profile store. */
@@ -4749,6 +4815,7 @@ export const RPC_METHODS = [
   'image.detach',
   'image.generate',
   'inbox.list',
+  'inbox.requests',
   'input.detect_drop',
   'insights.get',
   'learning.delete',

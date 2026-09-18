@@ -1249,6 +1249,24 @@
       }
     },
     {
+      "name": "inbox.requests",
+      "summary": "Read-only scoped request details for a specific session (approvals + clarifications).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InboxRequestsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InboxRequestsResult"
+        }
+      }
+    },
+    {
       "name": "input.detect_drop",
       "summary": "Recognise a terminal file drop pasted into the composer and turn it into an attachment.",
       "params": [
@@ -12746,6 +12764,43 @@
         "title": "ImageGenerateResult",
         "type": "object"
       },
+      "InboxCategoryCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "goals": {
+            "default": 0,
+            "title": "Goals",
+            "type": "integer"
+          },
+          "loops": {
+            "default": 0,
+            "title": "Loops",
+            "type": "integer"
+          },
+          "heartbeats": {
+            "default": 0,
+            "title": "Heartbeats",
+            "type": "integer"
+          },
+          "subagents": {
+            "default": 0,
+            "title": "Subagents",
+            "type": "integer"
+          },
+          "background_tasks": {
+            "default": 0,
+            "title": "Background Tasks",
+            "type": "integer"
+          },
+          "other": {
+            "default": 0,
+            "title": "Other",
+            "type": "integer"
+          }
+        },
+        "title": "InboxCategoryCounts",
+        "type": "object"
+      },
       "InboxCounts": {
         "additionalProperties": false,
         "properties": {
@@ -12886,6 +12941,34 @@
               }
             ],
             "default": null
+          },
+          "categories": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "subagent_count": {
+            "default": 0,
+            "title": "Subagent Count",
+            "type": "integer"
+          },
+          "subagent_count_unavailable": {
+            "default": false,
+            "title": "Subagent Count Unavailable",
+            "type": "boolean"
+          },
+          "background_task_count": {
+            "default": 0,
+            "title": "Background Task Count",
+            "type": "integer"
+          },
+          "background_task_count_unavailable": {
+            "default": false,
+            "title": "Background Task Count Unavailable",
+            "type": "boolean"
           }
         },
         "required": [
@@ -12956,6 +13039,353 @@
         "title": "InboxPendingApproval",
         "type": "object"
       },
+      "InboxRequestApproval": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "default": "",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "command": {
+            "default": "",
+            "title": "Command",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "choices": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Choices",
+            "type": "array"
+          },
+          "allow_permanent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Permanent"
+          },
+          "allow_session": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Session"
+          },
+          "smart_denied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Smart Denied"
+          },
+          "tool_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Name"
+          }
+        },
+        "title": "InboxRequestApproval",
+        "type": "object"
+      },
+      "InboxRequestClarification": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "default": "",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "kind": {
+            "default": "",
+            "title": "Kind",
+            "type": "string"
+          },
+          "params": {
+            "$ref": "#/components/schemas/InboxRequestClarifyParams",
+            "default": {
+              "question": null,
+              "choices": null,
+              "multi_select": null,
+              "questions": null,
+              "answers": null
+            }
+          }
+        },
+        "title": "InboxRequestClarification",
+        "type": "object"
+      },
+      "InboxRequestClarifyParams": {
+        "additionalProperties": false,
+        "properties": {
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Question"
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Choices"
+          },
+          "multi_select": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Multi Select"
+          },
+          "questions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InboxRequestClarifyQuestion"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Questions"
+          },
+          "answers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Answers"
+          }
+        },
+        "title": "InboxRequestClarifyParams",
+        "type": "object"
+      },
+      "InboxRequestClarifyQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "qid": {
+            "default": "",
+            "title": "Qid",
+            "type": "string"
+          },
+          "question": {
+            "default": "",
+            "title": "Question",
+            "type": "string"
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Choices"
+          },
+          "multi_select": {
+            "default": false,
+            "title": "Multi Select",
+            "type": "boolean"
+          }
+        },
+        "title": "InboxRequestClarifyQuestion",
+        "type": "object"
+      },
+      "InboxRequestSessionDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "live_session_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Live Session Ids",
+            "type": "array"
+          },
+          "approvals": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InboxRequestApproval"
+            },
+            "title": "Approvals",
+            "type": "array"
+          },
+          "clarifications": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InboxRequestClarification"
+            },
+            "title": "Clarifications",
+            "type": "array"
+          }
+        },
+        "title": "InboxRequestSessionDetail",
+        "type": "object"
+      },
+      "InboxRequestsCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "default": "",
+            "title": "Profile",
+            "type": "string"
+          },
+          "session_key": {
+            "default": "",
+            "title": "Session Key",
+            "type": "string"
+          },
+          "live_session_count": {
+            "default": 0,
+            "title": "Live Session Count",
+            "type": "integer"
+          },
+          "approval_count": {
+            "default": 0,
+            "title": "Approval Count",
+            "type": "integer"
+          },
+          "clarification_count": {
+            "default": 0,
+            "title": "Clarification Count",
+            "type": "integer"
+          },
+          "context_anchor": {
+            "default": "",
+            "title": "Context Anchor",
+            "type": "string"
+          },
+          "errors": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          }
+        },
+        "title": "InboxRequestsCoverage",
+        "type": "object"
+      },
+      "InboxRequestsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_key"
+        ],
+        "title": "InboxRequestsParams",
+        "type": "object"
+      },
+      "InboxRequestsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InboxRequestSessionDetail"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/InboxRequestsCoverage",
+            "default": {
+              "profile": "",
+              "session_key": "",
+              "live_session_count": 0,
+              "approval_count": 0,
+              "clarification_count": 0,
+              "context_anchor": "",
+              "errors": []
+            }
+          }
+        },
+        "title": "InboxRequestsResult",
+        "type": "object"
+      },
       "InboxResult": {
         "additionalProperties": false,
         "properties": {
@@ -12975,6 +13405,17 @@
               "waiting": 0,
               "scheduled": 0,
               "total": 0
+            }
+          },
+          "categories": {
+            "$ref": "#/components/schemas/InboxCategoryCounts",
+            "default": {
+              "goals": 0,
+              "loops": 0,
+              "heartbeats": 0,
+              "subagents": 0,
+              "background_tasks": 0,
+              "other": 0
             }
           },
           "badge": {

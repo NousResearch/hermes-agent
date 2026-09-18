@@ -437,6 +437,130 @@ class TestInboxList:
         inbox = _result(server, "inbox.list")["inbox"]
         assert inbox["items"][0]["pending_clarify"] == {"count": 2}
 
+    def test_empty_lane_session_included_in_other_category(self, server, db):
+        """A session with no goal/loop/heartbeat and no pending approval/clarify
+        still appears in the inbox under the 'other' category."""
+        key = _create_row(db, _new_key())
+        # No _save_goal, no approval, no clarify — just a plain session row
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert len(inbox["items"]) == 1
+        item = inbox["items"][0]
+        assert item["session_key"] == key
+        assert "other" in item["categories"]
+        assert item["lanes"] == []  # no lanes, but still included
+        assert inbox["categories"]["other"] == 1
+
+    def test_session_with_only_background_tasks_appears_in_inbox(self, server, db, monkeypatch):
+        """A session with only background processes (no goal/loop/heartbeat/subagents)
+        appears in the inbox under 'background_tasks' and 'other' categories."""
+        from tools import process_registry as pr_mod
+
+        key = _create_row(db, _new_key())
+        # Fake a running background process — use the PUBLIC scoped API shape:
+        # list_sessions(session_key=key) returns entries without session_key.
+        fake_session = {
+            "session_id": "proc-fake",
+            "command": "npm test",
+            "cwd": "/tmp",
+            "owner_task_id": key,
+            "started_at": "2026-01-01T00:00:00",
+            "uptime_seconds": 100,
+            "status": "running",
+            "output_preview": "",
+        }
+        original_ls = pr_mod.process_registry.list_sessions
+
+        def mock_ls(task_id=None, session_key=None, *, include_retained=False):
+            if session_key == key:
+                return [fake_session]
+            return []
+
+        monkeypatch.setattr(pr_mod.process_registry, "list_sessions", mock_ls)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert len(inbox["items"]) == 1
+        item = inbox["items"][0]
+        assert item["background_task_count"] == 1
+        assert "background_tasks" in item["categories"]
+        assert "other" in item["categories"]
+        assert inbox["categories"]["background_tasks"] == 1
+
+    def test_overlapping_goal_and_loop_categories_in_full_inbox(self, server, db):
+        """A session with both goal and loop counts in both category totals."""
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        _save_loop(key, awaiting_response=True)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert len(inbox["items"]) == 1
+        item = inbox["items"][0]
+        assert "goals" in item["categories"]
+        assert "loops" in item["categories"]
+        # Both category counts should be 1 (same session counted in both)
+        assert inbox["categories"]["goals"] == 1
+        assert inbox["categories"]["loops"] == 1
+
+
+# ── Background task counting ───────────────────────────────────────────────
+class TestBackgroundTaskCounting:
+    """Tests for per-session background task count in inbox items."""
+
+    def test_no_background_tasks_yields_zero_count(self, server, db):
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert item["background_task_count"] == 0
+
+    def test_background_tasks_counted_by_session_key(self, server, db, monkeypatch):
+        from tools import process_registry as pr_mod
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        fake_sessions = [
+            {
+                "session_id": "proc-1", "command": "npm test", "cwd": "/tmp",
+                "owner_task_id": key,
+                "started_at": "2026-01-01T00:00:00", "uptime_seconds": 10,
+                "status": "running", "output_preview": "",
+            },
+            {
+                "session_id": "proc-2", "command": "cargo build", "cwd": "/tmp",
+                "owner_task_id": key,
+                "started_at": "2026-01-01T00:00:00", "uptime_seconds": 5,
+                "status": "running", "output_preview": "",
+            },
+        ]
+
+        def mock_ls(task_id=None, session_key=None, *, include_retained=False):
+            if session_key == key:
+                return fake_sessions
+            return []
+
+        monkeypatch.setattr(pr_mod.process_registry, "list_sessions", mock_ls)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert item["background_task_count"] == 2
+
+    def test_exited_background_tasks_not_counted(self, server, db, monkeypatch):
+        from tools import process_registry as pr_mod
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        fake_sessions = [
+            {
+                "session_id": "proc-1", "command": "npm test", "cwd": "/tmp",
+                "owner_task_id": key,
+                "started_at": "2026-01-01T00:00:00", "uptime_seconds": 10,
+                "status": "exited", "output_preview": "",
+            },
+        ]
+
+        def mock_ls(task_id=None, session_key=None, *, include_retained=False):
+            if session_key == key:
+                return fake_sessions
+            return []
+
+        monkeypatch.setattr(pr_mod.process_registry, "list_sessions", mock_ls)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert item["background_task_count"] == 0
+
 
 # ── Defect regression tests ────────────────────────────────────────────────
 class TestDefect1SchemaMatch:
@@ -902,3 +1026,446 @@ class TestGateDefect6CanonicalPaths:
             server._server_requests._open[srq.id] = srq
         inbox = _result(server, "inbox.list")["inbox"]
         assert inbox["counts"]["needs_you"] == 0
+
+
+# ── Category classification ────────────────────────────────────────────────
+class TestCategoryClassification:
+    """Tests for the left-navigation category classification (overlapping)."""
+
+    def test_empty_control_yields_other(self):
+        from tui_gateway.methods_inbox import classify_categories
+
+        assert classify_categories(None) == ["other"]
+        assert classify_categories({}) == ["other"]
+        assert classify_categories({"goal": None, "loop": None, "heartbeat": None}) == ["other"]
+
+    def test_active_goal_yields_goals(self):
+        from tui_gateway.methods_inbox import classify_categories
+
+        assert classify_categories({"goal": {"status": "active"}, "loop": None, "heartbeat": None}) == ["goals"]
+
+    def test_paused_goal_yields_goals(self):
+        from tui_gateway.methods_inbox import classify_categories
+
+        assert classify_categories({"goal": {"status": "paused"}, "loop": None, "heartbeat": None}) == ["goals"]
+
+    def test_active_loop_yields_loops(self):
+        from tui_gateway.methods_inbox import classify_categories
+
+        assert classify_categories({"goal": None, "loop": {"status": "active"}, "heartbeat": None}) == ["loops"]
+
+    def test_paused_loop_yields_loops(self):
+        from tui_gateway.methods_inbox import classify_categories
+
+        assert classify_categories({"goal": None, "loop": {"status": "paused"}, "heartbeat": None}) == ["loops"]
+
+    def test_active_heartbeat_yields_heartbeats(self):
+        from tui_gateway.methods_inbox import classify_categories
+
+        assert classify_categories({"goal": None, "loop": None, "heartbeat": {"status": "active"}}) == ["heartbeats"]
+
+    def test_goal_and_loop_overlap(self):
+        """Sessions with both a goal and loop appear in BOTH categories."""
+        from tui_gateway.methods_inbox import classify_categories
+
+        control = {
+            "goal": {"status": "active"},
+            "loop": {"status": "active"},
+            "heartbeat": None,
+        }
+        assert classify_categories(control) == ["goals", "loops"]
+
+    def test_loop_and_heartbeat_overlap(self):
+        from tui_gateway.methods_inbox import classify_categories
+
+        control = {
+            "goal": None,
+            "loop": {"status": "active"},
+            "heartbeat": {"status": "active"},
+        }
+        assert classify_categories(control) == ["loops", "heartbeats"]
+
+    def test_all_three_overlap(self):
+        from tui_gateway.methods_inbox import classify_categories
+
+        control = {
+            "goal": {"status": "active"},
+            "loop": {"status": "active"},
+            "heartbeat": {"status": "active"},
+        }
+        assert classify_categories(control) == ["goals", "loops", "heartbeats"]
+
+    def test_done_goal_in_goals_category(self):
+        """A completed (done) goal appears in the goals category (persisted completed state)."""
+        from tui_gateway.methods_inbox import classify_categories
+
+        assert classify_categories({"goal": {"status": "done"}, "loop": None, "heartbeat": None}) == ["goals"]
+
+    def test_cleared_state_never_reaches_classify(self):
+        """'cleared' status is filtered at the snapshot level (returns None),
+        so it never reaches classify_categories.  The classify function only
+        sees 'active', 'paused', and 'done' for persisted automation."""
+        from tui_gateway.methods_inbox import classify_categories
+
+        # These are direct calls to classify_categories; in production,
+        # cleared states are converted to None by _safe_*_snapshot before reaching here.
+        assert classify_categories({"goal": {"status": "cleared"}, "loop": None, "heartbeat": None}) == ["other"]
+        assert classify_categories({"goal": None, "loop": {"status": "cleared"}, "heartbeat": None}) == ["other"]
+        assert classify_categories({"goal": None, "loop": None, "heartbeat": {"status": "cleared"}}) == ["other"]
+
+
+# ── Category counts ────────────────────────────────────────────────────────
+class TestCategoryCounts:
+    """Tests for the categories breakdown in the inbox response."""
+
+    def test_empty_inbox_has_zero_category_counts(self, server, db):
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["categories"] == {"goals": 0, "loops": 0, "heartbeats": 0, "subagents": 0, "background_tasks": 0, "other": 0}
+
+    def test_goal_session_increments_goals_category(self, server, db):
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["categories"]["goals"] == 1
+        assert inbox["categories"]["loops"] == 0
+        assert inbox["categories"]["heartbeats"] == 0
+
+    def test_loop_session_increments_loops_category(self, server, db):
+        key = _create_row(db, _new_key())
+        # Loop with awaiting_response=True gets the "running" lane, so it appears in inbox
+        _save_loop(key, awaiting_response=True)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["categories"]["loops"] == 1
+        assert inbox["categories"]["goals"] == 0
+
+    def test_heartbeat_session_increments_heartbeats_category(self, server, db):
+        key = _create_row(db, _new_key())
+        _save_heartbeat(key)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["categories"]["heartbeats"] == 1
+        assert inbox["categories"]["goals"] == 0
+
+    def test_overlapping_categories_counted_correctly(self, server, db):
+        """A session with both goal and loop increments BOTH category counts."""
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        _save_loop(key, awaiting_response=True)
+        inbox = _result(server, "inbox.list")["inbox"]
+        cats = inbox["categories"]
+        assert cats["goals"] == 1
+        assert cats["loops"] == 1
+
+    def test_mixed_sessions_counted_correctly(self, server, db):
+        goal_key = _create_row(db, _new_key())
+        _save_goal(goal_key)
+        loop_key = _create_row(db, _new_key())
+        _save_loop(loop_key, awaiting_response=True)
+        hb_key = _create_row(db, _new_key())
+        _save_heartbeat(hb_key)
+        inbox = _result(server, "inbox.list")["inbox"]
+        cats = inbox["categories"]
+        assert cats["goals"] == 1
+        assert cats["loops"] == 1
+        assert cats["heartbeats"] == 1
+
+    def test_item_has_categories_array(self, server, db):
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert item["categories"] == ["goals"]
+
+    def test_item_has_subagent_count_field(self, server, db):
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert "subagent_count" in item
+        assert item["subagent_count"] == 0
+
+    def test_item_has_background_task_count_field(self, server, db):
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert "background_task_count" in item
+        assert item["background_task_count"] == 0
+
+
+# ── Subagent counting ──────────────────────────────────────────────────────
+class TestSubagentCounting:
+    """Tests for per-session subagent count in inbox items."""
+
+    def test_no_active_subagents_yields_zero_count(self, server, db):
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert item["subagent_count"] == 0
+
+    def test_active_subagents_counted_by_owner_session(self, server, db, monkeypatch):
+        from tools import delegate_tool_registry as dtr
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        # Inject fake active subagent records belonging to this session
+        fake_records = [
+            {"subagent_id": "sa-1", "owner_agent_session_id": key, "goal": "task1", "status": "running"},
+            {"subagent_id": "sa-2", "owner_agent_session_id": key, "goal": "task2", "status": "running"},
+            {"subagent_id": "sa-3", "owner_agent_session_id": "other-session", "goal": "task3", "status": "running"},
+        ]
+        monkeypatch.setattr(dtr, "list_active_subagents", lambda: fake_records)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert item["subagent_count"] == 2
+
+    def test_subagent_count_in_subagents_category(self, server, db, monkeypatch):
+        """A session with active subagents gets 'subagents' in its categories array."""
+        from tools import delegate_tool_registry as dtr
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        fake_records = [
+            {"subagent_id": "sa-2", "owner_agent_session_id": key, "goal": "task2", "status": "running"},
+        ]
+        monkeypatch.setattr(dtr, "list_active_subagents", lambda: fake_records)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["categories"]["subagents"] == 1
+        item = inbox["items"][0]
+        assert "subagents" in item["categories"]
+
+    def test_session_with_only_subagents_appears_in_inbox(self, server, db, monkeypatch):
+        """A session with subagents but no goal/loop/heartbeat still appears in inbox."""
+        from tools import delegate_tool_registry as dtr
+
+        key = _create_row(db, _new_key())
+        fake_records = [
+            {"subagent_id": "sa-1", "owner_agent_session_id": key, "goal": "task1", "status": "running"},
+        ]
+        monkeypatch.setattr(dtr, "list_active_subagents", lambda: fake_records)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert len(inbox["items"]) == 1
+        item = inbox["items"][0]
+        assert item["session_key"] == key
+        assert item["subagent_count"] == 1
+        assert "subagents" in item["categories"]
+        assert "other" in item["categories"]
+
+
+# ── Contract validation for new fields ─────────────────────────────────────
+class TestContractNewFields:
+    """Verify the contract validates the new categories and subagent_count fields."""
+
+    def test_handler_result_matches_inbox_list_result_with_new_fields(self, server, db):
+        from tui_gateway.contracts.inbox import InboxListResult
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        response = _call(server, "inbox.list")
+        assert "result" in response
+        result = response["result"]
+        validated = InboxListResult.model_validate(result)
+        assert len(validated.inbox.items) >= 1
+        item = validated.inbox.items[0]
+        assert "goals" in item.categories
+        assert item.subagent_count == 0
+        assert item.background_task_count == 0
+        assert hasattr(validated.inbox, "categories")
+        assert validated.inbox.categories.goals >= 1
+
+    def test_empty_result_matches_contract_with_categories(self, server, db):
+        from tui_gateway.contracts.inbox import InboxListResult
+
+        response = _call(server, "inbox.list")
+        validated = InboxListResult.model_validate(response["result"])
+        assert validated.inbox.categories.goals == 0
+        assert validated.inbox.categories.loops == 0
+        assert validated.inbox.categories.heartbeats == 0
+        assert validated.inbox.categories.subagents == 0
+        assert validated.inbox.categories.background_tasks == 0
+        assert validated.inbox.categories.other == 0
+
+    def test_populated_result_category_counts_match_items(self, server, db):
+        from tui_gateway.contracts.inbox import InboxListResult
+
+        goal_key = _create_row(db, _new_key())
+        _save_goal(goal_key)
+        loop_key = _create_row(db, _new_key())
+        _save_loop(loop_key, awaiting_response=True)
+        hb_key = _create_row(db, _new_key())
+        _save_heartbeat(hb_key)
+        response = _call(server, "inbox.list")
+        validated = InboxListResult.model_validate(response["result"])
+        # Count unique sessions per category from the validated items
+        cat_sessions: dict[str, set[str]] = {}
+        for item in validated.inbox.items:
+            for cat in item.categories:
+                cat_sessions.setdefault(cat, set()).add(item.session_key)
+        assert len(cat_sessions.get("goals", set())) == validated.inbox.categories.goals
+        assert len(cat_sessions.get("loops", set())) == validated.inbox.categories.loops
+        assert len(cat_sessions.get("heartbeats", set())) == validated.inbox.categories.heartbeats
+
+
+# ── Error state propagation ────────────────────────────────────────────────
+class TestErrorStatePropagation:
+    """Subagent and bg-process errors surface as explicit unavailable flags, not silent zeros."""
+
+    def test_subagent_enumeration_failure_surfaces_in_coverage(self, server, db, monkeypatch):
+        """When list_active_subagents raises, badge is red and coverage has the error."""
+        from tools import delegate_tool_registry as dtr
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+
+        def boom():
+            raise RuntimeError("subagent registry locked")
+
+        monkeypatch.setattr(dtr, "list_active_subagents", boom)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["badge"] == "red"
+        assert any("subagent enumeration failed" in e for e in inbox["coverage"]["errors"])
+        # Safe type name only, never raw text
+        assert not any("subagent registry locked" in e for e in inbox["coverage"]["errors"])
+        item = inbox["items"][0]
+        assert item["subagent_count"] == 0
+        assert item["subagent_count_unavailable"] is True
+
+    def test_bg_process_query_failure_surfaces_in_coverage(self, server, db, monkeypatch):
+        """When list_sessions(session_key=...) raises, badge is red and coverage has the error."""
+        from tools import process_registry as pr_mod
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+
+        def boom(task_id=None, session_key=None, *, include_retained=False):
+            raise IOError("disk I/O error")
+
+        monkeypatch.setattr(pr_mod.process_registry, "list_sessions", boom)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["badge"] == "red"
+        assert any("bg-process" in e for e in inbox["coverage"]["errors"])
+        item = inbox["items"][0]
+        assert item["background_task_count"] == 0
+        assert item["background_task_count_unavailable"] is True
+
+    def test_both_errors_surfaced_simultaneously(self, server, db, monkeypatch):
+        """Both subagent and bg-process errors appear in coverage."""
+        from tools import delegate_tool_registry as dtr
+        from tools import process_registry as pr_mod
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+
+        def boom_subagents():
+            raise RuntimeError("subagent boom")
+
+        def boom_bg(task_id=None, session_key=None, *, include_retained=False):
+            raise IOError("bg boom")
+
+        monkeypatch.setattr(dtr, "list_active_subagents", boom_subagents)
+        monkeypatch.setattr(pr_mod.process_registry, "list_sessions", boom_bg)
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["badge"] == "red"
+        errors = inbox["coverage"]["errors"]
+        assert any("subagent enumeration failed" in e for e in errors)
+        assert any("bg-process" in e for e in errors)
+        item = inbox["items"][0]
+        assert item["subagent_count_unavailable"] is True
+        assert item["background_task_count_unavailable"] is True
+
+    def test_unavailable_flags_default_false_on_success(self, server, db):
+        """When both sources succeed, unavailable flags are False."""
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert item["subagent_count_unavailable"] is False
+        assert item["background_task_count_unavailable"] is False
+
+
+# ── Completed automation categories ────────────────────────────────────────
+class TestCompletedAutomationCategories:
+    """Persisted completed automation types appear in categories."""
+
+    def test_done_goal_in_goals_category(self):
+        """A completed (done) goal still appears in the goals category."""
+        from tui_gateway.methods_inbox import classify_categories
+
+        control = {"goal": {"status": "done"}, "loop": None, "heartbeat": None}
+        cats = classify_categories(control)
+        assert "goals" in cats
+
+    def test_done_loop_in_loops_category(self):
+        """A completed (done) loop still appears in the loops category."""
+        from tui_gateway.methods_inbox import classify_categories
+
+        control = {"goal": None, "loop": {"status": "done"}, "heartbeat": None}
+        cats = classify_categories(control)
+        assert "loops" in cats
+
+    def test_done_heartbeat_in_heartbeats_category(self):
+        """A completed (done) heartbeat still appears in the heartbeats category."""
+        from tui_gateway.methods_inbox import classify_categories
+
+        control = {"goal": None, "loop": None, "heartbeat": {"status": "done"}}
+        cats = classify_categories(control)
+        assert "heartbeats" in cats
+
+    def test_cleared_state_still_falls_through_to_other(self):
+        """'cleared' status is NOT included — only 'done' is a completed-but-persisted state."""
+        from tui_gateway.methods_inbox import classify_categories
+
+        assert classify_categories({"goal": {"status": "cleared"}, "loop": None, "heartbeat": None}) == ["other"]
+        assert classify_categories({"goal": None, "loop": {"status": "cleared"}, "heartbeat": None}) == ["other"]
+        assert classify_categories({"goal": None, "loop": None, "heartbeat": {"status": "cleared"}}) == ["other"]
+
+    def test_overlapping_done_and_active(self):
+        """A session with a done goal and active loop appears in both categories."""
+        from tui_gateway.methods_inbox import classify_categories
+
+        control = {
+            "goal": {"status": "done"},
+            "loop": {"status": "active"},
+            "heartbeat": None,
+        }
+        cats = classify_categories(control)
+        assert "goals" in cats
+        assert "loops" in cats
+
+
+# ── Producer-shaped data verification ─────────────────────────────────────
+class TestProducerShapedData:
+    """Verify the handler works with actual list_sessions() return shape (no session_key field)."""
+
+    def test_bg_task_count_uses_scoped_api(self, server, db, monkeypatch):
+        """Verify _background_task_counts_by_session calls list_sessions(session_key=key)."""
+        from tools import process_registry as pr_mod
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        call_log = []
+
+        def mock_ls(task_id=None, session_key=None, *, include_retained=False):
+            call_log.append({"task_id": task_id, "session_key": session_key})
+            if session_key == key:
+                return [{
+                    "session_id": "proc-1", "command": "npm test", "cwd": "/tmp",
+                    "owner_task_id": key,
+                    "started_at": "2026-01-01T00:00:00", "uptime_seconds": 10,
+                    "status": "running", "output_preview": "",
+                }]
+            return []
+
+        monkeypatch.setattr(pr_mod.process_registry, "list_sessions", mock_ls)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert item["background_task_count"] == 1
+        # Verify the scoped API was called with session_key parameter
+        assert any(c["session_key"] == key for c in call_log)
+
+    def test_subagent_count_uses_owner_agent_session_id(self, server, db, monkeypatch):
+        """Verify subagent mapping uses owner_agent_session_id (the actual public field)."""
+        from tools import delegate_tool_registry as dtr
+
+        key = _create_row(db, _new_key())
+        _save_goal(key)
+        # Producer-shaped entry: owner_agent_session_id is the public field
+        fake_records = [
+            {"subagent_id": "sa-1", "owner_agent_session_id": key, "goal": "task1", "status": "running"},
+        ]
+        monkeypatch.setattr(dtr, "list_active_subagents", lambda: fake_records)
+        item = _result(server, "inbox.list")["inbox"]["items"][0]
+        assert item["subagent_count"] == 1

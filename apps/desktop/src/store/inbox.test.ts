@@ -2,14 +2,21 @@ import { describe, expect, it } from 'vitest'
 
 import {
   $inbox,
+  $inboxRequestDetails,
   beginInboxRequest,
+  clearAllRequestDetails,
   clearInbox,
   commitInboxRequest,
+  countByCategory,
+  fetchInboxRequestDetails,
+  filterByCategory,
   filterInboxItems,
+  filterNeedsAttention,
   type InboxEntry,
   isInboxRequestCurrent,
   parseInboxSnapshot,
   refreshInbox,
+  searchInboxItems,
   selectInboxBadge,
   selectInboxNeedsCount
 } from './inbox'
@@ -27,6 +34,9 @@ function backendSnapshot(overrides: Record<string, unknown> = {}) {
     },
     items: [
       {
+        background_task_count: 0,
+        background_task_count_unavailable: false,
+        categories: ['goals'],
         cwd: 'C:/w/x',
         lanes: ['needs_you', 'running'],
         goal: { status: 'active', title: 'Ship the inbox', turns_used: 1, max_turns: 4 },
@@ -36,9 +46,14 @@ function backendSnapshot(overrides: Record<string, unknown> = {}) {
         pending_clarify: null,
         session_key: 'sess-1',
         source: 'cli',
+        subagent_count: 2,
+        subagent_count_unavailable: false,
         title: 'Inbox session'
       },
       {
+        background_task_count: 1,
+        background_task_count_unavailable: true,
+        categories: ['heartbeats'],
         cwd: '',
         lanes: ['scheduled'],
         goal: null,
@@ -48,6 +63,8 @@ function backendSnapshot(overrides: Record<string, unknown> = {}) {
         pending_clarify: null,
         session_key: 'sess-2',
         source: 'cli',
+        subagent_count: 0,
+        subagent_count_unavailable: false,
         title: 'Heartbeat session'
       }
     ],
@@ -348,5 +365,203 @@ describe('regression: stale data after gateway/profile switch', () => {
     expect(entry.snapshot!.coverage.profile).toBe('profileB')
     expect(entry.snapshot!.items).toHaveLength(1)
     expect(entry.snapshot!.items[0].session_key).toBe('sess-b-from-B')
+  })
+})
+
+describe('category filtering', () => {
+  it('filters items by category', () => {
+    const parsed = parseInboxSnapshot({ inbox: backendSnapshot() })!
+    expect(filterByCategory(parsed.items, 'goals')).toHaveLength(1)
+    expect(filterByCategory(parsed.items, 'heartbeats')).toHaveLength(1)
+    expect(filterByCategory(parsed.items, 'loops')).toHaveLength(0)
+    expect(filterByCategory(parsed.items, 'all')).toHaveLength(2)
+  })
+
+  it('filters items without recognized categories into "other"', () => {
+    const snapshot = backendSnapshot()
+    ;(snapshot.items as Array<Record<string, unknown>>)[0].categories = []
+    ;(snapshot.items as Array<Record<string, unknown>>)[1].categories = ['unknown-cat']
+    const parsed = parseInboxSnapshot({ inbox: snapshot })!
+    expect(filterByCategory(parsed.items, 'other')).toHaveLength(2)
+  })
+
+  it('filterNeedsAttention returns items with needs_you lane', () => {
+    const parsed = parseInboxSnapshot({ inbox: backendSnapshot() })!
+    expect(filterNeedsAttention(parsed.items)).toHaveLength(1)
+    expect(filterNeedsAttention(parsed.items)[0].session_key).toBe('sess-1')
+  })
+
+  it('countByCategory returns correct counts', () => {
+    const parsed = parseInboxSnapshot({ inbox: backendSnapshot() })!
+    expect(countByCategory(parsed.items, 'goals')).toBe(1)
+    expect(countByCategory(parsed.items, 'heartbeats')).toBe(1)
+    expect(countByCategory(parsed.items, 'loops')).toBe(0)
+  })
+
+  it('searchInboxItems with section scope filters within category', () => {
+    const parsed = parseInboxSnapshot({ inbox: backendSnapshot() })!
+    const results = searchInboxItems(parsed.items, 'inbox', 'goals', 'section')
+    expect(results).toHaveLength(1)
+    expect(results[0].session_key).toBe('sess-1')
+  })
+
+  it('searchInboxItems with all scope bypasses category filter', () => {
+    const parsed = parseInboxSnapshot({ inbox: backendSnapshot() })!
+    const results = searchInboxItems(parsed.items, 'session', 'goals', 'all')
+    expect(results).toHaveLength(2)
+  })
+})
+
+describe('request details store', () => {
+  it('clearAllRequestDetails wipes the store', () => {
+    $inboxRequestDetails.set({ 'sess-1': { details: null, error: null, loading: false } })
+    clearAllRequestDetails()
+    expect(Object.keys($inboxRequestDetails.get())).toHaveLength(0)
+  })
+})
+
+// ── Defect 4 regression: fetchInboxRequestDetails scope/generation guard ──
+
+describe('fetchInboxRequestDetails A-B-A scope guard', () => {
+  it('late response after clearInbox is rejected (does not repopulate)', async () => {
+    clearInbox()
+    // Simulate: fetch starts, then clearInbox is called mid-flight
+    let resolvePending!: (value: any) => void
+    const slowRequest = async <R,>(_method: string): Promise<R> => new Promise(resolve => { resolvePending = resolve })
+
+    const inflight = fetchInboxRequestDetails('sess-1', 'default', slowRequest)
+
+    // Clear inbox (simulating gateway switch) — this bumps the detail generation
+    clearInbox()
+
+    // Late response arrives from old backend
+    resolvePending({
+      coverage: {
+        approval_count: 1,
+        clarification_count: 0,
+        context_anchor: 'anchor',
+        errors: [],
+        live_session_count: 1,
+        profile: 'default',
+        session_key: 'sess-1'
+      },
+      sessions: [{
+        approvals: [{
+          allow_permanent: false,
+          allow_session: false,
+          choices: ['once', 'deny'],
+          command: 'test',
+          description: 'test',
+          request_id: 'old-req',
+          smart_denied: false,
+          tool_name: 'terminal'
+        }],
+        clarifications: [],
+        live_session_ids: ['live-1']
+      }]
+    })
+
+    const result = await inflight
+    // The late response should be rejected — store should not contain stale data
+    expect(result).toBeNull()
+  })
+
+  it('response from wrong profile does not overwrite current details', async () => {
+    clearInbox()
+
+    // First fetch for profile A completes
+    const profileARequest = async <R>(_method: string): Promise<R> => ({
+      coverage: {
+        approval_count: 1,
+        clarification_count: 0,
+        context_anchor: 'anchor-a',
+        errors: [],
+        live_session_count: 1,
+        profile: 'profileA',
+        session_key: 'sess-1'
+      },
+      sessions: [{
+        approvals: [],
+        clarifications: [],
+        live_session_ids: []
+      }]
+    }) as R
+
+    const resultA = await fetchInboxRequestDetails('sess-1', 'profileA', profileARequest)
+    expect(resultA).not.toBeNull()
+
+    // Now start a fetch for profileB (simulating switch)
+    let resolveB!: (value: any) => void
+    const slowRequestB = async <R,>(_method: string): Promise<R> => new Promise(resolve => { resolveB = resolve })
+
+    const inflightB = fetchInboxRequestDetails('sess-1', 'profileB', slowRequestB)
+
+    // Switch back to profileA and complete a new request
+    clearInbox()
+
+    const profileARetry = async <R>(_method: string): Promise<R> => ({
+      coverage: {
+        approval_count: 0,
+        clarification_count: 0,
+        context_anchor: 'anchor-a2',
+        errors: [],
+        live_session_count: 0,
+        profile: 'profileA',
+        session_key: 'sess-1'
+      },
+      sessions: []
+    }) as R
+
+    const resultARetry = await fetchInboxRequestDetails('sess-1', 'profileA', profileARetry)
+    expect(resultARetry).not.toBeNull()
+
+    // Late response from profileB arrives
+    resolveB({
+      coverage: {
+        approval_count: 5,
+        clarification_count: 0,
+        context_anchor: 'stale',
+        errors: [],
+        live_session_count: 1,
+        profile: 'profileB',
+        session_key: 'sess-1'
+      },
+      sessions: [{
+        approvals: [{
+          allow_permanent: false,
+          allow_session: false,
+          choices: ['once', 'deny'],
+          command: 'stale',
+          description: 'stale',
+          request_id: 'stale-req',
+          smart_denied: false,
+          tool_name: 'terminal'
+        }],
+        clarifications: [],
+        live_session_ids: ['live-99']
+      }]
+    })
+
+    const lateResult = await inflightB
+    // Late response should be rejected
+    expect(lateResult).toBeNull()
+
+    // The store should still contain the profileA data
+    const details = $inboxRequestDetails.get()['sess-1']
+    expect(details?.details?.coverage.profile).toBe('profileA')
+    expect(details?.details?.coverage.context_anchor).toBe('anchor-a2')
+  })
+
+  it('malformed payload returns null and publishes error', async () => {
+    clearInbox()
+
+    const malformedRequest = async <R>(_method: string): Promise<R> => 'not-a-record' as R
+
+    const result = await fetchInboxRequestDetails('sess-1', 'default', malformedRequest)
+    expect(result).toBeNull()
+
+    const entry = $inboxRequestDetails.get()['sess-1']
+    expect(entry?.error).toBeTruthy()
+    expect(entry?.details).toBeNull()
   })
 })

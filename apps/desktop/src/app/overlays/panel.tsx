@@ -145,6 +145,8 @@ interface PanelListRowProps {
   active: boolean
   // Leading status dot color class (e.g. 'bg-emerald-500'); omit for none.
   dotClassName?: string
+  // Whether the row's inline detail is expanded.
+  expanded?: boolean
   // Leading codicon glyph name (used when there's no lead/dot).
   icon?: string
   // Custom leading element (colored swatch, avatar, …). Wins over dot/icon.
@@ -170,6 +172,7 @@ interface PanelListRowProps {
 export function PanelListRow({
   active,
   dotClassName,
+  expanded,
   icon,
   lead,
   menu,
@@ -182,6 +185,7 @@ export function PanelListRow({
 }: PanelListRowProps) {
   const row = (
     <div
+      aria-expanded={expanded !== undefined ? expanded : undefined}
       className={cn(
         'group/row row-hover relative flex h-7 w-full items-center rounded-md text-[0.78rem] hover:text-foreground',
         active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'

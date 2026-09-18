@@ -33,6 +33,11 @@ class InboxItem(Result):
     heartbeat: JsonValue = None
     pending_approval: InboxPendingApproval | None = None
     pending_clarify: PendingClarify | None = None
+    categories: list[str] = []
+    subagent_count: int = 0
+    subagent_count_unavailable: bool = False
+    background_task_count: int = 0
+    background_task_count_unavailable: bool = False
 
 
 class InboxCounts(Result):
@@ -41,6 +46,15 @@ class InboxCounts(Result):
     waiting: int = 0
     scheduled: int = 0
     total: int = 0
+
+
+class InboxCategoryCounts(Result):
+    goals: int = 0
+    loops: int = 0
+    heartbeats: int = 0
+    subagents: int = 0
+    background_tasks: int = 0
+    other: int = 0
 
 
 class InboxCoverage(Result):
@@ -56,6 +70,7 @@ class InboxCoverage(Result):
 class InboxResult(Result):
     items: list[InboxItem] = []
     counts: InboxCounts = InboxCounts()
+    categories: InboxCategoryCounts = InboxCategoryCounts()
     badge: str = "none"
     coverage: InboxCoverage = InboxCoverage()
 

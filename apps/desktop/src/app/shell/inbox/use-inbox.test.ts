@@ -180,6 +180,9 @@ describe('useInbox', () => {
           scanned_sessions: 1
         },
         items: [{
+          background_task_count: 0,
+          background_task_count_unavailable: false,
+          categories: [],
           session_key: 'sess-a',
           title: 'Profile A session',
           source: 'cli',
@@ -189,7 +192,9 @@ describe('useInbox', () => {
           loop: null,
           heartbeat: null,
           pending_approval: null,
-          pending_clarify: null
+          pending_clarify: null,
+          subagent_count: 0,
+          subagent_count_unavailable: false
         }]
       }
     })

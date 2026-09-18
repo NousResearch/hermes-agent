@@ -128,6 +128,7 @@ export interface Translations {
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
+    switchModel: string;
     navigation: string;
     openDocumentation: string;
     openNavigation: string;
@@ -230,6 +231,8 @@ export interface Translations {
     confirmDeleteTitle: string;
     confirmDeleteMessage: string;
     sessionDeleted: string;
+    sessionRenamed: string;
+    failedToRename: string;
     failedToDelete: string;
     deleteEmpty: string;
     deleteEmptyConfirmTitle: string;
@@ -326,6 +329,13 @@ export interface Translations {
     change?: string;
     configure?: string;
     setMainModel?: string;
+    allAuxiliaryTasks?: string;
+    referenceModels?: string;
+    aggregator?: string;
+    setDefault?: string;
+    addPreset?: string;
+    saving?: string;
+    save?: string;
   };
 
   // ── Logs page ──
@@ -346,6 +356,15 @@ export interface Translations {
     scriptRequired?: string;
     /** Optional until all locales translate; deep-merge falls back to English. */
     jobIdsPlaceholder?: string;
+
+    // Shared form-field labels used by the cron editor dialogs.
+    fieldProvider: string;
+    fieldModel: string;
+    fieldScript: string;
+    fieldWorkdir: string;
+    fieldProfile: string;
+    allProfiles: string;
+    defaultOption: string;
     editJob?: string;
     confirmDeleteMessage: string;
     confirmDeleteTitle: string;
@@ -813,6 +832,252 @@ export interface Translations {
     showSidePanelTitle?: string;
     collapseSidePanel?: string;
     collapseSidePanelTitle?: string;
+    checkServerStatus?: string;
+    openLogs?: string;
+  };
+
+  // ── Shared form-field vocabulary ──
+  fields: {
+    name: string;
+    label: string;
+    description: string;
+    provider: string;
+    model: string;
+    profile: string;
+    script: string;
+    workdir: string;
+    transport: string;
+    authentication: string;
+    command: string;
+    args: string;
+    arguments: string;
+    events: string;
+    prompt: string;
+    skills: string;
+    hubSkills: string;
+    serverName: string;
+    profileName: string;
+    bearerToken: string;
+    none: string;
+    size: string;
+    modified: string;
+    path: string;
+    folderName: string;
+    folderNamePlaceholder: string;
+    pathPlaceholder: string;
+    deliverTo: string;
+    deliverOnly: string;
+    allAuxiliaryTasks: string;
+    whatFor: string;
+    enterServerName: string;
+    addFromSkillsHub: string;
+    newProfile: string;
+    restoreFromBackupUpload: string;
+    restoreFromBackupsPath: string;
+    fullBackup: string;
+    closeLog: string;
+  };
+
+  // ── Status badges ──
+  badges: {
+    connected: string;
+    linked: string;
+    ready: string;
+    installed: string;
+  };
+
+  // ── Shared icon-button tooltips / aria-labels ──
+  actions: {
+    setDefault: string;
+    deletePreset: string;
+    addPreset: string;
+    remove: string;
+    addReferenceModel: string;
+    testConnection: string;
+    deleteWebhook: string;
+    copy: string;
+    revoke: string;
+    revokeAccess: string;
+    resetMemory: string;
+    removeCredential: string;
+    pruneCheckpoints: string;
+    removeShellHook: string;
+    removeHook: string;
+    logOut: string;
+    reconnectConsole: string;
+    closeConsole: string;
+    close: string;
+    checkServerStatus: string;
+    openLogs: string;
+    refreshFiles: string;
+    uploadFiles: string;
+    createFolder: string;
+    addServer: string;
+  };
+
+  // ── Pairing page ──
+  pairing: {
+    loadFailed: string;
+    missingRequest: string;
+    revokeAccess: string;
+    revokeDescription: string;
+    revokeDescriptionPlain: string;
+    revoke: string;
+  };
+
+  // ── Profile builder page ──
+  profileBuilder: {
+    invalidName: string;
+    createFailed: string;
+    stepIdentity: string;
+    stepModel: string;
+    stepSkills: string;
+    stepMcp: string;
+    stepReview: string;
+    back: string;
+    next: string;
+    creating: string;
+    createProfile: string;
+    filterModels: string;
+    filterSkills: string;
+    searchHub: string;
+    defaultModelLater: string;
+    fullDefaultBundle: string;
+    keptSkillsCount: string;
+    plusHub: string;
+    hubLabel: string;
+    mcpServers: string;
+    mcpTransport: string;
+    httpAuthentication: string;
+  };
+
+  // ── System page ──
+  system: {
+    hookEventLabel: string;
+    credProviderLabel: string;
+    credLabelLabel: string;
+    fullBackup: string;
+    restoreFromBackupUpload: string;
+    restoreFromBackupsPath: string;
+    resetMemory: string;
+    removeCredential: string;
+    pruneCheckpoints: string;
+    removeShellHook: string;
+    closeLog: string;
+    close: string;
+    removeHook: string;
+  };
+
+  // ── MCP page ──
+  mcp: {
+    loadFailed: string;
+    catalogLoadFailed: string;
+    addFailed: string;
+    testFailed: string;
+    signInFailed: string;
+    updateFailed: string;
+    removed: string;
+    removeFailed: string;
+    installingInBackground: string;
+    installed: string;
+    installFailed: string;
+    addServer: string;
+    add: string;
+    adding: string;
+    envLabel: string;
+    bearerTokenPlaceholder: string;
+    bearerTokenHint: string;
+    oauthHint: string;
+    installTitle: string;
+    installRequires: string;
+    installing: string;
+    install: string;
+    enable: string;
+    disable: string;
+    endpoint: string;
+  };
+
+  // ── Files page ──
+  files: {
+    pathRequired: string;
+    directoryUnavailable: string;
+    folderNameRequired: string;
+    folderCreated: string;
+    createFailed: string;
+    uploadFailed: string;
+    downloadFailed: string;
+    deleted: string;
+    deleteFailed: string;
+    actions: string;
+    uploading: string;
+    releaseToUpload: string;
+    dropFilesHere: string;
+    loading: string;
+    target: string;
+    openItem: string;
+    downloadItem: string;
+    deleteItem: string;
+    deleteItemTitle: string;
+    deleteUntitledTitle: string;
+    deleteFolderDescription: string;
+    deleteFileDescription: string;
+    create: string;
+  };
+
+  // ── Webhooks page ──
+  webhooks: {
+    loadFailed: string;
+    gatewayRestarting: string;
+    restartFailed: string;
+    enabledRestarting: string;
+    enabledRestartFailed: string;
+    enableFailed: string;
+    nameRequired: string;
+    created: string;
+    createFailed: string;
+    error: string;
+    deleted: string;
+    newSubscription: string;
+    subscriptionCreated: string;
+    webhookUrl: string;
+    secretShownOnce: string;
+    done: string;
+    descriptionPlaceholder: string;
+    promptPlaceholder: string;
+    receiverDisabled: string;
+    receiverDisabledHint: string;
+    enableWebhooks: string;
+    enabling: string;
+    creating: string;
+    create: string;
+    restarting: string;
+    restartGateway: string;
+    deleteTitle: string;
+    deleteDescription: string;
+    deleteDescriptionPlain: string;
+    log: string;
+    enabled: string;
+    disabled: string;
+  };
+
+  // ── Channels page ──
+  channels: {
+    loadFailed: string;
+    nothingToSave: string;
+    fieldRequired: string;
+    fixHighlightedFields: string;
+    savedConnecting: string;
+    saved: string;
+    saveFailed: string;
+    updateFailed: string;
+    testFailed: string;
+    gatewayRestarting: string;
+    restartFailed: string;
+    whatsappSavedRestarting: string;
+    whatsappRestartFailed: string;
+    telegramSavedRestarting: string;
+    telegramRestartFailed: string;
+    telegramRestartFailedDetail: string;
   };
 
   // ── Kanban ──

@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const ga: Translations = {
+export const ga = defineLocale({
   common: {
     save: "Sábháil",
     saving: "Á shábháil...",
@@ -784,4 +784,4 @@ export const ga: Translations = {
     logTruncated: "(taispeántar an 100 KB deireanach — loga iomlán ag ",
     logAt: ")",
   },
-};
+});

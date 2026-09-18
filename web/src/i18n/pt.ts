@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const pt: Translations = {
+export const pt = defineLocale({
   common: {
     save: "Guardar",
     saving: "A guardar...",
@@ -777,4 +777,4 @@ export const pt: Translations = {
     logTruncated: "(a mostrar os últimos 100 KB — registo completo em ",
     logAt: ")",
   },
-};
+});

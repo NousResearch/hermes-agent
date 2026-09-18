@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const af: Translations = {
+export const af = defineLocale({
   common: {
     save: "Stoor",
     saving: "Besig om te stoor...",
@@ -776,4 +776,4 @@ export const af: Translations = {
     logTruncated: "(toon laaste 100 KB — volledige log by ",
     logAt: ")",
   },
-};
+});

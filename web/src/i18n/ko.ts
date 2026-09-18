@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const ko: Translations = {
+export const ko = defineLocale({
   common: {
     save: "저장",
     saving: "저장 중...",
@@ -775,4 +775,4 @@ export const ko: Translations = {
     logTruncated: "(마지막 100 KB 표시 중 — 전체 로그 위치: ",
     logAt: ")",
   },
-};
+});

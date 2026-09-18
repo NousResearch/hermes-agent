@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const zhHant: Translations = {
+export const zhHant = defineLocale({
   common: {
     save: "儲存",
     saving: "儲存中...",
@@ -775,4 +775,4 @@ export const zhHant: Translations = {
     logTruncated: "（顯示最後 100 KB — 完整日誌位於 ",
     logAt: "）",
   },
-};
+});

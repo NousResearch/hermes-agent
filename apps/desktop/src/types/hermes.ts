@@ -422,7 +422,7 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
-    show_reasoning?: boolean | null | number | string
+    show_reasoning?: boolean | string
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean

@@ -32,15 +32,15 @@ from hermes_cli.models import (
 _STATIC_FLOOR = list(_PROVIDER_MODELS["opencode-free"])
 
 # The live relay's current free tier. x-preview-f-free was DELISTED 2026-08-26;
-# deepseek-v4-flash-free + mimo-v2.5-free are back on the live list.
+# hy3-free and laguna-s-2.1-free were DELISTED 2026-09-09 (gone from live
+# /models, anon 401 "Model … is not supported"); deepseek-v4-flash-free was
+# DELISTED 2026-09-15 (still LISTED by /models, every POST 400s "Model is unavailable").
 _LIVE_FREE_MODELS = [
-    "deepseek-v4-flash-free",
-    "hy3-free",
     "mimo-v2.5-free",
-    "laguna-s-2.1-free",
     "nemotron-3-ultra-free",
     "nemotron-3.5-lightning-free",
     "muse-spark-1.2-contributor-free",
+    "muse-spark-1.3-contributor-free",
 ]
 
 # The raw live /zen/v1/models dump also lists paid/subscription + KEYED-free IDs
@@ -50,6 +50,7 @@ _LIVE_RAW_IDS = _LIVE_FREE_MODELS + [
     "claude-sonnet-5",          # paid
     "gpt-5.6-sol",              # paid
     "ox-alpha-free",            # KEYED Go-subscription (suffix looks free)
+    "deepseek-v4-flash-free",   # delisted but still listed; POST → 400 "Model is unavailable"
 ]
 
 
@@ -63,7 +64,7 @@ class TestProviderModelIdsOpencodeFree:
             result = provider_model_ids("opencode-free")
 
         assert "x-preview-f-free" not in result  # delisted — REVERT-PROOF
-        assert "deepseek-v4-flash-free" in result  # newly-live — REVERT-PROOF
+        assert "nemotron-3-ultra-free" in result  # newly-live — REVERT-PROOF
         assert "mimo-v2.5-free" in result  # newly-live — REVERT-PROOF
 
     def test_live_catalog_filters_out_keyed_free_suffix_model(self):
@@ -183,6 +184,50 @@ class TestOpencodeFreeFollowUps:
         assert calls["n"] == 1
         self._reset_memo(mod)
 
+    def test_fetch_drops_listed_but_delisted_model(self):
+        """A delisted id the relay still LISTS (deepseek-v4-flash-free: docs/zen dropped it,
+        every POST 400s "Model is unavailable") must not reach the keyless picker; offering it
+        lets a first-turn 400 drive a fallback switch that strands the session (#111749)."""
+        import hermes_cli.models as mod
+
+        self._reset_memo(mod)
+
+        def fake_open(req, timeout):
+            import io, json as _json
+
+            class _Resp(io.BytesIO):
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return _Resp(_json.dumps({"data": [{"id": m} for m in _LIVE_RAW_IDS]}).encode())
+
+        try:
+            with patch("hermes_cli.urllib_security.open_credentialed_url", fake_open):
+                live = mod._fetch_opencode_free_models(force_refresh=True)
+        finally:
+            self._reset_memo(mod)
+        assert live is not None
+        assert "deepseek-v4-flash-free" not in live
+        assert "ox-alpha-free" not in live
+        assert "mimo-v2.5-free" in live  # control: a servable free model survives the filter
+
+    def test_keyed_zen_live_first_picker_drops_delisted_model(self, monkeypatch):
+        """The keyed opencode-zen picker is live-first over GET /zen/v1/models, which still lists
+        deepseek-v4-flash-free; it must take the same exclusion as the keyless catalog (#111749)."""
+        import hermes_cli.models as mod
+        from providers import get_provider_profile
+
+        prof = get_provider_profile("opencode-zen")
+        monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "sk-zen-fake")
+        with patch.object(type(prof), "fetch_models", lambda self, **kw: list(_LIVE_RAW_IDS)):
+            zen = mod._profile_live_catalog("opencode-zen")
+        assert zen is not None
+        assert "deepseek-v4-flash-free" not in zen
+        assert "mimo-v2.5-free" in zen  # control: a servable live model still leads
+
     def test_heal_union_includes_live_only_model(self):
         """A newly-live free model absent from the static floor must still heal
         opencode-go/zen selections to the keyless Zen relay (sibling-site widen:
@@ -219,3 +264,6 @@ class TestOpencodeFreeFollowUps:
     def test_static_floor_excludes_delisted_model(self):
         """The offline floor must not offer a model known to 401 (#95914)."""
         assert "x-preview-f-free" not in _PROVIDER_MODELS["opencode-free"]
+        assert "hy3-free" not in _PROVIDER_MODELS["opencode-free"]
+        assert "laguna-s-2.1-free" not in _PROVIDER_MODELS["opencode-free"]
+        assert "deepseek-v4-flash-free" not in _PROVIDER_MODELS["opencode-free"]

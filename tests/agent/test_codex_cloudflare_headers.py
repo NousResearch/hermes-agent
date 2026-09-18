@@ -99,7 +99,7 @@ class TestPrimaryClientWiring:
         """Credential-rotation / base-url change path must also emit codex headers."""
         from run_agent import AIAgent
         token = _make_codex_jwt("acct-rotation")
-        with patch("run_agent.OpenAI") as mock_openai:
+        with patch("agent.process_bootstrap.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             agent = AIAgent(
                 api_key="placeholder-openrouter-key",
@@ -124,7 +124,7 @@ class TestPrimaryClientWiring:
         """Switching AWAY from chatgpt.com must drop the codex headers."""
         from run_agent import AIAgent
         token = _make_codex_jwt()
-        with patch("run_agent.OpenAI") as mock_openai:
+        with patch("agent.process_bootstrap.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             agent = AIAgent(
                 api_key=token,

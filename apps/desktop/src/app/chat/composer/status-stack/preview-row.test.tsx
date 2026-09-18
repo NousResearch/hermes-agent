@@ -19,7 +19,7 @@ describe('PreviewStatusRow', () => {
     vi.restoreAllMocks()
   })
 
-  it('keeps the preview tooltip label inline inside the portaled decoration', async () => {
+  it('keeps the full path and hint in one portaled bubble beside the label', async () => {
     const view = render(
       <PreviewStatusRow
         item={{ cwd: 'C:\\repo', id: 'preview.html', label: 'preview.html', target: 'preview.html' }}
@@ -30,13 +30,16 @@ describe('PreviewStatusRow', () => {
     fireEvent.pointerMove(screen.getByText('preview.html'), { pointerType: 'mouse' })
     await screen.findByRole('tooltip')
 
-    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
-    const label = content?.firstElementChild?.firstElementChild
+    const content = view.baseElement.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const label = content?.querySelector('[data-slot="tooltip-label"]')
 
     expect(content).not.toBeNull()
     expect(view.container.contains(content)).toBe(false)
-    expect(label?.classList.contains('inline-flex')).toBe(true)
-    expect(label?.classList.contains('flex')).toBe(false)
+    expect(content?.classList.contains('tooltip-bubble')).toBe(true)
+    expect(content?.getAttribute('data-side')).toBe('right')
+    expect(label?.textContent).toContain('preview.html')
+    expect(label?.querySelector('br')).not.toBeNull()
+    expect(content?.querySelector('[data-slot="tooltip-arrow"]')).not.toBeNull()
   })
 
   it('opens remote non-HTML file artifacts in the in-app preview instead of the local browser bridge', async () => {

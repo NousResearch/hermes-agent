@@ -1,6 +1,6 @@
-import { defineConfig } from 'vite'
 import babel from '@rolldown/plugin-babel'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
+import { defineConfig } from 'vite'
 
 /** React Compiler preset scoped to modules that can actually contain
  *  components/hooks (JSX syntax or a react-ish import). The preset's default
@@ -10,12 +10,15 @@ import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 function compilerPreset() {
   const preset = reactCompilerPreset()
   preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/
+
   return preset
 }
-import tailwindcss from '@tailwindcss/vite'
-import path from 'path'
+
 import fs from 'fs'
 import { createRequire } from 'module'
+import path from 'path'
+
+import tailwindcss from '@tailwindcss/vite'
 
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
@@ -80,9 +83,14 @@ const emojibaseAssets = () => ({
   }) {
     server.middlewares.use('/emojibase', (req, res, next) => {
       const rel = (req.url ?? '').split('?')[0].replace(/^\/+/, '')
-      if (!emojibaseDir || !EMOJIBASE_PATH.test(rel)) return next()
+
+      if (!emojibaseDir || !EMOJIBASE_PATH.test(rel)) {
+        return next()
+      }
       fs.readFile(path.join(emojibaseDir, rel), (err: unknown, buf: Buffer) => {
-        if (err) return next()
+        if (err) {
+          return next()
+        }
         res.setHeader('Content-Type', 'application/json')
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
         res.end(buf)
@@ -90,7 +98,10 @@ const emojibaseAssets = () => ({
     })
   },
   generateBundle(this: { emitFile: (asset: { type: 'asset'; fileName: string; source: Uint8Array }) => void }) {
-    if (!emojibaseDir) return
+    if (!emojibaseDir) {
+      return
+    }
+
     for (const rel of ['en/data.json', 'en/messages.json', 'en/shortcodes/emojibase.json']) {
       this.emitFile({
         type: 'asset',
@@ -118,6 +129,9 @@ export default defineConfig(({ command }) => ({
     postcss: { plugins: [] }
   },
   build: {
+    // Validate the packaged generation with metadata checks at launch, without
+    // reading every lazy vendor chunk (and triggering on-access AV scans).
+    manifest: 'renderer-manifest.json',
     // The renderer intentionally ships FEW chunks (not one, not thousands):
     //   · `codeSplitting: false` (the old setup) inlines every `lazy()` /
     //     dynamic import into the entry, so heavyweight lazy-only deps
@@ -139,7 +153,20 @@ export default defineConfig(({ command }) => ({
             // the heavy chunk, and the entry then statically imports 19 MB of
             // shiki just to reach react/hast utils — putting the heavy chunk
             // right back on the boot path.
-            { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|scheduler|react-router)[\\/]/ },
+            //
+            // @tanstack/react-query is here for the same reason react-router
+            // is: it carries MODULE-LEVEL context (QueryClientContext) that
+            // the entry's QueryClientProvider and every lazy chunk's useQuery
+            // must share. Left to rolldown's merge heuristics, an unmatched
+            // shared module can be inlined into a lazy chunk — the packaged
+            // app then runs TWO react-query runtimes, the provider's context
+            // is invisible to the other copy, and useQuery throws "No
+            // QueryClient set, use QueryClientProvider to set one" on the
+            // launch path (#95560). Grouping it forces one shared instance.
+            {
+              name: 'vendor-react',
+              test: /node_modules[\\/](react|react-dom|scheduler|react-router|@tanstack[\\/]react-query)[\\/]/
+            },
             {
               name: 'vendor-md',
               test: /node_modules[\\/](property-information|hast-util-[^\\/]+|mdast-util-[^\\/]+|micromark[^\\/]*|unist-util-[^\\/]+|vfile[^\\/]*|unified|stringify-entities|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|devlop|style-to-js|style-to-object|clsx)[\\/]/
@@ -189,6 +216,7 @@ export default defineConfig(({ command }) => ({
       '@': path.resolve(__dirname, './src'),
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
       '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),
+      '@hermes/shared/color': path.resolve(__dirname, '../shared/src/color.ts'),
       '@hermes/shared': path.resolve(__dirname, '../shared/src'),
       // The tour tool's preview surface injects driver.js's prebuilt IIFE into
       // the pane's guest page as raw source; the package's exports map doesn't
@@ -209,12 +237,15 @@ export default defineConfig(({ command }) => ({
       'react/jsx-dev-runtime': path.join(reactDir, 'jsx-dev-runtime.js'),
       'react/jsx-runtime': path.join(reactDir, 'jsx-runtime.js')
     },
-    dedupe: ['react', 'react-dom', 'react-router']
+    dedupe: ['react', 'react-dom', 'react-router', '@tanstack/react-query']
   },
   server: {
     host: '127.0.0.1',
     port: 5174,
     strictPort: true,
+    warmup: {
+      clientFiles: ['./src/components/intro-reveal/intro-root.tsx']
+    },
     fs: {
       allow: fsAllow
     }

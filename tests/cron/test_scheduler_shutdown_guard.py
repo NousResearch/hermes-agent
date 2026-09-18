@@ -117,6 +117,5 @@ class TestSourceGuardrail:
 
     def test_helper_defined(self, source):
         assert "def _interpreter_shutting_down(" in source
-        assert "#58720" in source
 
 

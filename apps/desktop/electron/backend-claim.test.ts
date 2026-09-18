@@ -7,6 +7,7 @@ import {
   claimDecision,
   createBackendOutputTail,
   DEFAULT_OUTPUT_TAIL_LIMIT,
+  formatBackendExitLine,
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
@@ -66,9 +67,12 @@ test('processStartMarker resolves a real marker for the current process', async 
   assert.match(marker, /^(linux|win|winms|ps):.+/)
 })
 
-test('processStartMarker rejects for a PID that does not exist', async () => {
+test('a missing PID is classified as ESRCH so reapOrphans can drop the record', async () => {
   // Largest PIDs are bounded well below this on every supported platform.
-  await assert.rejects(processStartMarker(2 ** 30 + 12345))
+  // Windows Get-Process / macOS `ps -p` used to surface exit code 1, which
+  // the identity matchers treated as "unknown" and kept forever. The native
+  // gate throws ESRCH — the errno those catch blocks already map to gone.
+  await assert.rejects(processStartMarker(2 ** 30 + 12345), (error: NodeJS.ErrnoException) => error?.code === 'ESRCH')
 })
 
 // --- PID-only marker helpers --------------------------------------------------
@@ -129,4 +133,22 @@ test('attach tolerates a child with missing stdio streams', () => {
 
   tail.attach({ stderr: null, stdout: null })
   assert.equal(tail.text(), '')
+})
+
+// --- formatBackendExitLine ---------------------------------------------------
+
+test('exit line carries the buffered tail next to the exit code, preferring the signal', () => {
+  const tail = createBackendOutputTail(64)
+  tail.append('Traceback (most recent call last):\n')
+
+  assert.equal(
+    formatBackendExitLine('Ignoring stale Hermes backend exit', 1, null, tail),
+    'Ignoring stale Hermes backend exit (1)\nRecent backend output:\nTraceback (most recent call last):'
+  )
+  assert.equal(formatBackendExitLine('Hermes backend exited', null, 'SIGTERM', tail), 'Hermes backend exited (SIGTERM)\nRecent backend output:\nTraceback (most recent call last):')
+})
+
+test('exit line stays byte-identical to the legacy shape when the tail is empty or missing', () => {
+  assert.equal(formatBackendExitLine('Hermes backend exited', 0, null, createBackendOutputTail(64)), 'Hermes backend exited (0)')
+  assert.equal(formatBackendExitLine('Hermes backend exited', 1, null, null), 'Hermes backend exited (1)')
 })

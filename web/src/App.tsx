@@ -589,7 +589,7 @@ export default function App() {
               "border-e border-current/20",
               "bg-background-base",
               "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
-              mobileOpen ? "translate-x-0" : "ltr:-translate-x-full rtl:translate-x-full",
+              mobileOpen ? "translate-x-0" : "max-lg:ltr:-translate-x-full max-lg:rtl:translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
               "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
               collapsed && "lg:w-14",

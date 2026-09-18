@@ -19,10 +19,12 @@ forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban as kanban_cli
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -104,11 +106,14 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         assert kb.get_task(conn, child).status == "ready"
 
 
-def test_dependency_block_with_terminal_parents_parks_then_escalates(kanban_home: Path) -> None:
+def test_dependency_block_with_terminal_parents_parks_then_escalates(
+    kanban_home: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
     """A ``dependency`` block whose parents are all terminal can never be
     satisfied by ``recompute_ready``: it must park in ``blocked`` as
-    ``needs_input`` (no ``dependency_wait``, no re-promotion) and count toward
-    the loop breaker so a re-block after an unblock reaches ``triage``."""
+    ``needs_input`` (no ``dependency_wait``, no re-promotion), say so on the
+    CLI, and count toward the loop breaker so a re-block after an unblock
+    reaches ``triage``."""
     with kbc.connect_closing() as conn:
         parent = kb.create_task(conn, title="already-done-parent", assignee="worker")
         with kb.write_txn(conn):
@@ -116,7 +121,10 @@ def test_dependency_block_with_terminal_parents_parks_then_escalates(kanban_home
         child = _running_task(conn, title="child-of-done")
         kb.link_tasks(conn, parent_id=parent, child_id=child)
 
-        assert kb.block_task(conn, child, reason="waiting on upstream", kind="dependency")
+        # `hermes kanban block <child> --kind dependency waiting on upstream`
+        args = argparse.Namespace(task_id=child, ids=None, reason=["waiting", "on", "upstream"], kind="dependency")
+        assert kanban_cli._cmd_block(args) == 0
+        assert f"Blocked {child} as needs_input (no open parent to wait on): waiting on upstream" in capsys.readouterr().out
         parked = kb.get_task(conn, child)
         assert (parked.status, parked.block_kind, parked.block_recurrences) == ("blocked", "needs_input", 1)
         events = kb.list_events(conn, child)

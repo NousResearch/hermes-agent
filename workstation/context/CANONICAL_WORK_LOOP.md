@@ -187,3 +187,40 @@ These are tracked boundaries, not claims of completed global hardening.
 - `workstation/trello_migration.py`
 - `workstation/work100.py`
 - `workstation/work_intent.py`
+
+## Adaptive execution correction — 2026-09-18
+
+Real Workstation Browser dogfood added an important invariant to the canonical
+loop: deterministic optimization must never become the only path by which a novel
+safe workflow is allowed to make progress.
+
+The canonical execution ladder is now:
+
+~~~text
+intent
+  -> canonical work / run / leases
+  -> choose execution policy
+     -> adaptive reasoning for novelty/drift
+     -> compiled execution for known repeated segments
+     -> promoted deterministic routine for validated reuse
+  -> evidence / acceptance / canonical commit
+  -> learning
+  -> future execution at the cheapest proven level
+~~~
+
+True homogeneous fan-out retains TaskCompiler, canary, checkpoints, idempotency
+and uncertainty semantics. Adaptive work retains policy, approval, TaskRun
+fencing, BrowserTask ownership, no-progress bounds and effect certainty.
+
+A deterministic runner that encounters an unmodeled semantic state must emit a
+compact NEEDS_REASONING/drift handoff with confirmed progress/evidence refs and
+allow the agent to repair only the unresolved segment. Confirmed effects are not
+replayed.
+
+The operation — not the whole session — owns the compilation candidate. Browser
+tool names are normalized to the canonical route before constraints are applied,
+and tools.effects remains the sole effect taxonomy.
+
+Canonical detailed specification:
+[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
+

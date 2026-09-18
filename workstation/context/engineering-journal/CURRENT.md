@@ -31,6 +31,12 @@ replace current-main qualification. The remote Windows aggregate gate exposed a
 900-second smoke timeout and a missing Git merge base; neither gate was disabled.
 Current-main Work100: 30 PASS, 0 FAIL, 0 COVERAGE_GAP and 0 NOT_RUN_ENVIRONMENT,
 including the real Electron lifecycle contracts through the managed Node resolver.
+Current-main POSIX Workstation run: 476 passed, 0 failed; one initial worker-event
+fixture flake passed on the runner retry. Trace showed result notification racing
+delivery notification because the executor completed immediately. The fixture now
+blocks executor completion until delivery is observed, preserving both event types,
+task correlation and the original two-second bounds. Five fresh-process runs of
+all seven persistent-worker tests passed without retry (35 assertions).
 
 ## H-064 — Canonical Work Loop (2026-09-17)
 

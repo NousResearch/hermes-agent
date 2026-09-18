@@ -116,19 +116,30 @@ def test_worker_delivery_publishes_parent_wakeup_event(tmp_path):
     bus = RuntimeEventBus()
     subscription = bus.subscribe(capacity=4)
     registry = WorkerRegistry(storage_path=tmp_path / "workers.json", event_bus=bus)
+    allow_result = threading.Event()
+    def execute(prompt):
+        assert allow_result.wait(timeout=2)
+        return [f"done:{prompt}"]
     worker = registry.start_persistent_worker(
         "worker-events",
         "parent-events",
         "session-events",
-        executor_fn=lambda prompt: [f"done:{prompt}"],
+        executor_fn=execute,
     )
-    registry.send_message(worker.worker_id, "wake parent", sender_id="parent")
-    message_event = subscription.get(timeout=2)
-    result_event = subscription.get(timeout=2)
-    assert message_event.type == "worker.message"
-    assert result_event.type == "worker.result"
-    assert result_event.task_id == "parent-events"
-    registry.stop_worker(worker.worker_id)
+    try:
+        # Observe delivery independently before allowing execution to finish.
+        # Thread scheduling must not decide which notification this test reads.
+        registry.send_message(worker.worker_id, "wake parent", sender_id="parent")
+        message_event = subscription.get(timeout=2)
+        assert message_event.type == "worker.message"
+        assert message_event.task_id == "parent-events"
+        allow_result.set()
+        result_event = subscription.get(timeout=2)
+        assert result_event.type == "worker.result"
+        assert result_event.task_id == "parent-events"
+    finally:
+        allow_result.set()
+        registry.stop_worker(worker.worker_id)
 
 
 def test_completed_worker_result_survives_restart_until_durable_ack(tmp_path):

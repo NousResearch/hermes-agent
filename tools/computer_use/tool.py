@@ -8,6 +8,7 @@ from __future__ import annotations
 import atexit
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -25,11 +26,13 @@ from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseB
 logger = logging.getLogger(__name__)
 
 # ── Approval & safety ───────────────────────────────────────────────────────
+# Optional computer_use-specific prompt handed to the shared gate as its explicit ``approval_callback``; when None the
+# gate resolves the per-thread CLI callback (``tools.terminal_tool.set_approval_callback``) like every other tool, so
+# in-tree hosts never call this. Same contract as that callback: ``cb(command, description, **kw)`` ->
+# "once" | "session" | "always" | "deny" | "timeout".
 _approval_callback = None
 
 def set_approval_callback(cb) -> None:
-    """Register the CLI approval prompt (terminal_tool pattern); ``cb(action, args, summary)`` ->
-    "approve_once" | "approve_session" | "always_approve" | "deny"."""
     global _approval_callback
     _approval_callback = cb
 
@@ -79,16 +82,51 @@ _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-sessi
 _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
-_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}  # process-scoped: (provider, model) → bool
-# Approval state keyed by session_id so a gateway serving concurrent sessions can't leak one run's
-# "always approve" into another; callers without a session_id share "".
-# Falls back to a shared "" bucket for callers that don't pass a session_id (e.g. the classic single-run
-# CLI). Values: _session_auto_approve[sid] -> bool   ("always_approve everything") _always_allow[sid]
-# -> set of (action, delivery_mode) scope keys See NousResearch/hermes-agent#67052 gap 4.
+# (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
+# override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
+_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
+# Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
+# gate's session key, so a computer_use "always" is one allowlist entry like any terminal pattern. Only the
+# once-per-session escalation warning is tracked here.
 _approval_lock = threading.Lock()
-_session_auto_approve: Dict[str, bool] = {}   # sid -> "always_approve everything"
-_always_allow: Dict[str, set] = {}            # sid -> set of (action, delivery_mode) scope keys
 _escalation_warned: set = set()               # sids already warned that a bypass widened the driver mode
+
+# Screenshot dedup: a tight capture→act→capture loop on a static screen resends the same ~1200px image every step.
+# Every delivered frame is hashed (sha256 over mime + base64 payload); when the next capture of the SAME target
+# (app, window) in the SAME session is byte-identical, the tool returns the normal text metadata (element index
+# included) plus an explicit "screen unchanged" note and omits the image block. Append-only — no prior transcript
+# message is rewritten, so prompt-cache prefixes stay intact. Staleness is bounded by a consecutive-omission streak
+# cap: full pixels are re-delivered before compaction (which keeps only the newest image-bearing tool results)
+# could evict the image the note refers to. State is per session; sessionless calls never dedup.
+_screenshot_dedup_lock = threading.Lock()
+_last_screenshot_state: Dict[str, Dict[str, Any]] = {}  # session_id -> {"digest", "target": (app, window), "streak"}
+_SCREENSHOT_DEDUP_MAX_STREAK = 2
+
+def _screenshot_dedup_check(session_id: str, digest: str, target: Tuple[str, str]) -> bool:
+    """True when this capture should be delivered WITHOUT its image: the previous frame for this session had identical
+    bytes for the same target and the omission streak is below _SCREENSHOT_DEDUP_MAX_STREAK. Any miss (new pixels,
+    new target, streak exhausted, first capture) resets the stored state to this digest so the image goes out."""
+    with _screenshot_dedup_lock:
+        state = _last_screenshot_state.get(session_id)
+        if (state is not None and state.get("digest") == digest and state.get("target") == target
+                and int(state.get("streak", 0)) < _SCREENSHOT_DEDUP_MAX_STREAK):
+            state["streak"] = int(state.get("streak", 0)) + 1
+            return True
+        _last_screenshot_state[session_id] = {"digest": digest, "target": target, "streak": 0}
+        return False
+
+def _reset_screenshot_dedup(session_id: Optional[str] = None) -> None:
+    """Forget dedup state (all sessions, or one scoped key)."""
+    with _screenshot_dedup_lock:
+        if session_id is None:
+            _last_screenshot_state.clear()
+        else:
+            _last_screenshot_state.pop(session_id, None)
+
+def reset_screenshot_dedup(session_id: str) -> None:
+    """Compaction boundary hook (mirrors ``reset_file_dedup``): the summary may have dropped the frame an
+    "unchanged" note would point at, so the next capture of this session must deliver pixels again."""
+    _reset_screenshot_dedup(_scoped_sid(session_id))
 
 def _cua_permission_mode(session_id: str) -> str:
     """Map Hermes's approval bypass onto Cua's immutable mode; fails closed. Both identity namespaces are consulted
@@ -156,12 +194,21 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
     except Exception as e:
         on_error(e)
 
-def _get_backend(session_id: str = "") -> ComputerUseBackend:
+def _scoped_sid(session_id: str) -> str:
+    """Cache key for one Hermes session's backend. Outside a served-profile scope it is the bare id
+    (legacy keys byte-identical); under a multiplexed turn the routed profile's home key is appended
+    so two profiles that share a session id (or a DISPLAY) never share one cua-driver (#110032).
+    Every cache path — lookup, install, release — goes through this, so release finds what lookup made."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
     sid = str(session_id or "")
+    return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
+
+def _get_backend(session_id: str = "") -> ComputerUseBackend:
+    bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
     while True:
         with _backend_lock:
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
-            permission_mode = _cua_permission_mode(sid)
+            permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:
@@ -176,13 +223,12 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
 
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
-    Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace; approval
-    state is cleared even without a backend."""
-    sid = str(session_id or "")
+    Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
+    grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
+    sid = _scoped_sid(session_id)
+    _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
     with _backend_lock:
         backend, call_lock = _detach_locked(sid)
-    with _approval_lock:
-        _session_auto_approve.pop(sid, None), _always_allow.pop(sid, None)
     if backend is None:
         return False
     _stop_backend(backend, call_lock,
@@ -207,13 +253,14 @@ def _shutdown_backend_atexit() -> None:
         _backend = None
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
     with _approval_lock:
-        _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()
+        _escalation_warned.clear()
     for backend, call_lock in unique.values():
         _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
 
 def reset_backend_for_tests() -> None:  # pragma: no cover — tear down the cached backend and per-session state
     _shutdown_backend_atexit()
     _AUX_VISION_ROUTE_CACHE.clear()
+    _reset_screenshot_dedup()
 
 def _noop_stub(name: str, *params: str, result: Any = None):
     # Recording stub: positional args are folded in under *params* (declared params default to None). ``result`` may
@@ -251,7 +298,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
         ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
     for scope in scopes:
-        if (err := _request_approval(scope, args, session_id)) is not None:
+        if (err := _request_approval(scope, args)) is not None:
             return err
     try:
         backend = _get_backend(session_id=session_id)
@@ -263,41 +310,34 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
         with call_lock:
-            return _dispatch(backend, action, args)
+            return _dispatch(backend, action, args, session_id=session_id or None)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
 
-def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -> Optional[str]:
-    """None if approved, else a JSON error string. Scoped by (action, delivery_mode) AND session_id: foreground
-    delivery is a visible focus change, so a background ``approve_session`` must NOT cover it; the blanket
-    ``always_approve`` does. No CLI approval wired -> default allow (gateway approval runs one layer out).
-
-    ``always_approve`` (the blanket "auto-approve everything" unlock) still covers foreground, since the
-    user explicitly opted into unattended operation. State is keyed on session_id so concurrent runs don't
-    leak unlocks into one another. See #67052.
+def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
+    """None if approved, else a JSON error string. The decision (yolo bypass, session/permanent grants, CLI prompt,
+    gateway pending, cron/unattended policy, fail-closed with nobody to ask) is ``tools.approval``'s shared gate,
+    so a computer_use grant is one store entry like any terminal pattern. Scope key ``cua:<action>:<mode>``:
+    foreground delivery is a visible focus change, so a background ``session`` grant must NOT cover it (#67052).
     """
-    scope_key = (action, "foreground" if args.get("delivery_mode") == "foreground" else "background")
-    with _approval_lock:
-        if _session_auto_approve.get(session_id) or scope_key in _always_allow.get(session_id, set()):
-            return None
-    if (cb := _approval_callback) is None:
+    from tools.approval import _run_approval_gate
+
+    mode = "foreground" if args.get("delivery_mode") == "foreground" else "background"
+    description = f"Allow computer_use to perform `{action}`?"
+    result = _run_approval_gate(
+        pattern_key=f"cua:{action}:{mode}", description=description,
+        display_target=f"computer_use: {_summarize_action(action, args)}", approval_callback=_approval_callback,
+        subject=f"computer_use `{action}` requires approval", noun="desktop actions",
+        advice="Find an alternative approach that avoids driving the desktop.",
+        autoapprove_log_prefix="computer_use action in non-interactive non-gateway context",
+        fail_closed_when_no_human=True,
+        no_human_block_message=(f"BLOCKED: computer_use `{action}` requires approval but no interactive user or "
+                                "gateway is present to approve it."),
+    )
+    if result.get("approved"):
         return None
-    try:
-        verdict = cb(action, args, _summarize_action(action, args))
-    except Exception as e:
-        logger.warning("approval callback failed: %s", e)
-        verdict = "deny"
-    if verdict in ("approve_session", "always_approve"):
-        with _approval_lock:
-            _always_allow.setdefault(session_id, set()).add(scope_key)
-            if verdict == "always_approve":
-                _session_auto_approve[session_id] = True
-    if verdict in ("approve_once", "approve_session", "always_approve"):
-        return None
-    return json.dumps({"error": ("approval prompt timed out — the user did not respond. Silence is not consent; "
-                                 "do not retry without the user.") if verdict == "timeout" else "denied by user",
-                       "action": action})
+    return json.dumps({"error": result.get("message") or "denied by user", "action": action})
 
 def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     fg = " [FOREGROUND — briefly raises the window / changes focus]" if args.get("delivery_mode") == "foreground" else ""
@@ -332,12 +372,13 @@ def _do_scroll(backend, action, args, **delivery):
     return backend.scroll(direction=args.get("direction", "down"), amount=int(args.get("amount", 3)),
                           element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"), **delivery)
 
-def _do_capture(backend, action, args, **_):
+def _do_capture(backend, action, args, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
     # pid/window_id forwarded only when given so older backends keep their defaults.
     return _capture_response(backend.capture(mode=mode, app=args.get("app"),
-                                             **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}))
+                                             **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}),
+                             session_id=session_id)
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
@@ -387,7 +428,7 @@ _ACTION_SUGGESTIONS = {
     "input_text": "type", "screenshot": "capture", "get_window_state": "capture", "left_click": "click", "mouse_click": "click",
 }
 
-def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
+def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], session_id: Optional[str] = None) -> Any:
     spec = _ACTIONS.get(action)
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
@@ -400,10 +441,12 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "
             "— input actions always hit the sticky target from the last capture/focus_app. "
             f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
-    # delivery_mode / bring_to_front thread through every input action (background → foreground ladder).
+    # delivery_mode / bring_to_front thread through every input action (background → foreground ladder); input
+    # handlers forward their kwargs to the backend verbatim, so the dedup session key rides only on read handlers.
     res = spec.handler(backend, action, args, delivery_mode=args.get("delivery_mode"),
-                       bring_to_front=bool(args.get("bring_to_front")))
-    return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")))
+                       bring_to_front=bool(args.get("bring_to_front")), **({} if spec.input else {"session_id": session_id}))
+    return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")),
+                                                                         session_id=session_id)
 
 # ── Response shaping ────────────────────────────────────────────────────────
 def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
@@ -546,11 +589,24 @@ def _text_capture_payload(v: SimpleNamespace, summary: str, extra: Optional[Dict
                    bounds_scale=v.bounds_scale),
     })
 
-def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
+def _capture_digest(cap: CaptureResult) -> str:
+    return hashlib.sha256((str(cap.image_mime_type or "") + ":").encode("utf-8")
+                          + (cap.png_b64 or "").encode("ascii", "ignore")).hexdigest()
+
+def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
+                      session_id: Optional[str] = None) -> Any:
     v = _capture_view(cap, max_elements)
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
-    if v.has_image:
+    if v.has_image and session_id and _screenshot_dedup_check(
+            _scoped_sid(session_id), _capture_digest(cap), (str(cap.app or ""), str(cap.window_title or ""))):
+        # Unchanged frame: same pixels for the same target in this session — no image (and no aux-vision call);
+        # the text metadata is fresh and the note says which earlier result still applies.
+        lines.append("  (screen unchanged since the previous capture — image omitted to save context; the previous "
+                     "capture's screenshot/analysis still shows the current state. Element indices below are fresh "
+                     "and remain the preferred way to act.)")
+        extra = {"screen_unchanged": True}
+    elif v.has_image:
         # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images
         # natively; returning the multimodal envelope unconditionally tripped HTTP 404/400 at the provider.
         if not _should_route_through_aux_vision():  # envelope carrying the screenshot (not the elements array, so no truncation note)
@@ -581,7 +637,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                      "elements_file — read_file/search_files it, or pass app= to narrow scope)")
     return _text_capture_payload(v, "\n".join(lines), extra)
 
-def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool) -> Any:
+def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+                          session_id: Optional[str] = None) -> Any:
     # No follow-up capture after a failed action: a normal-looking screenshot would suggest success.
     if not do_capture or not res.ok:
         return _text_response(res)
@@ -594,7 +651,7 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
-    resp, payload = _capture_response(cap), _action_payload(res)
+    resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.
         resp["content"][0]["text"] = resp["text_summary"] = json.dumps(payload) + "\n\n" + resp["text_summary"]
@@ -675,10 +732,11 @@ def _should_route_through_aux_vision() -> bool:
     try:
         from agent.auxiliary_client import _read_main_model, _read_main_provider
         from hermes_cli.config import load_config
+        from hermes_constants import hermes_home_key
         from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
         stage = "config read"
         provider, model = _read_main_provider() or "", _read_main_model() or ""
-        if (cached := _AUX_VISION_ROUTE_CACHE.get(key := (str(provider), str(model)))) is not None:
+        if (cached := _AUX_VISION_ROUTE_CACHE.get(key := (hermes_home_key(), str(provider), str(model)))) is not None:
             return cached
         stage = "decision"
         _AUX_VISION_ROUTE_CACHE[key] = decision = bool(should_route_capture_to_aux_vision(provider, model, load_config()))

@@ -126,14 +126,6 @@ def _profile_author() -> str:
     return _specify_author("decomposer")
 
 
-def _load_config() -> dict:
-    try:
-        from hermes_cli.config import load_config
-        return load_config() or {}
-    except Exception:
-        return {}
-
-
 def _resolve_profile_from_cfg(cfg: dict, key: str) -> str:
     """``kanban.<key>`` if it names an existing profile, else the active
     default profile — so a task is never stranded for lack of an owner.
@@ -202,7 +194,11 @@ class _Routing:
 
 
 def _load_routing() -> _Routing:
-    cfg = _load_config()
+    from hermes_cli.config import load_config_readonly
+    try:
+        cfg = load_config_readonly()
+    except Exception:  # decompose_task promises ok=False, never a raise, on config trouble
+        cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
     return _Routing(

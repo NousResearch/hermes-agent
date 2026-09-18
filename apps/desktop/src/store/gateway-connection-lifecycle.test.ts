@@ -63,6 +63,7 @@ const {
   ensureGatewayForProfile,
   openGatewayForAgent,
   openGatewayForProfile,
+  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   retainGatewayForAgent,
@@ -724,4 +725,180 @@ describe('secondary stalled-dial budget', () => {
     expect(reopened).not.toBeNull()
     expect(getConnectionFor.mock.calls.length).toBe(parkedDials + 1)
   })
+})
+
+describe('cooperative pool retirement (supersedes #104871)', () => {
+  it('a retired scope parks: no reconnect on socket drop and no redial from the wake/focus nudge; an explicit open re-arms it', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnectionFor })
+
+    // A bot tile pinned this local child under the registry-local scope; main
+    // pools that child under the bare profile key.
+    await ensureGatewayForAgent('local', 'bot-a')
+    await ensureGatewayForAgent('homelab', 'bot-b')
+    expect(gatewayMocks.instances).toHaveLength(2)
+    const dialsBefore = getConnectionFor.mock.calls.length
+
+    // Main announces the retirement BEFORE it SIGTERMs the child.
+    expect(parkSecondariesForRetiredBackend('bot-a')).toEqual(['conn:local::bot-a'])
+
+    // Then the child exits and the socket drops.
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // Neither the recovery nudge (focus / online / wake) nor time redials the
+    // retired scope; the unrelated remote scope is untouched.
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    expect(getConnectionFor.mock.calls.filter(([args]) => args.profile === 'bot-a')).toHaveLength(
+      getConnectionFor.mock.calls.slice(0, dialsBefore).filter(([args]) => args.profile === 'bot-a').length
+    )
+
+    // Ambient hydration and relay/status RPCs must not undo the park either.
+    const { requestGatewayForAgent } = await import('./gateway')
+    const parkedDials = getConnectionFor.mock.calls.length
+    await expect(openGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
+    await expect(requestGatewayForAgent('local', 'bot-a', 'session.list')).rejects.toThrow(/retired/i)
+    await expect(retainGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
+    expect(getConnectionFor.mock.calls.length).toBe(parkedDials)
+
+    // Parked ≠ evicted: the entry survives for its tile, and an explicit open
+    // (a click on the bot) is the one thing that re-arms and redials it.
+    const before = getConnectionFor.mock.calls.length
+    await ensureGatewayForAgent('local', 'bot-a')
+    expect(getConnectionFor.mock.calls.length).toBe(before + 1)
+    expect(getConnectionFor.mock.calls.at(-1)?.[0]).toMatchObject({ connectionId: 'local', profile: 'bot-a' })
+
+    // Once re-armed, the nudge treats it like any other scope again.
+    ;(gatewayMocks.instances.at(-1) as unknown as { connectionState: string }).connectionState = 'closed'
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getConnectionFor.mock.calls.length).toBe(before + 2)
+  })
+
+  it('touch pings carry the scope turn lease so main can skip leased residents early', async () => {
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    const touchBackend = vi.fn(async () => ({ ok: true }))
+
+    installDesktop({ getConnectionFor, touchBackend })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    touchBackend.mockClear()
+
+    touchSecondaryGateways()
+    expect(touchBackend).toHaveBeenCalledWith('conn:homelab::bot-a', { activeTurn: false })
+  })
+})
+
+
+describe('rejected secondary authentication', () => {
+  it('parks only the rejected source across automatic nudges and recovers on explicit selection', async () => {
+    vi.useFakeTimers()
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...descriptorFor(connectionId, profile), authMode: 'oauth'
+    }))
+    const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
+    installDesktop({ getConnectionFor, getGatewayWsUrlFor })
+    await ensureGatewayForAgent('cloud', 'default')
+    gatewayMocks.instances[0].connectionState = 'closed'
+    getGatewayWsUrlFor.mockResolvedValue({ ok: false, needsOauthLogin: true, error: 'Sign in again' } as never)
+    const rejected = ensureActiveGatewayOpen()
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(await rejected).toBeNull()
+    const calls = getGatewayWsUrlFor.mock.calls.length
+    reconnectSecondaryGateways({ forceOpenSockets: true })
+    await vi.advanceTimersByTimeAsync(60_000)
+    const nudged = ensureActiveGatewayOpen()
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(await nudged).toBeNull()
+    expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls)
+    getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' })
+    await ensureGatewayForAgent('healthy', 'default')
+    expect(activeGateway()?.connectionState).toBe('open')
+    await ensureGatewayForAgent('cloud', 'default')
+    expect(activeGateway()?.connectionState).toBe('open')
+    expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls + 2)
+  })
+
+  it('the explicit Reconnect action redials a parked active source', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      ...descriptorFor(connectionId, profile), authMode: 'oauth'
+    }))
+
+    const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
+    installDesktop({ getConnectionFor, getGatewayWsUrlFor })
+    await ensureGatewayForAgent('cloud', 'default')
+    gatewayMocks.instances[0].connectionState = 'closed'
+    getGatewayWsUrlFor.mockResolvedValue({ ok: false, needsOauthLogin: true, error: 'Sign in again' } as never)
+    const rejected = ensureActiveGatewayOpen()
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect(await rejected).toBeNull()
+
+    // The user re-authenticated in Settings and pressed Reconnect on the same route.
+    getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' })
+    const calls = getGatewayWsUrlFor.mock.calls.length
+    const recovered = ensureActiveGatewayOpen({ explicit: true })
+    await vi.advanceTimersByTimeAsync(8_000)
+    expect((await recovered)?.connectionState).toBe('open')
+    expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls + 1)
+  })
+})
+
+
+it('keeps background auth rejection after socket disposal until recovery or connection removal', async () => {
+  const { requestGatewayForAgent } = await import('./gateway')
+  const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+    ...descriptorFor(connectionId, profile), authMode: 'oauth'
+  }))
+  const getGatewayWsUrlFor = vi.fn(async () => ({ ok: false, needsOauthLogin: true, error: 'Sign in again' }))
+  installDesktop({ getConnectionFor, getGatewayWsUrlFor })
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  pruneSecondaryGateways(new Set())
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(1)
+
+  // Removing/replacing a connection must not leave a stale rejection behind.
+  disposeSecondariesForConnection('cloud')
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
+
+  getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' } as never)
+  await ensureGatewayForAgent('cloud', 'default')
+  expect(activeGateway()?.connectionState).toBe('open')
+  expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(3)
+})
+
+
+it('does not let a removed connection repopulate the auth rejection', async () => {
+  const { requestGatewayForAgent } = await import('./gateway')
+  const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+    ...descriptorFor(connectionId, profile), authMode: 'oauth'
+  }))
+  let rejectTicket!: (error: Error) => void
+  const ticket = new Promise<never>((_resolve, reject) => { rejectTicket = reject })
+  const getGatewayWsUrlFor = vi.fn(() => ticket)
+  installDesktop({ getConnectionFor, getGatewayWsUrlFor })
+  const pending = requestGatewayForAgent('cloud', 'default', 'session.list')
+  const rejected = expect(pending).rejects.toThrow()
+  await vi.waitFor(() => expect(getGatewayWsUrlFor).toHaveBeenCalledOnce())
+  disposeSecondariesForConnection('cloud')
+  rejectTicket(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
+  await rejected
+  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
 })

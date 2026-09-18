@@ -94,6 +94,7 @@ def _fetch_picker_live_models(
     """Fetch picker models with native Ollama and cached generic discovery."""
     from hermes_cli.models import _get_ollama_native_headers, cached_fetch_api_models, fetch_api_models
     from hermes_cli.models_local import (
+        _OLLAMA_LOCAL_MODELS_CACHE_TTL,
         _normalize_openai_base_url,
         fetch_ollama_local_models,
         should_use_ollama_native_catalog,
@@ -129,9 +130,27 @@ def _fetch_picker_live_models(
     if use_native:
         if preserve_native_models:
             return None
-        native_models = fetch_ollama_local_models(api_url, timeout=timeout, headers=resolved_headers)
+
+        def _probe_native_catalog() -> _NativePickerModelList | None:
+            models = fetch_ollama_local_models(api_url, timeout=timeout, headers=resolved_headers)
+            return None if models is None else _NativePickerModelList(models)
+
+        # Admit the native catalog to the SHARED disk cache: a no-probe picker open (every endpoint
+        # that is not the current one) reads ``provider_models_cache.json`` only, so a native probe
+        # that answered here but was never stored came back empty on the next open — the provider's
+        # whole group vanished from the picker until the user hit Refresh Models. Key the entry on
+        # the caller's ``headers`` (what that cache_only read hashes), not ``resolved_headers``: the
+        # native probe's synthesized Authorization would otherwise land under a fingerprint the
+        # read side never computes, and a keyed endpoint kept flickering. Clamp the fresh window
+        # to the native TTL (300s, as cached_provider_model_ids does for the built-in slug): a
+        # locally pulled model must not stay invisible for the generic 1h TTL.
+        native_models = (
+            cached_fetch_api_models(
+                api_key, api_url, timeout=timeout, headers=headers, api_mode=api_mode,
+                fetch_models=_probe_native_catalog, ttl_seconds=_OLLAMA_LOCAL_MODELS_CACHE_TTL)
+            if cache else _probe_native_catalog())
         if native_models is not None:
-            return _NativePickerModelList(native_models)
+            return native_models
         # A failed native probe is not authoritative: retry the cached generic catalog.
         api_url = _normalize_openai_base_url(api_url)
     generic_models = (cached_fetch_api_models if cache else fetch_api_models)(
@@ -737,12 +756,37 @@ class _PickerBuild:
         return discovered, native_catalog_empty, probe_live
 
 
+def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
+    """Section 0: the active / ``providers:``-configured LM Studio row from the live catalog.
+
+    LM Studio has no models.dev mapping and its overlay row (section 2) needs a credential, so a
+    hand-written ``model.provider: lmstudio`` left the slug unclaimed until section 3, where a bare
+    ``providers.lmstudio: {request_timeout_seconds: ...}`` block (no ``base_url``/``models``) cannot
+    discover anything and rendered a one-model ``user-config`` row — discarding the catalog
+    ``_build_curated_lists`` had already live-probed into ``b.curated["lmstudio"]``. A block that
+    points the slug at an endpoint of its own stays with section 3's custom-endpoint handling."""
+    if "lmstudio" in b.excluded or "lmstudio" in b.seen_slugs:
+        return
+    configured = user_providers.get("lmstudio")
+    if isinstance(configured, dict) and _entry_base_url(configured, ("base_url", "api", "url")):
+        return
+    is_current = b.current_provider_norm == "lmstudio"
+    if not (is_current or isinstance(configured, dict)):
+        return
+    from hermes_cli.model_switch import _declared_model_ids
+    configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
+    model_ids = list(dict.fromkeys([*configured_models, *b.curated.get("lmstudio", [])]))
+    b.add_builtin_row("lmstudio", get_label("lmstudio"), is_current, model_ids, "hermes")
+
+
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 1: models.dev-mapped providers with api_key auth."""
-    from hermes_cli.model_switch import _declared_model_ids
+    from hermes_cli.model_switch import _declared_model_ids, _scoped_key_env
     from agent.models_dev import get_provider_info
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
-        if not (_any_env(env_vars) or _raw_pool_usable(hermes_id)):
+        # Per-profile scope, never raw os.environ: a secondary profile's picker otherwise listed the
+        # LAUNCH profile's env-keyed providers and hid its own .env-keyed ones.
+        if not (_any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id)):
             continue
         model_ids = _live_or_curated_ids(hermes_id, b.curated)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
@@ -759,12 +803,11 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
 def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> bool:
     """Section-2 credential ladder: env/SDK, external-process executable, auth store, pool,
     anthropic's external credential files."""
-    if overlay.keyless:
-        return True  # served anonymously (opencode-free)
     if overlay.auth_type == "aws_sdk":
         has_creds = _has_aws_sdk_creds_for_listing(hermes_slug, b.current_provider)
     else:
-        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, os.environ.get)
+        from hermes_cli.model_switch import _scoped_key_env
+        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, _scoped_key_env)
     # External-process providers (copilot-acp) hold no key/token/pool entry by design — the
     # spawned ACP subprocess brings its own auth. "Configured" means the executable resolves.
     # "Configured" means the executable resolves, which is exactly what get_auth_status() reports for them;
@@ -1130,6 +1173,7 @@ def list_authenticated_providers(
         except Exception:
             pass  # best-effort; serial path still works
 
+    _lap_lmstudio_row(b, user_providers if isinstance(user_providers, dict) else {})
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data)
     _lap_canonical_rows(b)

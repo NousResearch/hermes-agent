@@ -33,6 +33,7 @@ const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
 const pluginsScript = join(scriptDir, "extract-plugins.py");
+const pluginStarsScript = join(scriptDir, "fetch-plugin-stars.py");
 const outputFile = join(websiteDir, "static", "api", "skills.json");
 const pluginsOutputFile = join(websiteDir, "static", "api", "plugins.json");
 const pluginsMetaOutputFile = join(websiteDir, "static", "api", "plugins-meta.json");
@@ -146,6 +147,11 @@ runPython(llmsScript, "generate-llms-txt.py");
 // 3) automation-blueprints-index.json — Automation Blueprints catalog page. Non-fatal; the page
 //    renders an empty state if the generator can't run.
 runPython(cronBlueprintsScript, "extract-automation-blueprints.py");
+
+// 4a) plugin-stars.json — GitHub star counts for catalog ranking. Reuse-only here
+//     (live site copy via one CDN GET, else on-disk, else empty); GitHub itself is
+//     probed only by the scheduled skills-index workflow. Never fails the build.
+runPython(pluginStarsScript, "fetch-plugin-stars.py");
 
 // 4) plugins.json + plugins-meta.json — Plugin Catalog page. The script itself
 //    degrades gracefully (empty catalog, exit 0) when plugin-catalog/ is absent;

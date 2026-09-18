@@ -565,6 +565,26 @@ def test_startup_fallback_re_resolves_reasoning_for_the_fallback_model(monkeypat
     assert shell.reasoning_config["effort"] == expected_effort
 
 
+def test_custom_entry_model_swap_re_resolves_reasoning(monkeypatch):
+    """`hermes chat --model <custom-provider-name>`: the runtime's explicit `model` replaces the
+    slug, so the CLI-level reasoning_config must follow to that model's per-model override."""
+    cli = _import_cli()
+    monkeypatch.setattr(cli, "_cprint", lambda *a, **k: None)
+    monkeypatch.setitem(cli.CLI_CONFIG, "agent", {
+        **cli.CLI_CONFIG.get("agent", {}), "reasoning_effort": "medium",
+        "reasoning_overrides": {"real-model": "high"}})
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"provider": "custom", "name": "my-lan", "model": "real-model", "api_mode": "chat_completions",
+                      "base_url": "http://10.0.0.7:11434/v1", "api_key": "sk-lan", "source": "custom"})
+    shell = cli.HermesCLI(model="my-lan", compact=True, max_turns=1)
+    assert shell.reasoning_config["effort"] == "medium"
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "real-model"
+    assert shell.reasoning_config["effort"] == "high"
+
+
 
 
 

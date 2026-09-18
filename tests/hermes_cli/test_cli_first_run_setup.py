@@ -190,6 +190,26 @@ def test_offer_first_run_setup_routes_into_shared_picker(monkeypatch):
     assert shell.agent is None
 
 
+def test_offer_first_run_setup_re_resolves_reasoning_for_picked_model(monkeypatch):
+    """The picker moves self.model; the CLI-level reasoning_config must follow it before the
+    lazily built agent inherits the launch model's effort."""
+    cli = _import_cli()
+    monkeypatch.setitem(cli.CLI_CONFIG, "agent", {
+        **cli.CLI_CONFIG.get("agent", {}), "reasoning_effort": "medium",
+        "reasoning_overrides": {"hermes-4-405b": "high"}})
+    shell = _make_shell(cli, monkeypatch)
+    assert shell.reasoning_config["effort"] == "medium"
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: {"model": {"provider": "nous", "default": "hermes-4-405b"}})
+    monkeypatch.setattr(shell, "_runtime_credentials_ready", lambda: True)
+
+    assert shell._offer_first_run_setup() is True
+    assert shell.model == "hermes-4-405b"
+    assert shell.reasoning_config["effort"] == "high"
+
+
 def test_offer_first_run_setup_declined(monkeypatch):
     cli = _import_cli()
     shell = _make_shell(cli, monkeypatch)

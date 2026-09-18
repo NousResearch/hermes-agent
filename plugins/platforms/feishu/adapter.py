@@ -2580,9 +2580,19 @@ class FeishuAdapter(BasePlatformAdapter):
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
         # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped.
+        # Exception: in thread/topic context a bare @mention is a valid ping.
         if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
-            return
+            _thread_context = getattr(message, 'thread_id', None) or getattr(message, 'root_id', None)
+            _has_self_mention = any(m.is_self for m in mentions)
+            if _thread_context and _has_self_mention:
+                text = '[Mentioned]'
+                logger.debug(
+                    '[Feishu] Thread mention-only message id=%s — synthesising ping text',
+                    message_id,
+                )
+            else:
+                logger.debug('[Feishu] Ignoring empty text message id=%s', message_id)
+                return
         if inbound_type != MessageType.COMMAND:
             hint = _build_mention_hint(mentions)
             if hint:

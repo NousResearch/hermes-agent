@@ -1,5 +1,91 @@
 # CURRENT — Workstation Engineering Journal
 
+## AEPC-E002 — Structural similarity is not semantic homogeneity (2026-09-18)
+
+**Classification:** CONFIRMED residual obstruction risk / P0 hardening follow-up.
+AEPC-E001 remains valid for the global-latch correction; KI-011 is not fully
+closed for long stateful-browser workflows until this narrower class is fixed.
+
+**Audit head:** `main@c4234200145162eefb60f6070c9f170b4bf79321`.
+
+**Published lineage:**
+- baseline before correction: `c04906aacee568bb6480287717c76afd230cf4a7`;
+- implementation on remote: `9e7292ab7825e5ce1ea294490eec57ba1f286069`;
+- documentation/evidence on remote: `5e1b22527fd40d732ee4fa7a1035e6366953f6b7`;
+- `365794e29d66cd63a6134c5c67ecc1ef603d70a6` was the local pre-publish
+  implementation SHA and must not be cited as a remote GitHub commit.
+
+**What the audit reconfirmed as correct:**
+- `_work_batch_candidate` no longer controls dispatcher admission;
+- `CompilationDecision` is operation-scoped;
+- tools.effects is the effective taxonomy and browser_console remains MUTATION;
+- mutable uncertainty is persisted before I/O and survives restart;
+- middleware-final arguments are re-admitted before mutable dispatch;
+- TaskRun/browser lease fencing, E1 snapshot semantics, compact NEEDS_REASONING,
+  exact recipe/routine reuse and no blind retry remain intact;
+- Workstation CI and Docker Build/Test/Publish passed on the audited lineage;
+  packaged/authenticated Electron smoke remains a separate open product gate.
+
+**Residual finding:** `workstation/batch_detection.py::structural_signature()`
+abstracts scalar argument values. This is useful for discovering repeated shapes,
+but the built-in `browser_type`, `browser_click` and `browser_press`
+registrations do not currently provide concrete `mutation_target`,
+`target_family_fields` or an equivalent owner contract. Consequently:
+
+~~~text
+browser_type(ref=@e1,  text="Continue")
+browser_type(ref=@e37, text="next prompt")
+browser_type(ref=@e92, text="third unrelated field")
+~~~
+
+can collapse to one structural family even though each action belongs to a
+different evolving UI state/semantic target. The third distinct call can then
+reach `REQUIRE_COMPILE`. The existing authenticated-controller regression only
+contains one type and one press, so it proves removal of the immediate global
+latch but does not prove a long stateful loop.
+
+**Required architectural correction:**
+1. distinguish structural similarity from semantic homogeneity;
+2. make `REQUIRE_COMPILE` depend on positive semantic family evidence:
+   canonical operation + canonical route/provider + owner-declared or safely
+   derived target-family/contract identity;
+3. if semantic family cannot be proven, shape repetition may produce
+   `SUGGEST_COMPILE`/learning but must not independently block bounded adaptive
+   execution;
+4. retain threshold-three compiler/canary behavior for true same-family fan-out;
+5. do not create a browser-wide exemption or reset counters around observations;
+6. correct `CompilationCandidate.successful_occurrences`: an
+   `executed_unverified` mutation is not verified success.
+
+**Paired regression required:**
+
+~~~text
+A. long stateful Browser flow
+navigate -> snapshot
+type target A -> snapshot
+click target B -> snapshot
+type target C -> snapshot
+click target D -> snapshot
+type target E
+=> no durable_compile_required from shape repetition alone
+
+B. true homogeneous fan-out
+same operation/provider/route/family target 1
+same operation/provider/route/family target 2
+same operation/provider/route/family target 3
+=> third distinct mutation REQUIRE_COMPILE
+~~~
+
+The adaptive regression must not pass because of threshold inflation, counter
+reset, browser-name exemption, disabled canary or weakened uncertainty/approval/
+TaskRun/lease/evidence contracts.
+
+**Closure:** focused AEPC suites + all Workstation tests + adjacent executor/
+guardrail seams + Work100 + Desktop owner contracts must remain green. If product
+browser code/runtime changes, run the packaged/native authenticated gate instead
+of claiming it from mocks or loopback-only tests.
+
+
 ## H-065 — Upstream reliability hardening code-to-PR gap audit (2026-09-18)
 
 **Classification:** VALIDATED for the code-level gap map; P0.0 Browser keepalive

@@ -492,7 +492,8 @@ describe('SidebarSessionRow inside the sortable list', () => {
     const kebab = screen.getByRole('button', { name: 'Session actions' })
     kebab.focus()
 
-    // Not defaultPrevented: dnd-kit's activator never saw it.
+    // Not defaultPrevented (the ⋯ menu is stubbed in this file, so only
+    // dnd-kit could have claimed the key) and no grabber reports a drag.
     expect(fireEvent.keyDown(kebab, space)).toBe(true)
     expect(container.querySelector('[aria-pressed="true"]')).toBeNull()
   })

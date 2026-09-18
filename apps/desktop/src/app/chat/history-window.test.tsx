@@ -15,14 +15,20 @@ import { ChatRuntimeBoundary } from '.'
 stubThreadEnvironment()
 
 const message = (rowId: number): ChatMessage => ({
-  id: `live-${rowId}`, rowId, role: 'user', parts: [{ type: 'text', text: `prompt ${rowId}` }]
+  id: `live-${rowId}`,
+  rowId,
+  role: 'user',
+  parts: [{ type: 'text', text: `prompt ${rowId}` }]
 })
 
 const page = (rowId: number) => ({
   session_id: 'stored',
   pagination: { has_older: true, has_newer: true, limit: 120, offset: 40, returned: 120, order: 'oldest' },
   messages: Array.from({ length: 120 }, (_, index) => ({
-    id: rowId + index, role: 'user' as const, content: `prompt ${rowId + index}`, timestamp: rowId + index
+    id: rowId + index,
+    role: 'user' as const,
+    content: `prompt ${rowId + index}`,
+    timestamp: rowId + index
   }))
 })
 
@@ -35,8 +41,10 @@ function mount() {
   const $messages = atom(Array.from({ length: 120 }, (_, index) => message(10_000 + index)))
 
   const view = {
-    ...PRIMARY_SESSION_VIEW, $messages,
-    $runtimeId: atom<string | null>('runtime'), $storedId: atom<string | null>('stored')
+    ...PRIMARY_SESSION_VIEW,
+    $messages,
+    $runtimeId: atom<string | null>('runtime'),
+    $storedId: atom<string | null>('stored')
   }
 
   let window!: Required<TranscriptWindowValue>
@@ -59,7 +67,17 @@ function mount() {
     </SessionViewProvider>
   )
 
-  return { view, mutations, ...rendered, get window() { return window }, get runtime() { return runtime } }
+  return {
+    view,
+    mutations,
+    ...rendered,
+    get window() {
+      return window
+    },
+    get runtime() {
+      return runtime
+    }
+  }
 }
 
 describe('bounded direct history runtime', () => {
@@ -68,7 +86,9 @@ describe('bounded direct history runtime', () => {
     const mounted = mount()
     const live = mounted.view.$messages.get()
     let id: string | null = null
-    await act(async () => { id = await mounted.window.revealRow(40, new AbortController().signal) })
+    await act(async () => {
+      id = await mounted.window.revealRow(40, new AbortController().signal)
+    })
 
     expect(api).toHaveBeenCalledTimes(1)
     const url = new URL(api.mock.calls[0][0].path, 'http://test')
@@ -81,32 +101,42 @@ describe('bounded direct history runtime', () => {
     expect(mounted.window.currentMessages?.find(message => message.rowId === 40)?.id).toBe(id)
     expect(mounted.window.isHistorical).toBe(true)
     expect(mounted.window.newerAvailable).toBe(true)
-    act(() => { mounted.window.returnToLatest() })
+    act(() => {
+      mounted.window.returnToLatest()
+    })
     expect(mounted.window.isHistorical).toBe(false)
   })
 
   it('keeps history static during streaming and restores the newest live tail and capabilities', async () => {
     vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
     const mounted = mount()
-    await act(async () => { await mounted.window.revealRow(40, new AbortController().signal) })
+    await act(async () => {
+      await mounted.window.revealRow(40, new AbortController().signal)
+    })
     const historical = mounted.runtime.thread.getState().messages
     const snapshot = mounted.window
     expect(mounted.runtime.thread.getState().capabilities.edit).toBe(false)
     expect(mounted.runtime.thread.getState().capabilities.reload).toBe(false)
     expect(mounted.runtime.thread.getState().capabilities.switchToBranch).toBe(false)
     expect(mounted.runtime.thread.getState().isDisabled).toBe(true)
-    act(() => { mounted.view.$messages.set([...mounted.view.$messages.get(), message(20_000)]) })
+    act(() => {
+      mounted.view.$messages.set([...mounted.view.$messages.get(), message(20_000)])
+    })
     expect(mounted.runtime.thread.getState().messages).toBe(historical)
     expect(mounted.window).toBe(snapshot)
     expect(await mounted.window.expandWindow()).toBe(false)
-    act(() => { mounted.window.returnToLatest() })
+    act(() => {
+      mounted.window.returnToLatest()
+    })
     expect(mounted.runtime.thread.getState().messages.at(-1)?.id).toBe('live-20000')
     expect(mounted.runtime.thread.getState().capabilities.edit).toBe(true)
     expect(mounted.runtime.thread.getState().capabilities.reload).toBe(true)
     expect(mounted.runtime.thread.getState().isDisabled).toBe(false)
     expect(mounted.window.isHistorical).toBe(false)
 
-    for (const callback of Object.values(mounted.mutations)) {expect(callback).not.toHaveBeenCalled()}
+    for (const callback of Object.values(mounted.mutations)) {
+      expect(callback).not.toHaveBeenCalled()
+    }
   })
 
   it('latest request wins even when the bridge ignores cancellation', async () => {
@@ -120,24 +150,41 @@ describe('bounded direct history runtime', () => {
       second = mounted.window.revealRow(400, new AbortController().signal)
     })
     expect(await first).toBeNull()
-    await act(async () => { resolves[1](page(400)); await second })
+    await act(async () => {
+      resolves[1](page(400))
+      await second
+    })
     const selected = mounted.window.currentMessages
-    await act(async () => { resolves[0](page(40)); await Promise.resolve() })
+    await act(async () => {
+      resolves[0](page(40))
+      await Promise.resolve()
+    })
     expect(mounted.window.currentMessages).toBe(selected)
     expect(selected[0].rowId).toBe(400)
   })
 
   it.each(['abort', 'latest', 'session', 'unmount'] as const)('discards pending reads on %s', async action => {
     let resolve!: (value: ReturnType<typeof page>) => void
-    vi.spyOn(window.hermesDesktop, 'api').mockImplementation(() => new Promise(done => { resolve = done }))
+    vi.spyOn(window.hermesDesktop, 'api').mockImplementation(
+      () =>
+        new Promise(done => {
+          resolve = done
+        })
+    )
     const mounted = mount()
     const signal = new AbortController()
     let pending!: Promise<string | null>
-    act(() => { pending = mounted.window.revealRow(40, signal.signal) })
     act(() => {
-      if (action === 'abort') {signal.abort()}
+      pending = mounted.window.revealRow(40, signal.signal)
+    })
+    act(() => {
+      if (action === 'abort') {
+        signal.abort()
+      }
 
-      if (action === 'latest') {mounted.window.returnToLatest()}
+      if (action === 'latest') {
+        mounted.window.returnToLatest()
+      }
 
       if (action === 'session') {
         mounted.view.$storedId.set('next-session')
@@ -145,10 +192,15 @@ describe('bounded direct history runtime', () => {
         mounted.view.$messages.set([message(30_000)])
       }
 
-      if (action === 'unmount') {mounted.unmount()}
+      if (action === 'unmount') {
+        mounted.unmount()
+      }
     })
     expect(await pending).toBeNull()
-    await act(async () => { resolve(page(40)); await Promise.resolve() })
+    await act(async () => {
+      resolve(page(40))
+      await Promise.resolve()
+    })
     expect(mounted.view.$messages.get().some(message => message.rowId === 40)).toBe(false)
     expect(mounted.window.isHistorical).toBe(false)
   })
@@ -156,14 +208,25 @@ describe('bounded direct history runtime', () => {
   it('rejects oversized, missing-target and failed responses without losing the selected page', async () => {
     const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
     const mounted = mount()
-    await act(async () => { await mounted.window.revealRow(40, new AbortController().signal) })
+    await act(async () => {
+      await mounted.window.revealRow(40, new AbortController().signal)
+    })
     const selected = mounted.window.currentMessages
 
-    for (const response of [{ ...page(400), messages: [...page(400).messages, ...page(600).messages] }, page(800), null]) {
-      if (response) {api.mockResolvedValueOnce(response)}
-      else {api.mockRejectedValueOnce(new Error('offline'))}
+    for (const response of [
+      { ...page(400), messages: [...page(400).messages, ...page(600).messages] },
+      page(800),
+      null
+    ]) {
+      if (response) {
+        api.mockResolvedValueOnce(response)
+      } else {
+        api.mockRejectedValueOnce(new Error('offline'))
+      }
 
-      await act(async () => { expect(await mounted.window.revealRow(400, new AbortController().signal)).toBeNull() })
+      await act(async () => {
+        expect(await mounted.window.revealRow(400, new AbortController().signal)).toBeNull()
+      })
       expect(mounted.window.currentMessages).toBe(selected)
     }
   })

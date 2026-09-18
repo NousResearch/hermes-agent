@@ -2137,6 +2137,10 @@ DEFAULT_CONFIG = {
         # legacy index is detected; require = shown as a REQUIRED upgrade (tooling may gate on it);
         # off = none.
         "fts_optimize_notice": "advise",
+        # Optional trigram substring index. False quarantines the index by removing
+        # its sync triggers; canonical messages and the base word index remain active.
+        # Each state.db resolves the config.yaml beside it, so this is profile-safe.
+        "trigram_fts": True,
         # CJK-bigram search index (messages_fts_cjk). When the extension is built
         # (native/fts5_cjk/build.sh → ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms get exact
         # index matches instead of LIKE scans. True = use when present (inert otherwise); False =

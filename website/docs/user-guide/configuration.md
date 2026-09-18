@@ -132,6 +132,23 @@ processes currently holding the database (`<db> is held by PID <n> (<command>)`)
 so you know what to stop; when the holder scan is partial or unavailable it says
 `cannot prove the database is quiet` instead of giving an all-clear.
 
+### Session Search Indexes
+
+The optional trigram substring index is enabled by default. To keep canonical
+messages and standard word search while disabling its storage and write cost:
+
+```yaml
+sessions:
+  trigram_fts: false
+```
+
+Hermes removes only the trigram sync triggers on ordinary open and retains a
+durable quarantine marker; affected substring/CJK queries use the existing safe
+fallback. `hermes sessions optimize-storage` retires the retained trigram storage.
+Re-enabling rebuilds from canonical messages while preserving the schema-v30
+cron and delegated-child exclusions. The setting is read from the `config.yaml`
+beside each `state.db`, including explicit profile database opens.
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:

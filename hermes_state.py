@@ -28,6 +28,7 @@ from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_state_common import (
+    FTS_TRIGRAM_STALE_KEY,
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
     TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
     escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
@@ -70,6 +71,7 @@ from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_search import SessionSearchMixin
+from hermes_state_trigram import trigram_enabled_after_config_resolution, trigram_fts_enabled_from_config
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
@@ -586,6 +588,8 @@ class SessionDB(
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
+        self._trigram_enabled = True
+        self._trigram_configured = trigram_fts_enabled_from_config(self.db_path)
         # _fts_cjk_loaded: tokenizer on the writer connection; _fts_cjk_available: messages_fts_cjk
         # is queryable AND not marked stale.
         self._fts_cjk_loaded = self._fts_cjk_available = self._fts_unavailable_warned = False
@@ -683,11 +687,19 @@ class SessionDB(
                 try:
                     apply_database_pragmas(conn, db_label="state.db")
                     cursor = conn.cursor()
+                    self._trigram_enabled = trigram_enabled_after_config_resolution(
+                        conn, self._trigram_configured,
+                    )
                     self._fts_enabled = self._fts_table_probe(cursor, "messages_fts") is True
-                    if self._fts_enabled:
+                    if self._fts_enabled and self._trigram_enabled:
                         self._trigram_available = (
                             self._fts_table_probe(cursor, "messages_fts_trigram") is True
                         )
+                        if cursor.execute(
+                            "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1",
+                            (FTS_TRIGRAM_STALE_KEY,),
+                        ).fetchone() is not None:
+                            self._trigram_available = False
                 except BaseException:
                     self._conn = None
                     self._close_connection_quietly(conn)
@@ -769,6 +781,9 @@ class SessionDB(
         # permissive process umask can never expose a fresh profile store.
         _secure_state_db_files(self.db_path, create_main=True)
         self._conn = self._open_writer_conn()
+        self._trigram_enabled = trigram_enabled_after_config_resolution(
+            self._conn, self._trigram_configured,
+        )
         self._init_schema()
 
     def _connect_and_init_with_lock_patience(self) -> None:

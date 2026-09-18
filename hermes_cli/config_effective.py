@@ -15,8 +15,9 @@ expands it) and can never be re-resolved through a profile's secret scope
 from __future__ import annotations
 
 import copy
+import stat
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 
 from hermes_cli import config as _config
 from hermes_cli import managed_scope
@@ -27,6 +28,109 @@ from utils import fast_safe_load
 _LAST_GOOD_USER_RAW: Dict[str, Dict[str, Any]] = {}
 # path -> (*user_signature, *managed_signature, effective, env_snapshot); see utils.file_signature.
 _EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
+# Explicit-path, fail-closed values use a separate cache so a fail-open
+# ``load_user_config_effective`` prewarm can never satisfy a safety-sensitive read.
+_STRICT_VALUE_CACHE: Dict[str, Tuple[Tuple[Any, ...], Tuple[Any, ...], Dict[str, Any]]] = {}
+
+
+class ConfigResolutionError(RuntimeError):
+    """An explicit effective-config source could not be resolved safely."""
+
+
+def _strict_source_signature(path: Path, *, label: str) -> Tuple[Any, ...]:
+    """Identity of a config source; only a genuinely absent path is optional."""
+    try:
+        link_stat = path.lstat()
+    except FileNotFoundError:
+        return ("absent",)
+    except OSError as exc:
+        raise ConfigResolutionError(f"{label} at {path} is inaccessible: {exc}") from exc
+
+    def _identity(st) -> Tuple[int, ...]:
+        return (
+            st.st_mtime_ns, st.st_size, st.st_ctime_ns, st.st_mode,
+            st.st_ino, st.st_dev, st.st_uid, st.st_gid,
+        )
+
+    if stat.S_ISLNK(link_stat.st_mode):
+        try:
+            target_stat = path.stat()
+        except OSError as exc:
+            raise ConfigResolutionError(
+                f"{label} at {path} is a dangling or inaccessible symlink: {exc}"
+            ) from exc
+        if not stat.S_ISREG(target_stat.st_mode):
+            raise ConfigResolutionError(f"{label} at {path} does not target a regular file")
+        return ("symlink", _identity(link_stat), _identity(target_stat))
+    if not stat.S_ISREG(link_stat.st_mode):
+        raise ConfigResolutionError(f"{label} at {path} is not a regular file")
+    return ("regular", *_identity(link_stat))
+
+
+def _read_mapping_strict(path: Path, *, label: str) -> Dict[str, Any]:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = fast_safe_load(handle)
+    except Exception as exc:
+        raise ConfigResolutionError(f"Could not read or parse {label} at {path}: {exc}") from exc
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigResolutionError(
+            f"{label} at {path} has a non-mapping root ({type(value).__name__})"
+        )
+    return value
+
+
+def _strict_managed_source() -> Tuple[Tuple[Any, ...], Optional[Path]]:
+    managed_dir = managed_scope.get_managed_dir()
+    if managed_dir is None:
+        return (("absent",), None)
+    path = managed_dir / "config.yaml"
+    signature = _strict_source_signature(path, label="Managed config source")
+    return signature, (None if signature == ("absent",) else path)
+
+
+def resolve_effective_config_value(config_path: Path, *keys: str, default: Any = None) -> Any:
+    """Strictly resolve one value from an explicit user config plus managed overlay.
+
+    Missing sources are valid empty layers. Present-but-broken sources raise
+    :class:`ConfigResolutionError`. Results are cached by complete user and managed
+    provenance (including symlink target, inode, ownership and mode).
+    """
+    config_path = Path(config_path).expanduser()
+    user_sig = _strict_source_signature(config_path, label="Config source")
+    managed_sig, managed_path = _strict_managed_source()
+    path_key = str(config_path)
+    cached = _STRICT_VALUE_CACHE.get(path_key)
+    if cached is not None and cached[0] == user_sig and cached[1] == managed_sig:
+        effective = copy.deepcopy(cached[2])
+    else:
+        user_raw = {} if user_sig == ("absent",) else _read_mapping_strict(config_path, label="Config")
+        managed_raw = {} if managed_path is None else _read_mapping_strict(managed_path, label="Managed config")
+        expanded = _config._normalize_root_model_keys(
+            cast(Dict[str, Any], _config._expand_env_vars(user_raw))
+        )
+        managed_expanded = _config._normalize_root_model_keys(
+            cast(Dict[str, Any], _config._expand_env_vars(managed_raw))
+        )
+        if isinstance(managed_expanded.get("model"), str):
+            managed_expanded = dict(managed_expanded)
+            managed_expanded["model"] = {"default": managed_expanded["model"]}
+        effective = _config._deep_merge(expanded, managed_expanded)
+        _STRICT_VALUE_CACHE[path_key] = (user_sig, managed_sig, copy.deepcopy(effective))
+
+    value: Any = effective
+    for key in keys:
+        if not isinstance(value, dict):
+            raise ConfigResolutionError(
+                f"Config path {'.'.join(keys)} at {config_path} crosses a non-mapping value"
+            )
+        if key not in value:
+            value = default
+            break
+        value = value[key]
+    return copy.deepcopy(value)
 
 
 def _effective(raw: Dict[str, Any]) -> Dict[str, Any]:

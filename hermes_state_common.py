@@ -875,6 +875,11 @@ _FTS_CJK_TRIGGERS = ("messages_fts_cjk_insert", "messages_fts_cjk_delete", "mess
 # and must not serve reads until `hermes sessions optimize-storage` rebuilds it on a capable host.
 FTS_CJK_STALE_KEY = "fts_cjk_stale"
 
+# Durable breadcrumb for ``sessions.trigram_fts: false``. Ordinary opens retain
+# trigram storage but remove its sync triggers; re-enable clears this only after
+# a complete canonical-message rebuild.
+FTS_TRIGRAM_STALE_KEY = "fts_trigram_stale"
+
 # Set when a base/trigram FTS index was detached after runtime corruption; startup must rebuild the complete
 # index before reinstalling sync triggers (rows written while they were absent leave an unknown gap).
 FTS_STALE_KEY = "fts_stale"

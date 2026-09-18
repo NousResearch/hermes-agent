@@ -32,6 +32,7 @@ from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
+from hermes_cli.routing_policy import check_requested_route, check_route
 from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
 
 
@@ -909,9 +910,19 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
+    model_cfg = _get_model_config()
+    policy = load_config().get("routing_policy") or {}
+    effective_model = str(target_model or model_cfg.get("default") or model_cfg.get("model") or "")
+    check_requested_route(
+        policy,
+        requested_provider=requested_provider,
+        model=effective_model,
+    )
     _raise_if_provider_disabled(requested_provider)
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    check_route(policy, provider=str(runtime.get("provider") or ""), model=effective_model,
+                base_url=str(runtime.get("base_url") or ""))
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
     return runtime
 

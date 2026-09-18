@@ -1068,6 +1068,12 @@ class SessionStore(
         from dataclasses import replace
 
         cleaned = sanitize_model_override(override)
+        if cleaned:
+            from hermes_cli.routing_policy import check_route, current_routing_policy
+            check_route(current_routing_policy(), **{
+                "provider": cleaned.get("provider", ""), "model": cleaned.get("model", ""),
+                "base_url": cleaned.get("base_url", ""),
+            })
 
         with self._lock:
             entry = self._entry_locked(session_key)

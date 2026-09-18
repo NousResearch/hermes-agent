@@ -315,6 +315,12 @@ class SessionSessionsMixin:
         sidebar even though its transcript is intact (#99222). Stores outside the profile tree (explicit
         ``db_path`` in tests, ad-hoc copies) derive nothing and keep NULL — never guess.
         """
+        from hermes_cli.routing_policy import check_outbound_route
+        route = model_config if isinstance(model_config, dict) else {}
+        check_outbound_route(
+            provider=str(route.get("provider") or ""), model=str(model or route.get("model") or ""),
+            base_url=str(route.get("base_url") or ""),
+        )
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
         def _do(conn):
@@ -661,6 +667,8 @@ class SessionSessionsMixin:
         serves it instead of the config.yaml primary provider (#79536). Callers without provider knowledge
         leave any stored provider untouched.
         """
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(provider=str(provider or ""), model=str(model or ""), base_url="")
         # Flush first: a still-queued pre-switch delta applied after this UPDATE would trip the
         # first_accounted_route overwrite and resurrect the old route.
         self.flush_token_counts()

@@ -1312,6 +1312,53 @@ class TestRunJobConfigEnvVarExpansion:
         assert kwargs["model"] == "z-ai/glm-5.2"
 
 
+    def test_routing_policy_error_in_first_fallback_stops_before_second_fallback_send(self, tmp_path):
+        """A denied fallback route is terminal; cron must not send through a later fallback."""
+        from hermes_cli.auth import AuthError
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  default: primary-model\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "terminal-fallback",
+            "name": "terminal fallback",
+            "prompt": "hi",
+            "provider": "primary",
+        }
+        requested = []
+
+        def resolve_runtime(**kwargs):
+            requested.append(kwargs["requested"])
+            if kwargs["requested"] == "primary":
+                raise AuthError("primary credentials unavailable")
+            if kwargs["requested"] == "denied-fallback":
+                raise RoutingPolicyError("routing policy denies provider 'denied-fallback'")
+            assert kwargs["requested"] == "permitted-fallback"
+            return {**self._RUNTIME, "provider": "permitted-fallback"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state_registry.acquire", return_value=MagicMock()), \
+             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+             patch("cron.scheduler.get_fallback_chain", return_value=[
+                 {"provider": "denied-fallback", "model": "denied-model"},
+                 {"provider": "permitted-fallback", "model": "permitted-model"},
+             ]), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve_runtime), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent_cls.return_value.run_conversation.return_value = {"final_response": "sent"}
+            success, _, _, error = run_job(job)
+
+        assert success is False
+        assert error == "RoutingPolicyError: routing policy denies provider 'denied-fallback'"
+        assert requested == ["primary", "denied-fallback"]
+        mock_agent_cls.assert_not_called()
+
+
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
         (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")

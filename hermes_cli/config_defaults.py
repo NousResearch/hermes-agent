@@ -22,6 +22,13 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    # Opt-in terminal route controls. Disabled preserves legacy credential discovery and fallback.
+    # When enabled, policy is enforced by resolution and dispatch layers; it is not a UI warning.
+    "routing_policy": {
+        "enabled": False,
+        "require_explicit": False,
+        "deny": {"providers": [], "models": [], "base_url_hosts": []},
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on

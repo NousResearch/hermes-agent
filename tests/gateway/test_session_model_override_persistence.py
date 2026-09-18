@@ -171,3 +171,24 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+def test_denied_override_is_not_persisted_to_routing_store(store_factory, monkeypatch):
+    """The routing index rejects a denied override before its independent write seam."""
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    writes = []
+    monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+        "enabled": True, "deny": {"base_url_hosts": ["denied.example"]},
+    })
+    monkeypatch.setattr(store, "_persist_routing_data", lambda *args: writes.append(args))
+
+    with pytest.raises(RoutingPolicyError):
+        store.set_model_override(entry.session_key, {
+            "model": "allowed", "provider": "openrouter", "base_url": "https://denied.example/v1",
+        })
+
+    assert writes == []
+    assert store.get_model_override(entry.session_key) is None

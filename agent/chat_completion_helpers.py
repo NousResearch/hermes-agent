@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_cli.routing_policy import check_route, current_routing_policy
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
@@ -715,6 +716,11 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     so callers can register it with their abort/close machinery; bedrock / MoA
     manage their own clients. Interrupt/abort/close semantics stay in callers.
     """
+    check_route(
+        current_routing_policy(), provider=str(getattr(agent, "provider", "") or ""),
+        model=str(api_kwargs.get("model") or getattr(agent, "model", "") or ""),
+        base_url=str(getattr(agent, "base_url", "") or ""),
+    )
     if agent.api_mode == "codex_responses":
         return agent._run_codex_stream(api_kwargs, client=make_client("codex_stream_request"),
             on_first_delta=getattr(agent, "_codex_on_first_delta", None))
@@ -2152,6 +2158,11 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
+        check_route(
+            current_routing_policy(), provider=str(getattr(agent, "provider", "") or ""),
+            model=str(summary_kwargs.get("model") or ""),
+            base_url=str(getattr(summary_client, "base_url", "") or ""),
+        )
         response = _managed_summary_call(
             agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
         return _summary_text(agent, response)
@@ -2799,6 +2810,11 @@ class _StreamingCall(StreamingWaitMonitor):
         # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
         if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
             stream_kwargs["stream_options"] = {"include_usage": True}
+        check_route(
+            current_routing_policy(), provider=str(getattr(self.agent, "provider", "") or ""),
+            model=str(stream_kwargs.get("model") or getattr(self.agent, "model", "") or ""),
+            base_url=str(getattr(self.agent, "base_url", "") or ""),
+        )
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()

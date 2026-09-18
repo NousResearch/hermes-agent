@@ -38,6 +38,7 @@ from agent.codex_headers import (
     is_official_codex_base_url as _is_official_codex_base_url,
 )
 from agent.codex_runtime import _codex_event_has_content
+from hermes_cli.routing_policy import RoutingPolicyError, check_route, current_routing_policy
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -2539,6 +2540,16 @@ def _relay_auxiliary_metadata(
     }
 
 
+def _guard_auxiliary_wire_route(client: Any, kwargs: Dict[str, Any], provider: Optional[str]) -> None:
+    """Reject a resolved auxiliary wire route immediately before its SDK send."""
+    check_route(
+        current_routing_policy(),
+        provider=str(provider or _effective_provider_for_client(client, "custom") or "custom"),
+        model=str(kwargs.get("model") or ""),
+        base_url=str(getattr(client, "base_url", "") or ""),
+    )
+
+
 def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
@@ -2549,15 +2560,18 @@ def _relay_sync_completion(
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
     callback = create or (lambda request: _create_with_progress(client, request))
+    def guarded_callback(request):
+        _guard_auxiliary_wire_route(client, request, provider)
+        return callback(request)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
     if route is None:
-        return _run_protected_sync_provider_call(callback, kwargs)
+        return _run_protected_sync_provider_call(guarded_callback, kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.execute_current(
-        kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+        kwargs, lambda request: _run_protected_sync_provider_call(guarded_callback, request),
         name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
         metadata=metadata, defer_logical_completion=True,
     )
@@ -2572,13 +2586,16 @@ async def _relay_async_completion(
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
+    async def guarded_callback(request):
+        _guard_auxiliary_wire_route(client, request, provider)
+        return await callback(request)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return await callback(kwargs)
+        return await guarded_callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return await relay_llm.execute_current_async(
-        kwargs, callback, name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
+        kwargs, guarded_callback, name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
         metadata=metadata, defer_logical_completion=True,
     )
 
@@ -2589,6 +2606,7 @@ def _relay_sync_stream(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
+    _guard_auxiliary_wire_route(client, kwargs, provider)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return client.chat.completions.create(**kwargs)
@@ -3978,6 +3996,11 @@ def _call_fallback_candidate_sync(
     )
 
     def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(
+            provider=str(dest.provider or ""), model=str(request_kwargs.get("model") or dest.model or ""),
+            base_url=str(dest.base_url or ""),
+        )
         return _validate_llm_response(
             _relay_sync_completion(
                 client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode,
@@ -4034,6 +4057,11 @@ async def _call_fallback_candidate_async(
     )
 
     async def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(
+            provider=str(dest.provider or ""), model=str(request_kwargs.get("model") or dest.model or ""),
+            base_url=str(dest.base_url or ""),
+        )
         return _validate_llm_response(
             await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
             task,
@@ -7166,6 +7194,9 @@ def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
     try:
         result = yield step
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         if not accept(exc):
             raise
         return None, exc
@@ -7770,6 +7801,7 @@ def _call_llm_impl(
         if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
             # Responses-shim clients consume the stream internally and return a completed
             # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
+            _guard_auxiliary_wire_route(client, kwargs, request_provider)
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
@@ -7820,6 +7852,8 @@ def _call_llm_impl(
                         raise
                     _last_transient = retry_transient
             raise _last_transient
+    except RoutingPolicyError:
+        raise
     except Exception as first_err:
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
@@ -7967,6 +8001,8 @@ async def _async_call_llm_impl(
             logger.info("Auxiliary %s (async): transient transport error; retrying "
                         "once on the same provider before fallback: %s", task or "call", transient_err)
             return await _primary()
+    except RoutingPolicyError:
+        raise
     except Exception as first_err:
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)

@@ -2,6 +2,36 @@
 
 A Workstation change is stable only when its **behavioral contract** is proven at the lowest useful layer and the relevant integration path remains green. Typecheck or source-shape checks alone are not proof.
 
+## Adaptive execution / progressive compilation regression gate
+
+The active 2026-09-18 correction is specified in
+[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
+
+Focused tests must prove both usability and safety:
+
+- native Workstation Browser can perform a bounded
+  navigate -> snapshot -> interact -> snapshot loop under one BrowserTask even
+  when the enclosing prompt contains repeatability signals;
+- the third-or-later distinct equivalent homogeneous mutation still triggers the
+  compiler/canary policy before uncontrolled fan-out;
+- a compilation candidate for one operation cannot contaminate an unrelated later
+  mutation;
+- browser tool constraints normalize to native_browser;
+- guardrail effect classification consumes tools.effects and keeps arbitrary
+  browser_console mutating;
+- deterministic drift returns compact NEEDS_REASONING, preserves confirmed
+  checkpoints and resumes without replay;
+- uncertain dispatched effects remain unretriable until reconciliation;
+- an adaptive -> candidate -> validated/promotion -> deterministic replay scenario
+  shows fewer provider/LLM calls on compatible reuse and returns to reasoning on
+  injected drift.
+
+Extend the focused suites around test_task_compiler.py,
+test_readonly_preflight.py, test_durable_agent_integration.py,
+test_durable_hardening.py, test_browser_workstation_route.py,
+test_routines.py and canonical-work-loop coverage before adding broader
+product gates.
+
 ## Validation ladder
 
 The read-only bootstrap regression is documented in

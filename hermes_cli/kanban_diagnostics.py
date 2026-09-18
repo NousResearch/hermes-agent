@@ -533,6 +533,56 @@ def _rule_review_dependency_deadlock(task, events, runs, now, cfg) -> list[Diagn
     )]
 
 
+def _rule_blocked_dependency(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Waiting in ``todo`` on a parent that is ``blocked``. Fires on the WAITING
+    side; ``_rule_repeated_failures`` already covers the blocked parent itself.
+
+    ``recompute_ready`` promotes a waiter only once every parent is
+    ``done``/``archived``, and a breaker trip leaves the parent ``blocked``
+    (``gave_up`` event) rather than done. Nothing reads the ``todo`` lane, and
+    ``promote_task`` refuses while a parent is unsatisfied, so without this
+    signal the waiter is stalled with no distress signal of its own. Graph-aware;
+    deliberately mutates nothing. A ``kind=dependency`` wait parks the parent in
+    ``todo``, not ``blocked``, so self-resolving waits never match."""
+    if _task_field(task, "status") != "todo":
+        return []
+    graph = cfg.get("_graph")
+    if not isinstance(graph, dict):
+        return []
+    blocked_parents = [
+        parent for parent in (graph.get("parents") or [])
+        if isinstance(parent, dict) and parent.get("status") == "blocked"
+    ]
+    if not blocked_parents:
+        return []
+
+    task_id = str(_task_field(task, "id") or "")
+    parent_ids = [str(p.get("id")) for p in blocked_parents if p.get("id")]
+    if not parent_ids:
+        return []
+    first = parent_ids[0]
+
+    actions = [
+        _cli_hint("Inspect the blocked dependency", f"hermes kanban show {first}", suggested=True),
+        _cli_hint("Unblock it once the cause is resolved", f"hermes kanban unblock {first}"),
+    ]
+    if task_id:
+        actions.append(_cli_hint(
+            "Or drop the dependency to release this task", f"hermes kanban unlink {first} {task_id}",
+        ))
+    return [Diagnostic(
+        kind="blocked_dependency", severity="error",
+        title=f"Waiting on {len(parent_ids)} blocked task(s)",
+        detail=f"This task is waiting in 'todo' on {', '.join(parent_ids)}, which is blocked. A blocked "
+               f"parent never reaches done on its own, so dependency promotion will not release this "
+               f"task and no dispatcher lane reads 'todo'. Resolve the parent (unblock it, complete it, "
+               f"or give up on it explicitly) or drop the dependency — this task will not move on its own.",
+        actions=actions,
+        first_seen_at=now, last_seen_at=now, count=len(parent_ids),
+        data={"waiting_task_id": task_id, "blocked_parent_ids": parent_ids},
+    )]
+
+
 def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Blocked for >= cfg["blocked_stale_hours"] (default 24) with no comment
     or unblock since the last ``blocked`` event."""
@@ -686,6 +736,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_review_dependency_deadlock,
+    _rule_blocked_dependency,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,

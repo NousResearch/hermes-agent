@@ -213,8 +213,21 @@ def test_max_spawn_stays_per_board(kanban_home, all_assignees_spawnable):
 
 
 def _park_in_review(conn: sqlite3.Connection, title: str, assignee: str) -> str:
-    tid = kb.create_task(conn, title=title, assignee=assignee)
-    _set_task_status(conn, tid, "review")
+    """A card genuinely handed off to ``assignee`` for review.
+
+    Goes through ``request_review`` rather than writing ``status='review'`` by
+    hand, so the card carries the ``review_requested`` provenance naming a
+    DIFFERENT implementer. Without it the review lane cannot show the reviewer
+    is independent of whoever wrote the artifact and fails closed, which would
+    make these budget tests fail for a reason that has nothing to do with the
+    cap under test.
+    """
+    tid = kb.create_task(conn, title=title, assignee=f"{assignee}-impl")
+    kb.claim_task(conn, tid)
+    kb.request_review(
+        conn, tid, summary="ready for review", reviewer=assignee,
+        expected_run_id=kb.get_task(conn, tid).current_run_id,
+    )
     return tid
 
 

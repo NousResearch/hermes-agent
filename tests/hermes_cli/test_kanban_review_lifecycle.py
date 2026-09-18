@@ -393,8 +393,11 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="park", assignee="worker")
         kb.claim_task(conn, tid)
+        # A reviewer distinct from the implementer: the review lane refuses to
+        # dispatch a card back to the profile that wrote it, so without this the
+        # gate under test would not be the only thing suppressing the claim.
         kb.request_review(
-            conn, tid, summary="done",
+            conn, tid, summary="done", reviewer="reviewer",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -445,12 +448,14 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
 
     with kbc.connect() as conn:
         # Review-lane task with a fresh PR comment.
-        review_id = kb.create_task(conn, title="review me", assignee="reviewer")
+        review_id = kb.create_task(conn, title="review me", assignee="impl")
         claimed = kb.claim_task(conn, review_id)
         assert claimed is not None
         kb.add_comment(conn, review_id, author="worker", body=pr_comment)
+        # Implementer != reviewer, or the review lane refuses the handoff for a
+        # reason that has nothing to do with the active_pr guard under test.
         assert kb.request_review(
-            conn, review_id, summary="PR ready",
+            conn, review_id, summary="PR ready", reviewer="reviewer",
             expected_run_id=claimed.current_run_id,
         )
         # Ready-lane task with the same fresh PR comment.
@@ -692,15 +697,18 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         task_id = kb.create_task(
             conn,
             title="domain review",
-            assignee="reviewer",
+            assignee="impl",
             skills=["domain-specific-review"],
         )
         implementation = kb.claim_task(conn, task_id)
         assert implementation is not None
+        # The reviewer must differ from the implementer for the lane to dispatch
+        # at all; the subject here is the skills it carries into that spawn.
         assert kb.request_review(
             conn,
             task_id,
             summary="ready",
+            reviewer="reviewer",
             expected_run_id=implementation.current_run_id,
         )
         monkeypatch.setattr(
@@ -743,13 +751,16 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
 
         review_ids: list[str] = []
         for title in ("review one", "review two"):
-            task_id = kb.create_task(conn, title=title, assignee="reviewer")
+            task_id = kb.create_task(conn, title=title, assignee="impl")
             implementation = kb.claim_task(conn, task_id)
             assert implementation is not None
+            # Reviewer distinct from implementer; the subject is the cap, not
+            # who is allowed to review.
             assert kb.request_review(
                 conn,
                 task_id,
                 summary="ready",
+                reviewer="reviewer",
                 expected_run_id=implementation.current_run_id,
             )
             review_ids.append(task_id)

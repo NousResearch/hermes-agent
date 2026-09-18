@@ -23,10 +23,28 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    yield test_home
+    # Evicting these forces a re-import against the fresh HERMES_HOME. Snapshot
+    # and put them back afterwards: left evicted, every later test file in this
+    # process gets a SECOND copy of hermes_cli.*, while the bindings those files
+    # captured at collection time still point at the abandoned first copy. The
+    # symptoms land nowhere near here -- a cleared _INITIALIZED_PATHS, a caplog
+    # that sees no records, a conftest write guard patched onto the module the
+    # test is not calling.
+    _evicted = {
+        name: mod for name, mod in sys.modules.items()
+        if name.startswith(("hermes_cli", "hermes_state")) or name == "hermes_constants"
+    }
+    for name in _evicted:
+        del sys.modules[name]
+    try:
+        yield test_home
+    finally:
+        for name in [
+            n for n in sys.modules
+            if n.startswith(("hermes_cli", "hermes_state")) or n == "hermes_constants"
+        ]:
+            del sys.modules[name]
+        sys.modules.update(_evicted)
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):

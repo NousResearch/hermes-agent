@@ -8,6 +8,7 @@ sibling's loop that never hears anything again.
 """
 
 import asyncio
+import logging
 import sys
 import threading
 import types
@@ -150,6 +151,40 @@ def test_dead_receive_loop_unparks_start_and_exits_the_thread(monkeypatch, caplo
     assert deaths, "expected the receive-loop death to be logged"
     assert deaths[0].exc_info is not None
     assert "simulated half-open peer" in caplog.text
+
+
+def test_receive_loop_death_during_disconnect_is_not_an_error(monkeypatch, caplog):
+    """``disconnect()`` clears ``_running`` and sends the CLOSE frame itself, so the
+    receive loop ending with ``ConnectionClosedOK`` is the expected shutdown path —
+    it must not be reported as a died link (ERROR + traceback) on every graceful stop."""
+    client_mod = _inject_fake_lark_module(monkeypatch)
+
+    class FakeSDKClient:
+        async def _receive_message_loop(self):
+            await asyncio.sleep(0.01)
+            raise ConnectionError("sent 1000 (OK); then received 1000 (OK)")
+
+        def start(self):
+            loop = client_mod.loop
+
+            async def _select():
+                while True:
+                    await asyncio.sleep(3600)
+
+            loop.create_task(self._receive_message_loop())
+            loop.run_until_complete(_select())
+
+    client_mod.Client = FakeSDKClient
+    stub = _adapter_stub(_running=False)  # disconnect() already flipped it
+
+    thread = threading.Thread(
+        target=lambda: feishu_adapter._run_official_feishu_ws_client(FakeSDKClient(), stub), daemon=True
+    )
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR and "receive loop" in r.getMessage()]
+    assert errors == [], [r.getMessage() for r in errors]
 
 
 def test_receive_loop_normal_return_keeps_start_parked(monkeypatch):

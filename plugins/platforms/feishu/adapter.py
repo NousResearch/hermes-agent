@@ -1066,10 +1066,15 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
                 # A *normal* return means the SDK's own ladder already reconnected (it scheduled a
                 # fresh receive loop) and must NOT stop the loop. Deliberate disconnects nil
                 # ``_ws_client`` first, so the supervisor exits without restarting.
-                logger.exception(
-                    "[Feishu] lark WS receive loop died; stopping the worker "
-                    "loop so the supervisor can rebuild"
-                )
+                adapter = getattr(_ws_isolation_state, "adapter", None)
+                if adapter is None or getattr(adapter, "_running", True):
+                    logger.exception(
+                        "[Feishu] lark WS receive loop died; stopping the worker "
+                        "loop so the supervisor can rebuild"
+                    )
+                else:
+                    # ``disconnect()`` sent the CLOSE frame itself: the loop ending here is expected.
+                    logger.debug("[Feishu] lark WS receive loop ended during disconnect", exc_info=True)
                 asyncio.get_running_loop().stop()
 
         ws_client_module.Client._receive_message_loop = _receive_message_loop_exit_notify
@@ -1120,6 +1125,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _ws_isolation_state.loop = loop
     _ws_isolation_state.connect_kwargs = connect_overrides
     _ws_isolation_state.on_link_up = _on_link_up
+    _ws_isolation_state.adapter = adapter
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
@@ -1139,6 +1145,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _ws_isolation_state.loop = None
         _ws_isolation_state.connect_kwargs = None
         _ws_isolation_state.on_link_up = None
+        _ws_isolation_state.adapter = None
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]

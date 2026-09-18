@@ -69,8 +69,8 @@ def message_agent_tool_schema() -> dict:
                 "asynchronous, like texting: it validates the target against the live "
                 "roster, delivers your message into that agent's own Bot Chat with your "
                 "attribution automatically prefixed, and returns immediately with a "
-                "dispatch acknowledgement (the hand-off to a background delivery process, "
-                "not a delivery receipt). It does NOT return their reply and you must "
+                "dispatch acknowledgement — status queued plus a delivery_id (the hand-off to a background "
+                "delivery process, not a delivery receipt). It does NOT return their reply and you must "
                 "not wait or poll for one — send it, finish your turn, and that process's "
                 "completion notification wakes you with the outcome: their reply, or the "
                 "delivery failure. COMPOSE the message yourself: write what YOU want to say to "
@@ -306,7 +306,7 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             # per the #93091 reason enum).
             return json.dumps({"error": str(exc), "reason": exc.reason})
         label = f"@{match['handle']} on {match['connection_label'] or match['connection_id']}"
-        raw = _spawn_delivery(waiter_command(root, envelope), label, task_id=task_id, agent=agent)
+        raw = _spawn_delivery(waiter_command(root, envelope), label, delivery_id=envelope["id"], task_id=task_id, agent=agent)
         waiter_error = json.loads(raw).get("error")
         if not waiter_error:
             return raw
@@ -315,7 +315,7 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
         # sender resend and deliver the message twice. Same shape as the live-owner branch of
         # _start_delivery: queued + notification_error.
         return json.dumps({
-            "status": "queued", "to": label, "notification_error": waiter_error,
+            "status": "queued", "delivery_id": envelope["id"], "to": label, "notification_error": waiter_error,
             "detail": (f"Message queued for {label}; the relay delivers it on its own, but the reply "
                        "waiter did not start, so the reply will NOT wake you. Do NOT resend."),
         })
@@ -455,6 +455,12 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     return proc.returncode
 
 
+def _dm_delivery_id(dm_file: "str | os.PathLike") -> str:
+    """One delivery id per DM file: the dispatch ack, the live-owner intent and every retry
+    of the runner derive it the same way, so the sender can correlate all of them."""
+    return hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
+
+
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
     from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
@@ -470,7 +476,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
         if owner is None:
             return None
         intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8"),
-                      delivery_id=hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest(),
+                      delivery_id=_dm_delivery_id(dm_file),
                       **({"author": author} if author else {}))
         try:
             fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -544,8 +550,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
             try:
                 record = _admit_live_dm(home, dm_file, author)
             except Exception as exc:
-                print(json.dumps({"status": "ambiguous", "delivery_id": hashlib.sha256(
-                    str(Path(dm_file).resolve()).encode()).hexdigest(),
+                print(json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
                     "error": f"Live admission outcome unknown: {exc}. Do not resend.",
                     "evidence_file": dm_file}))
                 return 1
@@ -594,8 +599,7 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
         try:
             record = _admit_live_dm(profile_home, dm_file, author)
         except Exception as exc:
-            return json.dumps({"status": "ambiguous", "delivery_id": hashlib.sha256(
-                str(Path(dm_file).resolve()).encode()).hexdigest(),
+            return json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
                 "error": f"Live delivery admission could not be confirmed: {exc}. Do not resend.",
                 "evidence_file": dm_file})
         if record is not None:
@@ -616,11 +620,13 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
     return _spawn_delivery(command, label, dm_file=dm_file, task_id=task_id, agent=agent)
 
 
-def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
+def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, delivery_id: Optional[str] = None,
                     task_id: Optional[str], agent: Any) -> str:
     """Launch the cleanup-owning runner and transfer file ownership on ack. ``dm_file``
     is None for relay deliveries (the waiter watches a reply file; envelope artifacts
-    are owned/swept by ``tools/bot_relay.py``)."""
+    are owned/swept by ``tools/bot_relay.py``), which pass the envelope id as ``delivery_id``
+    instead. The ack is ``queued`` + ``delivery_id`` like the live-owner branch: hand-off
+    to a background process, never a delivery receipt."""
     transferred = False
     try:
         from tools.terminal_tool import terminal_tool
@@ -645,15 +651,16 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
         # From here the background runner owns the file (removed after the consumer finishes).
         transferred = True
         return json.dumps({
-            "status": "sent",
+            "status": "queued",
+            "delivery_id": delivery_id or (_dm_delivery_id(dm_file) if dm_file else ""),
             "to": label,
-            "detail": (f"Message dispatched to {label}: this acknowledges the hand-off to a "
+            "detail": (f"Message queued for {label}: this acknowledges the hand-off to a "
                        "background delivery process, not a delivery receipt — do NOT wait or poll. "
                        "Finish your turn now; that process's completion notification carries the "
                        "delivery outcome — the reply (relay it then, attributed to that agent) or "
                        "the delivery failure (report it; the message was NOT delivered)."),
             "process_id": proc_id,
-            "sent_at": int(time.time()),
+            "queued_at": int(time.time()),
         })
     except Exception as exc:
         logger.error("message_agent delivery spawn failed: %s", exc, exc_info=True)

@@ -308,6 +308,8 @@ export const en: Translations = {
     noJobs: "No cron jobs configured. Create one above.",
     last: "Last",
     next: "Next",
+    /** Replaces `next` when the stored next_run_at is already past the scheduler grace. */
+    overdueSince: "Overdue since",
     pause: "Pause",
     resume: "Resume",
     triggerNow: "Trigger now",

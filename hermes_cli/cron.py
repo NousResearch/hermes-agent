@@ -4,7 +4,7 @@ import contextlib
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -97,19 +97,35 @@ def _dispatch_kind_label(kind) -> Optional[str]:
     return {"catch_up": "catch-up after missed fire", "late": "late"}.get(kind)
 
 
-def _next_run_overdue_seconds(next_run_at: str) -> Optional[float]:
-    """Seconds the timestamp has already been in the past; None if malformed.
+def _next_run_overdue_seconds(next_run_at: Any) -> Optional[float]:
+    """Seconds the stored ``next_run_at`` is already in the past (negative while still
+    upcoming); None when it is not a parseable ISO timestamp.
 
-    next_run_at is written as timezone-aware ISO strings; a naive value only ever comes
-    from a hand-edited jobs.json and is read as UTC.
+    Parses through the scheduler's own ``_parse_aware`` so the CLI and the ticker agree on
+    the instant (mixed UTC offsets, DST folds, legacy naive stamps read as system-local).
     """
-    try:
-        dt = datetime.fromisoformat(str(next_run_at).replace("Z", "+00:00"))
-    except ValueError:
+    from cron.jobs import _parse_aware
+    from hermes_time import now
+    dt = _parse_aware(next_run_at)
+    if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - dt).total_seconds()
+    # Same-tzinfo subtraction is wall-clock arithmetic in Python; compare instants.
+    return (now().astimezone(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+
+
+def _next_run_row(job: Dict[str, Any]) -> tuple[str, str]:
+    """``("Next run" | "Overdue", value)`` for one job.
+
+    A stamp parked past `cron doctor`'s grace on a job that is supposed to fire is the only
+    user-visible trace of a dead scheduler; never present it as an upcoming run (#114309).
+    """
+    stamp = job.get("next_run_at", "?")
+    overdue_s = _next_run_overdue_seconds(stamp)
+    if (overdue_s is None or overdue_s <= _OVERDUE_GRACE_SECONDS
+            or not job.get("enabled", True) or job.get("state") in {"paused", "completed"}):
+        return ("Next run", stamp)
+    return ("Overdue", color(f"{stamp}  ({_format_lateness(overdue_s)} ago — the job has not fired; "
+                                   "is the scheduler running?)", Colors.YELLOW))
 
 
 def _dispatch_display(dispatch: dict) -> Optional[str]:
@@ -223,7 +239,7 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Name", job.get("name", "(unnamed)")),
         ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
-        ("Next run", job.get("next_run_at", "?")),
+        _next_run_row(job),
         ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
     ] + [(label, value) for label, value in optional if value]
 
@@ -491,17 +507,14 @@ def _print_active_jobs_summary(jobs) -> None:
     if not jobs:
         print("  No active jobs")
         return
-    from datetime import timezone
     from cron.jobs import _parse_aware
 
-    next_runs = []
-    for job in jobs:
-        raw = job.get("next_run_at")
-        parsed = _parse_aware(raw)
-        if parsed is not None:
-            # A shared ZoneInfo compares wall times across a DST fold; use UTC
-            # for ordering, but keep the stored timestamp for display.
-            next_runs.append((parsed.astimezone(timezone.utc), raw))
+    # Stored stamps carry mixed UTC offsets (an interval job keeps last_run_at's offset, a cron
+    # job its configured zone), so order by instant, never by ISO text; display the stored stamp.
+    # `_parse_aware` hands back one shared ZoneInfo, and Python compares same-tzinfo datetimes
+    # by wall clock (wrong across a DST fold) — normalise to UTC before ordering.
+    next_runs = [(parsed.astimezone(timezone.utc), j["next_run_at"]) for j in jobs
+                 if (parsed := _parse_aware(j.get("next_run_at"))) is not None]
     print(f"  {len(jobs)} active job(s)")
     if next_runs:
         earliest = min(next_runs, key=lambda run: run[0])[1]

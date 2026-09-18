@@ -5,6 +5,7 @@ import {
   cronJobHasExecutionContent,
   cronJobFormFromJob,
   cronLastResult,
+  cronNextRunOverdueMs,
   splitCronList,
   type CronJobFormState,
 } from "./cron-job";
@@ -198,5 +199,24 @@ describe("cronLastResult", () => {
     expect(
       cronLastResult({ last_status: "blocked_config", last_error: "missing API key" }),
     ).toEqual({ status: "blocked_config", tone: "warning", detail: "missing API key" });
+  });
+});
+
+describe("cronNextRunOverdueMs", () => {
+  const now = Date.parse("2026-09-17T20:35:00+04:00");
+
+  it("flags an active job whose stored slot sits past the scheduler grace (#114309)", () => {
+    const job = { next_run_at: "2026-09-17T13:34:18+04:00", enabled: true, state: "scheduled" };
+    expect(cronNextRunOverdueMs(job, now)).toBe(now - Date.parse(job.next_run_at));
+  });
+
+  it("keeps upcoming, within-grace, paused and unparseable slots as plain next runs", () => {
+    expect(cronNextRunOverdueMs({ next_run_at: "2026-09-17T21:00:00+04:00", enabled: true }, now)).toBeNull();
+    expect(cronNextRunOverdueMs({ next_run_at: "2026-09-17T20:30:00+04:00", enabled: true }, now)).toBeNull();
+    expect(
+      cronNextRunOverdueMs({ next_run_at: "2026-09-17T13:34:18+04:00", enabled: true, state: "paused" }, now),
+    ).toBeNull();
+    expect(cronNextRunOverdueMs({ next_run_at: "2026-09-17T13:34:18+04:00", enabled: false }, now)).toBeNull();
+    expect(cronNextRunOverdueMs({ next_run_at: "not-a-date", enabled: true }, now)).toBeNull();
   });
 });

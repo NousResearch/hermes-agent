@@ -27,3 +27,28 @@ export function jobTitle(job: CronJob): string {
 
   return pick(job.name) || clip(pick(job.prompt)) || clip(pick(job.script)) || job.id || 'Cron job'
 }
+
+// Mirrors hermes_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can dispatch a few minutes late.
+export const NEXT_RUN_OVERDUE_GRACE_MS = 15 * 60 * 1000
+
+// Milliseconds a job's stored next_run_at has sat in the past beyond that grace, or null when
+// the slot is upcoming, within grace, unparseable, or the job is not expected to fire. A slot
+// parked in the past is the only user-visible trace of a dead scheduler (#114309), so no
+// surface may present it as an upcoming "Next".
+export function nextRunOverdueMs(job: Pick<CronJob, 'enabled' | 'next_run_at' | 'state'>, nowMs = Date.now()): null | number {
+  const state = jobState(job as CronJob)
+
+  if (state === 'paused' || state === 'completed' || state === 'disabled' || !job.next_run_at) {
+    return null
+  }
+
+  const at = Date.parse(job.next_run_at)
+
+  if (Number.isNaN(at)) {
+    return null
+  }
+
+  const overdue = nowMs - at
+
+  return overdue > NEXT_RUN_OVERDUE_GRACE_MS ? overdue : null
+}

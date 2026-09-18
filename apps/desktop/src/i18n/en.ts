@@ -2630,6 +2630,8 @@ export const en: Translations = {
     emptyTitleSearch: 'No matches',
     last: 'Last:',
     next: 'Next:',
+    // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
+    overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
     manage: 'Manage',
     showRuns: 'Show runs',

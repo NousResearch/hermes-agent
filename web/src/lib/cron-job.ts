@@ -148,3 +148,23 @@ export function cronLastResult(
       : asString(job.last_error).trim() || asString(job.last_delivery_error).trim();
   return { status, tone, detail: detail || null };
 }
+
+/** Mirrors hermes_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can run a few minutes late. */
+export const CRON_NEXT_RUN_OVERDUE_GRACE_MS = 15 * 60 * 1000;
+
+/**
+ * Milliseconds a job's stored `next_run_at` has sat in the past beyond the doctor grace, or
+ * null when the job is upcoming, within grace, not expected to fire, or has no parseable stamp.
+ * A stamp parked in the past is the only user-visible trace of a dead scheduler (#114309), so
+ * the dashboard must never present it as an upcoming "Next".
+ */
+export function cronNextRunOverdueMs(
+  job: Pick<CronJob, "next_run_at" | "enabled" | "state">,
+  nowMs: number = Date.now(),
+): number | null {
+  if (job.enabled === false || job.state === "paused" || job.state === "completed") return null;
+  const at = Date.parse(asString(job.next_run_at));
+  if (Number.isNaN(at)) return null;
+  const overdue = nowMs - at;
+  return overdue > CRON_NEXT_RUN_OVERDUE_GRACE_MS ? overdue : null;
+}

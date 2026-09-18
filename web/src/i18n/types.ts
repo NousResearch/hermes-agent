@@ -322,6 +322,7 @@ export interface Translations {
     noJobs: string;
     last: string;
     next: string;
+    overdueSince?: string;
     pause: string;
     resume: string;
     triggerNow: string;

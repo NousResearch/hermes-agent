@@ -21,6 +21,7 @@ import type {
 import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
+  cronNextRunOverdueMs,
   cronJobFormFromJob,
   cronLastResult,
   focusCronField,
@@ -1181,9 +1182,18 @@ export default function CronPage() {
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>
-                    <span>
-                      {t.cron.next}: {formatTime(job.next_run_at)}
-                    </span>
+                    {cronNextRunOverdueMs(job) === null ? (
+                      <span>
+                        {t.cron.next}: {formatTime(job.next_run_at)}
+                      </span>
+                    ) : (
+                      <span
+                        className="text-warning font-medium"
+                        data-testid="cron-next-run-overdue"
+                      >
+                        {t.cron.overdueSince ?? en.cron.overdueSince!}: {formatTime(job.next_run_at)}
+                      </span>
+                    )}
                   </div>
                   {job.last_delivery_error && (
                     <p className="text-xs text-destructive mt-1">

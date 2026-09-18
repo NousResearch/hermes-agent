@@ -594,8 +594,8 @@ class TestSlashCronListLastStatus:
 
 class TestStatusSurfacesDeadScheduler:
     """#114309 — with the ticker dead and a job's next_run_at stranded in the past, `cron
-    status` must not present the stale timestamp as an upcoming "Next run": flag it as
-    OVERDUE and say when the scheduler last ticked."""
+    status` / `cron list` must not present the stale timestamp as an upcoming "Next run":
+    flag it as overdue and say when the scheduler last ticked."""
 
     def _dead_gateway(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
@@ -604,36 +604,30 @@ class TestStatusSurfacesDeadScheduler:
         )
         monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda: False)
 
+    def _park_next_run(self, job_id, when):
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(job_id)]["next_run_at"] = when.isoformat()
+        save_jobs(jobs)
+
     def test_overdue_next_run_and_stale_heartbeat_are_loud(
         self, tmp_cron_dir, capsys, monkeypatch
     ):
         job = create_job(prompt="Hourly", schedule="every 60m")
         self._dead_gateway(monkeypatch)
-        overdue = datetime.now(timezone.utc) - timedelta(hours=7)
-        jobs = load_jobs()
-        jobs[[j["id"] for j in jobs].index(job["id"])]["next_run_at"] = overdue.isoformat()
-        save_jobs(jobs)
+        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(hours=7))
         (tmp_cron_dir / "cron" / "ticker_heartbeat").write_text(str(time.time() - 25 * 3600))
 
         cron_command(Namespace(cron_command="status"))
+        status_out = capsys.readouterr().out
+        cron_command(Namespace(cron_command="list", all=False, json=False))
+        list_out = capsys.readouterr().out
 
-        out = capsys.readouterr().out
-        assert "Gateway is not running" in out
-        assert "Scheduler last ticked" in out
-        assert "OVERDUE" in out
-        # The stale timestamp must no longer read as an upcoming run.
-        assert "Next run:" not in out
-
-    def test_future_next_run_stays_plain(self, tmp_cron_dir, capsys, monkeypatch):
-        create_job(prompt="Hourly", schedule="every 60m")
-        self._dead_gateway(monkeypatch)
-
-        cron_command(Namespace(cron_command="status"))
-
-        out = capsys.readouterr().out
-        assert "Next run:" in out
-        assert "OVERDUE" not in out
-        assert "Scheduler last ticked" not in out
+        assert "Gateway is not running" in status_out
+        assert "Scheduler last ticked" in status_out
+        assert "OVERDUE" in status_out and "7h ago" in status_out
+        # The stale timestamp must no longer read as an upcoming run on either surface.
+        assert "Next run:" not in status_out
+        assert "Overdue:" in list_out and "Next run:" not in list_out
 
     def test_overdue_within_doctor_grace_stays_plain(self, tmp_cron_dir, capsys, monkeypatch):
         # status shares `cron doctor`'s 15-minute grace (_OVERDUE_GRACE_SECONDS): a job only
@@ -641,16 +635,16 @@ class TestStatusSurfacesDeadScheduler:
         # not flash OVERDUE while doctor calls the same job healthy.
         job = create_job(prompt="Hourly", schedule="every 60m")
         self._dead_gateway(monkeypatch)
-        within_grace = datetime.now(timezone.utc) - timedelta(minutes=5)
-        jobs = load_jobs()
-        jobs[[j["id"] for j in jobs].index(job["id"])]["next_run_at"] = within_grace.isoformat()
-        save_jobs(jobs)
+        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(minutes=5))
 
         cron_command(Namespace(cron_command="status"))
+        status_out = capsys.readouterr().out
+        cron_command(Namespace(cron_command="list", all=False, json=False))
+        list_out = capsys.readouterr().out
 
-        out = capsys.readouterr().out
-        assert "Next run:" in out
-        assert "OVERDUE" not in out
+        assert "Next run:" in status_out and "OVERDUE" not in status_out
+        assert "Scheduler last ticked" not in status_out  # no heartbeat file → nothing to date
+        assert "Next run:" in list_out and "Overdue:" not in list_out
 
 
 class TestSlashCronRunSkipped:

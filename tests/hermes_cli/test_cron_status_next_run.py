@@ -9,15 +9,22 @@ from cron import jobs as job_store
 from hermes_cli.cron import _print_active_jobs_summary
 
 
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch):
+    # Freeze both the scheduler's clock (normalisation) and the CLI's (overdue check): the
+    # fixtures below are 2026-11 instants and must never start reading as overdue.
+    now = datetime(2026, 10, 31, tzinfo=ZoneInfo("America/New_York"))
+    monkeypatch.setattr(job_store, "_hermes_now", lambda: now)
+    monkeypatch.setattr("hermes_time.now", lambda: now)
+
+
 @pytest.mark.parametrize("later,earlier", [
     ("2026-11-01T01:15:00-05:00", "2026-11-01T01:45:00-04:00"),
     ("2026-11-02T09:00:00-05:00", "2026-11-02T08:00:00-05:00"),
     ("2026-11-02T08:00:00-05:00", "2026-11-02T12:30:00+00:00"),
 ])
-def test_status_earliest_persisted_instant(later, earlier, monkeypatch, capsys):
-    # Only freeze the clock: creation, persistence, normalization and listing are real.
-    now = datetime(2026, 10, 31, tzinfo=ZoneInfo("America/New_York"))
-    monkeypatch.setattr(job_store, "_hermes_now", lambda: now)
+def test_status_earliest_persisted_instant(later, earlier, capsys):
+    # Only the clock is frozen: creation, persistence, normalization and listing are real.
     late_job = job_store.create_job(prompt="later", schedule=later)
     early_job = job_store.create_job(prompt="earlier", schedule=earlier)
     jobs = job_store.list_jobs()

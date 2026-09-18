@@ -2403,7 +2403,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
-        adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter._fetch_message_context_chain = AsyncMock(return_value=None)
         adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
@@ -2530,7 +2530,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
 
     def test_regular_reply_root_id_does_not_become_thread_id(self):
         adapter = self._build_adapter()
-        adapter._fetch_message_text = AsyncMock(return_value="parent text")
+        adapter._fetch_message_context_chain = AsyncMock(return_value="parent text")
         message = SimpleNamespace(
             content=json.dumps({"text": "regular reply"}),
             message_type="text",
@@ -2558,6 +2558,9 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         event = adapter._dispatch_inbound_event.call_args.args[0]
         self.assertEqual(event.reply_to_message_id, "om_root")
         self.assertEqual(event.reply_to_text, "parent text")
+        adapter._fetch_message_context_chain.assert_awaited_once_with(
+            "om_root", chat_id="oc_chat", thread_id=None
+        )
 
     def test_explicit_thread_id_is_preserved(self):
         adapter = self._build_adapter()
@@ -2585,6 +2588,9 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
 
         adapter.build_source.assert_called_once()
         self.assertEqual(adapter.build_source.call_args.kwargs["thread_id"], "omt_thread")
+        adapter._fetch_message_context_chain.assert_awaited_once_with(
+            "om_root", chat_id="oc_chat", thread_id="omt_thread"
+        )
 
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):

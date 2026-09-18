@@ -1420,6 +1420,10 @@ DEFAULT_CONFIG = {
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Public skill command aliases. ``name`` is a namespaced token such as
+        # ``pstack:bro``; ``skill`` is its generated slash name. Set
+        # ``hide_default`` to remove the generated spelling from all surfaces.
+        "command_aliases": [],
         # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
         # HERMES_HOME, scanned alongside the local dir.

@@ -228,6 +228,17 @@ export const $sidebarMessagingOpenIds = persistentAtom(
   [] as string[],
   Codecs.stringArray
 )
+// One master switch for the whole below-Sessions stack (messaging platforms +
+// cron jobs): every section there is shrink-0 while Sessions is the only
+// flex-1 row, so expanding any of them eats the session list one by one. The
+// aggregate toggle reclaims the space in one click (#105234). Default open —
+// existing installs keep their current layout until they collapse it.
+const SIDEBAR_BELOW_SESSIONS_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarBelowSessionsOpen'
+export const $sidebarBelowSessionsOpen = persistentAtom(
+  SIDEBAR_BELOW_SESSIONS_OPEN_STORAGE_KEY,
+  true,
+  Codecs.bool
+)
 // The Project-grouping flag, per scope like the grouping atoms below it: one
 // global bool here meant picking Project inside a workspace also flipped the
 // all-profiles view into the project tree (and leaving it there wiped the
@@ -616,6 +627,10 @@ export function setSidebarRecentsOpen(open: boolean) {
 
 export function setSidebarCronOpen(open: boolean) {
   $sidebarCronOpen.set(open)
+}
+
+export function setSidebarBelowSessionsOpen(open: boolean) {
+  $sidebarBelowSessionsOpen.set(open)
 }
 
 export function toggleSidebarMessagingOpen(sourceId: string) {

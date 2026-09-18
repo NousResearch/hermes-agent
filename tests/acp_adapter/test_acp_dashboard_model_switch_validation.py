@@ -1,4 +1,4 @@
-"""ACP ``session/set_model`` and the dashboard main slot validate through ``switch_model``.
+"""ACP ``session/set_config_option`` (model) and the dashboard main slot validate through ``switch_model``.
 
 Both surfaces used to accept any string (``parse_model_input`` + ``detect_provider_for_model``
 for ACP; bare provider/model normalization for ``POST /api/model/set``), so a model no catalog
@@ -72,7 +72,7 @@ def test_acp_explicit_provider_prefix_becomes_explicit_provider(monkeypatch):
     assert made["requested_provider"] == "anthropic" and made["base_url"] == "https://api.anthropic.com"
 
 
-def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch):
+def test_acp_set_config_option_model_runs_switch_model_off_the_event_loop(monkeypatch):
     """``switch_model`` does ~10 s of sync network I/O on a cold cache; ACP must run it on a
     worker thread (like the gateway) or every session in the process stalls."""
     import asyncio
@@ -91,7 +91,7 @@ def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch)
 
     async def _run():
         loop_thread = threading.current_thread()
-        resp = await agent.set_session_model("anthropic:claude-sonnet-5", "s1")
+        resp = await agent.set_config_option("model", "s1", "anthropic:claude-sonnet-5")
         return resp, loop_thread
 
     resp, loop_thread = asyncio.run(_run())

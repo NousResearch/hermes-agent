@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_METHODS = frozenset({"approval", "clarify"})
 
+# Bounded transcript context for the request-detail view. The scan window is wider than
+# what we return so tool-only and empty rows cannot starve the excerpt.
+_CONTEXT_SCAN_LIMIT = 24
+_CONTEXT_KEPT_MESSAGES = 4
+_CONTEXT_MESSAGE_CHARS = 320
+_CONTEXT_TOTAL_CHARS = 1200
+_CONTEXT_ROLES = frozenset({"user", "assistant"})
+
 
 def _safe_error_message(exc: Exception) -> str:
     return f"{type(exc).__name__}"
@@ -72,6 +80,62 @@ def _build_clarify_detail(snapshot: dict) -> dict:
             "answers": answers,
         },
     }
+
+
+def _redact_context_text(text: str) -> str:
+    """Redact credential-shaped content before any transcript text leaves the gateway."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return str(redact_sensitive_text(str(text), force=True) or "")
+    except Exception:
+        return ""
+
+
+def _build_context_excerpt(db, session_key: str) -> dict:
+    """Bounded, redacted excerpt of the owning session's recent turns.
+
+    Read-only and side-effect free: it reads PERSISTED messages directly and never
+    resumes, hydrates or mutates the session, so opening the inbox cannot change the
+    state of the work it describes.
+
+    Only user/assistant text rows are surfaced. Tool rows are raw JSON payloads that
+    cost context without informing a decision, and tool-call-only assistant rows carry
+    no text to show. Content is redacted and hard-capped per message and in total, so
+    an unbounded transcript can never be egressed through this path.
+    """
+    try:
+        rows = db.get_messages(session_key, limit=_CONTEXT_SCAN_LIMIT, latest=True)
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": f"transcript read failed: {_safe_error_message(exc)}",
+            "messages": [],
+        }
+
+    kept: list[dict] = []
+    total = 0
+    for row in reversed(rows or []):  # newest first while selecting, displayed oldest first
+        role = str(row.get("role") or "")
+        if role not in _CONTEXT_ROLES:
+            continue
+        text = _redact_context_text(row.get("content") or "").strip()
+        if not text:
+            continue
+        if len(text) > _CONTEXT_MESSAGE_CHARS:
+            text = text[:_CONTEXT_MESSAGE_CHARS].rstrip() + "…"
+        kept.append({
+            "role": role,
+            "text": text,
+            "timestamp": row.get("timestamp"),
+        })
+        total += len(text)
+        if len(kept) >= _CONTEXT_KEPT_MESSAGES or total >= _CONTEXT_TOTAL_CHARS:
+            break
+
+    if not kept:
+        return {"available": False, "reason": "no displayable messages in this session", "messages": []}
+    kept.reverse()  # chronological for display
+    return {"available": True, "reason": None, "messages": kept}
 
 
 def _gather_requests_for_session(
@@ -140,6 +204,9 @@ def _inbox_requests(rid: dict, params: dict) -> dict:
         row = db.get_session(session_key)
         if row is None or _inbox_denied_source(row):
             return _err(rid, 4001, "Session not found")
+        # Same connection as the identity check: one read, no second open, no side effects
+        # on the session itself.
+        context = _build_context_excerpt(db, session_key)
 
     # Thread-safe snapshot of live sessions
     try:
@@ -181,8 +248,13 @@ def _inbox_requests(rid: dict, params: dict) -> dict:
         except Exception as exc:
             all_errors.append(f"{sid}: request gathering failed: {_safe_error_message(exc)}")
 
-    # Runtime presence alone provides no transcript/message anchor.
-    context_anchor = "unavailable: open chat for context"
+    # The anchor now reports what the excerpt actually carries. "Unavailable" stays a
+    # real, named state (read failure vs. nothing displayable) so the panel never
+    # renders an empty transcript as if it were the whole story.
+    if context.get("available"):
+        context_anchor = f"available: last {len(context['messages'])} message(s)"
+    else:
+        context_anchor = f"unavailable: {context.get('reason') or 'no context'}"
 
     coverage = {
         "profile": profile or _inbox_request_profile_name(profile),
@@ -199,6 +271,7 @@ def _inbox_requests(rid: dict, params: dict) -> dict:
             "live_session_ids": live_ids,
             "approvals": all_approvals,
             "clarifications": all_clarifications,
+            "context": context,
         }],
         "coverage": coverage,
     })

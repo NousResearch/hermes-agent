@@ -382,7 +382,94 @@ describe('InboxPanel', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
-  it('shows context button in detail pane', () => {
+  it('renders the recent-message excerpt so a request can be judged in place', async () => {
+    const item = makeItem({ session_key: 'sess-ctx', title: 'Context test' })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 1, running: 0, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    const { fetchInboxRequestDetails } = await import('@/store/inbox')
+
+    vi.mocked(fetchInboxRequestDetails).mockResolvedValue({
+      coverage: {
+        approval_count: 1, clarification_count: 0, context_anchor: 'available: last 2 message(s)',
+        errors: [], live_session_count: 1, profile: 'inbox-test-profile', session_key: 'sess-ctx'
+      },
+      sessions: [{
+        approvals: [{
+          allow_permanent: false,
+          allow_session: true,
+          choices: ['once', 'deny'],
+          command: 'rm -rf /tmp/hermes-inbox-demo',
+          description: 'pending approval',
+          request_id: 'req-1',
+          smart_denied: null,
+          tool_name: 'terminal'
+        }],
+        clarifications: [],
+        context: {
+          available: true,
+          reason: null,
+          messages: [
+            { role: 'user', text: 'Clean up the temp folder', timestamp: 1 },
+            { role: 'assistant', text: 'That command deletes a path recursively.', timestamp: 2 }
+          ]
+        },
+        live_session_ids: ['live-1']
+      }]
+    })
+
+    renderPanel(entry)
+    clickRow('Context test')
+
+    await waitFor(() => expect(screen.getByText('Recent messages')).toBeTruthy())
+    expect(screen.getByText('Clean up the temp folder')).toBeTruthy()
+    expect(screen.getByText('That command deletes a path recursively.')).toBeTruthy()
+    expect(screen.getByText('rm -rf /tmp/hermes-inbox-demo')).toBeTruthy()
+
+    // Context must read before the controls: understanding the request is what makes
+    // acting on it safe, so the excerpt cannot sit below the buttons.
+    const excerpt = screen.getByText('Recent messages')
+    const controls = screen.getByText('Approvals (1)')
+    expect(excerpt.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('names an absent excerpt instead of rendering an empty transcript', async () => {
+    const item = makeItem({ session_key: 'sess-legacy', title: 'Legacy context' })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 1, running: 0, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    const { fetchInboxRequestDetails } = await import('@/store/inbox')
+
+    // A gateway that predates the excerpt omits the field entirely.
+    vi.mocked(fetchInboxRequestDetails).mockResolvedValue({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: '',
+        errors: [], live_session_count: 1, profile: 'inbox-test-profile', session_key: 'sess-legacy'
+      },
+      sessions: [{ approvals: [], clarifications: [], live_session_ids: ['live-1'] }]
+    })
+
+    renderPanel(entry)
+    clickRow('Legacy context')
+
+    await waitFor(() => expect(screen.getByText('No recent transcript available.')).toBeTruthy())
+  })
+
+  it('keeps the open-chat action available for the full conversation', async () => {
     const item = makeItem({ session_key: 'sess-ctx', title: 'Context test' })
 
     const entry = makeEntry({
@@ -396,7 +483,12 @@ describe('InboxPanel', () => {
 
     renderPanel(entry)
     clickRow('Context test')
-    expect(screen.getByText('Open chat for context')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open full chat' }))
+    expect(navigateSpy).toHaveBeenCalled()
+
+    // Opening the chat is the escalation path, never the only way to see context.
+    expect(screen.queryByText('Open chat for context')).toBeNull()
   })
 
   it('goal and heartbeat metadata shown in inline detail', () => {

@@ -120,9 +120,29 @@ export interface InboxRequestClarification {
   request_id: string
 }
 
+export interface InboxRequestContextMessage {
+  role: string
+  text: string
+  timestamp: number | null
+}
+
+/**
+ * Bounded, redacted excerpt of the owning session's recent turns, so a request can be
+ * judged without leaving the panel. `available: false` carries a reason: an absent
+ * excerpt must never read as "nothing was happening".
+ */
+export interface InboxRequestContext {
+  available: boolean
+  reason: string | null
+  messages: InboxRequestContextMessage[]
+}
+
 export interface InboxRequestSessionDetail {
   approvals: InboxRequestApproval[]
   clarifications: InboxRequestClarification[]
+  // Optional at the renderer boundary: an older gateway that predates the excerpt must
+  // keep parsing, and the panel reports the absence instead of an empty transcript.
+  context?: InboxRequestContext
   live_session_ids: string[]
 }
 
@@ -436,6 +456,38 @@ function parseClarification(value: unknown): InboxRequestClarification | null {
   }
 }
 
+function parseContextMessage(value: unknown): InboxRequestContextMessage | null {
+  if (!isRecord(value)) {return null}
+
+  const text = asString(value.text)
+
+  if (!text) {return null}
+
+  return {
+    role: asString(value.role),
+    text,
+    timestamp: typeof value.timestamp === 'number' ? value.timestamp : null
+  }
+}
+
+function parseRequestContext(value: unknown): InboxRequestContext {
+  // A backend that predates this field reports nothing. Say so out loud rather than
+  // rendering an empty excerpt as if the session were quiet.
+  if (!isRecord(value)) {
+    return { available: false, reason: 'context not reported by this backend', messages: [] }
+  }
+
+  const messages = Array.isArray(value.messages)
+    ? (value.messages as unknown[]).map(parseContextMessage).filter((m): m is InboxRequestContextMessage => m !== null)
+    : []
+
+  return {
+    available: value.available === true,
+    reason: typeof value.reason === 'string' && value.reason ? value.reason : null,
+    messages
+  }
+}
+
 function parseRequestSessionDetail(value: unknown): InboxRequestSessionDetail | null {
   if (!isRecord(value)) {return null}
 
@@ -451,7 +503,7 @@ function parseRequestSessionDetail(value: unknown): InboxRequestSessionDetail | 
     ? (value.live_session_ids as unknown[]).filter((id): id is string => typeof id === 'string')
     : []
 
-  return { approvals, clarifications, live_session_ids }
+  return { approvals, clarifications, context: parseRequestContext(value.context), live_session_ids }
 }
 
 function parseRequestDetails(value: unknown): InboxRequestDetails | null {

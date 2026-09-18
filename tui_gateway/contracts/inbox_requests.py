@@ -43,10 +43,30 @@ class InboxRequestClarification(Result):
     params: InboxRequestClarifyParams = InboxRequestClarifyParams()
 
 
+class InboxRequestContextMessage(Result):
+    role: str = ""  # "user" | "assistant"
+    text: str = ""
+    timestamp: float | None = None
+
+
+class InboxRequestContext(Result):
+    """Bounded, redacted excerpt of the owning session's recent turns.
+
+    ``available=False`` is a real state, not an empty transcript: the reason names
+    why (no displayable rows, or a failed read) so the panel can say "unavailable"
+    instead of implying an all-clear.
+    """
+
+    available: bool = False
+    reason: str | None = None
+    messages: list[InboxRequestContextMessage] = []
+
+
 class InboxRequestSessionDetail(Result):
     live_session_ids: list[str] = []
     approvals: list[InboxRequestApproval] = []
     clarifications: list[InboxRequestClarification] = []
+    context: InboxRequestContext = InboxRequestContext()
 
 
 class InboxRequestsCoverage(Result):

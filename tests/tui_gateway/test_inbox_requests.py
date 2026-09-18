@@ -177,10 +177,17 @@ class TestSessionResolution:
         assert _error(_call(server, "inbox.requests", session_key=key))["code"] == 4001
 
     def test_live_presence_does_not_fabricate_context_anchor(self, server, db):
+        """Runtime presence is not a transcript anchor. With no persisted turns the
+        anchor says so, and no excerpt is invented from liveness."""
         key = _create_row(db, _new_key())
         _open_session(server, key)
         result = _result(server, "inbox.requests", session_key=key)
-        assert result["coverage"]["context_anchor"] == "unavailable: open chat for context"
+        assert result["coverage"]["context_anchor"].startswith("unavailable:")
+        assert result["sessions"][0]["context"] == {
+            "available": False,
+            "reason": "no displayable messages in this session",
+            "messages": [],
+        }
 
     def test_empty_session_key_returns_error(self, server, db):
         response = _call(server, "inbox.requests", session_key="")
@@ -554,9 +561,129 @@ class TestContextAnchor:
         assert "unavailable" in anchor.lower() or "open chat" in anchor.lower()
 
     def test_live_session_reports_available(self, server, db):
-        """When a live session exists, coverage.context_anchor indicates available."""
+        """Availability reflects the excerpt that actually exists, not mere liveness."""
         key = _create_row(db, _new_key())
         _open_session(server, key)
+        db.append_message(key, "user", "please tidy the temp folder")
         result = _result(server, "inbox.requests", session_key=key)
         anchor = result["coverage"].get("context_anchor") or ""
-        assert "available" in anchor.lower() or "live" in anchor.lower()
+        assert anchor.startswith("available:")
+        assert result["sessions"][0]["context"]["messages"][-1]["text"] == "please tidy the temp folder"
+
+
+# ── Recent-turn excerpt ──────────────────────────────────────────────
+class TestContextExcerpt:
+    """The excerpt is what lets a request be answered without opening the chat.
+
+    Invariants: bounded, redacted, read-only, and honest about absence. An absent
+    excerpt must never render as a quiet session, and reading one must never resume,
+    hydrate or otherwise touch the session it describes.
+    """
+
+    def test_excerpt_returns_recent_turns_oldest_first(self, server, db):
+        key = _create_row(db, _new_key())
+        _open_session(server, key)
+        for index in range(6):
+            db.append_message(key, "user", f"user turn {index}")
+            db.append_message(key, "assistant", f"assistant turn {index}")
+
+        context = _result(server, "inbox.requests", session_key=key)["sessions"][0]["context"]
+
+        assert context["available"] is True
+        assert context["reason"] is None
+        texts = [message["text"] for message in context["messages"]]
+        assert len(texts) == 4
+        assert texts[-1] == "assistant turn 5"
+        assert texts == [
+            "user turn 4",
+            "assistant turn 4",
+            "user turn 5",
+            "assistant turn 5",
+        ]
+        assert {message["role"] for message in context["messages"]} <= {"user", "assistant"}
+
+    def test_excerpt_skips_tool_rows_and_textless_turns(self, server, db):
+        key = _create_row(db, _new_key())
+        _open_session(server, key)
+        db.append_message(key, "user", "clean the folder")
+        db.append_message(
+            key, "tool", '{"raw": "tool-payload-should-not-surface"}', tool_name="terminal"
+        )
+        db.append_message(key, "assistant", "")  # tool-call-only turn carries no text
+        db.append_message(key, "assistant", "Done, the folder is empty.")
+
+        context = _result(server, "inbox.requests", session_key=key)["sessions"][0]["context"]
+
+        texts = [message["text"] for message in context["messages"]]
+        assert texts == ["clean the folder", "Done, the folder is empty."]
+        assert "tool-payload-should-not-surface" not in json.dumps(context)
+
+    def test_excerpt_bounds_each_message(self, server, db):
+        key = _create_row(db, _new_key())
+        _open_session(server, key)
+        db.append_message(key, "user", "x" * 5000)
+
+        context = _result(server, "inbox.requests", session_key=key)["sessions"][0]["context"]
+
+        assert context["available"] is True
+        text = context["messages"][-1]["text"]
+        assert len(text) <= 321
+        assert text.endswith("…")
+
+    def test_excerpt_read_failure_is_named_and_rpc_still_succeeds(self, server, db, monkeypatch):
+        """A failed read is a named state, not a silent empty excerpt and not a 500."""
+        from hermes_state import SessionDB
+
+        def boom(self, *args, **kwargs):
+            raise RuntimeError("super-secret-internal-XYZ")
+
+        monkeypatch.setattr(SessionDB, "get_messages", boom)
+        key = _create_row(db, _new_key())
+        _open_session(server, key)
+
+        response = _call(server, "inbox.requests", session_key=key)
+
+        assert "result" in response
+        context = response["result"]["sessions"][0]["context"]
+        assert context["available"] is False
+        assert context["messages"] == []
+        assert context["reason"].startswith("transcript read failed:")
+        assert "super-secret-internal-XYZ" not in json.dumps(response)
+
+    def test_excerpt_redacts_before_egress(self, server, db, monkeypatch):
+        """Transcript text passes through the canonical redactor, not around it."""
+        import agent.redact as redact_module
+
+        monkeypatch.setattr(
+            redact_module, "redact_sensitive_text", lambda text, force=False: "[SCRUBBED]"
+        )
+        key = _create_row(db, _new_key())
+        _open_session(server, key)
+        db.append_message(key, "user", "my key is sk-live-abcdef1234567890")
+
+        context = _result(server, "inbox.requests", session_key=key)["sessions"][0]["context"]
+
+        assert context["messages"][-1]["text"] == "[SCRUBBED]"
+        assert "sk-live-abcdef1234567890" not in json.dumps(context)
+
+    def test_excerpt_read_does_not_resume_or_mutate_the_session(self, server, db, monkeypatch):
+        from hermes_state import SessionDB
+
+        calls = []
+        original = SessionDB.get_messages
+
+        def spy(self, session_id, **kwargs):
+            calls.append((session_id, kwargs))
+            return original(self, session_id, **kwargs)
+
+        monkeypatch.setattr(SessionDB, "get_messages", spy)
+        key = _create_row(db, _new_key())
+        sid = _open_session(server, key)
+        db.append_message(key, "user", "hello")
+
+        _result(server, "inbox.requests", session_key=key)
+
+        assert calls == [(key, {"limit": 24, "latest": True})]
+        # The live runtime record is untouched: reading the inbox never hydrates it.
+        assert server._sessions[sid]["history"] == []
+        assert server._sessions[sid]["running"] is False

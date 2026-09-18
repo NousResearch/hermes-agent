@@ -24,6 +24,7 @@ import {
   type InboxCategory,
   type InboxEntry,
   type InboxItem,
+  type InboxRequestContext,
   type InboxRequestDetails,
   refreshInbox,
   searchInboxItems
@@ -50,7 +51,12 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
   const detailApprovals = expandedDetails?.sessions.flatMap(s => s.approvals) ?? []
   const detailClarifications = expandedDetails?.sessions.flatMap(s => s.clarifications) ?? []
   const detailLiveSessionId = expandedDetails?.sessions[0]?.live_session_ids[0] ?? ''
-  const contextAnchor = expandedDetails?.coverage.context_anchor ?? ''
+
+  const detailContext: InboxRequestContext = expandedDetails?.sessions[0]?.context ?? {
+    available: false,
+    messages: [],
+    reason: null
+  }
 
   return (
     <div className="flex flex-col gap-3 py-2">
@@ -111,6 +117,29 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
         </div>
       )}
 
+      {/* Context first: decide from the conversation, then act — the point of the
+          panel is to answer a request without leaving it. */}
+      <div>
+        <PanelSectionLabel>Recent messages</PanelSectionLabel>
+        {detailContext.available && detailContext.messages.length > 0 ? (
+          <ul className="mt-1 flex flex-col gap-1.5">
+            {detailContext.messages.map((message, index) => (
+              <li
+                className="rounded-md border border-(--ui-stroke-tertiary) bg-foreground/5 px-2 py-1.5"
+                key={`${message.role}-${message.timestamp ?? index}-${index}`}
+              >
+                <span className="text-[0.6rem] uppercase tracking-wide text-muted-foreground/60">{message.role}</span>
+                <p className="mt-0.5 whitespace-pre-wrap break-words text-[0.68rem] text-foreground/85">{message.text}</p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-[0.62rem] text-muted-foreground/60">
+            {detailContext.reason ? `Unavailable: ${detailContext.reason}` : 'No recent transcript available.'}
+          </p>
+        )}
+      </div>
+
       {detailApprovals.length > 0 && (
         <div>
           <PanelSectionLabel>Approvals ({detailApprovals.length})</PanelSectionLabel>
@@ -142,10 +171,6 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
       )}
 
       <div>
-        <PanelSectionLabel>Context</PanelSectionLabel>
-        <p className="mt-1 text-[0.62rem] text-muted-foreground/60">
-          {contextAnchorLabel(contextAnchor)}
-        </p>
         <Button
           className="mt-1"
           onClick={() => onOpenSession(item)}
@@ -153,7 +178,7 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
           variant="secondary"
         >
           <Codicon name="arrow-right" size="0.75rem" />
-          {contextButtonLabel()}
+          Open full chat
         </Button>
       </div>
     </div>
@@ -212,16 +237,6 @@ function metaLine(item: InboxItem): string {
   const counts = formatCounts(item)
 
   return counts ? `${lane} · ${counts}` : lane
-}
-
-function contextAnchorLabel(anchor: string): string {
-  if (!anchor || anchor.includes('unavailable')) {return 'Exact request location unavailable'}
-
-  return 'Open chat for context'
-}
-
-function contextButtonLabel(): string {
-  return 'Open chat for context'
 }
 
 export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () => void }) {

@@ -54,12 +54,23 @@ export function testMessagingPlatform(
   })
 }
 
+export type TeamsChecklistStatus = 'failed' | 'not_verifiable' | 'verified'
+
+export interface TeamsChecklistItem {
+  name: string
+  next_step?: string
+  note?: string
+  status: TeamsChecklistStatus
+}
+
+export interface TeamsPreflightChecklist {
+  capabilities: TeamsChecklistItem[]
+  permissions: TeamsChecklistItem[]
+}
+
 export interface TeamsPreflightResponse {
   category: string
-  checklist?: {
-    capabilities: Array<{ name: string; status: string }>
-    permissions: Array<{ name: string; status: string; note?: string }>
-  }
+  checklist?: TeamsPreflightChecklist
   message: string
   ok: boolean
 }

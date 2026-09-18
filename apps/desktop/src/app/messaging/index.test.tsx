@@ -328,6 +328,33 @@ describe('MessagingView Teams preflight', () => {
     expect(runGatewayRestart).not.toHaveBeenCalled()
     expect(screen.getByText('Passed.')).toBeTruthy()
   })
+
+  it('renders sanitized capability and permission checklist states with next steps', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+    preflightTeamsConfig.mockResolvedValue({
+      ok: true,
+      category: 'success',
+      message: 'Passed.',
+      checklist: {
+        capabilities: [{ name: 'Bot Framework messaging', status: 'verified', next_step: 'Ready for a local send test.' }],
+        permissions: [
+          { name: 'Microsoft Entra admin consent', status: 'not_verifiable', note: 'The token request cannot inspect tenant consent.', next_step: 'Ask an administrator to confirm consent.' },
+          { name: 'Teams channel messaging', status: 'failed', next_step: 'Review the Teams app permissions and try again.' }
+        ]
+      }
+    })
+
+    await renderMessaging()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Testar configuração' })))
+
+    expect(await screen.findByText('Checklist do preflight')).toBeTruthy()
+    expect(screen.getByText('Bot Framework messaging')).toBeTruthy()
+    expect(screen.getByText('Verificado localmente')).toBeTruthy()
+    expect(screen.getByText('Não verificável neste teste')).toBeTruthy()
+    expect(screen.getByText('Falhou')).toBeTruthy()
+    expect(screen.getByText('Próximo passo: Ask an administrator to confirm consent.')).toBeTruthy()
+    expect(screen.getByText('Próximo passo: Review the Teams app permissions and try again.')).toBeTruthy()
+  })
 })
 
 describe('MessagingView Telegram quick setup', () => {

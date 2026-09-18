@@ -27,7 +27,8 @@ async def test_success_returns_sanitized_checklist_and_never_secret():
     assert result["ok"] is True
     assert result["category"] == "success"
     assert result["checklist"]["capabilities"]
-    assert result["checklist"]["permissions"][0]["status"] == "unknown"
+    assert result["checklist"]["permissions"][0]["status"] == "not_verifiable"
+    assert result["checklist"]["permissions"][0]["next_step"]
     assert "super-secret" not in str(result)
     assert "token-value" not in str(result)
     assert calls[0][1]["client_secret"] == "super-secret"

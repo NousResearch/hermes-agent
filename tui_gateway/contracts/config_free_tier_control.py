@@ -244,6 +244,20 @@ class ModelCapabilities(Result):
     can_disable_reasoning: bool | None = None
 
 
+class ProviderModelProvenance(OpenModel):
+    """``hermes_cli/model_list_provenance.py::_finalize`` — where a provider row's model list came
+    from (live discovery, the hosted catalog snapshot, or a bundled fallback). Display-only copy;
+    the surfaces render ``label``. Absent when nothing recorded it yet."""
+
+    label: str
+    source: str
+    age_seconds: int | None = None
+    count: int | None = None
+    degraded: bool | None = None
+    reason: str | None = None
+    stale: bool | None = None
+
+
 class ModelOptionProvider(OpenModel):
     """One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field
     the builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path)."""
@@ -255,6 +269,7 @@ class ModelOptionProvider(OpenModel):
     is_current: bool | None = None
     is_user_defined: bool | None = None
     source: str | None = None
+    provenance: ProviderModelProvenance | None = None
     aliases: list[str] | None = None
     api_url: str | None = None
     auth_type: str | None = None

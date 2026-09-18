@@ -62,6 +62,15 @@ def _term_rows() -> int:
     return shutil.get_terminal_size((100, 24)).lines
 
 
+def _provenance_label(row) -> str:
+    """One-line source for a ``model.options`` provider row (``''`` when none was recorded).
+
+    Display only — every picker that renders provider rows calls this so a bundled fallback, a
+    dated hosted-catalog snapshot and a live discovery stop looking identical (#110055)."""
+    provenance = (row or {}).get("provenance") if isinstance(row, dict) else None
+    return str((provenance or {}).get("label") or "") if isinstance(provenance, dict) else ""
+
+
 class _Panel:
     """Fragment accumulator for one bordered overlay panel (``(style, text)`` tuples)."""
 
@@ -629,6 +638,10 @@ class CLITuiMixin:
             for p in _providers if isinstance(_providers, list) else []:
                 count = p.get("total_models", len(p.get("models", [])))
                 label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"
+                # Where this row's list came from: bundled fallback / hosted catalog / discovery.
+                # Rows with no recorded source stay bare rather than guessing (#110055).
+                if source_label := _provenance_label(p):
+                    label += f"  · {source_label}"
                 if p.get("is_current"):
                     label += "  ← current"
                 choices.append(label)
@@ -667,6 +680,8 @@ class CLITuiMixin:
                 hint = f"Select a model ({len(model_list)} available) — type to filter"
             else:
                 hint = "No models listed for this provider. Use Back or Cancel."
+            if source_label := _provenance_label(provider_data):
+                hint = f"Source: {source_label}  ·  {hint}"
         return self._render_scroll_list_panel(
             state, title, hint, choices, min_width=46, max_width=84, indent='  ')
 

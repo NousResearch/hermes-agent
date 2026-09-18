@@ -719,6 +719,7 @@ export interface ModelOptionProvider {
   is_current?: boolean | null
   is_user_defined?: boolean | null
   source?: string | null
+  provenance?: ProviderModelProvenance | null
   aliases?: string[] | null
   api_url?: string | null
   auth_type?: string | null
@@ -733,6 +734,17 @@ export interface ModelOptionProvider {
   free_tier_pending?: boolean | null
   free_tier_row?: boolean | null
   unavailable_models?: string[] | null
+  [key: string]: unknown
+}
+/** ``hermes_cli/model_list_provenance.py::_finalize`` — where a provider row's model list came from (live discovery, the hosted catalog snapshot, or a bundled fallback). Display-only copy; the surfaces render ``label``. Absent when nothing recorded it yet. */
+export interface ProviderModelProvenance {
+  label: string
+  source: string
+  age_seconds?: number | null
+  count?: number | null
+  degraded?: boolean | null
+  reason?: string | null
+  stale?: boolean | null
   [key: string]: unknown
 }
 /** ``hermes_cli/inventory.py::_apply_capabilities``. */

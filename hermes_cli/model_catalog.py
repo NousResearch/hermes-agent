@@ -44,6 +44,15 @@ _catalog_cache: dict[str, Any] | None = None
 _catalog_cache_source_mtime: float = 0.0
 _catalog_cache_source_path: str = ""
 
+# Last manifest fetch failure, surfaced (never raised) by ``catalog_status()`` so the pickers can
+# say WHY they are on the in-repo list instead of silently serving it (#110055).
+_last_fetch_error: str = ""
+
+# A snapshot older than this is reported as stale even though stale-while-revalidate normally
+# refreshes in the background: past a day the refresh itself is failing (bot-gated URL, offline).
+_STALE_DISPLAY_SECONDS = 24 * 3600.0
+
+
 
 def _load_catalog_config() -> dict[str, Any]:
     """Load the ``model_catalog`` config block with defaults filled in."""
@@ -86,19 +95,24 @@ def _cache_path() -> Path:
 
 def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
     """HTTP GET the manifest URL and return a validated dict, or None on failure."""
+    global _last_fetch_error
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         logger.info("model catalog fetch failed (%s): %s", url, exc)
+        _last_fetch_error = f"couldn't reach the model catalog: {exc}"
         return None
     except Exception as exc:  # pragma: no cover — defensive
         logger.info("model catalog fetch errored (%s): %s", url, exc)
+        _last_fetch_error = f"couldn't reach the model catalog: {exc}"
         return None
     if not _validate_manifest(data):
         logger.info("model catalog at %s failed schema validation", url)
+        _last_fetch_error = f"model catalog at {url} failed schema validation"
         return None
+    _last_fetch_error = ""
     return data
 
 
@@ -240,6 +254,26 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
 def refresh_interval_seconds() -> float:
     """Return the configured catalog TTL in seconds (the gateway poll cadence)."""
     return max(60.0, _load_catalog_config()["ttl_hours"] * 3600.0)
+
+
+def catalog_status() -> dict[str, Any]:
+    """Cache-only status of the hosted manifest: ``{origin, as_of, fresh, reason, url}``.
+
+    ``origin`` is ``hosted`` when a validated manifest sits on disk — that is the copy provider
+    blocks are read from — else ``unavailable`` with the fetch failure that got us here. Never
+    fetches: this runs while a picker is being drawn.
+    """
+    cfg = _load_catalog_config()
+    if not cfg["enabled"]:
+        return {"origin": "unavailable", "reason": "model catalog disabled in config"}
+    disk_data, disk_mtime = _read_disk_cache()
+    if disk_data is None:
+        return {"origin": "unavailable", "reason": _last_fetch_error or "no catalog cached yet"}
+    age = time.time() - disk_mtime
+    stale_after = max(_STALE_DISPLAY_SECONDS, cfg["ttl_hours"] * 3600.0)
+    return {
+        "origin": "hosted", "as_of": disk_mtime, "fresh": age < stale_after,
+        "url": cfg["url"], "age_seconds": age}
 
 
 def refresh_catalogs() -> bool:

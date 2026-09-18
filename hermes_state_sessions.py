@@ -8,7 +8,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
@@ -170,6 +170,11 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 
 # Lifecycle statuses surfaced by session pickers; classified from the final
 # message row ONLY so it stays O(1) per session.
+# Sessions that are not human conversations (kanban workers, third-party tool integrations, finite one-shot
+# runs): every human picker — TUI/Desktop session lists, ``/sessions`` in the CLI, ``sessions list`` in the
+# console — excludes them. A deny-list, so new interactive platforms surface automatically.
+INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot")
+
 SESSION_STATUS_COMPLETE = "complete"
 SESSION_STATUS_INTERRUPTED = "interrupted"
 SESSION_STATUS_ERROR = "error"
@@ -282,7 +287,10 @@ class SessionSessionsMixin:
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
-        bare row before create_session carries the real model/prompt). chat_id/thread_id scope gateway
+        bare row before create_session carries the real model/prompt) — the one exception is the
+        token-accounting guard's placeholder ``source='unknown'``, which a later writer's real surface
+        replaces (#111999): once minted, that placeholder otherwise labelled a real session anonymous
+        for life, because this upsert is the only writer that could correct it. chat_id/thread_id scope gateway
         /resume (IDOR). Children backfill from the parent; a missing profile_name is stamped with THIS
         store's own (NULL reads as unowned).
 
@@ -320,6 +328,11 @@ class SessionSessionsMixin:
                 )
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
+                       source = CASE
+                           WHEN sessions.source = 'unknown'
+                           THEN COALESCE(excluded.source, 'unknown')
+                           ELSE sessions.source
+                       END,
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = CASE
                            WHEN excluded.model_config IS NOT NULL
@@ -1210,7 +1223,11 @@ class SessionSessionsMixin:
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
-        if not include_hidden:
+        # The archived-only view is the recovery surface for rows that dropped out of every
+        # default list: a session that is archived AND hidden (Bot Mode marks its sessions
+        # hidden) must still be reachable there, or nothing but direct DB access can bring
+        # it back (#90946).
+        if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
         where_sql = _where_sql(where_clauses)
         base_where_params = list(params)  # pinned back-fill reuses the WHERE before LIMIT/OFFSET
@@ -1278,10 +1295,7 @@ class SessionSessionsMixin:
             seen_ids = {s["id"] for s in sessions}
             pinned_where = f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
             pinned_query = f"""
-                {select_head}COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                        s.started_at
-                    ) AS last_active
+                {select_head}{_sql_session_last_active("s")} AS last_active
                 {from_sessions}
                 {pinned_where}
                 ORDER BY s.started_at DESC
@@ -1369,15 +1383,17 @@ class SessionSessionsMixin:
         return list(reversed(chain)) or [session_id]
 
     def search_sessions(
-        self, source: str = None, limit: int = 20, offset: int = 0, workspace_key: str = None,
+        self, source: Union[str, Sequence[str], None] = None, limit: int = 20, offset: int = 0,
+        workspace_key: str = None,
     ) -> List[Dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
-        so ``hermes -c``/``--resume`` picks its last session."""
+        so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several."""
         where_clauses = []
         params: list = []
         if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+            sources = [source] if isinstance(source, str) else list(source)
+            where_clauses.append(f"s.source IN ({','.join('?' * len(sources))})")
+            params.extend(sources)
         if workspace_key:
             ws_clause, ws_params = _workspace_key_clause(workspace_key)
             where_clauses.append(ws_clause)

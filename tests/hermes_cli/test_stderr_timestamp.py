@@ -5,7 +5,11 @@ import sys
 
 import pytest
 
-from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
+from gateway.restart import (
+    EXTERNAL_GATEWAY_SUPERVISOR_ENV,
+    GATEWAY_FATAL_CONFIG_EXIT_CODE,
+    GATEWAY_SERVICE_RESTART_EXIT_CODE,
+)
 from hermes_cli import stderr_timestamp
 
 _STALE_GATEWAY_ARGV = [
@@ -162,3 +166,50 @@ def test_main_does_not_mark_unsupervised_child(tmp_path, monkeypatch):
 
     assert rc == 0
     assert marker_path.read_text(encoding="utf-8") == "unset"
+
+
+@pytest.mark.spawns_gateway_lookalike
+def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
+    """launchd KeepAlive.SuccessfulExit=false parks exit 0; the wrapper must
+    turn gateway EX_CONFIG (78) into that clean stop without swallowing the
+    please-restart code (75) or a non-gateway child's 78."""
+    log_path = tmp_path / "gateway.error.log"
+    gateway_tail = ["-m", "hermes_cli.main", "gateway", "run"]
+
+    rc_config = stderr_timestamp.main(
+        [
+            "--error-log",
+            str(log_path),
+            "--",
+            sys.executable,
+            "-c",
+            f"raise SystemExit({GATEWAY_FATAL_CONFIG_EXIT_CODE})",
+            *gateway_tail,
+        ]
+    )
+    rc_restart = stderr_timestamp.main(
+        [
+            "--error-log",
+            str(log_path),
+            "--",
+            sys.executable,
+            "-c",
+            f"raise SystemExit({GATEWAY_SERVICE_RESTART_EXIT_CODE})",
+            *gateway_tail,
+        ]
+    )
+    rc_other = stderr_timestamp.main(
+        [
+            "--error-log",
+            str(log_path),
+            "--",
+            sys.executable,
+            "-c",
+            f"raise SystemExit({GATEWAY_FATAL_CONFIG_EXIT_CODE})",
+        ]
+    )
+
+    assert rc_config == 0
+    assert rc_restart == GATEWAY_SERVICE_RESTART_EXIT_CODE
+    assert rc_other == GATEWAY_FATAL_CONFIG_EXIT_CODE
+

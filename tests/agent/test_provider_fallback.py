@@ -510,3 +510,68 @@ class TestFallbackExtraBodyReResolution:
         agent.request_overrides["temperature"] = 0.2
         self._activate(agent)
         assert agent.request_overrides.get("temperature") == 0.2
+
+
+# ── MoA preset as a fallback entry (#112525, #112623) ─────────────────────
+
+
+def _write_moa_home(tmp_path, monkeypatch):
+    """Real config.yaml with a MoA preset under a temp HERMES_HOME (genuine preset resolution)."""
+    import yaml
+
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "moa": {"default_preset": "default", "presets": {"default": {
+            "enabled": True,
+            "reference_models": [{"provider": "xai", "model": "grok-4-fast"}],
+            "aggregator": {"provider": "xai", "model": "grok-4.6"},
+        }}},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def _assert_bound_to_moa_preset(agent, preset="default"):
+    from agent.conversation_loop import _moa_client_consumes_prepared_request
+
+    assert (agent.provider, agent.requested_provider, agent.model) == ("moa", "moa", preset)
+    assert (agent.base_url, agent.api_mode) == ("moa://local", "chat_completions")
+    assert agent._client_kwargs == {}
+    assert _moa_client_consumes_prepared_request(agent.client)
+
+
+class TestMoaPresetFallback:
+    def test_runtime_fallback_to_moa_preset_binds_the_facade(self, tmp_path, monkeypatch):
+        """#112525 / #112623: a ``{provider: moa, model: <preset>}`` fallback entry activates the
+        preset (facade, ``moa://local``), never the aggregator's HTTP client wearing the virtual
+        identity (preset name on the aggregator wire → 404; ``provider == "moa"`` guards misfire)."""
+        _write_moa_home(tmp_path, monkeypatch)
+        agent = _make_agent(fallback_model={"provider": "moa", "model": "default"})
+        aggregator_client = _mock_client(base_url="https://api.x.ai/v1/", api_key="xai-key")
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(aggregator_client, "grok-4.6")):
+            assert agent._try_activate_fallback() is True
+        _assert_bound_to_moa_preset(agent)
+        assert agent.client is not aggregator_client
+        assert agent._provider_fallback_route == ("default", "moa")
+
+    def test_init_time_fallback_to_moa_preset_binds_the_facade(self, tmp_path, monkeypatch):
+        """Primary without credentials at init walks the chain: a MoA entry lands on the preset
+        with virtual pins, not on the aggregator slug with the aggregator's kwargs."""
+        _write_moa_home(tmp_path, monkeypatch)
+        aggregator_client = _mock_client(base_url="https://api.x.ai/v1/", api_key="xai-key")
+
+        def _route(provider, model=None, **_kw):
+            return (aggregator_client, "grok-4.6") if provider == "moa" else (None, None)
+
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.auxiliary_client.resolve_provider_client", side_effect=_route),
+        ):
+            agent = AIAgent(model="anthropic/claude-sonnet-4.5", provider="openrouter",
+                            quiet_mode=True, skip_context_files=True, skip_memory=True,
+                            fallback_model={"provider": "moa", "model": "default"})
+        _assert_bound_to_moa_preset(agent)
+        assert agent._fallback_activated is True

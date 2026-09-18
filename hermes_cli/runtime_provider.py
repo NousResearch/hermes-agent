@@ -242,8 +242,8 @@ def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model
 # ── base_url / credential helpers ──────────────────────────────────────────────────────────
 
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
-_NO_ANTHROPIC_CREDENTIALS_MSG = ("No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                                 "run 'claude setup-token', or authenticate with 'claude /login'.")
+_NO_ANTHROPIC_CREDENTIALS_MSG = ("No Anthropic credentials found. Run 'hermes auth add anthropic' to sign in, "
+                                 "or set ANTHROPIC_TOKEN / ANTHROPIC_API_KEY.")
 
 
 def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra: Any) -> Dict[str, Any]:
@@ -284,10 +284,15 @@ def _anthropic_cfg_base_url(model_cfg: Dict[str, Any]) -> str:
     return cfg_base_url if _anthropic_base_url_override_ok(cfg_base_url) else ""
 
 
-def _anthropic_token_or_raise() -> str:
+def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     from agent.anthropic_credentials import resolve_anthropic_token
-    token = resolve_anthropic_token()
+    token = resolve_anthropic_token(model=model)
     if not token:
+        # A key the pool benched for *this* model is not a missing credential; telling the
+        # user to re-authenticate would send them chasing a cooldown that lifts on its own.
+        if model and resolve_anthropic_token():
+            raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
+                            "other Claude models remain available (see `hermes auth list`).")
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 
@@ -538,7 +543,7 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
         pool = None
     if not (pool and pool.has_credentials()):
         return None
-    entry = pool.select()
+    entry = pool.select(model=target_model or None)
     if entry is None:
         return None
     pool_api_key = _pool_entry_api_key(entry)
@@ -555,7 +560,7 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
 
 def _explicit_anthropic(requested_provider, model_cfg, api_key, base_url, target_model):
     base_url = base_url or _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
-    api_key = api_key or _anthropic_token_or_raise()
+    api_key = api_key or _anthropic_token_or_raise(model=target_model)
     return _runtime("anthropic", "anthropic_messages", base_url, api_key, source="explicit", requested_provider=requested_provider)
 
 
@@ -715,7 +720,7 @@ def _azure_anthropic_env_key(model_cfg: Dict[str, Any]) -> str:
             or get_secret_str("ANTHROPIC_API_KEY", "").strip())
 
 
-def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: str | None = None) -> Dict[str, Any]:
     """Native Anthropic (Messages API) from env/auth store; ``model.base_url`` honoured only when
     the configured provider is anthropic (else a Codex endpoint would leak into Anthropic requests)."""
     base_url = _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
@@ -727,7 +732,7 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any]) -
             raise AuthError("No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or ANTHROPIC_API_KEY, or point "
                             "key_env/api_key_env in your config.yaml model section at a custom env var.")
     else:
-        token = _anthropic_token_or_raise()
+        token = _anthropic_token_or_raise(model=target_model)
     return _runtime("anthropic", "anthropic_messages", base_url, token, source="env", requested_provider=requested_provider)
 
 
@@ -860,7 +865,29 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
-    return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    return runtime
+
+
+def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict[str, Any]) -> None:
+    """Reject a bare ``custom`` placeholder request that fell through the whole ladder to the
+    OpenRouter default endpoint with no credential. Every other custom rung (named entry, local
+    bypass, pool, ``key_cmd``) yields a key, a callable or the ``no-key-required`` placeholder, so
+    an EMPTY key on a ``custom`` runtime is exactly the dead shape that otherwise dies at agent
+    construction as ``No LLM provider configured``. Keyed on the literal request, not the resolved
+    shape: local aliases (``ollama``, ``vllm``) are resolved tolerantly by ``/model`` direct-alias
+    switching, which supplies the alias endpoint AFTER this call and must not fail here. Typed
+    ``AuthError`` so every caller's fallback chain (CLI, gateway, TUI, cron) still advances (#17929).
+    """
+    if requested_provider != "custom" or runtime.get("provider") != "custom" or runtime.get("api_key"):
+        return
+    raise AuthError(
+        f"provider '{requested_provider}' resolved without credentials (no endpoint or API key configured). "
+        "If this is a named custom provider, use its real name (see providers: in config.yaml).",
+        provider=requested_provider,
+        code="missing_api_key",
+    )
 
 
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):
@@ -889,7 +916,7 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     if _is_external_process_provider(provider):
         yield _resolve_external_process_runtime(provider, requested_provider)
     if provider == "anthropic":
-        yield _anthropic_env_runtime(requested_provider, model_cfg)
+        yield _anthropic_env_runtime(requested_provider, model_cfg, target_model)
     if provider == "bedrock":
         yield _resolve_bedrock_runtime(requested_provider, model_cfg, target_model)
     pconfig = PROVIDER_REGISTRY.get(provider)

@@ -25,9 +25,9 @@ def receipt_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME for receipt writes."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(
-        "hermes_cli.config.get_hermes_home", lambda: home, raising=False
-    )
+    # ``_receipt_dir`` resolves through ``hermes_constants.get_hermes_home`` (env var), not
+    # ``hermes_cli.config`` — patch where production reads.
+    monkeypatch.setenv("HERMES_HOME", str(home))
     # ensure no receipt bleeds between tests
     ur._current = None
     yield home
@@ -425,6 +425,17 @@ class TestFleetClassification:
         )
         assert ok is False
         assert "version unknown" in capsys.readouterr().out
+
+    def test_identity_pending_row_gets_restart_aware_copy(self, capsys):
+        """#112634: a gateway this update relaunched that has not stamped yet must not be told to
+        restart — it was just restarted on the new code. Still non-fatal."""
+        ok = ur.print_fleet_version_matrix(
+            [{"profile": "default", "pid": 34516, "code_sha": None, "state": "unknown", "identity_pending": True}]
+        )
+        assert ok is False
+        out = capsys.readouterr().out
+        assert "code identity not published yet" in out and "hermes gateway status" in out
+        assert "predates version stamping" not in out
 
 
 class TestGatewayStatusStamping:

@@ -338,6 +338,27 @@ class TestSafeRestore:
         assert "README.md" in result["skipped_user_edits"]
         assert "main.py" in result["restored_files"]
 
+    def test_safe_restore_finds_ledger_under_walked_key(self, mgr, work_dir, tmp_path):
+        base = self._checkpoint(mgr, work_dir)
+
+        # A generic project marker in an ancestor dir (e.g. a stray
+        # package.json in /tmp) makes record_agent_write's marker walk key
+        # the ledger to the ancestor, while restore reads the exact dir's
+        # hash.  Safe restore must still find the ledger, or it silently
+        # degrades to a full restore and overwrites user edits.
+        (tmp_path / "package.json").write_text("{}\n")
+
+        (work_dir / "main.py").write_text("agent version\n")
+        (work_dir / "README.md").write_text("user hand edit\n")
+        mgr.record_agent_write(str(work_dir / "main.py"))
+
+        result = mgr.restore(str(work_dir), base, safe=True)
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "print('hello')\n"
+        assert (work_dir / "README.md").read_text() == "user hand edit\n"
+        assert result["restored_files"] == ["main.py"]
+        assert "README.md" in result["skipped_user_edits"]
+
     def test_safe_restore_skips_file_user_edited_after_agent(self, mgr, work_dir):
         base = self._checkpoint(mgr, work_dir)
 

@@ -78,20 +78,34 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
     raise value  # type: ignore[misc]
 
 
-def _scan_context_content(content: str, filename: str) -> str:
+def _scan_context_content(content: str, filename: str, *, user_authored: bool = False) -> str:
     """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
     cloned repo's docs); blocking, not warning, because the file would otherwise enter the prompt verbatim.
+
+    *user_authored* (SOUL.md in the user's own HERMES_HOME): a hit is WARNED and the file still loads.
+    SOUL.md sits in the same trust class as config.yaml — file-tool writes to it go through the
+    protected-instruction approval gate (``tools/file_tools_write_guards.py``) and project checkouts never
+    supply it — so a user who *documents* "ignore previous instructions" in their security guidance
+    must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
+    (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking, and so does
+    a SOUL.md owned by a profile distribution (``hermes profile install <git-url>`` copies it in unscanned;
+    ``load_soul_md`` passes ``user_authored=False`` when ``distribution.yaml`` owns the file).
     """
     # A leading UTF-8 BOM is a Windows-editor artifact, not an injection.
     if content.startswith("\ufeff"):
         content = content[1:]
     findings = _scan_for_threats(content, scope="context")
-    if findings:
-        logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
-        return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
-    return content
+    if not findings:
+        return content
+    if user_authored:
+        logger.warning("Context file %s matched injection pattern(s) %s; loaded anyway because it is the "
+                       "user's own file in HERMES_HOME — review it if you did not write that text",
+                       filename, ", ".join(findings))
+        return content
+    logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
+    return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
 
 
 def _find_git_root(start: Path) -> Optional[Path]:
@@ -108,13 +122,27 @@ def _exists_or_denied(path: Path) -> bool:
         return False
 
 
+def _is_file_or_denied(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir_or_denied(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
     """Nearest ``.hermes.md`` / ``HERMES.md`` from *cwd* up to the git root, else None."""
     stop_at = _find_git_root(cwd)
     current = cwd.resolve()
     # No git root: cwd only — walking parents could pick up a file planted in /tmp, /home, etc.
     for directory in [current, *current.parents] if stop_at else [current]:
-        found = next((directory / n for n in (".hermes.md", "HERMES.md") if (directory / n).is_file()), None)
+        found = next((directory / n for n in (".hermes.md", "HERMES.md") if _is_file_or_denied(directory / n)), None)
         if found or directory == stop_at:
             return found
     return None
@@ -508,6 +536,15 @@ STEER_MARKER_OPEN = (
     "once at this position; not tool output and not a new delivery when replayed from conversation history]"
 )
 STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
+# Text after the "[" that opens one of Hermes' own control frames (the steer marker above, the compaction
+# handoff and its fallbacks, runtime/system notes, agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
+# agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
+# (hosted rooms) relabel these so a reply cannot reproduce the exact trusted shape. Keep the regex literal in
+# apps/desktop/src/plugins/hermes-bots/group-round-prompt.ts byte-equivalent to this list.
+CONTROL_FRAME_OPENERS = (
+    "/?OUT-OF-BAND USER MESSAGE", "CONTEXT COMPACTION", "CONTEXT SUMMARY]", "PRIOR CONTEXT", "Runtime note:",
+    "System note:", "System:", "SYSTEM]", "IMPORTANT:", "Planning state preserved", "ASYNC DELEGATION",
+)
 
 
 def format_steer_marker(steer_text: str) -> str:
@@ -1422,22 +1459,26 @@ def _build_skills_system_prompt_inner(
 
 def _truncate_content(
     content: str, filename: str, max_chars: Optional[int] = None, context_length: Optional[int] = None,
-    read_path: Optional[str] = None,
+    read_path: Optional[str] = None, queue_warning: bool = True,
 ) -> str:
     """Head/tail truncation with a marker in the middle; ``read_path`` (default ``filename``) is what the
-    agent is told to ``read_file`` to recover the full content."""
+    agent is told to ``read_file`` to recover the full content. ``queue_warning=False`` is for bounded
+    previews (subdirectory hints) whose fixed cap no config key or model raises: the truncation is logged
+    with the marker as the only disclosure, never queued for the chat status line."""
     if max_chars is None:
         max_chars = _get_context_file_max_chars(context_length)
     if len(content) <= max_chars:
         return content
-    msg = (
-        f"⚠️  Context file {filename} TRUNCATED: {len(content)} chars exceeds limit of {max_chars} — "
-        f"trim the file, pin a larger context_file_max_chars, or use a larger-context model!"
+    remedy = (
+        "trim the file, pin a larger context_file_max_chars, or use a larger-context model!" if queue_warning
+        else f"the full file stays readable with read_file: {read_path or filename}"
     )
+    msg = f"⚠️  Context file {filename} TRUNCATED: {len(content)} chars exceeds limit of {max_chars} — {remedy}"
     logger.warning(msg)
-    if (warnings := _truncation_warnings.get()) is None:
-        _truncation_warnings.set(warnings := [])
-    warnings.append(msg)
+    if queue_warning:
+        if (warnings := _truncation_warnings.get()) is None:
+            _truncation_warnings.set(warnings := [])
+        warnings.append(msg)
     head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
     marker = (
@@ -1476,8 +1517,20 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
             content = strip_legacy_protocol(content).strip()
         if not content:
             return None
-        return _truncate_content(_scan_context_content(content, "SOUL.md"), "SOUL.md", context_length=context_length,
-                                 read_path=str(soul_path))
+        # `hermes profile install <git-url>` / `profile update` plant a third-party SOUL.md into a
+        # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
+        # approval gate, so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
+        # with no `distribution_owned` list owns the whole payload) a scanner hit keeps BLOCKING.
+        from hermes_cli.profile_distribution import read_manifest
+        try:
+            manifest = read_manifest(soul_path.parent)
+            user_authored = manifest is None or (bool(manifest.distribution_owned)
+                                                 and "SOUL.md" not in manifest.distribution_owned)
+        except Exception as e:  # unparseable manifest is still a distribution: fail closed
+            logger.debug("Could not read distribution manifest next to %s: %s", soul_path, e)
+            user_authored = False
+        return _truncate_content(_scan_context_content(content, "SOUL.md", user_authored=user_authored), "SOUL.md",
+                                 context_length=context_length, read_path=str(soul_path))
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None
@@ -1555,7 +1608,7 @@ def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
     candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.is_dir():
+    if _is_dir_or_denied(cursor_rules_dir):
         candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
     return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
 

@@ -1,6 +1,7 @@
 """Tests for terminal/file tool availability in local dev environments."""
 
 import importlib
+import logging
 
 import pytest
 
@@ -112,6 +113,89 @@ class TestCheckFnTransientFailureSuppression:
         # Different fn so last-good for `good` doesn't apply; bad has no success.
         assert reg._check_fn_cached(bad) is False
 
+    def test_expected_false_reprobe_logs_info_but_probe_exception_stays_warning(
+        self, monkeypatch, caplog
+    ):
+        import tools.registry as reg
+
+        calls = {"count": 0}
+
+        def unavailable():
+            calls["count"] += 1
+            return False
+
+        def broken():
+            raise RuntimeError("probe failed")
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: clock["now"])
+
+        with caplog.at_level(logging.INFO, logger="tools.registry"):
+            assert reg._check_fn_cached(unavailable) is False
+            clock["now"] += reg._CHECK_FN_TTL_SECONDS + 1
+            assert reg._check_fn_cached(unavailable) is False
+            assert reg._check_fn_cached(broken) is False
+
+        expected_false = [
+            record for record in caplog.records if "returned False" in record.getMessage()
+        ]
+        raised = [record for record in caplog.records if "raised" in record.getMessage()]
+        assert calls["count"] == 2
+        assert [record.levelno for record in expected_false] == [logging.INFO, logging.INFO]
+        assert len(raised) == 1
+        assert raised[0].levelno == logging.WARNING
+        assert raised[0].exc_info is not None
+
+
+    def test_core_tool_drop_after_success_warns_once_never_configured_stays_info(self, monkeypatch, caplog):
+        """A check_fn that drops a ``_HERMES_CORE_TOOLS`` member it had previously admitted logs at
+        WARNING naming the tool (#112649 atom 4): core tools are non-deferrable, so a dropped one
+        leaves neither the schema nor the tool_search catalog and the model's "no such tool" is
+        accurate. A core tool whose probe never succeeded (unconfigured browser/image_gen/HA on a
+        stock home) keeps the INFO verdict of ae5666f7fc4 — the live pass counted 13 WARNINGs per
+        process when every unconfigured core tool warned. The WARNING fires once per probe per
+        process, not on every TTL re-probe.
+        """
+        import tools.registry as reg
+
+        state = {"core": True}
+
+        def core_gate():
+            return state["core"]
+
+        def never_gate():
+            return False
+
+        import toolsets
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(toolsets, "_HERMES_CORE_TOOLS",
+                            [*toolsets._HERMES_CORE_TOOLS, "core_probe_tool", "never_probe_tool"])
+        for name, gate in (("core_probe_tool", core_gate), ("never_probe_tool", never_gate)):
+            reg.registry.register(name=name, toolset=name, schema={"name": name},
+                                  handler=lambda **kw: None, check_fn=gate)
+        reg.invalidate_check_fn_cache()
+        try:
+            with caplog.at_level(logging.INFO, logger="tools.registry"):
+                assert reg._check_fn_cached(core_gate) is True
+                assert reg._check_fn_cached(never_gate) is False
+                state["core"] = False
+                clock["now"] += reg._CHECK_FN_FAILURE_GRACE_SECONDS + reg._CHECK_FN_TTL_SECONDS + 1
+                assert reg._check_fn_cached(core_gate) is False
+                assert reg._check_fn_cached(never_gate) is False
+                clock["now"] += reg._CHECK_FN_TTL_SECONDS + 1
+                assert reg._check_fn_cached(core_gate) is False
+        finally:
+            reg.registry.deregister("core_probe_tool")
+            reg.registry.deregister("never_probe_tool")
+            reg.invalidate_check_fn_cache()
+
+        core = [r for r in caplog.records if "core_gate" in r.getMessage()]
+        never = [r for r in caplog.records if "never_gate" in r.getMessage()]
+        assert [r.levelno for r in core] == [logging.WARNING, logging.INFO]
+        assert "core_probe_tool" in core[0].getMessage()
+        assert never and all(r.levelno == logging.INFO for r in never)
 
     def test_grace_expiry_lets_real_outage_through(self, monkeypatch):
         import tools.registry as reg

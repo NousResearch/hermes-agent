@@ -3868,6 +3868,18 @@ class BasePlatformAdapter(ABC):
             return voice_ok
         return bool(caption and voice_ok)
 
+    def _tts_text_delivered(self, parts_delivered: List[bool]) -> bool:
+        """Whether the reply text already reached the user through the TTS sends.
+
+        Default mode: the text rides along as the FIRST file's caption, so any True wins (the
+        caption is only ever attached to the first part). Voice-only mode (``gateway.tts_reply_text``
+        off): the text is skipped only when EVERY voice part landed — a multi-part reply whose first
+        part failed but a later one succeeded must still fall back to text, or part 1 is lost."""
+        if not parts_delivered:
+            return False
+        reply_text = bool(getattr(getattr(self.gateway_runner, "config", None), "tts_reply_text", True))
+        return any(parts_delivered) if reply_text else all(parts_delivered)
+
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
         delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
@@ -4206,15 +4218,16 @@ class BasePlatformAdapter(ABC):
                         event, session_key, interrupt_event, text_content, media_files):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
                 # TTS plays before text; generated files are removed afterwards.
-                _tts_caption_delivered = False
+                _tts_parts_delivered = []
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
-                        _tts_caption_delivered |= await self._play_tts_file(
+                        _tts_parts_delivered.append(await self._play_tts_file(
                             event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
-                            _record_delivery)
+                            _record_delivery))
                     finally:
                         with contextlib.suppress(OSError):
                             os.remove(_tts_path)
+                _tts_caption_delivered = self._tts_text_delivered(_tts_parts_delivered)
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)

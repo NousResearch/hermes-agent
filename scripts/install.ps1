@@ -765,6 +765,155 @@ function Get-PowerShellHostExe {
     return "powershell"
 }
 
+# ---------------------------------------------------------------------------
+# uv binary validation / shim resolution (issue #110350)
+#
+# A native executable that exits nonzero does NOT throw a PowerShell
+# exception: `& $exe --version` inside a try{} just produces an empty string
+# and the failure is invisible unless $LASTEXITCODE is checked. That is
+# exactly how a relocated Chocolatey uv shim (a launcher that resolves its
+# real binary RELATIVE to its own location) was silently accepted as the
+# managed uv: the copy was broken, `--version` failed without throwing, and
+# "Managed uv found" was printed with the error text inside the
+# parentheses. These helpers close that class of hole: acceptance of ANY uv
+# binary -- pre-existing managed copy, freshly installed copy, or salvaged
+# copy -- requires exit code 0 AND recognizable version output, and the
+# Chocolatey bin dir is resolved to the real underlying executable before
+# anything is copied.
+# ---------------------------------------------------------------------------
+
+function Test-UvBinary {
+    <#
+    Return true only when $UvPath runs `uv --version` successfully:
+    exit code 0 AND recognizable "uv 0.x.y" output. A relocated
+    package-manager shim fails both checks (it exits nonzero with a
+    "Cannot find file at ..." message), so it is rejected.
+    #>
+    param([string]$UvPath)
+    if ([string]::IsNullOrWhiteSpace($UvPath) -or -not (Test-Path -LiteralPath $UvPath)) {
+        return $false
+    }
+    $ver = ""
+    $exit = 1
+    $proc = $null
+    try {
+        $proc = New-Object System.Diagnostics.Process
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $UvPath
+        $startInfo.Arguments = "--version"
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $proc.StartInfo = $startInfo
+        if (-not $proc.Start()) { return $false }
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit(10000)) {
+            try { $proc.Kill() } catch { }
+            $proc.WaitForExit()
+            return $false
+        }
+        $ver = $stdoutTask.Result
+        [void]$stderrTask.Result
+        $exit = $proc.ExitCode
+    } catch {
+        return $false
+    } finally {
+        if ($proc) { $proc.Dispose() }
+    }
+    if ($exit -ne 0) { return $false }
+    $ver = ("$ver").Trim()
+    return $ver -match '^uv \d+\.\d+\.\d+.*'
+}
+
+function Resolve-UvShimTarget {
+    <#
+    Package managers keep launchers on PATH whose relative targets only
+    work at the original location: Chocolatey's ShimGen launcher at
+    C:\ProgramData\chocolatey\bin\uv.exe resolves ..\lib\uv\tools\uv.exe
+    relative to ITS OWN directory; moving it (salvage copy) breaks it.
+    When $UvPath is such a launcher, return the standalone executable it
+    wraps; otherwise return $UvPath unchanged. Callers must still pass
+    the result through Test-UvBinary.
+    #>
+    param([string]$UvPath)
+    if ([string]::IsNullOrWhiteSpace($UvPath)) { return $UvPath }
+    # Normalize to native separators so the layout checks below work on
+    # both Windows (backslash) and POSIX (slash) hosts.
+    $sep = [IO.Path]::DirectorySeparatorChar
+    $shim = $UvPath.Replace('\', $sep).Replace('/', $sep).TrimEnd($sep)
+    $dir = Split-Path $shim -Parent
+    $name = Split-Path $shim -Leaf
+    # Chocolatey: the shim sits in <prefix>\bin (or a tools bin dir) and the
+    # real binary lives under <prefix>\lib\<name>\tools\.  We key on the
+    # 'chocolatey' path segment so the layout is recognized cross-platform.
+    $prefix = ''
+    if ($dir.IndexOf('chocolatey', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        # Walk up from the shim's own dir to the segment that ends in 'chocolatey'.
+        $node = $dir
+        while ($node) {
+            if ((Split-Path $node -Leaf) -ieq 'chocolatey') { $prefix = $node; break }
+            $node = Split-Path $node -Parent
+        }
+    }
+    if ($prefix) {
+        # Package name = the shim leaf without its .exe (Chocolatey shims in
+        # bin\ map to lib\<package>\tools\<package>.exe).
+        $baseName = $name
+        if ($baseName -like '*.exe') { $baseName = $baseName -replace '\.exe$', '' }
+        foreach ($toolDir in @("tools", "tools.bin")) {
+            $target = Join-Path (Join-Path (Join-Path $prefix 'lib') $baseName) $toolDir
+            $target = Join-Path $target "$name"
+            if (Test-Path -LiteralPath $target) { return $target }
+        }
+    }
+    # Generic shim: a sidecar .<name>.shim / .<name> marker next to the
+    # launcher that names the real binary.
+    foreach ($marker in @(".$name.shim", ".$name")) {
+        $markerPath = Join-Path $dir $marker
+        if (Test-Path -LiteralPath $markerPath) {
+            $target = (Get-Content -LiteralPath $markerPath -TotalCount 1).Trim()
+            if ($target -and (Test-Path -LiteralPath $target)) { return $target }
+        }
+    }
+    return $shim
+}
+
+function Invoke-UvInstallerSpawns {
+    <#
+    Rungs 1 + 2: run the official uv installer -- astral.sh first, then
+    the byte-identical copy published on GitHub releases. Corporate
+    proxies and AV products frequently block astral.sh while github.com
+    is reachable (issue #69216), so a second source turns a hard failure
+    into a working install. Output is tee'd so the caller can surface
+    the real error when every source fails.
+    #>
+    param([string]$UvInstallDir)
+    # Spawn via the resolved host exe (see Get-PowerShellHostExe) rather
+    # than a bare `powershell`, which isn't guaranteed to be on PATH under
+    # PowerShell 7 / pwsh-only setups.
+    $psHostExe = Get-PowerShellHostExe
+    $installerOutput = @()
+    $astralOut = @()
+    & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
+    $installerOutput += "--- uv installer source: astral.sh ---"
+    $installerOutput += @($astralOut | ForEach-Object { "$_" })
+    if ($UvInstallDir -and (Test-Path $UvInstallDir)) {
+        Write-Info "uv installer succeeded via astral.sh"
+    } else {
+        Write-Info "astral.sh uv installer did not produce $UvInstallDir; trying GitHub releases mirror ..."
+        $ghOut = @()
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
+        $installerOutput += "--- uv installer source: GitHub releases ---"
+        $installerOutput += @($ghOut | ForEach-Object { "$_" })
+        if (Test-Path $UvInstallDir) {
+            Write-Info "uv installer succeeded via GitHub releases"
+        }
+    }
+    return $installerOutput
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -772,11 +921,19 @@ function Install-Uv {
     # place, so install.ps1 and `hermes update` stay in sync.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
 
+    # Pre-existing managed copy: ACCEPT IT ONLY WHEN IT ACTUALLY RUNS.
+    # A broken salvage from a previous install (issue #110350: a relocated
+    # Chocolatey uv shim reports "Managed uv found" but cannot execute
+    # anything) must be discarded and re-installed, not trusted.
     if (Test-Path $managedUv) {
-        $script:UvCmd = $managedUv
-        $version = & $managedUv --version
-        Write-Success "Managed uv found ($version)"
-        return $true
+        if (Test-UvBinary $managedUv) {
+            $script:UvCmd = $managedUv
+            $ver = & $managedUv --version
+            Write-Success "Managed uv found ($ver)"
+            return $true
+        }
+        Write-Warn "Existing managed uv at $managedUv does not run (broken copy, e.g. a relocated package-manager shim); removing and reinstalling..."
+        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
     }
 
     Write-Info "Installing managed uv into $HermesHome\bin ..."
@@ -788,37 +945,9 @@ function Install-Uv {
     try {
         $ErrorActionPreference = "Continue"
         $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
-        # Spawn via the resolved host exe (see Get-PowerShellHostExe) rather
-        # than a bare `powershell`, which isn't guaranteed to be on PATH under
-        # PowerShell 7 / pwsh-only setups.
-        $psHostExe = Get-PowerShellHostExe
 
-        # Rungs 1 + 2: run the uv installer -- astral.sh first, then the
-        # byte-identical copy published on GitHub releases.  Corporate
-        # proxies and AV products frequently block astral.sh while
-        # github.com is reachable (issue #69216), so a second source turns
-        # a hard failure into a working install.  Capture the installer
-        # output (Tee-Object) instead of discarding it: when every source
-        # fails, the real error (download blocked, AV quarantine,
-        # permissions) must reach the user instead of only the generic
-        # "installed but not found" message.
-        $installerOutput = @()
-        $astralOut = @()
-        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
-        $installerOutput += "--- uv installer source: astral.sh ---"
-        $installerOutput += @($astralOut | ForEach-Object { "$_" })
-        if (Test-Path $managedUv) {
-            Write-Info "uv installer succeeded via astral.sh"
-        } else {
-            Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
-            $ghOut = @()
-            & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
-            $installerOutput += "--- uv installer source: GitHub releases ---"
-            $installerOutput += @($ghOut | ForEach-Object { "$_" })
-            if (Test-Path $managedUv) {
-                Write-Info "uv installer succeeded via GitHub releases"
-            }
-        }
+        # Rungs 1 + 2: official installer sources (astral.sh, GitHub mirror).
+        $installerOutput = @(Invoke-UvInstallerSpawns -UvInstallDir $managedUv)
 
         # Rung 3: salvage an existing uv.exe.  When the installer cannot run
         # at all (network fully blocked) but a working uv already exists --
@@ -827,25 +956,46 @@ function Install-Uv {
         # the managed location so the managed-first invariant holds
         # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
         if (-not (Test-Path $managedUv)) {
-            $existingUv = $null
+            $salvageCandidates = @()
             $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
                 Select-Object -First 1
             if ($uvOnPath -and $uvOnPath.Source -and (Test-Path $uvOnPath.Source)) {
-                $existingUv = $uvOnPath.Source
+                $salvageCandidates += $uvOnPath.Source
             }
-            if (-not $existingUv) {
-                $defaultUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
-                if (Test-Path $defaultUv) { $existingUv = $defaultUv }
-            }
-            if ($existingUv) {
-                Write-Info "Salvaging existing uv from $existingUv"
+            $defaultUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
+            if (Test-Path $defaultUv) { $salvageCandidates += $defaultUv }
+
+            foreach ($salvageCandidate in $salvageCandidates) {
+                # Package-manager shims (e.g. Chocolatey's C:\ProgramData\
+                # chocolatey\bin\uv.exe ShimGen launcher) resolve their real
+                # binary RELATIVE to their own location.  Copying the shim
+                # to $HermesHome\bin breaks it -- the real executable lives
+                # under <prefix>\lib\uv\tools\.  Resolve the shim to the
+                # underlying standalone binary before salvaging (issue
+                # #110350).  Falls back to the candidate itself when no
+                # shim target is found.
+                $salvageSource = Resolve-UvShimTarget $salvageCandidate
+                if ($salvageSource -ne $salvageCandidate) {
+                    Write-Info "Resolved shim $salvageCandidate to underlying executable $salvageSource"
+                }
+                if (-not (Test-Path -LiteralPath $salvageSource)) { continue }
+                Write-Info "Salvaging existing uv from $salvageSource"
                 try {
-                    Copy-Item $existingUv $managedUv -Force
-                    # Verify the salvaged binary actually runs before
-                    # trusting it as the managed uv.
-                    $null = & $managedUv --version
+                    Copy-Item $salvageSource $managedUv -Force
+                    # A native executable that exits nonzero does NOT
+                    # throw a PowerShell exception, so the old verify step
+                    # (`$null = & $managedUv --version`) silently passed for
+                    # a broken shim and the salvage was trusted anyway.
+                    # Require a successful, recognizable `uv --version`
+                    # before accepting the copy.
+                    if (Test-UvBinary $managedUv) {
+                        Write-Info "Salvaged uv verified"
+                        break
+                    }
+                    Write-Info "Salvaged uv at $salvageSource does not run after copying; trying next candidate"
+                    Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
                 } catch {
-                    Write-Info "Existing uv at $existingUv could not be salvaged: $_"
+                    Write-Info "Existing uv at $salvageSource could not be salvaged: $_"
                     Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
                 }
             }
@@ -853,11 +1003,18 @@ function Install-Uv {
 
         $ErrorActionPreference = $prevEAP
 
+        # The managed uv exists but must be VALID before the stage can
+        # report success -- every acceptance path (pre-existing, installer,
+        # salvage) funnels through this one gate (issue #110350).
         if (Test-Path $managedUv) {
-            $script:UvCmd = $managedUv
-            $version = & $managedUv --version
-            Write-Success "Managed uv installed ($version)"
-            return $true
+            if (Test-UvBinary $managedUv) {
+                $script:UvCmd = $managedUv
+                $version = & $managedUv --version
+                Write-Success "Managed uv installed ($version)"
+                return $true
+            }
+            Write-Err "Managed uv at $managedUv exists but does not run (broken copy); removing it"
+            Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
         }
 
         Write-Err "uv installed but not found at $managedUv"
@@ -1166,8 +1323,18 @@ function Resolve-UvCmd {
     # Check the managed location first -- this is where Install-Uv puts it.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
     if (Test-Path $managedUv) {
-        $script:UvCmd = $managedUv
-        return
+        # A PREVIOUS install's broken salvage (issue #110350) may still be
+        # sitting at the managed path: a relocated package-manager shim that
+        # cannot run.  Do not let later stages (Test-Python, venv, deps)
+        # inherit it -- remove it and fall through so uv is re-provisioned
+        # from a working source, or the cross-process driver's throw gives
+        # the user a clean error.
+        if (Test-UvBinary $managedUv) {
+            $script:UvCmd = $managedUv
+            return
+        }
+        Write-Warn "Managed uv at $managedUv does not run (broken copy, e.g. a relocated package-manager shim); removing it"
+        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
     }
 
     # Fall back to PATH (covers edge cases where the installer ran in a

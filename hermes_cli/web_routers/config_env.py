@@ -394,6 +394,21 @@ def _endpoint_row(
     }
 
 
+def _model_names_provider(model_cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]]) -> bool:
+    """True when ``model.provider`` points at this ``providers`` entry.
+
+    ``switch_model`` spells the active provider either as the stored key or as
+    ``custom:<lowercased name>``; the list's ``is_current`` and delete's mirror
+    detach must accept both, or a mixed-case key activates but never shows as
+    active.
+    """
+    names = {coerce_provider_id(provider_key).lower()}
+    if isinstance(entry, dict) and coerce_provider_id(entry.get("name")):
+        names.add(coerce_provider_id(entry.get("name")).lower())
+    current = str(model_cfg.get("provider") or "").strip().lower()
+    return current.removeprefix("custom:") in names
+
+
 def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
@@ -415,7 +430,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 endpoint_id, str(raw_entry.get("name") or endpoint_id), base_url,
                 str(raw_entry.get("model") or raw_entry.get("default_model") or (models[0] if models else "")),
                 models, raw_entry.get("context_length"), bool(raw_entry.get("discover_models", True)),
-                raw_entry, endpoint_id == current_provider, "providers",
+                raw_entry, _model_names_provider(model_cfg, endpoint_id, raw_entry), "providers",
             ))
 
     if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
@@ -446,13 +461,7 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, ent
     See #62269.
     """
     model_cfg = cfg.get("model")
-    if not isinstance(model_cfg, dict):
-        return
-    names = {coerce_provider_id(provider_key).lower()}
-    if isinstance(entry, dict) and coerce_provider_id(entry.get("name")):
-        names.add(coerce_provider_id(entry.get("name")).lower())
-    current = str(model_cfg.get("provider") or "").strip().lower()
-    if current.removeprefix("custom:") not in names:
+    if not isinstance(model_cfg, dict) or not _model_names_provider(model_cfg, provider_key, entry):
         return
     for field in ("provider", "base_url", "api_key", "key_env"):
         model_cfg.pop(field, None)

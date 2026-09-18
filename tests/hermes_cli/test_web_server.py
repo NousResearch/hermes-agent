@@ -1922,6 +1922,9 @@ class TestWebServerEndpoints:
             activate = self.client.post(f"{path}/activate", json={})
             assert activate.status_code == 200, activate.text
             assert load_config()["model"].get("base_url"), key
+            current = [e["id"] for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
+                       if e["is_current"]]
+            assert current == [key], f"{key}: list does not mark the endpoint just activated as current: {current}"
             deleted = self.client.request("DELETE", path)
             assert deleted.status_code == 200, deleted.text
             cfg = load_config()

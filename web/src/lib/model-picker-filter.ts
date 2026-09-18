@@ -33,12 +33,18 @@ const MODEL_ID_SHAPE_RE = /^\w[\w.-]*\/\w[\w.-]*(?::[\w./-]+)?$/;
  * `/models` — a typed id that LOOKS like a model id and matches nothing gets a
  * verbatim row instead of a dead end. OpenRouter-only: other providers have no
  * suffix routing, and offering unlisted ids there would just 400 at the wire.
+ *
+ * `trimmedQuery` arrives pre-trimmed from the picker. This regex is the
+ * stricter TS twin of the backend's permissive
+ * `hermes_constants.openrouter_slug_parts`: the picker only offers ids a human
+ * plausibly typed as a model id, while the Python validator stays permissive
+ * about what a suffix may contain.
  */
 export function verbatimModelId(
   selectedProvider: { slug: string; models?: readonly string[] } | null,
   trimmedQuery: string,
 ): string | null {
-  const q = trimmedQuery.trim();
+  const q = trimmedQuery;
   if (!q || !MODEL_ID_SHAPE_RE.test(q)) return null;
   if (!selectedProvider || selectedProvider.slug !== "openrouter") return null;
   const listed = selectedProvider.models ?? [];

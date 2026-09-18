@@ -16,7 +16,7 @@ from difflib import get_close_matches
 from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
-from hermes_constants import openrouter_slug_suffix, openrouter_variant_base
+from hermes_constants import openrouter_slug_parts, openrouter_variant_base
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -484,24 +484,29 @@ def _openrouter_pin_verdict(req: _Request, catalog: list[str]) -> Optional[dict[
     (only ``:free``/``:batch`` SKUs and the ``:nitro``-style modifiers appear there).
     When the BASE id is listed, verify the suffix against the model's public
     endpoints API — a valid pin is accepted verbatim, a bad one is rejected with
-    the available pins. Returns None (fall through to the caller's verdict path)
-    when this is not a pin case or the endpoints API is unreachable."""
+    the available pins. The base id is matched case-insensitively and the
+    catalog's canonical casing is used for the endpoints probe and messages.
+    Returns None (fall through to the caller's verdict path) when this is not a
+    pin case or the endpoints API is unreachable."""
     if req.normalized != "openrouter" or ":" not in req.lookup:
         return None
-    base = req.lookup.rpartition(":")[0]
-    suffix = openrouter_slug_suffix(req.lookup)
-    if not suffix or base not in set(catalog):
+    parts = openrouter_slug_parts(req.lookup)
+    if parts is None:
+        return None
+    base, suffix = parts
+    canonical = next((m for m in catalog if m.lower() == base.lower()), None)
+    if canonical is None:
         return None
     from hermes_cli import models as _m
 
-    slugs = _m.fetch_openrouter_endpoint_slugs(base)
+    slugs = _m.fetch_openrouter_endpoint_slugs(canonical)
     if not slugs:
         return None
     if suffix.lower() in {s.lower() for s in slugs}:
         return _accept()
     shown = ", ".join(f"`:{s}`" for s in slugs[:8])
     more = f" (and {len(slugs) - 8} more)" if len(slugs) > 8 else ""
-    return _reject(f"`:{suffix}` does not match any provider endpoint of `{base}` on OpenRouter."
+    return _reject(f"`:{suffix}` does not match any provider endpoint of `{canonical}` on OpenRouter."
                    f"\n  Available provider pins: {shown}{more}")
 
 

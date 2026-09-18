@@ -761,6 +761,13 @@ class TestValidateOpenRouterProviderPinSuffixes:
         result = self._validate("x-ai/notreal-model:wafer")
         assert result["accepted"] is False
 
+    def test_pin_base_case_insensitive(self):
+        """Catalog stores canonical casing; a differently-cased base id must
+        still reach the pin verdict instead of the generic reject."""
+        result = self._validate("Z-AI/GLM-5.3-FLASH:wafer")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
     def test_non_openrouter_provider_unaffected(self):
         result = _validate(
             "z-ai/glm-5.3-flash:wafer", "groq", api_models=["z-ai/glm-5.3-flash"],

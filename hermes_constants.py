@@ -1545,15 +1545,29 @@ OPENROUTER_VARIANT_SUFFIXES: frozenset[str] = frozenset(
 )
 
 
+def openrouter_slug_parts(model_id: str) -> tuple[str, str] | None:
+    """Split ``vendor/model[:suffix]`` at the LAST ``:`` into ``(base, suffix)``,
+    or None when the id carries no non-empty base+suffix pair (``x-ai/grok-4``
+    and ``x-ai/grok-4:`` have no suffix). Pure parsing — callers classify the
+    suffix (catalog variant, routing modifier, provider pin). Single definition
+    of OpenRouter slug anatomy: the modifier path (``openrouter_variant_base``)
+    and the provider-pin path (``hermes_cli.models_validate``) both delegate
+    here. The dashboard picker's TS twin (``MODEL_ID_SHAPE_RE`` in
+    ``web/src/lib/model-picker-filter.ts``) is deliberately stricter about what
+    counts as a model id; this parser stays permissive about suffix contents."""
+    base, sep, suffix = (model_id or "").rpartition(":")
+    if not sep or not base or not suffix:
+        return None
+    return base, suffix
+
+
 def openrouter_slug_suffix(model_id: str) -> str | None:
     """Raw suffix after the LAST ``:`` (``x-ai/grok-4:nitro`` → ``nitro``,
     ``z-ai/glm-5.3-flash:deepinfra/fp4`` → ``deepinfra/fp4``), else None.
     Pure parsing — callers classify the suffix (catalog variant, routing
     modifier, provider pin)."""
-    base, sep, suffix = (model_id or "").rpartition(":")
-    if not sep or not base or not suffix:
-        return None
-    return suffix
+    parts = openrouter_slug_parts(model_id)
+    return parts[1] if parts else None
 
 
 def openrouter_variant_base(model_id: str) -> str | None:
@@ -1572,9 +1586,9 @@ def openrouter_variant_base(model_id: str) -> str | None:
     >>> openrouter_variant_base("x-ai/grok-4") is None
     True
     """
-    suffix = openrouter_slug_suffix(model_id)
-    if suffix is not None and suffix.lower() in OPENROUTER_VARIANT_SUFFIXES:
-        return (model_id or "").rpartition(":")[0]
+    parts = openrouter_slug_parts(model_id)
+    if parts and parts[1].lower() in OPENROUTER_VARIANT_SUFFIXES:
+        return parts[0]
     return None
 
 

@@ -538,7 +538,7 @@ export class JsonRpcRequestChannel {
         // A crashing handler must not leave the backend waiting out its full
         // deadline (clarify blocks 3600s): answer -32603 and stop. The `send`
         // guard makes this a no-op if the handler already responded.
-        request.fail(JSON_RPC_INTERNAL_ERROR, `server request handler crashed: ${decoded.method}`)
+        request.fail({ code: JSON_RPC_INTERNAL_ERROR, message: `server request handler crashed: ${decoded.method}` })
         this.options.onRequestHandlerError?.(error instanceof Error ? error : new Error(String(error)), {
           id: decoded.id,
           method: decoded.method,

@@ -308,32 +308,24 @@ describe('JsonRpcRequestChannel', () => {
     const { sent, transport } = spyTransport()
 
     channel.attach(transport)
-    channel.onRequest(req => {
-      if (req.method === 'boom') {
-        throw new Error('handler exploded')
-      }
-
-      if (req.method === 'clarify') {
-        req.respond({ answer: 'yes' })
-
-        return true
-      }
-
-      return false
+    // Declared methods only: an undeclared name is answered -32601 before any handler runs.
+    channel.onServerRequest('sudo', () => {
+      throw new Error('handler exploded')
     })
+    channel.onServerRequest('clarify', req => req.respond({ answer: 'yes' }))
 
-    channel.handleFrame(JSON.stringify({ id: 'srq-1', jsonrpc: '2.0', method: 'boom', params: { session_id: 's1' } }))
+    channel.handleFrame(JSON.stringify({ id: 'srq-1', jsonrpc: '2.0', method: 'sudo', params: { session_id: 's1' } }))
     channel.handleFrame(JSON.stringify({ id: 'srq-2', jsonrpc: '2.0', method: 'nobody', params: { session_id: 's1' } }))
 
     const frames = sent.map(f => JSON.parse(f) as { id: string; error?: { code: number; message?: string } })
 
     expect(frames[0].id).toBe('srq-1')
     expect(frames[0].error?.code).toBe(-32603)
-    expect(frames[0].error?.message).toContain('boom')
+    expect(frames[0].error?.message).toContain('sudo')
     expect(frames[1].id).toBe('srq-2')
     expect(frames[1].error?.code).toBe(-32601)
     // The crash reports through its own hook; it is not an "unhandled" request.
-    expect(crashed).toEqual([{ id: 'srq-1', method: 'boom', message: 'handler exploded' }])
+    expect(crashed).toEqual([{ id: 'srq-1', method: 'sudo', message: 'handler exploded' }])
     expect(unhandled).toEqual(['nobody'])
 
     // The channel survives: a normal request after the crash still routes.

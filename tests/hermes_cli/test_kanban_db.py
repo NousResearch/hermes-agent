@@ -170,6 +170,108 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "idx_events_run" in indexes
 
 
+def test_connect_leaves_historical_run_provenance_unknown_on_existing_run_schema(tmp_path):
+    """An upgrade must not infer a historical attempt from mutable task fields."""
+    db_path = tmp_path / "legacy-runs-kanban.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            worker_pid INTEGER,
+            max_runtime_seconds INTEGER,
+            last_heartbeat_at INTEGER,
+            current_run_id INTEGER,
+            session_id TEXT,
+            model_override TEXT
+        );
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE task_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            profile TEXT,
+            step_key TEXT,
+            status TEXT NOT NULL,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            worker_pid INTEGER,
+            max_runtime_seconds INTEGER,
+            last_heartbeat_at INTEGER,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            outcome TEXT,
+            summary TEXT,
+            metadata TEXT,
+            error TEXT
+        );
+        INSERT INTO tasks (id, title, assignee, status, created_at, session_id, model_override)
+        VALUES ('legacy', 'old task', 'worker', 'done', 1, 'origin-session', 'gpt-5.6-terra');
+        INSERT INTO task_runs (task_id, status, started_at, ended_at, outcome)
+        VALUES ('legacy', 'done', 1, 2, 'completed');
+    """)
+    conn.close()
+
+    with kbc.connect(db_path) as migrated:
+        run = kb.latest_run(migrated, "legacy")
+
+    assert run is not None
+    assert run.session_id is None
+    assert run.model_override is None
+
+
+def test_synthesized_terminal_run_snapshots_nullable_model_and_session(kanban_home):
+    """A terminal transition before dispatch retains only explicit task provenance."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="unclaimed terminal", session_id="origin-session",
+        )
+        assert kb.complete_task(conn, task_id, result="done")
+        run = kb.latest_run(conn, task_id)
+
+    assert run is not None
+    assert run.session_id == "origin-session"
+    assert run.model_override is None
+
+
+def test_run_provenance_survives_dispatch_reclaim_and_completion(
+    kanban_home, all_assignees_spawnable,
+):
+    """Every dispatcher attempt snapshots model/session through retry and terminal paths."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="durable provenance", assignee="worker", session_id="origin-session",
+            model_override="gpt-5.6-terra",
+        )
+        first = kbd.dispatch_once(conn, spawn_fn=lambda *_args, **_kwargs: None)
+        first_run = kb.latest_run(conn, task_id)
+
+        assert first.spawned and first_run is not None
+        assert first_run.session_id == "origin-session"
+        assert first_run.model_override == "gpt-5.6-terra"
+        assert kb.reclaim_task(conn, task_id, reason="retry")
+
+        second = kbd.dispatch_once(conn, spawn_fn=lambda *_args, **_kwargs: None)
+        assert second.spawned
+        assert kb.complete_task(conn, task_id, result="done")
+        runs = kb.list_runs(conn, task_id)
+
+    assert [run.session_id for run in runs] == ["origin-session", "origin-session"]
+    assert [run.model_override for run in runs] == ["gpt-5.6-terra", "gpt-5.6-terra"]
+    assert [run.outcome for run in runs] == ["reclaimed", "completed"]
+
+
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------

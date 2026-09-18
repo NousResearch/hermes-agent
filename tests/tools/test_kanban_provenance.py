@@ -59,3 +59,22 @@ def test_tool_subscription_captures_conversation_anchors(tmp_path, monkeypatch):
         metadata = kn.list_notify_subs(conn, result["task_id"])[0]["delivery_metadata"]
         assert metadata["scope_id"] == "guild"
         assert metadata["parent_chat_id"] == "forum"
+
+
+def test_kanban_show_tool_includes_run_model_provenance(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    kb.init_db()
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn, title="tool provenance", session_id="origin",
+            model_override="gpt-5.6-terra",
+        )
+        kb.claim_task(conn, task_id)
+
+    result = json.loads(kt._handle_show({"task_id": task_id}))
+
+    assert result["runs"][-1]["session_id"] == "origin"
+    assert result["runs"][-1]["model_override"] == "gpt-5.6-terra"

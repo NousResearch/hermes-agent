@@ -682,7 +682,7 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
     try:
         result = _deliver_with_replay(
             f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
-            body={"message": message}, timeout=wait_seconds + _DM_TIMEOUT_SLACK_S,
+            body=_turn_body(message, message_key="message"), timeout=wait_seconds + _DM_TIMEOUT_SLACK_S,
             headers=headers, idempotency_key=idempotency_key)
     except urllib.error.HTTPError as exc:
         return _peer_refusal(peer_name, exc)

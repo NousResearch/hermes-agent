@@ -3836,6 +3836,8 @@ export interface Translations {
     imageDownloadFailed: string
     openImage: string
     downloadImage: string
+    previousImage: string
+    nextImage: string
     savingImage: string
     imagePreviewFailed: string
     imageAttach: string

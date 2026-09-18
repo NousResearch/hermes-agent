@@ -4482,6 +4482,8 @@ export const en: Translations = {
     imageDownloadFailed: 'Image download failed',
     openImage: 'Open image',
     downloadImage: 'Download image',
+    previousImage: 'Previous image',
+    nextImage: 'Next image',
     savingImage: 'Saving image',
     imagePreviewFailed: 'Image preview failed',
     imageAttach: 'Image attach',

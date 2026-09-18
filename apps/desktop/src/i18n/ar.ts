@@ -3247,6 +3247,8 @@ export const ar = defineLocale({
     imageDownloadFailed: 'فشل تنزيل الصورة',
     openImage: 'فتح الصورة',
     downloadImage: 'تنزيل الصورة',
+    previousImage: 'الصورة السابقة',
+    nextImage: 'الصورة التالية',
     savingImage: 'جار حفظ الصورة',
     imagePreviewFailed: 'فشلت معاينة الصورة',
     imageAttach: 'إرفاق الصورة',

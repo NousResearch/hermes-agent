@@ -142,6 +142,8 @@ def reset_language_cache() -> None:
     _config_language_cached.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
+    from hermes_cli.commands import _reset_localized_command_catalog_cache
+    _reset_localized_command_catalog_cache()
 
 
 def get_language() -> str:
@@ -154,6 +156,11 @@ def get_language() -> str:
     except UnscopedSecretError:
         env_lang = os.environ.get("HERMES_LANGUAGE")  # unscoped default-profile path: environ IS its own value
     return _normalize_lang(env_lang) if env_lang else _config_language() or DEFAULT_LANGUAGE
+
+
+def normalize_language(value: Any) -> str:
+    """Return the supported language code for a wire/request value."""
+    return _normalize_lang(value)
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
@@ -178,4 +185,4 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         return value
 
 
-__all__ = ["SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "reset_language_cache"]
+__all__ = ["SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "normalize_language", "reset_language_cache"]

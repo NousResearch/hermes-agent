@@ -22,6 +22,7 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('RU-RU')).toBe('ru')
     expect(normalizeLocale(' ru_ru ')).toBe('ru')
     expect(normalizeLocale('Русский')).toBe('ru')
+    expect(normalizeLocale('ko-KR')).toBe('ko')
   })
 
   it('falls back to English for empty or unsupported values', () => {
@@ -42,6 +43,7 @@ describe('desktop i18n languages', () => {
     expect(isLocale('ja')).toBe(true)
     expect(isLocale('ar')).toBe(true)
     expect(isLocale('ru')).toBe(true)
+    expect(isLocale('ko')).toBe(true)
   })
 
   it('returns the persisted config value for supported locales', () => {
@@ -51,5 +53,6 @@ describe('desktop i18n languages', () => {
     expect(localeConfigValue('ja')).toBe('ja')
     expect(localeConfigValue('ar')).toBe('ar')
     expect(localeConfigValue('ru')).toBe('ru')
+    expect(localeConfigValue('ko')).toBe('ko')
   })
 })

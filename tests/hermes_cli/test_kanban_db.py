@@ -1957,3 +1957,162 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+# ---------------------------------------------------------------------------
+# Orphan reclaim: workers are only reapable by the dispatcher that spawned
+# them (``_recent_worker_exits`` is in-memory, ``os.waitpid`` only reaps own
+# children). A gateway restart therefore makes every in-flight worker
+# unreapable by the successor, which used to classify each as ``unknown`` ->
+# "pid N not alive" -> a counted failure. Two sweeps hit ``failure_limit`` and
+# blocked EVERY in-flight card at once. An orphan must requeue like the quota
+# wall: no failure counted.
+# ---------------------------------------------------------------------------
+
+
+def test_orphaned_worker_requeues_without_counting_failure(
+    kanban_home, monkeypatch,
+):
+    """A worker whose claiming dispatcher is gone is an orphan, not a crash:
+    it returns to ``ready`` with ``consecutive_failures`` untouched even after
+    far more restarts than ``DEFAULT_FAILURE_LIMIT``."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    # The claiming gateway PID is dead; the worker exit was never reaped, so
+    # the PID is deliberately absent from the reap registry (-> "unknown").
+    monkeypatch.setattr(_kbd, "_claimer_gateway_is_gone", lambda _c: True)
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="orphan", assignee="a")
+
+        for i in range(6):
+            pid = 71000 + i
+            kb.claim_task(conn, tid, claimer=f"{host}:{90000 + i}")
+            conn.execute(
+                "UPDATE tasks SET worker_pid=?, consecutive_failures=? "
+                "WHERE id=?",
+                (pid, 0, tid),
+            )
+            conn.commit()
+            # NOTE: no _record_worker_exit — an orphan is exactly the case
+            # where no exit status was ever collected.
+
+            crashed = kbd.detect_crashed_workers(conn, orphan_reclaim=True)
+            assert tid not in crashed, (
+                f"restart {i}: orphan must not be reported as a crash"
+            )
+
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"restart {i}: should requeue ready, got {task.status}"
+            )
+            assert task.consecutive_failures == 0, (
+                f"restart {i}: orphan must not count a failure, "
+                f"got {task.consecutive_failures}"
+            )
+
+        outcomes = [
+            r["outcome"] for r in conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=?", (tid,),
+            ).fetchall()
+        ]
+        assert "crashed" not in outcomes
+        assert "reclaimed" in outcomes, (
+            f"orphan must record a non-backoff outcome, got {outcomes}"
+        )
+        assert "rate_limited" not in outcomes, (
+            "an orphan is not a quota wall: a 'rate_limited' outcome would make "
+            "check_respawn_guard park the card for the 300s rate-limit cooldown"
+        )
+
+
+def test_unknown_exit_still_counts_failure_when_dispatcher_alive(
+    kanban_home, monkeypatch,
+):
+    """Guard against over-reach: an unreapable worker whose dispatcher is
+    STILL ALIVE is a genuine crash and must keep counting a failure."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setattr(_kbd, "_claimer_gateway_is_gone", lambda _c: False)
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="realcrash", assignee="a")
+        kb.claim_task(conn, tid, claimer=f"{host}:{os.getpid()}")
+        conn.execute(
+            "UPDATE tasks SET worker_pid=?, consecutive_failures=0 WHERE id=?",
+            (72000, tid),
+        )
+        conn.commit()
+
+        crashed = kbd.detect_crashed_workers(conn, orphan_reclaim=True)
+        assert tid in crashed
+        assert kb.get_task(conn, tid).consecutive_failures == 1
+
+
+def test_oneshot_dispatch_keeps_counting_failures(kanban_home, monkeypatch):
+    """The orphan reclaim is opted into by the long-lived daemon ONLY.
+
+    Under one-shot ``hermes kanban dispatch`` the claiming process exits right
+    after spawning its workers, by design — so "the claimer is gone" is the
+    normal case there, not evidence of a restart. If the rule fired in that
+    mode every genuine crash would be silently requeued and the crash breaker
+    would never trip. Pin the default: no opt-in, dead claimer, still a crash.
+    """
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    # Claimer is gone — would be an orphan under the daemon's rule.
+    monkeypatch.setattr(_kbd, "_claimer_gateway_is_gone", lambda _c: True)
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="oneshot", assignee="a")
+        kb.claim_task(conn, tid, claimer=f"{host}:{91000}")
+        conn.execute(
+            "UPDATE tasks SET worker_pid=?, consecutive_failures=0 WHERE id=?",
+            (73000, tid),
+        )
+        conn.commit()
+
+        # No orphan_reclaim -> one-shot semantics preserved.
+        crashed = kbd.detect_crashed_workers(conn)
+        assert tid in crashed, (
+            "without the daemon opt-in an unreapable death must stay a crash"
+        )
+        assert kb.get_task(conn, tid).consecutive_failures == 1
+
+
+def test_claimer_gateway_is_gone_detects_only_dead_local_pids():
+    """Unit-level truth table for the orphan detector."""
+    from hermes_cli import kanban_db_dispatch as _kbd
+    import socket
+
+    host = socket.gethostname() or "unknown"
+
+    # Our own live PID -> not orphaned.
+    assert _kbd._claimer_gateway_is_gone(f"{host}:{os.getpid()}") is False
+    # A foreign host is never judged locally (its PIDs are meaningless here).
+    assert _kbd._claimer_gateway_is_gone("some-other-host:1") is False
+    # Malformed / empty claims are not orphans.
+    assert _kbd._claimer_gateway_is_gone(None) is False
+    assert _kbd._claimer_gateway_is_gone("") is False
+    assert _kbd._claimer_gateway_is_gone(f"{host}:notapid") is False
+    assert _kbd._claimer_gateway_is_gone(f"{host}") is False
+
+    # A dead local PID -> orphaned. Use a reaped child to get a PID that is
+    # certain to be gone rather than guessing a free number. ``os.fork`` is
+    # POSIX-only (and the repo's windows-footgun gate rejects it even in tests),
+    # so spawn a trivial interpreter instead.
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert _kbd._claimer_gateway_is_gone(f"{host}:{child.pid}") is True

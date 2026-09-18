@@ -288,6 +288,9 @@ class TestVaultEgressRedaction:
     def test_exec_redacts_registered_vault_secret_from_stdout_and_stderr(self, tmp_path, monkeypatch):
         """A browser_exec page read must not return a vault-filled value to model history."""
         from agent import redact
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "config.yaml").write_text("vault:\n  enabled: true\n", encoding="utf-8")
 
         secret = "vault-filled-password-112693"
         cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "stdout={secret}"\necho "stderr={secret}" >&2\n')

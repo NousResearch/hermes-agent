@@ -26,8 +26,9 @@ logger = logging.getLogger("tools.browser_supervisor")
 def _redact_supervisor_text(value: str) -> str:
     """Redact page-originated text before exposing supervisor snapshots."""
     from agent.redact import redact_sensitive_text
+    from agent.vault_backends.base import browser_vault_enabled
 
-    return redact_sensitive_text(value, force=True)
+    return redact_sensitive_text(value, force=browser_vault_enabled())
 
 
 def _trim_ring(events: list, keep: int) -> list:

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Exact secret values that transited a server-side vault fill (browser_vault_fill). Generic
 # credential-shaped regexes cannot catch an arbitrary user password, so the fill path registers
 # the exact bytes and every browser_* tool result (including browser_cdp Runtime.evaluate
-# passthrough) is scrubbed against them before it can reach the model. Memory only: never
+# passthrough) is scrubbed against them while browser vault is enabled. Memory only: never
 # persisted or logged. Keyed by profile home so a multiplex gateway never scrubs profile B's
 # output with profile A's passwords (which would also confirm to B that the bytes exist), and
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
@@ -40,8 +40,8 @@ def _vault_scope() -> str:
 def register_vault_redaction_value(value) -> None:
     """Register an exact vault secret value for model-facing redaction.
 
-    Called by the vault fill path BEFORE the injection happens, so no later browser tool result
-    can echo the value back into model context. Also registers the form a text input normalizes
+    Called by the vault fill path BEFORE the injection happens, so browser tool results cannot
+    echo the value back while vault is enabled. Also registers the form a text input normalizes
     it to (CR/LF stripped), since that is what the page holds.
     """
     if not isinstance(value, str) or not value:
@@ -64,8 +64,13 @@ def clear_vault_redaction_values() -> None:
 
 
 def redact_registered_vault_values(text: str) -> str:
-    """Exact-substring scrub of every vault secret value registered for the current profile."""
+    """Scrub registered values only while the current profile opts into browser vault."""
     if not isinstance(text, str) or not text:
+        return text
+    from agent.vault_backends.base import browser_vault_enabled
+
+    # Keep the registry across opt-out so re-enabling restores protection.
+    if not browser_vault_enabled():
         return text
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
@@ -904,7 +909,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = text if isinstance(text, str) else str(text)
     if not text:
         return text
-    # Vault secrets are a hard model-egress boundary: scrubbed regardless of the redact_secrets preference.
+    # Vault opt-in scrubs registered values independently of security.redact_secrets.
     text = redact_registered_vault_values(text)
     if not (force or _redact_enabled()):
         return text

@@ -561,8 +561,8 @@ class TestBrowserVaultTools:
             assert canary not in json.dumps(scrubbed)
             assert "«redacted-vault-secret»" in json.dumps(scrubbed, ensure_ascii=False)
 
-            # And the generic browser-result scrub catches it too, even with
-            # user-level redaction preferences irrelevant (unconditional).
+            # With vault opted in, the generic scrub catches it independently
+            # of security.redact_secrets.
             assert canary not in redact_sensitive_text(f"page text: {canary}")
         finally:
             redact.clear_vault_redaction_values()

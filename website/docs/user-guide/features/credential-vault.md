@@ -43,6 +43,20 @@ remain available for your existing login workflow, including Proton Pass or cust
 automation. Saving an item, installing a manager, or enabling a manager source does
 **not** enable browser vault. The behavior described below applies after opt-in.
 
+### Output masking
+
+`vault.enabled: false` also disables vault-forced output masking, including exact-value
+scrubbing of secrets registered by an earlier vault fill. This policy is checked at
+runtime for the active profile. The in-memory registry is retained, not cleared:
+turning vault back on restores masking of values still registered in that process.
+
+Generic secret redaction (`security.redact_secrets`) is independent. With vault off
+and generic redaction on, ordinary credential-pattern masking still applies. With
+both off, browser output is not masked by either policy, including JSON and Python
+mapping readbacks of previously filled passwords. Such output can then reach the
+model, logs, stored snapshots, and conversation history. Re-enabling vault does not
+retroactively remove output already exposed while it was off.
+
 ## What it looks like
 
 **CLI / TUI**

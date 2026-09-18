@@ -610,6 +610,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
     from agent.redact import redact_sensitive_text
+    from agent.vault_backends.base import browser_vault_enabled
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
@@ -661,18 +662,20 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
-    # browser_vault_fill registers injected values with this forced model-egress
-    # boundary. Preserve raw stdout only for screenshot-path detection below.
+    # Vault opt-in forces redaction; otherwise honor security.redact_secrets.
+    # CLI stderr can echo user code/page values, so it follows the same policy.
+    # Preserve raw stdout for screenshot-path detection below.
+    force_redaction = browser_vault_enabled()
     result = {
         "success": proc.returncode == 0,
         "exit_code": proc.returncode,
-        "output": redact_sensitive_text(proc.stdout, force=True),
+        "output": redact_sensitive_text(proc.stdout, force=force_redaction),
     }
     if workspace:
         result["workspace"] = workspace
     if session:
         result["session"] = session
-    stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
+    stderr = redact_sensitive_text((proc.stderr or "").strip(), force=force_redaction)
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:

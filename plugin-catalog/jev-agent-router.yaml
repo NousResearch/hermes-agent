@@ -1,7 +1,7 @@
 name: jev-agent-router
 repo: https://github.com/Pinutss/jev-agent-router
-sha: e1e63a5f5fc667eb555e9f195e965bce720096fa
-description: Picks one agent for a task, explains the choice, abstains, or falls back once. Portable Agent Plugins v1 package with agent_route MCP.
+sha: 8cb6d67a81d4545502750c4599b427d98acf3120
+description: "Agent Plugins v1 package: one skill plus one stdio MCP server (agent_route) started with uv run from the checkout. Needs uv on PATH. Registers no Hermes tools or hooks; do not expect jev_* tools."
 maintainer: Pinutss
 tier: community
 category: general

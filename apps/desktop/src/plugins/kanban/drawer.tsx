@@ -2,7 +2,7 @@
  * Task drawer — the desktop port of the dashboard's task detail, flat-styled:
  * status menu + meta table, DIAGNOSTICS (the "why is this stuck" panel, with
  * reassign recovery), description (editable), result/summary, dependencies,
- * comments (+composer), activity, run history, and the worker log tail.
+ * comments (+composer), activity folded by attempt, and the worker log tail.
  */
 
 import {
@@ -52,6 +52,7 @@ import {
   type DiagnosticAction,
   type KanbanAttachment,
   type KanbanEvent,
+  type KanbanRun,
   type KanbanTaskDetail,
   SEVERITY_TONE,
   type TaskEstimate
@@ -65,6 +66,7 @@ import {
   depSegment,
   duration,
   errText,
+  FIELD_LABEL,
   isLockedTarget,
   type KanbanText,
   lockedReason,
@@ -550,6 +552,181 @@ export interface LinkedCard {
   title: string
 }
 
+/**
+ * One attempt's worth of activity: the events a single run emitted, or the
+ * task-scoped rows that predate any run (``run_id`` null). Every attempt the
+ * board still lists gets a row here, including one that emitted no events — an
+ * attempt that crashed before its first event is exactly what an operator
+ * opens the drawer to find.
+ */
+interface ActivityAttempt {
+  events: KanbanEvent[]
+  key: string
+  run?: KanbanRun
+}
+
+/** Fold-row key for the run-less rows (a promotion, a link change, …). */
+const TASK_SCOPED_ATTEMPT = 'task'
+
+function attemptStart(attempt: ActivityAttempt): number {
+  return attempt.run?.started_at ?? attempt.events[0]?.created_at ?? 0
+}
+
+/**
+ * Group the feed into attempts. ``list_events`` returns created_at ASC, so the
+ * last group is the newest attempt — the one left unfolded by default. Runs
+ * with no events still get a row, so folding never hides an attempt entirely.
+ */
+function buildAttempts(events: KanbanEvent[], runs: KanbanRun[]): ActivityAttempt[] {
+  const attempts = new Map<string, ActivityAttempt>()
+  const runById = new Map(runs.map(run => [String(run.id), run]))
+
+  for (const event of events) {
+    const key = typeof event.run_id === 'number' ? String(event.run_id) : TASK_SCOPED_ATTEMPT
+    const attempt = attempts.get(key) ?? { events: [], key, run: runById.get(key) }
+
+    attempt.events.push(event)
+    attempts.set(key, attempt)
+  }
+
+  for (const run of runs) {
+    const key = String(run.id)
+
+    if (!attempts.has(key)) {
+      attempts.set(key, { events: [], key, run })
+    }
+  }
+
+  return [...attempts.values()].sort((a, b) => attemptStart(a) - attemptStart(b))
+}
+
+/**
+ * The activity feed, folded by attempt. A card retried six times used to render
+ * every event and every run row at once — the height cap only hid them, it kept
+ * none of them off the DOM. Folding each attempt behind one focusable row
+ * leaves a single attempt on screen by default and still accounts for every
+ * event on the card (folded attempts + unfolded events = events).
+ */
+function ActivityFeed({ events, runs, k }: { events: KanbanEvent[]; k: KanbanText; runs: KanbanRun[] }) {
+  const attempts = buildAttempts(events, runs)
+  // null = the operator has not touched the feed yet, so the newest attempt is
+  // the unfolded one; deriving it keeps a late-landing detail query unfolded
+  // instead of freezing the first (empty) render's choice.
+  const [unfolded, setUnfolded] = useState<null | string[]>(null)
+  const open = new Set(unfolded ?? (attempts.length > 0 ? [attempts[attempts.length - 1].key] : []))
+
+  const toggle = (key: string) => {
+    const next = new Set(open)
+
+    if (next.has(key)) {
+      next.delete(key)
+    } else {
+      next.add(key)
+    }
+
+    setUnfolded([...next])
+  }
+
+  return (
+    <ul className="flex flex-col gap-1">
+      {attempts.map((attempt, index) => {
+        const run = attempt.run
+        const events = attempt.events
+        const foldable = events.length > 0
+        const unfoldedHere = foldable && open.has(attempt.key)
+        const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run?.outcome ?? run?.status ?? '')
+        const started = run?.started_at ?? events[0]?.created_at
+        const note = run?.error ?? run?.summary
+        const spent = duration(run?.started_at, run?.ended_at)
+
+        return (
+          <li className="flex flex-col gap-1" key={attempt.key}>
+            <button
+              aria-expanded={foldable ? unfoldedHere : undefined}
+              aria-label={
+                foldable ? (unfoldedHere ? k.collapse(`#${index + 1}`) : k.expand(`#${index + 1}`)) : undefined
+              }
+              className={cn(
+                'flex items-center gap-2 rounded px-1 py-0.5 text-left text-[0.71rem]',
+                foldable && 'hover:bg-(--chrome-action-hover)'
+              )}
+              data-attempt={attempt.key}
+              data-events={events.length}
+              disabled={!foldable}
+              onClick={foldable ? () => toggle(attempt.key) : undefined}
+              onKeyDown={event => {
+                if (!foldable || !isSubmitEnter(event)) {
+                  return
+                }
+
+                // Swallow Enter so the button's own activation cannot fire too.
+                event.preventDefault()
+                toggle(attempt.key)
+              }}
+              type="button"
+            >
+              {foldable ? (
+                <Codicon
+                  className="shrink-0 text-(--ui-text-tertiary)"
+                  name={unfoldedHere ? 'chevron-down' : 'chevron-right'}
+                  size="0.7rem"
+                />
+              ) : (
+                <span className="w-[0.7rem] shrink-0" />
+              )}
+              <span className="shrink-0 tabular-nums text-(--ui-text-quaternary)">{index + 1}</span>
+              {run && (
+                <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
+                  {run.outcome ?? run.status}
+                </Badge>
+              )}
+              {run?.profile && <span className="shrink-0 text-(--ui-text-tertiary)">{run.profile}</span>}
+              {spent && <span className="shrink-0 text-(--ui-text-quaternary)">{spent}</span>}
+              {started && <span className="shrink-0 text-(--ui-text-quaternary)">{ago(started)}</span>}
+              <span className="ml-auto shrink-0 tabular-nums text-(--ui-text-quaternary)">{events.length}</span>
+            </button>
+            {note && (
+              <p
+                className={cn(
+                  'line-clamp-1 px-1 text-[0.6875rem]',
+                  run?.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
+                )}
+              >
+                {note}
+              </p>
+            )}
+            {unfoldedHere && (
+              <ScrollFade deps={events.length} max="7rem">
+                <ul className="flex flex-col gap-1 pl-4">
+                  {events.map(event => {
+                    const { detail: extra, label } = eventText(event, k)
+
+                    return (
+                      <li
+                        className="flex items-baseline gap-2 text-[0.6875rem]"
+                        data-event-id={event.id}
+                        key={event.id}
+                      >
+                        <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
+                        {extra && (
+                          <span className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)" title={extra}>
+                            {extra}
+                          </span>
+                        )}
+                        <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </ScrollFade>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 export function TaskDrawer({
   columns,
   focusLinks,
@@ -958,71 +1135,14 @@ export function TaskDrawer({
               />
             </Section>
 
-            {detail.events.length > 0 && (
-              <Section label={k.activity(detail.events.length)}>
-                <ScrollFade deps={detail.events.length} max="7rem">
-                  <ul className="flex flex-col gap-1">
-                    {detail.events.map(event => {
-                      const { detail: extra, label } = eventText(event, k)
-
-                      return (
-                        <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
-                          <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
-                          {extra && (
-                            <span
-                              className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)"
-                              title={extra}
-                            >
-                              {extra}
-                            </span>
-                          )}
-                          <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {detail.runs.length > 0 && (
-              <Section label={k.runs(detail.runs.length)}>
-                <ScrollFade max="11rem">
-                  <ul className="flex flex-col gap-1.5">
-                    {detail.runs.map(run => {
-                      const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
-
-                      return (
-                        <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
-                          <div className="flex items-center gap-2">
-                            <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
-                              {run.outcome ?? run.status}
-                            </Badge>
-                            {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
-                            {duration(run.started_at, run.ended_at) && (
-                              <span className="text-(--ui-text-quaternary)">
-                                {duration(run.started_at, run.ended_at)}
-                              </span>
-                            )}
-                            <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
-                              {ago(run.ended_at ?? run.started_at)}
-                            </span>
-                          </div>
-                          {(run.error || run.summary) && (
-                            <p
-                              className={cn(
-                                'line-clamp-2 whitespace-pre-wrap',
-                                run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
-                              )}
-                            >
-                              {run.error ?? run.summary}
-                            </p>
-                          )}
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </ScrollFade>
+            {(detail.events.length > 0 || detail.runs.length > 0) && (
+              <Section
+                action={
+                  detail.runs.length > 0 ? <span className={FIELD_LABEL}>{k.runs(detail.runs.length)}</span> : undefined
+                }
+                label={k.activity(detail.events.length)}
+              >
+                <ActivityFeed events={detail.events} k={k} runs={detail.runs} />
               </Section>
             )}
 

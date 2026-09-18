@@ -95,6 +95,10 @@ export interface KanbanEvent {
   kind: string
   payload: unknown
   created_at: number
+  /** The run that emitted this row — null/absent for task-scoped events (a
+   *  promotion, a link change). Serialized from task_events.run_id; the drawer
+   *  folds the activity feed by it. */
+  run_id?: null | number
 }
 
 export interface KanbanAttachment {

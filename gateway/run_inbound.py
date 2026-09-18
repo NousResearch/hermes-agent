@@ -20,6 +20,7 @@ from contextlib import suppress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.reply_context import prepend_reaction_context, reaction_metadata
 from gateway.run_common import _UNSET
 from gateway.run_inbound_unauthorized import (
     PAIRING_RATE_LIMITED_REPLY, UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg,
@@ -557,6 +558,12 @@ class GatewayInboundMixin:
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._adapter_for_source(source)
         if adapter:
+            existing = adapter._pending_messages.get(_quick_key)
+            if reaction_metadata(event.raw_message) is not None or (
+                existing is not None and reaction_metadata(existing.raw_message) is not None
+            ):
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return
             merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
 
     async def _hm_busy_slash_or_photo(
@@ -674,6 +681,10 @@ class GatewayInboundMixin:
         if _handled:
             return _result
 
+        if reaction_metadata(event.raw_message) is not None and not self._draining:
+            # Preserve each target while the agent starts or handles another turn.
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return None
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
@@ -1569,6 +1580,9 @@ class GatewayInboundMixin:
                     f"{message_text}"
                 )
 
+        reaction = reaction_metadata(event.raw_message)
+        if reaction is not None:
+            return prepend_reaction_context(message_text, reaction)
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
@@ -1693,10 +1707,13 @@ class GatewayInboundMixin:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
-        if "@" in message_text:
-            message_text = await self._expand_inbound_context_references(source, session_key, message_text)
+        if "@" in message_text and reaction_metadata(event.raw_message) is None:
+            message_text = await self._expand_inbound_context_references(
+                source, session_key, message_text
+            )
             if message_text is None:
                 return None
+
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
         return self._prepend_inbound_reply_context(event, source, message_text)

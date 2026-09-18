@@ -253,6 +253,33 @@ def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, m
     assert evidence.status == "passed"
 
 
+def test_macos_mktemp_dot_separator_records_ad_hoc_evidence(tmp_path, monkeypatch):
+    """`mktemp -t hermes-verify` produces a DOT separator on macOS, not a hyphen.
+
+    The agent is only ever told to use a `hermes-verify-` prefix, so a hyphen-only
+    matcher records no evidence on macOS and the agent is nudged to verify forever.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    script = Path(tempfile.gettempdir()) / f"hermes-verify.{tmp_path.name}.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    try:
+        evidence = classify_verification_command(
+            f"python {script}",
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="ok",
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert evidence is not None
+    assert evidence.canonical_command == "ad-hoc verification script"
+    assert evidence.kind == "ad_hoc"
+    assert evidence.status == "passed"
+
+
 
 
 

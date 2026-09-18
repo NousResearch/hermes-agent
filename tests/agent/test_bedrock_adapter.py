@@ -532,10 +532,13 @@ class TestNormalizeConverseStreamEvents:
         new one, so text still lands before the toolUse instead of being overwritten by it."""
         from agent.bedrock_adapter import normalize_converse_stream_events
         events = [{k: {kk: vv for kk, vv in v.items() if kk != "contentBlockIndex"} for k, v in e.items()}
-                  for e in self._LIVE_TEXT_THEN_TOOL_EVENTS]
+                  for e in self._LIVE_TEXT_THEN_TOOL_EVENTS[:-2]]
+        # Text after the tool's stop must open its own slot, not land on the closed tool block.
+        events += [{"contentBlockDelta": {"delta": {"text": "done"}}}, {"contentBlockStop": {}},
+                   {"messageStop": {"stopReason": "tool_use"}}]
         msg = normalize_converse_stream_events({"stream": events}).choices[0].message
-        assert msg.content == "I'll echo banana now."
-        assert [list(b)[0] for b in msg.bedrock_content_blocks] == ["text", "toolUse"]
+        assert msg.content == "I'll echo banana now.\ndone"
+        assert [list(b) for b in msg.bedrock_content_blocks] == [["text"], ["toolUse"], ["text"]]
         assert msg.bedrock_content_blocks[1]["toolUse"]["input"] == {"s": "banana"}
 
 

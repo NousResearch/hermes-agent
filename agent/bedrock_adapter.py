@@ -815,11 +815,8 @@ def stream_converse_with_callbacks(
     paths); ``on_interrupt_check`` True stops streaming; ``on_event`` fires for EVERY event before branching
     and its exceptions are swallowed so a watchdog hook can never abort the stream.
 
-    Blocks are keyed by the ``contentBlockIndex`` Bedrock stamps on every contentBlockStart/Delta/Stop.
-    Text blocks get NO contentBlockStart on the wire (only toolUse does), so the index has to be read off
-    the deltas themselves: keying text by a running counter shreds one text block into one block per delta,
-    lets the later toolUse start overwrite one fragment and sort into the middle of the text, and that
-    ``[text, toolUse, text...]`` replay is rejected by Claude as assistant prefill on the next turn."""
+    Blocks are keyed by the ``contentBlockIndex`` Bedrock stamps on every contentBlockStart/Delta/Stop:
+    text blocks get NO contentBlockStart, so a counter keyed on starts shredded them (#108200)."""
     parts = _ResponseParts()
     stream_blocks: Dict[int, Dict[str, Any]] = {}
     current_block_index: Optional[int] = None
@@ -834,7 +831,7 @@ def stream_converse_with_callbacks(
         proxies) a start opens a fresh slot and a delta/stop continues the current one."""
         nonlocal current_block_index
         idx = payload.get("contentBlockIndex")
-        if not isinstance(idx, int) or isinstance(idx, bool):
+        if not isinstance(idx, int):
             idx = len(stream_blocks) if new_block or current_block_index is None else current_block_index
         current_block_index = idx
         return idx
@@ -881,6 +878,7 @@ def stream_converse_with_callbacks(
                     parts.absorb_reasoning(reasoning, block, on_reasoning_delta)
         elif "contentBlockStop" in event:
             idx = block_index(event["contentBlockStop"])
+            current_block_index = None  # a following index-less delta opens a fresh slot, not this one
             if current_tool is not None:
                 input_dict = _parse_tool_args(current_tool["input_json"])  # "" → {} via the JSON-error path
                 parts.tool_calls.append(_tool_call_ns(current_tool["toolUseId"], current_tool["name"], input_dict))
@@ -896,6 +894,7 @@ def stream_converse_with_callbacks(
             usage_data = {key: meta_usage.get(key, 0) for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens")}
     flush_text()
     return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason, "")
+
 
 # --- High-level API: call Bedrock Converse ---
 

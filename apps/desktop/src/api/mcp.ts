@@ -1,4 +1,4 @@
-import type { RpcMethods } from '@hermes/shared'
+import type { RpcMethod, RpcMethods } from '@hermes/shared'
 
 import type { McpCatalogResponse, McpServerSummary } from '@/types/hermes'
 
@@ -50,12 +50,8 @@ export function saveMcpServers(
   })
 }
 
-/** The MCP OAuth handshake RPCs, in call order. */
-export type McpOAuthMethod =
-  | 'mcp.servers.oauth.callback'
-  | 'mcp.servers.oauth.cancel'
-  | 'mcp.servers.oauth.poll'
-  | 'mcp.servers.oauth.start'
+/** The MCP OAuth handshake RPCs, derived from the generated contract. */
+export type McpOAuthMethod = Extract<RpcMethod, `mcp.servers.oauth.${string}`>
 
 /** Capture the source before the first await. Every OAuth RPC, including
  *  cleanup after a foreground switch, belongs to this (connection, profile).

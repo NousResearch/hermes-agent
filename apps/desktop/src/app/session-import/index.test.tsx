@@ -1,11 +1,11 @@
-import type { ForeignSessionRow } from '@hermes/shared'
+import type { ForeignSessionRow, SessionForeignImportResult } from '@hermes/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { setSessionOwnerHint } from '@/store/session'
 
-import { type ForeignImportResult, foreignRequest } from './api'
+import { foreignRequest } from './api'
 
 import { SessionImportView } from './index'
 
@@ -78,7 +78,7 @@ it('browses without importing, then retries a failed import on the captured owne
 })
 
 it('does not navigate when an import finishes after the view has closed', async () => {
-  let finish!: (result: ForeignImportResult) => void
+  let finish!: (result: SessionForeignImportResult) => void
   vi.mocked(foreignRequest).mockImplementation(async (_owner, method) => {
     if (method === 'session.foreign.list') {
       return { sessions: [session], next_offset: null, host: 'studio', unreadable: 0 }
@@ -88,7 +88,7 @@ it('does not navigate when an import finishes after the view has closed', async 
       return { messages: [], total: 0, truncated: false, already_imported: 'existing', cwd: null }
     }
 
-    return new Promise<ForeignImportResult>(resolve => {
+    return new Promise<SessionForeignImportResult>(resolve => {
       finish = resolve
     })
   })

@@ -2349,6 +2349,7 @@ DEFAULT_CONFIG = {
         "idle_stop_minutes": 30,
     },
     "computer_use": {
+        "target": "auto",  # auto preserves resolution; windows selects the WSL host. Restart after changing.
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,

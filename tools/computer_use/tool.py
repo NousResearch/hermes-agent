@@ -339,7 +339,12 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         admitted = _bd_lease.assert_agent_may_act()
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
-    _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY
+    from tools.computer_use.cua_backend_driver import computer_use_target
+    try:
+        if computer_use_target() != "windows":
+            _bd_ensure_started()  # headless guest profiles keep the existing Xvnc path
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
     if (err := _reject_unsafe(action, args)) is not None:
         return err
     scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (

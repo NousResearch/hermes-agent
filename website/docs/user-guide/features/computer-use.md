@@ -642,3 +642,25 @@ autostart pattern — see
   - [Connect your agent](https://cua.ai/docs/how-to-guides/driver/connect-your-agent) — register cua-driver with various harnesses (Hermes among them)
 - [cua-driver source (trycua/cua)](https://github.com/trycua/cua)
 - [Browser automation](./browser.md) for cross-platform web tasks where you don't need to drive native apps.
+
+
+### Windows-host control from a WSL backend
+
+A Windows Desktop **Remote** connection to WSL does not select the Windows desktop.
+In the **WSL backend profile** that should drive the Windows host, run:
+
+```bash
+hermes config set computer_use.target windows
+hermes computer-use install
+hermes computer-use status
+```
+
+For a named profile, run each command with `hermes -p PROFILE` instead of `hermes`.
+Restart that WSL backend after changing the target; this does not hot-switch existing sessions.
+Windows PowerShell/WSL interop must be enabled. Installation uses the official Windows installer
+and may request Windows UAC consent. Status prints the selected Windows executable path.
+The same resolver is used by the agent and by Desktop's existing status/install endpoints.
+`computer_use.target: auto` keeps legacy resolution; `linux` restricts it to the guest.
+An incompatible `HERMES_CUA_DRIVER_CMD` is not silently replaced. A Windows-host profile cannot
+also drive a running Linux **Bot Screen**: stop that screen or use a separate profile.
+This uses same-PC executable interop, not a relay to an arbitrary remote frontend's desktop.

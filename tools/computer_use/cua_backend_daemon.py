@@ -125,7 +125,7 @@ class _EmbeddedCuaDaemon:
         self._owns_runtime = self._running = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
         token = uuid.uuid4().hex[:12]
-        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
+        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32" or _driver.is_windows_driver(driver_cmd)
                             else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
 
     def child_env(self) -> Dict[str, str]:
@@ -150,7 +150,14 @@ class _EmbeddedCuaDaemon:
         serve_args = ["serve", "--embedded", "--socket", self.socket_path, "--no-permissions-gate", "--permission-mode",
                       self.permission_mode, *(["--dangerously-bypass-approvals"] if self.permission_mode == "unrestricted" else [])]
         if self.manifest_applies:
-            serve_args += ["--capability-manifest", str(self.capability_manifest), "--approve-capability-manifest"]
+            manifest = str(self.capability_manifest)
+            if sys.platform == "linux" and _driver.is_windows_driver(self._command):
+                # Windows receives argv unchanged through interop, including manifest paths.
+                converted = _cb()._run_quiet(["wslpath", "-w", manifest], timeout=3.0)
+                manifest = (converted.stdout or "").strip()
+                if converted.returncode or not manifest or "\n" in manifest:
+                    raise RuntimeError("Cannot translate the capability manifest for the Windows driver")
+            serve_args += ["--capability-manifest", manifest, "--approve-capability-manifest"]
         # The private daemon owns the cursor overlay, so the overlay policy must apply to this long-lived serve
         # process, not only its MCP proxy. Appended BEFORE the macOS app-launch wrapping so the flag travels inside
         # `open ... --args` with the rest of the serve args.
@@ -203,6 +210,6 @@ class _EmbeddedCuaDaemon:
                              stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
         if process is not None:
             _wait_or_kill(process)
-        if sys.platform != "win32" and os.path.exists(self.socket_path):
+        if not self.socket_path.startswith("\\\\.\\pipe\\") and os.path.exists(self.socket_path):
             with contextlib.suppress(OSError):
                 os.remove(self.socket_path)

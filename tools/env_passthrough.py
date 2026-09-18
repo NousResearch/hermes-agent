@@ -141,6 +141,29 @@ def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | N
     return get_secret(name, None if multiplex_active else fallback)
 
 
+def scoped_passthrough_additions(present: Iterable[str]) -> dict[str, str]:
+    """Declared passthrough names the bound profile secret scope supplies but the env being
+    filtered (*present*) lacks. A routed profile's ``.env`` and hydrated sources never enter
+    ``os.environ`` (``load_hermes_dotenv`` skips the process-global load for a routed home), so a
+    name-by-name filter over the process env can only forward a declared name the LAUNCH profile
+    also happens to define — the served profile's own value has no way in (#114209). Reads the
+    bound scope alone: never ``os.environ``, never another profile. Empty without a scope, so
+    single-profile spawns are byte-identical."""
+    from agent.secret_scope import _is_global_env, current_secret_scope
+    scope = current_secret_scope()
+    if not scope:
+        return {}
+    present = set(present)
+    additions: dict[str, str] = {}
+    for name in get_all_passthrough():
+        if name in present or _is_global_env(name):
+            continue
+        value = scope.get(name)
+        if value is not None:
+            additions[name] = value
+    return additions
+
+
 def clear_env_passthrough() -> None:
     """Reset the skill-scoped allowlist (e.g. on session reset)."""
     _get_allowed().clear()

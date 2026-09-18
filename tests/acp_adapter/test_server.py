@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -657,8 +658,11 @@ class TestRegisterSessionMcpServers:
         )
 
         registered_config = {}
+        pinned_cwd = {}
         def capture_register(config_map):
+            from agent.runtime_cwd import resolve_context_cwd
             registered_config.update(config_map)
+            pinned_cwd["value"] = resolve_context_cwd()  # the stdio default cwd reads this pin
             return ["mcp_test_server_tool1"]
 
         with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=capture_register), \
@@ -670,6 +674,8 @@ class TestRegisterSessionMcpServers:
         assert cfg["command"] == "/usr/bin/test"
         assert cfg["args"] == ["--flag"]
         assert cfg["env"] == {"KEY": "val"}
+        # Registration runs under the session's logical cwd so IDE-provided stdio servers spawn there.
+        assert pinned_cwd["value"] == Path("/tmp")
 
 
     @pytest.mark.asyncio

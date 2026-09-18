@@ -140,7 +140,7 @@ export function assistantLooksSuccessfullySettled(message: ChatMessage): boolean
 
     const status = 'status' in part ? String(part.status ?? '') : ''
 
-    return status === 'complete' || status === 'done' || status === 'error' || status === 'failed'
+    return status === 'complete' || status === 'done'
   })
 }
 

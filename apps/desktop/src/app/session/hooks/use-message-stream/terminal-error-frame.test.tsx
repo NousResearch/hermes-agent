@@ -65,6 +65,7 @@ describe('terminal error message.complete frames', () => {
     const bubble = lastAssistant()
     expect(bubble?.error).toBe('connection reset mid-stream')
     expect(chatMessageText(bubble!)).toBe('half an ans')
+    expect(chatMessageText(bubble!)).not.toContain('connection reset mid-stream')
     expect(bubble?.pending).toBe(false)
   })
 

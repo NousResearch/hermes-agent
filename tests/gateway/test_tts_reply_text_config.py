@@ -66,3 +66,22 @@ def test_voice_only_falls_back_to_text_when_voice_fails():
 
     assert _play(adapter) is False         # voice failed → the caller sends the text as usual
     assert adapter.calls == [None]
+
+
+def _delivered(adapter, parts):
+    return BasePlatformAdapter._tts_text_delivered(adapter, parts)
+
+
+def test_voice_only_multipart_falls_back_to_text_when_any_part_fails():
+    adapter = _Adapter(tts_reply_text=False, voice_success=True)
+
+    assert _delivered(adapter, [False, True]) is False   # part 1 never landed → text still goes out
+    assert _delivered(adapter, [True, True]) is True     # every part landed → voice-only reply
+    assert _delivered(adapter, []) is False
+
+
+def test_default_mode_multipart_keeps_first_caption_semantics():
+    adapter = _Adapter(tts_reply_text=True, voice_success=True)
+
+    assert _delivered(adapter, [True, False]) is True    # caption rode on part 1 → text skipped
+    assert _delivered(adapter, [False, False]) is False

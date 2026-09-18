@@ -27,10 +27,16 @@ _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
 
 def _cfg_path() -> str:
-    """``~/.hermes/config.yaml`` spelled for the active profile, for help text."""
-    from hermes_constants import display_hermes_home
+    """``~/.hermes/config.yaml`` spelled for the active profile, for help text.
 
-    return f"{display_hermes_home()}/config.yaml"
+    ``main._apply_profile_override`` builds this parser (via ``top_level_value_flag_sets``) BEFORE
+    it re-homes the process to the sticky ``active_profile``; ``get_hermes_home()`` would emit the
+    "[HERMES_HOME fallback] ... wrong profile" warning on every ``hermes`` command for that
+    throwaway help string. Read the process home directly: after the override it IS the profile home.
+    """
+    from hermes_constants import display_hermes_home, get_process_hermes_home
+
+    return f"{display_hermes_home(get_process_hermes_home())}/config.yaml"
 
 
 @lru_cache(maxsize=1)

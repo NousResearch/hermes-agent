@@ -2064,6 +2064,124 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(desktop.getConnection).toHaveBeenCalledTimes(6)
   })
 
+  it('a failed cold boot keeps its recovery surface while main replays cold-boot progress behind it (#112899)', async () => {
+    // Main keeps startHermes() available after the renderer's boot concluded
+    // in failure; any later getConnection() caller re-enters it and replays
+    // `backend.resolve` (running:true — hides BootFailureOverlay) then
+    // `backend.remote` (error:null — the store's late-progress guard only
+    // holds while running is false, so this wipes boot.error). Each replay
+    // buried the recovery surface under the CONNECTING overlay for the whole
+    // ~45s readiness wait, indefinitely.
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => {
+      throw new Error('Hermes backend did not become ready: getaddrinfo ENOTFOUND gateway.tailnet.example')
+    })
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: 'Hermes backend did not become ready: getaddrinfo ENOTFOUND gateway.tailnet.example',
+      fakeMode: false,
+      message: 'Desktop boot failed',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: false,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().running).toBe(false)
+
+    for (let replay = 0; replay < 2; replay += 1) {
+      act(() => {
+        desktop.emitBootProgress({
+          error: null,
+          fakeMode: false,
+          message: 'Resolving Hermes backend',
+          phase: 'backend.resolve',
+          progress: 8,
+          running: true,
+          timestamp: Date.now()
+        })
+        desktop.emitBootProgress({
+          error: null,
+          fakeMode: false,
+          message: 'Connecting to remote Hermes backend at https://gateway.tailnet.example:8443',
+          phase: 'backend.remote',
+          progress: 24,
+          running: true,
+          timestamp: Date.now()
+        })
+      })
+
+      // BootFailureOverlay renders on `boot.error && !boot.running`.
+      expect($desktopBoot.get().error).toBeTruthy()
+      expect($desktopBoot.get().running).toBe(false)
+    }
+  })
+
+  it('a boot failed by a startup backend exit still shows the progress of its own bounded retry (#112899)', async () => {
+    // The failure latch must not outlive the boot it describes: onBackendExit
+    // concludes the in-flight boot, but boot()'s catch may then classify the
+    // failure as retryable and start a FRESH lifecycle. That retry's progress
+    // events must reach the overlay, or the retry runs blind behind a stale
+    // "couldn't start" surface.
+    const desktop = fakeDesktop()
+    let rejectConnection: (err: Error) => void = () => undefined
+    desktop.getConnection = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectConnection = reject
+          })
+      )
+      .mockImplementation(() => new Promise<never>(() => undefined))
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: 'Could not verify the existing SSH backend.',
+      fakeMode: false,
+      message: 'Desktop boot failed',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: true,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => backendExit?.({ code: 1, signal: null }))
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    await act(async () => {
+      rejectConnection(new Error('Could not verify the existing SSH backend.'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await advanceBackoff()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+    expect($desktopBoot.get().error).toBeNull()
+
+    act(() => {
+      desktop.emitBootProgress({
+        error: null,
+        fakeMode: false,
+        message: 'Resolving Hermes backend',
+        phase: 'backend.resolve',
+        progress: 8,
+        running: true,
+        timestamp: Date.now()
+      })
+    })
+
+    expect($desktopBoot.get().phase).toBe('backend.resolve')
+    expect($desktopBoot.get().running).toBe(true)
+  })
+
   it('FIX #82679: a NON-retryable boot failure (local / confirmed reauth) fails immediately without auto-retry', async () => {
     const desktop = fakeDesktop()
     desktop.getConnection = vi.fn(async () => {

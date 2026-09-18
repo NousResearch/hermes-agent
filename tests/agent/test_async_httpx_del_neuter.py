@@ -81,6 +81,7 @@ class TestCleanupStaleAsyncClients:
         """Entries with a closed loop should be evicted."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -94,7 +95,7 @@ class TestCleanupStaleAsyncClients:
         mock_client._client = MagicMock()
         mock_client._client.is_closed = False
 
-        key = ("test_stale", True, "", "", "", (), False)
+        key = _client_cache_key("test_stale", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -111,6 +112,7 @@ class TestCleanupStaleAsyncClients:
     def test_awaits_async_close_for_closed_loop(self):
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -127,7 +129,7 @@ class TestCleanupStaleAsyncClients:
         loop = asyncio.new_event_loop()
         loop.close()
         client = AsyncClient()
-        key = ("test_async_close", True, "", "", "", (), False)
+        key = _client_cache_key("test_async_close", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (client, "test-model", loop)
 
@@ -142,6 +144,7 @@ class TestCleanupStaleAsyncClients:
     def test_shutdown_closes_outside_cache_lock(self):
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             shutdown_cached_clients,
         )
@@ -157,7 +160,7 @@ class TestCleanupStaleAsyncClients:
                 if acquired:
                     _client_cache_lock.release()
 
-        key = ("test_shutdown_lock", False, "", "", "", (), False)
+        key = _client_cache_key("test_shutdown_lock", async_mode=False)
         with _client_cache_lock:
             previous = dict(_client_cache)
             _client_cache.clear()
@@ -175,6 +178,7 @@ class TestCleanupStaleAsyncClients:
     def test_shutdown_does_not_await_live_foreign_loop_client(self):
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             shutdown_cached_clients,
         )
@@ -189,7 +193,7 @@ class TestCleanupStaleAsyncClients:
                 self.awaited = True
 
         client = Client()
-        key = ("test_shutdown_foreign_loop", True, "", "", "", (), False)
+        key = _client_cache_key("test_shutdown_foreign_loop", async_mode=True)
         with _client_cache_lock:
             previous = dict(_client_cache)
             _client_cache.clear()
@@ -208,6 +212,7 @@ class TestCleanupStaleAsyncClients:
         """Entries with an open loop should be preserved."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -215,7 +220,7 @@ class TestCleanupStaleAsyncClients:
         loop = asyncio.new_event_loop()  # NOT closed
 
         mock_client = MagicMock()
-        key = ("test_live", True, "", "", "", (), False)
+        key = _client_cache_key("test_live", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -232,12 +237,13 @@ class TestCleanupStaleAsyncClients:
         """Sync entries (cached_loop=None) should be preserved."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
 
         mock_client = MagicMock()
-        key = ("test_sync", False, "", "", "", (), False)
+        key = _client_cache_key("test_sync", async_mode=False)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", None)
 
@@ -307,10 +313,11 @@ class TestClientCacheBoundedGrowth:
         """Multiple event loops for the same provider should NOT create multiple entries."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
         )
 
-        key = ("test_no_grow", True, "", "", "", (), False)
+        key = _client_cache_key("test_no_grow", async_mode=True)
 
         loops = []
         try:
@@ -347,6 +354,7 @@ class TestClientCacheBoundedGrowth:
         """Cache should not exceed _CLIENT_CACHE_MAX_SIZE."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             _CLIENT_CACHE_MAX_SIZE,
         )
@@ -356,13 +364,16 @@ class TestClientCacheBoundedGrowth:
             saved = dict(_client_cache)
             _client_cache.clear()
 
+        def key_for(i: int) -> tuple:
+            return _client_cache_key(f"evict_test_{i}", async_mode=False)
+
         try:
             # Fill to max + 5
             for i in range(_CLIENT_CACHE_MAX_SIZE + 5):
                 mock_client = MagicMock()
                 mock_client._client = MagicMock()
                 mock_client._client.is_closed = False
-                key = (f"evict_test_{i}", False, "", "", "", (), False)
+                key = key_for(i)
                 with _client_cache_lock:
                     # Inline the eviction logic (same as _get_cached_client)
                     while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
@@ -374,9 +385,9 @@ class TestClientCacheBoundedGrowth:
                 assert len(_client_cache) <= _CLIENT_CACHE_MAX_SIZE, \
                     f"Cache size {len(_client_cache)} exceeds max {_CLIENT_CACHE_MAX_SIZE}"
                 # The earliest entries should have been evicted
-                assert ("evict_test_0", False, "", "", "", (), False) not in _client_cache
+                assert key_for(0) not in _client_cache
                 # The latest entries should be present
-                assert (f"evict_test_{_CLIENT_CACHE_MAX_SIZE + 4}", False, "", "", "", (), False) in _client_cache
+                assert key_for(_CLIENT_CACHE_MAX_SIZE + 4) in _client_cache
         finally:
             with _client_cache_lock:
                 _client_cache.clear()

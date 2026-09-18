@@ -56,13 +56,16 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
-  try {
-    const url = new URL(path)
-
-    return url.pathname.split('/').filter(Boolean).pop() || path
-  } catch {
-    return path.split(/[\\/]/).filter(Boolean).pop() || path
+  // `C:\Users\…` parses as a URL with scheme `c:`; a drive letter is a path, not a scheme.
+  if (!/^[A-Za-z]:[\\/]/.test(path)) {
+    try {
+      return new URL(path).pathname.split('/').filter(Boolean).pop() || path
+    } catch {
+      // not a URL — fall through to the path split
+    }
   }
+
+  return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
 
 export function mediaMarkdownHref(path: string): string {

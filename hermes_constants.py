@@ -809,9 +809,14 @@ def _legacy_path_has_content(path: Path) -> bool:
     return True
 
 
-def display_hermes_home() -> str:
-    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``)."""
-    home = get_hermes_home()
+def display_hermes_home(home: Path | None = None) -> str:
+    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``).
+
+    ``home`` overrides the lookup for callers that run before the CLI has applied the sticky
+    ``active_profile`` (``get_hermes_home()`` would emit the wrong-profile fallback warning there).
+    """
+    if home is None:
+        home = get_hermes_home()
     try:  # as_posix(): str() on Windows yields chimeras like ~/AppData\Local\hermes/skills/
         return "~/" + home.relative_to(Path.home()).as_posix()
     except ValueError:

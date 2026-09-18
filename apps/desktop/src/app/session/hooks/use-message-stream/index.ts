@@ -34,6 +34,7 @@ import { $todosBySession, setSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../../types'
 
+import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
@@ -682,8 +683,20 @@ export function useMessageStream({
         const prev = state.messages
         let nextMessages = prev
 
-        if (streamId && prev.some(m => m.id === streamId)) {
-          nextMessages = prev.map(m => (m.id === streamId ? completeMessage(m) : m))
+        const streamIndex = streamId ? prev.findIndex(message => message.id === streamId) : -1
+
+        let collapsed: DuplicateFinalCollapse | null = null
+
+        if (streamIndex >= 0) {
+          collapsed = collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
+            completeMessage,
+            finalText,
+            hasFailure: Boolean(failure) || Boolean(completionError),
+            interimBoundaryPending
+          })
+          nextMessages =
+            collapsed?.messages ??
+            prev.map((message, index) => (index === streamIndex ? completeMessage(message) : message))
         } else {
           const fallbackIndex = [...prev]
             .reverse()
@@ -758,8 +771,10 @@ export function useMessageStream({
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
 
-        const sameTurnAssistant = streamId
-          ? nextMessages.find(m => m.id === streamId)
+        const sameTurnId = collapsed?.keptId ?? streamId
+
+        const sameTurnAssistant = sameTurnId
+          ? nextMessages.find(m => m.id === sameTurnId)
           : [...nextMessages].reverse().find(m => m.role === 'assistant' && !m.hidden)
 
         const localVisibleText = sameTurnAssistant ? chatMessageText(sameTurnAssistant).trim() : ''

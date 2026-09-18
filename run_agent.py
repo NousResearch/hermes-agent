@@ -35,7 +35,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     Only local CLI sessions record one: gateway/cron/remote backends (non-"local" ``TERMINAL_ENV``) have no
     stable host cwd for the agent's tools.
     """
-    if source != "cli" or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
+    if source not in CLI_FAMILY_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
         return None
     try:
         return os.getcwd()
@@ -43,14 +43,32 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
+# Sources that label the human conversation an interactive UI transport hosts. A finite ``hermes chat -q`` /
+# one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
+# session env into child processes) but is NOT that conversation: labelling it ``tui``/``desktop`` lists it
+# in the TUI/WebUI pickers as a resumable chat and lets ``hermes -c`` in the TUI continue it (#112550).
+# Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
+_UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
+
+# Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
+# pickers hide them without title/cwd heuristics; ``hermes -c`` still treats them as CLI history.
+ONESHOT_SOURCE = "oneshot"
+CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
+
+
 def _session_source_for_agent(platform: Optional[str]) -> str:
     try:
         from gateway.session_context import get_session_env
-
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
     except Exception:
-        source = os.environ.get("HERMES_SESSION_SOURCE", "")
-    return str(source or "").strip() or platform or "cli"
+        get_session_env = os.environ.get
+    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
+    single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
+    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
+    if single_query and not explicit and source in _UI_TRANSPORT_SOURCES:
+        source = ""
+    if single_query and not source and (platform or "cli") == "cli":
+        return ONESHOT_SOURCE
+    return source or platform or "cli"
 
 
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:

@@ -24,11 +24,13 @@ _ALL_TOOLSETS = {"all", "*"}
 
 # Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
 # billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so
-# batch pipelines can verify the tier they pay for went out on the wire.
+# batch pipelines can verify the tier they pay for went out on the wire. ``partial`` /
+# ``interrupted`` / ``turn_exit_reason`` say WHY ``completed`` is false, so a pipeline can tell
+# an iteration-budget stop from a Ctrl-C without parsing stderr (#111770).
 _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
-    "model", "provider", "session_id", "completed",
+    "model", "provider", "session_id", "completed", "partial", "interrupted", "turn_exit_reason",
 )
 
 # Counters summed per auxiliary task (vision, compression, title_generation, ...) into the
@@ -81,6 +83,27 @@ def _auxiliary_report(report: dict, by_task: dict[str, dict]) -> None:
         "total_tokens": (report.get("total_tokens") or 0) + totals["total_tokens"],
         "api_calls": (report.get("api_calls") or 0) + totals["api_calls"],
     }
+
+# Exit code for a turn stopped by an interrupt (SIGINT convention, same as ``chat -Q``).
+_INTERRUPTED_EXIT_CODE = 130
+
+
+def _oneshot_exit_code(response: Optional[str], result: dict) -> int:
+    """Map a finished ``-z`` turn onto its exit code: ``0`` only when the turn completed;
+    ``130`` interrupted; ``2`` failed or stopped partway (``partial``, ``completed: False`` such
+    as the iteration budget); ``1`` a completed turn that produced no text at all.
+
+    The outcome is judged from the result, not from whether text was printed: a partial or
+    failed turn usually leaves an explanation on stdout, and exiting 0 for it made scripts treat
+    a half-done job (or a provider error summary) as success (#111770).
+    """
+    if result.get("interrupted"):
+        return _INTERRUPTED_EXIT_CODE
+    if result.get("failed") or result.get("partial") or result.get("completed") is False:
+        return 2
+    if not (response or "").strip():
+        return 1
+    return 0
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -253,6 +276,9 @@ def run_oneshot(
     # Non-interactive by definition — an approval prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+    # Same finite-chat marker as `hermes chat -q` (cli.py): the session-source resolver uses it to drop an
+    # inherited tui/desktop transport label, and delegate dispatch to route detached results inline.
+    os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
 
     # Nothing here drains process_registry.completion_queue (only cli.py's process_loop and the
     # gateway watchers do), so left unbound delegate_task would be forced background and every
@@ -310,13 +336,11 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
-    if not (response or "").strip():
-        if result.get("failed") or result.get("partial"):
-            return 2
+    exit_code = _oneshot_exit_code(response, result)
+    if exit_code == 1:
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
-        return 1
-    return 0
+    return exit_code
 
 
 def _create_session_db_for_oneshot():

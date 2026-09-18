@@ -20,7 +20,6 @@ from hermes_cli import update_cmd
 def _no_stale_module_purge(monkeypatch):
     """The migration step evicts every cached Hermes module first (#111271); a real purge
     would discard the ``hermes_cli.config`` object these tests patch."""
-    monkeypatch.setattr(cli_main, "_purge_stale_hermes_modules", lambda: None)
 
 
 def test_repair_node_deps_runs_config_migration_on_version_bump(capsys):
@@ -30,7 +29,6 @@ def test_repair_node_deps_runs_config_migration_on_version_bump(capsys):
     with (
         patch.object(update_cmd, "_update_node_dependencies", return_value=[]),
         patch.object(update_cmd, "_m") as m,
-        patch.object(update_cmd, "_reload_config_modules"),
         patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
         patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
@@ -58,7 +56,6 @@ def test_repair_node_deps_up_to_date_config(capsys):
     with (
         patch.object(update_cmd, "_update_node_dependencies", return_value=[]),
         patch.object(update_cmd, "_m") as m,
-        patch.object(update_cmd, "_reload_config_modules"),
         patch.object(update_cmd, "_run_config_check_fresh", return_value=(38, 38)),
         patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
@@ -78,7 +75,6 @@ def test_repair_node_deps_up_to_date_config(capsys):
 def test_check_and_apply_config_migration_interactive_prompt():
     """When new config options exist in an interactive session, it prompts the user."""
     with (
-        patch.object(update_cmd, "_reload_config_modules"),
         patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
         patch("hermes_cli.config.get_missing_env_vars", return_value=[{"name": "NEW_KEY", "description": "desc"}]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
@@ -99,7 +95,6 @@ def test_check_and_apply_config_migration_interactive_prompt():
 def test_check_and_apply_config_migration_assume_yes():
     """When assume_yes=True, it applies migrations non-interactively without prompting."""
     with (
-        patch.object(update_cmd, "_reload_config_modules"),
         patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
         patch("hermes_cli.config.get_missing_env_vars", return_value=[{"name": "NEW_KEY"}]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
@@ -117,7 +112,6 @@ def test_check_and_apply_config_migration_assume_yes():
 def test_check_and_apply_config_migration_non_interactive():
     """In a non-interactive session (e.g. CI/scripts), it applies safe migrations automatically."""
     with (
-        patch.object(update_cmd, "_reload_config_modules"),
         patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
         patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[{"key": "new_setting"}]),

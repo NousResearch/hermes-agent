@@ -583,7 +583,7 @@ async fn run_bootstrap(
         let err = format!(
             "install.ps1 -Manifest failed: exit {:?}\n{}",
             manifest_result.exit_code,
-            manifest_result.stderr.trim()
+            crate::events::strip_ansi(manifest_result.stderr.trim())
         );
         emit_event(
             &app,
@@ -985,6 +985,10 @@ fn build_pin_args(script: &install_script::ResolvedScript) -> Vec<String> {
 }
 
 fn emit_event(app: &AppHandle, event: BootstrapEvent) {
+    // The webview shows log lines as plain text, so ANSI styling/cursor
+    // bytes from install.sh must not cross the event boundary (#112675).
+    // The disk tee keeps the raw bytes — only the UI payload is sanitized.
+    let event = event.sanitized_for_ui();
     // Tee important state transitions to the rolling installer log so
     // bootstrap-installer.log isn't just "starting" + final summary.
     // Log lines (the noisy stuff) handle their own tracing in

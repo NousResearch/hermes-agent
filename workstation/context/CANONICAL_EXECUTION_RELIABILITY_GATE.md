@@ -11,6 +11,32 @@ become an untracked mutation channel.
 
 Status: **IMPLEMENTED & VERIFIED — branch `antigravity/canonical-execution-reliability-gate`**
 
+
+## 2026-09-18 refinement — reliable work must remain executable
+
+Native-browser dogfood found that a broad compiler latch can preserve fan-out
+safety while still violating the product objective by preventing a novel,
+authorized, stateful interaction from progressing.
+
+The gate is therefore refined by
+[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md):
+
+- retain all causal reliability invariants in this document;
+- reserve mandatory compilation for the repeated operation/fan-out that actually
+  requires it, not every later mutation in the enclosing request;
+- allow bounded adaptive discovery/interaction when deterministic representation
+  does not yet exist;
+- capture successful adaptive work so future compatible executions move into
+  compiled/routine paths;
+- on deterministic drift, return a compact reasoning handoff instead of blocking
+  the work in a compiler/preflight loop.
+
+The previous statement that quantified/repetitive mutable work must use
+TaskCompiler remains true for **homogeneous fan-out once the repeated operation is
+identified**. It must not be interpreted as "any mutating step inside a request
+with a repeatability signal is forbidden until a full durable plan already
+exists."
+
 This gate has been fully implemented and verified with comprehensive regression suites and forensic tests. Existing V1/V1.1/V2/V2.1/V2.5/V3/V3.1–V3.5/V4 work is preserved, and the causal reliability loop is now proven across code, additive database migrations, and runtime tests.
 
 The gate exists because the 2026-09-17 forensic investigations converge on one product boundary: Hermes Work already has most of the required capabilities, but cross-domain causal identity, terminality, effect certainty and acceptance are not yet strong enough to guarantee that the state shown to the user corresponds to the execution that actually produced the external result.

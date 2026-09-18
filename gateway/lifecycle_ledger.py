@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 
 def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore task overrides)."""
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, get_process_hermes_home
 
-    val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else get_hermes_home()
+    # get_process_hermes_home expands ``~``/``$VAR`` (python -m gateway.run skips the CLI normalizer).
+    return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
 
 
 def _home_path(home: Optional[Path], *relative: str) -> Path:

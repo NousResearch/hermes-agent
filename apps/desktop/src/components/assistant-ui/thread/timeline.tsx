@@ -86,8 +86,19 @@ const ActiveThreadTimeline: FC = () => {
 
   const railEntries = useMemo(() => {
     const indexed = indexedEntries ?? []
-    const selected = history.isHistorical ? deriveTimelineEntries((history.currentMessages ?? []).map(message => ({ id: message.id, rowId: message.rowId, role: message.role, text: messageContentText(message.parts) }))) : []
-    const loaded = new Map([...entries, ...selected].filter(entry => entry.rowId !== undefined).map(entry => [entry.rowId, entry]))
+    const selected = history.isHistorical
+      ? deriveTimelineEntries(
+          (history.currentMessages ?? []).map(message => ({
+            id: message.id,
+            rowId: message.rowId,
+            role: message.role,
+            text: messageContentText(message.parts)
+          }))
+        )
+      : []
+    const loaded = new Map(
+      [...entries, ...selected].filter(entry => entry.rowId !== undefined).map(entry => [entry.rowId, entry])
+    )
     const seen = new Set(indexed.map(entry => entry.rowId))
 
     const merged = [
@@ -98,7 +109,15 @@ const ActiveThreadTimeline: FC = () => {
     return (history.olderAvailable || indexedEntries) && !indexComplete
       ? [{ id: EARLIER_TIMELINE_ID, preview: t.assistant.thread.showEarlier }, ...merged]
       : merged
-  }, [entries, indexedEntries, indexComplete, history.olderAvailable, history.currentMessages, history.isHistorical, t.assistant.thread.showEarlier])
+  }, [
+    entries,
+    indexedEntries,
+    indexComplete,
+    history.olderAvailable,
+    history.currentMessages,
+    history.isHistorical,
+    t.assistant.thread.showEarlier
+  ])
 
   const root = useRef<HTMLDivElement>(null)
   const jumpFrame = useRef(0)
@@ -154,7 +173,12 @@ const ActiveThreadTimeline: FC = () => {
 
           const timeout = window.setTimeout(() => finish(false), 15000)
           controller.signal.addEventListener('abort', () => finish(false), { once: true })
-          const detail: TimelineRevealRequest = { id, rowId: railEntries.find(entry => entry.id === id)?.rowId, signal: controller.signal, complete: finish }
+          const detail: TimelineRevealRequest = {
+            id,
+            rowId: railEntries.find(entry => entry.id === id)?.rowId,
+            signal: controller.signal,
+            complete: finish
+          }
           viewport.dispatchEvent(new CustomEvent(TIMELINE_REVEAL_EVENT, { detail }))
         })
 

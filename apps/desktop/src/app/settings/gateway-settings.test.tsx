@@ -66,6 +66,7 @@ describe('GatewaySettings', () => {
       authMode: 'oauth',
       org: 'old-team'
     }
+
     registry.value = { connections: [saved] }
     getConnectionConfig.mockResolvedValue({
       ...localConnection,
@@ -74,20 +75,26 @@ describe('GatewaySettings', () => {
       remoteUrl: 'https://other.example'
     })
     const calls: string[] = []
+
     const oauthLogoutConnectionConfig = vi.fn(async () => {
       calls.push('logout')
     })
+
     const agentSignIn = vi.fn(async () => {
       calls.push('login')
+
       return { connected: true }
     })
+
     const save = vi.fn(async () => {
       calls.push('save')
     })
+
     const discover = vi.fn().mockResolvedValue({
       needsOrgSelection: true,
       orgs: [{ id: 'new-team', name: 'New team', role: 'OWNER' }]
     })
+
     Object.assign(window.hermesDesktop, {
       oauthLogoutConnectionConfig,
       connections: { save },

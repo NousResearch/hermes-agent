@@ -129,6 +129,27 @@ describe("CronCategoryField", () => {
     expect(rows("option").map((el) => el.textContent)).toContain("Family");
   });
 
+  it("shows the job's category as the single selected option, and says so", async () => {
+    const input = await render("Family");
+    await focusInput(input);
+
+    const options = rows("option");
+    const selected = options.filter((el) => el.getAttribute("aria-selected") === "true");
+    expect(selected).toHaveLength(1); // one category per job, never a set
+    expect(selected[0].textContent).toContain("Family");
+    expect(selected[0].textContent).toContain("current");
+    // the replace semantics are stated in the list itself
+    expect(container.textContent).toContain("picking another replaces it");
+  });
+
+  it("does not claim replace semantics when the job has no label yet", async () => {
+    const input = await render();
+    await focusInput(input);
+
+    expect(container.textContent).not.toContain("picking another replaces it");
+    expect(rows("option").every((el) => el.getAttribute("aria-selected") === "false")).toBe(true);
+  });
+
   it("clears the value with the × control", async () => {
     await render("Family");
     const clear = container.querySelector<HTMLElement>('[aria-label="Clear the category"]');

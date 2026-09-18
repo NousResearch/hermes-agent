@@ -309,7 +309,7 @@ function CronAdvancedFields({
         </div>
 
         <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}-category`}>Category</Label>
+          <Label htmlFor={`${idPrefix}-category`}>Category (one per job)</Label>
           <CronCategoryField
             id={`${idPrefix}-category`}
             value={form.category}
@@ -317,7 +317,8 @@ function CronAdvancedFields({
             onChange={(next) => update("category", next)}
           />
           <span className="text-xs text-muted-foreground">
-            Groups this job in the list when grouping is on. Reuse a label or type a new one.
+            Groups this job in the list when grouping is on. Picking another label replaces the
+            current one.
           </span>
         </div>
 

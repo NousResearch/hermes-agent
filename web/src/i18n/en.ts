@@ -271,6 +271,8 @@ export const en: Translations = {
     categoryClear: "Clear the category",
     categoryExisting: "Categories already in use",
     categoryCreateNew: "New:",
+    categoryCurrent: "current",
+    categorySingleHint: "A job has one category — picking another replaces it.",
     prompt: "Prompt",
     promptPlaceholder: "What should the agent do on each run?",
     schedule: "Schedule (cron expression)",

@@ -109,28 +109,44 @@ export function CronCategoryField({ id, value, options, onChange }: CronCategory
           aria-label={t.cron.categoryExisting ?? en.cron.categoryExisting}
           className="absolute z-50 mt-1 max-h-56 w-full overflow-auto border border-border bg-background shadow-lg"
         >
-          {rows.map((row, index) => (
-            <button
-              key={`${row.kind}:${row.label}`}
-              type="button"
-              role="option"
-              aria-selected={index === highlight}
-              data-testid={`cron-category-${row.kind}`}
-              className={cn(
-                "flex w-full items-center gap-2 px-3 py-2 text-left text-sm",
-                index === highlight ? "bg-muted" : "bg-transparent",
-              )}
-              onMouseEnter={() => setHighlight(index)}
-              onClick={() => pick(row.label)}
-            >
-              {row.kind === "create" && (
-                <span className="text-xs text-muted-foreground">
-                  {t.cron.categoryCreateNew ?? en.cron.categoryCreateNew}
-                </span>
-              )}
-              <span className="truncate">{row.label}</span>
-            </button>
-          ))}
+          {rows.map((row, index) => {
+            const isCurrent = row.label === value.trim();
+            return (
+              <button
+                key={`${row.kind}:${row.label}`}
+                type="button"
+                role="option"
+                // aria-selected marks the job's actual category (this is a
+                // single-select list); `data-highlighted` is only the cursor row.
+                aria-selected={isCurrent}
+                data-highlighted={index === highlight ? "true" : undefined}
+                data-testid={`cron-category-${row.kind}`}
+                className={cn(
+                  "flex w-full items-center gap-2 px-3 py-2 text-left text-sm",
+                  index === highlight ? "bg-muted" : "bg-transparent",
+                )}
+                onMouseEnter={() => setHighlight(index)}
+                onClick={() => pick(row.label)}
+              >
+                {row.kind === "create" && (
+                  <span className="text-xs text-muted-foreground">
+                    {t.cron.categoryCreateNew ?? en.cron.categoryCreateNew}
+                  </span>
+                )}
+                <span className="truncate">{row.label}</span>
+                {isCurrent && (
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {t.cron.categoryCurrent ?? en.cron.categoryCurrent}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          {value.trim().length > 0 && (
+            <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+              {t.cron.categorySingleHint ?? en.cron.categorySingleHint}
+            </p>
+          )}
         </div>
       )}
     </div>

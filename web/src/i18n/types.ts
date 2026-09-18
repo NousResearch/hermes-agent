@@ -290,6 +290,8 @@ export interface Translations {
     categoryClear?: string;
     categoryExisting?: string;
     categoryCreateNew?: string;
+    categoryCurrent?: string;
+    categorySingleHint?: string;
     prompt: string;
     promptPlaceholder: string;
     schedule: string;

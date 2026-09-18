@@ -36,6 +36,16 @@ def test_preloads_numpy_only_for_holographic_memory(monkeypatch):
     assert imported == ["numpy"]
 
 
+def test_preload_preserves_holographic_fallback_without_numpy(monkeypatch):
+    def missing_numpy(_name):
+        raise ModuleNotFoundError("No module named 'numpy'", name="numpy")
+
+    monkeypatch.setattr("plugins.memory._get_active_memory_provider", lambda: "holographic")
+    monkeypatch.setattr(entry.importlib, "import_module", missing_numpy)
+
+    entry._preload_stdin_sensitive_dependencies()
+
+
 def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):
     discovery_calls = []
 

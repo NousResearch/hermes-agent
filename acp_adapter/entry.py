@@ -89,13 +89,17 @@ def _preload_stdin_sensitive_dependencies() -> None:
     """Load holographic memory's NumPy dependency before ACP starts its stdin reader.
 
     On native Windows, NumPy DLL initialization can wait on a console stdin handle already owned by the
-    ACP reader thread.  Importing it before ``acp.run_agent`` starts that thread avoids the deadlock while
-    keeping the dependency lazy for every other memory provider.
+    ACP reader thread. Importing it before ``acp.run_agent`` starts that thread avoids the deadlock while
+    keeping the dependency lazy for every other memory provider. NumPy is optional: without it holographic
+    memory falls back to non-HRR retrieval, so a missing dependency must not prevent ACP from starting.
     """
     from plugins.memory import _get_active_memory_provider
 
     if _get_active_memory_provider() == "holographic":
-        importlib.import_module("numpy")
+        try:
+            importlib.import_module("numpy")
+        except ImportError:
+            pass
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

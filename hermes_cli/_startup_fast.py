@@ -34,12 +34,20 @@ def project_root_str() -> str:
     return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 
 
+def _realpath_or_self(path: str) -> str:
+    """``os.path.realpath`` without raising when the process cwd is gone (#102941)."""
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+
 def ensure_project_root_on_path() -> None:
     """Put the project root at sys.path[0], deduping realpath-equivalents."""
     project_root = project_root_str()
-    normalized_root = os.path.normcase(os.path.realpath(project_root))
+    normalized_root = os.path.normcase(_realpath_or_self(project_root))
     sys.path[:] = [entry for entry in sys.path
-                   if not entry or os.path.normcase(os.path.realpath(entry)) != normalized_root]
+                   if not entry or os.path.normcase(_realpath_or_self(entry)) != normalized_root]
     sys.path.insert(0, project_root)
 
 

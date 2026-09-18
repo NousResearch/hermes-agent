@@ -684,13 +684,10 @@ def _skills_dir_signature(skills_dir: Path) -> float:
 def _walk_skill_count(skills_dir: Path) -> int:
     """One ``os.walk`` over the skills tree (prunes ``.git``/``node_modules``/support dirs
     instead of statting them). Best-effort: a subtree that vanishes mid-walk (a concurrent
-    skill install/update) is skipped, never raised — one profile's churn must not abort the
-    whole enumeration."""
+    skill install/update) is skipped, never raised — ``os.walk`` (``onerror=None``) swallows
+    scandir errors itself, so one profile's churn cannot abort the whole enumeration."""
     from agent.skill_utils import iter_skill_index_files
-    try:
-        return sum(1 for _ in iter_skill_index_files(skills_dir, "SKILL.md"))
-    except OSError:
-        return 0
+    return sum(1 for _ in iter_skill_index_files(skills_dir, "SKILL.md"))
 
 
 def _count_skills(profile_dir: Path) -> int:

@@ -63,7 +63,8 @@ def _profile_mention_items(prefix: str) -> list[dict]:
     try:
         from hermes_cli.profiles import list_profiles
         seen: set[str] = set()
-        for p in list_profiles():
+        # Per keystroke: only name/description are read, so never walk skill trees in-request (#114041).
+        for p in list_profiles(lazy_skill_count=True):
             if not (name := (p.name or "").strip()):
                 continue
             seen.add(name.lower())

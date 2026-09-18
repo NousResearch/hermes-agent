@@ -741,6 +741,23 @@ class TestListProfiles:
         assert list_profiles(lazy_skill_count=True)[0].skill_count == 3
         assert walks == ["hermes-skill-count"]  # a second poll inside the window schedules nothing
 
+        # GET /api/profiles (the router's own ``lazy_skill_count=True`` call) and the per-keystroke
+        # ``@<profile>`` completion must be just as walk-free: same spy, still one background walk.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_routers import profiles as profiles_router
+        from tui_gateway import methods_complete
+        app = FastAPI()
+        app.include_router(profiles_router.router)
+        # Cold cache: a synchronous list_profiles() in either caller would walk on the request thread.
+        profiles._SKILL_COUNT_CACHE.clear()
+        resp = TestClient(app).get("/api/profiles")
+        assert resp.status_code == 200
+        assert resp.json()["profiles"][0]["name"] == "default"
+        assert walks == ["hermes-skill-count"]
+        assert any(i["text"] == "@default" for i in methods_complete._profile_mention_items("def"))
+        assert walks == ["hermes-skill-count"]
+
         # Control: the detail/CLI path counts synchronously on the caller's thread.
         profiles._SKILL_COUNT_CACHE.clear()
         assert list_profiles()[0].skill_count == 3

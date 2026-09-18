@@ -381,6 +381,9 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   const { status, text } = useMessagePartReasoning()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
 
+  // The group above already hides grouped parts; this covers a Reasoning part
+  // rendered without a ReasoningGroup wrapper (assistant-ui drops the group
+  // when a ChainOfThought component is registered).
   const showReasoning = useStore($showReasoning)
 
   if (!showReasoning) {

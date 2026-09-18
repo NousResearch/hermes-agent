@@ -511,8 +511,16 @@ describe('assistant-ui streaming renderer', () => {
     await waitFor(() => {
       expect(container.querySelectorAll('[data-slot="aui_reasoning-text"]')).toHaveLength(enabled ? 2 : 0)
     })
-    expect(within(container).queryByRole('button', { name: /thinking/i }) !== null).toBe(enabled)
-    expect(container.textContent?.includes('standalone reasoning')).toBe(enabled)
+    const thinking = within(container).queryByRole('button', { name: /thinking/i })
+    const standalone = within(container).queryByText('standalone reasoning')
+
+    if (enabled) {
+      expect(thinking).not.toBeNull()
+      expect(standalone).not.toBeNull()
+    } else {
+      expect(thinking).toBeNull()
+      expect(standalone).toBeNull()
+    }
   })
 
   it('renders assistant text incrementally before completion', async () => {

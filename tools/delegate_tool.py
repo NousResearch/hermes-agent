@@ -31,7 +31,7 @@ from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime, _resolve_delegation_credentials,
+    _resolve_child_runtime, _resolve_delegation_credentials, _role_credential_cfg,
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
@@ -56,17 +56,10 @@ from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
 
-_ROLES = frozenset({"leaf", "orchestrator"})
-
-# Nested delegation is granted by depth/role in _build_child_agent, never by the
-# model naming toolsets (there is no model-facing toolsets argument).
-def _normalize_role(r: Optional[str]) -> str:
-    """'leaf' | 'orchestrator'; None/empty/unknown -> 'leaf' (unknown warns)."""
-    r_norm = str(r).strip().lower() if r else "leaf"
-    if r_norm not in _ROLES:
-        logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
-        return "leaf"
-    return r_norm
+from tools.delegate_tool_roles import (  # noqa: F401
+    ROLE_SCHEMA, RoleDefinition, RoleDefinitionError, RoleSpec, available_role_names, load_role_definition,
+    resolve_role as _resolve_role, role_dirs, role_file,
+)
 
 DEFAULT_MAX_ITERATIONS = 250
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
@@ -176,8 +169,11 @@ def _build_child_agent(
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
     routing_cfg: Optional[Dict[str, Any]] = None,
-    # Legacy; accepted for wire compat but ignored (capability is depth-derived).
+    # Legacy label kept for wire compat; capability is depth-derived and the named role's
+    # ``spawn.can_delegate`` may only narrow it.
     role: str = "leaf",
+    # Resolved named role definition (#112369), or None for a built-in leaf/orchestrator.
+    role_def: Optional[RoleDefinition] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -189,6 +185,10 @@ def _build_child_agent(
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     max_spawn = _get_max_spawn_depth()
     effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    if role_def is not None and role_def.can_delegate is False:
+        # A named role narrows only: can_delegate=false forces the leaf tool surface even where the
+        # depth budget would grant delegation.
+        effective_role = "leaf"
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
@@ -199,10 +199,14 @@ def _build_child_agent(
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
     delegation_cfg = _load_config()
-    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(
+        parent_agent, toolsets, effective_role, role=role_def
+    )
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
+        role_charter=role_def.charter() if role_def is not None else None,
+        include_context_files=role_def.injects_context_files() if role_def is not None else True,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -262,6 +266,9 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    if role_def is not None:
+        # Which named role instance this is (#41554 consumes it for attribution).
+        child._delegate_role_name = role_def.name
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
@@ -359,16 +366,9 @@ def _run_single_child(
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
-def _build_children(
-    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
-    top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
-    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
-) -> tuple[List[tuple], Optional[str]]:
-    """Build every child on the main thread (construction is not thread-safe);
-    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
-    from tools.delegation_live_log import wrap_progress_callback
-    from tools.delegation_output_schema import append_output_contract
-    overrides = {
+def _runtime_overrides(creds: Dict[str, Any], routing_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """``_build_child_agent`` override kwargs for one credential bundle (the call's, or a role-pinned task's)."""
+    return {
         "override_provider": creds["provider"], "override_base_url": creds["base_url"],
         "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
         "override_request_overrides": creds.get("request_overrides"),
@@ -376,6 +376,21 @@ def _build_children(
         "override_acp_args": creds.get("args"),
         "routing_cfg": routing_cfg,
     }
+
+
+def _build_children(
+    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
+    top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
+    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    explicit_route: bool = False,
+) -> tuple[List[tuple], Optional[str]]:
+    """Build every child on the main thread (construction is not thread-safe);
+    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure. Each task resolves its own
+    ``role`` (per-task beats the call's ``top_role``): an unknown or unparsable named role fails the call here,
+    and a role's model pin re-resolves that task's credentials so the pinned provider's own key/endpoint are used
+    instead of the config route's."""
+    from tools.delegation_live_log import wrap_progress_callback
+    from tools.delegation_output_schema import append_output_contract
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
@@ -383,11 +398,19 @@ def _build_children(
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
+            role = _resolve_role(t.get("role") or top_role)
+            role_def = role.definition
+            task_creds = creds
+            if role_def is not None and role_def.model and not explicit_route:
+                task_creds = _resolve_delegation_credentials(
+                    _role_credential_cfg(routing_cfg, role_def.model), parent_agent
+                )
+            overrides = _runtime_overrides(task_creds, routing_cfg)
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                toolsets=None,  # always inherit the parent's toolsets (a role may narrow them further)
+                model=task_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=role.name, role_def=role_def, **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -423,7 +446,9 @@ def delegate_task(
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
-    (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or a
+    on the wire (unadvertised; per-task beats top-level) and now also names a role definition file resolved at
+    spawn time (#112369): named roles may add a charter, narrow toolsets and force a leaf child, but capability
+    itself stays depth-derived. Returns JSON with one results entry per task, or a
     dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
@@ -441,7 +466,12 @@ def delegate_task(
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
 
-    top_role = _normalize_role(role)
+    try:
+        # A named role (#112369) resolves here so an unknown/malformed role fails the whole call with
+        # user-facing text; the built-ins stay the depth-derived labels they always were.
+        top_role = _resolve_role(role).name
+    except RoleDefinitionError as exc:
+        return tool_error(str(exc))
     # background applies to single tasks AND batches: a batch is ONE async unit
     # that joins on every child and re-enters as a single consolidated message.
     background = is_truthy_value(background, default=False) if background is not None else False
@@ -496,6 +526,7 @@ def delegate_task(
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        explicit_route=credentials_cfg is not None,
     )
     if err:
         return tool_error(err)

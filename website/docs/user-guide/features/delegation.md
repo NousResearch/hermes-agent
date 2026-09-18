@@ -543,6 +543,50 @@ delegate_task(
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
 
+## Named Roles (role definitions)
+
+`role` also accepts the name of a **role definition file** — a small YAML file resolved at spawn time, modeled on how skills are discovered:
+
+```
+~/.hermes/roles/reviewer.yaml            # user-level, like ~/.hermes/skills/
+<workspace>/.hermes/roles/reviewer.yaml  # repo-level, resolved from the nearest .git root
+```
+
+A workspace role overrides a same-named user role (same precedence rule as project skills).
+
+```yaml
+schema: hermes.role/v1
+name: reviewer                     # must match the file name
+description: Read-only verification worker. Re-derives results from evidence; never implements.
+spawn:
+  can_delegate: false              # maps onto the leaf/orchestrator semantics above
+model:                             # optional pin; beats delegation.provider/model in config.yaml
+  provider: zai
+  model: glm-5.3
+tools:
+  mode: allowlist                  # allowlist | denylist | inherit
+  toolsets: [terminal, file]
+context:
+  context_files: false             # skip the AGENTS.md-class injection for this child
+prompt: |
+  You are a {name} role instance. Verify; do not implement.
+```
+
+```python
+delegate_task(tasks=[{"goal": "Verify the remediation report", "role": "reviewer"}])
+```
+
+A role can only **narrow** a spawn; it can never grant a child more than the parent has:
+
+- `tools.mode: allowlist` intersects its `toolsets` with the parent's. Entries the parent lacks are dropped with a warning, and an allowlist that resolves to nothing **fails the spawn** instead of inheriting the parent's (wider) set. `denylist` subtracts its entries; `inherit` changes nothing.
+- `spawn.can_delegate: false` forces the leaf tool surface even when `max_spawn_depth` would allow the child to delegate. `true` only permits — the depth budget still applies.
+- `model` is resolved through the same credential path as `delegation.provider`/`delegation.model`, so the pinned provider's own key and endpoint are used. It beats config; an explicit per-call route (e.g. `/review`'s `auxiliary.review`) still wins.
+- `prompt` is injected into the child's system prompt as a marked **Role Contract** section, with `{name}` replaced by the role name. Children are fresh conversations, so nothing here touches the parent's cached prefix.
+
+An unknown role name, a missing/foreign `schema`, broken YAML, a mismatched `name`, or a bad `tools.mode` fails the call with a message naming the file and the problem — never a silent fallback to `leaf`.
+
+Not yet enforced in this release: role-level `output_schema` (accepted and ignored with a warning; tracked by #35688), role attribution on the session record (#41554), persona overlays (#80995), and any GUI surface for roles.
+
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
@@ -563,8 +607,8 @@ For **durable execution** that must survive session closure or process restart, 
 ## Key Properties
 
 - Each subagent gets its **own terminal session** (separate from the parent)
-- Subagents inherit the parent's enabled toolsets; the model cannot select or widen them per call
-- **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
+- Subagents inherit the parent's enabled toolsets; the model cannot select or widen them per call (a named role may narrow them further — see [Named Roles](#named-roles-role-definitions))
+- **Nested delegation is opt-in** — only orchestrator children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`; a named role with `spawn.can_delegate: false` opts that child out even where the depth budget would allow it.
 - Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
 - **Cancellation follows ownership** — `/stop` or closing/resetting the owning session cancels its background children; synchronous descendants under orchestrators follow their parent's interrupt state
 - Only the final summary enters the parent's context, keeping token usage efficient

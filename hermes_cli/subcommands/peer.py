@@ -43,6 +43,11 @@ _DM_REPLAY_WAIT_SECONDS = 1
 #: immediately (no turn runs), so this stays far below ``DM_TIMEOUT_S``.
 _DM_REPLAY_TIMEOUT_S = 30
 
+#: Fallback dedup window for the *derived* idempotency key when ``bot_mode.dedup_window_seconds``
+#: is unset or unusable. The derived key is bucketed by this window, so the same message sent in a
+#: later bucket is a NEW delivery — the CLI help quotes it, and both read it from here.
+_DEDUP_WINDOW_FALLBACK_S = 900
+
 #: The run/status read's ``object`` tag — the read-path twin of SEND_RESULT_OBJECT.
 RUN_OBJECT = "hermes.peer.run"
 
@@ -385,9 +390,9 @@ def _resolve_idempotency_key(args, *, sender_profile: str, target_profile: str,
     from hermes_cli.delivery_keys import derive_delivery_key
 
     try:
-        window = int(_bot_mode_value("dedup_window_seconds", 900))
+        window = int(_bot_mode_value("dedup_window_seconds", _DEDUP_WINDOW_FALLBACK_S))
     except (TypeError, ValueError):
-        window = 900
+        window = _DEDUP_WINDOW_FALLBACK_S
     return derive_delivery_key(sender_profile, target_profile, session_id, message,
                                dedup_window_seconds=window)
 
@@ -809,7 +814,11 @@ def build_peer_parser(subparsers) -> None:
             sp.add_argument("message", nargs="?", default=None, help="Message text (or stdin)")
             sp.add_argument(
                 "--idempotency-key", default=None,
-                help="Stable retry key; a retry MUST reuse it (derived from the message when omitted)")
+                help="Stable retry key; a retry MUST reuse it. Derived from the message when "
+                     "omitted, and then bucket-bounded: the derived key is scoped to the current "
+                     f"{_DEDUP_WINDOW_FALLBACK_S}-second bucket "
+                     "(bot_mode.dedup_window_seconds), so the same message sent in a later bucket "
+                     "is a NEW delivery. Pass an explicit key for a longer guarantee")
             sp.add_argument(
                 "--wait", dest="wait_seconds", type=float, default=None,
                 help="Seconds to wait for a reply before a queued receipt is returned "

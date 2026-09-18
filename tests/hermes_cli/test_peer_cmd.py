@@ -1,5 +1,6 @@
 """Tests for ``hermes peer`` — cross-machine bot-to-bot DMs."""
 
+import argparse
 import json
 import threading
 import time
@@ -791,3 +792,56 @@ def test_dm_read_timeout_replays_over_a_real_socket(monkeypatch, capsys, slow_de
     assert payload["session_id"] == "bc_1"
     assert "unreachable" not in (captured.out + captured.err).lower()
     assert "Could not reach peer" not in captured.err
+
+
+# ── dm idempotency help ──────────────────────────────────────────────────────
+
+
+def _dm_action(dest: str):
+    """The ``dm`` subparser's argument named ``dest`` — the help the operator actually reads."""
+    parser = argparse.ArgumentParser(prog="hermes")
+    peer_cmd.build_peer_parser(parser.add_subparsers(dest="action"))
+    root = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    peer = root.choices["peer"]
+    actions = next(a for a in peer._actions if isinstance(a, argparse._SubParsersAction))
+    dm = actions.choices["dm"]
+    return next(action for action in dm._actions if action.dest == dest)
+
+
+def test_dm_idempotency_help_states_the_derived_key_is_bucket_bounded():
+    """A derived key is bucket-scoped, so the help must not read as a permanent retry key.
+
+    ``derive_delivery_key`` scopes the derived key to the current dedup window, and a retry that
+    lands in a later window is a NEW delivery. The explicit key is the only way to outlive it, so
+    the help has to say both things.
+    """
+    text = _dm_action("idempotency_key").help or ""
+    assert "bucket" in text, text
+    assert str(peer_cmd._DEDUP_WINDOW_FALLBACK_S) in text, text
+    assert "explicit key" in text, text
+
+
+def test_dm_idempotency_help_matches_the_derivation_window(monkeypatch):
+    """The window the help quotes is the one the derivation passes, so the two cannot drift."""
+    import hermes_cli.delivery_keys as delivery_keys
+
+    seen: dict = {}
+    asked: list = []
+
+    def _capture(sender_profile, target_profile, session_id, message, *, dedup_window_seconds):
+        seen["window"] = dedup_window_seconds
+        return "derived-key"
+
+    def _bot_mode(key, default):
+        asked.append((key, default))
+        return default
+
+    monkeypatch.setattr(delivery_keys, "derive_delivery_key", _capture)
+    monkeypatch.setattr(peer_cmd, "_bot_mode_value", _bot_mode)
+    key = peer_cmd._resolve_idempotency_key(
+        SimpleNamespace(idempotency_key=None), sender_profile="a", target_profile="b",
+        session_id="bc_1", message="status?")
+
+    assert key == "derived-key"
+    assert asked == [("dedup_window_seconds", peer_cmd._DEDUP_WINDOW_FALLBACK_S)]
+    assert seen["window"] == peer_cmd._DEDUP_WINDOW_FALLBACK_S

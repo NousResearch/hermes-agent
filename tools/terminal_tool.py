@@ -1198,6 +1198,7 @@ def terminal_tool(
     workdir: Optional[str] = None,
     pty: bool = False,
     notify_on_complete: bool = False,
+    completion_linger_seconds: float | None = None,
     watch_patterns: Optional[List[str]] = None,
     _host_local: bool = False,
 ) -> str:
@@ -1273,6 +1274,7 @@ def terminal_tool(
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
                 task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
+                completion_linger_seconds=completion_linger_seconds,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
             )

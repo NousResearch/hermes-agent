@@ -479,6 +479,7 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    completion_linger_seconds: float = 0.0      # Per-process one-shot completion contract
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
@@ -1513,7 +1514,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "One-shot exit lingering (bounded %ss) for %d notify_on_complete "
             "background process(es): %s",
             timeout, len(pending), ", ".join(s.id for s in pending))
-        deadline = time.monotonic() + max(float(timeout), 0.0)
+        deadline = time.monotonic() + max(
+            float(timeout), *(max(0.0, s.completion_linger_seconds) for s in pending),
+        )
         interval = max(float(poll_interval), 0.05)
         try:
             from tools.interrupt import is_interrupted as _is_interrupted

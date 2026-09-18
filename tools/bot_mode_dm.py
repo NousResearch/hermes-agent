@@ -305,7 +305,9 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             # per the #93091 reason enum).
             return json.dumps({"error": str(exc), "reason": exc.reason})
         label = f"@{match['handle']} on {match['connection_label'] or match['connection_id']}"
-        raw = _spawn_delivery(waiter_command(root, envelope), label, task_id=task_id, agent=agent)
+        from tools.bot_relay import relay_waiter_linger_seconds
+        raw = _spawn_delivery(waiter_command(root, envelope), label, task_id=task_id, agent=agent,
+                              completion_linger_seconds=relay_waiter_linger_seconds())
         waiter_error = json.loads(raw).get("error")
         if not waiter_error:
             return raw
@@ -616,6 +618,7 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
 
 
 def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
+                    completion_linger_seconds: float | None = None,
                     task_id: Optional[str], agent: Any) -> str:
     """Launch the cleanup-owning runner and transfer file ownership on ack. ``dm_file``
     is None for relay deliveries (the waiter watches a reply file; envelope artifacts
@@ -625,6 +628,7 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
         from tools.terminal_tool import terminal_tool
 
         raw = terminal_tool(command, background=True, notify_on_complete=True, task_id=task_id,
+                            completion_linger_seconds=completion_linger_seconds,
                             workdir=str(Path(__file__).resolve().parent.parent), _host_local=True)
         try:
             parsed = json.loads(raw)

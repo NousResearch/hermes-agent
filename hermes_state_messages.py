@@ -36,7 +36,7 @@ _BUMP_GENERATION_SQL = """
 _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
-_DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})"
+_DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
@@ -391,7 +391,7 @@ class SessionMessagesMixin:
                              author: str = "user") -> Optional[List[Dict[str, Any]]]:
         """Set (``emoji=None``: clear) *author*'s reaction. Tapback semantics: one per author per message;
         the same emoji again clears, a different one replaces. Returns the list after the write, or
-        ``None`` for a foreign row."""
+        ``None`` for a row outside the session's visible resume lineage (see ``_reaction_row_query``)."""
         if not session_id or message_row_id is None:
             return None
         sql, params = self._reaction_row_query(session_id, message_row_id)
@@ -422,8 +422,9 @@ class SessionMessagesMixin:
 
     def _reaction_row_query(self, session_id: str, message_row_id: int) -> Tuple[str, tuple]:
         """A reaction addresses a row the client can SEE, and a display resume materializes the whole
-        compression lineage with row ids — so a row is "in this session" when its owner is any lineage
-        segment, not only the tip. Explicit ``/branch`` copies keep their own rows (``_resume_lineage_ids``)."""
+        compression lineage (active + compacted rows, with row ids) — so a row is "in this session" when
+        its owner is any lineage segment, not only the tip, and a rewound row is not. Explicit ``/branch``
+        copies keep their own rows (``_resume_lineage_ids``)."""
         lineage = self._resume_lineage_ids(session_id)
         return _DISPLAY_META_ROW_SQL.format(ids=_placeholders(lineage)), (message_row_id, *lineage)
 
@@ -436,10 +437,12 @@ class SessionMessagesMixin:
         lineage = self._resume_lineage_ids(session_id)
         def _do(conn):
             pending = []
+            # Only reaction-bearing rows cross into Python: display_metadata also carries delivery /
+            # attachment markers on most rows, and the lineage scan grows with the session's age.
             for row in conn.execute("SELECT id, role, content, display_metadata FROM messages "
-                    f"WHERE session_id IN ({_placeholders(lineage)}) AND (active = 1 OR compacted = 1) "
-                    "AND display_metadata IS NOT NULL ORDER BY id",
-                    tuple(lineage)).fetchall():
+                    f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
+                    f"AND {_sql_json_extract('display_metadata', '$.' + self.REACTIONS_METADATA_KEY)} IS NOT NULL "
+                    "ORDER BY id", tuple(lineage)).fetchall():
                 meta = self._decode_display_metadata(row["display_metadata"])
                 reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None
                 if not isinstance(reactions, list):

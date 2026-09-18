@@ -205,7 +205,7 @@ _stub_entry("computer_use", computer_use_stub)
 _stub_entry("image_generate", image_generate_stub)
 
 # --- build agent -----------------------------------------------------------
-TOOLSETS = ["file", "terminal", "search", "web", "todo", "session_search",
+TOOLSETS = ["file", "file_write", "terminal", "search", "web", "todo", "session_search",
             "clarify", "image_gen", "computer_use", "cronjob", "memory",
             "desktop_ui", "project", "code_execution"]
 

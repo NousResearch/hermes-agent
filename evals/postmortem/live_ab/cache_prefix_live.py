@@ -29,7 +29,7 @@ rt = resolve_runtime_provider(requested="nous", target_model="anthropic/claude-f
 sid = f"f0ab_{arm}_{int(time.time())}"
 ag = AIAgent(model="anthropic/claude-fable-5.1", provider="nous", base_url=rt.get("base_url"), api_key=rt.get("api_key"),
              api_mode=rt.get("api_mode"), session_id=sid, quiet_mode=True,
-             enabled_toolsets=["file", "terminal"], platform="cli", max_iterations=12,
+             enabled_toolsets=["file", "file_write", "terminal"], platform="cli", max_iterations=12,
              skip_context_files=True, skip_memory=True, reasoning_config={"enabled": True, "effort": "medium"})
 task = ("In /tmp/f0ab_work (create it), do these steps ONE tool call at a time, no parallel calls: "
         "1) write a.txt with 'alpha', 2) write b.txt with 'beta', 3) read a.txt, 4) read b.txt, "

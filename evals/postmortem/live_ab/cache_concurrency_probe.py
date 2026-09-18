@@ -196,7 +196,7 @@ def worker(w):
         a = AIAgent(api_key=CRED["api_key"], base_url=CRED["base_url"], provider=CRED["provider"], **extra,
                     api_mode=API_MODE, model=MODEL, session_id=f"cacheprobe-{PROVIDER}-{ARGS.wire or API_MODE}-{N}-{w}",
                     platform="cli", quiet_mode=True, skip_context_files=True, skip_memory=True, save_trajectories=False,
-                    enabled_toolsets=["file", "terminal"], max_iterations=CALLS + 4)
+                    enabled_toolsets=["file", "file_write", "terminal"], max_iterations=CALLS + 4)
         a.run_conversation(TASK_PREFIX.format(w=w) + TASK)
     except Exception:
         _write(dict(worker=w, error=traceback.format_exc()[-600:]))

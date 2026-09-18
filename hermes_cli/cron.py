@@ -466,10 +466,20 @@ def _print_active_jobs_summary(jobs) -> None:
     if not jobs:
         print("  No active jobs")
         return
-    next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
+    from datetime import timezone
+    from cron.jobs import _parse_aware
+
+    next_runs = []
+    for job in jobs:
+        raw = job.get("next_run_at")
+        parsed = _parse_aware(raw)
+        if parsed is not None:
+            # A shared ZoneInfo compares wall times across a DST fold; use UTC
+            # for ordering, but keep the stored timestamp for display.
+            next_runs.append((parsed.astimezone(timezone.utc), raw))
     print(f"  {len(jobs)} active job(s)")
     if next_runs:
-        print(f"  Next run: {min(next_runs)}")
+        print(f"  Next run: {min(next_runs, key=lambda run: run[0])[1]}")
     # Post-downtime late fires show at status level, not just per-job in `cron list`.
     late = [j for j in jobs if isinstance(j.get("last_dispatch"), dict)
             and j["last_dispatch"].get("kind") in ("late", "catch_up")]

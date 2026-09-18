@@ -442,8 +442,8 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
 @_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins'); with no failure it carries the
-    built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Skill
+    (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Skill
     discovery is bound to the calling session's profile and workspace (``_completion_cwd``: its record,
     else the cwd a new session would be seeded with) so project-local skills register for the repo the
     session is actually in (#114359)."""
@@ -461,7 +461,8 @@ def _(rid, params: dict) -> dict:
     skills: dict[str, dict] = {}
     try:
         with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
-            warning = _catalog_skills(cat, skills) or warning
+            collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
+        warning = warning or collision_note
     except Exception as e:
         warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {

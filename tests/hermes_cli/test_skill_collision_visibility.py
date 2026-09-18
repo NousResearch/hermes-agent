@@ -57,3 +57,22 @@ def test_built_in_name_collision_is_visible_on_every_listing_surface(monkeypatch
 
     gateway_commands = _exec_commands(CommandContext(args="", options={"page_size": 500})).text
     assert f"⚠ {NOTE}" in gateway_commands and "`/tidy-notes`" in gateway_commands
+
+
+def test_catalog_discovery_failure_warning_outranks_the_collision_note(monkeypatch):
+    """A colliding skill must not hide a real discovery failure: the failure stays in ``warning``."""
+    import tools.skills_tool as skills_tool
+    from tui_gateway import server
+
+    _write_skill("handoff")
+    _write_skill("tidy-notes")  # control: skills still list when a loader failed
+    monkeypatch.setattr(skills_tool, "_SKILLS_CACHE", {})
+
+    def _broken_cfg():
+        raise RuntimeError("config.yaml unreadable")
+
+    monkeypatch.setattr(server, "_load_cfg", _broken_cfg)
+
+    catalog = server._methods["commands.catalog"](1, {})["result"]
+    assert catalog["warning"] == "quick_commands discovery unavailable: config.yaml unreadable"
+    assert "/tidy-notes" in catalog["skills"]

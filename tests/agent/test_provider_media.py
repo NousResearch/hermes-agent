@@ -111,3 +111,54 @@ def test_save_url_redirect_scopes_caller_headers_to_first_hop_and_fails_closed(m
     with pytest.raises(ValueError, match="without a Location"):
         _save_video("https://api.example/no-location", require_known_content_type=True)
     assert list(provider_media.cache_dir("videos").iterdir()) == [path]
+
+
+def test_save_url_trusted_origin_skips_private_check_on_first_hop_only(monkeypatch, tmp_path):
+    """``trusted_origin=True`` (the caller built the URL from the operator's own
+    provider ``base_url``) must let a LAN/loopback relay serve the first hop, but the
+    cloud-metadata floor still applies and every redirect target is re-validated in
+    full — a relay cannot bounce us to another internal address."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    hits = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append((self.path, self.headers.get("Authorization")))
+            if self.path == "/bounce":
+                self.send_response(302)
+                self.send_header("Location", "/content")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.end_headers()
+            self.wfile.write(b"clip")
+
+        def log_message(self, *_):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+
+        path = _save_video(f"{base}/content", headers={"Authorization": "Bearer test"},
+                           require_known_content_type=True, trusted_origin=True)
+        assert path.read_bytes() == b"clip"
+        assert hits == [("/content", "Bearer test")]
+
+        with pytest.raises(ValueError, match="SSRF safety check"):
+            _save_video(f"{base}/bounce", headers={"Authorization": "Bearer test"},
+                        require_known_content_type=True, trusted_origin=True)
+        assert hits[1:] == [("/bounce", "Bearer test")]  # hop 2 (loopback) refused before connecting
+
+        with pytest.raises(ValueError, match="always-blocked"):
+            _save_video("http://169.254.169.254/latest/meta-data", trusted_origin=True)
+        assert len(hits) == 2
+    finally:
+        server.shutdown()
+        server.server_close()

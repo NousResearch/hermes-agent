@@ -50,7 +50,7 @@ def save_url(
     kind: str, url: str, *, prefix: str, timeout: float, max_bytes: int, chunk_size: int,
     content_types: Dict[str, str], url_extensions: Tuple[str, ...], default_extension: str,
     label: str, empty_error: str, headers: Optional[Dict[str, str]] = None,
-    require_known_content_type: bool = False,
+    require_known_content_type: bool = False, trusted_origin: bool = False,
 ) -> Path:
     """Stream-download *url* into the cache with a size cap.
 
@@ -65,20 +65,34 @@ def save_url(
     guarded transport, closing DNS-rebinding TOCTOU). Caller-supplied *headers*
     (e.g. provider auth) go to the first hop only — a redirect target never
     receives them.
-    """
-    from tools.url_safety import create_ssrf_safe_client, is_safe_url
 
-    current_url, hop_headers = url, headers
+    *trusted_origin* is for callers that built *url* from the operator's own
+    provider ``base_url`` (not from a provider response): the first hop skips the
+    private-address class check so a LAN/loopback relay works without
+    ``security.allow_private_urls``, but the cloud-metadata floor still applies and
+    every redirect target is re-validated in full.
+    """
+    import httpx
+
+    from tools.url_safety import create_ssrf_safe_client, is_always_blocked_url, is_safe_url
+
+    current_url, hop_headers, trusted_hop = url, headers, trusted_origin
     for _ in range(_MAX_SAVE_URL_REDIRECTS + 1):
-        if not is_safe_url(current_url):
-            raise ValueError(f"{label} URL failed the SSRF safety check: {current_url}")
-        with create_ssrf_safe_client(timeout=timeout, follow_redirects=False) as client:
+        if trusted_hop:
+            if is_always_blocked_url(current_url):
+                raise ValueError(f"{label} URL targets an always-blocked address: {current_url}")
+            client = httpx.Client(timeout=timeout, follow_redirects=False)
+        else:
+            if not is_safe_url(current_url):
+                raise ValueError(f"{label} URL failed the SSRF safety check: {current_url}")
+            client = create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
+        with client:
             with client.stream("GET", current_url, headers=hop_headers) as response:
                 if response.status_code in _REDIRECT_STATUS_CODES:
                     location = response.headers.get("location")
                     if not location:
                         raise ValueError(f"{label} download redirected without a Location: {current_url}")
-                    current_url, hop_headers = urljoin(current_url, location), None
+                    current_url, hop_headers, trusted_hop = urljoin(current_url, location), None, False
                     continue
                 if not response.is_success:
                     response.read()

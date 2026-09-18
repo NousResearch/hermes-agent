@@ -115,6 +115,26 @@ class TestGuessCategory:
         # Even though it matches test_* pattern, logs/ is excluded.
         assert dg.guess_category(p) is None
 
+    @pytest.mark.parametrize("tree", (
+        "services", "inputs", "outputs", "docs", "scripts",
+        "tools", "hooks", "agenda", "archive",
+    ))
+    def test_user_authored_trees_are_protected(self, _isolate_env, tree):
+        """A user's own tree must never be swept because a file inside is named ``test_*``.
+
+        Regression: ``services/`` holds code repos, so ``<repo>/tests/test_*.py`` was classified
+        as disposable session junk and unlinked by ``on_session_end`` — observed as files
+        vanishing from a clean git working tree mid-session (40 deletions in one repo, 67 in
+        another). ``projects/`` was already protected for the same reason (#75403); the trees
+        users actually keep code in were missed.
+        """
+        dg = _load_lib()
+        tests_dir = _isolate_env / tree / "demo" / "tests"
+        tests_dir.mkdir(parents=True)
+        p = tests_dir / "test_demo.py"
+        p.write_text("x")
+        assert dg.guess_category(p) is None
+
     def test_cron_subtree_categorised(self, _isolate_env):
         dg = _load_lib()
         # Only files under ``cron/output/`` are disposable run artifacts.

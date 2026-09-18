@@ -17,6 +17,7 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
+from agent.redact import redact_for_egress
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
@@ -57,6 +58,26 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
         return False
     kind = getattr(params.get("require_checkpoint"), "kind", None)
     return _has_var_kwargs(params) or kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+
+
+# -- Provider egress redaction -----------------------------------------------
+
+def _redact_rows_for_provider(
+    messages: Optional[List[Dict[str, Any]]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Scrub every text ``content`` field of OpenAI-style rows before they leave the process for a
+    memory provider (a remote reader like chat platforms or telemetry). Copies rows — the caller's
+    list/dicts are never mutated. Non-string content (None, multimodal parts) passes through as-is.
+    """
+    if not messages:
+        return messages
+    scrubbed: List[Dict[str, Any]] = []
+    for row in messages:
+        content = row.get("content")
+        if isinstance(content, str) and content:
+            row = {**row, "content": redact_for_egress(content)}
+        scrubbed.append(row)
+    return scrubbed
 
 
 # -- Tool-schema plumbing -----------------------------------------------------
@@ -485,11 +506,17 @@ class MemoryManager:
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
         ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
+        Content is scrubbed with ``redact_for_egress`` (fail-closed) before the fan-out: providers are
+        remote readers and their stores archive turns verbatim, so secrets echoed into tool output must
+        not reach them even with ``security.redact_secrets`` on (it covers display/telemetry surfaces).
         """
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
             return
+        clean_user_content = redact_for_egress(clean_user_content)
+        assistant_content = redact_for_egress(assistant_content)
+        messages = _redact_rows_for_provider(messages)
         optional_kwargs = {"messages": messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
@@ -608,7 +635,8 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
+        redacted = _redact_rows_for_provider(messages)
+        self._each_provider("on_session_end failed", lambda p: p.on_session_end(redacted), level=logging.WARNING,
                             exc_info=True)
 
     def commit_session_boundary_async(self, messages: List[Dict[str, Any]], *, new_session_id: str,

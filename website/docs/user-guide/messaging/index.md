@@ -195,7 +195,8 @@ to the log, stamps `gateway_state.json` with `gateway_state: degraded` and
 `exit_reason: loop_liveness_watchdog`, and exits with code `75` so the service
 supervisor restarts the process. `hermes gateway status` renders that record as
 `⚠ Gateway exited degraded: event loop stopped dispatching …` until a new
-gateway process overwrites it. Set `gateway.loop_watchdog: false` in
+gateway process overwrites it, and the dashboard's gateway badge shows
+**Degraded** with the same reason. Set `gateway.loop_watchdog: false` in
 `config.yaml` to disable the watchdog.
 
 ### Optional Linux event-loop watchdog

@@ -297,7 +297,8 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         gateway_state = runtime.get("gateway_state")
         if not gateway_running:
             # Shared with /api/messaging/platforms: a durable operator stop outranks a retained
-            # ``startup_failed`` (kept on disk for diagnostics), so the overview does not alarm on it.
+            # ``startup_failed`` / watchdog ``degraded`` (kept on disk for diagnostics), so the
+            # overview does not alarm on it.
             gateway_state = retained_gateway_state(runtime)
         elif remote_health_body is not None and gateway_state in {None, "stopped"}:
             # The health probe confirmed the gateway is alive, but the local runtime status

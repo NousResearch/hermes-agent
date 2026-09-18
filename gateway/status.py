@@ -210,18 +210,30 @@ def normalize_updated_at(value: Any) -> Optional[str]:
     return None
 
 
+# ``exit_reason`` values the out-of-loop watchdogs (gateway/shutdown_watchdog.py) stamp together with
+# ``gateway_state: degraded`` right before they hard-exit a wedged process (#113372).
+WATCHDOG_EXIT_REASONS = frozenset({"loop_liveness_watchdog", "shutdown_watchdog"})
+
+
 def retained_gateway_state(runtime: Any) -> str:
     """What a NOT-running gateway's retained ``gateway_state.json`` says about it now:
-    ``"startup_failed"`` only while the operator still wants it running, else ``"stopped"``.
+    ``"startup_failed"`` (or a watchdog-stamped ``"degraded"``) only while the operator still
+    wants it running, else ``"stopped"``.
 
     ``hermes gateway stop`` keeps the last ``startup_failed`` + ``exit_reason`` on disk for
     diagnostics and records the durable stop intent as ``desired_state``; a profile the operator
-    stopped is "stopped", not a current failure. Any other retained state of a dead process
-    (``running``, ``starting``, missing) is also just "stopped". Shared by ``/api/status`` and
-    ``/api/messaging/platforms`` so the sidebar strip and the Channels page cannot disagree."""
+    stopped is "stopped", not a current failure. A watchdog exit (``degraded`` + an exit_reason in
+    ``WATCHDOG_EXIT_REASONS``) is the same kind of current failure as ``startup_failed`` and is kept
+    under the same rule, so the dashboard agrees with ``hermes gateway status``. Any other retained
+    state of a dead process (``running``, ``starting``, missing) is just "stopped". Shared by
+    ``/api/status`` and ``/api/messaging/platforms`` so the sidebar strip and the Channels page
+    cannot disagree."""
     rt = runtime if isinstance(runtime, dict) else {}
-    if rt.get("desired_state") != "stopped" and rt.get("gateway_state") == "startup_failed":
-        return "startup_failed"
+    if rt.get("desired_state") != "stopped":
+        if rt.get("gateway_state") == "startup_failed":
+            return "startup_failed"
+        if rt.get("gateway_state") == "degraded" and rt.get("exit_reason") in WATCHDOG_EXIT_REASONS:
+            return "degraded"
     return "stopped"
 
 

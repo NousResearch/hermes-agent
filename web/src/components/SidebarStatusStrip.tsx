@@ -57,6 +57,12 @@ export function gatewayLine(
     running: { label: g.running, tone: "text-success" },
     starting: { label: g.starting, tone: "text-warning" },
     startup_failed: { label: g.failed, tone: "text-destructive" },
+    // Live: some channels offline. Retained on a dead PID: a watchdog hard-exited a wedged
+    // process (gateway_exit_reason names it) — same verdict `hermes gateway status` prints.
+    degraded: {
+      label: g.degraded,
+      tone: status.gateway_running ? "text-warning" : "text-destructive",
+    },
     stopped: { label: g.stopped, tone: "text-muted-foreground" },
   };
   if (status.gateway_state && byState[status.gateway_state]) {

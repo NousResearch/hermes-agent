@@ -65,6 +65,7 @@ export const en: Translations = {
     activeSessionsLabel: "Active Sessions:",
     gatewayStatusLabel: "Gateway Status:",
     gatewayStrip: {
+      degraded: "Degraded",
       failed: "Start failed",
       off: "Off",
       running: "Running",

@@ -10,6 +10,26 @@ It does **not** revoke the Canonical Execution Reliability Gate, canary admissio
 uncertain-mutation handling, TaskRun fencing, acceptance, circuit breaking or
 canonical evidence requirements.
 
+## Architectural extension — Capability runtime
+
+AEPC defines **when adaptive execution may continue and when compilation is
+admissible/required**. The follow-up
+[PROGRESSIVE_OPERATIONAL_COMPILATION.md](PROGRESSIVE_OPERATIONAL_COMPILATION.md)
+defines **what should be compiled and reused**.
+
+The new target introduces Capability as a reusable deterministic unit between
+primitive Tool calls and larger Recipe/Routine workflows. It also repositions
+`work_execute` as deterministic runtime infrastructure selected by the harness,
+rather than primarily as a refusal/replan instruction.
+
+This extension does not weaken AEPC-E002. Semantic homogeneity remains required
+before mandatory compilation. Structural signatures remain discovery hints. The
+Capability layer must reuse the existing evidence, recipe, procedural-memory,
+WorkPlan/WorkItem, uncertainty and promotion owners rather than creating parallel
+authority.
+
+
+
 ## Implemented boundary — 2026-09-18
 
 Baseline/main audited: `c04906aacee568bb6480287717c76afd230cf4a7`.

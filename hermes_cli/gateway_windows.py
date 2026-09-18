@@ -1407,7 +1407,7 @@ def _probe_state_file(state_path: Path) -> None:
                 age_str = f" (updated {age_seconds}s ago)"
             except Exception:
                 pass
-        _probe(5, gateway_state == "running", f"gateway_state.json state={gateway_state!r}{age_str}")
+        _probe(5, gateway_state in ("running", "degraded"), f"gateway_state.json state={gateway_state!r}{age_str}")
     except Exception as exc:
         _probe(5, False, f"gateway_state.json present but unreadable: {exc}")
 

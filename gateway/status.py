@@ -944,12 +944,13 @@ def parse_active_agents(raw: Any) -> int:
         return 0
 
 
-# Only a live ``running`` gateway is a valid begin-drain target.
-_DRAINABLE_GATEWAY_STATES = frozenset({"running"})
+# Live, serving states: a valid begin-drain target. ``degraded`` is a serving gateway with a parked
+# platform (a dead watchdog-stamped ``degraded`` is already excluded by ``gateway_running=False``).
+_DRAINABLE_GATEWAY_STATES = frozenset({"running", "degraded"})
 
 
 def derive_gateway_busy(*, gateway_running: bool, gateway_state: Any, active_agents: Any) -> bool:
-    """Busy iff live, ``running``, and ``active_agents > 0`` -- the contract NAS gates on. Liveness
+    """Busy iff live, serving (``running``/``degraded``), and ``active_agents > 0`` -- the contract NAS gates on. Liveness
     keys off ``gateway_running``, NEVER ``updated_at`` (a stale heartbeat is a health warning, not death)."""
     if not derive_gateway_drainable(gateway_running=gateway_running, gateway_state=gateway_state):
         return False
@@ -957,7 +958,7 @@ def derive_gateway_busy(*, gateway_running: bool, gateway_state: Any, active_age
 
 
 def derive_gateway_drainable(*, gateway_running: bool, gateway_state: Any) -> bool:
-    """Drainable iff live and ``running``; independent of ``active_agents`` (idle drains finish)."""
+    """Drainable iff live and serving; independent of ``active_agents`` (idle drains finish)."""
     return bool(gateway_running) and gateway_state in _DRAINABLE_GATEWAY_STATES
 
 

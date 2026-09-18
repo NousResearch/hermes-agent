@@ -56,7 +56,7 @@ import {
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
-import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
+import { dismissNotification, notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { loadPoolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
@@ -108,6 +108,7 @@ import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './ga
 // flaps, sleep/wake, Wi‑Fi blips that self-heal in 1–3 minutes — never even
 // toast. Chat stays readable/draftable the whole time either way.
 const RECONNECT_ESCALATE_AFTER_MS = 300_000
+const GATEWAY_CONNECTION_LOST_NOTIFICATION_ID = 'gateway-connection-lost'
 
 // Bound for the sleep/wake liveness probe (see reconnectNow): long enough to
 // ride out a busy-but-healthy backend's scheduling jitter, short enough that a
@@ -466,6 +467,7 @@ export function useGatewayBoot({
             // Non-blocking: chat stays readable/draftable while we keep retrying.
             // Settings / Gateway menu remain reachable without a modal lockout.
             notify({
+              id: GATEWAY_CONNECTION_LOST_NOTIFICATION_ID,
               kind: 'warning',
               title: translateNow('boot.errors.gatewayConnectionLost'),
               message: translateNow('boot.errors.gatewayConnectionLostDetail'),
@@ -903,6 +905,7 @@ export function useGatewayBoot({
       reportPrimaryGatewayState(st)
 
       if (st === 'open') {
+        dismissNotification(GATEWAY_CONNECTION_LOST_NOTIFICATION_ID)
         bootSnapshotSuperseded = true
         reconnectAttempt = 0
         reconnectFailingSince = null

@@ -51,6 +51,9 @@ def _checkpoint_path() -> Path:
     return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
+# Tail of the output a completion notification carries. Right for a build log; a spawner whose
+# output IS the payload (a bot DM's reply) asks for more per process (completion_output_chars).
+COMPLETION_OUTPUT_CHARS = 2000
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
 
@@ -519,6 +522,7 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
@@ -558,7 +562,7 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "watch_patterns")
+    "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -1447,6 +1451,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
+            limit = session.completion_output_chars or COMPLETION_OUTPUT_CHARS
+            cut = len(session.output_buffer) - limit
             notification = {
                 "type": "completion",
                 "session_id": session.id,
@@ -1456,7 +1462,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
-                "output": _output_tail(session, 2000),
+                "output": _output_tail(session, limit),
+                # A consumer that relays the output (a bot DM's reply) must know it is not whole.
+                **({"output_cut": cut} if cut > 0 else {}),
                 # Stable producer identity across checkpoint recovery (unlike a
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,

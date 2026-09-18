@@ -176,6 +176,10 @@ def test_startup_route_decodes_custom_colon_qualified_model(tmp_path, monkeypatc
         "custom:jetson-vllm:nemotron-nano-30b", current_provider="anthropic",
         user_providers=cfg.get("providers"))
     assert route == model_switch.StartupModelRoute("nemotron-nano-30b", "custom:jetson-vllm", "")
+    # The caller's providers are the only source: without the entry the prefix is bare ``custom``.
+    assert model_switch.resolve_startup_model_route(
+        "custom:jetson-vllm:nemotron-nano-30b", current_provider="anthropic", user_providers={}
+    ).provider == "custom"
     # A colon inside a plain model id is not a provider delimiter.
     assert model_switch.resolve_startup_model_route(
         "anthropic/claude-3.5-sonnet:beta", current_provider="anthropic",
@@ -187,9 +191,9 @@ def test_oneshot_and_tui_qualified_model_never_reaches_default_provider(tmp_path
     startup owner, so provider auto-detection never hands the qualified string to the configured
     default (#73943)."""
     from hermes_cli.oneshot import _resolve_model_and_provider
-    from tui_gateway import server as tui_server
 
     cfg = _write_named_provider(tmp_path, monkeypatch)
+    from tui_gateway import server as tui_server  # binds the config path at import: after HERMES_HOME
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
     monkeypatch.setattr(

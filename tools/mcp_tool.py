@@ -15,6 +15,7 @@ import importlib
 import importlib.util
 import inspect
 import logging
+import math
 import os
 import sys
 import threading
@@ -269,6 +270,10 @@ def _resolve_reconnect_backoff(server_name: str, config: dict) -> float:
     try:
         value = float(raw)
     except (TypeError, ValueError):
+        value = None
+    # ``float()`` accepts nan/inf; reject them explicitly rather than relying on how they happen
+    # to fall through min()/max().
+    if value is None or not math.isfinite(value):
         logger.warning("MCP server '%s': invalid reconnect_backoff %r in config, using default %.0fs",
                        server_name, raw, _DEFAULT_RECONNECT_BACKOFF)
         return _DEFAULT_RECONNECT_BACKOFF

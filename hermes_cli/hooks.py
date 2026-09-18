@@ -123,6 +123,11 @@ _DEFAULT_PAYLOADS = {
         "attempt": 0, "final_response": "All done — the change is applied.",
         "changed_paths": ["src/app.tsx"],
     },
+    "pre_finish": {
+        "session_id": "test-session", "platform": "cli", "model": "gpt-4", "coding": True,
+        "attempt": 0, "final_response": "Deployed the config change.",
+        "changed_paths": [],
+    },
     "on_session_start": {"session_id": "test-session"},
     "on_session_end": {
         "session_id": "test-session", "task_id": "test-task", "turn_id": "test-turn",

@@ -6,20 +6,22 @@ description: "真实语言服务器（pyright、gopls、rust-analyzer 等）接�
 
 # 语言服务器协议（LSP）
 
-Hermes 以后台子进程方式运行完整的语言服务器——pyright、gopls、rust-analyzer、
-typescript-language-server、clangd 以及约 20 个其他服务器——并将其语义诊断结果
-接入 `write_file` 和 `patch` 所使用的写后 lint 检查。当 agent 编辑文件时，
-它能精确看到该次编辑引入的错误——不仅是语法错误，还包括语言服务器检测到的
-**类型错误、未定义名称、缺失导入以及全项目范围的语义问题**。
+Hermes 可将完整的语言服务器——pyright、gopls、rust-analyzer、
+typescript-language-server、clangd 以及约 20 个其他服务器——作为后台子进程运行，
+并将其语义诊断结果接入 `write_file` 和 `patch` 所使用的写后 lint 检查。启用后，
+当 agent 编辑文件时，它能精确看到该次编辑引入的错误——不仅是语法错误，还包括
+语言服务器检测到的**类型错误、未定义名称、缺失导入以及全项目范围的语义问题**。
 
 这与顶级编码 agent 所采用的架构相同。Hermes 将其作为自包含组件提供：
-无需编辑器宿主，无需安装插件，无需管理独立守护进程。
+无需编辑器宿主，无需安装插件，无需管理独立守护进程。该功能默认关闭，需显式启用，
+因此 Hermes 不会在未经用户明确配置的情况下安装语言服务器包。
 
 ## LSP 的触发时机
 
-LSP 以 **git 工作区检测**为前提条件。当 agent 的工作目录（或正在编辑的文件）
-位于 git 仓库内时，LSP 针对该工作区运行。若两者均不在 git 仓库中，LSP 保持
-休眠——这对消息网关（gateway）场景很有用，此时 cwd 为用户主目录，没有可诊断的项目。
+LSP 默认处于禁用状态。设置 `lsp.enabled: true` 后，它仍以 **git 工作区检测**
+为前提条件。当 agent 的工作目录（或正在编辑的文件）位于 git 仓库内时，LSP 针对
+该工作区运行。若两者均不在 git 仓库中，LSP 保持休眠——这对消息网关（gateway）
+场景很有用，此时 cwd 为用户主目录，没有可诊断的项目。
 
 检查分层进行：首先进行进程内语法检查（微秒级），语法通过后再进行 LSP 语义诊断。
 不稳定或缺失的语言服务器永远不会导致写入失败——所有 LSP 失败路径均静默回退至
@@ -101,13 +103,15 @@ hermes lsp which <id>      # 打印解析后的二进制路径
 
 ## 配置
 
-默认配置适用于典型场景；若二进制文件已在 PATH 上，无需任何设置。
+LSP 需显式启用。设置 `enabled: true` 后可使用 PATH 或
+`<HERMES_HOME>/lsp/bin/` 中已有的语言服务器；仅当你希望 Hermes 将缺失的服务器包
+安装到其 profile 目录中时，才应设置 `install_strategy: auto`。
 
 ```yaml
 # config.yaml
 lsp:
   # 主开关。禁用后跳过整个子系统——不会启动任何服务器，不会运行后台事件循环。
-  enabled: true
+  enabled: false
 
   # 每次写入后等待诊断结果的方式。
   wait_mode: document      # "document" 或 "full"
@@ -115,8 +119,14 @@ lsp:
 
   # 处理缺失服务器二进制文件的策略。
   #   auto    — 通过 npm/pip/go install 安装到 <HERMES_HOME>/lsp/bin
-  #   manual  — 仅使用已在 PATH 上的二进制文件
-  install_strategy: auto
+  #   manual  — 仅使用 PATH 或 <HERMES_HOME>/lsp/bin 中已有的二进制文件
+  install_strategy: manual
+
+  # 未使用的语言服务器客户端保持运行的最长时间（秒）。
+  # 空闲客户端会自动关闭，并在下次相关文件操作时重新启动。设置为 0 可禁用
+  # 空闲回收，使服务器在进程整个生命周期内保持运行。除 0 外，低于 30 秒的值会被钳制为 30，
+  # 确保扫描不会在操作进行中回收客户端。
+  idle_timeout: 600
 
   # 各服务器覆盖配置（均为可选）。
   servers:
@@ -142,7 +152,8 @@ lsp:
 
 ## 安装位置
 
-当 `install_strategy: auto` 时，Hermes 将二进制文件安装到 `<HERMES_HOME>/lsp/bin/`。
+当你显式设置 `install_strategy: auto` 时，Hermes 将二进制文件安装到
+`<HERMES_HOME>/lsp/bin/`。
 NPM 包安装到 `<HERMES_HOME>/lsp/node_modules/`，bin 符号链接位于上一级目录。
 Go 二进制文件通过 `go install` 安装，`GOBIN` 指向暂存目录。
 
@@ -159,8 +170,9 @@ LSP 服务器在**首次使用时懒启动**。在从未处理过 `.py` 文件�
 `wait_timeout` 秒——pyright/tsserver 通常在数十毫秒内响应，rust-analyzer 在索引
 过程中可能需要数秒。
 
-服务器在 Hermes 进程的整个生命周期内保持运行。没有空闲超时回收机制——每次写入都
-重启服务器索引的代价远高于保持守护进程运行。
+服务器在使用期间保持运行；连续 `lsp.idle_timeout` 秒（默认 600）没有文件活动后会被
+关闭，并在下次相关文件操作时自动重新启动。设置 `idle_timeout: 0` 可禁用空闲
+回收，使服务器在进程整个生命周期内保持运行。
 
 ## 禁用
 
@@ -213,5 +225,5 @@ stderr 输出和协议错误均记录于此。部分服务器（尤其是 rust-a
 
 **编辑位于任何 git 仓库之外的文件**
 
-按设计，LSP 仅在 git 仓库内运行。若项目尚未初始化，运行 `git init` 以启用
-LSP 诊断。否则将使用进程内仅语法检查的回退方案。
+按设计，LSP 仅在已启用且位于 git 仓库内时运行。请设置 `lsp.enabled: true`；
+若项目尚未初始化，还需运行 `git init`。否则将使用进程内仅语法检查的回退方案。

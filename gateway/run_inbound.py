@@ -17,6 +17,7 @@ import os
 import re
 import time
 from contextlib import suppress
+from collections import OrderedDict
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -37,6 +38,77 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+_REDELIVERY_TTL_SECONDS = 900.0
+_REDELIVERY_PER_SESSION = 64
+_REDELIVERY_MAX_SESSIONS = 512
+
+
+class PlatformRedeliveryLedger:
+    """Bounded in-memory record of admitted platform update ids, per session key.
+
+    Telegram stamps ``MessageEvent.platform_update_id``, and the adapter can hand the
+    same update over twice — a redelivery after a slow turn was observed live, and each
+    arrival started its own turn on the same session (concurrently when the first was
+    still running). Nothing at the turn boundary asked "have I already consumed this?".
+
+    Deliberately in-memory and bounded:
+
+    * **not durable** — a redelivery spanning a process restart is ``/restart``'s
+      existing territory (``run_busy._is_stale_restart_redelivery``), and a
+      per-message sidecar file would be new state to corrupt and clean up;
+    * **bounded per session** (``per_session``) and **in session count**
+      (``max_sessions``, LRU-evicted) so a long-lived gateway cannot grow without
+      limit, with ``ttl`` expiring entries so the bound is time-based too.
+
+    Keyed on ``update_id``, **never** ``message_id``: Telegram redelivers an EDIT as a
+    new update carrying the SAME ``message_id``, so a message-id key would silently
+    swallow every legitimate edit.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl: float = _REDELIVERY_TTL_SECONDS,
+        per_session: int = _REDELIVERY_PER_SESSION,
+        max_sessions: int = _REDELIVERY_MAX_SESSIONS,
+    ) -> None:
+        self._ttl = ttl
+        self._per_session = max(1, per_session)
+        self._max_sessions = max(1, max_sessions)
+        self._seen: "OrderedDict[str, Dict[int, float]]" = OrderedDict()
+
+    def is_redelivery(self, session_key: str, update_id: int, now: Optional[float] = None) -> bool:
+        """True when this update id was already admitted for this session.
+
+        One call is both the probe and the record: an unseen id is recorded and
+        reported as a first delivery.
+        """
+        now = time.monotonic() if now is None else now
+        session = self._seen.get(session_key)
+        if session is None:
+            session = {}
+            self._seen[session_key] = session
+        else:
+            self._seen.move_to_end(session_key)
+
+        if session:
+            # Expire stale ids so a restart that rebases the update counter cannot be
+            # blocked by a stale entry it happens to reuse.
+            for seen_id in [i for i, ts in session.items() if ts < now - self._ttl]:
+                del session[seen_id]
+
+        if update_id in session:
+            session[update_id] = now
+            return True
+
+        session[update_id] = now
+        while len(session) > self._per_session:
+            del session[next(iter(session))]  # insertion-ordered: drop the oldest
+        while len(self._seen) > self._max_sessions:
+            self._seen.popitem(last=False)  # LRU: drop the least recently touched session
+        return False
 
 
 class GatewayInboundMixin:
@@ -135,6 +207,47 @@ class GatewayInboundMixin:
             notifier = self._unauthorized_owner_notifier = UnauthorizedOwnerNotifier()
         if notifier.first_time(platform_name, source.user_id) and getattr(self, "config", None) is not None:
             await notifier.notify(self, source, hint)
+
+    def _hm_is_platform_redelivery(self, event: "MessageEvent", source: SessionSource) -> bool:
+        """True when this inbound event is a platform redelivery of an already-admitted update.
+
+        Only platforms that stamp ``platform_update_id`` are covered (Telegram today), so
+        every other platform keeps its existing behaviour exactly.
+
+        ⚠ **A drained follow-up is NOT a redelivery, and must never be treated as one.**
+        When a message arrives while a turn is running the base adapter queues it and
+        later re-dispatches the SAME event object through ``_process_message_background``
+        (``platforms/base.py``) — a second trip through ``_hm_admit_event`` for one update
+        id. That re-admission is identified by our own ingress stamp and always admitted.
+        Keying on the update id alone would silently swallow every queued follow-up and
+        interrupt — destroying the feature this guard exists to protect.
+        """
+        update_id = getattr(event, "platform_update_id", None)
+        if update_id is None or getattr(event, "_hermes_ingress_admitted", False):
+            return False
+        try:
+            session_key = self._session_key_for_source(source)
+        except Exception:
+            # Fail open: dropping a real message is worse than tolerating a duplicate turn.
+            logger.debug("Redelivery guard skipped: no session key for source", exc_info=True)
+            return False
+
+        ledger = getattr(self, "_inbound_redelivery_ledger", None)
+        if ledger is None:
+            # getattr/setattr: bare-runner tests build GatewayRunner via object.__new__.
+            ledger = PlatformRedeliveryLedger()
+            self._inbound_redelivery_ledger = ledger
+        if not ledger.is_redelivery(session_key, int(update_id)):
+            return False
+
+        logger.info(
+            "Dropping redelivered inbound update (platform=%s chat=%s update_id=%s): already admitted, "
+            "and a redelivery must not start a second turn",
+            getattr(getattr(source, "platform", None), "value", "unknown"),
+            getattr(source, "chat_id", None) or "unknown",
+            update_id,
+        )
+        return True
 
     async def _hm_admit_event(
         self, event: "MessageEvent"
@@ -236,9 +349,16 @@ class GatewayInboundMixin:
             else:
                 logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             return None
+        # A platform redelivery of an update we already admitted must not start a second
+        # turn. After auth, so an unauthorized sender can neither probe nor poison this
+        # state; before the bot-message charge, so a duplicate spends no budget.
+        if self._hm_is_platform_redelivery(event, source):
+            return None
+
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
         if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
             return None
+        event._hermes_ingress_admitted = True
         return event, source, False
 
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:

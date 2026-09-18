@@ -460,14 +460,15 @@ def test_server_request_waits_for_a_ws_client_that_advertised(server):
     assert "clarify" in response["result"]["server_requests"]
 
     box = {}
-    thread = threading.Thread(target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-new", {}, timeout=5)),
+    thread = threading.Thread(target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-new", _request_params("sudo", "ws-new"), timeout=5)),
                               daemon=True)
     thread.start()
     req = _wait_open(server_requests)
     assert peer.frames[-1]["id"] == req.id
     assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "yes"}}) is None
     thread.join(timeout=5)
-    assert box["r"] == {"value": "yes"}
+    # The response frame's result is validated into the request's declared model.
+    assert box["r"].value == "yes"
     # Disconnect forgets the advertisement; the next connection must advertise again.
     server.unregister_live_transport(peer)
     assert server_requests.answers_requests(peer) is False

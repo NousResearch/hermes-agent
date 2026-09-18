@@ -16,6 +16,7 @@ These drive the REAL producer through the REAL relay into the gateway's
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -121,8 +122,11 @@ def test_emit_complete_publishes_both_terminal_events_and_clears_the_live_entry(
     run.emit_complete({"result": "ok"}, _entry(), 1.5)
 
     assert [e for e, s, _ in emits if s == "parent-sid"] == ["subagent.start", "subagent.complete"], emits
-    # The child's window mirrors the run and closes on the summary.
-    assert [e for e, s, _ in emits if s == "live-1"] == ["message.start", "message.delta", "message.complete"], emits
+    # The child's window mirrors the run and closes on the summary. Asserted as a shape (first/last
+    # + the delta between) rather than an exact list so a future mirror event is not a false red.
+    child_events = [e for e, s, _ in emits if s == "live-1"]
+    assert child_events[0] == "message.start" and child_events[-1] == "message.complete", emits
+    assert "message.delta" in child_events, emits
     # Liveness is cleared, so a resume of the child is not refused with 4009.
     assert server._child_run_active("child-1") is False
     assert "child-1" not in server._active_child_runs
@@ -146,3 +150,52 @@ def test_emit_complete_carries_a_classified_failure_reason(server, emits):
     assert payload["cost_usd"] == 0.0
     assert [e for e, s, _ in emits if s == "live-1"][-1] == "message.complete"
     assert server._child_run_active("child-1") is False
+
+
+def test_a_frame_the_contract_refuses_is_refused_loudly(server, emits, caplog):
+    """The undeclared-field case that started this: the frame is still dropped, but not silently.
+
+    Before the fields were declared the build escaped into ``_safe_progress``, which logged at DEBUG —
+    the terminal event vanished and the child stayed "running". Any future producer field now says so
+    at WARNING, which is how this class gets caught instead of shipped.
+    """
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+    _run, relay = _child_run(server)
+    relay("subagent.start", preview="research X")
+
+    with caplog.at_level(logging.WARNING):
+        relay("subagent.complete", preview="done", status="completed", undeclared_field=1)
+
+    assert "subagent.complete" not in [e for e, _, _ in emits], emits
+    # The warning names the offending field, so the operator does not have to reproduce it.
+    assert any("undeclared_field" in message for message in caplog.messages), caplog.messages
+    # A refused completion still leaves the child pinned "running" — the entry stamped on
+    # `subagent.start` is reclaimed only once it ages past the stale window (see
+    # test_subagent_child_mirror.py::test_stale_child_run_not_reported_active). Forwarding a
+    # stripped frame instead is deliberate: the producer bug gets fixed, never papered over.
+    assert server._child_run_active("child-1") is True
+
+
+def test_the_sink_reports_a_frame_it_cannot_build(server, emits, caplog):
+    """The gateway side of the same class: junk from a producer used to vanish at DEBUG."""
+    with caplog.at_level(logging.WARNING):
+        server._on_tool_progress(
+            "parent-sid", "subagent.complete", None, None, None,
+            goal="research X", task_count=1, task_index=0, duration_seconds="not-a-number",
+        )
+
+    assert "subagent.complete" not in [e for e, _, _ in emits], emits
+    assert any("gateway sink" in message for message in caplog.messages), caplog.messages
+
+
+def test_the_sink_allow_list_covers_every_declared_payload_field():
+    """The drift guard: the kwargs-rebuild path may only omit the fields it builds by hand.
+
+    This is the pair that silently diverged and shipped the dropped completion — the model and the
+    allow-list have to agree, so assert the relationship rather than either side alone.
+    """
+    from tui_gateway.contracts.events import SubagentEventPayload
+    from tui_gateway.tool_progress import _SUBAGENT_FIELDS
+
+    handled_positionally = {"goal", "task_count", "task_index", "tool_preview"}
+    assert {key for key, _, _ in _SUBAGENT_FIELDS} | handled_positionally == set(SubagentEventPayload.model_fields)

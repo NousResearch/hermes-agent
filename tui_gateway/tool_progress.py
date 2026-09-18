@@ -379,25 +379,36 @@ _SUBAGENT_FIELDS = (
     ("files_read", bool, _str_list), ("files_written", bool, _str_list), ("output_tail", bool, list),
     ("tool_name", bool, str), ("text", bool, str), ("status", bool, str), ("summary", bool, str),
     ("duration_seconds", _not_none, float),
+    # `_ChildRun.emit_complete` reports both; leaving them out of this allow-list made the
+    # kwargs-rebuild path a second, silent settlement point (the prebuilt-payload path above
+    # does not consult it).
+    ("cost_usd", _not_none, float), ("failure_reason", bool, str),
 )
 
 
 def _progress_subagent(sid, name, preview, kw, event_type):
     payload_model = kw.pop("subagent_payload", None)
-    payload = {"goal": str(kw.get("goal") or ""), "task_count": int(kw.get("task_count") or 1), "task_index": int(kw.get("task_index") or 0)}
-    source = {**kw, "tool_name": name, "text": preview}
-    for key, present, coerce in srv._SUBAGENT_FIELDS:
-        if present(source.get(key)):
-            val = coerce(source[key])
-            if val is not None:
-                payload[key] = val
-    if preview and event_type == "subagent.tool":
-        payload["tool_preview"] = str(preview)
-        payload["text"] = str(preview)
-    # subagent.text is the child's per-token reply, relayed solely to feed a watch window's live mirror
-    # (keyed off the child sid); on the parent it's hundreds of ignored frames, so skip it.
-    payload_model = payload_model if isinstance(payload_model, SubagentEventPayload) else SubagentEventPayload(**payload)
-    payload = payload_model.model_dump(mode="json")
+    try:
+        payload = {"goal": str(kw.get("goal") or ""), "task_count": int(kw.get("task_count") or 1), "task_index": int(kw.get("task_index") or 0)}
+        source = {**kw, "tool_name": name, "text": preview}
+        for key, present, coerce in srv._SUBAGENT_FIELDS:
+            if present(source.get(key)):
+                val = coerce(source[key])
+                if val is not None:
+                    payload[key] = val
+        if preview and event_type == "subagent.tool":
+            payload["tool_preview"] = str(preview)
+            payload["text"] = str(preview)
+        # subagent.text is the child's per-token reply, relayed solely to feed a watch window's live mirror
+        # (keyed off the child sid); on the parent it's hundreds of ignored frames, so skip it.
+        payload_model = payload_model if isinstance(payload_model, SubagentEventPayload) else SubagentEventPayload(**payload)
+        payload = payload_model.model_dump(mode="json")
+    except Exception as exc:
+        # A junk/undeclared producer value used to escape back into the relay's `_safe_progress`,
+        # which logs at DEBUG — the frame vanished with no signal, exactly like the relay-boundary
+        # slip this allow-list mirrors. Say it loudly instead.
+        logger.warning("subagent.%s frame dropped at the gateway sink: %s", event_type, exc)
+        return
     if event_type != "subagent.text":
         srv._emit(event_type, sid, payload_model)
     srv._mirror_subagent_to_child(event_type, payload)

@@ -8,6 +8,9 @@ import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
+
+from pydantic import ValidationError
+
 from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 from tui_gateway.contracts.events import SubagentEventPayload
 
@@ -331,11 +334,20 @@ class _ChildProgressRelay:
         if self.parent_cb:
             # kwargs override identity (e.g. status, duration_seconds).
             identity = {**self._identity_kwargs(), **kwargs}
-            payload = SubagentEventPayload(
-                **identity,
-                **({"tool_name": tool_name} if tool_name else {}),
-                **({"text": preview} if preview else {}),
-            )
+            try:
+                payload = SubagentEventPayload(
+                    **identity,
+                    **({"tool_name": tool_name} if tool_name else {}),
+                    **({"text": preview} if preview else {}),
+                )
+            except ValidationError as exc:
+                # A producer field the wire model does not declare (or a value its enum refuses) used
+                # to escape into `_safe_progress`, which logs at DEBUG: the frame vanished with no
+                # signal, so a completed child stayed "running" and its next prompt answered 4009.
+                # A contract slip at this boundary is always a bug — refuse the frame loudly.
+                # Anything else raised here still propagates to `_safe_progress`, as before.
+                logger.warning("subagent.%s frame refused by the wire contract: %s", event_type, exc)
+                return
             with _quiet("Parent callback failed: %s"):
                 self.parent_cb(event_type, tool_name, preview, args, subagent_payload=payload, **identity)
 

@@ -1562,10 +1562,12 @@ def _resolve_path_ctor_target(ctor: ast.Call, raw_aliases, imports) -> str | Non
 def _hermes_home_candidates() -> tuple:
     """Hermes-home roots whose *boundaries* stay protected.
 
-    Both the HOME-based default and an explicit ``HERMES_HOME`` override count: a relocated
-    install protects the same boundaries, and isolated/test runs point the override at a temp dir.
+    Resolve the active profile and platform default per call, as the file-tool guard does.
+    Retain the explicit environment and legacy HOME-based roots without caching a profile.
     """
-    homes = []
+    from hermes_constants import _get_platform_default_hermes_home, get_hermes_home
+
+    homes = [str(get_hermes_home()), str(_get_platform_default_hermes_home())]
     env_home = os.environ.get("HERMES_HOME")
     if env_home:
         homes.append(env_home)

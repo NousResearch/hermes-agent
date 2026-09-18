@@ -433,16 +433,27 @@ _NON_TOOL_CALLING_PATTERNS = [
 _CACHE_POINT_PATTERNS = ["anthropic.claude", "amazon.nova"]
 
 
+def _capability_model_id(model_id: str) -> str:
+    """The id every capability gate must match on. An application-inference-profile ARN names no
+    model, so resolve it to the model it wraps (per-process cached) and hand back the bare model id
+    -- gates like ``_BEDROCK_XAI_GROK_NO_SAMPLING_RE`` are anchored and never match a bare ARN.
+    Everything else, including an unresolvable profile, is returned unchanged; the request always
+    targets the id the caller passed."""
+    model_id = model_id or ""
+    if not _APPLICATION_PROFILE_ARN_RE.search(model_id):
+        return model_id
+    resolved = _resolve_inference_profile_model_id(model_id)
+    tail = _FOUNDATION_MODEL_ARN_RE.search(resolved)
+    return tail.group(1) if tail else resolved
+
+
 def _model_supports_tool_use(model_id: str) -> bool:
     """False for denylisted models; unknown models default to True."""
-    return not any(pattern in model_id.lower() for pattern in _NON_TOOL_CALLING_PATTERNS)
+    return not any(pattern in _capability_model_id(model_id).lower() for pattern in _NON_TOOL_CALLING_PATTERNS)
 
 
 def _model_supports_prompt_cache(model_id: str) -> bool:
-    # An application-inference-profile ARN names no model: match on the wrapped model (cached lookup).
-    if _APPLICATION_PROFILE_ARN_RE.search(model_id):
-        model_id = _resolve_inference_profile_model_id(model_id)
-    return any(pattern in model_id.lower() for pattern in _CACHE_POINT_PATTERNS)
+    return any(pattern in _capability_model_id(model_id).lower() for pattern in _CACHE_POINT_PATTERNS)
 
 
 # --- Server-verdict cachePoint suppression ---
@@ -910,18 +921,20 @@ def build_converse_kwargs(
     second-newest message (survives as the tail grows — mirrors Anthropic system_and_3), each only if the
     model supports caching and Bedrock has not rejected that placement."""
     system_prompt, converse_messages = convert_messages_to_converse(messages)
+    # Every capability gate below matches on the wrapped model, never the opaque profile ARN.
+    capability_model = _capability_model_id(model)
     cache_at = {p for p in CACHE_POINT_PLACEMENTS if cache_point_allowed(model, p)} if _model_supports_prompt_cache(model) else set()
     inference_config: Dict[str, Any] = {} if max_tokens is None else {"maxTokens": max_tokens}
     kwargs: Dict[str, Any] = {"modelId": model, "messages": converse_messages, "inferenceConfig": inference_config}
     if system_prompt:
         kwargs["system"] = system_prompt + [dict(_CACHE_POINT)] if "system" in cache_at else system_prompt
     from agent.anthropic_adapter import _forbids_sampling_params
-    if not _forbids_sampling_params(model) and not _BEDROCK_XAI_GROK_NO_SAMPLING_RE.match(model or ""):
+    if not _forbids_sampling_params(capability_model) and not _BEDROCK_XAI_GROK_NO_SAMPLING_RE.match(capability_model):
         inference_config.update({k: v for k, v in (("temperature", temperature), ("topP", top_p)) if v is not None})
     if stop_sequences:
         inference_config["stopSequences"] = stop_sequences
     converse_tools = convert_tools_to_converse(tools) if tools else []
-    if converse_tools and not _model_supports_tool_use(model):
+    if converse_tools and not _model_supports_tool_use(capability_model):
         # Non-tool-calling models reject toolConfig (ValidationException → retry loop): strip and warn.
         logger.warning(
             "Model %s does not support tool calling — tools stripped. "
@@ -1155,6 +1168,7 @@ def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = Tr
 # region / base_url may differ, and an empty region must not skip the lookup because the
 # production caller (agent/model_metadata.py::_resolve_bedrock_context_length) passes none.
 _APPLICATION_PROFILE_ARN_RE = re.compile(r":application-inference-profile/")
+_FOUNDATION_MODEL_ARN_RE = re.compile(r"(?::foundation-model/)(.+)$")
 _ARN_REGION_RE = re.compile(r"^arn:[^:]+:bedrock:([a-z0-9-]+):", re.IGNORECASE)
 _inference_profile_model_cache: Dict[str, str] = {}
 

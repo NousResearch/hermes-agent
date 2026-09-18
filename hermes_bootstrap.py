@@ -150,18 +150,14 @@ def _patch_urllib3_create_connection(module) -> None:
     """Point ``urllib3.util.connection.create_connection`` (its own serial walker) at the racer."""
     if getattr(module.create_connection, "_hermes_happy_eyeballs", False):
         return
-    urllib3_original = module.create_connection
     urllib3_sentinel = module._DEFAULT_TIMEOUT
 
     def _urllib3_racer(address, timeout=urllib3_sentinel, source_address=None, socket_options=None):
         effective = socket.getdefaulttimeout() if timeout is urllib3_sentinel else timeout
-        try:
-            return _happy_eyeballs_create_connection(
-                address, effective, source_address=source_address, socket_options=tuple(socket_options or ()))
-        except OSError:
-            raise
-        except Exception:
-            return urllib3_original(address, timeout, source_address=source_address, socket_options=socket_options)
+        # OSError = every candidate failed (identical to the serial original); anything else is a
+        # racer bug and must surface rather than silently fall back to the serial stall.
+        return _happy_eyeballs_create_connection(
+            address, effective, source_address=source_address, socket_options=tuple(socket_options or ()))
 
     _urllib3_racer._hermes_happy_eyeballs = True  # type: ignore[attr-defined]
     module.create_connection = _urllib3_racer
@@ -208,19 +204,15 @@ def install_happy_eyeballs_socket_connect() -> None:
     """
     if getattr(socket.create_connection, "_hermes_happy_eyeballs", False):
         return
-    socket_original = socket.create_connection
 
     def _socket_racer(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *, all_errors=False):
         # Stock create_connection leaves the sentinel alone, so the socket keeps the
         # process default from socket.setdefaulttimeout(); the racer re-applies the
         # timeout on the winner, so it must resolve the sentinel the same way.
         effective = socket.getdefaulttimeout() if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
-        try:
-            return _happy_eyeballs_create_connection(address, effective, source_address=source_address)
-        except OSError:
-            raise  # every candidate failed — identical semantics to the serial original
-        except Exception:
-            return socket_original(address, timeout, source_address=source_address, all_errors=all_errors)
+        # OSError = every candidate failed (identical to the serial original); anything else is a
+        # racer bug and must surface rather than silently fall back to the serial stall.
+        return _happy_eyeballs_create_connection(address, effective, source_address=source_address)
 
     _socket_racer._hermes_happy_eyeballs = True  # type: ignore[attr-defined]
     socket.create_connection = _socket_racer

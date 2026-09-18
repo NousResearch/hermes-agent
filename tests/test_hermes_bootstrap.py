@@ -468,3 +468,21 @@ class TestHappyEyeballsSocketConnect:
         assert winner.timeout is None  # sentinel resolves to the process default, like stock
         assert clock[0] == hb._HAPPY_EYEBALLS_DELAY_SECONDS
         assert sockets[0].closed is True and sockets[1] is winner
+
+    def test_racer_bug_raises_instead_of_falling_back_to_the_serial_walk(self, monkeypatch):
+        """A non-OSError from the racer is a bug in the racer, not a network outcome: it must
+        surface, never silently reroute the connect through the serial stock walker (which
+        would reintroduce the exact stall the racer exists to remove). OSError still means
+        "every candidate failed" and propagates unchanged."""
+        import urllib3.util.connection as urllib3_connection
+
+        _fresh_import()
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("racer bug")
+
+        for racer in (socket.create_connection, urllib3_connection.create_connection):
+            assert getattr(racer, "_hermes_happy_eyeballs", False)
+            monkeypatch.setitem(racer.__globals__, "_happy_eyeballs_create_connection", boom)
+            with pytest.raises(RuntimeError, match="racer bug"):
+                racer(("127.0.0.1", 1), 1.0)

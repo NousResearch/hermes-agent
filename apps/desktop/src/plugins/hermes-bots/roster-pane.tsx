@@ -33,7 +33,7 @@ import {
   sourceByConnection,
   useRoster
 } from './data'
-import { insertBotOrderByDrop } from './group-order'
+import { insertBotOrderByDrop, sortGroupRosterRows } from './group-order'
 import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
 import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
@@ -439,10 +439,23 @@ export function BotsPane() {
       void moveBotsToSection([dragBot], targetSectionId)
     }
 
-    // The band the user sees: this section's bots, current display order.
-    const sectionBots = roster.filter(
-      bot => botSectionId(bot, allMeta) === targetSectionId && !isBotHidden(bot, allMeta)
-    )
+    // The band the user SEES: this section's bots in display order — pin
+    // band, then manual rosterOrder, then activity — NOT the `roster` array's
+    // pin+activity order. Resolving a drop against the activity order when a
+    // manual order exists inserts relative to the wrong neighbour and
+    // reshuffles the whole band.
+    const sectionBots = sortGroupRosterRows(
+      roster
+        .filter(bot => botSectionId(bot, allMeta) === targetSectionId && !isBotHidden(bot, allMeta))
+        .map(bot => ({
+          bot,
+          kind: 'bot' as const,
+          activity: activityOf(bot),
+          pinned: isPinned(bot),
+          order: botRosterMeta(bot, allMeta)?.rosterOrder
+        })),
+      {}
+    ).map(row => row.bot)
     const bandRows = sectionBots.map(bot => ({
       name: botRosterKey(bot),
       pinned: isPinned(bot)

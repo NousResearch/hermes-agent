@@ -1084,7 +1084,7 @@ def _(rid, params: SessionSetHiddenParams) -> SessionSetHiddenResult | dict:
             else:
                 target = params.session_id
                 if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
-                    return _err(rid, 4001, "session not found")
+                    return srv._err(rid, 4001, "session not found")
                 db.set_session_hidden(key, hidden)
             return SessionSetHiddenResult(hidden=hidden, session_key=key)
         except Exception as e:

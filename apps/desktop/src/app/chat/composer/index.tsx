@@ -1145,6 +1145,7 @@ export function ChatBar({
           // guard forever (#44135). Clear unconditionally: by the time blur
           // runs there is nothing left composing in this editor.
           composingRef.current = false
+
           if (blurCloseTimer.current !== null) {
             window.clearTimeout(blurCloseTimer.current)
           }

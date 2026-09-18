@@ -48,7 +48,9 @@ describe('skill link installation', () => {
   it('uses the registered remote name without changing the install destination', async () => {
     setApiRequestConnection('server-a')
     $connectionsRegistry.set({
-      version: 2, primary: 'server-a', secureTokenStorage: false,
+      version: 2,
+      primary: 'server-a',
+      secureTokenStorage: false,
       connections: [{ id: 'server-a', kind: 'remote', label: 'Homelab', tokenSet: false, tokenPreview: null }]
     })
     const pending = requestSkillInstallFromDeepLink('official/research/example')
@@ -56,7 +58,8 @@ describe('skill link installation', () => {
     expect(request.details?.[1].value).toBe('Homelab · research')
     await runConfirm(request)
     expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/research/example', {
-      connectionId: 'server-a', profile: 'research'
+      connectionId: 'server-a',
+      profile: 'research'
     })
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: '“example” installed' }))
     settleConfirm(true)
@@ -88,7 +91,9 @@ describe('skill link installation', () => {
   })
 
   it('does not report completion when a profile switch abandons polling', async () => {
-    vi.mocked(installHubSkill).mockImplementationOnce(async () => { setApiRequestProfile('other') })
+    vi.mocked(installHubSkill).mockImplementationOnce(async () => {
+      setApiRequestProfile('other')
+    })
     const pending = requestSkillInstallFromDeepLink('clawhub/apple-design')
     const request = $confirmRequest.get()!
     await expect(runConfirm(request)).rejects.toThrow('The destination changed')

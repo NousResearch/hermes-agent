@@ -30,6 +30,7 @@ export function ConfigField({
   value,
   enumOptions,
   optionLabels,
+  optionDescriptions,
   onChange,
   descriptionExtra
 }: {
@@ -38,6 +39,7 @@ export function ConfigField({
   value: unknown
   enumOptions?: string[]
   optionLabels?: Record<string, string>
+  optionDescriptions?: Record<string, string>
   onChange: (value: unknown) => void
   descriptionExtra?: ReactNode
 }) {
@@ -140,20 +142,28 @@ export function ConfigField({
         value={String(value ?? '') || EMPTY_SELECT_VALUE}
       >
         <SelectTrigger className={CONTROL_TEXT}>
-          <SelectValue />
+          <SelectValue>{optionLabels?.[String(value ?? '')]}</SelectValue>
         </SelectTrigger>
-        <SelectContent>
-          {selectOptions.map(option => (
-            <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
-              {option
-                ? (optionLabels?.[option] ?? prettyName(option))
-                : schemaKey === 'display.personality'
-                  ? c.none
-                  : schemaKey === 'memory.provider'
-                    ? c.builtinOnly
-                    : c.noneParen}
-            </SelectItem>
-          ))}
+        <SelectContent className={optionDescriptions ? 'min-w-72' : undefined}>
+          {selectOptions.map(option => {
+            const optionDescription = optionDescriptions?.[option]
+
+            return (
+              <SelectItem
+                description={optionDescription}
+                key={option || EMPTY_SELECT_VALUE}
+                value={option || EMPTY_SELECT_VALUE}
+              >
+                {option
+                  ? (optionLabels?.[option] ?? prettyName(option))
+                  : schemaKey === 'display.personality'
+                    ? c.none
+                    : schemaKey === 'memory.provider'
+                      ? c.builtinOnly
+                      : c.noneParen}
+              </SelectItem>
+            )
+          })}
         </SelectContent>
       </Select>
     )

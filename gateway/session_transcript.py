@@ -349,8 +349,13 @@ class SessionTranscriptMixin:
             return
         try:
             from gateway.shutdown_flush import drain_transcript_spool
+            # Inside an outage the append that follows logs/escalates the same failure; the
+            # replay attempt is only the order-preserving probe, so its failure stays at DEBUG.
+            with self._transcript_retry_lock:
+                known_failing = bool(self._transcript_append_failures.get(session_id))
             _replayed, remaining = drain_transcript_spool(
                 session_id, lambda message: self._append_transcript_message(session_id, message),
+                db_known_failing=known_failing,
             )
             if not remaining:
                 spooled_sessions.discard(session_id)

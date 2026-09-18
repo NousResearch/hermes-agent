@@ -1659,6 +1659,42 @@ class TestGatewaySessionDbRecovery:
         assert rows == [f"m{i}" for i in range(threshold)] + ["recovered"]  # replayed in order
         assert list((tmp_path / "pending_messages").glob("pending-*.json")) == []
 
+    def test_stalled_session_spool_replay_does_not_warn_per_append(self, caplog, tmp_path, monkeypatch):
+        """Live finding on #114266: once a stalled session's backlog is spooled, the pre-write
+        replay probe on a still-dead DB must not add a shutdown_flush WARNING per append — the
+        per-append ERROR escalation already covers the outage. Recovery still replays in order."""
+        import threading
+        from types import SimpleNamespace
+        import hermes_constants
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        def _fail(**kwargs):
+            raise RuntimeError("disk I/O error")
+
+        store = object.__new__(SessionStore)
+        store._db = SimpleNamespace(append_message=_fail)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
+        threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        n_appends = threshold + 3
+        with caplog.at_level(logging.DEBUG):
+            for i in range(n_appends):
+                store.append_to_transcript("s-stall", {"role": "user", "content": f"m{i}"})
+        errors = [r for r in caplog.records if "session is stalled" in r.getMessage()]
+        assert len(errors) == n_appends - threshold + 1 and {r.levelno for r in errors} == {logging.ERROR}
+        replay_failed = [r for r in caplog.records if "Replay of spooled transcript message" in r.getMessage()]
+        assert replay_failed, "spool replay was attempted before each write"
+        assert [r.levelno for r in replay_failed if r.levelno >= logging.WARNING] == []
+
+        rows = []
+        store._db = SimpleNamespace(append_message=lambda **kw: rows.append(kw["content"]))
+        store.append_to_transcript("s-stall", {"role": "assistant", "content": "recovered"})
+        assert rows == [f"m{i}" for i in range(n_appends)] + ["recovered"]
+
     def test_pending_queue_caps_at_max(self):
         """Pending queue should drop oldest messages when exceeding the cap
         to prevent unbounded memory growth on persistent DB failure."""

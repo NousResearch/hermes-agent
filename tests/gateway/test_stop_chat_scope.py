@@ -1,24 +1,17 @@
-"""Regression tests: /stop falls back to ANY running turn in the same chat when
-the caller's exact session key (and thread-sibling keys) miss.
+"""Regression tests: /stop falls back to a running turn in the SAME chat when the
+caller's exact session key and thread-sibling key both miss.
 
-Two real shapes produce the miss (found via the Slack native stop button,
-gateway-gateway#286 review):
+Semantics under test: "/stop" means "stop what's running in this chat". On an exact +
+thread-sibling miss, an AUTHORIZED user's /stop interrupts the chat's running turns;
+another chat, workspace, profile or thread is never touched.
 
-- A turn triggered by a TOP-LEVEL channel message keys ``chat_type=channel``
-  (with the relay's thread_id fallback), while a stop/`/stop` arriving from
-  inside the reply thread normalizes to ``chat_type=thread`` — different key,
-  same chat, and the run was invisible to /stop.
-- Rolling-DM configs key the DM session WITHOUT a thread slot; a stop event
-  carrying the thread keys a different session.
-
-Semantics: "/stop" means "stop what's running in this chat". On an exact +
-thread-sibling miss, an AUTHORIZED user's /stop interrupts the chat's running
-turns; other chats are never touched.
+Regression for #113738 (found via Slack's native stop button, gateway-gateway#286).
 """
 
 import pytest
 
-from gateway.run import GatewayRunner
+from agent.i18n import t
+from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 from gateway.platforms.base import Platform
 from gateway.platforms.event import MessageEvent, MessageType
@@ -48,11 +41,14 @@ def _slack_source(chat_type, chat_id, thread_id=None, user_id="U-alice", scope_i
     )
 
 
-def _runner_with_run(running_key, own_key, authorized=True):
+def _runner_with_run(running_keys, own_key, authorized=True):
     runner = object.__new__(GatewayRunner)
-    runner._running_agents = {running_key: _FakeAgent()}
+    if isinstance(running_keys, str):
+        running_keys = [running_keys]
+    runner._running_agents = dict.fromkeys(running_keys, _FakeAgent())
     runner.session_store = _FakeStore(own_key)
     runner._is_user_authorized_for_source = lambda source, **kw: authorized
+    runner.adapters = {}
     interrupted = []
 
     async def _fake_interrupt(session_key, source, *, interrupt_reason, invalidation_reason):
@@ -62,22 +58,28 @@ def _runner_with_run(running_key, own_key, authorized=True):
     return runner, interrupted
 
 
+async def _stop(source, running_keys, authorized=True):
+    """Drive one /stop through the real handler; return (own_key, interrupted, reply)."""
+    own_key = build_session_key(source)
+    runner, interrupted = _runner_with_run(running_keys, own_key, authorized=authorized)
+    event = MessageEvent(text="/stop", message_type=MessageType.TEXT, source=source)
+    result = await runner._handle_stop_command(event)
+    return own_key, interrupted, result
+
+
 @pytest.mark.asyncio
 async def test_stop_from_thread_reaches_top_level_channel_run():
-    # Running turn: triggered by a top-level channel message (relay stamps the
-    # message's own ts as thread_id; chat_type slot stays "channel").
+    # Running turn: triggered by a top-level channel message (the relay stamps the
+    # message's own ts as thread_id; the chat_type slot stays "channel").
     running_key = build_session_key(_slack_source("channel", "C9", thread_id="170.100"))
     # The stop arrives from inside the reply thread → normalizes to "thread".
     stop_source = _slack_source("thread", "C9", thread_id="170.100")
-    own_key = build_session_key(stop_source)
-    assert own_key != running_key  # the miss under test
+    assert build_session_key(stop_source) != running_key  # the miss under test
 
-    runner, interrupted = _runner_with_run(running_key, own_key)
-    event = MessageEvent(text="/stop", message_type=MessageType.TEXT, source=stop_source)
-    result = await runner._handle_stop_command(event)
+    _, interrupted, result = await _stop(stop_source, running_key)
 
-    assert [k for k, _ in interrupted] == [running_key]
-    assert "no active" not in str(getattr(result, "text", result)).lower()
+    assert interrupted == [(running_key, "stop_command_chat_scope")]
+    assert result == t("gateway.stop.stopped")
 
 
 @pytest.mark.asyncio
@@ -86,44 +88,96 @@ async def test_stop_with_thread_reaches_rolling_dm_run():
     running_key = build_session_key(_slack_source("dm", "D1"))
     # The stop event carries the session thread → keys a different session.
     stop_source = _slack_source("dm", "D1", thread_id="170.100")
-    own_key = build_session_key(stop_source)
-    assert own_key != running_key
+    assert build_session_key(stop_source) != running_key
 
-    runner, interrupted = _runner_with_run(running_key, own_key)
-    event = MessageEvent(text="/stop", message_type=MessageType.TEXT, source=stop_source)
-    result = await runner._handle_stop_command(event)
+    _, interrupted, result = await _stop(stop_source, running_key)
 
-    assert [k for k, _ in interrupted] == [running_key]
-    assert "no active" not in str(getattr(result, "text", result)).lower()
+    assert interrupted == [(running_key, "stop_command_chat_scope")]
+    assert result == t("gateway.stop.stopped")
+
+
+@pytest.mark.asyncio
+async def test_stop_reaches_peer_run_in_per_sender_group():
+    # Intentional widening, same contract: with nothing running under the caller's own key,
+    # an authorized /stop interrupts the chat's live turn even when a PEER started it — the
+    # bot-triggered runaway of #113846, where a per-sender group key hid the executing turn.
+    running_key = build_session_key(_slack_source("group", "C9", user_id="U-bob"))
+    stop_source = _slack_source("group", "C9", user_id="U-alice")
+    assert build_session_key(stop_source) != running_key
+
+    _, interrupted, result = await _stop(stop_source, running_key)
+
+    assert interrupted == [(running_key, "stop_command_chat_scope")]
+    assert result == t("gateway.stop.stopped")
+
+
+@pytest.mark.asyncio
+async def test_stop_does_not_reach_a_different_thread_of_the_same_channel():
+    # Another thread in the same channel is another conversation: exact key, thread sibling
+    # and chat-scope fallback must all leave it running.
+    other_thread = build_session_key(_slack_source("thread", "C9", thread_id="170.200"))
+    stop_source = _slack_source("thread", "C9", thread_id="170.100")
+
+    _, interrupted, result = await _stop(stop_source, other_thread)
+
+    assert interrupted == []
+    assert result == t("gateway.stop.no_active")
 
 
 @pytest.mark.asyncio
 async def test_chat_scope_fallback_is_authorization_gated():
     running_key = build_session_key(_slack_source("channel", "C9", thread_id="170.100"))
     stop_source = _slack_source("thread", "C9", thread_id="170.100")
-    own_key = build_session_key(stop_source)
 
-    runner, interrupted = _runner_with_run(running_key, own_key, authorized=False)
-    # The no-active tail touches adapters; keep it inert for this harness.
-    runner.adapters = {}
-    event = MessageEvent(text="/stop", message_type=MessageType.TEXT, source=stop_source)
-    result = await runner._handle_stop_command(event)
+    _, interrupted, result = await _stop(stop_source, running_key, authorized=False)
 
     assert interrupted == []
-    assert "no active" in str(getattr(result, "text", result)).lower()
+    assert result == t("gateway.stop.no_active")
 
 
 @pytest.mark.asyncio
-async def test_chat_scope_fallback_never_crosses_chats():
-    # A run in ANOTHER chat of the same workspace must stay invisible.
-    running_key = build_session_key(_slack_source("channel", "C-other", thread_id="170.100"))
+async def test_pending_sentinel_is_never_interrupted():
+    # A session still being set up has no agent turn yet; /stop must not claim it stopped.
+    pending = build_session_key(_slack_source("channel", "C9", thread_id="170.100"))
     stop_source = _slack_source("thread", "C9", thread_id="170.100")
-    own_key = build_session_key(stop_source)
 
-    runner, interrupted = _runner_with_run(running_key, own_key)
-    runner.adapters = {}
+    own_key = build_session_key(stop_source)
+    runner, interrupted = _runner_with_run(pending, own_key)
+    runner._running_agents[pending] = _AGENT_PENDING_SENTINEL
     event = MessageEvent(text="/stop", message_type=MessageType.TEXT, source=stop_source)
+
     result = await runner._handle_stop_command(event)
 
     assert interrupted == []
-    assert "no active" in str(getattr(result, "text", result)).lower()
+    assert result == t("gateway.stop.no_active")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("other_chat_id", ["C-other", "C90"])
+async def test_chat_scope_fallback_interrupts_only_the_callers_chat(other_chat_id):
+    # A same-chat run AND a foreign run are live: exactly the caller's chat is stopped
+    # ("C90" also proves a chat id that merely starts with "C9" is not folded in).
+    same_chat = build_session_key(_slack_source("channel", "C9", thread_id="170.100"))
+    foreign = build_session_key(_slack_source("channel", other_chat_id, thread_id="170.100"))
+    stop_source = _slack_source("thread", "C9", thread_id="170.100")
+
+    _, interrupted, result = await _stop(stop_source, [same_chat, foreign])
+
+    assert interrupted == [(same_chat, "stop_command_chat_scope")]
+    assert result == t("gateway.stop.stopped")
+
+
+@pytest.mark.asyncio
+async def test_chat_scope_fallback_does_not_cross_workspace_scope_or_profile():
+    running_keys = [
+        # Same chat_id, different Slack workspace (scope_id).
+        build_session_key(_slack_source("channel", "C9", thread_id="170.100", scope_id="T2")),
+        # Same chat_id, different profile namespace.
+        build_session_key(_slack_source("channel", "C9", thread_id="170.100"), profile="work"),
+    ]
+    stop_source = _slack_source("thread", "C9", thread_id="170.100")
+
+    _, interrupted, result = await _stop(stop_source, running_keys)
+
+    assert interrupted == []
+    assert result == t("gateway.stop.no_active")

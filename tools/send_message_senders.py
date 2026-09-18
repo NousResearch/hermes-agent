@@ -250,7 +250,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         thread_kwargs = _telegram_thread_kwargs(thread_id)
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
-        last_msg, warnings, _tg_caption = None, [], None
+        last_msg, warnings, media_failures, _tg_caption = None, [], [], None
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)
@@ -261,8 +261,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
-                warnings.append(f"Media file not found, skipping: {media_path}")
-                logger.warning(warnings[-1])
+                failure = f"Media file not found, skipping: {media_path}"
+                warnings.append(failure)
+                media_failures.append(failure)
+                logger.warning(failure)
                 # Caption mode suppressed the text send; the file is gone, so deliver the words alone.
                 if _tg_caption is not None and last_msg is None:
                     try:
@@ -278,10 +280,23 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
-                warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
-                logger.error(warnings[-1])
+                failure = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
+                warnings.append(failure)
+                media_failures.append(failure)
+                logger.error(failure)
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
+        if media_failures:
+            result = {
+                "error": (
+                    f"Failed to deliver {len(media_failures)} of "
+                    f"{len(media_files)} Telegram media attachments"
+                ),
+                "warnings": warnings,
+                "partial_success": True,
+                "message_id": str(last_msg.message_id),
+            }
+            return result
         return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}

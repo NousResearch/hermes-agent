@@ -53,14 +53,35 @@ function isLocale(value: string): value is Locale {
   return (SUPPORTED_LOCALES as string[]).includes(value);
 }
 
+function browserLocale(language: string | undefined): Locale | undefined {
+  if (!language) return undefined;
+
+  const normalized = language.toLowerCase();
+  if (isLocale(normalized)) return normalized;
+
+  if (normalized.startsWith("zh-") && /-(tw|hk|mo|hant)(-|$)/.test(normalized)) {
+    return "zh-hant";
+  }
+
+  const base = normalized.split("-")[0];
+  return isLocale(base) ? base : undefined;
+}
+
+export function resolveInitialLocale(storedValue: string | null, browserLanguage?: string): Locale {
+  if (storedValue && isLocale(storedValue)) return storedValue;
+  return browserLocale(browserLanguage) ?? "en";
+}
+
 function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && isLocale(stored)) return stored;
+    const browserLanguage = typeof navigator === "undefined" ? undefined : navigator.language;
+    return resolveInitialLocale(stored, browserLanguage);
   } catch {
     // SSR or privacy mode
   }
-  return "en";
+  const browserLanguage = typeof navigator === "undefined" ? undefined : navigator.language;
+  return resolveInitialLocale(null, browserLanguage);
 }
 
 interface I18nContextValue {

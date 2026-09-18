@@ -1282,9 +1282,15 @@ def _active_memory_provider_label(agent: Any) -> str:
 
 def _checkpoint_blocked(reason: str) -> CompressionCheckpointUnavailable:
     return CompressionCheckpointUnavailable(
-        f"BLOCKED_MISSING_PREREQUISITE: required pre-compress checkpoint unavailable: {reason}. "
-        f"Recover by {_CHECKPOINT_REQUIRED_REMEDIATION}."
+        f"BLOCKED_MISSING_PREREQUISITE: required pre-compress checkpoint unavailable: {reason}"
     )
+
+
+def _checkpoint_incapable(reason: str) -> CompressionCheckpointUnavailable:
+    """Capability refusal: the gate can never pass with this provider set, so the
+    message carries the config-level way out. Transient checkpoint failures keep
+    the plain form — there the provider is capable and the right move is a retry."""
+    return _checkpoint_blocked(f"{reason}. Recover by {_CHECKPOINT_REQUIRED_REMEDIATION}")
 
 
 def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
@@ -2847,7 +2853,7 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
     if checkpoint_required:
         supports_checkpoint = getattr(memory_manager, "supports_pre_compress_checkpoint", None)
         if memory_manager is None or not callable(supports_checkpoint):
-            raise _checkpoint_blocked(
+            raise _checkpoint_incapable(
                 f"no active provider implements checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
             )
         try:
@@ -2855,7 +2861,7 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
         except Exception as exc:
             raise _checkpoint_blocked("provider capability probe failed") from exc
         if not compatible:
-            raise _checkpoint_blocked(
+            raise _checkpoint_incapable(
                 f"active provider does not implement checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
             )
         try:

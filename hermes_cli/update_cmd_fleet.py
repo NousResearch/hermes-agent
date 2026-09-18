@@ -760,7 +760,8 @@ def _restart_macos_launchd_gateways(
     cannot leave the rest of the fleet on old code (#68523).
     """
     from hermes_cli.gateway import (
-        get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, _graceful_restart_via_sigusr1, _launchd_kickstart,
+        get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, legacy_launchd_labels_for_install,
+        _graceful_restart_via_sigusr1, _launchd_kickstart,
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
     )
     if require_supervision:
@@ -773,7 +774,15 @@ def _restart_macos_launchd_gateways(
     failed_or_stale_units.extend(_failed)
     current_label = get_launchd_label()
 
-    for label in launchd_gateway_labels_for_install():
+    derived_labels = launchd_gateway_labels_for_install()
+    # Units labelled before the profile-name suffix scheme (ai.hermes.gateway-<hash>) are invisible
+    # to the derivation; legacy_launchd_labels_for_install() credits one only when its plist is
+    # provably this install's, so the #41403 boundary (never touch another install's fleet) holds.
+    # See #115254.
+    legacy_labels = legacy_launchd_labels_for_install(exclude=set(derived_labels) | {current_label})
+    if legacy_labels:
+        print(f"  ↻ legacy-labelled units of this install join the restart: {', '.join(legacy_labels)}")
+    for label in derived_labels + legacy_labels:
         if label == current_label:
             continue
         try:

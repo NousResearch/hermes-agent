@@ -2775,6 +2775,79 @@ def launchd_gateway_labels_for_install() -> list[str]:
     return root_label + sorted(profile_labels)
 
 
+def legacy_launchd_labels_for_install(exclude=()) -> list[str]:
+    """Launchd labels of THIS install that the profile-layout derivation can't map (#115254).
+
+    A unit whose label predates the profile-name suffix scheme (``ai.hermes.gateway-<8hex>`` from the
+    historical hash suffix) is invisible to ``launchd_gateway_labels_for_install()`` and therefore to
+    the update restart pass. This scans the account's LaunchAgents for such plists and credits one
+    only when attribution to THIS install is provable — see ``_launchd_plist_belongs_to_install`` —
+    so the derivation's boundary holds: a sandboxed HERMES_HOME never restarts another install's
+    fleet (#41403).
+    """
+    import plistlib
+    import pwd
+
+    try:
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    except Exception:
+        return []
+    agents_dir = home / "Library" / "LaunchAgents"
+    if not agents_dir.is_dir():
+        return []
+    try:
+        venv = _detect_venv_dir()
+        venv = venv.resolve() if venv else None
+    except OSError:
+        venv = None
+    excluded = set(exclude)
+    labels: set[str] = set()
+    for plist_path in sorted(agents_dir.glob("ai.hermes.gateway*.plist")):
+        try:
+            data = plistlib.loads(plist_path.read_bytes())
+        except Exception:
+            continue  # unreadable/malformed plist: attribution can't be proven — fail closed
+        label = data.get("Label") if isinstance(data, dict) else None
+        if not isinstance(label, str) or label in excluded or not label.startswith("ai.hermes.gateway"):
+            continue
+        if _launchd_plist_belongs_to_install(data, venv):
+            labels.add(label)
+    return sorted(labels)
+
+
+def _launchd_plist_belongs_to_install(data: dict, venv: Path | None) -> bool:
+    """Whether a launchd gateway plist is a unit of THIS install.
+
+    Two provable anchors, either suffices: the ProgramArguments run this install's venv python
+    (the pull is shared across the install's profiles, so every unit of this install points there),
+    or the pinned ``HERMES_HOME`` is one of this install's homes (a native service home or a home
+    under this root's ``profiles/`` tree). Anything else — including a plist whose anchors can't be
+    read — belongs to another install and must stay untouched.
+    """
+    argv = data.get("ProgramArguments")
+    if venv is not None and isinstance(argv, list) and argv:
+        try:
+            if Path(str(argv[0])).resolve().parent.parent == venv:
+                return True
+        except OSError:
+            pass
+    env_home = (data.get("EnvironmentVariables") or {}).get("HERMES_HOME")
+    if not env_home:
+        return False
+    try:
+        resolved = Path(str(env_home)).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    if resolved in _native_service_homes():
+        return True
+    from hermes_constants import get_default_hermes_root
+    try:
+        rel = resolved.relative_to(get_default_hermes_root().resolve()).parts
+    except ValueError:
+        return False
+    return not rel or (len(rel) == 2 and rel[0] == "profiles")
+
+
 def _detect_venv_dir() -> Path | None:
     """Active virtualenv dir: ``sys.prefix``, then ``VIRTUAL_ENV`` (uv sets it without changing
     sys.prefix), then .venv/venv under PROJECT_ROOT; None if none found."""

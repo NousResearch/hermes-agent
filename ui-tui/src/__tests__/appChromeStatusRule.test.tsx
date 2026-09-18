@@ -125,7 +125,7 @@ describe('StatusRule session title', () => {
     }
   })
 
-  it('pins the named session at the far-right edge instead of the cwd label', () => {
+  it('pins the cwd and named session together at the far-right edge', () => {
     const element = StatusRule({
       ...baseProps,
       sessionTitle: 'weekly-digest'
@@ -135,7 +135,8 @@ describe('StatusRule session title', () => {
     const title = findElementWithText(element, 'weekly-digest')
 
     expect(rendered).toContain('weekly-digest')
-    expect(rendered).not.toContain('~/repo')
+    expect(rendered).toContain('~/repo')
+    expect(rendered).toContain('~/repo · weekly-digest')
     // Regression for issue #82465: a raw, full-saturation accent-hue
     // background (e.g. #FFBF00 on DARK_SEEDS) paired with statusFg (a
     // near-white tone never designed to sit on it) rendered at roughly a
@@ -565,5 +566,6 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     })
 
     expect(textContent(element)).not.toContain('weekly-digest')
+    expect(textContent(element)).toContain('~/repo')
   })
 })

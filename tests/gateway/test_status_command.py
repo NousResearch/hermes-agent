@@ -196,8 +196,8 @@ async def test_status_command_uses_most_recent_persisted_model_route(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_status_command_prefers_rehydrated_session_model_override(tmp_path):
-    """A committed /model switch is current before the selected model records usage."""
+async def test_status_command_reads_persisted_override_without_rehydrating(tmp_path):
+    """A durable /model switch displays after restart without activating its runtime."""
     source = _make_source()
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
     session_entry = store.get_or_create_session(source)
@@ -234,15 +234,113 @@ async def test_status_command_prefers_rehydrated_session_model_override(tmp_path
         await runner._record_model_switch(
             result, switch_ctx, source=source, one_turn=False, picker=False
         )
-        # Simulate a restart: /status must lazily recover the durable override.
-        runner._session_state(session_entry.session_key).conversation.model_override = None
+        restarted_store = SessionStore(sessions_dir=store.sessions_dir, config=store.config)
+        runner = _make_runner(session_entry)
+        runner.session_store = restarted_store
+        runner._session_db = AsyncSessionDB(db)
+        # Metadata failure must not prevent route display or cause runtime activation.
+        runner._resolve_route_context = AsyncMock(return_value=None)
+        assert runner._peek_session_state(session_entry.session_key) is None
 
-        status = await runner._handle_message(_make_event("/status"))
+        with patch("gateway.run._resolve_runtime_agent_kwargs_for_provider") as resolve:
+            status = await runner._handle_message(_make_event("/status"))
 
         assert "**Model:** `model-b` (provider-b)" in status
         assert "**Model:** `model-a` (provider-a)" not in status
+        resolve.assert_not_called()
+        assert runner._peek_session_state(session_entry.session_key) is None
+        assert restarted_store.get_model_override(session_entry.session_key) == {
+            "model": "model-b", "provider": "provider-b", "base_url": "https://b.example/v1",
+        }
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint_matches", [True, False])
+async def test_status_persisted_override_authenticated_metadata_is_profile_scoped(tmp_path, endpoint_matches):
+    """Real config -> provider -> HTTP lookup survives restart without hydrating session state."""
+    import asyncio
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    from agent import secret_scope
+
+    windows = {"test-profile-a": 32_768, "test-profile-b": 65_536}
+    requests = []
+
+    class Models(BaseHTTPRequestHandler):
+        def do_GET(self):
+            key = self.headers.get("Authorization", "").removeprefix("Bearer ")
+            if self.path != "/v1/models":
+                self.send_error(404)
+                return
+            requests.append(key)
+            if key not in windows:
+                self.send_error(401)
+                return
+            body = json.dumps({"data": [{"id": "status-probe-model", "context_length": windows[key]}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Models)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}/v1"
+    override = {"model": "status-probe-model", "provider": "custom:probe", "base_url": base_url}
+    was_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        homes = {}
+        for key in windows:
+            home = tmp_path / key
+            home.mkdir()
+            (home / "config.yaml").write_text(json.dumps({
+                "model": {"default": "other-model", "provider": "custom:default", "context_length": 80_000},
+                "custom_providers": [{"name": "probe", "api_key": key,
+                                      "base_url": base_url + ("/" if endpoint_matches else "/other")}],
+            }), encoding="utf-8")
+            store = SessionStore(sessions_dir=home / "sessions", config=GatewayConfig())
+            entry = store.get_or_create_session(_make_source())
+            store.update_session(entry.session_key, last_prompt_tokens=4_096)
+            store.set_model_override(entry.session_key, override)
+            homes[key] = home
+
+        for key in ("test-profile-a", "test-profile-b", "test-profile-a"):
+            home = homes[key]
+            store = SessionStore(sessions_dir=home / "sessions", config=GatewayConfig())
+            entry = store.get_or_create_session(_make_source())
+            runner = _make_runner(entry)
+            runner.session_store = store
+            runner._session_db = None
+            runner.config.multiplex_profiles = True
+            runner._resolve_profile_home_for_source = lambda source: home
+            assert runner._peek_session_state(entry.session_key) is None
+
+            status = await runner._handle_status_command(_make_event("/status"))
+
+            assert "**Model:** `status-probe-model` (custom:probe)" in status
+            if endpoint_matches:
+                assert f"4,096 / {windows[key]:,}" in status
+            else:
+                # A moved provider's new credential must not go to the saved old endpoint.
+                assert "**Context:** ~4,096 tokens" in status
+            assert "80,000" not in status
+            assert runner._peek_session_state(entry.session_key) is None
+            assert store.get_model_override(entry.session_key) == override
+        assert set(requests) == (set(windows) if endpoint_matches else {""})
+    finally:
+        secret_scope.set_multiplex_active(was_multiplex)
+        await asyncio.to_thread(server.shutdown)
+        server.server_close()
+        await asyncio.to_thread(thread.join, 5)
 
 
 def _runner_with_session_override(override: dict, *, last_prompt_tokens: int):

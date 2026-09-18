@@ -60,9 +60,17 @@ If you already have Git installed, the installer detects it and uses that instea
 
 After installation:
 
+**Linux, macOS, WSL2:** reload your shell, then run hermes:
+
 ```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
+source ~/.bashrc    # reload shell (or: source ~/.zshrc on zsh)
 hermes              # start chatting!
+```
+
+**Windows (native PowerShell):** open a new terminal window, then run:
+
+```powershell
+hermes
 ```
 
 ### Troubleshooting
@@ -262,3 +270,5 @@ scripts/run_tests.sh
 MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+
+

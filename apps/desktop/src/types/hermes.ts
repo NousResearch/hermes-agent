@@ -320,8 +320,10 @@ export interface MessagingPlatformInfo {
   name: string
   playground?: {
     callback_url?: null | string
+    command?: null | string
     enabled: boolean
     test_url?: null | string
+    ui_url?: null | string
   }
   state?: null | string
   updated_at?: null | string

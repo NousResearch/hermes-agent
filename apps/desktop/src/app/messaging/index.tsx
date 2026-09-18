@@ -7,6 +7,7 @@ import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { CopyButton } from '@/components/ui/copy-button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
@@ -684,7 +685,9 @@ function PlatformDetail({
   const { t } = useI18n()
   const m = t.messaging
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [playgroundTesting, setPlaygroundTesting] = useState(false)
   const [playgroundMessage, setPlaygroundMessage] = useState<string | null>(null)
+  const playgroundTestingRef = useRef(false)
 
   const requiredFields = platform.env_vars.filter(field => field.required)
   const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
@@ -723,16 +726,46 @@ function PlatformDetail({
           <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
             {platform.playground.test_url && <div>Test URL: {platform.playground.test_url}</div>}
             {platform.playground.callback_url && <div>Callback URL: {platform.playground.callback_url}</div>}
+            {platform.playground.command && (
+              <div className="flex flex-wrap items-center gap-2">
+                <code className="break-all">{platform.playground.command}</code>
+                <CopyButton label="Copy command" text={platform.playground.command} />
+              </div>
+            )}
           </div>
+          {platform.playground.ui_url && (
+            <Button
+              className="mt-3"
+              onClick={() => openExternalLink(platform.playground?.ui_url ?? '')}
+              size="sm"
+              variant="secondary"
+            >
+              Open Playground UI
+              <ExternalLink className="size-3.5" />
+            </Button>
+          )}
           <Button
             className="mt-3"
-            onClick={() => {
-              void testTeamsPlayground(scopeProfile).then(result => setPlaygroundMessage(result.message))
+            disabled={playgroundTesting}
+            onClick={async () => {
+              if (playgroundTestingRef.current) return
+              playgroundTestingRef.current = true
+              setPlaygroundTesting(true)
+              setPlaygroundMessage(null)
+              try {
+                const result = await testTeamsPlayground(scopeProfile)
+                setPlaygroundMessage(result.message)
+              } catch {
+                setPlaygroundMessage('Não foi possível testar o endpoint do bot.')
+              } finally {
+                playgroundTestingRef.current = false
+                setPlaygroundTesting(false)
+              }
             }}
             size="sm"
             variant="secondary"
           >
-            Test local Playground
+            {playgroundTesting ? 'Testando endpoint do bot…' : 'Testar endpoint do bot'}
           </Button>
           {playgroundMessage && <p className="mt-2 text-xs text-muted-foreground">{playgroundMessage}</p>}
         </section>

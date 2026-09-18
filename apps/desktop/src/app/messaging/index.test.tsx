@@ -80,7 +80,7 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
     gateway_running: true,
     id: 'teams',
     name: 'Microsoft Teams',
-    playground: { enabled: false, test_url: null, callback_url: null },
+    playground: { enabled: false, test_url: null, callback_url: null, command: null, ui_url: null },
     state: 'disabled',
     ...patch
   }
@@ -119,29 +119,74 @@ async function renderMessaging() {
 }
 
 describe('MessagingView Teams Playground', () => {
-  it('keeps the local emulator hidden by default and shows URLs only after opt-in', async () => {
-    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
-    await renderMessaging()
-    expect(screen.queryByText('Local Teams Playground')).toBeNull()
-
-    cleanup()
+  it('shows the safe command and explicit UI link after opt-in', async () => {
     getMessagingPlatforms.mockResolvedValue({
       platforms: [
         platform({
           playground: {
+            callback_url: 'http://127.0.0.1:3978/api/messages',
+            command: 'agentsplayground -e http://127.0.0.1:3978/api/messages -c emulator --disable-telemetry',
             enabled: true,
             test_url: 'http://127.0.0.1:56150',
-            callback_url: 'http://127.0.0.1:3978/api/messages'
+            ui_url: 'http://127.0.0.1:56150'
           }
         })
       ]
     })
-    testTeamsPlayground.mockResolvedValue({ ok: true, message: 'Playground health check passed.' })
     await renderMessaging()
-    expect(await screen.findByText(/Test URL: http:\/\/127\.0\.0\.1:56150/)).toBeTruthy()
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test local Playground' })))
-    await waitFor(() => expect(testTeamsPlayground).toHaveBeenCalled())
-    expect(screen.getByText('Playground health check passed.')).toBeTruthy()
+    expect(await screen.findByText(/agentsplayground -e http:\/\/127\.0\.0\.1:3978\/api\/messages/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open Playground UI' })).toBeTruthy()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Open Playground UI' })))
+    expect(openExternalLink).toHaveBeenCalledWith('http://127.0.0.1:56150')
+  })
+
+  it('labels the action as a bot endpoint test, prevents duplicate clicks, and preserves URLs on failure', async () => {
+    const pending = new Promise<{ ok: boolean; message: string }>(() => undefined)
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          playground: {
+            callback_url: 'http://127.0.0.1:3978/api/messages',
+            command: 'agentsplayground -e http://127.0.0.1:3978/api/messages -c emulator --disable-telemetry',
+            enabled: true,
+            test_url: 'http://127.0.0.1:56150',
+            ui_url: 'http://127.0.0.1:56150'
+          }
+        })
+      ]
+    })
+    testTeamsPlayground.mockReturnValue(pending)
+    await renderMessaging()
+    const button = screen.getByRole('button', { name: 'Testar endpoint do bot' })
+    await act(async () => {
+      fireEvent.click(button)
+      fireEvent.click(button)
+    })
+    expect(testTeamsPlayground).toHaveBeenCalledTimes(1)
+    expect(button).toHaveProperty('disabled', true)
+    expect(screen.getByText(/Test URL: http:\/\/127\.0\.0\.1:56150/)).toBeTruthy()
+    expect(screen.getByText(/agentsplayground -e/)).toBeTruthy()
+  })
+
+  it('renders a rejected health check without losing the operational details', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          playground: {
+            callback_url: 'http://127.0.0.1:3978/api/messages',
+            command: 'agentsplayground -e http://127.0.0.1:3978/api/messages -c emulator --disable-telemetry',
+            enabled: true,
+            test_url: 'http://127.0.0.1:56150',
+            ui_url: 'http://127.0.0.1:56150'
+          }
+        })
+      ]
+    })
+    testTeamsPlayground.mockRejectedValue(new Error('network unavailable'))
+    await renderMessaging()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Testar endpoint do bot' })))
+    expect(await screen.findByText('Não foi possível testar o endpoint do bot.')).toBeTruthy()
+    expect(screen.getByText(/Callback URL: http:\/\/127\.0\.0\.1:3978\/api\/messages/)).toBeTruthy()
   })
 })
 

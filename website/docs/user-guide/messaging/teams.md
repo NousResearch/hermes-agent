@@ -174,6 +174,10 @@ Open the printed link in your browser — it opens directly in the Teams client.
 
 ### Optional local homologation target
 
+**Why it matters:** The operational Playground shortens the path from configuration to a first local conversation. Teams admins can activate a repeatable local check, validate a bot endpoint during homologation, and keep the command and URLs visible for support hand-offs. This reduces avoidable setup back-and-forth without changing production Teams credentials or starting a process from Hermes.
+
+**What it does—and does not do:** The Playground is a local UI client for Bot Framework-style activities, not Microsoft Teams and not a production end-to-end test. Hermes' dashboard shows the sanitized launch command and explicit URLs, lets you open the UI or copy the command, and its test only probes the local bridge health endpoint. It does not verify Teams tenant consent, public reachability, identity, or production credentials.
+
 Hermes includes a disabled-by-default local Playground seam for testing a near-Teams UI without changing the production Teams adapter. The Microsoft 365 Agents Playground is a local UI client, not the bot endpoint: it receives the Hermes webhook through `-e`, sends Bot Framework Activity envelopes to it, and uses the Activity's `serviceUrl` for callbacks. Configure the Hermes bot endpoint explicitly:
 
 ```bash

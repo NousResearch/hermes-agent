@@ -16,6 +16,7 @@ import {
   GROUP_CHAT_MAX_ROUNDS,
   groupChatRoomKey,
   groupThreadOf,
+  groupUserDisplayName,
   mintGroupThreadId,
   updateGroupChat
 } from './group-chat'
@@ -464,7 +465,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   // view with the superseded run's events.
   recordGroupActivity(group, {
     kind: 'stopped',
-    member: 'You',
+    member: groupUserDisplayName(group),
     thread: thread || null
   })
 
@@ -784,7 +785,7 @@ export function sendToGroupChat(
     group,
     {
       kind: 'user',
-      name: 'You'
+      name: groupUserDisplayName(group)
     },
     trimmed,
     target,
@@ -812,7 +813,7 @@ export function sendToGroupChat(
   })
   recordGroupActivity(group, {
     kind: 'queued',
-    member: 'You',
+    member: groupUserDisplayName(group),
     thread: target
   })
 

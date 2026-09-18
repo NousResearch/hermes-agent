@@ -186,6 +186,8 @@ type BotsMessages = {
     settingsTitle: string
     settingsDesc: string
     nameLabel: string
+    userNameLabel: string
+    userNamePlaceholder: string
     searchToAdd: string
     searchToAddPlaceholder: string
     removeFromSelection: string
@@ -442,6 +444,8 @@ const en: BotsMessages = {
     settingsTitle: 'Group settings',
     settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
     nameLabel: 'Group name',
+    userNameLabel: 'Your name in this room (optional)',
+    userNamePlaceholder: 'e.g. Mary — bots will address you as @mary',
     searchToAdd: 'Search bots to add',
     searchToAddPlaceholder: 'Search bots to add…',
     removeFromSelection: 'Remove from selection',
@@ -690,6 +694,8 @@ const ja: BotsMessages = {
     settingsTitle: 'グループ設定',
     settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
     nameLabel: 'グループ名',
+    userNameLabel: 'この部屋でのあなたの名前（任意）',
+    userNamePlaceholder: '例: Mary — ボットは @mary と呼びます',
     searchToAdd: '追加するボットを検索',
     searchToAddPlaceholder: '追加するボットを検索…',
     removeFromSelection: '選択から外す',
@@ -934,6 +940,8 @@ const zh: BotsMessages = {
     settingsTitle: '群组设置',
     settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
     nameLabel: '群组名称',
+    userNameLabel: '你在这个房间的名字（可选）',
+    userNamePlaceholder: '例如：Mary — 机器人会以 @mary 称呼你',
     searchToAdd: '搜索要添加的机器人',
     searchToAddPlaceholder: '搜索要添加的机器人…',
     removeFromSelection: '从选择中移除',
@@ -1177,6 +1185,8 @@ const zhHant: BotsMessages = {
     settingsTitle: '群組設定',
     settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
     nameLabel: '群組名稱',
+    userNameLabel: '你在這個房間的名字（可選）',
+    userNamePlaceholder: '例如：Mary — 機器人會以 @mary 稱呼你',
     searchToAdd: '搜尋要加入的機器人',
     searchToAddPlaceholder: '搜尋要加入的機器人…',
     removeFromSelection: '從選取中移除',

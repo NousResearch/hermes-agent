@@ -1191,3 +1191,86 @@ describe('stopGroupThread (#91868/#94569)', () => {
     expect(reply).toBe('finished anyway')
   })
 })
+
+// #105194: the human participant can carry a room-local display name. It must
+// reach the member prompt (introduction + the mention tag the rules name) and
+// the room log (entries stamped with the name, not the 'You' sentinel).
+describe('room-local user name', () => {
+  it('introduces the user by name and points the rules at the name slug', async () => {
+    await loadRoom()
+    const { buildGroupChatTurnPrompt } = await import('./group-round-prompt')
+
+    const members: GroupMember[] = [
+      { name: 'research', title: '' },
+      { name: 'builder', title: '' }
+    ]
+
+    const prompt = buildGroupChatTurnPrompt({
+      deltaLines: [],
+      groupName: 'Core',
+      members,
+      userName: 'Mary',
+      viewer: members[0]
+    })
+
+    expect(prompt).toMatch(/and the user \(Mary\)\./)
+    expect(prompt).toMatch(/mention @mary only for a judgment call/)
+
+    // No name set: the sentinel phrasing and @user tag stay exactly as before.
+    const sentinel = buildGroupChatTurnPrompt({
+      deltaLines: [],
+      groupName: 'Core',
+      members,
+      viewer: members[0]
+    })
+
+    expect(sentinel).toMatch(/and the user\./)
+    expect(sentinel).toMatch(/mention @user only for a judgment call/)
+
+    // A name that cannot slug (e.g. only emoji) falls back to @user rather
+    // than producing an empty or colliding tag.
+    const unsloggable = buildGroupChatTurnPrompt({
+      deltaLines: [],
+      groupName: 'Core',
+      members,
+      userName: '🙂',
+      viewer: members[0]
+    })
+
+    expect(unsloggable).toMatch(/mention @user only for a judgment call/)
+  })
+
+  it('stamps the room-local name onto sent entries and the needs-you badge reacts to it', async () => {
+    const room = await loadRoom()
+    const { chat } = room
+
+    chat.updateGroupChat('Room', (r: GroupChat) => {
+      r.userName = 'Mary'
+
+      return r
+    })
+
+    expect(chat.groupUserDisplayName('Room')).toBe('Mary')
+    expect(chat.groupUserDisplayName('Missing')).toBe('You')
+
+    const sent = chat.appendGroupChatEntry(
+      'Room',
+      { kind: 'user', name: chat.groupUserDisplayName('Room') },
+      'hello room',
+      't1'
+    )
+
+    expect(sent?.from?.name).toBe('Mary')
+
+    // A member addressing @mary (the name slug) badges the group as needing
+    // the user, exactly like @user does.
+    chat.appendGroupChatEntry('Room', { kind: 'member', name: 'research' }, 'checking with @mary on this', 't1')
+
+    expect(chat.$groupNeedsYou.get().Room).toBe(true)
+
+    // Blank name clears back to the sentinel.
+    chat.setGroupChatUserName('Room', '   ')
+
+    expect(chat.groupUserDisplayName('Room')).toBe('You')
+  })
+})

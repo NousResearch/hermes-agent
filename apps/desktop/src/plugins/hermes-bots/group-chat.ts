@@ -1452,6 +1452,26 @@ export function setGroupChatImage(group: string, image: null | string | undefine
   })
 }
 
+/** The human participant's display name for a room, or the 'You' sentinel
+ *  when no room-local name is set. New entries always stamp the CURRENT
+ *  resolved name into the log, so renaming later only affects new messages —
+ *  history keeps reading as it was written (#105194). */
+export function groupUserDisplayName(group: string, fallback = GROUP_USER_SENTINEL): string {
+  const name = String(($groupChats.get()[group] || {}).userName || '').trim()
+
+  return name || fallback
+}
+
+/** Set or clear the room-local display name for the human participant. Persists
+ *  with the room record; blank clears it back to the 'You' sentinel. */
+export function setGroupChatUserName(group: string, userName: null | string | undefined) {
+  updateGroupChat(group, (room: GroupChatRoom) => {
+    room.userName = String(userName || '').trim() || null
+
+    return room
+  })
+}
+
 function groupChatEntryId(): string {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
     return globalThis.crypto.randomUUID()
@@ -1459,6 +1479,11 @@ function groupChatEntryId(): string {
 
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }
+
+/** The persisted author marker for the human participant's own room-log
+ *  entries when no room-local display name is set. Compared as a sentinel
+ *  (`group-activity.ts`), so it stays English where WRITTEN; see i18n.ts. */
+const GROUP_USER_SENTINEL = 'You'
 
 /** The agent loop's "(empty)" terminal sentinel (empty_response_exhausted) is
  *  a FAILURE marker, never bot text. Mirror gateway/run.py's user-friendly
@@ -1513,12 +1538,23 @@ export function appendGroupChatEntry(
     return room
   })
 
-  // Needs-you: a member addressing @user badges the group header.
-  if (from.kind === 'member' && /@user\b/i.test(entry.text)) {
-    $groupNeedsYou.set({
-      ...$groupNeedsYou.get(),
-      [group]: true
-    })
+  // Needs-you: a member addressing @user (or the room-local user name's
+  // mention slug, when one is configured) badges the group header (#105194).
+  if (from.kind === 'member') {
+    const userName = String(($groupChats.get()[group] || {}).userName || '').trim()
+    const userTags = ['@user']
+    const slug = userName.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+
+    if (slug && !['all', 'everyone', 'user', 'default', 'hermes'].includes(slug)) {
+      userTags.push(`@${slug}`)
+    }
+
+    if (userTags.some(tag => new RegExp(`${tag}\\b`, 'i').test(entry.text))) {
+      $groupNeedsYou.set({
+        ...$groupNeedsYou.get(),
+        [group]: true
+      })
+    }
   }
 
   return entry

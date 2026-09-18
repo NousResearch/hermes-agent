@@ -80,9 +80,17 @@ export function groupActivityLabel(event: GroupActivityEntry, group?: null | str
     return base
   }
 
-  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot', group)
+  // The human participant's events: the 'You' sentinel or the room-local
+  // user name — never resolved through the bot roster, which could shadow a
+  // same-named bot (#105194).
+  const roomUserName = group ? String(($groupChats.get()[group] || {}).userName || '').trim() : ''
+  const member = event?.member || ''
 
-  return `${who} ${base}`
+  if (member === 'You' || (roomUserName && member === roomUserName)) {
+    return `${member} ${base}`
+  }
+
+  return `${groupSpeakerLabel(member || 'A bot', group)} ${base}`
 }
 
 const GROUP_ACTIVITY_LABELS: Record<GroupActivityKind, string> = {

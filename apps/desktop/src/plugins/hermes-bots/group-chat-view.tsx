@@ -66,6 +66,7 @@ import {
   groupThreadOf,
   scheduleGroupChatServerSync,
   setGroupChatImage,
+  setGroupChatUserName,
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
@@ -377,12 +378,15 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const current = (rooms[group] || {}).image || null
+  const currentUserName = (rooms[group] || {}).userName || ''
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const [userName, setUserName] = useState(currentUserName)
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
+      setUserName(currentUserName)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
@@ -396,6 +400,13 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
 
     if (image !== current) {
       setGroupChatImage(finalName, image)
+    }
+
+    // Room-local display name for the human participant; blank clears it
+    // back to the 'You' sentinel. Applied AFTER the potential rename so it
+    // lands on the re-keyed room (#105194).
+    if (userName.trim() !== currentUserName.trim()) {
+      setGroupChatUserName(finalName, userName)
     }
 
     onClose()
@@ -437,6 +448,14 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
             maxLength={64}
             onChange={event => setName(event.target.value)}
             value={name}
+          />
+          <Input
+            aria-label={b.group.userNameLabel}
+            className="mt-2"
+            maxLength={64}
+            onChange={event => setUserName(event.target.value)}
+            placeholder={b.group.userNamePlaceholder}
+            value={userName}
           />
         </form>
         {onManageMembers ? (
@@ -1026,8 +1045,13 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
         ) || null
 
+    // The user's own lines: the localized "You" when the entry carries the
+    // sentinel (no room-local name was set when it was written), else the
+    // stamped room-local name (#105194).
     const display = isUser
-      ? b.group.you
+      ? entry.from.name === 'You'
+        ? b.group.you
+        : entry.from.name || b.group.you
       : displayName(
           member || {
             name: entry.from.name
@@ -1041,7 +1065,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     // Clicked: append the gateway name so same-named agents on
     // two connections are tellable apart on demand.
     const label = isUser
-      ? b.group.you
+      ? display
       : revealed
         ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
         : display

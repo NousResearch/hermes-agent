@@ -298,7 +298,7 @@ def _boto3_chain_has_credentials() -> bool:
     return False
 
 
-def resolve_aws_auth_env_var(env: Optional[Dict[str, str]] = None) -> Optional[str]:
+def resolve_aws_auth_env_var(env: Optional[Any] = None) -> Optional[str]:
     """Name of the active AWS auth source: env vars first (no I/O), then ``"iam-role"`` via boto3's chain, else None."""
     env = env if env is not None else os.environ
     for group in _AWS_AUTH_ENV_CHAIN:
@@ -307,7 +307,29 @@ def resolve_aws_auth_env_var(env: Optional[Dict[str, str]] = None) -> Optional[s
     return "iam-role" if _boto3_chain_has_credentials() else None
 
 
-def has_aws_credentials(env: Optional[Dict[str, str]] = None) -> bool:
+def fallback_aws_profile_credentials(env: Optional[Any] = None) -> bool:
+    """Evict stale host environment AWS key pairs and fall back to AWS_PROFILE / boto3 profile credentials.
+
+    When stale AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in host env cause auth 403 errors in Bedrock mode,
+    clearing them lets boto3 resolve valid credentials from AWS_PROFILE (~/.aws/credentials or IAM role).
+    """
+    target_env = env if env is not None else os.environ
+    has_stale_keys = bool(target_env.get("AWS_ACCESS_KEY_ID") or target_env.get("AWS_SECRET_ACCESS_KEY"))
+    if not has_stale_keys:
+        return False
+    for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        target_env.pop(var, None)
+        if env is not None and var in os.environ:
+            os.environ.pop(var, None)
+    reset_client_cache()
+    logger.info(
+        "Evicted stale AWS_ACCESS_KEY_ID environment credentials; falling back to AWS_PROFILE=%s",
+        target_env.get("AWS_PROFILE") or "default",
+    )
+    return has_aws_credentials(target_env)
+
+
+def has_aws_credentials(env: Optional[Any] = None) -> bool:
     """True if any AWS credential source (env vars or boto3 chain) is detected.
 
     This two-tier approach mirrors the pattern from OpenClaw PR #62673: cloud environments (EC2, ECS,

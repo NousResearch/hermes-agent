@@ -2390,9 +2390,21 @@ def _try_resolve_fallback_provider() -> dict | None:
         for entry in fb_list:
             try:
                 from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
+                entry_provider = (entry.get("provider") or "").strip().lower()
+                if entry_provider in {"bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon"}:
+                    from agent.bedrock_adapter import has_aws_credentials
+                    if not has_aws_credentials():
+                        logger.debug("Fallback entry %s skipped: no AWS credentials", entry_provider)
+                        continue
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
                     explicit_api_key=resolve_entry_api_key(entry), target_model=entry.get("model") or None)
+                # Skip entries whose resolved runtime lacks an API key or credentials placeholder
+                resolved_prov = (runtime.get("provider") or "").strip().lower()
+                resolved_key = runtime.get("api_key")
+                if resolved_prov != "bedrock" and not resolved_key:
+                    logger.debug("Fallback entry %s skipped: missing API key", entry.get("provider"))
+                    continue
                 # Named custom entries resolve to the bare "custom" billing class; persist the configured
                 # identity so UI/billing rows match the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)

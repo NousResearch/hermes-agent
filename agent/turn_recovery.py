@@ -1608,18 +1608,23 @@ def route_classified_error(
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
     # escalate to the fallback chain once; False -> terminal handling.
-    if (
-        classified.is_auth
-        and not _retry.auth_failover_attempted
-        and agent._fallback_index < len(agent._fallback_chain)
-    ):
-        _retry.auth_failover_attempted = True
-        agent._buffer_diagnostic_status(
-            "🔐 Authentication failed and could not be refreshed — "
-            "switching to fallback provider..."
-        )
-        if agent._try_activate_fallback(reason=classified.reason):
-            return _fallback_break()
+    if classified.is_auth and not _retry.auth_failover_attempted:
+        if agent.provider == "bedrock":
+            from agent.bedrock_adapter import fallback_aws_profile_credentials
+            if fallback_aws_profile_credentials():
+                _retry.auth_failover_attempted = True
+                agent._buffer_diagnostic_status(
+                    "🔐 AWS environment credentials failed — falling back to AWS_PROFILE..."
+                )
+                return _fallback_break()
+        if agent._fallback_index < len(agent._fallback_chain):
+            _retry.auth_failover_attempted = True
+            agent._buffer_diagnostic_status(
+                "🔐 Authentication failed and could not be refreshed — "
+                "switching to fallback provider..."
+            )
+            if agent._try_activate_fallback(reason=classified.reason):
+                return _fallback_break()
 
     # Nous Portal: a genuine account-level 429 is recorded to a shared file so ALL
     # sessions back off; is_genuine_nous_rate_limit excludes upstream 429s.

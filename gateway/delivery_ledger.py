@@ -74,10 +74,18 @@ FLOOD_RETRY_SLACK_SECONDS = 2.0
 # merely suggests retrying is never mistaken for a flood.
 _RAW_FLOOD_RE = re.compile(r"flood control exceeded.*?retry in\s+(\d+(?:\.\d+)?)", re.IGNORECASE)
 
+# Some adapters describe their own throttling without either the ``flood_control:`` prefix or PTB's
+# wording — e.g. Weixin's circuit breaker fails a send closed with "...cooldown active for 12.3s"
+# (``gateway/platforms/weixin.py``). The cooldown length is still embedded in the text, so it is worth
+# extracting precisely rather than falling back to the generic default every time.
+_COOLDOWN_WAIT_RE = re.compile(r"cooldown active for\s+(\d+(?:\.\d+)?)s", re.IGNORECASE)
+
 
 def _raw_flood_wait(text: str) -> Optional[float]:
-    """Seconds asked for by a flood error still carrying the platform's own wording, else ``None``."""
-    match = _RAW_FLOOD_RE.search(text or "")
+    """Seconds asked for by a flood error still carrying the platform's own wording (PTB's "flood
+    control exceeded... retry in N seconds", or an adapter's own "cooldown active for Ns"), else
+    ``None``."""
+    match = _RAW_FLOOD_RE.search(text or "") or _COOLDOWN_WAIT_RE.search(text or "")
     if not match:
         return None
     try:
@@ -86,11 +94,34 @@ def _raw_flood_wait(text: str) -> Optional[float]:
         return None
 
 
+def _classified_rate_limited(text: str) -> bool:
+    """Whether ``text`` matches the platform-neutral "rate_limited" send-error classification
+    (``gateway.platforms.base.classify_send_error``), so any adapter's rate-limit wording is
+    recognised here too and not just Telegram's. Imported locally (this module is loaded well before
+    ``gateway.platforms.base`` in some paths, e.g. CLI commands that only touch the ledger) and
+    best-effort like everything else in this module."""
+    if not text:
+        return False
+    try:
+        from gateway.platforms.base import classify_send_error
+    except Exception:
+        return False
+    try:
+        return classify_send_error(None, text) == "rate_limited"
+    except Exception:
+        return False
+
+
 def is_flood_error(error: Any) -> bool:
-    """True for a flood refusal: the adapters' fail-closed ``flood_control:<seconds>`` result, or a
-    row still carrying the platform's own flood wording (see ``_RAW_FLOOD_RE``)."""
+    """True for a flood refusal: the adapters' fail-closed ``flood_control:<seconds>`` result, a row
+    still carrying the platform's own flood/cooldown wording (see ``_RAW_FLOOD_RE``), or any other
+    error text the platform-neutral classifier recognises as a rate limit (see
+    ``_classified_rate_limited``) — so an adapter that surfaces a rate limit without either of the
+    two specific shapes above (e.g. Weixin's bare ``RuntimeError``) still gets a timed redelivery
+    instead of being treated as an ordinary failure and retried immediately inside its own cooldown."""
     text = str(error or "").strip().lower()
-    return text.startswith(FLOOD_ERROR_PREFIX) or _raw_flood_wait(text) is not None
+    return (text.startswith(FLOOD_ERROR_PREFIX) or _raw_flood_wait(text) is not None
+            or _classified_rate_limited(text))
 
 
 def flood_wait_seconds(error: Any, default: float = FLOOD_RETRY_DEFAULT_SECONDS) -> float:

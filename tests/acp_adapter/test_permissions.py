@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -240,3 +241,24 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
             make_acp_edit_approval_requester, DeniedOutcome(outcome="cancelled"), lambda cb: cb(proposal),
         )
         assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, "failed")]
+
+    def test_allowed_edit_approval_request_is_closed_as_completed_once(self):
+        """Live regression: a client answering with a plain ``selected`` outcome (not the SDK
+        ``AllowedOutcome`` class) had the edit applied but the bubble closed ``failed``."""
+        from acp_adapter.edit_approval import EditProposal, make_acp_edit_approval_requester
+
+        proposal = EditProposal(tool_name="write_file", path="/tmp/x", old_text="", new_text="y", arguments={})
+        decisions = []
+        response = SimpleNamespace(outcome=SimpleNamespace(outcome="selected", option_id="allow_once"))
+        request_permission = AsyncMock(name="request_permission")
+        future = MagicMock(spec=Future)
+        future.result.return_value = response
+        sent = []
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+            requester = make_acp_edit_approval_requester(
+                request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append,
+            )
+            decisions.append(requester(proposal))
+        requested = request_permission.call_args.kwargs["tool_call"]
+        assert decisions == [True]
+        assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, "completed")]

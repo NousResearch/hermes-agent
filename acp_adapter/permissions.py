@@ -103,9 +103,12 @@ def await_permission(
     if send_update is not None:
         import acp as _acp
 
+        # Duck-typed like the callers' own allow checks (``outcome == "selected"`` is the wire
+        # discriminator), so the bubble's terminal status always matches the decision taken.
         outcome = getattr(response, "outcome", None)
-        allowed = isinstance(outcome, AllowedOutcome) and any(
-            option.option_id == outcome.option_id and option.kind.startswith("allow") for option in options
+        allowed = getattr(outcome, "outcome", None) == "selected" and any(
+            option.option_id == getattr(outcome, "option_id", None) and option.kind.startswith("allow")
+            for option in options
         )
         send_update(_acp.update_tool_call(tool_call.tool_call_id, status="completed" if allowed else "failed"))
     return response, timed_out

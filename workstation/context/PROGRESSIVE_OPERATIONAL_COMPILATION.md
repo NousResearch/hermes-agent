@@ -89,6 +89,21 @@ git.verify_clean_state
 
 A Capability is not merely a renamed Tool and is not a Skill.
 
+### Existing name collision
+
+Current `workstation/capabilities.py` already owns a different concept:
+`RuntimeCapabilityRegistry` for installed Python modules/system binaries. Do
+**not** overwrite or silently repurpose that module. The operational abstraction
+defined here should use an explicit implementation name such as
+`OperationalCapability` / `OperationalCapabilityRegistry` and a file/package
+such as `workstation/operational_capabilities.py` or
+`workstation/capability_runtime/`, unless a deliberate migration renames the
+existing runtime-dependency registry with backward compatibility and tests.
+
+The product/documentation term may remain **Capability**; the code name must avoid
+ambiguous ownership.
+
+
 ### Capability contract
 
 A capability must be able to declare, at minimum:

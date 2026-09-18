@@ -62,11 +62,23 @@ class InboxRequestContext(Result):
     messages: list[InboxRequestContextMessage] = []
 
 
+class InboxExpiredRequest(Result):
+    """One request that ended without an answer; what it was for plus how it ended."""
+
+    request_id: str = ""
+    kind: str = ""  # "approval"
+    command: str = ""
+    description: str = ""
+    ended_at: float = 0.0
+    outcome: str = ""  # "timeout" | "session_closed" | "interrupted" | "notify_failed" | ...
+
+
 class InboxRequestSessionDetail(Result):
     live_session_ids: list[str] = []
     approvals: list[InboxRequestApproval] = []
     clarifications: list[InboxRequestClarification] = []
     context: InboxRequestContext = InboxRequestContext()
+    expired_requests: list[InboxExpiredRequest] = []
 
 
 class InboxRequestsCoverage(Result):
@@ -84,9 +96,43 @@ class InboxRequestsResult(Result):
     coverage: InboxRequestsCoverage = InboxRequestsCoverage()
 
 
+class InboxRedoParams(ProfileParams):
+    session_key: str
+    request_id: str
+
+
+class InboxRedoResult(Result):
+    redone: bool = False
+    session_id: str = ""
+    record_cleared: bool = False
+
+
+class InboxDismissParams(ProfileParams):
+    session_key: str
+    request_id: str
+
+
+class InboxDismissResult(Result):
+    dismissed: bool = False
+
+
 method(
     "inbox.requests",
     params=InboxRequestsParams,
     result=InboxRequestsResult,
     doc="Read-only scoped request details for a specific session (approvals + clarifications).",
+)
+
+method(
+    "inbox.redo",
+    params=InboxRedoParams,
+    result=InboxRedoResult,
+    doc="Re-raise an expired request by asking its live session to attempt the action again.",
+)
+
+method(
+    "inbox.dismiss",
+    params=InboxDismissParams,
+    result=InboxDismissResult,
+    doc="Drop one expired-request record from the inbox.",
 )

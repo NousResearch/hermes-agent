@@ -1567,6 +1567,12 @@ class SessionDB(
         else:
             self._write_sql(sql, (key, value))
 
+    def delete_meta(self, key: str) -> None:
+        """Remove ``state_meta[key]`` (no-op when absent). Idempotent under the retry contract."""
+        def _do(conn):
+            return conn.execute("DELETE FROM state_meta WHERE key = ?", (key,)).rowcount
+        self._execute_write(_do)
+
     def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
         """Retag legacy kanban worker rows from ``cli`` to ``kanban`` by cwd under the board's workspaces
         root; gated once per root via state_meta. Returns rows retagged."""

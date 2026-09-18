@@ -147,8 +147,6 @@ def _queue_approval(server, key, *, command="rm -rf /tmp/secret-value-abc", desc
 
 
 def _open_session(server, key, *, profile_home=None):
-    from hermes_constants import get_hermes_home
-
     sid = f"sid-{uuid.uuid4().hex[:8]}"
     server._sessions[sid] = {
         "session_key": key,
@@ -160,7 +158,11 @@ def _open_session(server, key, *, profile_home=None):
         "cols": 120,
         "agent": None,
         "created_at": time.time(),
-        "profile_home": str(profile_home) if profile_home is not None else str(get_hermes_home()),
+        # The REAL launch-profile shape: server._add_session stores None for the launch
+        # profile, never the home path. Fixtures that stored the path hid the
+        # launch/foreign comparison bug (approval listed under Needs attention,
+        # detail read empty).
+        "profile_home": profile_home,
     }
     return sid
 
@@ -327,6 +329,19 @@ class TestInboxList:
         assert inbox["counts"]["needs_you"] == 1
         clarify = inbox["items"][0]["pending_clarify"]
         assert clarify == {"count": 1}
+
+    def test_live_clarify_with_launch_profile_none_home(self, server, db):
+        """A launch-profile session (profile_home=None, the real shape) still counts.
+
+        Same defect family as the requests-side regression: the live join compared
+        the record's raw ``profile_home`` (None for launch) against the launch home
+        path, so launch-profile clarifies never reached the list either.
+        """
+        key = _create_row(db, _new_key())
+        _queue_clarify(server, key, sid=_open_session(server, key, profile_home=None))
+        inbox = _result(server, "inbox.list")["inbox"]
+        assert inbox["counts"]["needs_you"] == 1
+        assert inbox["items"][0]["pending_clarify"] == {"count": 1}
 
     def test_approval_egress_never_leaks_raw_credential(self, server, db):
         key = _create_row(db, _new_key())

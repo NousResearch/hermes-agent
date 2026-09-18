@@ -1397,6 +1397,7 @@ export interface InboxItem {
   heartbeat?: unknown
   pending_approval?: InboxPendingApproval | null
   pending_clarify?: PendingClarify | null
+  expired_request_count?: number
   categories?: string[]
   subagent_count?: number
   subagent_count_unavailable?: boolean
@@ -1448,6 +1449,7 @@ export interface InboxRequestSessionDetail {
   approvals?: InboxRequestApproval[]
   clarifications?: InboxRequestClarification[]
   context?: InboxRequestContext
+  expired_requests?: InboxExpiredRequest[]
 }
 export interface InboxRequestApproval {
   request_id?: string
@@ -1488,6 +1490,15 @@ export interface InboxRequestContextMessage {
   text?: string
   timestamp?: number | null
 }
+/** One request that ended without an answer; what it was for plus how it ended. */
+export interface InboxExpiredRequest {
+  request_id?: string
+  kind?: string
+  command?: string
+  description?: string
+  ended_at?: number
+  outcome?: string
+}
 export interface InboxRequestsCoverage {
   profile?: string
   session_key?: string
@@ -1496,6 +1507,24 @@ export interface InboxRequestsCoverage {
   clarification_count?: number
   context_anchor?: string
   errors?: string[]
+}
+export interface InboxRedoParams {
+  profile?: string | null
+  session_key: string
+  request_id: string
+}
+export interface InboxRedoResult {
+  redone?: boolean
+  session_id?: string
+  record_cleared?: boolean
+}
+export interface InboxDismissParams {
+  profile?: string | null
+  session_key: string
+  request_id: string
+}
+export interface InboxDismissResult {
+  dismissed?: boolean
 }
 export type PingParams = Record<string, never>
 export interface PingResult {
@@ -4451,8 +4480,12 @@ export interface RpcMethods {
   'image.detach': { params: ImageDetachParams; result: ImageDetachResult }
   /** Generate an image through the tool's provider dispatcher and hand the renderer a data URL. */
   'image.generate': { params: ImageGenerateParams; result: ImageGenerateResult }
+  /** Drop one expired-request record from the inbox. */
+  'inbox.dismiss': { params: InboxDismissParams; result: InboxDismissResult }
   /** Read-only cross-session inbox aggregation for the active profile. */
   'inbox.list': { params: InboxParams; result: InboxListResult }
+  /** Re-raise an expired request by asking its live session to attempt the action again. */
+  'inbox.redo': { params: InboxRedoParams; result: InboxRedoResult }
   /** Read-only scoped request details for a specific session (approvals + clarifications). */
   'inbox.requests': { params: InboxRequestsParams; result: InboxRequestsResult }
   /** Recognise a terminal file drop pasted into the composer and turn it into an attachment. */
@@ -4826,7 +4859,9 @@ export const RPC_METHODS = [
   'image.attach_bytes',
   'image.detach',
   'image.generate',
+  'inbox.dismiss',
   'inbox.list',
+  'inbox.redo',
   'inbox.requests',
   'input.detect_drop',
   'insights.get',

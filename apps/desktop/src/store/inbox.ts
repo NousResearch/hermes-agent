@@ -55,6 +55,8 @@ export interface InboxItem {
   loop: Record<string, unknown> | null
   pending_approval: InboxPendingApproval | null
   pending_clarify: InboxPendingClarify | null
+  /** Requests that ended without an answer and are still awaiting a redo/dismiss decision. */
+  expired_request_count: number
   session_key: string
   source: string
   subagent_count: number
@@ -137,12 +139,28 @@ export interface InboxRequestContext {
   messages: InboxRequestContextMessage[]
 }
 
+/**
+ * One request that ended without an answer. Kept (durably, gateway-side) so the panel can
+ * still say what it was for and offer a redo — an expired request must never vanish silently.
+ */
+export interface InboxExpiredRequest {
+  command: string
+  description: string
+  ended_at: number
+  kind: string
+  outcome: string
+  request_id: string
+}
+
 export interface InboxRequestSessionDetail {
   approvals: InboxRequestApproval[]
   clarifications: InboxRequestClarification[]
   // Optional at the renderer boundary: an older gateway that predates the excerpt must
   // keep parsing, and the panel reports the absence instead of an empty transcript.
   context?: InboxRequestContext
+  // Optional at the renderer boundary for the same reason: an older gateway has no
+  // expired-request store at all.
+  expired_requests?: InboxExpiredRequest[]
   live_session_ids: string[]
 }
 
@@ -264,6 +282,7 @@ function parseItem(value: unknown): InboxItem | null {
     background_task_count_unavailable: value.background_task_count_unavailable === true,
     categories,
     cwd: asString(value.cwd),
+    expired_request_count: typeof value.expired_request_count === 'number' ? value.expired_request_count : 0,
     goal: value.goal === null ? null : isRecord(value.goal) ? value.goal : null,
     heartbeat: value.heartbeat === null ? null : isRecord(value.heartbeat) ? value.heartbeat : null,
     lanes: value.lanes as InboxLane[],
@@ -601,6 +620,52 @@ export async function respondToApproval(params: {
   }) as ApprovalRespondResult
 
   return result
+}
+
+export interface RedoExpiredResult {
+  record_cleared: boolean
+  redone: boolean
+  session_id: string
+}
+
+/**
+ * Re-raise an expired request: the gateway asks the session to attempt the action again,
+ * which raises a fresh approval the panel can answer. Refused (4009) when the session is
+ * not live — nothing is resumed on the operator's behalf.
+ */
+export async function redoExpiredRequest(params: {
+  profile?: string
+  requestId: string
+  request?: InboxRequest
+  sessionKey: string
+}): Promise<RedoExpiredResult> {
+  const { profile, requestId, request: rpc = defaultInboxRequest, sessionKey } = params
+
+  return await rpc('inbox.redo', {
+    session_key: sessionKey,
+    request_id: requestId,
+    ...(profile ? { profile } : {})
+  }) as RedoExpiredResult
+}
+
+export interface DismissExpiredResult {
+  dismissed: boolean
+}
+
+/** Drop one expired-request record — the operator's "I'm done with this one". */
+export async function dismissExpiredRequest(params: {
+  profile?: string
+  requestId: string
+  request?: InboxRequest
+  sessionKey: string
+}): Promise<DismissExpiredResult> {
+  const { profile, requestId, request: rpc = defaultInboxRequest, sessionKey } = params
+
+  return await rpc('inbox.dismiss', {
+    session_key: sessionKey,
+    request_id: requestId,
+    ...(profile ? { profile } : {})
+  }) as DismissExpiredResult
 }
 
 export interface ClarifyAnswerResult {

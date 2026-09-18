@@ -16,7 +16,10 @@ import logging
 import os
 
 from .method_ctx import HandlerRegistry, bind_module
-from .methods_inbox import _INBOX_DENY_SOURCES, _inbox_denied_source
+from .methods_inbox import (
+    _INBOX_DENY_SOURCES, _inbox_denied_source, _inbox_home_key,
+    clear_expired_request, load_expired_requests,
+)
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -207,6 +210,9 @@ def _inbox_requests(rid: dict, params: dict) -> dict:
         # Same connection as the identity check: one read, no second open, no side effects
         # on the session itself.
         context = _build_context_excerpt(db, session_key)
+        # Expired requests survive the turn, the session close and an app restart; they are
+        # read here so the panel can still say what died unanswered — and offer a Redo.
+        expired_requests = load_expired_requests(db, session_key)
 
     # Thread-safe snapshot of live sessions
     try:
@@ -215,14 +221,14 @@ def _inbox_requests(rid: dict, params: dict) -> dict:
     except Exception as exc:
         return _err(rid, 5036, f"could not enumerate active sessions: {_safe_error_message(exc)}")
 
-    want_home = os.path.normcase(str(profile_home) if profile_home is not None else str(_hermes_home))
+    want_home = _inbox_home_key(profile_home)
     live_sessions: list[tuple[str, dict]] = []
     for sid, record in snapshot:
         if not isinstance(record, dict):
             continue
         if record.get("_finalized"):
             continue
-        if os.path.normcase(str(record.get("profile_home") or "")) != want_home:
+        if _inbox_home_key(record.get("profile_home")) != want_home:
             continue
         key = str(record.get("session_key") or "")
         if key != session_key:
@@ -272,6 +278,7 @@ def _inbox_requests(rid: dict, params: dict) -> dict:
             "approvals": all_approvals,
             "clarifications": all_clarifications,
             "context": context,
+            "expired_requests": expired_requests,
         }],
         "coverage": coverage,
     })
@@ -300,6 +307,116 @@ def _(rid, params: dict) -> dict:
     except Exception as exc:
         logger.debug("inbox.requests failed: %s", exc, exc_info=True)
         return _err(rid, 5031, "inbox.requests failed")
+
+
+# ── expired requests: redo / dismiss ──────────────────────────────────────────
+_REDO_PROMPT = (
+    "[Agent Inbox] An approval request expired before it was answered. "
+    "The user asked to redo it — attempt this action again now so they can approve or deny it.\n\n"
+    "Command: {command}"
+)
+
+
+def _inbox_live_session_for_key(profile_home: str | None, session_key: str) -> str | None:
+    """Runtime id of the live session owning *session_key* in this profile, else None."""
+    from tui_gateway.server import _sessions, _sessions_lock
+
+    want_home = _inbox_home_key(profile_home)
+    try:
+        with _sessions_lock:
+            snapshot = list(_sessions.items())
+    except Exception:
+        return None
+    for sid, record in snapshot:
+        if not isinstance(record, dict) or record.get("_finalized"):
+            continue
+        if _inbox_home_key(record.get("profile_home")) != want_home:
+            continue
+        if str(record.get("session_key") or "") == session_key:
+            return sid
+    return None
+
+
+@method("inbox.redo")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Re-raise an expired request by asking its session to attempt the action again.
+
+    The original waiter is long gone (the agent already received its not-approved result
+    and must not be told to retry from here), so re-raising means a fresh attempt: the
+    session is prompted, which raises a NEW approval the operator can answer. Requires the
+    session to be live — the prompt path resumes nothing on its own — and the redo record is
+    cleared only after the submit is accepted.
+    """
+    from tui_gateway.server import _methods, _profile_home, ProfileUnavailableError
+
+    session_key = str(params.get("session_key") or "").strip()
+    request_id = str(params.get("request_id") or "").strip()
+    if not session_key or not request_id:
+        return _err(rid, 4002, "session_key and request_id are required")
+    profile = (params.get("profile") or "").strip() or None
+    try:
+        profile_home_raw = _profile_home(profile)
+    except ProfileUnavailableError:
+        raise
+    except Exception as exc:
+        return _err(rid, 5031, f"profile resolution failed: {_safe_error_message(exc)}")
+    profile_home = str(profile_home_raw) if profile_home_raw is not None else None
+
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5031)
+        record = next(
+            (entry for entry in load_expired_requests(db, session_key)
+             if str(entry.get("request_id")) == request_id),
+            None,
+        )
+    if record is None:
+        return _err(rid, 4001, "expired request not found")
+
+    live_sid = _inbox_live_session_for_key(profile_home, session_key)
+    if live_sid is None:
+        return _err(rid, 4009, "session is not running — open it to redo this request")
+
+    text = _REDO_PROMPT.format(command=str(record.get("command") or "(command not recorded)"))
+    # Through the composer's own choke point: role alternation, persistence and streaming
+    # behave exactly as a typed message. ``queued`` never interrupts a turn in flight, and
+    # ``hidden`` keeps a message the user did not type out of the transcript's bubbles.
+    submitted = _methods["prompt.submit"](rid, {
+        "session_id": live_sid, "text": text, "queued": True, "display_kind": "hidden",
+    })
+    if "error" in submitted:
+        return submitted
+
+    cleared = False
+    with _profile_db(params) as db:
+        if db is not None:
+            cleared = clear_expired_request(db, session_key, request_id)
+    return _ok(rid, {"redone": True, "session_id": live_sid, "record_cleared": cleared})
+
+
+@method("inbox.dismiss")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Drop one expired-request record (the operator's decision that it is done)."""
+    from tui_gateway.server import ProfileUnavailableError
+
+    session_key = str(params.get("session_key") or "").strip()
+    request_id = str(params.get("request_id") or "").strip()
+    if not session_key or not request_id:
+        return _err(rid, 4002, "session_key and request_id are required")
+    try:
+        with _profile_db(params) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5031)
+            dismissed = clear_expired_request(db, session_key, request_id)
+    except ProfileUnavailableError:
+        raise
+    except Exception as exc:
+        return _err(rid, 5031, f"inbox.dismiss failed: {_safe_error_message(exc)}")
+    if not dismissed:
+        return _err(rid, 4001, "expired request not found")
+    return _ok(rid, {"dismissed": True})
 
 
 def register(server) -> None:

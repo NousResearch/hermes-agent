@@ -183,6 +183,7 @@ describe('useInbox', () => {
           background_task_count: 0,
           background_task_count_unavailable: false,
           categories: [],
+          expired_request_count: 0,
           session_key: 'sess-a',
           title: 'Profile A session',
           source: 'cli',

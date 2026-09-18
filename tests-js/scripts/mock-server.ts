@@ -659,8 +659,15 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             // result is in the history, fall through to the canned reply.
             const hasToolResult = Array.isArray(parsed.messages)
               && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
+            // A REDO prompt (the inbox re-raising an expired request) names the command in
+            // the latest user turn — script the gated call again so the re-raised approval is
+            // real. Once its tool result lands the latest message is that result, not the
+            // prompt, so this cannot loop.
+            const latest = Array.isArray(parsed.messages) ? parsed.messages[parsed.messages.length - 1] : undefined
+            const redoPrompt = latest?.role === 'user' && typeof latest.content === 'string'
+              && latest.content.includes(APPROVAL_COMMAND)
 
-            if (!hasToolResult) {
+            if (!hasToolResult || redoPrompt) {
               if (stream) {
                 streamScriptedTurn(res, model, APPROVAL_COMMAND_TURN)
               } else {

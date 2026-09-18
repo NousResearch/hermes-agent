@@ -126,13 +126,32 @@ def register_gateway_notify(session_key: str, cb) -> None:
         _gateway_notify_cbs[session_key] = cb
 
 
+def _approval_caller() -> str:
+    """Best-effort ``file:line function`` of the frame that changed an approval's outcome.
+
+    "The command was denied and nobody clicked deny" is unanswerable from the outside:
+    every resolution path (user click, /deny, interrupt, teardown, client answer) funnels
+    through the two functions below, so the caller is the one durable trace of *who* decided.
+    """
+    try:
+        import traceback
+        frame = traceback.extract_stack()[-3]
+        return f"{frame.filename.rsplit(chr(92), 1)[-1].rsplit('/', 1)[-1]}:{frame.lineno} {frame.name}"
+    except Exception:
+        return "unknown"
+
+
 def unregister_gateway_notify(session_key: str) -> None:
     """Unregister the callback and wake ALL blocked threads for this session so
     they don't hang forever (agent run finished or interrupted)."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        for entry in _gateway_queues.pop(session_key, []):
+        woken = _gateway_queues.pop(session_key, [])
+        for entry in woken:
             entry.event.set()
+    if woken:
+        logger.info("approval.wait woken without a choice by %s (%d pending) session=%s",
+                    _approval_caller(), len(woken), session_key)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -145,6 +164,7 @@ def resolve_gateway_approval(session_key: str, choice: str,
     (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
     relayed to the agent in the BLOCKED message. Returns the number resolved.
     """
+    caller = _approval_caller()
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
@@ -169,6 +189,11 @@ def resolve_gateway_approval(session_key: str, choice: str,
             if reason:
                 entry.reason = reason
             entry.event.set()
+    logger.info(
+        "approval.resolve choice=%s resolve_all=%s count=%d by %s session=%s request_ids=%s",
+        choice, resolve_all, len(targets), caller, session_key,
+        [e.data.get("request_id") for e in targets],
+    )
     return len(targets)
 
 
@@ -176,6 +201,7 @@ def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> 
     """Withdraw one pending approval nobody can answer (the only attached client cannot render it).
     The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of
     idling for the whole approvals.timeout (#112548). False when it is no longer pending."""
+    caller = _approval_caller()
     with _lock:
         queue = _gateway_queues.get(session_key, [])
         entry = next((e for e in queue if e.data.get("request_id") == request_id), None)
@@ -186,6 +212,8 @@ def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> 
             _gateway_queues.pop(session_key, None)
         entry.cancelled = cause
         entry.event.set()
+    logger.info("approval.withdraw request_id=%s cause=%r by %s session=%s",
+                request_id, cause, caller, session_key)
     return True
 
 

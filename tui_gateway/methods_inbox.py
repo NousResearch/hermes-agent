@@ -1,4 +1,4 @@
-"""Read-only Desktop "Agent Inbox" aggregation.
+"""Desktop "Agent Inbox" aggregation.
 
 ``inbox.list`` returns, for the ACTIVE connection + profile only, a bounded, deny-listed
 list of sessions that currently need the operator or carry persisted automation state.
@@ -9,14 +9,19 @@ Authoritative, non-fabricated sources:
     aggregation never resumes a session or hydrates a transcript (no side effects).
   - live pending approval from the gateway's in-process queue, redacted on egress.
   - live pending clarify for OPEN sessions (in-memory on this gateway process).
+  - durably recorded EXPIRED requests (timed out / withdrawn without an answer), so a
+    prompt that died on its own is still visible afterwards — what it was for, that it
+    expired, and a Redo — instead of vanishing silently.
 Coverage is declared outright: this is an ACTIVE-profile view, never a global inbox.
 
-This module is READ-ONLY. Opening or dismissing anything never resolves an approval or a
-clarify prompt; resolution stays in the owning session's UI through the existing RPCs.
+Request resolution stays in the owning session's UI through the existing RPCs; the only
+writes that originate here are the inbox's own expired-request records (and their
+dismissal), never an approval/clarify decision.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -49,12 +54,14 @@ def _inbox_denied_source(row) -> bool:
 
 # ── pure lane classification ──────────────────────────────────────────────────
 def classify_lanes(
-    control: dict | None, pending_approval: bool, pending_clarify: bool, now: float | None = None
+    control: dict | None, pending_approval: bool, pending_clarify: bool, now: float | None = None,
+    pending_expired: bool = False,
 ) -> list[str]:
     """Ordered, deduplicated lanes for one session from its allowed control snapshot.
 
     Honest rules — no inference from turn counts:
-      needs_you  - a pending approval or clarify prompt for this session.
+      needs_you  - a pending approval or clarify prompt for this session, or an expired
+                   request still awaiting the operator's redo/dismiss decision.
       running    - an ACTIVE goal with no wait barrier, or a loop awaiting its response.
       waiting    - a paused goal / wait barrier, or a loop deferred by a goal or paused.
       scheduled  - an active heartbeat, or an active loop not awaiting a response whose
@@ -62,7 +69,7 @@ def classify_lanes(
     ``control`` is the ``session.control.read`` snapshot shape; absent state returns [].
     """
     lanes: list[str] = []
-    if pending_approval or pending_clarify:
+    if pending_approval or pending_clarify or pending_expired:
         lanes.append("needs_you")
     control = control or {}
     goal = control.get("goal")
@@ -198,7 +205,128 @@ def badge_state(items: list[dict], errors: list = ()) -> str:
     return "none"
 
 
+# ── expired requests (durable) ────────────────────────────────────────────────
+# A request that ends without an answer (timeout, withdrawal, session teardown) used to
+# disappear completely: no trace of what it was for and no way to re-raise it. Each one is
+# recorded in the owning session's store (state_meta — survives the turn, the session close
+# and an app restart), pruned to a bounded window, and rendered by the panel with a Redo.
+_EXPIRED_PREFIX = "inbox.expired."
+_EXPIRED_KEEP_PER_SESSION = 10
+_EXPIRED_MAX_AGE_S = 7 * 24 * 3600
+
+
+def _expired_record_key(session_key: str, request_id: str) -> str:
+    return f"{_EXPIRED_PREFIX}{session_key}.{request_id}"
+
+
+def _parse_expired_record(raw) -> dict | None:
+    try:
+        entry = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(entry, dict) or not entry.get("request_id"):
+        return None
+    return entry
+
+
+def record_expired_request(db, session_key: str, payload: dict, outcome: str) -> bool:
+    """Persist one request that ended without an answer; True when written.
+
+    Only what the panel needs to say *what it was for* is kept, each field bounded. The
+    command text is whatever the surface already redacted for display, so a
+    credential-shaped value never reaches this store.
+    """
+    if db is None or not session_key:
+        return False
+    request_id = str(payload.get("request_id") or "").strip()
+    if not request_id:
+        return False
+    entry = {
+        "request_id": request_id,
+        "session_key": session_key,
+        "kind": "approval",
+        "command": str(payload.get("command") or "")[:500],
+        "description": str(payload.get("description") or "")[:300],
+        "pattern_keys": [str(k) for k in (payload.get("pattern_keys") or [])][:8],
+        "ended_at": time.time(),
+        "outcome": str(outcome or "unknown")[:40],
+    }
+    try:
+        db.set_meta(_expired_record_key(session_key, request_id), json.dumps(entry))
+        _prune_expired_requests(db, session_key)
+    except Exception:
+        logger.warning("failed to record expired request %s", request_id, exc_info=True)
+        return False
+    return True
+
+
+def _prune_expired_requests(db, session_key: str) -> None:
+    """Keep the newest N per session and drop anything past the age window."""
+    cutoff = time.time() - _EXPIRED_MAX_AGE_S
+    for index, entry in enumerate(load_expired_requests(db, session_key)):  # newest first
+        too_old = float(entry.get("ended_at") or 0) < cutoff
+        if too_old or index >= _EXPIRED_KEEP_PER_SESSION:
+            db.delete_meta(_expired_record_key(session_key, str(entry.get("request_id") or "")))
+
+
+def load_expired_requests(db, session_key: str) -> list[dict]:
+    """Expired requests for one session, newest first."""
+    if db is None or not session_key:
+        return []
+    try:
+        rows = db.list_meta_prefix(f"{_EXPIRED_PREFIX}{session_key}.")
+    except Exception:
+        logger.debug("expired-request read failed", exc_info=True)
+        return []
+    entries = [entry for _key, raw in rows if (entry := _parse_expired_record(raw)) is not None]
+    entries.sort(key=lambda e: float(e.get("ended_at") or 0), reverse=True)
+    return entries
+
+
+def load_expired_request_counts(db) -> dict[str, int]:
+    """session_key → expired-request count for every session, from ONE prefix scan."""
+    counts: dict[str, int] = {}
+    try:
+        rows = db.list_meta_prefix(_EXPIRED_PREFIX)
+    except Exception:
+        logger.debug("expired-request scan failed", exc_info=True)
+        return counts
+    for _key, raw in rows:
+        entry = _parse_expired_record(raw)
+        if entry is None:
+            continue
+        key = str(entry.get("session_key") or "")
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def clear_expired_request(db, session_key: str, request_id: str) -> bool:
+    """Drop one expired-request record (Dismiss). False when it was not there."""
+    if db is None or not session_key or not request_id:
+        return False
+    key = _expired_record_key(session_key, request_id)
+    if db.get_meta(key) is None:
+        return False
+    db.delete_meta(key)
+    return True
+
+
 # ── live sources ──────────────────────────────────────────────────────────────
+def _inbox_home_key(home) -> str:
+    """Normalized comparison key for "which profile home owns this runtime session".
+
+    A session created under the launch profile stores ``profile_home = None``
+    (``server._add_session``: "None = launch"), and ``_profile_home()`` returns None for
+    that same profile — so comparing the raw values against a home path never matched,
+    and every launch-profile session vanished from the live joins. The panel then listed
+    a pending approval under Needs attention while the detail read returned nothing to
+    act on (live, 2026-09-18). Both sides resolve through here; a foreign profile still
+    matches only its own normalized path.
+    """
+    return os.path.normcase(str(home) if home is not None else str(_hermes_home))
+
+
 def _live_clarify_by_session_key(profile_home: str | None) -> tuple[dict[str, int], list[str]]:
     """session_key → pending clarify count for OPEN sessions owned by this profile.
 
@@ -220,15 +348,13 @@ def _live_clarify_by_session_key(profile_home: str | None) -> tuple[dict[str, in
         return out, errors
     from tui_gateway import server_requests
 
-    # When profile_home is None (launch profile), match sessions whose profile_home
-    # is the launch profile's home (_hermes_home). When it's a foreign profile,
-    # match the explicit path.  normcase ensures Windows drive-letter and casing
-    # differences don't cause a false mismatch.
-    want_home = os.path.normcase(str(profile_home) if profile_home is not None else str(_hermes_home))
+    # Both sides normalize through _inbox_home_key: None means the launch profile's home
+    # (see its docstring for why raw-value comparison dropped every launch session).
+    want_home = _inbox_home_key(profile_home)
     for sid, record in snapshot:
         if not isinstance(record, dict):
             continue
-        if os.path.normcase(str(record.get("profile_home") or "")) != want_home:
+        if _inbox_home_key(record.get("profile_home")) != want_home:
             continue
         key = str(record.get("session_key") or "")
         if not key:
@@ -282,6 +408,9 @@ def _list_inbox(rid, params: dict) -> dict:
 
     clarify_by_key, clarify_errors = _live_clarify_by_session_key(profile_home)
     subagent_by_key, subagent_error = _subagent_counts_by_owner()
+    # One prefix scan for every session's expired-request count (state_meta), so a request
+    # that died without an answer stays visible after its turn, session and app restart.
+    expired_by_key = load_expired_request_counts(db)
 
     # Collect session keys from the allowed rows for bounded bg-process queries
     session_keys = []
@@ -327,7 +456,9 @@ def _list_inbox(rid, params: dict) -> dict:
             errors.append(f"{key}: approval read failed: {_safe_error_message(exc)}")
         clarify_count = clarify_by_key.get(key, 0)
         clarify = {"count": clarify_count} if clarify_count > 0 else None
-        lanes = classify_lanes(control, approval is not None, clarify is not None)
+        expired_count = expired_by_key.get(key, 0)
+        lanes = classify_lanes(control, approval is not None, clarify is not None,
+                               pending_expired=expired_count > 0)
         cats = classify_categories(control)
         subagent_count = subagent_by_key.get(key, 0)
         bg_task_count = bg_task_by_key.get(key, 0)
@@ -348,6 +479,7 @@ def _list_inbox(rid, params: dict) -> dict:
             "heartbeat": control.get("heartbeat"),
             "pending_approval": approval,
             "pending_clarify": clarify,
+            "expired_request_count": expired_count,
             "categories": cats,
             "subagent_count": subagent_count,
             "subagent_count_unavailable": subagent_error is not None,

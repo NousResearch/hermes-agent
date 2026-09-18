@@ -782,9 +782,31 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
                                            request_id=request_id or None)
 
+    def _settle_with_expiry(reason: str) -> None:
+        """Run the client-request settle, then record a request nobody answered.
+
+        "resolved" means an answer landed; every other reason (timeout, session close,
+        interrupt, notify failure) is a request that ended without the operator ever getting
+        to decide. Those used to vanish entirely — no trace of what it was for and no way
+        back to it — so they are recorded durably and the panel keeps showing them with a
+        Redo (live, 2026-09-18).
+        """
+        settle(reason)
+        if not request_id or reason == "resolved":
+            return
+        try:
+            from tui_gateway.methods_inbox import record_expired_request
+            session = _sessions.get(sid)
+            if session is None:
+                return
+            with _session_db(session) as db:
+                record_expired_request(db, session_key, payload, reason)
+        except Exception:
+            logger.debug("expired-request record failed for %s", request_id, exc_info=True)
+
     settle = server_requests.send_async("approval", sid, payload, on_result)
     if request_id:
-        _approval.register_gateway_settle(session_key, request_id, settle)
+        _approval.register_gateway_settle(session_key, request_id, _settle_with_expiry)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):

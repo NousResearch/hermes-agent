@@ -19,13 +19,16 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import { cn } from '@/lib/utils'
 import {
   countByCategory,
+  dismissExpiredRequest,
   fetchInboxRequestDetails,
   filterNeedsAttention,
   type InboxCategory,
   type InboxEntry,
+  type InboxExpiredRequest,
   type InboxItem,
   type InboxRequestContext,
   type InboxRequestDetails,
+  redoExpiredRequest,
   refreshInbox,
   searchInboxItems
 } from '@/store/inbox'
@@ -37,6 +40,83 @@ import { ApprovalCard } from './approval-card'
 import { ClarifyCard } from './clarify-card'
 
 type SearchScope = 'all' | 'section'
+
+const EXPIRY_OUTCOME_TEXT: Record<string, string> = {
+  notify_failed: 'never reached a surface that could answer it',
+  session_closed: 'the session closed before an answer',
+  timeout: 'timed out without an answer'
+}
+
+function expiryLine(entry: InboxExpiredRequest): string {
+  const seconds = Math.max(0, Date.now() / 1000 - entry.ended_at)
+  const ago =
+    seconds < 90 ? 'just now'
+      : seconds < 3600 ? `${Math.round(seconds / 60)}m ago`
+        : seconds < 86_400 ? `${Math.round(seconds / 3600)}h ago`
+          : `${Math.round(seconds / 86_400)}d ago`
+
+  return `Expired ${ago} — ${EXPIRY_OUTCOME_TEXT[entry.outcome] ?? entry.outcome}`
+}
+
+/**
+ * One request that ended without an answer. Kept visible instead of vanishing: what it was
+ * for, that it expired, a Redo that re-raises it through the session, and a Dismiss for
+ * the operator's "I'm done with this one".
+ */
+function ExpiredRequestCard({
+  entry,
+  onChanged,
+  sessionKey
+}: {
+  entry: InboxExpiredRequest
+  onChanged: () => void
+  sessionKey: string
+}) {
+  const [busy, setBusy] = useState<'dismiss' | 'redo' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const act = async (kind: 'dismiss' | 'redo') => {
+    setBusy(kind)
+    setError(null)
+
+    try {
+      if (kind === 'redo') {
+        await redoExpiredRequest({ requestId: entry.request_id, sessionKey })
+      } else {
+        await dismissExpiredRequest({ requestId: entry.request_id, sessionKey })
+      }
+
+      onChanged()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'request failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-(--ui-stroke-tertiary) bg-foreground/5 px-2 py-1.5" data-expired-request="">
+      <p className="break-words font-mono text-[0.66rem] text-foreground/85">{entry.command || '(command not recorded)'}</p>
+      {entry.description && (
+        <p className="mt-0.5 break-words text-[0.62rem] text-muted-foreground/70">{entry.description}</p>
+      )}
+      <p className="mt-1 text-[0.6rem] text-muted-foreground/60">{expiryLine(entry)}</p>
+      <div className="mt-1.5 flex gap-2">
+        <Button disabled={busy !== null} onClick={() => void act('redo')} size="xs" variant="secondary">
+          {busy === 'redo' ? 'Redoing…' : 'Redo'}
+        </Button>
+        <Button disabled={busy !== null} onClick={() => void act('dismiss')} size="xs" variant="text">
+          {busy === 'dismiss' ? 'Dismissing…' : 'Dismiss'}
+        </Button>
+      </div>
+      {error && (
+        <p className="mt-1 break-words text-[0.62rem] text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
 
 interface InlineDetailProps {
   detailsLoading: boolean | undefined
@@ -57,6 +137,7 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
     messages: [],
     reason: null
   }
+  const detailExpired = expandedDetails?.sessions[0]?.expired_requests ?? []
 
   return (
     <div className="flex flex-col gap-3 py-2">
@@ -164,6 +245,22 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
                 clarification={c}
                 key={c.request_id}
                 onResolved={onRetry}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {detailExpired.length > 0 && (
+        <div>
+          <PanelSectionLabel>Expired requests ({detailExpired.length})</PanelSectionLabel>
+          <div className="mt-1 flex flex-col gap-2">
+            {detailExpired.map(entry => (
+              <ExpiredRequestCard
+                entry={entry}
+                key={entry.request_id}
+                onChanged={onRetry}
+                sessionKey={item.session_key}
               />
             ))}
           </div>
@@ -340,11 +437,52 @@ export function InboxPanel({ inbox, onClose }: { inbox: InboxEntry; onClose: () 
     }
   }, [])
 
+  // The expanded row's request state can change with NO user action: an approval times out,
+  // a request is withdrawn, a record is dismissed elsewhere. Re-read the detail when the row's
+  // request state moves WHILE IT IS EXPANDED, so the panel never keeps offering controls for a
+  // request that is already gone (live bug: "Approve once" lingered past expiry). The initial
+  // expand is the effect below; this watcher only fires on a transition.
+  const expandedFingerprint = useMemo(() => {
+    const item = items.find(candidate => candidate.session_key === expandedKey)
+
+    if (!item) {
+      return ''
+    }
+
+    return [
+      item.pending_approval ? item.pending_approval.count : 0,
+      item.pending_clarify ? item.pending_clarify.count : 0,
+      item.expired_request_count ?? 0,
+      item.lanes.join(',')
+    ].join('|')
+  }, [expandedKey, items])
+
   useEffect(() => {
     if (expandedKey) {
       void loadDetails(expandedKey)
     }
   }, [expandedKey, loadDetails])
+
+  const previousRequestStateRef = useRef('')
+
+  useEffect(() => {
+    const state = expandedKey ? expandedFingerprint : ''
+
+    if (state === previousRequestStateRef.current) {
+      return
+    }
+
+    const wasExpanded = previousRequestStateRef.current !== ''
+
+    previousRequestStateRef.current = state
+
+    // Both states non-empty: the row stayed visible and only its REQUEST state moved. A row
+    // that left the list (scope/profile switch, filter change) is not a request transition —
+    // the scope guard already invalidated it and re-expanding fetches fresh.
+    if (expandedKey && wasExpanded && state !== '') {
+      void loadDetails(expandedKey)
+    }
+  }, [expandedKey, expandedFingerprint, loadDetails])
 
   const handleRowSelect = useCallback((item: InboxItem) => {
     setExpandedKey(prev => prev === item.session_key ? null : item.session_key)

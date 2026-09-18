@@ -69,7 +69,9 @@ vi.mock('@/store/gateway', () => {
 vi.mock('@/store/inbox', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   refreshInbox: vi.fn(),
-  fetchInboxRequestDetails: vi.fn().mockResolvedValue(null)
+  fetchInboxRequestDetails: vi.fn().mockResolvedValue(null),
+  dismissExpiredRequest: vi.fn().mockResolvedValue({ dismissed: true }),
+  redoExpiredRequest: vi.fn().mockResolvedValue({ record_cleared: true, redone: true, session_id: 'live-1' })
 }))
 
 afterEach(() => {
@@ -88,6 +90,7 @@ function makeItem(overrides: Partial<InboxItem> & { session_key: string }): Inbo
     goal: null,
     heartbeat: null,
     lanes: ['needs_you'],
+    expired_request_count: 0,
     loop: null,
     pending_approval: null,
     pending_clarify: null,
@@ -438,6 +441,196 @@ describe('InboxPanel', () => {
     const excerpt = screen.getByText('Recent messages')
     const controls = screen.getByText('Approvals (1)')
     expect(excerpt.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps an expired request visible with what it was for and a Redo', async () => {
+    const item = makeItem({ expired_request_count: 1, session_key: 'sess-exp', title: 'Expired test' })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'amber',
+        counts: { needs_you: 1, running: 0, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    const { fetchInboxRequestDetails } = await import('@/store/inbox')
+
+    vi.mocked(fetchInboxRequestDetails).mockResolvedValue({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: 'unavailable: no context',
+        errors: [], live_session_count: 0, profile: 'inbox-test-profile', session_key: 'sess-exp'
+      },
+      sessions: [{
+        approvals: [],
+        clarifications: [],
+        expired_requests: [{
+          command: 'rm -rf /tmp/hermes-e2e-approval-probe',
+          description: 'Delete scratch dir',
+          ended_at: Date.now() / 1000 - 600,
+          kind: 'approval',
+          outcome: 'timeout',
+          request_id: 'exp-1'
+        }],
+        live_session_ids: []
+      }]
+    })
+
+    renderPanel(entry)
+    clickRow('Expired test')
+
+    await waitFor(() => expect(screen.getByText('Expired requests (1)')).toBeTruthy())
+    expect(screen.getByText('rm -rf /tmp/hermes-e2e-approval-probe')).toBeTruthy()
+    expect(screen.getByText('Delete scratch dir')).toBeTruthy()
+    expect(screen.getByText(/Expired 10m ago — timed out without an answer/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Redo' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy()
+  })
+
+  it('redo asks the gateway to re-raise the expired request', async () => {
+    const item = makeItem({ expired_request_count: 1, session_key: 'sess-redo', title: 'Redo test' })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'amber',
+        counts: { needs_you: 1, running: 0, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    const { fetchInboxRequestDetails, redoExpiredRequest } = await import('@/store/inbox')
+
+    vi.mocked(fetchInboxRequestDetails).mockResolvedValue({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: 'unavailable: no context',
+        errors: [], live_session_count: 1, profile: 'inbox-test-profile', session_key: 'sess-redo'
+      },
+      sessions: [{
+        approvals: [],
+        clarifications: [],
+        expired_requests: [{
+          command: 'rm -rf /tmp/hermes-e2e-approval-probe',
+          description: 'Delete scratch dir',
+          ended_at: Date.now() / 1000 - 60,
+          kind: 'approval',
+          outcome: 'timeout',
+          request_id: 'exp-2'
+        }],
+        live_session_ids: ['live-1']
+      }]
+    })
+
+    renderPanel(entry)
+    clickRow('Redo test')
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Redo' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
+
+    await waitFor(() => expect(vi.mocked(redoExpiredRequest)).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'exp-2', sessionKey: 'sess-redo' })
+    ))
+  })
+
+  it('a refused redo (session not running) is shown, not swallowed', async () => {
+    const item = makeItem({ expired_request_count: 1, session_key: 'sess-refused', title: 'Refused test' })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'amber',
+        counts: { needs_you: 1, running: 0, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    const { fetchInboxRequestDetails, redoExpiredRequest } = await import('@/store/inbox')
+
+    vi.mocked(fetchInboxRequestDetails).mockResolvedValue({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: 'unavailable: no context',
+        errors: [], live_session_count: 0, profile: 'inbox-test-profile', session_key: 'sess-refused'
+      },
+      sessions: [{
+        approvals: [],
+        clarifications: [],
+        expired_requests: [{
+          command: 'rm -rf /tmp/x',
+          description: '',
+          ended_at: Date.now() / 1000 - 60,
+          kind: 'approval',
+          outcome: 'timeout',
+          request_id: 'exp-3'
+        }],
+        live_session_ids: []
+      }]
+    })
+
+    vi.mocked(redoExpiredRequest).mockRejectedValueOnce(
+      new Error('session is not running — open it to redo this request')
+    )
+
+    renderPanel(entry)
+    clickRow('Refused test')
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Redo' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('session is not running'))
+  })
+
+  it('re-reads the expanded detail when the row’s request state changes on a poll', async () => {
+    // Live bug: an approval could expire while the row stayed expanded and the panel kept
+    // offering "Approve once" for a request that no longer existed. The detail must follow
+    // the row's request state (pending → expired → redone) without a manual collapse.
+    const pendingItem = makeItem({ session_key: 'sess-live', title: 'Live row' })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'amber',
+        counts: { needs_you: 1, running: 0, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [pendingItem]
+      }
+    })
+
+    const { fetchInboxRequestDetails } = await import('@/store/inbox')
+
+    vi.mocked(fetchInboxRequestDetails).mockResolvedValue({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: 'unavailable: no context',
+        errors: [], live_session_count: 1, profile: 'inbox-test-profile', session_key: 'sess-live'
+      },
+      sessions: [{ approvals: [], clarifications: [], expired_requests: [], live_session_ids: ['live-1'] }]
+    })
+
+    const { rerender } = renderPanel(entry)
+
+    clickRow('Live row')
+    await waitFor(() => expect(vi.mocked(fetchInboxRequestDetails)).toHaveBeenCalledTimes(1))
+
+    // A poll tick arrives with the request expired and its record persisted.
+    const expiredItem = makeItem({ expired_request_count: 1, session_key: 'sess-live', title: 'Live row' })
+
+    rerender(
+      <MemoryRouter>
+        <InboxPanel
+          inbox={makeEntry({
+            snapshot: {
+              badge: 'amber',
+              counts: { needs_you: 1, running: 0, waiting: 0, scheduled: 0, total: 1 },
+              coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+              items: [expiredItem]
+            }
+          })}
+          onClose={vi.fn()}
+        />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(vi.mocked(fetchInboxRequestDetails)).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(fetchInboxRequestDetails).mock.calls[1][0]).toBe('sess-live')
   })
 
   it('names an absent excerpt instead of rendering an empty transcript', async () => {

@@ -1231,6 +1231,24 @@
       }
     },
     {
+      "name": "inbox.dismiss",
+      "summary": "Drop one expired-request record from the inbox.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InboxDismissParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InboxDismissResult"
+        }
+      }
+    },
+    {
       "name": "inbox.list",
       "summary": "Read-only cross-session inbox aggregation for the active profile.",
       "params": [
@@ -1245,6 +1263,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/InboxListResult"
+        }
+      }
+    },
+    {
+      "name": "inbox.redo",
+      "summary": "Re-raise an expired request by asking its live session to attempt the action again.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/InboxRedoParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InboxRedoResult"
         }
       }
     },
@@ -12878,6 +12914,87 @@
         "title": "InboxCoverage",
         "type": "object"
       },
+      "InboxDismissParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_key",
+          "request_id"
+        ],
+        "title": "InboxDismissParams",
+        "type": "object"
+      },
+      "InboxDismissResult": {
+        "additionalProperties": false,
+        "properties": {
+          "dismissed": {
+            "default": false,
+            "title": "Dismissed",
+            "type": "boolean"
+          }
+        },
+        "title": "InboxDismissResult",
+        "type": "object"
+      },
+      "InboxExpiredRequest": {
+        "additionalProperties": false,
+        "description": "One request that ended without an answer; what it was for plus how it ended.",
+        "properties": {
+          "request_id": {
+            "default": "",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "kind": {
+            "default": "",
+            "title": "Kind",
+            "type": "string"
+          },
+          "command": {
+            "default": "",
+            "title": "Command",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "ended_at": {
+            "default": 0.0,
+            "title": "Ended At",
+            "type": "number"
+          },
+          "outcome": {
+            "default": "",
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "title": "InboxExpiredRequest",
+        "type": "object"
+      },
       "InboxItem": {
         "additionalProperties": false,
         "properties": {
@@ -12941,6 +13058,11 @@
               }
             ],
             "default": null
+          },
+          "expired_request_count": {
+            "default": 0,
+            "title": "Expired Request Count",
+            "type": "integer"
           },
           "categories": {
             "default": [],
@@ -13037,6 +13159,59 @@
           "count"
         ],
         "title": "InboxPendingApproval",
+        "type": "object"
+      },
+      "InboxRedoParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_key",
+          "request_id"
+        ],
+        "title": "InboxRedoParams",
+        "type": "object"
+      },
+      "InboxRedoResult": {
+        "additionalProperties": false,
+        "properties": {
+          "redone": {
+            "default": false,
+            "title": "Redone",
+            "type": "boolean"
+          },
+          "session_id": {
+            "default": "",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "record_cleared": {
+            "default": false,
+            "title": "Record Cleared",
+            "type": "boolean"
+          }
+        },
+        "title": "InboxRedoResult",
         "type": "object"
       },
       "InboxRequestApproval": {
@@ -13353,6 +13528,14 @@
               "reason": null,
               "messages": []
             }
+          },
+          "expired_requests": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InboxExpiredRequest"
+            },
+            "title": "Expired Requests",
+            "type": "array"
           }
         },
         "title": "InboxRequestSessionDetail",

@@ -33,6 +33,9 @@ class InboxItem(Result):
     heartbeat: JsonValue = None
     pending_approval: InboxPendingApproval | None = None
     pending_clarify: PendingClarify | None = None
+    # Requests that ended without an answer (timed out / withdrawn). They stay listed so
+    # the operator can still see what died and redo it; dismissed only explicitly.
+    expired_request_count: int = 0
     categories: list[str] = []
     subagent_count: int = 0
     subagent_count_unavailable: bool = False

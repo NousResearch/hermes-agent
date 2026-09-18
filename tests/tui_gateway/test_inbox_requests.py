@@ -87,7 +87,6 @@ def _create_row(db, key, *, source="cli", title=""):
 
 
 def _open_session(server, key, *, profile_home=None):
-    from hermes_constants import get_hermes_home
     sid = f"sid-{uuid.uuid4().hex[:8]}"
     server._sessions[sid] = {
         "session_key": key,
@@ -99,7 +98,11 @@ def _open_session(server, key, *, profile_home=None):
         "cols": 120,
         "agent": None,
         "created_at": time.time(),
-        "profile_home": str(profile_home) if profile_home is not None else str(get_hermes_home()),
+        # The REAL launch-profile shape: server._add_session stores None for the launch
+        # profile, never the home path. Fixtures that stored the path hid the
+        # launch/foreign comparison bug (approval listed under Needs attention,
+        # detail read empty).
+        "profile_home": profile_home,
     }
     return sid
 
@@ -230,6 +233,23 @@ class TestProfileIsolation:
         result = _result(server, "inbox.requests", session_key=key)
         assert sid_launch in result["sessions"][0]["live_session_ids"]
         assert sid_foreign not in result["sessions"][0]["live_session_ids"]
+
+    def test_launch_profile_none_home_stays_visible(self, server, db):
+        """The real launch-profile runtime shape (profile_home=None) must stay visible.
+
+        ``server._add_session`` stores ``None`` for launch-profile sessions, and
+        ``_profile_home()`` returns None for that same profile. Comparing the raw
+        record value against the launch home path therefore never matched and
+        dropped every launch session from the live join: the panel listed a pending
+        approval under Needs attention while this detail read returned nothing to
+        act on (live 2026-09-18, test build).
+        """
+        key = _create_row(db, _new_key())
+        sid = _open_session(server, key, profile_home=None)
+        _queue_approval(server, key)
+        result = _result(server, "inbox.requests", session_key=key)
+        assert sid in result["sessions"][0]["live_session_ids"]
+        assert len(result["sessions"][0]["approvals"]) == 1
 
     def test_read_failure_does_not_resume_session(self, server, db):
         """Reading requests never starts/resumes/hydrates a session."""
@@ -517,6 +537,113 @@ class TestErrorHandling:
         server._sessions[sid]["_finalized"] = True
         result = _result(server, "inbox.requests", session_key=key)
         assert sid not in result["sessions"][0]["live_session_ids"]
+
+
+# ── Expired requests: recorded, listed, redone, dismissed ────────────
+class TestExpiredRequests:
+    """A request that ends without an answer must stay visible (what it was for + Redo)."""
+
+    def _record(self, db, key, *, request_id="exp-1", outcome="timeout", command="rm -rf /tmp/probe"):
+        from tui_gateway.methods_inbox import record_expired_request
+        assert record_expired_request(db, key, {
+            "request_id": request_id,
+            "command": command,
+            "description": "Delete scratch dir",
+            "pattern_keys": ["rm:-rf"],
+        }, outcome)
+
+    def test_recorded_request_is_listed_and_detail_includes_it(self, server, db):
+        key = _create_row(db, _new_key())
+        self._record(db, key)
+
+        detail = _result(server, "inbox.requests", session_key=key)["sessions"][0]
+        assert [e["request_id"] for e in detail["expired_requests"]] == ["exp-1"]
+        entry = detail["expired_requests"][0]
+        assert entry["command"] == "rm -rf /tmp/probe"
+        assert entry["outcome"] == "timeout"
+        assert entry["ended_at"] > 0
+
+        inbox = _result(server, "inbox.list")["inbox"]
+        item = next(i for i in inbox["items"] if i["session_key"] == key)
+        assert item["expired_request_count"] == 1
+        assert "needs_you" in item["lanes"]
+
+    def test_newest_first_and_pruned_to_the_kept_window(self, server, db):
+        key = _create_row(db, _new_key())
+        for index in range(12):
+            self._record(db, key, request_id=f"exp-{index:02d}")
+        detail = _result(server, "inbox.requests", session_key=key)["sessions"][0]
+        ids = [e["request_id"] for e in detail["expired_requests"]]
+        assert len(ids) == 10, ids
+        assert ids[0] == "exp-11" and "exp-00" not in ids  # newest kept, oldest pruned
+
+    def test_expired_only_session_still_scoped_to_its_profile(self, server, db):
+        """A record's presence never leaks across profiles (same key, other home)."""
+        key = _create_row(db, _new_key())
+        self._record(db, key)
+        from tui_gateway.server import _profile_home as _orig, ProfileUnavailableError
+        with pytest.raises(ProfileUnavailableError):
+            _call(server, "inbox.requests", session_key=key, profile="nonexistent-foreign")
+        assert _orig is not None
+
+    def test_dismiss_removes_the_record(self, server, db):
+        key = _create_row(db, _new_key())
+        self._record(db, key)
+        result = _result(server, "inbox.dismiss", session_key=key, request_id="exp-1")
+        assert result["dismissed"] is True
+        detail = _result(server, "inbox.requests", session_key=key)["sessions"][0]
+        assert detail["expired_requests"] == []
+
+    def test_dismiss_unknown_request_is_a_named_error(self, server, db):
+        key = _create_row(db, _new_key())
+        error = _error(_call(server, "inbox.dismiss", session_key=key, request_id="missing"))
+        assert error["code"] == 4001
+
+    def test_redo_requires_a_live_session(self, server, db):
+        key = _create_row(db, _new_key())
+        self._record(db, key)
+        error = _error(_call(server, "inbox.redo", session_key=key, request_id="exp-1"))
+        assert error["code"] == 4009  # nothing is resumed on the operator's behalf
+
+    def test_redo_submits_a_prompt_and_clears_the_record(self, server, db, monkeypatch):
+        key = _create_row(db, _new_key())
+        sid = _open_session(server, key)
+        self._record(db, key)
+        submitted: list[dict] = []
+
+        def _fake_submit(rid, params):
+            submitted.append(params)
+            return {"result": {"ok": True}}
+
+        monkeypatch.setitem(server._methods, "prompt.submit", _fake_submit)
+        result = _result(server, "inbox.redo", session_key=key, request_id="exp-1")
+        assert result["redone"] is True and result["session_id"] == sid
+        assert submitted and submitted[0]["session_id"] == sid
+        assert "rm -rf /tmp/probe" in submitted[0]["text"]
+        assert submitted[0]["display_kind"] == "hidden"
+        detail = _result(server, "inbox.requests", session_key=key)["sessions"][0]
+        assert detail["expired_requests"] == []
+
+    def test_redo_keeps_the_record_when_the_submit_fails(self, server, db, monkeypatch):
+        key = _create_row(db, _new_key())
+        _open_session(server, key)
+        self._record(db, key)
+
+        def _busy_submit(rid, params):
+            return {"error": {"code": 4009, "message": "session busy"}}
+
+        monkeypatch.setitem(server._methods, "prompt.submit", _busy_submit)
+        error = _error(_call(server, "inbox.redo", session_key=key, request_id="exp-1"))
+        assert error["code"] == 4009
+        detail = _result(server, "inbox.requests", session_key=key)["sessions"][0]
+        assert [e["request_id"] for e in detail["expired_requests"]] == ["exp-1"]
+
+    def test_record_without_request_id_is_not_written(self, db, server):
+        from tui_gateway.methods_inbox import record_expired_request
+        key = _create_row(db, _new_key())
+        assert record_expired_request(db, key, {"command": "x"}, "timeout") is False
+        detail = _result(server, "inbox.requests", session_key=key)["sessions"][0]
+        assert detail["expired_requests"] == []
 
 
 # ── Contract validation ──────────────────────────────────────────────

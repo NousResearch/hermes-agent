@@ -200,6 +200,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     try:
         notify_cb(dict(entry.data))
         approval_published()
+        logger.info(
+            "approval.wait start request_id=%s surface=%s session=%s command=%r",
+            entry.data.get("request_id"), surface, session_key,
+            (entry.data.get("command") or "")[:160],
+        )
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry("notify_failed")
@@ -221,4 +226,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     # not a timeout (#112548) — the same first-settlement rule as server_requests.send().
     resolved = state != "timeout" or choice is not None
     extra = {"cancelled": cancelled} if cancelled else {}
+    logger.info(
+        "approval.wait end state=%s choice=%s resolved=%s cancelled=%r request_id=%s",
+        state, choice, resolved, cancelled, entry.data.get("request_id"),
+    )
     return _finish(payload, resolved, choice, entry.reason, **extra)

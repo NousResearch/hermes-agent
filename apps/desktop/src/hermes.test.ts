@@ -509,6 +509,8 @@ describe('Hermes REST helpers', () => {
     expect(call.timeoutMs).toBeUndefined()
   })
 
+  // Explicit profile/connection writes (deleting a profile) carry the foreground
+  // dial tag; session reads stay on the ambient default (#111651).
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
     api.mockResolvedValue({ messages: [], session_id: 'session-1' })
 
@@ -552,6 +554,7 @@ describe('Hermes REST helpers', () => {
       connectionId: 'source-a',
       method: 'DELETE',
       path: '/api/profiles/backend-worker',
+      priority: 'foreground',
       profile: 'backend-worker'
     })
   })

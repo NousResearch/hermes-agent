@@ -420,15 +420,40 @@ class CLIModelSwitchMixin:
         if route is None:
             return
         stored_model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
+        from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+        managed = str(stored_provider or "").strip().lower() in LLAMACPP_ALIASES
         self.model = stored_model
         if stored_provider:
             self.provider = stored_provider
             self.requested_provider = stored_provider
-            if stored_base_url:
+            if stored_base_url and not managed:
                 self.base_url = stored_base_url
             if stored_api_mode:
                 self.api_mode = stored_api_mode
-        if provider_changed:
+        if managed and not (getattr(self, "_explicit_base_url", None) and not provider_changed):
+            # The supervisor owns the live port: last boot's loopback URL (an ephemeral fallback when
+            # 18434 was busy) must not pin the resume onto a dead endpoint. A launch-time --base-url
+            # for this same provider is user intent and keeps winning.
+            self._explicit_api_key = None
+            self._explicit_base_url = None
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
+                if resolved.get("api_key"):
+                    self.api_key = resolved["api_key"]
+                    self._credential_pool = resolved.get("credential_pool")
+                if resolved.get("base_url"):
+                    self.base_url = resolved["base_url"]
+                if not stored_api_mode and resolved.get("api_mode"):
+                    self.api_mode = resolved["api_mode"]
+            except Exception:
+                if stored_base_url:
+                    self.base_url = stored_base_url
+                logger.debug(
+                    "Credential re-resolution for resumed session provider "
+                    "%s failed; keeping ambient credentials",
+                    stored_provider, exc_info=True)
+        elif provider_changed:
             # Launch-time explicit overrides belong to the AMBIENT provider and would poison
             # _ensure_runtime_credentials for the restored one. api_key is never persisted to
             # the session DB — runtime provider resolution owns credentials.
@@ -436,7 +461,7 @@ class CLIModelSwitchMixin:
             self._explicit_base_url = stored_base_url
             try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider)
+                resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
                 if resolved.get("api_key"):
                     self.api_key = resolved["api_key"]
                     self._credential_pool = resolved.get("credential_pool")

@@ -33,9 +33,10 @@ TOUCH_EXPECT = "paris"
 _RESTART_BACKOFF_S = (1, 5, 15, 60)
 _RESIDENT = ("loaded", "ready")
 
-# Chosen once and reused across restarts: sessions persist the resolved base_url, so an ephemeral
-# port would strand every resumed session after each restart. Deliberately NOT 8080 so we never
-# collide with a user's own llama-server/Ollama-adjacent stack.
+# Chosen once and reused across restarts: sessions persist the resolved base_url as a snapshot, and
+# every resume path re-resolves llamacpp-alias sessions to the live endpoint (a stale port is
+# recoverable, but a stable one keeps external tooling pointed at the right place). Deliberately NOT
+# 8080 so we never collide with a user's own llama-server/Ollama-adjacent stack.
 _DEFAULT_PORT = 18434
 
 
@@ -67,7 +68,7 @@ def _stable_port() -> int:
     except OSError:
         logger.warning(
             "port %d busy; managed llama-server falling back to an ephemeral "
-            "port — existing sessions may need a model re-pick", _DEFAULT_PORT)
+            "port — resumed sessions follow the live endpoint", _DEFAULT_PORT)
         return _free_port()
 
 

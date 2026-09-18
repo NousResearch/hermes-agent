@@ -689,6 +689,29 @@ class TestCallbackPortReservation:
         assert _cached_client_info(storage) is None
         assert asyncio.run(storage.get_client_info()) is None
 
+    @pytest.mark.parametrize("payload", [
+        {"client_id": "c", "redirect_uris": ["http://127.0.0.1:abc/callback"]},  # the issue's repro
+        ["x"],                                                                    # non-dict client.json
+    ])
+    def test_malformed_client_info_flow_reserves_fresh_ephemeral_port(self, tmp_path, payload):
+        """Flow-level: the login path calls _configure_callback_port(cfg, storage) and the SDK
+        then calls storage.get_client_info(). A poisoned client.json must fall through to a
+        freshly reserved ephemeral port and read as "no registration", so the flow re-registers
+        instead of crashing on every attempt until the file is removed by hand (#112568)."""
+        import tools.mcp_oauth as mod
+
+        storage = self._seed_client_info(tmp_path, payload)
+        cfg: dict = {"cimd": False}  # keep the fresh-port branch, as the sibling tests do
+        port = mod._configure_callback_port(cfg, storage)
+        try:
+            assert port == cfg["_resolved_port"] > 0
+            assert port in mod._reserved_sockets  # only a truly fresh pick is parked
+            assert asyncio.run(storage.get_client_info()) is None
+        finally:
+            reserved = mod._reserved_sockets.pop(port, None)
+            if reserved is not None:
+                reserved.close()
+
 
 # ---------------------------------------------------------------------------
 # remove_oauth_tokens

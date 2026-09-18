@@ -80,6 +80,11 @@ export interface BotMeta {
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
   pinned?: boolean
+  /** Manual roster position within its band (pinned or not) and section —
+   *  same contract as a group room's `rosterOrder` (#105909): set on every
+   *  row when one moves, so a partial write cannot split an ordering.
+   *  Undefined = never hand-placed, keeps activity order. */
+  rosterOrder?: number
   shape?: string
   title?: string
   /** Creation timestamp in ms. Deliberately not copied when duplicating a bot. */

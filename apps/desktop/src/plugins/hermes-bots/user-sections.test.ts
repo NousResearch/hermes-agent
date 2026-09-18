@@ -46,6 +46,7 @@ import {
   backfillBotSectionNames,
   createBotSection,
   deleteBotSection,
+  dropBotSection,
   groupRowsBySection,
   loadBotSections,
   moveBotsToSection,
@@ -182,5 +183,28 @@ describe('user sections', () => {
     await vi.waitFor(() => expect(saveBotMeta).toHaveBeenCalledTimes(1))
     expect(saveBotMeta).toHaveBeenCalledWith(bot('nanox'), { sectionId: section.id, sectionName: 'Customers' })
     expect($botSections.get()).toEqual([{ id: section.id, name: 'Customers' }])
+  })
+
+  it('dropping a section heading before/after another reorders and persists', () => {
+    const a = createBotSection('Alpha')!
+    const b = createBotSection('Beta')!
+    const c = createBotSection('Gamma')!
+    expect($botSections.get().map(s => s.name)).toEqual(['Alpha', 'Beta', 'Gamma'])
+
+    // Drop Gamma BEFORE Beta: it lands between Alpha and Beta.
+    dropBotSection(c.id, b.id, false)
+    expect($botSections.get().map(s => s.name)).toEqual(['Alpha', 'Gamma', 'Beta'])
+
+    // Drop Alpha AFTER Beta: it moves to the end.
+    dropBotSection(a.id, b.id, true)
+    expect($botSections.get().map(s => s.name)).toEqual(['Gamma', 'Beta', 'Alpha'])
+
+    // A drop on itself and a drop naming an unknown id are no-ops.
+    dropBotSection(a.id, a.id, true)
+    dropBotSection(a.id, 'sec-missing', true)
+    expect($botSections.get().map(s => s.name)).toEqual(['Gamma', 'Beta', 'Alpha'])
+
+    // The persisted store carries the new order (what the next window loads).
+    expect(storage.get('bot-sections-v1')).toEqual($botSections.get())
   })
 })

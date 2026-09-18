@@ -35,7 +35,7 @@ import { type DragEvent, type ReactNode, useEffect, useRef, useState } from 'rea
 
 import { useBots } from './i18n'
 import { RosterSectionHeader } from './roster-sections'
-import { $draggingBot, BOT_DRAG_MIME } from './user-sections'
+import { $draggingBot, $draggingSection, BOT_DRAG_MIME, dropBotSection, SECTION_DRAG_MIME } from './user-sections'
 
 // ── name dialog ──────────────────────────────────────────────────────────────
 
@@ -142,6 +142,11 @@ export function UserSectionHeader({
 }: UserSectionHeaderProps) {
   const b = useBots()
   const { t } = useI18n()
+  // Section drag-reorder: the in-flight section id lives in the shared
+  // $draggingSection atom (the drop target is a different component than the
+  // drag source); only the drop edge is local presentation state.
+  const sectionDrag = useValue($draggingSection)
+  const [sectionDropEdge, setSectionDropEdge] = useState<null | 'after' | 'before'>(null)
 
   // Unassigned has no record to rename, reorder or delete — it is whatever is
   // left over — so it gets the plain heading rather than a menu of disabled
@@ -197,7 +202,54 @@ export function UserSectionHeader({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div data-section-id={id} data-slot="bots-section-heading">
+        <div data-section-id={id} data-slot="bots-section-heading" draggable onDragEnd={() => $draggingSection.set(null)}
+          onDragStart={event => {
+            event.dataTransfer.setData(SECTION_DRAG_MIME, id!)
+            event.dataTransfer.effectAllowed = 'move'
+            $draggingSection.set(id!)
+          }}
+          onDragEnter={event => {
+            if (sectionDrag && event.dataTransfer.types.includes(SECTION_DRAG_MIME)) {
+              event.preventDefault()
+            }
+          }}
+          onDragOver={event => {
+            if (!sectionDrag || sectionDrag === id || !event.dataTransfer.types.includes(SECTION_DRAG_MIME)) {
+              return
+            }
+
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'move'
+
+            const rect = event.currentTarget.getBoundingClientRect()
+            setSectionDropEdge(event.clientY > rect.top + rect.height / 2 ? 'after' : 'before')
+          }}
+          onDragLeave={event => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setSectionDropEdge(null)
+            }
+          }}
+          onDrop={event => {
+            const edge = sectionDropEdge
+            const dragId = sectionDrag
+            setSectionDropEdge(null)
+
+            if (!dragId || dragId === id || !edge || !event.dataTransfer.types.includes(SECTION_DRAG_MIME)) {
+              return
+            }
+
+            event.preventDefault()
+            event.stopPropagation()
+            $draggingSection.set(null)
+            dropBotSection(dragId, id!, edge === 'after')
+          }}
+          className={cn(
+            'rounded-md',
+            sectionDrag === id && 'opacity-40',
+            sectionDropEdge === 'before' && 'shadow-[inset_0_2px_0_0_var(--ui-accent)]',
+            sectionDropEdge === 'after' && 'shadow-[inset_0_-2px_0_0_var(--ui-accent)]'
+          )}
+        >
           <RosterSectionHeader
             action={action}
             collapsed={collapsed}

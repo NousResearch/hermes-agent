@@ -11,7 +11,7 @@ import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { switcherActive } from '@/store/session-switcher'
 
-import { isEditableTarget, isFocusWithin } from './combo'
+import { isEditableTarget, isFocusWithin, OVERLAY_SURFACE } from './combo'
 
 /** `composer.focus` defaults that need the surface/target gate. */
 export const isComposerFocusSoftCombo = (combo: string) => combo === '/' || combo === 'enter'
@@ -41,8 +41,7 @@ const ENTER_ACTIVATES = [
 
 // Overlays that cover the whole window (portaled to the body, or the overlay
 // shell itself) — one anywhere means the composer is behind it.
-const BLOCKING_OVERLAY =
-  '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-overlay-surface]'
+const BLOCKING_OVERLAY = OVERLAY_SURFACE
 
 // Blockers that live INSIDE a chat surface. Inactive tabs stay mounted, so this
 // one has to be visible-scoped: a clarify card waiting in a background thread

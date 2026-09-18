@@ -507,6 +507,23 @@ function parseRequestContext(value: unknown): InboxRequestContext {
   }
 }
 
+function parseExpiredRequest(value: unknown): InboxExpiredRequest | null {
+  if (!isRecord(value)) {return null}
+
+  const requestId = asString(value.request_id)
+
+  if (!requestId) {return null}
+
+  return {
+    command: asString(value.command),
+    description: asString(value.description),
+    ended_at: typeof value.ended_at === 'number' ? value.ended_at : 0,
+    kind: asString(value.kind),
+    outcome: asString(value.outcome),
+    request_id: requestId
+  }
+}
+
 function parseRequestSessionDetail(value: unknown): InboxRequestSessionDetail | null {
   if (!isRecord(value)) {return null}
 
@@ -518,11 +535,17 @@ function parseRequestSessionDetail(value: unknown): InboxRequestSessionDetail | 
     ? (value.clarifications as unknown[]).map(parseClarification).filter((c): c is InboxRequestClarification => c !== null)
     : []
 
+  // Requests that died unanswered. Parsed like every other field — dropping them here means
+  // the wire carries the record and the panel still shows nothing (live, 2026-09-18).
+  const expired_requests = Array.isArray(value.expired_requests)
+    ? (value.expired_requests as unknown[]).map(parseExpiredRequest).filter((e): e is InboxExpiredRequest => e !== null)
+    : []
+
   const live_session_ids = Array.isArray(value.live_session_ids)
     ? (value.live_session_ids as unknown[]).filter((id): id is string => typeof id === 'string')
     : []
 
-  return { approvals, clarifications, context: parseRequestContext(value.context), live_session_ids }
+  return { approvals, clarifications, context: parseRequestContext(value.context), expired_requests, live_session_ids }
 }
 
 function parseRequestDetails(value: unknown): InboxRequestDetails | null {

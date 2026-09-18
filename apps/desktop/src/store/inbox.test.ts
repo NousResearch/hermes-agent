@@ -552,6 +552,59 @@ describe('fetchInboxRequestDetails A-B-A scope guard', () => {
     expect(details?.details?.coverage.context_anchor).toBe('anchor-a2')
   })
 
+  it('keeps expired requests through the parser (wire → panel)', async () => {
+    // The record could be present on the wire and still never reach the panel: the session
+    // parser rebuilt the object field-by-field and dropped expired_requests. Assert the
+    // parsed shape, not just the mocked store contract.
+    clearInbox()
+
+    const request = async <R>(_method: string): Promise<R> => ({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: 'unavailable: no context',
+        errors: [], live_session_count: 0, profile: 'default', session_key: 'sess-1'
+      },
+      sessions: [{
+        approvals: [],
+        clarifications: [],
+        expired_requests: [{
+          command: 'rm -rf /tmp/hermes-e2e-approval-probe',
+          description: 'Delete scratch dir',
+          ended_at: 1789765000,
+          kind: 'approval',
+          outcome: 'timeout',
+          request_id: 'exp-1'
+        }],
+        live_session_ids: []
+      }]
+    }) as R
+
+    const result = await fetchInboxRequestDetails('sess-1', 'default', request)
+
+    expect(result?.sessions[0]?.expired_requests).toEqual([{
+      command: 'rm -rf /tmp/hermes-e2e-approval-probe',
+      description: 'Delete scratch dir',
+      ended_at: 1789765000,
+      kind: 'approval',
+      outcome: 'timeout',
+      request_id: 'exp-1'
+    }])
+  })
+
+  it('an expired record without a request id is dropped, not half-rendered', async () => {
+    clearInbox()
+
+    const request = async <R>(_method: string): Promise<R> => ({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: '',
+        errors: [], live_session_count: 0, profile: 'default', session_key: 'sess-1'
+      },
+      sessions: [{ approvals: [], clarifications: [], expired_requests: [{ command: 'x' }], live_session_ids: [] }]
+    }) as R
+
+    const result = await fetchInboxRequestDetails('sess-1', 'default', request)
+    expect(result?.sessions[0]?.expired_requests).toEqual([])
+  })
+
   it('malformed payload returns null and publishes error', async () => {
     clearInbox()
 

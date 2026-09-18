@@ -635,12 +635,16 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
+    from agent.notification_presentation import event_presentation_muted
+    if event_presentation_muted(event, sid):
+        return False
     return write_json(_event_frame(event, sid, payload))
 
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
-_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
+_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
+                            lambda sid: _session_client_answers_requests(sid))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -660,6 +664,7 @@ def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
     with _live_transports_lock:
         _live_transports.discard(transport)
+    _server_requests.forget(transport)
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
@@ -745,7 +750,15 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
 
     def on_result(result: dict | None) -> None:
-        if result is None:  # withdrawn: the queue entry resolves on its own path
+        if result is None:
+            # No client can answer this prompt: the request was never sent (the only attached client predates
+            # server→client requests) or the client answered -32601 (no handler). Without withdrawing the
+            # queue entry the agent would idle for the whole approvals.timeout with no prompt anywhere
+            # (#112548). A withdrawal, not a deny: nobody refused the command.
+            if request_id:
+                _approval.withdraw_gateway_approval(session_key, request_id,
+                                                    "the attached client cannot answer approval requests "
+                                                    "(update the Hermes app)")
             return
         choice = str(result.get("choice") or "deny")
         _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
@@ -2231,6 +2244,9 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
         return resolution.selected_model, resolution.runtime
+    if resolution.runtime.get("source") == "local-runtime":
+        # Live supervisor beat any persisted loopback URL for this identity.
+        overrides.pop("base_url", None)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
     return model, resolution.runtime
 

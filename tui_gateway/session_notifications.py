@@ -158,7 +158,10 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
     """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
     try:
-        _emit("message.start", sid)
+        from gateway.warning_notifications import render_notification
+        with _session_profile_runtime_scope(session):
+            render_notification(lambda: _emit("message.start", sid), platform="tui",
+                                diagnostic=(kwargs.get("display_metadata") or {}).get("notification_category") == "diagnostic")
         _run_prompt_submit(rid, sid, session, text, **kwargs)
     except Exception as exc:
         _notif_log_failure(what, exc)
@@ -374,7 +377,12 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             if not events:
                 continue
             task = _kb.get_task(conn, sub["task_id"])
-            texts.extend(t for t in (_format_kanban_event_text(sub, task, ev, slug) for ev in events) if t)
+            from gateway.kanban_watchers_notifier import diagnostic_event
+            from gateway.warning_notifications import DiagnosticText
+            for ev in events:
+                text = _format_kanban_event_text(sub, task, ev, slug)
+                if text:
+                    texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
             if task and getattr(task, "status", "") == "archived":
@@ -412,6 +420,11 @@ def _collect_kanban_notifications(session: dict) -> list:
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:
+    with _session_profile_runtime_scope(session):
+        _notif_poll_kanban_scoped(sid, session)
+
+
+def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
     """One kanban poll: emit new texts, buffer them, and run the buffered batch as a turn if idle. Events are
     cursor-claimed (never re-queued), so they wait in the buffer instead of dropping the agent turn."""
     try:
@@ -420,15 +433,24 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
         _notif_log_failure("kanban notification poll failed", exc)
         texts = []
     for text in texts:
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        from gateway.warning_notifications import DiagnosticText, render_notification
+        render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": text}),
+                            platform="tui", diagnostic=isinstance(text, DiagnosticText))
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
         return
     with session["history_lock"]:
-        batch, session["_kanban_pending"] = list(session.get("_kanban_pending") or []), []
+        pending = session.get("_kanban_pending") or []
+        from gateway.warning_notifications import DiagnosticText, warning_notifications_enabled
+        split = not warning_notifications_enabled("tui")
+        diagnostic = split and isinstance(pending[0], DiagnosticText)
+        batch = [text for text in pending if not split or isinstance(text, DiagnosticText) == diagnostic]
+        session["_kanban_pending"] = [text for text in pending if split and isinstance(text, DiagnosticText) != diagnostic]
     with contextlib.suppress(Exception):
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch), "kanban notification dispatch failed")
+        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
+                      "kanban notification dispatch failed",
+                      **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
 
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
@@ -438,6 +460,9 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         return
     kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
               if evt.get("type") == "async_delegation" else {})
+    from agent.notification_presentation import diagnostic_process_event
+    if diagnostic_process_event(evt):
+        kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
     try:
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
     except Exception:
@@ -484,7 +509,10 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         from tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
         display_text = (async_delegation_display_text(evt) if is_delegation
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
-        _emit("status.update", sid, {"kind": "process", "text": display_text})
+        from agent.notification_presentation import diagnostic_process_event
+        from gateway.warning_notifications import render_notification
+        render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": display_text}),
+                            platform="tui", diagnostic=diagnostic_process_event(evt))
         emitted.add(dedup_key)
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
@@ -589,7 +617,9 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     try:
         started = _run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
                                      image_paths=[], terminal_callback=terminal_receipt,
-                                     turn_author=claimed.get("author") or None)
+                                     turn_author=claimed.get("author") or None,
+                                     **({"display_metadata": {"notification_category": "diagnostic"}}
+                                        if claimed.get("notification_category") == "diagnostic" else {}))
     except Exception as exc:
         _notif_release_turn(session)
         terminal_receipt({"status": "failed", "error": str(exc)})
@@ -630,6 +660,11 @@ def _poll_bot_live_delivery_guarded(sid: str, session: dict, now: float) -> None
 
 
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
+    with _session_profile_runtime_scope(session):
+        _notification_poller_scoped_loop(stop_event, sid, session)
+
+
+def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     """Daemon thread (started by _init_session()) that drains the process-global completion_queue for this session
     (ownership routing: _notif_handle_event) and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
     delivery path for platform="tui" rows.

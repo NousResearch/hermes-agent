@@ -233,10 +233,16 @@ def cmd_info(name: str) -> None:
     console.print()
 
 
-def cmd_validate(path: str, as_json: bool = False) -> None:
-    """Catalog-admission validation of a plugin directory (the CI gate); exits 0/1."""
+def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -> None:
+    """Catalog-admission validation of a plugin directory (the CI gate); exits 0/1. *install_deps*
+    installs the declared Python deps first so the capability probe imports what an install would."""
     from hermes_cli.plugin_validate import validate_plugin_dir
     from hermes_cli.plugins_cmd import _console
+    if install_deps:
+        from hermes_cli.plugin_python_deps import install_for_plugin_dir
+        outcome = install_for_plugin_dir(Path(path))
+        if outcome.status in ("failed", "invalid"):
+            print(outcome.message, file=sys.stderr)
     report = validate_plugin_dir(Path(path))
     if as_json:
         print(json.dumps(report.to_dict(), indent=2))

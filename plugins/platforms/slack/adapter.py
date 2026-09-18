@@ -3276,8 +3276,8 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]]) -> SendResult:
         """Post ``notice`` (prefixed by the caption) in place of a failed media delivery; the
         host-local path is never echoed into chat."""
-        text = f"{caption}\n{notice}" if caption else notice
-        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+        return await self.emit_media_warning(chat_id, notice, caption=caption,
+                                             reply_to=reply_to, metadata=metadata, shown_metadata=metadata)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,

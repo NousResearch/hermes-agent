@@ -2175,7 +2175,8 @@ _PLUGIN_ACTIONS = {
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),
-    "validate": lambda args: _catalog().cmd_validate(args.path, as_json=getattr(args, "json", False)),
+    "validate": lambda args: _catalog().cmd_validate(
+        args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
     "update": lambda args: cmd_update(args.name),
     "remove": lambda args: cmd_remove(args.name),
     "rm": lambda args: cmd_remove(args.name),

@@ -7,8 +7,10 @@ import {
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
+  findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
-  spliceRegistrySessionRows
+  spliceRegistrySessionRows,
+  tagRegistrySessionResponse
 } from './profile-session-routing'
 
 test('remote sidebar slices all follow the selected profile', () => {
@@ -300,6 +302,46 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
   )
 })
 
+test('registry-pinned session responses retain their owning connection', () => {
+  const sidebar = tagRegistrySessionResponse(
+    '/api/profiles/sessions/sidebar?recents_profile=default',
+    {
+      recents: { sessions: [{ id: 'remote-chat', profile: 'default' }] },
+      cron: { sessions: [{ id: 'remote-cron', profile: 'default' }] },
+      messaging: { sessions: [] }
+    },
+    'test-amnezia'
+  ) as any
+
+  assert.equal(sidebar.recents.sessions[0].connection_id, 'test-amnezia')
+  assert.equal(sidebar.cron.sessions[0].connection_id, 'test-amnezia')
+
+  const aggregate = tagRegistrySessionResponse(
+    '/api/profiles/sessions?profile=all',
+    { sessions: [{ id: 'remote-profile-chat', profile: 'research' }] },
+    'test-amnezia'
+  ) as any
+
+  assert.equal(aggregate.sessions[0].connection_id, 'test-amnezia')
+
+  const single = tagRegistrySessionResponse(
+    '/api/sessions/remote-chat?profile=default',
+    { id: 'remote-chat', profile: 'default' },
+    'test-amnezia'
+  ) as any
+
+  assert.equal(single.connection_id, 'test-amnezia')
+})
+
+test('registry response ownership tagging ignores non-session payloads and transcript messages', () => {
+  const status = { ok: true }
+  const messages = { messages: [{ id: 'message-1' }], session_id: 'remote-chat' }
+
+  assert.equal(tagRegistrySessionResponse('/api/status', status, 'test-amnezia'), status)
+  assert.equal(tagRegistrySessionResponse('/api/sessions/remote-chat/messages', messages, 'test-amnezia'), messages)
+  assert.equal((messages.messages[0] as any).connection_id, undefined)
+})
+
 test('registry sources: an older shared host without the aggregator falls back to its flat list', async () => {
   const calls: string[] = []
 
@@ -373,4 +415,44 @@ test('splice: registry rows dedupe by id and extend per-profile totals', () => {
   assert.equal(totals['hermes-claude'], 1)
   assert.equal(totals.default, 2) // untagged registry row counts under default
   assert.equal(totals.work, 1) // deduped row does not double-count
+})
+
+test('finds the remote owner profile for a hint-less session read (#85834)', async () => {
+  const owner = await findRemoteOwnerProfileForSession('sess-remote', ['vps-a', 'vps-b'], async profile => {
+    if (profile === 'vps-b') {
+      return { sessions: [{ id: 'sess-remote' }] } as never
+    }
+
+    return { sessions: [{ id: 'other' }] } as never
+  })
+
+  assert.equal(owner, 'vps-b')
+})
+
+test('remote owner lookup matches a compression lineage root id too', async () => {
+  const owner = await findRemoteOwnerProfileForSession('root-1', ['vps-a'], async () => {
+    return { sessions: [{ id: 'tip-2', _lineage_root_id: 'root-1' }] } as never
+  })
+
+  assert.equal(owner, 'vps-a')
+})
+
+test('remote owner lookup returns null when no remote lists the id or remotes fail', async () => {
+  const missing = await findRemoteOwnerProfileForSession('sess-x', ['vps-a'], async () => {
+    return { sessions: [{ id: 'other' }] } as never
+  })
+
+  assert.equal(missing, null)
+
+  const dead = await findRemoteOwnerProfileForSession('sess-x', ['vps-a'], async () => {
+    throw new Error('remote unavailable')
+  })
+
+  assert.equal(dead, null)
+
+  const noRemotes = await findRemoteOwnerProfileForSession('sess-x', [], async () => {
+    throw new Error('never called')
+  })
+
+  assert.equal(noRemotes, null)
 })

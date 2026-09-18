@@ -5,6 +5,7 @@ from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 from hermes_cli import setup as setup_mod
+from hermes_cli import setup_migration
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +26,7 @@ class TestOfferOpenclawMigration:
         script.write_text("# placeholder")
         with (
             patch("hermes_cli.setup.Path.home", return_value=tmp_path),
-            patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            patch.object(setup_migration, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=False),
         ):
             assert setup_mod._offer_openclaw_migration(tmp_path / ".hermes") is False
@@ -57,7 +58,7 @@ class TestOfferOpenclawMigration:
 
         with (
             patch("hermes_cli.setup.Path.home", return_value=tmp_path),
-            patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            patch.object(setup_migration, "_OPENCLAW_SCRIPT", script),
             # Both prompts answered Yes: preview offer + proceed confirmation
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
@@ -115,7 +116,7 @@ class TestOfferOpenclawMigration:
 
         with (
             patch("hermes_cli.setup.Path.home", return_value=tmp_path),
-            patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            patch.object(setup_migration, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
             patch(
@@ -219,7 +220,7 @@ class TestGetSectionConfigSummary:
 
     def test_model_returns_none_without_api_key(self):
         with patch.object(setup_mod, "get_env_value", return_value=""):
-            result = setup_mod._get_section_config_summary({}, "model")
+            result = setup_migration._get_section_config_summary({}, "model")
         assert result is None
 
 
@@ -242,7 +243,7 @@ class TestGetSectionConfigSummary:
             return "sk-ant-oat01-xxx" if key == "CLAUDE_CODE_OAUTH_TOKEN" else ""
 
         with patch.object(setup_mod, "get_env_value", side_effect=env_side):
-            result = setup_mod._get_section_config_summary({}, "model")
+            result = setup_migration._get_section_config_summary({}, "model")
         assert result is None
 
 

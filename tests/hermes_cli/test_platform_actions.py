@@ -39,6 +39,17 @@ def _runner_with(adapters: dict):
     return patch("gateway.run._gateway_runner_ref", lambda: runner)
 
 
+def _multiplex_runner_with(*, default: dict, profiles: dict, active_profile: str = "default"):
+    """A runner using the REAL GatewayAuthorizationMixin resolution ladder."""
+    from gateway.authz_mixin import GatewayAuthorizationMixin
+
+    runner = GatewayAuthorizationMixin.__new__(GatewayAuthorizationMixin)
+    runner.adapters = default
+    runner._profile_adapters = profiles
+    runner._active_profile_name = lambda: active_profile
+    return patch("gateway.run._gateway_runner_ref", lambda: runner)
+
+
 def _telegram_adapter(connected=True):
     a = MagicMock()
     a.platform = Platform.TELEGRAM
@@ -262,6 +273,49 @@ class TestVerbRouting:
                 actions.add_reaction("discord", "not-a-number", "456", "x")
             )
         assert result["error"] == "invalid_argument"
+
+
+class TestMultiplexProfileRouting:
+    """A plugin acting during a secondary profile's turn must act through THAT
+    profile's adapter, never the default profile's — the fail-closed contract
+    of GatewayAuthorizationMixin._authorization_adapter (#85245)."""
+
+    def test_secondary_profile_routes_to_its_own_adapter_not_default(self):
+        actions = PlatformActions("p")
+        default_adapter = _telegram_adapter()
+        team_b_adapter = _telegram_adapter()
+        with (
+            _grant(True),
+            _multiplex_runner_with(
+                default={Platform.TELEGRAM: default_adapter},
+                profiles={"team-b": {Platform.TELEGRAM: team_b_adapter}},
+            ),
+            patch("hermes_cli.profiles.get_active_profile_name", return_value="team-b"),
+        ):
+            result = asyncio.run(actions.add_reaction("telegram", "1", "2", "x"))
+        assert result["ok"] is True
+        team_b_adapter._set_reaction.assert_awaited_once()
+        default_adapter._set_reaction.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "resolver",
+        [
+            {"return_value": "team-b"},              # stamped profile, no registry entry
+            {"side_effect": RuntimeError("boom")},  # profile resolution itself fails
+        ],
+        ids=["no-registry-entry", "resolution-error"],
+    )
+    def test_unresolvable_profile_fails_closed_never_default_bot(self, resolver):
+        actions = PlatformActions("p")
+        default_adapter = _telegram_adapter()
+        with (
+            _grant(True),
+            _multiplex_runner_with(default={Platform.TELEGRAM: default_adapter}, profiles={}),
+            patch("hermes_cli.profiles.get_active_profile_name", **resolver),
+        ):
+            result = asyncio.run(actions.add_reaction("telegram", "1", "2", "x"))
+        assert result["error"] == "adapter_not_registered"
+        default_adapter._set_reaction.assert_not_awaited()
 
 
 class TestPluginContextWiring:

@@ -1,10 +1,15 @@
 'use client'
 
+import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FC, useCallback, useEffect, useMemo, useState } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { createContext, type FC, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Button } from '@/components/ui/button'
+import { CardStack, type CardStackAction } from '@/components/ui/card-stack'
+import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
   DialogContent,
@@ -16,107 +21,221 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AlertCircle, ChevronDown, Loader2 } from '@/lib/icons'
+import { ChevronDown, Loader2 } from '@/lib/icons'
+import { releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
+import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
 import {
+  answerApproval,
   type ApprovalRequest,
   clearApprovalRequest,
-  registerApprovalInlineAnchor,
   replayPendingApproval,
-  sessionApprovalInlineVisible,
-  sessionApprovalRequest
+  sessionApprovalRequests,
+  sessionApprovalStackSize
 } from '@/store/prompts'
+import { setToolDisclosureOpen } from '@/store/tool-view'
 
-import type { ToolPart } from './fallback-model'
+import { isApprovalActivity } from './approval-activity'
+import { toolEntryDisclosureId } from './fallback-model/targets'
+import { isToolCallPart, summarizeToolRun } from './run-summary'
 
-// Inline approval control. Rendered as a compact button strip
-// under the pending tool row that raised the approval (the row already shows
-// the command, so the strip deliberately doesn't repeat it) instead of as a
-// modal overlay.
-//
-// Binding is POSITIONAL, not command-matched: the desktop `tool.start` payload
-// carries no structured args (only tool_id/name/context — see
-// tui_gateway/server.py::_on_tool_start), so we cannot join the approval to the
-// row by command string. But `approval.request` only ever fires from the
-// `terminal` / `execute_code` guards and the agent thread blocks on exactly one
-// approval at a time, so the single pending row of those tools IS the row that
-// raised it. The command/description text comes from `$approvalRequest` (the
-// event payload), which is the only place that data reliably exists.
-export const APPROVAL_TOOLS = new Set(['terminal', 'execute_code'])
-
-// Canonical gateway choices (ui-tui/src/components/prompts.tsx).
 type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
+export const ApprovalPlacementContext = createContext<'inline' | 'floating'>('inline')
 
-export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
-  // The tool row lives in whichever session's transcript rendered it — read
-  // THAT session's approval (works for the primary and every tile).
-  const sessionId = useStore(useSessionView().$runtimeId)
-  const $request = useMemo(() => sessionApprovalRequest(sessionId), [sessionId])
-  const request = useStore($request)
-
-  if (!request || !APPROVAL_TOOLS.has(part.toolName)) {
-    return null
-  }
-
-  return <InlineApprovalBar request={request} />
-}
-
-const InlineApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
-  useEffect(() => registerApprovalInlineAnchor(request.sessionId), [request.sessionId])
-
-  return <ApprovalBar request={request} surface="inline" />
-}
-
-export const PendingApprovalFallback: FC = () => {
+// One transcript-owned host for the session. Execution rows never mount,
+// register or re-home this queue, including the first delayed tool.start.
+export const PendingApprovalStack: FC = () => {
   const { t } = useI18n()
+  const placement = useContext(ApprovalPlacementContext)
   const sessionId = useStore(useSessionView().$runtimeId)
-  const $request = useMemo(() => sessionApprovalRequest(sessionId), [sessionId])
-  const $inlineVisible = useMemo(() => sessionApprovalInlineVisible(sessionId), [sessionId])
-  const request = useStore($request)
-  const inlineVisible = useStore($inlineVisible)
-
-  if (!request || inlineVisible) {
-    return null
-  }
+  const requests = useStore(useMemo(() => sessionApprovalRequests(sessionId), [sessionId]))
+  const total = useStore(useMemo(() => sessionApprovalStackSize(sessionId), [sessionId]))
+  const reduced = useReducedMotion()
 
   return (
-    <div
-      className="pointer-events-none absolute left-1/2 z-30 w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2"
-      data-slot="tool-approval-fallback"
-      style={{ bottom: 'calc(var(--composer-measured-height) + 0.875rem)' }}
+    <motion.section
+      animate={{ paddingBlock: requests.length ? 8 : 0 }}
+      aria-label={t.assistant.approval.jumpToApproval}
+      className={cn(
+        'min-w-0',
+        placement === 'floating' ? 'sticky bottom-4 z-10 mt-auto w-full max-w-xl self-center' : 'w-full max-w-xl'
+      )}
+      data-approval-placement={placement}
+      data-approval-stack=""
+      data-slot="tool-approval-stack"
+      initial={false}
+      transition={reduced || requests.length ? { duration: 0 } : { duration: 0.22, ease: 'easeInOut' }}
     >
-      <div className="pointer-events-auto rounded-xl border border-primary/30 bg-(--ui-chat-surface-background) px-3 py-2 shadow-lg backdrop-blur-xl [-webkit-backdrop-filter:blur(1rem)]">
-        <div className="flex min-w-0 items-center gap-2 text-sm text-primary">
-          <AlertCircle className="size-4 shrink-0" />
-          <span className="shrink-0 font-medium">{t.assistant.approval.jumpToApproval}</span>
-          {request.description && (
-            <span className="min-w-0 truncate text-(--ui-text-tertiary)">{request.description}</span>
-          )}
-        </div>
-        <ApprovalBar request={request} surface="floating" />
-      </div>
-    </div>
+      <ApprovalActivity floating={placement === 'floating'} visible={requests.length > 0} />
+      <ApprovalQueue floating={placement === 'floating'} requests={requests} total={total} />
+    </motion.section>
   )
 }
 
-const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
+function ApprovalActivity({ floating, visible }: { floating: boolean; visible: boolean }) {
+  const { t } = useI18n()
+  const reduced = useReducedMotion()
 
-const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline' }> = ({ request, surface }) => {
+  const summary = useAuiState(state => {
+    if (!visible) {
+      return ''
+    }
+
+    const start = state.thread.messages.findLastIndex(message => message.role === 'user')
+
+    const tools = state.thread.messages
+      .slice(start + 1)
+      .filter(message => message.role === 'assistant')
+      .flatMap(message => message.content.filter(isToolCallPart).filter(isApprovalActivity))
+
+    return tools.length
+      ? summarizeToolRun(
+          tools,
+          tools.some(tool => tool.result === undefined)
+        )
+      : ''
+  })
+
+  const disclosureIds = useAuiState(state => {
+    if (!visible) {
+      return ''
+    }
+
+    const start = state.thread.messages.findLastIndex(message => message.role === 'user')
+
+    return state.thread.messages
+      .slice(start + 1)
+      .filter(message => message.role === 'assistant')
+      .flatMap(message =>
+        message.content
+          .filter(isToolCallPart)
+          .filter(isApprovalActivity)
+          .map(tool => toolEntryDisclosureId(message.id, tool))
+      )
+      .join('\n')
+  })
+
+  return (
+    <AnimatePresence initial={false}>
+      {visible && (
+        <motion.div
+          animate={{ height: 'auto', opacity: 1 }}
+          className="overflow-hidden"
+          exit={{ height: 0, opacity: 0 }}
+          initial={{ height: 0, opacity: 0 }}
+          key="activity"
+          transition={{ duration: reduced ? 0 : 0.22, ease: 'easeInOut' }}
+        >
+          <div
+            className={cn('mb-1 min-w-0', floating && 'rounded bg-(--ui-chat-surface-background)')}
+            data-approval-activity=""
+            data-glass-opaque={floating ? '' : undefined}
+            data-tool-summary=""
+          >
+            <ScaffoldRow
+              onToggle={
+                disclosureIds
+                  ? () => {
+                      for (const id of disclosureIds.split('\n')) {
+                        setToolDisclosureOpen(id, true)
+                      }
+                    }
+                  : undefined
+              }
+              open={false}
+            >
+              <span className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>{summary || t.assistant.approval.jumpToApproval}</span>
+            </ScaffoldRow>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
+async function sendApproval(request: ApprovalRequest, choice: ApprovalChoice) {
+  const gateway = $gateway.get()
+
+  if (!gateway) {
+    throw new Error('Gateway disconnected')
+  }
+
+  if (
+    !sessionApprovalRequests(request.sessionId)
+      .get()
+      .some(item => item.requestId === request.requestId)
+  ) {
+    return
+  }
+
+  await answerApproval(gateway, request, choice)
+  triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
+  clearApprovalRequest(request.sessionId, request.requestId)
+  void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
+}
+
+export function ApprovalQueue({
+  requests,
+  total,
+  floating = false
+}: {
+  requests: ApprovalRequest[]
+  total: number
+  floating?: boolean
+}) {
+  const { t } = useI18n()
+
+  return (
+    <CardStack
+      getKey={request => request.requestId ?? 'legacy'}
+      items={requests}
+      onSwipe={(request, _side, action) => {
+        void action
+          .depart(() => sendApproval(request, 'deny'))
+          .catch(error => {
+            releaseApprovalKey()
+            notifyError(error, t.assistant.approval.sendFailed)
+          })
+      }}
+      surfaceClassName={cn(
+        'rounded-xl border bg-(--ui-chat-surface-background)',
+        floating ? 'border-(--stroke-nous) shadow-nous' : 'border-(--ui-stroke-secondary)'
+      )}
+      swipeDirections={['left']}
+    >
+      {(request, action) => (
+        <ApprovalCard
+          position={total - requests.length + requests.indexOf(request) + 1}
+          request={request}
+          stack={action}
+          total={total}
+        />
+      )}
+    </CardStack>
+  )
+}
+
+interface ApprovalCardProps {
+  request: ApprovalRequest
+  total: number
+  position: number
+  stack: CardStackAction
+}
+
+const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
   const gateway = useStore($gateway)
   const [submitting, setSubmitting] = useState<ApprovalChoice | null>(null)
+  const submittingRef = useRef(false)
   // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
   // it goes through a confirm step rather than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
-  // The pending tool row only shows a single truncated line of the command, and
-  // a pending row can't be expanded (no result yet), so the full command was
-  // previously only reachable via the "Always allow" modal. Let the user reveal
-  // it inline instead — "expand, Run" (2 clicks) rather than the modal dance.
-  const [showCommand, setShowCommand] = useState(false)
-  const busy = submitting !== null
+
+  const present = stack.active
+  const busy = submitting !== null || !present || stack.busy
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
   const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
@@ -127,146 +246,94 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
-      // Another bar (or the keyboard path) may have already resolved this
-      // approval; the map is the single source of truth, so bail if this
-      // session's request is gone.
-      if (busy || !sessionApprovalRequest(request.sessionId).get()) {
+      const pending = sessionApprovalRequests(request.sessionId).get()
+
+      if (submittingRef.current || !pending.some(item => item.requestId === request.requestId)) {
         return
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed, { action: reconnectAction() })
 
         return
       }
 
+      submittingRef.current = true
       setSubmitting(choice)
 
       try {
-        await gateway.request<{ resolved?: boolean }>('approval.respond', {
-          choice,
-          request_id: request.requestId,
-          session_id: request.sessionId ?? undefined
-        })
-        triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
-        clearApprovalRequest(request.sessionId, request.requestId)
-        void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
+        await stack.depart(() => sendApproval(request, choice))
       } catch (error) {
+        releaseApprovalKey()
         notifyError(error, copy.sendFailed)
+        submittingRef.current = false
         setSubmitting(null)
       }
     },
-    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.requestId, request.sessionId]
+    [copy.gatewayDisconnected, copy.sendFailed, gateway, request, stack]
   )
 
-  // ⌘/Ctrl+Enter → Run, Esc → Reject.
-  // While the confirm dialog is open it owns the keyboard (Esc closes it), so
-  // the strip-level shortcuts stand down to avoid denying the whole approval.
-  useEffect(() => {
-    if (confirmAlways) {
-      return
-    }
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault()
-        void respond('once')
-      } else if (event.key === 'Escape') {
-        event.preventDefault()
-        void respond('deny')
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown, true)
-
-    return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [confirmAlways, respond])
-
   return (
-    <div
-      className={cn(surface === 'inline' ? 'mt-1 ps-5' : 'mt-2')}
-      data-slot={surface === 'inline' ? 'tool-approval-inline' : 'tool-approval-actions'}
+    <article
+      aria-hidden={!present || undefined}
+      className="min-w-0"
+      data-request-id={request.requestId}
+      data-slot="tool-approval-card"
+      inert={!present}
     >
-      <div className="flex items-center gap-2.5">
-        <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
-          <Button
-            className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
-            disabled={busy}
-            onClick={() => void respond('once')}
-            size="xs"
-            variant="ghost"
-          >
-            {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
-            {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
-          </Button>
-          {hasMoreOptions && <span aria-hidden className="w-px self-stretch bg-primary/20" />}
-          {hasMoreOptions && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  aria-label={copy.moreOptions}
-                  className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
-                  disabled={busy}
-                  size="xs"
-                  variant="ghost"
-                >
-                  <ChevronDown className="size-3" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-44">
-                {allowSession && (
-                  <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
-                )}
-                {allowAlways && (
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      // Defer one tick so the menu fully unmounts before the dialog
-                      // mounts — otherwise Radix's focus-return races the dialog and
-                      // dismisses it via onInteractOutside.
-                      setTimeout(() => setConfirmAlways(true), 0)
-                    }}
-                  >
-                    {copy.alwaysAllowMenu}
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
-                  {copy.reject}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-        </div>
-
-        <Button
-          className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
-          disabled={busy}
-          onClick={() => void respond('deny')}
-          size="xs"
-          variant="ghost"
-        >
-          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
-          {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
-        </Button>
-
-        {hasCommand && (
-          <Button
-            aria-expanded={showCommand}
-            className="h-6 gap-1 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
-            onClick={() => setShowCommand(value => !value)}
-            size="xs"
-            variant="ghost"
-          >
-            {copy.command}
-            <ChevronDown className={cn('size-3 transition-transform', showCommand && 'rotate-180')} />
-          </Button>
+      <div className="flex items-center gap-2 px-2.5 pt-2 text-xs text-(--ui-text-secondary)">
+        <Codicon name="terminal" size="0.875rem" />
+        <span>{copy.command}</span>
+        {total > 1 && (
+          <span className="ml-auto text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)">
+            {position} / {total}
+          </span>
         )}
       </div>
-
-      {showCommand && hasCommand && (
-        <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground">
-          {request.command.trim()}
+      {hasCommand && (
+        <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
+          {request.command}
         </pre>
       )}
+      <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">
+        <Button data-approval-deny="" disabled={busy} onClick={() => void respond('deny')} size="sm" variant="text">
+          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
+        </Button>
+        {hasMoreOptions && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button aria-label={copy.moreOptions} disabled={busy} size="sm" variant="secondary">
+                {copy.alwaysAllowMenu}
+                <ChevronDown className="size-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-44">
+              {allowSession && (
+                <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
+              )}
+              {allowAlways && (
+                <DropdownMenuItem
+                  onSelect={() => {
+                    // Defer one tick so the menu fully unmounts before the dialog
+                    // mounts — otherwise Radix's focus-return races the dialog and
+                    // dismisses it via onInteractOutside.
+                    setTimeout(() => setConfirmAlways(true), 0)
+                  }}
+                >
+                  {copy.alwaysAllowMenu}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
+                {copy.reject}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        <Button data-approval-run="" disabled={busy} onClick={() => void respond('once')} size="sm">
+          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
+          <span className="opacity-60">↵</span>
+        </Button>
+      </div>
 
       <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
         <DialogContent className="max-w-md">
@@ -298,6 +365,6 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </article>
   )
 }

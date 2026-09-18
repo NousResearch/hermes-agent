@@ -63,6 +63,13 @@ one-off at the call site.
 - **Projects own workspace cwd.** Use Sidebar → Projects for local folders and
   worktrees; do not reintroduce a per-session/right-sidebar folder-picker flow.
 
+Profile icons and condensed profile rows offer **Open in new window** and
+**Set as default** in their existing context menus. Opening a profile creates a
+full peer window without switching the source window. The desktop default
+applies at startup and to generic new chats; explicit profile/project actions
+and profile-specific windows keep their own destinations. Changing the default
+does not move existing sessions or replace the active conversation.
+
 Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.
@@ -85,6 +92,37 @@ Menus and popovers use their own shared `shadow-md` +
 `--ui-stroke-secondary` primitive treatment. Drag affordances may use tokenized
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
+
+**Queued cards:** `CardStack` (`src/components/ui/card-stack.tsx`) consumes a live,
+keyed list, retaining the current item when more arrive. Inline and floating
+approvals and both toast placements share its gesture handling and geometry.
+The Cursor-reference treatment uses one 96%-scale silhouette 7px above the
+front, 220ms promotion, and 180ms upward clearance; no rotation or lateral throw
+on button/keyboard decisions. Consumers supply the existing surface tokens and
+own the exact-request response. Gestures never grant approval. Departing cards
+are immediately inert; toasts can expand to the full live list. One persistent
+transcript-level host owns approvals, independent of tool rows and assistant
+message boundaries. Prepared approvals can precede tool.start: execution must
+not relocate or remount the stack. While approvals remain, a real activity line
+above the cards changes from awaiting approval to current-turn command status;
+represented execution rows appear only when explicitly expanded. Empty text
+continuations must not introduce paragraph gaps. Keep inline approvals beside
+the conversation and let genuine content scroll normally; do not inject padding
+or write scroll offsets to pin the decision. Preview this order with delayed
+start and completion events, not pre-created tool rows. Final approval removal
+retires both the painted card and its measured layout footprint; restoring tool
+rows must not insert their full height before the outgoing stack can settle.
+No completion callback may clear the measurement of a newly arrived card.
+Reduced motion settles immediately without retaining empty clearance.
+
+## Window glass
+
+Glass defaults to **29% Tint, Sidebar only** in both light and dark appearances.
+Fade defaults to zero so the content column and text stay opaque. Native frost
+keeps its platform/appearance defaults. Explicitly saved settings take precedence;
+changing defaults must not overwrite a user's existing choices. The shared
+`apps/shared/src/translucency.ts` resolver owns these defaults for both the
+renderer and Electron's first window paint.
 
 ## Stroke & color tokens
 
@@ -109,9 +147,10 @@ do **not** pass `h-*`, `px-*`, `py-*`, or icon-size overrides.
 
 **Variants:** `default` (primary), `destructive`, `secondary` (soft fill —
 the default non-primary look), `outline` (transparent + 1px inset ring, no
-fill/shadow), `ghost`, `link`, `text` (boxless quiet inline — "Cancel",
-"Clear"), `textStrong` (bold underlined inline affordance — "Change",
-"Open logs").
+fill/shadow), `ghost`, `floating` (a control loose from any surface — opaque
+popover fill + `shadow-md`, hover lifts the glyph only), `link`, `text`
+(boxless quiet inline — "Cancel", "Clear"), `textStrong` (bold underlined
+inline affordance — "Change", "Open logs").
 
 **Sizes:** `default`, `xs`, `sm`, `lg`, `inline` (flush, zero box — for buttons
 that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
@@ -139,6 +178,21 @@ Never use native HTML `title=` on buttons — unstyled, ~500ms OS delay, clashes
 with the themed `Tip`. `src/components/ui/__tests__/no-native-title.test.ts`
 fails on any `<button>` / `<Button>` that still carries `title=`.
 
+**Tooltip timing.** A hover is not a click — the cursor crosses triggers on
+the way somewhere else. `Tip` waits 200ms before the first open so a sweep
+does not flash a trail. After a tip has opened the page is warm: the next
+trigger within 300ms opens instantly. The cooldown starts on close, so a
+hover a second later waits again. Once triggered, entrance has no animation.
+Exit fades over 100ms and moves 0.125rem toward the anchor; reduced motion
+disables the exit animation. `OverflowTip` stays on its own longer delay
+(list titles must not trail while scanning). Bubbles use a 0.25rem radius.
+
+**Tooltip placement.** Choose intent through `placement`: `control` above (default), `toolbar` below, `row` to the right, and `left-rail` / `right-rail` inward. Explicit `side` and `align` override the preference. Radix flips and shifts for collisions, keeps the arrow attached, and hides detached triggers. Controls and toolbars use their owning pane as a boundary; row descriptions and rails may extend into the window. Use `boundary="viewport"` for an intentional escape. Short labels size to content; descriptions wrap within 24rem and the available space, in one rounded bubble.
+
+**Slash descriptions.** Keep autocomplete rows single-line and ellipsized, but reveal the complete catalog description to the right of the hovered row. Use the shared bounded tooltip, collision padding, and word wrapping; it must not intercept row selection. Catalog and completion producers preserve the full author-supplied description.
+
+**Model search.** Model filters and their highlighted labels treat hyphens, dots, underscores and spaces equivalently. Preserve original label spelling inside marks. The shared highlighter remains literal for other surfaces such as the command palette; model callers explicitly opt in. Model identifier search does not use dictionary spellcheck.
+
 **Keybind hints in tooltips.** On a tipped button bound to a rebindable hotkey,
 use `<TipKeybindLabel actionId="..." />` — it reads the i18n label and the
 current combo from `$bindings`. Pass `text={...}` only when the label is
@@ -151,6 +205,20 @@ Notes:
 - SVGs inherit `size-3.5` (`size-3` at `xs`). Don't re-set icon size.
 - Polymorph with `asChild` when the button must render as a link/Slot.
 
+## Badges — one component
+
+`src/components/ui/badge.tsx`. Variants: `default` (tinted primary), `muted`,
+`warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
+Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
+
+## Context-sensitive dialogs
+
+Sudo password dialogs keep the backdrop unblurred (`DialogContent`'s
+`blurBackdrop={false}`) and show the complete, selectable command before the
+password field. Long commands wrap and scroll; missing backend context is
+explicit, never inferred from another tool row. Other dialogs retain the shared
+blurred backdrop.
+
 ## Form controls
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for
@@ -160,8 +228,14 @@ Notes:
   Empty lists hide their search field.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
-  pill rows.
+  pill rows. `iconOnly` renders compact icon buttons with label tooltips and
+  accessible names; use `codiconIcon()` for Codicon options.
 - **`Switch`** (`size="xs"`) — bare, with `aria-label`. No bordered text wrapper.
+- **`FanMenu`** (`src/components/ui/fan-menu.tsx`) — one hub control that
+  fans sibling toggles out on hover: `direction` `vertical` | `horizontal`
+  (split around the hub) | `arc`. Discs are `Button` `floating` off /
+  `default` on; tips face outside the fan according to its geometry. Use it where a row of rarely
+  touched toggles is costing input width (the composer's voice controls).
 
 ## Layout
 
@@ -175,6 +249,32 @@ Notes:
   rows. Flat, flush-left; no per-row indentation that fights flush headers.
 - **No dividers between rows** unless the list genuinely needs them; prefer
   spacing. When you do need one, it's a single `--ui-stroke-tertiary` hairline.
+
+## Panel titlebars
+
+Top-edge panels extend into the native titlebar band. Their tab strips remain
+inside their own zones so tab drops, focus, and split boundaries use the same
+geometry. Panels without room beside the measured window controls place their
+tabs on a full-width row below the controls. Minimized row groups use vertical
+restore rails, including groups with multiple tabs. Sidebar buttons and shortcuts
+restore minimized or fully hidden side groups without changing the selected tab.
+Lower panels keep local headers. Empty header space moves the window;
+tabs and actions remain no-drag, with native-control space reserved from the
+existing traffic-light and Window Controls Overlay measurements.
+
+The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
+and the right-sidebar toggle sit on the right; haptics remain in settings.
+Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
+status dots after 400ms, without changing tab widths. Hints follow the same
+binding and hovered/focused-zone resolver as the number shortcuts.
+
+Tab close buttons fade the label with a content mask, not a painted gradient.
+The tab reads its surface token directly so glass tint is painted only once.
+
+Sticky user messages clip covered scrolling content, including the gap above
+them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
+Clipping follows the pinned prompt and its live height without changing layout,
+so glass and message-bubble transparency do not reveal scrolling text.
 
 ## Feedback & empty/error/loading states
 
@@ -190,6 +290,15 @@ Notes:
 - **Empty:** `EmptyState` for plain page bodies; `PanelEmpty` for overlay
   master/detail empties with an icon and action. Don't hand-roll a third
   centered empty.
+- **Confirmation:** `ConfirmDialog` is the only way we ask "are you sure". It
+  opens focused on Confirm, so `Enter` confirms and `Esc` cancels, and it owns
+  the pending → done → close beat and the inline error — a call site passes an
+  async `onConfirm` and nothing else. A third way out (e.g. "Remove from
+  sidebar" beside "Delete worktree") goes in the one `secondaryAction` slot.
+  Never `window.confirm`: it's an unstyled blocking Chromium modal. A handler
+  that wants the answer inline instead of a mounted dialog calls `confirm()`
+  from `src/store/confirm.ts`, which renders this same primitive through the
+  single `ConfirmHost` at the shell — the way `notify()` backs notifications.
 
 ## Chat, tools & boot surfaces
 
@@ -205,8 +314,52 @@ Notes:
 - Bordered surfaces in the transcript (tables, fences, callouts, attachments)
   use `--ui-stroke-tertiary`. Not `border-border` — that's the app-wide
   default and reads too hot against the thread.
+- Interactive directive chips in the composer expose their action on hover.
+  The action stays visible for a 500ms grace period while the pointer crosses
+  from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
+- Tool rows reserve destructive red for explicit failures. Missing read paths and
+  ambiguous exit-1 results use neutral notices, with details still available.
+  Errors described inside returned data are not tool failures. Expanded failures
+  show the actual explanation; supporting output keeps its normal text color.
+- Nested transcript scrollers keep their height caps and hand vertical scrolling
+  back to the thread at either edge (`overscroll-behavior-y: auto`), even when
+  their content fits. Only the outer thread contains vertical overscroll;
+  horizontal code/output boundaries may remain contained. Thinking previews
+  follow new tokens only while near the bottom, preserving the user's reading
+  position until they scroll back down.
+- Composer status groups start collapsed except todos. Progress updates and queue
+  pause/resume preserve the user's disclosure choice. Error banners meet the
+  stack's top edge without a blank padding strip. File and preview links remain
+  visible at the bottom of the stack, below the queue and all status groups.
+- Popping out a composer makes it the window's only visible composer. It keeps
+  its viewport placement while hover or keyboard focus selects a chat pane;
+  moving back into the editor retains that recipient. Drafts, attachments and
+  queues stay session-owned. Docking restores the individual pane composers.
+  In either placement, moving into a chat pane gives its editor typing focus
+  immediately and preserves its caret. Layout-only hover events and delayed
+  focus callbacks cannot replace that choice, and a live transcript selection
+  is never cleared by focus-follow. Movement within the same pane
+  must not flush React; deliberate Tab navigation and clicked controls still work.
+  An inline message edit is a typing target of its own: opening one keeps focus
+  in the edit editor, and neither its mount-time focus nor mouse movement while
+  it is open hands the caret back to the pane composer.
+  Active dictation or voice conversation pins the recipient until capture ends,
+  keeping the microphone's stop controls and shortcut attached to its owner.
+- Status-stack rows use `StatusRow` with a leading `dismiss` action, a state
+  icon and optional trailing actions. `StatusDismissButton` owns the Codicon
+  close button for previews, background tasks and queued prompts; do not swap
+  it for a trash icon or a CSS glyph. Icons and controls align to the first text
+  line, including messages with attachment metadata.
+- `status-stack.css` owns the shared columns and `0.25rem` nesting step. Rows
+  own their padding and full-width hover fill. `StatusControlRow` uses the same
+  columns for goal/loop/heartbeat details; `StatusPendingIcon` supplies the
+  dashed marker for tasks and criteria. The first row has `0.5rem` top inset.
+- Keep the rounded status card stationary, with the bounded scroll viewport
+  inside it. The outer scroll boundary uses `overscroll-behavior-y: contain`;
+  nested rosters and transcripts use `auto` so wheel input can hand off at an
+  edge without trapping it or scrolling the chat behind the stack.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
@@ -237,6 +390,10 @@ Notes:
 
 ## Motion
 
+- Visible windows keep animating when another app takes focus. Hidden/minimized
+  windows and inactive panes may pause; background polling stays focus-gated.
+- Animated integer counts reuse `AnimatedInt` in `src/components/ui/diff-count.tsx`.
+  Its spring updates the DOM directly without per-frame React renders.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
@@ -272,6 +429,11 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
+  Dimming still distinguishes session panes; sidebar navigation must not desaturate
+  the chat or transfer its active highlight to a hidden primary tab.
+- Focused and hovered chat panes both retain full color and opacity. Only panes
+  that are neither focused nor hovered recede, with 20% desaturation.
 - Register global shortcuts through the shared layer, not ad-hoc listeners.
 - One cancel gesture does one thing: cancel the active interaction, or close the
   topmost dismissable surface — never both, never the control underneath.
@@ -315,7 +477,8 @@ The detailed state contract lives in the scoped
 ## Before you add something — checklist
 
 - [ ] Reuse a primitive (`Button`, `SearchField`, `SegmentedControl`,
-      `ListRow`, `Loader`, `ErrorState`, `LogView`) instead of forking one?
+      `ListRow`, `Loader`, `ErrorState`, `LogView`, `ConfirmDialog`) instead of
+      forking one?
 - [ ] Tokens (`--ui-*`, `shadow-nous`, `--stroke-nous`) — zero raw colors /
       one-off shadows?
 - [ ] No `className` overriding a primitive's padding / size / radius / chrome?

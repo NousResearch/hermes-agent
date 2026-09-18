@@ -1,17 +1,19 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { JsonRpcGatewayError } from '@hermes/shared'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { stripAnsi } from '@/lib/ansi'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
-import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
+import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
   $composerAttachments,
@@ -26,7 +28,6 @@ import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
 import {
   $busy,
-  $connection,
   $currentCwd,
   $messages,
   $terminalBackend,
@@ -36,8 +37,9 @@ import {
   setMessages,
   setTurnStartedAt
 } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import { $sessionStates, isSessionRemote } from '@/store/session-states'
 import { clearSessionSubagents } from '@/store/subagents'
+import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
@@ -56,6 +58,7 @@ import {
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
+  durableRowIdsForRebind,
   finalizeInterruptedMessages,
   planEdit,
   planReload,
@@ -338,8 +341,8 @@ export function usePromptActions({
       options: { updateComposerAttachments?: boolean } = {}
     ): Promise<{ attachments: ComposerAttachment[]; sessionId: string }> => {
       const updateComposerAttachments = options.updateComposerAttachments ?? true
-      const remote = $connection.get()?.mode === 'remote'
       const storedSessionId = selectedStoredSessionIdRef.current
+      const remote = isSessionRemote(storedSessionId ?? sessionId)
       let liveSessionId = sessionId
       const synced: ComposerAttachment[] = []
 
@@ -428,7 +431,7 @@ export function usePromptActions({
   // image.attach_bytes.
   const eagerlyUploadAttachment = useCallback(
     async (sessionId: string, attachment: ComposerAttachment) => {
-      const remote = $connection.get()?.mode === 'remote'
+      const remote = isSessionRemote(sessionId)
 
       setComposerAttachmentUploadState(attachment.id, 'uploading')
 
@@ -490,6 +493,8 @@ export function usePromptActions({
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,
+    // Window dispatcher: exact owner + turn lease through the terminal event.
+    // A private requestGatewayForAgent wrapper released the only client at ACK.
     requestGateway,
     runtimeIdByStoredSessionIdRef,
     resumeStoredSession,
@@ -575,6 +580,14 @@ export function usePromptActions({
         return markCompleted()
       }
 
+      // The messaging service can be started from the app — offer it here
+      // instead of asking a desktop user a CLI question (desktop-17).
+      notify({
+        kind: 'error',
+        message: copy.handoff.timedOut,
+        action: { label: copy.handoff.startMessaging, onClick: () => void runGatewayRestart() }
+      })
+
       return { error: copy.handoff.timedOut, ok: false }
     },
     [activeSessionIdRef, appendSessionTextMessage, copy, requestGateway]
@@ -624,6 +637,18 @@ export function usePromptActions({
     async (audio: Blob) => {
       if (!sttEnabled) {
         throw new Error(copy.sttDisabled)
+      }
+
+      // Client-direct first: mic audio goes straight to the profile's STT
+      // provider (config + key fetched from the connected gateway), cutting
+      // the desktop→gateway audio hop. `null` = provider not client-callable
+      // (local whisper, command providers, older backend) → relay unchanged.
+      // Provider REJECTIONS surface — re-running the same request through
+      // the relay would fail identically, just slower.
+      const direct = await transcribeAudioClientDirect(audio)
+
+      if (direct !== null) {
+        return direct
       }
 
       const dataUrl = await blobToDataUrl(audio)
@@ -807,6 +832,42 @@ export function usePromptActions({
     [activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef, updateSessionState]
   )
 
+  // A hidden note that lands mid-turn must reach the model without becoming a
+  // user turn. session.steer injects it into the model's next tool result and
+  // records nothing in the transcript; a redirect would paint it as the user's
+  // own bubble and store it as one.
+  const injectHiddenPrompt = useCallback(
+    async (rawText: string): Promise<boolean> => {
+      const text = sanitizeComposerInput(rawText).trim()
+      const sessionId = activeSessionIdRef.current
+
+      if (!text || !sessionId) {
+        return false
+      }
+
+      const send = async (id: string): Promise<boolean> => {
+        const response = await requestGateway<SessionRedirectResponse>('session.steer', { session_id: id, text })
+
+        return response?.status === 'queued'
+      }
+
+      try {
+        const { result } = await withSessionNotFoundResume(sessionId, selectedStoredSessionIdRef.current, send, {
+          requestGateway,
+          onRecovered: recoveredId => {
+            activeSessionIdRef.current = recoveredId
+            setActiveSessionId(recoveredId)
+          }
+        })
+
+        return result
+      } catch {
+        return false
+      }
+    },
+    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
+  )
+
   // After a durable rewind the surviving bubbles' cached rowIds are stale (the
   // gateway re-inserted the kept prefix as new SQLite rows). Rebind them to the
   // authoritative post-rewrite ids so the NEXT rewind/edit/regenerate doesn't
@@ -834,7 +895,8 @@ export function usePromptActions({
       truncateMessageId: string | undefined,
       interruptFirst: boolean,
       truncateRowId?: number,
-      sourceText?: string
+      sourceText?: string,
+      rebindRowIds?: readonly number[]
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -851,7 +913,8 @@ export function usePromptActions({
           }
         },
         truncateRowId,
-        sourceText
+        sourceText,
+        rebindRowIds
       ),
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
@@ -866,7 +929,8 @@ export function usePromptActions({
         return
       }
 
-      const plan = planReload($messages.get(), parentId)
+      const messages = $messages.get()
+      const plan = planReload(messages, parentId)
 
       if (!plan) {
         return
@@ -883,17 +947,22 @@ export function usePromptActions({
           plan.truncateMessageId,
           false,
           plan.truncateRowId,
-          plan.sourceText
+          plan.sourceText,
+          durableRowIdsForRebind(messages)
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
       } catch (err) {
+        // Same rollback as restoreToMessage below: applyReloadOptimistic
+        // already hid/truncated the transcript, and leaving that in place
+        // after a rejected submit is what blanked the chat (#95745).
         updateSessionState(sessionId, state => ({
           ...state,
           busy: false,
           awaitingResponse: false,
           turnLive: false,
-          turnStartedAt: null
+          turnStartedAt: null,
+          messages
         }))
         notifyError(err, copy.regenerateFailed)
       }
@@ -951,7 +1020,8 @@ export function usePromptActions({
           plan.truncateMessageId,
           interruptFirst,
           plan.truncateRowId,
-          plan.sourceText
+          plan.sourceText,
+          durableRowIdsForRebind(messages)
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1036,7 +1106,8 @@ export function usePromptActions({
           plan.truncateMessageId,
           interruptFirst,
           plan.truncateRowId,
-          plan.sourceText
+          plan.sourceText,
+          durableRowIdsForRebind(messages)
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1069,7 +1140,8 @@ export function usePromptActions({
                 retryPlan.truncateMessageId,
                 false,
                 retryPlan.truncateRowId,
-                retryPlan.sourceText
+                retryPlan.sourceText,
+                durableRowIdsForRebind(refreshed)
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1135,6 +1207,7 @@ export function usePromptActions({
     executeSlashCommand,
     handleThreadMessagesChange,
     handoffSession,
+    injectHiddenPrompt,
     reloadFromMessage,
     restoreToMessage,
     redirectPrompt,

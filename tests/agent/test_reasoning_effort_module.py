@@ -16,7 +16,7 @@ supported vocabulary. The policy under test:
 import pytest
 
 from agent.reasoning_effort import (
-    CODEX_RESPONSES_EFFORTS,
+    CODEX_GPT56_EFFORTS,
     EFFORT_LADDER,
     GLM52_EFFORTS,
     GLM52_OVERRIDES,
@@ -112,13 +112,15 @@ class TestClampEffort:
 
 class TestKimiVocabulary:
     @pytest.mark.parametrize(
-        "model", ["k3", "kimi-k3", "kimi-k3-cot", "moonshotai/kimi-k3"]
+        "model",
+        ["k3", "kimi-k3", "kimi-k3-cot", "moonshotai/kimi-k3", "k3-256k"],
     )
     def test_k3_slugs(self, model):
         assert kimi_supported_efforts(model) is KIMI_K3_EFFORTS
 
     @pytest.mark.parametrize(
-        "model", ["kimi-k2.6", "moonshotai/kimi-k2-0905", "kimi-latest", None]
+        "model",
+        ["kimi-k2.6", "moonshotai/kimi-k2-0905", "kimi-latest", "mk3000", None],
     )
     def test_k2_era_slugs(self, model):
         assert kimi_supported_efforts(model) is KIMI_K2_EFFORTS
@@ -135,8 +137,41 @@ class TestGlm52Vocabulary:
 
 class TestCodexVocabulary:
     def test_minimal_and_ultra(self):
-        assert clamp_effort("minimal", CODEX_RESPONSES_EFFORTS) == "low"
-        assert clamp_effort("ultra", CODEX_RESPONSES_EFFORTS) == "max"
+        assert clamp_effort("minimal", CODEX_GPT56_EFFORTS) == "low"
+        assert clamp_effort("ultra", CODEX_GPT56_EFFORTS) == "max"
+
+    def test_per_model_max_support(self):
+        """Live-verified (Aug 2026, #68365): 'max' is gpt-5.6-only — gpt-5.5
+        rejects it ("Supported values are: 'none','low','medium','high',
+        'xhigh'"); 'minimal' is rejected by both generations."""
+        from agent.reasoning_effort import (
+            CODEX_GPT56_EFFORTS,
+            CODEX_LEGACY_EFFORTS,
+            codex_supported_efforts,
+        )
+
+        assert codex_supported_efforts("gpt-5.6") is CODEX_GPT56_EFFORTS
+        assert codex_supported_efforts("gpt-5.6-codex") is CODEX_GPT56_EFFORTS
+        assert codex_supported_efforts("gpt-5.5") is CODEX_LEGACY_EFFORTS
+        assert codex_supported_efforts("o5-pro") is CODEX_LEGACY_EFFORTS
+        # The consequential clamps:
+        assert clamp_effort("max", CODEX_GPT56_EFFORTS) == "max"
+        assert clamp_effort("max", CODEX_LEGACY_EFFORTS) == "xhigh"
+        assert clamp_effort("ultra", CODEX_LEGACY_EFFORTS) == "xhigh"
+        assert clamp_effort("minimal", CODEX_LEGACY_EFFORTS) == "low"
+
+    @pytest.mark.parametrize(
+        "model",
+        ["gpt-daybreak-blue-latest", "gpt-daybreak-blue-latest-900k"],
+    )
+    def test_daybreak_alias_uses_gpt56_max_support(self, model):
+        """Daybreak Blue is a GPT-5.6 Sol alias, so its base and 900k picker
+        slugs must preserve Sol's max reasoning level."""
+        from agent.reasoning_effort import codex_supported_efforts
+
+        supported = codex_supported_efforts(model)
+        assert clamp_effort("max", supported) == "max"
+        assert clamp_effort("ultra", supported) == "max"
 
 
 class TestRequestedEffort:

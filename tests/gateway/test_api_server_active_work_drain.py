@@ -21,6 +21,7 @@ from gateway.platforms.api_server import APIServerAdapter
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import make_restart_runner
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 # Safety net so a regression parks the executor thread forever instead of
 # hanging CI.  No assertion below depends on elapsed time.
@@ -115,7 +116,7 @@ class TestAPIServerAdapterWorkCount:
 
         assert adapter.interrupt_active_runs("gateway shutdown") == 1
 
-        agent.interrupt.assert_called_once_with("gateway shutdown")
+        agent.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
 
 class TestDrainWaitsForApiWork:
@@ -183,7 +184,7 @@ class TestDrainWaitsForApiWork:
 
         runner._interrupt_running_agents("gateway shutdown")
 
-        agent.interrupt.assert_called_once_with("gateway shutdown")
+        agent.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
     @pytest.mark.asyncio
     async def test_drain_still_waits_for_chat_cron_and_api_work(self):
@@ -374,7 +375,7 @@ class TestInterruptActiveRuns:
         adapter._active_run_agents = {"run-1": agent}
 
         assert adapter.interrupt_active_runs("gateway shutdown") == 1
-        agent.interrupt.assert_called_once_with("gateway shutdown")
+        agent.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
     def test_interrupts_each_agent_exactly_once_across_both_registries(self):
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -388,9 +389,9 @@ class TestInterruptActiveRuns:
         }
 
         assert adapter.interrupt_active_runs("gateway shutdown") == 3
-        shared.interrupt.assert_called_once_with("gateway shutdown")
-        run_only.interrupt.assert_called_once_with("gateway shutdown")
-        turn_only.interrupt.assert_called_once_with("gateway shutdown")
+        shared.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
+        run_only.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
+        turn_only.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
     def test_one_bad_agent_does_not_strand_the_others(self):
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -405,7 +406,7 @@ class TestInterruptActiveRuns:
         }
 
         assert adapter.interrupt_active_runs("gateway shutdown") == 1
-        healthy.interrupt.assert_called_once_with("gateway shutdown")
+        healthy.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
 
 class TestShutdownInterruptReachesEveryApiTurn:
@@ -445,9 +446,7 @@ class TestShutdownInterruptReachesEveryApiTurn:
 
                     runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
 
-                    agent.interrupt.assert_called_once_with(
-                        _INTERRUPT_REASON_GATEWAY_SHUTDOWN
-                    )
+                    agent.interrupt.assert_called_once_with(_INTERRUPT_REASON_GATEWAY_SHUTDOWN, tool_reason="gateway shutdown")
                     response = await asyncio.wait_for(request, _TURN_UNBLOCK_TIMEOUT)
                     assert response.status == 200
         finally:
@@ -487,9 +486,7 @@ class TestShutdownInterruptReachesEveryApiTurn:
 
                     runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
 
-                    agent.interrupt.assert_called_once_with(
-                        _INTERRUPT_REASON_GATEWAY_SHUTDOWN
-                    )
+                    agent.interrupt.assert_called_once_with(_INTERRUPT_REASON_GATEWAY_SHUTDOWN, tool_reason="gateway shutdown")
                     response = await asyncio.wait_for(request, _TURN_UNBLOCK_TIMEOUT)
                     assert response.status == 200
                     await asyncio.wait_for(response.text(), _TURN_UNBLOCK_TIMEOUT)
@@ -520,9 +517,9 @@ class TestShutdownSettleWindow:
         which it always is for API turns — and the post-interrupt tool kill
         lands on a turn that was asked to stop microseconds earlier.
         """
-        import tools.browser_tool as _bt
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
+        import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the drain-timeout path
@@ -538,7 +535,8 @@ class TestShutdownSettleWindow:
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", _spy_kill_all)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
-        monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+        monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", lambda: None)
+        monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         with patch("gateway.status.remove_pid_file"), \
              patch("gateway.status.write_runtime_status"), \
@@ -564,9 +562,9 @@ class TestShutdownSettleWindow:
         and previously went straight to the tool-subprocess kill. The settle
         loop must re-signal when API work is still live at exit.
         """
-        import tools.browser_tool as _bt
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
+        import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01
@@ -576,7 +574,8 @@ class TestShutdownSettleWindow:
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 0)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)
-        monkeypatch.setattr(_bt, "cleanup_all_browsers", lambda: None)
+        monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", lambda: None)
+        monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         # Accelerate the loop clock: each time() call advances 1s of virtual
         # time, so the 5s settle deadline expires after a handful of polls

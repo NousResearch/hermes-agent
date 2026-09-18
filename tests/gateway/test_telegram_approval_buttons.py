@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.platforms.base import unauthorized_action_notice
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -15,36 +17,6 @@ _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
-
-# ---------------------------------------------------------------------------
-# Minimal Telegram mock so TelegramAdapter can be imported
-# ---------------------------------------------------------------------------
-def _ensure_telegram_mock():
-    """Wire up the minimal mocks required to import TelegramAdapter."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
-    mod = MagicMock()
-    mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
-    # Provide real exception classes so ``except (NetworkError, ...)`` in
-    # connect() doesn't blow up under xdist when this mock leaks.
-    mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, mod)
-    sys.modules.setdefault("telegram.error", mod.error)
-
-
-_ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
@@ -323,7 +295,7 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         query.answer.assert_called_once()
-        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
 
@@ -353,7 +325,7 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         query.answer.assert_called_once()
-        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
         assert runner.last_source is not None

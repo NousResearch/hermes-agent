@@ -109,13 +109,22 @@ class TestTokenHubEffortVocabulary:
 
 
 class TestCodexUltraForEveryModel:
-    def test_ultra_maps_to_max_for_non_gpt56_models(self):
+    def test_ultra_never_leaks_and_respects_per_model_ceiling(self):
+        """'ultra' must never reach the Codex wire. Live-verified vocabulary
+        (#68365): gpt-5.6 accepts max (its ceiling), gpt-5.5/o5 do not —
+        their ceiling is xhigh."""
         transport = get_transport("codex_responses")
-        for model in ("gpt-5.6-codex", "o5-pro", "some-responses-model"):
+        expected = {
+            "gpt-5.6-codex": "max",
+            "o5-pro": "xhigh",
+            "gpt-5.5": "xhigh",
+            "some-responses-model": "xhigh",
+        }
+        for model, wire in expected.items():
             kw = transport.build_kwargs(
                 model=model,
                 messages=[{"role": "user", "content": "hi"}],
                 tools=[],
                 reasoning_config={"enabled": True, "effort": "ultra"},
             )
-            assert kw["reasoning"]["effort"] == "max", model
+            assert kw["reasoning"]["effort"] == wire, model

@@ -1910,7 +1910,7 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
                     "Docs: https://hermes-agent.nousresearch.com/docs ; "
                     "interpreter ~/.hermes/hermes-agent/venv/bin/python ; "
                     "source github.com/NousResearch/hermes-agent ; mail hermes-agent@example.com ; "
-                    "skill_view(name='hermes-agent') ; built by hermes-agent."
+                    "skill_view(name='hermes-agent') ; hermes-agent's docs ; built by hermes-agent."
                 ),
             },
             {"role": "user", "content": "Hi"},
@@ -1931,4 +1931,5 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
     assert "hermes-agent@example.com" in system_text
     assert "skill_view(name='hermes-agent')" in system_text  # a quoted slug is an identifier
     assert "built by claude-code." in system_text  # a sentence-final dot is prose
-    assert system_text.count("claude-code") == 2
+    assert "claude-code's docs" in system_text  # so is a possessive
+    assert kwargs["system"][-1]["text"].count("claude-code") == 3  # the caller's block, not the CC prefix

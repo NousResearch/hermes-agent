@@ -31,6 +31,13 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
+    # Forward turns served by a LOCAL surface (Desktop chat, TUI, dashboard) for a gateway-owned
+    # session back to the session's own platform chat, so the platform record stays complete.
+    # Off by default; see tui_gateway/turn_mirror.py for the full semantics.
+    "mirror_local_turns": False,
+    "mirror_local_turns_silent": True,  # disable_notification on the mirrored sends
+    "mirror_local_turns_4096_split": False,  # false: paginate past the cap; true: split plainly
+    "mirror_local_turns_label": "📲",  # first-line marker; "" hides it
 }
 
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
@@ -197,6 +204,9 @@ _NORMALISERS: dict[str, Any] = {
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext")),
     "tool_preview_length": _norm_int,
+    "mirror_local_turns": _norm_bool,
+    "mirror_local_turns_silent": _norm_bool,
+    "mirror_local_turns_4096_split": _norm_bool,
 }
 
 

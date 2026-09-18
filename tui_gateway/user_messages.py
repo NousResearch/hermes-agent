@@ -99,6 +99,14 @@ AGENT_STILL_STARTING = (
     "Hermes is still starting this session (loading tools), so this command could not run yet. "
     "Wait for the status bar to show ready and try again.")
 
+# A deferred build that finished WITHOUT attaching an agent (its session record was replaced or
+# closed while it ran) leaves ``agent_ready`` set and ``agent`` None; this is the recorded cause.
+AGENT_BUILD_ABANDONED = "agent build aborted: the session record was replaced before the build finished"
+# Turn refusal when the record still has no agent at admission time (reason unknown).
+AGENT_MISSING_FOR_TURN = (
+    "Hermes could not start the assistant for this session, so your message was not run. "
+    "Reopen the session (or start a new one with /new) and send it again.")
+
 
 def resume_failed_message(exc: Any) -> str:
     return (f"Could not reopen that session (its transcript could not be read). Details: {exc}. "

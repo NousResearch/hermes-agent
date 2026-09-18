@@ -13,6 +13,7 @@ import json
 import logging
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -129,11 +130,34 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/my/project", session_title="the-title")
         assert result == "manual-name"
 
-    def test_title_beats_dirname(self):
-        cfg = HonchoClientConfig()
-        result = cfg.resolve_session_name("/some/dir", session_title="my-project")
-        assert result == "my-project"
-
+    @pytest.mark.parametrize(
+        ("session_strategy", "title_source", "expected"),
+        [
+            ("per-directory", "llm", "dir"),
+            ("per-directory", "derived", "dir"),
+            ("per-repo", "llm", "repo-name"),
+            ("per-repo", "derived", "repo-name"),
+            ("global", "llm", "my-workspace"),
+            ("global", "derived", "my-workspace"),
+        ],
+    )
+    def test_automatic_title_does_not_override_strategy(
+        self,
+        session_strategy,
+        title_source,
+        expected,
+    ):
+        cfg = HonchoClientConfig(
+            session_strategy=session_strategy,
+            workspace_id="my-workspace",
+        )
+        with patch.object(HonchoClientConfig, "_git_repo_name", return_value="repo-name"):
+            result = cfg.resolve_session_name(
+                "/some/dir",
+                session_title="generated-title",
+                session_title_source=title_source,
+            )
+        assert result == expected
 
     def test_title_sanitized(self):
         cfg = HonchoClientConfig()
@@ -154,14 +178,25 @@ class TestResolveSessionNameTitle:
 
     def test_per_session_uses_session_id(self):
         cfg = HonchoClientConfig(session_strategy="per-session")
-        result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            session_title="generated-title",
+            session_title_source="llm",
+            session_id="20260309_175514_9797dd",
+        )
         assert result == "20260309_175514_9797dd"
 
 
     def test_gateway_key_beats_per_session_id(self):
         # Gateways keep per-chat isolation even in per-session.
         cfg = HonchoClientConfig(session_strategy="per-session")
-        result = cfg.resolve_session_name("/some/dir", gateway_session_key="agent:main:telegram:dm:42", session_id="20260309_175514_9797dd")
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            session_title="explicit-title",
+            session_title_source="user",
+            gateway_session_key="agent:main:telegram:dm:42",
+            session_id="20260309_175514_9797dd",
+        )
         assert result == "agent-main-telegram-dm-42"
 
     def test_global_strategy_returns_workspace(self):

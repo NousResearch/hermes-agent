@@ -571,12 +571,18 @@ def _chat_messages_to_responses_input(
             msg, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
         )
         emit(message_items, msg)
+        fallback = None
         if not message_items:
-            # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback.
             fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
-            if fallback is not None:
-                emit([{"role": "assistant", "content": fallback}], msg)
-        emit(_replay_tool_call_items(msg, start_index=len(items), wire_ids=wire_ids), msg)
+        tool_items = _replay_tool_call_items(msg, start_index=len(items) + (fallback is not None), wire_ids=wire_ids)
+        # A function_call already follows its reasoning. Inventing an empty assistant
+        # message between them changes the replayed turn (Muse can emit corrupt finals).
+        # Keep a follower only for reasoning with no other following item, and make it
+        # non-empty: strict Responses-compatible providers reject "" with 400.
+        if fallback is not None and not (fallback == "" and tool_items):
+            follower = " " if fallback == "" else fallback
+            emit([{"role": "assistant", "content": follower}], msg)
+        emit(tool_items, msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
     # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint
     # first, retain pre-checkpoint USER and SUMMARY messages within a token budget, leave the tail.

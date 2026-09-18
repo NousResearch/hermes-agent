@@ -107,7 +107,8 @@ def _plan_goal_compression_recovery(
 
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
-    queued_prompt_generation: int | None) -> tuple[list[str], Any] | None:
+    queued_prompt_generation: int | None, display_kind: str | None,
+    display_metadata: dict | None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -119,6 +120,7 @@ def _admit_prompt_turn(
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
             session["running"] = False
+            session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
@@ -126,6 +128,7 @@ def _admit_prompt_turn(
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
             session["running"] = False
+            session.pop("_submit_user_row", None)
             return None
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
         if image_paths is None:
@@ -134,14 +137,31 @@ def _admit_prompt_turn(
         # A retained failed turn (see _fail_inflight_turn) is a stale leftover
         # by the time a new turn starts — replace it, never append onto it.
         if not isinstance(inflight, dict) or inflight.get("status") == "error":
-            _start_inflight_turn(session, text)
+            _start_inflight_turn(
+                session, text, display_kind=display_kind, display_metadata=display_metadata)
         agent = session["agent"]
-        with contextlib.suppress(Exception):
-            agent.clear_interrupt()
+        if agent is None:
+            session["running"] = False
+        else:
+            with contextlib.suppress(Exception):
+                agent.clear_interrupt()
+    if agent is None:
+        # A deferred build can finish without attaching an agent (its record was replaced or closed
+        # mid-build: ``agent_ready`` set, ``agent`` None, see ``_start_agent_build``).  Every turn source
+        # crosses this gate, so refuse here with a retryable frame: the turn body used to dereference the
+        # missing agent twice (in ``_invoke_agent`` and again in its ``finally``), which killed the turn
+        # thread with ``running`` still True — the prompt vanished and the session stayed "busy" (#111531).
+        reason = session.get("agent_error") or AGENT_MISSING_FOR_TURN
+        logger.info("Refusing turn for session %s: no agent attached (%s)", session.get("session_key") or sid, reason)
+        _emit_terminal_turn_error(
+            sid, session, reason,
+            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
+        return None
     return images, agent
 
 
-def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True) -> str:
+def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
+                        notification_category: str | None = None) -> str:
     """Write the durable crash marker; returns the session key it was written under (compression
     can rotate session_key mid-turn).  A surviving marker means the process died mid-turn.
     The key is published before the disk write so an interrupt racing startup can retire
@@ -154,7 +174,9 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True)
         with session["history_lock"]:
             session["_active_turn_marker_key"] = marker_key
         record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
-                          auto_continue=auto_continue)
+                          auto_continue=auto_continue,
+                          **({"notification_category": "diagnostic"}
+                             if notification_category == "diagnostic" else {}))
         with session["history_lock"]:
             marker_cancelled = bool(session.get("_turn_cancel_requested"))
         if marker_cancelled:
@@ -312,7 +334,10 @@ def _goal_followup_after_turn(
         recovery_prompt, recovery_notice = _plan_goal_compression_recovery(
             session, result, status=status, raw=raw)
         if recovery_notice:
-            _emit("status.update", sid, {"kind": "goal", "text": recovery_notice})
+            from gateway.warning_notifications import render_notification
+            render_notification(
+                lambda: _emit("status.update", sid, {"kind": "goal", "text": recovery_notice}),
+                platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
         goal_followup = recovery_prompt or None
     except Exception as _goal_recovery_exc:
         _hook_failure("goal compression recovery", _goal_recovery_exc)
@@ -409,8 +434,8 @@ def _run_post_turn_followups(
     if _drain_queued_prompt(rid, sid, session):
         return
     if goal_followup:
-        with session["history_lock"]:
-            if session.get("running"):
+        with _session_turn_admission(session) as admitted:
+            if not admitted or session.get("running"):
                 return  # user already sent something — their turn wins
             session["running"] = True
         _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
@@ -419,18 +444,21 @@ def _run_post_turn_followups(
     # not consume session A's event.  Unclaimable events are requeued for the poller.
     try:
         from tools.process_registry import process_registry
-        drained = process_registry.drain_notifications(
-            session_key=session.get("session_key", ""),
-            owns_event=lambda e: _session_owns_notification_event(sid, session, e),
-            skip_poll_observed=False)
-        from tools.process_registry_notifications import format_process_notification
-        deferred = []
-        _notif_handle_ready(
-            sid, session, [event for event, _text in drained],
-            session.setdefault("_notification_emitted", set()), process_registry,
-            format_process_notification, deferred, owned=True)
-        for event in deferred:
-            process_registry.completion_queue.put(event)
+        # _finish_turn has released the worker's runtime scope. Queue ownership,
+        # notification policy and nested dispatch still belong to this session.
+        with _session_profile_runtime_scope(session):
+            drained = process_registry.drain_notifications(
+                session_key=session.get("session_key", ""),
+                owns_event=lambda e: _session_owns_notification_event(sid, session, e),
+                skip_poll_observed=False)
+            from tools.process_registry_notifications import format_process_notification
+            deferred = []
+            _notif_handle_ready(
+                sid, session, [event for event, _text in drained],
+                session.setdefault("_notification_emitted", set()), process_registry,
+                format_process_notification, deferred, owned=True)
+            for event in deferred:
+                process_registry.completion_queue.put(event)
     except Exception as _drain_exc:
         _hook_failure("completion queue drain", _drain_exc)
 
@@ -520,7 +548,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         prompt = ctx.message
     st.prompt_text = prompt if isinstance(prompt, str) else ""
     run_message: Any = _route_turn_images(agent, prompt, images) if images else prompt
-    st.tts_queue, st.thinking_started = _start_turn_voice()
+    from agent.notification_presentation import event_presentation_muted
+    if not event_presentation_muted("message.delta", sid):
+        st.tts_queue, st.thinking_started = _start_turn_voice()
     # Per-turn API-message notes: barge mid-speech, reactions, HUD surface (per-turn state
     # that must not touch the byte-stable system prompt).
     from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
@@ -533,8 +563,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
     images: list[str], display_kind: str | None, display_metadata: dict | None,
-    turn_author: dict | None = None) -> None:
-    """Wire the streaming callbacks and run the conversation into ``st.result``."""
+    turn_author: dict | None = None, text: Any = None) -> None:
+    """Wire the streaming callbacks and run the conversation into ``st.result``.
+    ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
@@ -542,6 +573,8 @@ def _invoke_agent(
     hold = {"buf": "", "held": ""} if _is_bot_mode_session(session) else None
 
     def _stream(delta):
+        if getattr(agent, "_mute_notification_reply", False):
+            return
         if hold is not None and isinstance(delta, str):
             from gateway.response_filters import is_partial_silence_marker
             hold["buf"] += delta
@@ -561,6 +594,8 @@ def _invoke_agent(
     # Interim assistant text (commentary beside tool calls, pre-nudge final answer) is sealed
     # by the desktop as its own segment instead of being lost to message.complete.
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+        if getattr(agent, "_mute_notification_reply", False):
+            return
         _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
     agent.interim_assistant_callback = (
         _interim_assistant_cb if _load_interim_assistant_messages() else None)
@@ -582,13 +617,16 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
+    _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"], text)
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
         "session.title", sid, {"session_id": _k, "title": t})
     _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
     try:
-        st.result = agent.run_conversation(run_message, **st.run_kwargs)
+        from agent.notification_presentation import notification_turn, event_presentation_muted
+        with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
+            st.result = agent.run_conversation(run_message, **st.run_kwargs)
     finally:
         # Stop AND join before anything emits: a tick surviving past message.complete would
         # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
@@ -829,10 +867,26 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
-    admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
+    # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
+    # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
+    # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
+    # the token-accounting guard as an anonymous session (#111999).
+    if _ensure_session_db_row(session) is False:
+        logger.warning(
+            "prompt dispatch: session store unavailable for %s — this turn may not persist",
+            session.get("session_key") or sid)
+    admitted = _admit_prompt_turn(
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
     if admitted is None:
         return False
     images, agent = admitted
+    from gateway.warning_notifications import diagnostic_turn_muted
+    from agent.notification_presentation import notification_config_snapshot
+    with _session_profile_runtime_scope(session):
+        notification_config = notification_config_snapshot()
+        muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
+    if muted:
+        display_kind = "hidden"
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
@@ -847,9 +901,10 @@ def _run_prompt_submit(
         "kind=%s chars=%s images=%d",
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
-    _emit("message.start", sid)
+    if not muted:
+        _emit("message.start", sid)
 
-    def run():
+    def run_body():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
         # before any tool can commission a child (delegate_task captures it as authority).
         transport_token = bind_transport(session.get("transport"))
@@ -857,7 +912,8 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
+        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
+            notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
         try:
             prepared = _prepare_turn_input(sid, session, st, text, images)
@@ -871,7 +927,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author)
+                display_metadata, turn_author, text)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
@@ -895,6 +951,7 @@ def _run_prompt_submit(
                 session["last_active"] = time.time()
                 if not st.error_retained:
                     _clear_inflight_turn(session)
+                _release_hosted_room_turn_slot(session)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
             # agent.session_id is re-read because compression may have rotated it (an
             # accepted/finished pair whose id changed IS a rotation trace).
@@ -917,8 +974,16 @@ def _run_prompt_submit(
                     session.pop("_hosted_room_task", None)
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, st.agent)
-        _run_post_turn_followups(rid, sid, session, st.result, goal_followup)
-    run_thread = threading.Thread(target=run, daemon=True)
+        return st.result, goal_followup
+    def run():
+        from agent.notification_presentation import notification_turn
+        # _prepare_turn_input owns profile binding for the worker. The context
+        # here only gates presentation; do not introduce a second runtime scope.
+        from agent.notification_presentation import notification_policy_snapshot
+        with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
+            followup = run_body()
+        if followup is not None:
+            _run_post_turn_followups(rid, sid, session, *followup)
     # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
     # state registry, and _sessions_lock gates every create/close/prompt on this backend.
     with _routing_provenance_db(session) as routing_db, _sessions_lock:
@@ -929,8 +994,7 @@ def _run_prompt_submit(
             # still run its turn, but its stamp stays (#106459).
             if registered is session:
                 _reopen_routed_session_row(routing_db, sid, session)
-            session["_run_thread"] = run_thread
-            run_thread.start()
+            can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
     if not can_start:
         with session["history_lock"]:
             session["running"] = False

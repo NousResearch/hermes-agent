@@ -15,6 +15,9 @@ from typing import Any, Callable, List, Optional
 class TurnContext:
     # read-only turn identity / wiring
     source: Any = None
+    # Scheduled heartbeats are proactive work, not replies to the source message that
+    # registered the watch.  Their routine delivery surfaces stay quiet.
+    scheduled_heartbeat: bool = False
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
     _live_status_adapter: Any = None
     _live_status_mode: str = "off"
@@ -58,6 +61,7 @@ class TurnContext:
     persist_user_display_kind: Optional[str] = None
     persist_user_display_metadata: Optional[dict] = None
     user_config: Any = None
+    mute_notification_reply: bool = False
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False

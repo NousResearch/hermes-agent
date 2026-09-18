@@ -381,6 +381,7 @@ class McpRuntimeStatus(WireEnum):
     disabled = "disabled"
     connecting = "connecting"
     failed = "failed"
+    lazy = "lazy"
     configured = "configured"
 
 
@@ -603,6 +604,7 @@ class AgentPluginRow(Result):
     catalog_tier: str | None = None
     installed_sha: str | None = None
     catalog_sha: str | None = None
+    catalog_version: str | None = None
     update_available: bool | None = None
     pinned_sha: str | None = None
 

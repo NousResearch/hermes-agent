@@ -771,6 +771,7 @@ class TestWebServerEndpoints:
 
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
+        (worker_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
 
         seen = {}
 
@@ -1893,6 +1894,7 @@ class TestWebServerEndpoints:
         default_home = get_hermes_home()
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
+        (worker_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
 
         assert self.client.post(
             "/api/providers/custom-endpoints?profile=worker",
@@ -4539,6 +4541,51 @@ class TestDashboardPluginManifestExtensions:
         entries = [p for p in plugins if p["name"] == "dupe"]
         assert len(entries) == 1
         assert entries[0]["tab"]["path"] == "/from-profile"
+
+    def test_unreadable_plugin_paths_do_not_block_discovery(self, tmp_path, monkeypatch, caplog):
+        """A denied plugin directory or manifest must not prevent valid plugins loading."""
+        from pathlib import Path
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "valid", {
+            "name": "valid",
+            "label": "Valid Plugin",
+            "entry": "dist/index.js",
+        })
+        denied_root = tmp_path / "denied-root"
+        denied_root.mkdir()
+        denied_plugin = tmp_path / "plugins" / "denied"
+        (denied_plugin / "dashboard").mkdir(parents=True)
+        (denied_plugin / "dashboard" / "manifest.json").write_text("{}", encoding="utf-8")
+
+        from hermes_cli import web_server_dashboard
+        original_search_dirs = web_server_dashboard._dashboard_plugin_search_dirs
+        original_scandir = web_server_dashboard.os.scandir
+        original_exists = Path.exists
+
+        def search_dirs():
+            return [(denied_root, "user"), *original_search_dirs()]
+
+        def guarded_scandir(path):
+            if Path(path) == denied_root:
+                raise PermissionError("[WinError 5] Access is denied")
+            return original_scandir(path)
+
+        def guarded_exists(path):
+            if path == denied_plugin / "dashboard" / "manifest.json":
+                raise PermissionError("[WinError 5] Access is denied")
+            return original_exists(path)
+
+        monkeypatch.setattr(web_server_dashboard, "_dashboard_plugin_search_dirs", search_dirs)
+        monkeypatch.setattr(web_server_dashboard.os, "scandir", guarded_scandir)
+        monkeypatch.setattr(Path, "exists", guarded_exists)
+
+        plugins = web_server_dashboard._discover_dashboard_plugins()
+
+        assert "valid" in {plugin["name"] for plugin in plugins}
+        assert "denied" not in {plugin["name"] for plugin in plugins}
+        assert "Skipping unreadable dashboard plugin root" in caplog.text
+        assert "Skipping unreadable dashboard plugin" in caplog.text
 
 
 

@@ -219,6 +219,12 @@ class ComputeHost:
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
+            # #101416: the parent already holds this session's active-session lease (claimed in
+            # prompt.submit before routing here). Install the inert borrow BEFORE the turn runs, or
+            # _admit_prompt_turn re-claims from this child pid and is fenced out by the parent's own
+            # registry entry ("already has a live owner"). Unknown flag (parent predates the field):
+            # no borrow, legacy self-claim path, unchanged behaviour.
+            server._install_borrowed_lease(sid, session, frame)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
             with session["history_lock"]:
@@ -324,6 +330,7 @@ class ComputeHost:
                 reasoning_config_override=frame.get("reasoning_config_override"),
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
+                cwd_override=str(frame.get("cwd") or "") or None,
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
                 session_db=session_db, auth_user_id=frame.get("auth_user_id"))

@@ -1909,8 +1909,14 @@ class SlackAdapter(BasePlatformAdapter):
     def scope_id_for_chat(self, chat_id: str) -> Optional[str]:
         """Return the workspace id owning ``chat_id``.
         ``None`` for unknown channels and for channels claimed by several workspaces (dropped from
-        the map) — no scope beats a wrong one."""
+        the map) — no scope beats a wrong one. A channel unseen since boot (the map only fills from
+        inbound events) still resolves when exactly one workspace is authenticated: every inbound
+        reply will carry that team_id, so a caller keying a session on it must match (#111896)."""
         team_id = chat_id and (getattr(self, "_channel_team", None) or {}).get(str(chat_id))
+        if not team_id and chat_id and str(chat_id) not in (getattr(self, "_channel_teams", None) or {}):
+            team_clients = getattr(self, "_team_clients", None) or {}
+            if len(team_clients) == 1:
+                team_id = next(iter(team_clients))
         return str(team_id) if team_id else None
 
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
@@ -2347,9 +2353,12 @@ class SlackAdapter(BasePlatformAdapter):
                     message_id, chat_id, e, exc_info=True)
                 return SendResult(
                     success=False, error=str(e), retryable=True, error_kind="transient")
+            # An HTTP 200 + ``ok=false`` reply raises too; its ``str()`` reads like a transport
+            # failure ("status: 200") while the real cause is the body's error code.
+            api_error = _slack_response_payload(getattr(e, "response", None)).get("error")
             logger.error(
-                "[Slack] Failed to edit message %s in channel %s: %s", message_id, chat_id, e,
-                exc_info=True)
+                "[Slack] Failed to edit message %s in channel %s: api_error=%s: %s",
+                message_id, chat_id, api_error or "none", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
@@ -3267,8 +3276,8 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]]) -> SendResult:
         """Post ``notice`` (prefixed by the caption) in place of a failed media delivery; the
         host-local path is never echoed into chat."""
-        text = f"{caption}\n{notice}" if caption else notice
-        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+        return await self.emit_media_warning(chat_id, notice, caption=caption,
+                                             reply_to=reply_to, metadata=metadata, shown_metadata=metadata)
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,

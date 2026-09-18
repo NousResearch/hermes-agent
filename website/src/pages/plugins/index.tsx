@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
+import { pluginCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
 interface PluginCapabilities {
   providesTools?: string[];
@@ -24,6 +25,10 @@ interface CatalogPlugin {
   platforms?: string[];
   capabilities?: PluginCapabilities;
   docsUrl?: string;
+  /** Human label for the pin ("1.4.0"); cosmetic, shown beside the sha. */
+  version?: string;
+  /** Card banner image (GitHub-hosted https URL enforced by the extractor). */
+  image?: string;
   installCommand: string;
   /** GitHub stargazers at the last daily probe; null when the repo is not on GitHub or unprobed. */
   stars?: number | null;
@@ -186,6 +191,7 @@ function PluginCard({
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
   const pinUrl = `${plugin.repo.replace(/\.git$/, "").replace(/\/$/, "")}/tree/${plugin.sha}`;
+  const installUrl = pluginCatalogInstallUrl(plugin);
 
   return (
     <div
@@ -194,6 +200,18 @@ function PluginCard({
       style={style}
     >
       <div className={styles.cardAccent} style={{ background: tier.color }} />
+
+      {plugin.image && (
+        <img
+          className={styles.cardImage}
+          src={plugin.image}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
+        />
+      )}
 
       <div className={styles.cardInner}>
         <div className={styles.cardTop}>
@@ -210,6 +228,11 @@ function PluginCard({
             >
               {tier.icon} {tier.label}
             </span>
+            {plugin.version && (
+              <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
+                v{plugin.version.replace(/^v/i, "")}
+              </span>
+            )}
             {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
@@ -267,7 +290,7 @@ function PluginCard({
           ))}
         </div>
 
-        {onPick && (
+        {onPick ? (
           <button
             className={styles.pickBtn}
             onClick={(e) => {
@@ -277,6 +300,14 @@ function PluginCard({
           >
             + Add to this Agent
           </button>
+        ) : (
+          <a
+            className={styles.pickBtn}
+            href={installUrl}
+            onClick={(e) => e.stopPropagation()}
+          >
+            Install in Hermes
+          </a>
         )}
 
         {expanded && (
@@ -306,7 +337,7 @@ function PluginCard({
                   className={styles.shaLink}
                   title={plugin.sha}
                 >
-                  <code>{plugin.shaShort}</code> ↗
+                  <code>{plugin.version ? `${plugin.version} @ ${plugin.shaShort}` : plugin.shaShort}</code> ↗
                 </a>
               </span>
             </div>
@@ -553,7 +584,7 @@ export default function PluginCatalogPage() {
               </span>
             </nav>
             <p className={styles.heroSub}>
-              Reviewed, SHA-pinned plugins you can install with one command.
+              Reviewed, SHA-pinned plugins. Open in Hermes Desktop to review and install, or copy the CLI command.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})

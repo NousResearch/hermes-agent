@@ -185,6 +185,14 @@ def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginC
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
     if not out:
         out.extend(ClassifiedLoginControl(c, 70, "one-time-code") for c in _indexed_split_otp_group(controls))
+    else:
+        # Mixed widgets mark only the first box with ``autocomplete=one-time-code``; an authoritative
+        # box inside a verified indexed group speaks for its silent siblings, so pull the whole
+        # widget in — otherwise the fill would send the entire code to the one classified box.
+        group = _indexed_split_otp_group(controls)
+        if any(c.score == 100 and any(c.control is g for g in group) for c in out):
+            out.extend(ClassifiedLoginControl(g, 70, "one-time-code")
+                       for g in group if not any(g is c.control for c in out))
     return out
 
 

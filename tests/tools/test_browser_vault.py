@@ -882,6 +882,23 @@ class TestTwoFactor:
         assert build_otp_fills(classify_otp_controls(labeled), "246810") == [
             {"index": 0, "token": "one-time-code", "value": "246810"}]
 
+    def test_mixed_indexed_otp_widget_with_autocomplete_only_on_first_box(self):
+        """#113094 review follow-up: when only the first box carries ``autocomplete=one-time-code``
+        and the rest expose just the indexed id, the authoritative box pulls its silent siblings in
+        so the fill spreads one digit per box instead of sending the whole code to box 0."""
+        from agent.vault_login_classifier import LoginControl, build_otp_fills, classify_otp_controls
+
+        widget = [LoginControl("one-time-code" if i == 0 else "", 0, i, "-", f"input-code-{i}", "text", None)
+                  for i in range(6)]
+        classified = classify_otp_controls(widget)
+        assert [c.control.index for c in classified] == list(range(6))
+        assert [c.score for c in classified] == [100, 70, 70, 70, 70, 70]
+        assert [f["value"] for f in build_otp_fills(classified, "246810")] == list("246810")
+        # the labeled fallback case stays untouched: a 70-score regex hit outside any verified
+        # group never pulls indexed siblings in
+        labeled = [LoginControl("", 0, 0, "Verification code", "backup", "text", None)] + widget[1:]
+        assert [c.control.index for c in classify_otp_controls(labeled)] == [0]
+
     def test_indexed_otp_widget_without_maxlength_reaches_the_secure_prompt(self):
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool

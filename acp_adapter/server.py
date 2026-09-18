@@ -425,7 +425,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 set_session_cwd(state.cwd)
                 register_mcp_servers(configs)
 
-            await asyncio.to_thread(contextvars.copy_context().run, _register_pinned)
+            await asyncio.to_thread(_register_pinned)  # to_thread already runs in a copied context
         except Exception:
             logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
             return

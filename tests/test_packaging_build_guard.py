@@ -11,6 +11,12 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+HERMES_STATE_SUPPORT_MODULES = (
+    "hermes_state_common",
+    "hermes_state_portability",
+    "hermes_state_schema",
+    "hermes_state_search",
+)
 
 
 def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.CompletedProcess[str]:
@@ -94,3 +100,43 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
 
     missing = sorted(expected - shipped)
     assert not missing, f"{kind} omits bundled plugin manifests: {missing}"
+
+
+def test_wheel_ships_importable_hermes_state_support_modules(tmp_path):
+    """The built wheel, not the source tree, must provide SessionDB support modules."""
+    result = _build_artifact("wheel", tmp_path, nix_build=True)
+    assert result.returncode == 0, result.stderr
+    wheel_path = next(tmp_path.glob("hermes_agent-*.whl"))
+
+    with zipfile.ZipFile(wheel_path) as wheel:
+        shipped = set(wheel.namelist())
+    missing = sorted(
+        f"{module}.py"
+        for module in HERMES_STATE_SUPPORT_MODULES
+        if f"{module}.py" not in shipped
+    )
+    assert not missing, f"wheel omits hermes_state support modules: {missing}"
+
+    import_script = "\n".join(
+        [
+            "import importlib",
+            "from pathlib import Path",
+            "import sys",
+            f"wheel_path = {str(wheel_path)!r}",
+            "sys.path.insert(0, wheel_path)",
+            f"module_names = {HERMES_STATE_SUPPORT_MODULES!r}",
+            "for name in module_names:",
+            "    module = importlib.import_module(name)",
+            "    archive = getattr(module.__loader__, 'archive', None)",
+            "    assert archive is not None, module.__loader__",
+            "    assert Path(archive).resolve() == Path(wheel_path).resolve(), archive",
+        ]
+    )
+    imported = subprocess.run(
+        [sys.executable, "-I", "-c", import_script],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr

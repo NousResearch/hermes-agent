@@ -505,6 +505,53 @@ class TestRunEvents:
                 assert "event: run.completed" in after_body
 
     @pytest.mark.asyncio
+    async def test_active_reconnect_replays_gap_then_streams_to_terminal(self, adapter, tmp_path):
+        _use_idempotency_db(adapter, tmp_path / "active-reconnect.db")
+        app = _create_runs_app(adapter)
+        started_gate = threading.Event()
+        finish_gate = threading.Event()
+        callback_holder = {}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+
+                def run_conversation(**_kwargs):
+                    started_gate.set()
+                    finish_gate.wait(timeout=3)
+                    return {"final_response": "reconnected"}
+
+                def make_agent(**kwargs):
+                    callback_holder["stream"] = kwargs["stream_delta_callback"]
+                    return agent
+
+                agent.run_conversation.side_effect = run_conversation
+                create.side_effect = make_agent
+                response = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await response.json())["run_id"]
+                assert started_gate.wait(timeout=3)
+                while "stream" not in callback_holder:
+                    await asyncio.sleep(0.01)
+
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                first_line = await first.content.readline()
+                assert first_line.startswith(b"id: ")
+                first_cursor = int(first_line.removeprefix(b"id: ").strip())
+                await first.release()
+
+                callback_holder["stream"]("lost-event")
+                finish_gate.set()
+                reconnected = await cli.get(
+                    f"/v1/runs/{run_id}/events", headers={"Last-Event-ID": str(first_cursor)})
+                body = await reconnected.text()
+                assert reconnected.status == 200
+                assert "data: " in body
+                assert "lost-event" in body
+                assert "run.completed" in body
+                ids = [int(line.removeprefix("id: ").strip()) for line in body.splitlines() if line.startswith("id: ")]
+                assert ids == sorted(set(ids))
+
+    @pytest.mark.asyncio
     async def test_two_active_event_subscribers_each_receive_live_terminal_event(self, adapter):
         app = _create_runs_app(adapter)
         started_gate = threading.Event()

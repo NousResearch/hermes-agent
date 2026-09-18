@@ -135,6 +135,9 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   return <ToolFallback {...props} />
 }
 
+// Match the compact terminal/log viewers rather than the full thread's slack.
+const PREVIEW_RELOCK_THRESHOLD_PX = 24
+
 type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
 
 const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
@@ -197,8 +200,7 @@ const ThinkingDisclosure: FC<{
     }
   }
 
-  // While the preview is live, pin the scroll container to the bottom on
-  // every content growth so the latest tokens are always visible.
+  // Follow new tokens until the user scrolls up to read earlier reasoning.
   useEffect(() => {
     if (!isPreview) {
       return
@@ -216,13 +218,18 @@ const ThinkingDisclosure: FC<{
     // scrollHeight read+write per preview per frame. Only actual content
     // growth needs the pin; the height rides the RO entry, reflow-free.
     let lastHeight = -1
+    let following = true
+
+    const trackScroll = () => {
+      following = el.scrollHeight - el.scrollTop - el.clientHeight < PREVIEW_RELOCK_THRESHOLD_PX
+    }
 
     const pin = (entries: readonly ResizeObserverEntry[]) => {
       const height = entries[entries.length - 1]?.borderBoxSize?.[0]?.blockSize ?? -1
       const grew = height < 0 || height > lastHeight
       lastHeight = height
 
-      if (grew) {
+      if (grew && following) {
         el.scrollTop = el.scrollHeight
       }
     }
@@ -231,8 +238,12 @@ const ThinkingDisclosure: FC<{
     // layout already clean (still before paint), avoiding a forced reflow.
     const observer = new ResizeObserver(pin)
     observer.observe(content)
+    el.addEventListener('scroll', trackScroll, { passive: true })
 
-    return () => observer.disconnect()
+    return () => {
+      observer.disconnect()
+      el.removeEventListener('scroll', trackScroll)
+    }
     // Re-run when the disclosure toggles so the observer attaches to the new
     // DOM after expand/collapse (refs are conditionally rendered on `open`).
   }, [isPreview, open])
@@ -263,7 +274,8 @@ const ThinkingDisclosure: FC<{
             // and inherits the disclosure-level opacity fade defined in
             // styles.css (~0.67 at rest, 1 on hover/focus). overflow-auto so
             // the max-h-40 preview is a real scroller, not a clip.
-            'mt-0.5 w-full min-w-0 max-w-full overflow-auto overscroll-contain wrap-anywhere pb-1',
+            // Even a body that fits must hand vertical input to the thread.
+            'mt-0.5 w-full min-w-0 max-w-full overflow-auto overscroll-x-contain overscroll-y-auto wrap-anywhere pb-1',
             isPreview && 'max-h-40'
           )}
           data-slot="aui_thinking-body"

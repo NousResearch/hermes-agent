@@ -153,10 +153,14 @@ fails on any `<button>` / `<Button>` that still carries `title=`.
 the way somewhere else. `Tip` waits 200ms before the first open so a sweep
 does not flash a trail. After a tip has opened the page is warm: the next
 trigger within 300ms opens instantly. The cooldown starts on close, so a
-hover a second later waits again. Close is immediate. `OverflowTip` stays
-on its own longer delay (list titles must not trail while scanning).
+hover a second later waits again. Once triggered, entrance has no animation.
+Exit fades over 100ms and moves 0.125rem toward the anchor; reduced motion
+disables the exit animation. `OverflowTip` stays on its own longer delay
+(list titles must not trail while scanning). Bubbles use a 0.25rem radius.
 
-**Slash descriptions.** Keep autocomplete rows single-line and ellipsized, but reveal the complete catalog description in the shared themed tooltip when hovering anywhere on a slash row. Size that tooltip to the window with collision padding and word wrapping; it must not intercept row selection. Catalog and completion producers preserve the full author-supplied description.
+**Tooltip placement.** Choose intent through `placement`: `control` above (default), `toolbar` below, `row` to the right, and `left-rail` / `right-rail` inward. Explicit `side` and `align` override the preference. Radix flips and shifts for collisions, keeps the arrow attached, and hides detached triggers. Controls and toolbars use their owning pane as a boundary; row descriptions and rails may extend into the window. Use `boundary="viewport"` for an intentional escape. Short labels size to content; descriptions wrap within 24rem and the available space, in one rounded bubble.
+
+**Slash descriptions.** Keep autocomplete rows single-line and ellipsized, but reveal the complete catalog description to the right of the hovered row. Use the shared bounded tooltip, collision padding, and word wrapping; it must not intercept row selection. Catalog and completion producers preserve the full author-supplied description.
 
 **Model search.** Model filters and their highlighted labels treat hyphens, dots, underscores and spaces equivalently. Preserve original label spelling inside marks. The shared highlighter remains literal for other surfaces such as the command palette; model callers explicitly opt in. Model identifier search does not use dictionary spellcheck.
 
@@ -200,7 +204,7 @@ blurred backdrop.
 - **`FanMenu`** (`src/components/ui/fan-menu.tsx`) — one hub control that
   fans sibling toggles out on hover: `direction` `vertical` | `horizontal`
   (split around the hub) | `arc`. Discs are `Button` `floating` off /
-  `default` on; tips anchor left by default. Use it where a row of rarely
+  `default` on; tips face outside the fan according to its geometry. Use it where a row of rarely
   touched toggles is costing input width (the composer's voice controls).
 
 ## Layout
@@ -289,6 +293,12 @@ so glass and message-bubble transparency do not reveal scrolling text.
   ambiguous exit-1 results use neutral notices, with details still available.
   Errors described inside returned data are not tool failures. Expanded failures
   show the actual explanation; supporting output keeps its normal text color.
+- Nested transcript scrollers keep their height caps and hand vertical scrolling
+  back to the thread at either edge (`overscroll-behavior-y: auto`), even when
+  their content fits. Only the outer thread contains vertical overscroll;
+  horizontal code/output boundaries may remain contained. Thinking previews
+  follow new tokens only while near the bottom, preserving the user's reading
+  position until they scroll back down.
 - Composer status groups start collapsed except todos. Progress updates and queue
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain

@@ -292,36 +292,34 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
             <StatusSection
               accessory={
                 <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
-                  <Tip label={ctrl.goalActions}>
-                    <span className="inline-flex">
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          aria-haspopup="menu"
-                          aria-label={ctrl.goalActions}
-                          className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
-                          disabled={isBusy}
-                          onClick={event => {
-                            // Radix opens pointer interactions from pointerdown. Keyboard,
-                            // assistive-tech, and programmatic clicks have no pointer sequence.
-                            if (event.detail === 0) {
-                              setMenuOpen(true)
-                            }
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'F10' && e.shiftKey) {
-                              e.preventDefault()
-                              setMenuOpen(true)
-                            }
-                          }}
-                          size="icon-xs"
-                          type="button"
-                          variant="ghost"
-                        >
-                          <Codicon name="ellipsis" size="0.8rem" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </span>
-                  </Tip>
+                  <span className="inline-flex">
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        aria-haspopup="menu"
+                        aria-label={ctrl.goalActions}
+                        className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
+                        disabled={isBusy}
+                        onClick={event => {
+                          // Radix opens pointer interactions from pointerdown. Keyboard,
+                          // assistive-tech, and programmatic clicks have no pointer sequence.
+                          if (event.detail === 0) {
+                            setMenuOpen(true)
+                          }
+                        }}
+                        onKeyDown={e => {
+                          if (e.key === 'F10' && e.shiftKey) {
+                            e.preventDefault()
+                            setMenuOpen(true)
+                          }
+                        }}
+                        size="icon-xs"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Codicon name="ellipsis" size="0.8rem" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                  </span>
                   <DropdownMenuContent align="end" className="w-44">
                     {renderMenuItems(false)}
                   </DropdownMenuContent>
@@ -426,19 +424,17 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                                     <Codicon name="copy" size="0.7rem" />
                                   </Button>
                                 </Tip>
-                                <Tip label={ctrl.removeCriterion(index)}>
-                                  <Button
-                                    aria-label={ctrl.removeCriterion(index)}
-                                    className="size-6 rounded text-muted-foreground/60 hover:text-destructive"
-                                    disabled={isBusy}
-                                    onClick={() => confirmRemoveCriterion(index)}
-                                    size="icon-xs"
-                                    type="button"
-                                    variant="ghost"
-                                  >
-                                    <Codicon name="close" size="0.7rem" />
-                                  </Button>
-                                </Tip>
+                                <Button
+                                  aria-label={ctrl.removeCriterion(index)}
+                                  className="size-6 rounded text-muted-foreground/60 hover:text-destructive"
+                                  disabled={isBusy}
+                                  onClick={() => confirmRemoveCriterion(index)}
+                                  size="icon-xs"
+                                  type="button"
+                                  variant="ghost"
+                                >
+                                  <Codicon name="close" size="0.7rem" />
+                                </Button>
                               </div>
                             }
                           >

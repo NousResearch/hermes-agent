@@ -28,6 +28,7 @@ import {
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
+import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -290,6 +291,7 @@ export function useDesktopIntegrations({
   //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
+  //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
   //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
   //  - open/<path>?… → in-app navigate (generic)
@@ -328,9 +330,21 @@ export function useDesktopIntegrations({
           repo: action.repo,
           enable: action.enable,
           force: action.force,
-          legacyHint: action.legacyHint
+          legacyHint: action.legacyHint,
+          catalogName: action.catalogName,
+          sha: action.sha
         })
 
+        return
+      }
+
+      if (action.type === 'skill-install') {
+        void requestSkillInstallFromDeepLink(action.identifier)
+
+        return
+      }
+
+      if (payload.kind === 'skill') {
         return
       }
 

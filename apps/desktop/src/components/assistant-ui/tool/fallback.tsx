@@ -39,7 +39,6 @@ import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { ToolIcon } from '@/components/ui/tool-icon'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
@@ -517,26 +516,24 @@ function ToolEntry({ part }: ToolEntryProps) {
   // It goes in the in-flow `action` slot (not `trailing`) so it can't overlap
   // the disclosure caret's hit-target — see the comment above `trailing`.
   const dismissAction = canDismiss ? (
-    <Tip label={statusCopy.dismiss}>
-      <Button
-        aria-label={statusCopy.dismiss}
-        className={cn(
-          'size-5 rounded-md text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
-          open
-            ? 'opacity-80'
-            : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
-        )}
-        onClick={event => {
-          event.stopPropagation()
-          dismissToolRow(disclosureId)
-        }}
-        size="icon-xs"
-        type="button"
-        variant="ghost"
-      >
-        <Codicon name="close" size="0.75rem" />
-      </Button>
-    </Tip>
+    <Button
+      aria-label={statusCopy.dismiss}
+      className={cn(
+        'size-5 rounded-md text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
+        open
+          ? 'opacity-80'
+          : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
+      )}
+      onClick={event => {
+        event.stopPropagation()
+        dismissToolRow(disclosureId)
+      }}
+      size="icon-xs"
+      type="button"
+      variant="ghost"
+    >
+      <Codicon name="close" size="0.75rem" />
+    </Button>
   ) : undefined
 
   if (dismissed) {

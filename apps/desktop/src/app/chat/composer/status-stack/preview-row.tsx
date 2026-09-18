@@ -103,15 +103,13 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     >
       <Tip
         label={
-          // Inline flow with a hard break, not a flex column: Tip's background
-          // only wraps inline content, so a flex box would light the first
-          // line and leave the rest dark-on-dark.
           <>
             {item.target}
             <br />
             <span className="opacity-70">{t.preview.linkHint}</span>
           </>
         }
+        placement="row"
       >
         <span className="min-w-0 truncate text-[0.73rem] leading-4 text-foreground/92">{item.label}</span>
       </Tip>

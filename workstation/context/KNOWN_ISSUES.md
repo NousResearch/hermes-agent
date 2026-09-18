@@ -1,5 +1,40 @@
 # Workstation Known Issues
 
+
+## KI-011 — Durable compiler can obstruct stateful native-browser work [OPEN — 2026-09-18]
+
+**Observed:** on an authenticated internal Electron Chromium session,
+browser_navigate, browser_snapshot and browser_extract_items succeeded, while
+subsequent mutating interaction was replaced by durable_compile_required.
+Attempting to express the work as durable execution then exposed
+PREFLIGHT_REQUIRED/verifier requirements unsuitable for the unknown stateful UI
+step, plus a native_browser route-constraint namespace mismatch in one path.
+
+**Confirmed architectural contributors on current code:**
+
+- prepare_turn_work() stores a broad _work_batch_candidate boolean;
+- requires_compilation() can use that boolean to reject any later non-read /
+  non-interactive effect, rather than only the repeated operation;
+- unknown browser builtins conservatively become MUTATION in tools.effects,
+  while another guardrail list can classify browser_console differently;
+- route comparison does not universally normalize browser tool names to the
+  canonical native_browser route;
+- deterministic preflight assumes durable mutation/readback semantics that are
+  correct for fan-out but too strong as a prerequisite for discovering a novel
+  stateful UI workflow.
+
+**Target invariant:** safe authorized novel work may make bounded adaptive
+progress; homogeneous repeated mutations still require compiler/canary; learned
+stable segments progressively move to compiled/routine execution.
+
+**Do not fix by:** making arbitrary browser JS read-only, disabling canary,
+allowing blind retry, weakening TaskRun/browser leases, adding a second memory or
+authority store, or globally bypassing work_execute.
+
+**Canonical design:** 
+[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
+
+
 This file records observed/reproduced gaps and the evidence boundary around them. A listed symptom is **not** permission to assume a root cause; verify current `main` and any explicitly named candidate before changing code.
 
 ## KI-002 — Preview and Workstation Browser are separate browser lanes

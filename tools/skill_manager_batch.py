@@ -9,6 +9,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from tools.skill_mutation_lock import serialized_skill_mutation
+
 logger = logging.getLogger("tools.skill_manager_tool")
 
 _BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}
@@ -181,6 +183,7 @@ def _rollback(snapshots, find_skill):
     return ("; ".join(notes) if notes else "all touched skills rolled back"), bool(notes)
 
 
+@serialized_skill_mutation
 def _skill_manage_batch(operations, default_name: str = None, task_id: str = None,
                         session_id: str = None) -> str:
     """Apply operations atomically: every touched skill is snapshotted first and any

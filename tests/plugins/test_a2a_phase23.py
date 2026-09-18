@@ -526,8 +526,16 @@ class TestTaskStore:
             "peer", agent=agent,
         )
 
-        assert pending is None
-        assert adapter.tasks.get(terminal["id"])["state"] == protocol.STATE_COMPLETED
+        # Forwarded tasks are async: _prepare_task returns a WORKING pending that the
+        # background thread resolves; the caller finalizes the store afterwards.
+        assert terminal is None
+        assert pending is not None
+        pend: dict = pending
+        state, reply = pend["future"].result(timeout=5)
+        assert state == protocol.STATE_COMPLETED
+        assert reply == "forwarded reply"
+        adapter._finalize_task(pend, state, reply)
+        assert adapter.tasks.get(pend["task_id"])["state"] == protocol.STATE_COMPLETED
         assert adapter.tasks.get("t-live")["state"] == protocol.STATE_WORKING
         assert adapter.tasks.get("t-within-reply-window")["state"] == protocol.STATE_WORKING
 

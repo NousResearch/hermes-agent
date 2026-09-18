@@ -749,6 +749,53 @@ describe('mergeInFlightMessages', () => {
     expect(result.applied).toBe(false)
     expect(result.caughtUp).toBe(false)
   })
+
+  it('overlays onto the LAST live projection row when earlier interim row is sealed and prevents duplicate ids', () => {
+    // base has: matching user, sealed interim row with assistant-stream-1 id, and live assistant-stream-2
+    const interimSealed = assistant('assistant-stream-1', 'Step 1 done', { interim: true, pending: false })
+    const liveTail = assistant('assistant-stream-2', 'Step 2 working...', { pending: true })
+    const baseMessages = [
+      user('u1', 'run full procedure'),
+      interimSealed,
+      liveTail
+    ]
+
+    // Journal captured tail after matching user:
+    // contains interim row 1, plus live tail 2 with tool-call and reasoning
+    const journalInterim = assistant('assistant-stream-1', 'Step 1 done', { interim: true })
+    const journalLive = {
+      id: 'assistant-stream-2',
+      role: 'assistant' as const,
+      pending: true,
+      parts: [
+        { type: 'reasoning' as const, text: 'Thinking about step 2' },
+        { type: 'tool-call' as const, toolCallId: 'call-2', toolName: 'browser_click', args: { ref: 'btn' } },
+        { type: 'text' as const, text: 'Step 2 working...' }
+      ]
+    }
+    const tail = [
+      user('u1', 'run full procedure'),
+      journalInterim,
+      journalLive
+    ]
+
+    const result = mergeInFlightMessages(baseMessages, tail, { keepPending: true })
+
+    expect(result.applied).toBe(true)
+    expect(result.caughtUp).toBe(false)
+    // There must be NO duplicate message ids: exactly 3 messages (user, interim, merged live)
+    expect(result.messages.map(m => m.id)).toEqual(['u1', 'assistant-stream-1', 'assistant-stream-2'])
+    // The interim row must remain sealed with its original parts
+    expect(result.messages[1].interim).toBe(true)
+    expect(result.messages[1].parts).toEqual([{ type: 'text', text: 'Step 1 done' }])
+    // The overlay must occur on the LAST row (assistant-stream-2), preserving reasoning and tool calls
+    expect(result.messages[2].id).toBe('assistant-stream-2')
+    expect(result.messages[2].parts).toEqual([
+      { type: 'reasoning', text: 'Thinking about step 2' },
+      { type: 'tool-call', toolCallId: 'call-2', toolName: 'browser_click', args: { ref: 'btn' } },
+      { type: 'text', text: 'Step 2 working...' }
+    ])
+  })
 })
 
 describe('mid-turn redirect corrections', () => {

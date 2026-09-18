@@ -189,7 +189,9 @@ def scan_plugin(plugin_dir: Optional[Path], manifest: Optional[Dict[str, Dict[st
             src = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        hits += scan_source(src, str(p.relative_to(plugin_dir)), manifest)
+        # POSIX form on every OS: notices/reports compare and dedupe on this string, and the
+        # compat tests pin ``sub/m.py`` — native Windows otherwise records ``sub\m.py`` (#112576).
+        hits += scan_source(src, p.relative_to(plugin_dir).as_posix(), manifest)
     if cacheable:
         with _scan_lock:
             _scan_cache[key] = (signature, list(hits))

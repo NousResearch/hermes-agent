@@ -139,6 +139,9 @@ def _load_hermes_env() -> None:
     running ``send`` for profile B under its secret scope) it is the installed scope mapping: writing B's
     ``.env`` into the shared process env would hand every other profile's later reads B's tokens
     (``gateway.config._getenv`` reads the scope first, so the loader sees the same values either way).
+    The installed scope is already ``build_profile_secret_scope``'s composition — user ``.env``, then
+    the profile's external secret sources over it — so it is authoritative as-is; replaying raw
+    ``.env`` over it would let a stale user value beat the secret-manager one for this request.
     """
     import os
     try:
@@ -146,13 +149,10 @@ def _load_hermes_env() -> None:
         home = get_hermes_home()
     except Exception:
         return
-    from agent.secret_scope import current_secret_scope, is_multiplex_active, load_env_file
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() if is_multiplex_active() else None
     if isinstance(scope, dict):
         target: dict = scope
-        env_path = home / ".env"
-        if env_path.exists():
-            target.update(load_env_file(env_path))
     else:
         target = os.environ
         env_path = home / ".env"

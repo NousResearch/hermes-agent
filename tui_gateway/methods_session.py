@@ -123,8 +123,10 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
             "source": row.get("source") or ""}
 
 
-# Hidden from human listings (sub-agent runs, kanban workers); a deny-list so new platforms surface automatically.
-_LISTING_DENY_SOURCES = frozenset({"kanban", "tool"})
+from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+
+# Hidden from human listings (kanban workers, tool integrations, one-shot runs); see INTERNAL_LISTING_SOURCES.
+_LISTING_DENY_SOURCES = frozenset(INTERNAL_LISTING_SOURCES)
 
 
 def _denied_source(row: dict) -> bool:
@@ -1217,15 +1219,18 @@ def _(rid, params: dict, session: dict) -> dict:
             "model": _metadata_mirror(session).get("model", "")})
     with session["history_lock"]:
         history = list(session.get("history", []))
-    # Bind the session context: on the RPC thread the session cwd is unset, so the prompt build
-    # inside would key its workspace pin on the backend's cwd and overwrite the session's pin.
+    # Bind the session context (on the RPC thread the session cwd is unset, so the prompt build inside
+    # would key its workspace pin on the backend's cwd and overwrite the session's pin) and the session's
+    # profile runtime scope: the build reaches the external memory provider's system_prompt_block(),
+    # whose get_secret read fails closed once this process multiplexes (#112927).
     tokens = _set_session_context(session["session_key"])
     try:
         from agent.context_breakdown import compute_session_context_breakdown
         from agent.context_file_sources import context_file_sources_for_agent
-        payload = compute_session_context_breakdown(agent, history)
-        # Structured per-file rows so the Desktop popover can explain "why is my CLAUDE.md ignored?".
-        payload["context_files"] = context_file_sources_for_agent(agent)
+        with _session_profile_runtime_scope(session):
+            payload = compute_session_context_breakdown(agent, history)
+            # Structured per-file rows so the Desktop popover can explain "why is my CLAUDE.md ignored?".
+            payload["context_files"] = context_file_sources_for_agent(agent)
         return _ok(rid, payload)
     except Exception as exc:
         return _err(rid, 5000, f"Could not compute context breakdown: {exc}")

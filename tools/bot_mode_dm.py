@@ -136,16 +136,19 @@ def ensure_message_agent_tool(agent: Any) -> bool:
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
         tools = getattr(agent, "tools", None)
-        if tools and any(
+        present = bool(tools) and any(
             isinstance(t, dict) and t.get("function", {}).get("name") == MESSAGE_AGENT_TOOL_NAME
             for t in tools
-        ):
-            return True
-        if not message_agent_authorized(agent):
-            return False
-        if agent.tools is None:
-            agent.tools = []
-        agent.tools.append(message_agent_tool_schema())
+        )
+        if not present:
+            if not message_agent_authorized(agent):
+                return False
+            if agent.tools is None:
+                agent.tools = []
+            agent.tools.append(message_agent_tool_schema())
+        # Success means BOTH halves hold: a tool-surface rebuild (compaction, MCP refresh)
+        # can keep the schema while valid_tool_names is republished without it, and an
+        # advertised-but-nondispatchable tool sends the model hunting for shellouts (#96105).
         valid = getattr(agent, "valid_tool_names", None)
         if isinstance(valid, set):
             valid.add(MESSAGE_AGENT_TOOL_NAME)
@@ -155,12 +158,24 @@ def ensure_message_agent_tool(agent: Any) -> bool:
         return False
 
 
-def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
-    """Map a target handle to a profile name ('hermes' → 'default')."""
+def _resolve_local_name(target: str, roster: list[str], root: Path | None = None) -> Optional[str]:
+    """Map a target to a local profile FOLDER id: 'hermes' → 'default'; an exact folder id
+    (case-insensitive); else — when ``root`` is given — a friendly name or its Desktop @-slug
+    (profile.yaml ``display_name`` / Bot Mode title: 'Scribe', '@scribe', 'Dr. Foo' → 'foo').
+    Ambiguous friendly names resolve to None so a DM never lands on the wrong bot (#100671)."""
     want = target.strip().lower()
+    if not want:
+        return None
     if want == "hermes":
         return "default" if "default" in roster else None
-    return next((name for name in roster if name.lower() == want), None) if want else None
+    exact = next((name for name in roster if name.lower() == want), None)
+    if exact is not None or root is None:
+        return exact
+    from tools.bot_mode_probe import alias_forms, local_alias_map
+
+    aliases = local_alias_map(root)
+    hits = set().union(*(aliases.get(form, set()) for form in alias_forms(want) | {want}))
+    return next(iter(hits)) if len(hits) == 1 else None
 
 
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
@@ -180,8 +195,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
-            is_bot_mode_managed,
+            BOT_CHAT_TITLE, _display_name, _handle, _hermes_root, _peers, _profile_name as _self_profile_name,
+            _roster, is_bot_mode_managed,
         )
         from tools.bot_relay import BOT_CHAT_TURN_ARGS, _hermes_cli
 
@@ -213,7 +228,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     raw_target = str(target or "").strip().lstrip("@")
     if not raw_target:
         return _roster_err("target is required.")
-    content = f"Message from 🤖 {_handle(me)} (@{_handle(me)}): " + body
+    # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
+    content = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)))} (@{_handle(me)}): " + body
     delivery = dict(task_id=task_id, agent=agent)
     # Attribution for the recipient's memory hooks; the text prefix above stays the human-facing signature.
     author = {"id": f"bot:{me}", "name": _handle(me), "is_bot": True}
@@ -240,11 +256,11 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
                                author=peer_author, **delivery)
 
-    # Local teammate.
+    # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
+    resolved = _resolve_local_name(raw_target, roster, root)
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
-    if not is_local_shape and "@" not in raw_target:
+    if resolved is None and not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")
-    resolved = _resolve_local_name(raw_target, roster) if is_local_shape else None
     if resolved is None or resolved == me:
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
@@ -390,16 +406,19 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
     compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
 
-    def _turn():
+    def _turn(turn_env=env):
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=turn_env)
 
     proc = _turn()
     if proc.returncode != 0:
-        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action
+        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action, turn_failure_text
+        from tools.bot_relay import retry_turn_env
 
-        if retry_action(classify_agent_error((proc.stderr or proc.stdout or "").strip()[-500:])) != RETRY_NONE:
-            proc = _turn()
+        # The re-run replays the same session and payload; the failed attempt already persisted the
+        # user row, so the retried process is told to resume it (RESUME_UNANSWERED_TURN_ENV).
+        if retry_action(classify_agent_error(turn_failure_text(proc.stdout, proc.stderr))) != RETRY_NONE:
+            proc = _turn(retry_turn_env(env))
     stderr_text = proc.stderr or ""
     reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
                    for line in stderr_text.splitlines()

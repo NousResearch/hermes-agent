@@ -366,7 +366,12 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
         "post_install": entry.post_install or "",
         # Composer-suggestion triggers (desktop brand pills), only when the
         # manifest declares a `suggest` block.
-        "suggest": {"keywords": list(entry.suggest.keywords), "hosts": list(entry.suggest.hosts)} if entry.suggest else None,
+        "suggest": {
+            "keywords": list(entry.suggest.keywords), "hosts": list(entry.suggest.hosts),
+            "applications": list(getattr(entry.suggest, "applications", [])),
+            "examples": list(getattr(entry.suggest, "examples", [])),
+            "requires_app": getattr(entry.suggest, "requires_app", False),
+        } if entry.suggest else None,
         "needs_install": install is not None,
         "installed": installed,
         "enabled": enabled,
@@ -374,9 +379,10 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
 
 
 @router.get("/api/mcp/catalog")
-async def list_mcp_catalog(profile: Optional[str] = None):
+async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = False):
     """Browse the Nous-approved MCP catalog (optional-mcps/ manifests), each
-    entry annotated with installed/enabled state for ``profile``."""
+    entry annotated with installed/enabled state for ``profile``. Opt-in app
+    signals describe this backend machine, never the client or terminal sandbox."""
     with http_failure("mcp_catalog import failed", 500, "Catalog unavailable"):
         from hermes_cli import mcp_catalog
 
@@ -402,7 +408,36 @@ async def list_mcp_catalog(profile: Optional[str] = None):
         diagnostics = [{"name": n, "kind": k, "message": m} for (n, k, m) in mcp_catalog.catalog_diagnostics()]
     except Exception:
         pass
-    return {"entries": entries, "diagnostics": diagnostics}
+    result = {"entries": entries, "diagnostics": diagnostics}
+    if detect_apps:
+        import sys
+
+        try:
+            from hermes_cli.mcp_app_detection import discover_catalog_apps, validate_applications
+
+            applications = {}
+            for entry in entries:
+                labels = (entry["suggest"] or {}).get("applications") or [
+                    entry["name"].replace("-", " ").replace("_", " ")
+                ]
+                try:
+                    applications[entry["name"]] = validate_applications(labels)
+                except ValueError:
+                    # Catalog identifiers allow more than app labels; one unusable
+                    # inference must not suppress valid observations for other entries.
+                    applications[entry["name"]] = []
+
+            # Keep backend-local filesystem work off the event loop and profile lock.
+            detected = await asyncio.to_thread(discover_catalog_apps, applications)
+        except Exception:
+            _log.warning("Backend application discovery unavailable")
+            detected = {"matches": {}, "discovery": {
+                "scope": "backend", "status": "unavailable", "platform": sys.platform,
+            }}
+        for entry in entries:
+            entry["detected_apps"] = detected["matches"].get(entry["name"], [])
+        result["discovery"] = detected["discovery"]
+    return result
 
 
 @router.post("/api/mcp/catalog/install")

@@ -756,51 +756,6 @@ def _approval_send_outcome(future, timeout: float) -> str:
     return "failed"
 
 
-def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | None":
-    """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``.
-
-    Only a DEFINITIVE failure tears down the registration; ``ambiguous`` (card may have posted) stays armed
-    and proceeds to the bounded wait, whose response timeout covers a lost card."""
-    outcome = _approval_send_outcome(fut, timeout=15)
-    if outcome == "declined":
-        # P5(b): a connector DECLINE is MORE definitive than a failure — the
-        # destination was authorized and refused, so the card cannot arrive and
-        # no late reply can resolve it. Without this branch `declined` fell
-        # through to the bounded wait and the agent blocked until
-        # clarify_timeout (indefinitely when that is configured non-positive).
-        logger.warning(
-            "Clarify prompt DECLINED by the connector's egress guard; "
-            "clearing registration"
-        )
-        clarify_mod.clear_session(session_key)
-        return "[clarify prompt could not be delivered: destination refused]"
-    if outcome == "failed":
-        # Undeliverable: clear the registration and return the sentinel so the agent falls back, not hangs.
-        logger.warning("Clarify send failed definitively; clearing registration")
-        clarify_mod.clear_session(session_key)
-        return "[clarify prompt could not be delivered]"
-    if outcome == "ambiguous":
-        logger.warning(
-            "Clarify prompt send timed out — treating as possibly-delivered "
-            "(no teardown; the registration stays armed for a late reply)")
-    return None
-
-
-def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> tuple[str, bool]:
-    """Resolve a clarify prompt: send disposition, then the bounded wait.
-
-    Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
-    callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
-    abort = _clarify_send_disposition(fut, session_key=session_key, clarify_mod=clarify_mod)
-    if abort is not None:
-        return abort, False
-    timeout = clarify_mod.get_clarify_timeout()
-    response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
-    if response is None or response == "":
-        return f"[user did not respond within {int(timeout / 60)}m]", False
-    return response, True
-
-
 def _resolve_progress_thread_id(
     platform: Any, source_thread_id: Any, event_message_id: Any, *, reply_in_thread: bool = True
 ) -> Optional[str]:
@@ -1192,6 +1147,20 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+def _has_replayable_sidecar(role: Any, content: Any, msg: Dict[str, Any]) -> bool:
+    """True for an assistant row whose reply lives only in the ``api_content`` sidecar.
+
+    A reasoning-only clean stop persists ``content=""`` and the promoted text in ``api_content``
+    (agent/turn_final_response.py). Gating replay on ``content`` alone dropped that row, so the
+    next gateway turn lost the assistant's answer and replayed user->user."""
+    return (
+        role == "assistant"
+        and not content
+        and isinstance(msg.get("api_content"), str)
+        and bool(msg.get("api_content"))
+    )
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]], *, channel_prompt: Optional[str] = None,
     inject_timestamps: bool = False) -> tuple[List[Dict[str, Any]], Optional[str]]:
@@ -1226,7 +1195,7 @@ def _build_gateway_agent_history(
         if "tool_calls" in msg or "tool_call_id" in msg or role == "tool":
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
             agent_history.append(clean_msg)
-        elif content:
+        elif content or _has_replayable_sidecar(role, content, msg):
             replay_timestamp = msg.get("timestamp")
             # Clean before rendering: a timestamp prefix hides recovery notes
             # from the startswith-based stripper. Retain an embedded original time.
@@ -1775,15 +1744,19 @@ async def _async_profile_runtime_scope(profile_home: "Path"):
 
 
 def load_gateway_config_for_runner() -> "GatewayConfig":
-    """Load gateway config for the process-level GatewayRunner. Multiplexed: reload under the default
-    profile's ``_profile_runtime_scope`` so platform tokens in its ``.env`` resolve via the secret
-    scope; unscoped ``_getenv`` falls to ``os.environ``, which often lacks a token living only under
+    """Load gateway config for the process-level GatewayRunner. An UNSET ``multiplex_profiles`` is
+    settled first by ``resolve_multiplex_mode`` (the default is on; the boot guard keeps a fleet that
+    still runs per-profile gateways standalone). Multiplexed: reload under the default profile's
+    ``_profile_runtime_scope`` so platform tokens in its ``.env`` resolve via the secret scope;
+    unscoped ``_getenv`` falls to ``os.environ``, which often lacks a token living only under
     ``profiles/<name>/.env``. Off -> identical to ``load_gateway_config()``.
 
     See #64674.
     """
+    from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
     cfg = load_gateway_config()
-    if not getattr(cfg, "multiplex_profiles", False):
+    log_multiplex_decision(resolve_multiplex_mode(cfg))
+    if not cfg.multiplex_profiles:
         return cfg
     try:
         home = get_hermes_home()
@@ -1791,10 +1764,12 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
         return cfg
     try:
         with _profile_runtime_scope(Path(home)):
-            return load_gateway_config()
+            scoped = load_gateway_config()
     except Exception:
         logger.debug("multiplex default-scope config reload failed; using unscoped load", exc_info=True)
         return cfg
+    scoped.multiplex_profiles = cfg.multiplex_profiles  # the verdict above, not a second unset flag
+    return scoped
 
 
 async def _discover_gateway_mcp_tools(config: object) -> None:
@@ -2361,11 +2336,15 @@ def _resolve_gateway_model_context(
         context_length=context_length, context_source=context_source)
 
 
-def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
-    """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
+def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Optional[str] = None) -> dict:
+    """Resolve runtime credentials for a specific provider (e.g. from channel override).
+
+    ``target_model`` is the model the override will actually send: the ladder's model-keyed rungs
+    (OpenCode free tier, Zen/Go relay + api_mode) must see it rather than config's ``default``,
+    or a ``*-free`` default routes a Go-only override to the keyless Zen relay (#112600)."""
     from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
     try:
-        runtime = resolve_runtime_provider(requested=provider)
+        runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {
@@ -2410,7 +2389,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                 from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=resolve_entry_api_key(entry))
+                    explicit_api_key=resolve_entry_api_key(entry), target_model=entry.get("model") or None)
                 # Named custom entries resolve to the bare "custom" billing class; persist the configured
                 # identity so UI/billing rows match the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
@@ -2558,7 +2537,12 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
+# ``tool_reason`` for the inactivity timeout: attributes the stop to the gateway watchdog (#112647).
+_INTERRUPT_TOOL_REASON_TIMEOUT = "gateway inactivity watchdog"
 _INTERRUPT_REASON_EVICTED = "Session ended while the turn was running"
+# ``tool_reason`` for eviction / shutdown: these stops are system-issued, not user stops (#112647).
+_INTERRUPT_TOOL_REASON_EVICTED = "session evicted"
+_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN = "gateway shutdown"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
@@ -2653,7 +2637,7 @@ def _abandon_timed_out_gateway_turn(
     agent = agent_holder[0] if agent_holder else None
     if agent is not None:
         try:
-            request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT)
+            request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT, tool_reason=_INTERRUPT_TOOL_REASON_TIMEOUT)
         except Exception:
             logger.debug("Timed-out agent interrupt failed", exc_info=True)
 
@@ -2671,15 +2655,27 @@ def _watch_gateway_turn_inactivity(
     *, agent_holder, task_id: str, process_baseline, timeout: float, worker_done: threading.Event,
     timeout_fired: threading.Event, cleanup_lock: threading.Lock, poll_interval: float = 5.0,
     is_still_current: Optional[Callable[[], bool]] = None) -> None:
-    """Thread watchdog that remains runnable when gateway asyncio is starved."""
+    """Thread watchdog that remains runnable when gateway asyncio is starved.
+
+    Until an agent publishes a usable activity snapshot, elapsed worker time is the
+    liveness clock.  Otherwise a provider hang before activity initialization can
+    retain the session turn lease forever because every watchdog poll just skips it.
+    """
+    activity_origin = time.monotonic()
     while not worker_done.wait(max(0.01, poll_interval)):
+        now = time.monotonic()
+        idle_seconds = now - activity_origin
         agent = agent_holder[0] if agent_holder else None
-        if agent is None or not hasattr(agent, "get_activity_summary"):
-            continue
-        try:
-            idle_seconds = float(agent.get_activity_summary().get("seconds_since_activity", 0.0))
-        except Exception:
-            continue
+        if agent is not None and hasattr(agent, "get_activity_summary"):
+            try:
+                reported_idle = agent.get_activity_summary().get("seconds_since_activity")
+                if reported_idle is not None:
+                    idle_seconds = max(0.0, float(reported_idle))
+                    # Preserve the most recent usable activity clock as the fallback if
+                    # a later provider-side diagnostic read raises or returns None.
+                    activity_origin = now - idle_seconds
+            except Exception:
+                pass
         if idle_seconds < timeout:
             continue
         _abandon_timed_out_gateway_turn(
@@ -3401,6 +3397,8 @@ class GatewayRunner(
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
         # See #64674.
+        # An injected config (tests, ``gateway run --config``) is taken verbatim: an unset flag there
+        # stays None (= standalone); only the loaded path runs the boot-time default-on guard.
         self.config = config if config is not None else load_gateway_config_for_runner()
         # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
@@ -5023,7 +5021,7 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
                 logger.warning("Shutdown context: %s", format_context_for_log(_shutdown_ctx))
 
             def _diagnostic() -> None:
-                # Heavyweight (ps auxf, pstree, dmesg), detached so it finishes even if our cgroup is torn
+                # Heavyweight (comm-only ps, pstree, dmesg), detached so it finishes even if our cgroup is torn
                 # down; bounded by an internal timeout, never blocks.
                 from gateway.shutdown_forensics import spawn_async_diagnostic
                 spawn_async_diagnostic(
@@ -5071,6 +5069,7 @@ async def _start_gateway_start_control_socket(runner):
         # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
         # this feature. See #92091.
         from gateway.control_socket import GatewayControlServer
+        from gateway.run_profile_reconcile import migrate_profile_identity_verb, purge_profile_identity_verb
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
@@ -5118,7 +5117,9 @@ async def _start_gateway_start_control_socket(runner):
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
-                           "rescan-profiles": _rescan_profiles_handler})
+                           "rescan-profiles": _rescan_profiles_handler,
+                           "migrate-profile-identity": migrate_profile_identity_verb(runner),
+                           "purge-profile-identity": purge_profile_identity_verb(runner)})
         if not await _control_server.start():
             _control_server = None
         else:
@@ -5367,7 +5368,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     def _recover_pending() -> None:
         from gateway.shutdown_flush import recover_pending_to_db
-        recovered = recover_pending_to_db()
+        recovered = recover_pending_to_db(
+            session_resolver=runner.session_store.resolve_session_id_for_key,
+        )
         if recovered:
             logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
 
@@ -5457,6 +5460,9 @@ def main():
         import yaml
         with open(args.config, encoding="utf-8") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
+        # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
+        from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
+        log_multiplex_decision(resolve_multiplex_mode(config))
 
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a
     # wedged non-daemon worker can't block Py_FinalizeEx's join. SystemExit caught so EVERY path exits.

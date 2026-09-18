@@ -1261,6 +1261,8 @@ class CLICommandsMixin:
     # ---- /resume, /sessions, /branch ------------------------------------------------------
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
+        if getattr(self, "_agent_running", False):
+            return _cp("  Agent is busy. Wait for the current turn to finish, then retry /resume.")
         from cli import _sync_process_session_id
         target = _command_arg(cmd_original)
         # Users copy the help text's placeholder brackets/quotes verbatim (``/resume <abc123>``).
@@ -1367,6 +1369,11 @@ class CLICommandsMixin:
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the
         full history so a different approach can be explored without losing the original."""
+        # An in-flight agent run would flush through the rotating session identity: the branch
+        # ends the parent row and repoints agent.session_id (_sync_agent_to_session), so the
+        # turn's remaining messages land on the branch. Refuse mid-turn like /handoff does.
+        if getattr(self, "_agent_running", False):
+            return _cp("  Agent is busy. Wait for the current turn to finish, then retry /branch.")
         from cli import _sync_process_session_id
         if not self.conversation_history:
             return _cp("  No conversation to branch — send a message first.")
@@ -2080,7 +2087,9 @@ class CLICommandsMixin:
         runtime = turn_route["runtime"]
         main_runtime = {
             "model": turn_route["model"],
-            **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")}}
+            **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            "session_id": getattr(parent_agent, "session_id", None),
+        }
         preview = _ellipsize(question, 60)
         _cp(f"  💬 Side question: \"{preview}\"",
             "  Answering from a snapshot of this conversation — the current work continues.\n")

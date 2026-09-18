@@ -604,6 +604,7 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     hermes_home = tmp_path / ".hermes"
     profile_home = hermes_home / "profiles" / "milo"
     profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
 
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),

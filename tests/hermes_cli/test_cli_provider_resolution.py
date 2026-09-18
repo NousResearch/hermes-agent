@@ -10,6 +10,7 @@ from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
 import hermes_cli.main_provider_setup as hermes_cli_main_provider_setup
 from hermes_cli import model_setup_flows
+from hermes_cli import model_switch
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +186,56 @@ def test_explicit_model_wins_over_provider_default_model(monkeypatch):
     assert shell.model == "explicit-id"
 
 
+
+@pytest.mark.parametrize(
+    ("explicit_base_url", "expected_base_url"),
+    [
+        (None, "http://alias.example:8000/v1"),
+        ("http://override.example:9000/v1", "http://override.example:9000/v1"),
+    ],
+)
+def test_startup_alias_base_url_reaches_runtime_resolution(
+    monkeypatch,
+    explicit_base_url,
+    expected_base_url,
+):
+    """Startup aliases keep their endpoint unless --base-url overrides it (#103933)."""
+    cli = _import_cli()
+    monkeypatch.setitem(
+        cli.CLI_CONFIG,
+        "model",
+        {
+            "default": "fallback-model",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+    )
+    monkeypatch.setattr(
+        model_switch,
+        "DIRECT_ALIASES",
+        {
+            "myalias": model_switch.DirectAlias(
+                "my-model-id",
+                "custom",
+                "http://alias.example:8000/v1",
+                api_key="not-needed",
+            ),
+        },
+    )
+
+    shell = cli.HermesCLI(
+        model="myalias",
+        base_url=explicit_base_url,
+        compact=True,
+        max_turns=1,
+    )
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "my-model-id"
+    assert shell.provider == "custom"
+    assert shell.base_url == expected_base_url
+
+
 def test_provider_flag_logs_when_custom_default_model_cannot_resolve(monkeypatch, caplog):
     """A named --provider that fails to resolve must not fail silently."""
     cli = _import_cli()
@@ -261,6 +312,56 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_ensure_runtime_credentials_passes_cli_model_as_target_model(monkeypatch):
+    """`hermes -m mimo-v2.5 --provider opencode-go` must resolve credentials for the model the
+    CLI will send: the OpenCode free-tier rung keys off the effective model, and without
+    target_model a `*-free` config default routes an explicit paid model to the keyless Zen
+    relay (#112600)."""
+    cli = _import_cli()
+    seen = {}
+
+    def _runtime_resolve(**kwargs):
+        seen.update(kwargs)
+        return {
+            "provider": "opencode-go",
+            "api_mode": "chat_completions",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "api_key": "test-key",
+            "source": "env",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    shell = cli.HermesCLI(model="mimo-v2.5", provider="opencode-go", compact=True, max_turns=1)
+
+    assert shell._ensure_runtime_credentials() is True
+    assert seen["requested"] == "opencode-go"
+    assert seen["target_model"] == "mimo-v2.5"
+
+
+
+
+def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_path):
+    """The auth-fallback rung must resolve credentials for the ENTRY's model, exactly like the
+    primary path does for `-m`: with a `*-free` config default and no target_model, the OpenCode
+    free-tier rung wins and a Go-only fallback entry is built against the Zen relay (#112600)."""
+    from hermes_cli.auth import AuthError
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  default: mimo-v2.5-free\n  provider: opencode\n  base_url: https://opencode.ai/zen/v1\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-test-go")
+    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+
+    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    shell._fallback_model = [{"provider": "opencode-go", "model": "mimo-v2.5"}]
+    runtime = shell._resolve_fallback_runtime(AuthError("no key", provider="opencode-zen", code="missing_api_key"))
+
+    assert runtime is not None
+    assert shell.model == "mimo-v2.5"
+    assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):

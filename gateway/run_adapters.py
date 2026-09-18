@@ -457,6 +457,7 @@ class GatewayAdapterLifecycleMixin:
         → running), re-bind the home channel to the CLI session_id, dispatch a synthetic event, mark
         ``completed``/``failed``."""
         from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes, _reclaim_stale
+        from gateway.run_idle_gates import off_loop_gate, profile_has_pending_handoff
         await asyncio.sleep(5)  # let platforms connect before dispatching through them
         # Does _process_handoff accept the profile argument? Test stand-ins bind a one-arg callable.
         try:
@@ -524,6 +525,11 @@ class GatewayAdapterLifecycleMixin:
             while self._running:
                 try:
                     for profile_name, profile_home in _handoff_watch_scopes(self):
+                        # Idle gate (run_idle_gates): skip the scope entry when the profile's store
+                        # holds no pending handoff. The root poll (None) is unscoped and stays cheap.
+                        if profile_home is not None and not await off_loop_gate(
+                                self, lambda home=profile_home: profile_has_pending_handoff(home)):
+                            continue
                         async with _scope(profile_home):
                             await _tick(profile_name)
                 except asyncio.CancelledError:
@@ -1438,14 +1444,26 @@ class GatewayAdapterLifecycleMixin:
 
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
-        return self._make_default_profile_message_handler() if self._multiplex_on() else self._handle_message
+        if self._multiplex_on():
+            return self._make_default_profile_message_handler()
+        return self._standalone_scoped(self._handle_message)
 
     def _primary_busy_session_handler(self):
         """Return the correctly scoped busy-session handler for a primary adapter."""
-        return (
-            self._make_default_profile_busy_session_handler()
-            if self._multiplex_on() else self._handle_active_session_busy_message
-        )
+        if self._multiplex_on():
+            return self._make_default_profile_busy_session_handler()
+        return self._standalone_scoped(self._handle_active_session_busy_message)
+
+    def _standalone_scoped(self, handler):
+        """Standalone twin of the ``_make_default_profile_*`` wrappers: run ``handler`` under
+        ``_standalone_launch_scope`` so slash commands and turns keep resolving the launch profile's
+        credentials after a hosted room flipped the process-wide guard (#112878). Decided per event:
+        activation happens after the adapters were wired."""
+        async def _handler(*args):
+            with self._standalone_launch_scope():
+                return await handler(*args)
+
+        return _handler
 
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
@@ -1486,7 +1504,7 @@ class GatewayAdapterLifecycleMixin:
     def _primary_platform_event_handler(self):
         if self._multiplex_on():
             return self._make_default_profile_platform_event_handler()
-        return self._handle_gateway_platform_event
+        return self._standalone_scoped(self._handle_gateway_platform_event)
 
     @staticmethod
     def _adapter_credential_claim(platform: Platform, adapter: Any) -> Optional[tuple]:

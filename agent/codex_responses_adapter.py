@@ -386,9 +386,8 @@ def _replay_reasoning_items(
         if foreign_issuer or foreign_model:
             if not _CROSS_ISSUER_WARN_EMITTED:
                 logger.warning(
-                    "Dropping reasoning item minted by %s/%s while calling %s/%s — encrypted_content is "
-                    "sealed to its issuer and model. This happens when a session switches model mid-conversation.",
-                    item_issuer, item_model, current_issuer_kind, current_issuer_model,
+                    "Dropping reasoning item because its issuer or model differs from the current route; "
+                    "encrypted content remains bound to its original issuer and model."
                 )
                 _CROSS_ISSUER_WARN_EMITTED = True
             continue

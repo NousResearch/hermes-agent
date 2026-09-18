@@ -145,6 +145,40 @@ restart/Windows/Electron paths where relevant. A green unit suite or an
 "Implemented contract" label is not sufficient to promote product-level causal
 reliability.
 
+## D-017 — Adaptive execution precedes progressive compilation
+
+Durable compilation is an optimization and reliability mechanism for understood
+repetitive work; it is not a universal permission gate for every mutation inside
+a request that happens to look repetitive.
+
+Novel or drifted work may execute through a bounded ADAPTIVE mode under the
+existing TaskRun, BrowserTask/worker/host lease, approval, policy and uncertainty
+contracts. As stable operation segments are observed, the runtime progressively
+moves them through compiled execution and the existing
+Experience -> Candidate -> Validate -> Promote -> Routine lifecycle.
+
+A compilation requirement is scoped to a concrete operation fingerprint/target
+family, not to the whole session or turn. The current _work_batch_candidate-style
+global latch is therefore not an architectural invariant and must be replaced by
+operation-scoped policy.
+
+The deterministic runner must return a compact NEEDS_REASONING/drift handoff when
+reality no longer matches its assumptions. It must not trap the agent in a
+durable_compile_required <-> PREFLIGHT_REQUIRED refusal loop.
+
+For stateful browser work, transient UI interaction and external commit are
+distinct. Evidence strength is chosen at the effect boundary; independent
+persisted readback is required where the risk/effect contract demands it, not for
+every focus/type/open intermediate UI step.
+
+tools.effects is the canonical effect taxonomy. Route policy compares canonical
+route identities (native_browser for the internal Workstation Browser) after
+tool-to-route normalization. Arbitrary browser_console remains potentially
+mutating.
+
+Detailed contract:
+[ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).
+
 ## Changing a decision
 
 A replacement decision must state which decision it supersedes, why the old invariant no longer holds, how migration/backward compatibility is handled, and which tests prove the new contract. Do not silently drift architecture through implementation-only changes.

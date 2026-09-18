@@ -36,7 +36,7 @@ from tools.approval_floors import (
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
-from tools.approval_smart import _smart_verdict
+from tools.approval_smart import _script_has_gateway_lifecycle, _smart_approval_human_only, _smart_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -1214,11 +1214,16 @@ def check_all_command_guards(command: str, env_type: str,
     # "Always" is offered when at least one warning is a dangerous-pattern key the persistence layer would actually
     # allowlist permanently. Pure-tirith findings are session-max by design, so a tirith-only prompt hides Always;
     # mixed prompts offer it (the pattern key persists, tirith downgrades to session — see _persist_choice).
+    #
+    # Exception: warnings whose pattern key is outside guardian jurisdiction (gateway-lifecycle / agent
+    # self-termination) skip the guardian LLM entirely and proceed straight to the human prompt — a guardian
+    # APPROVE must not be able to stop or restart the agent's own gateway. See #96555.
     return _human_decision(
         _COMMAND_GATE, command=command, description=combined_desc,
         pattern_key=primary_key, pattern_keys=all_keys, warnings=warnings,
         session_key=session_key, approval_callback=approval_callback,
-        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
+        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        smart=approval_mode == "smart" and not _smart_approval_human_only(all_keys),
         permanent_capable=any(not is_t for _, _, is_t in warnings),
     )
 
@@ -1289,12 +1294,17 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # Smart mode: an APPROVE only suppresses the redundant whole-script prompt; the per-call terminal() guards still
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for
     # display; the raw code is what gets assessed and run.
+    #
+    # Exception: a script that EMBEDS a gateway-lifecycle command (subprocess.run(["launchctl", "bootout", ...]),
+    # os.system("hermes gateway stop"), ...) is outside guardian jurisdiction — the guardian sees only the
+    # benign-looking shell string and would auto-approve the agent's own self-termination. Such scripts go straight
+    # to the human prompt, same as their terminal() counterparts. See #96555.
     from agent.redact import redact_sensitive_text
     return _human_decision(
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], warnings=[(pattern_key, None, False)], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
-        smart=approval_mode == "smart",
+        smart=approval_mode == "smart" and not _script_has_gateway_lifecycle(code),
         pending_body=lambda: f"**Code:**\n```python\n{redact_sensitive_text(code)}\n```",
     )
 

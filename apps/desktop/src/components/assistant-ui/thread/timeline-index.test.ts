@@ -66,7 +66,7 @@ describe('timeline metadata index', () => {
     expect((await fetchTimelineIndex('session', 'default')).complete).toBe(true)
   })
 
-  it('names the mark before an anchor, paging the index once while it cannot cover it', async () => {
+  it('names the mark before an anchor, paging a partial index only as far as one lookup may', async () => {
     api
       .mockResolvedValueOnce({
         entries: [{ row_id: 10, preview: 'Prompt 10' }, { row_id: 20, preview: 'Prompt 20' }],
@@ -76,6 +76,7 @@ describe('timeline metadata index', () => {
         entries: [{ row_id: 30, preview: 'Prompt 30' }, { row_id: 40, preview: 'Prompt 40' }],
         pagination: { next_cursor: null, has_more: false }
       })
+      .mockResolvedValue(page(1, true))
     const { previousPromptRowId } = await import('./timeline-index')
 
     // The anchor sits past the first page; the lookup advances the shared index.
@@ -88,15 +89,9 @@ describe('timeline metadata index', () => {
     expect(await previousPromptRowId('session', 'default', 10)).toBeNull()
     expect(await previousPromptRowId('session', 'default', undefined)).toBeNull()
     expect(api).toHaveBeenCalledTimes(2)
-  })
-
-  it('bounds how far one lookup pages a partially loaded index', async () => {
-    api.mockResolvedValue(page(1, true))
-    const { previousPromptRowId } = await import('./timeline-index')
-
-    // The anchor is never covered and the index never completes: the lookup
+    // A session whose index never completes nor covers the anchor: the lookup
     // stops at its per-lookup ceiling instead of walking the whole session.
-    expect(await previousPromptRowId('session', 'default', 99_999)).toBe(1)
-    expect(api).toHaveBeenCalledTimes(3)
+    expect(await previousPromptRowId('endless', 'default', 99_999)).toBe(1)
+    expect(api).toHaveBeenCalledTimes(5)
   })
 })

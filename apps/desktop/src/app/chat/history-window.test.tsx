@@ -182,6 +182,7 @@ describe('paging earlier from an open history window', () => {
       .mockResolvedValueOnce(page(4000))
       .mockResolvedValueOnce(index([3880, 4000]))
       .mockResolvedValueOnce({ ...page(3880), pagination: { ...page(3880).pagination, has_older: false } })
+
     const mounted = mount()
     const live = mounted.view.$messages.get()
 
@@ -231,17 +232,25 @@ describe('paging earlier from an open history window', () => {
     expect(beforePrepend).not.toHaveBeenCalled()
   })
 
-  it('still retires the entry point when the open window starts at the session top', async () => {
-    const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue({
-      ...page(1),
-      pagination: { ...page(1).pagination, has_older: false }
-    })
-    const mounted = mount()
+  it('retires the entry point when the complete index lists no prompt before the window', async () => {
+    const api = vi
+      .spyOn(window.hermesDesktop, 'api')
+      // The backend counts rows before this page, but none of them is a prompt mark.
+      .mockResolvedValueOnce(page(4000))
+      .mockResolvedValueOnce(index([4000]))
 
-    await act(async () => { await mounted.window.revealRow(1, new AbortController().signal) })
+    const mounted = mount('stored-unlisted')
+
+    await act(async () => { await mounted.window.revealRow(4000, new AbortController().signal) })
+    expect(mounted.window.olderAvailable).toBe(true)
+
+    let grew = true
+    await act(async () => { grew = (await mounted.window.expandWindow()) === true })
+    expect(grew).toBe(false)
+    // No page can ever arrive: stop offering one instead of failing forever.
     expect(mounted.window.olderAvailable).toBe(false)
+    expect(mounted.window.currentMessages?.[0]?.rowId).toBe(4000)
     expect(await mounted.window.expandWindow()).toBe(false)
-    // Nothing older to walk to: the lookup never even reaches the backend.
-    expect(api).toHaveBeenCalledTimes(1)
+    expect(api).toHaveBeenCalledTimes(2)
   })
 })

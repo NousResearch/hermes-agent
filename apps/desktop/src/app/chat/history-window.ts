@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { capabilityScoped, hermesApi, type ProfileScope } from '@/api/client'
-import { previousPromptRowId } from '@/components/assistant-ui/thread/timeline-index'
+import { cachedTimelineIndex, previousPromptRowId, timelineIndexKey } from '@/components/assistant-ui/thread/timeline-index'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import type { SessionMessagesResponse } from '@/types/hermes'
 
@@ -162,6 +162,20 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
       const rowId = await previousPromptRowId(captured.storedId, captured.scope, anchor)
 
       if (rowId === null || controller.signal.aborted) {
+        // A complete index that lists no prompt before this window means the
+        // backend's older rows can never be paged to: retire the offer so the
+        // button and the top-edge auto-page stop promising a page that never
+        // arrives. An incomplete index still leaves the page untouched for a retry.
+        if (
+          rowId === null &&
+          anchor !== undefined &&
+          !controller.signal.aborted &&
+          latest.current.page === current &&
+          cachedTimelineIndex(timelineIndexKey(captured.storedId, captured.scope))?.complete
+        ) {
+          setSelection({ lifetime: captured.lifetime, page: { ...current, olderAvailable: false } })
+        }
+
         return false
       }
 

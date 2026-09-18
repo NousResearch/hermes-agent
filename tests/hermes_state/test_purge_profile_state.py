@@ -150,3 +150,60 @@ class TestPurgeProfileState:
         routing = db.load_gateway_routing_entries(scope="/root/sessions")
         assert "agent:foo_bar:feishu:dm:chatA" not in routing
         assert "agent:fooXbar:feishu:dm:chatB" in routing
+
+
+_V1_TOPIC_DDL = """
+CREATE TABLE telegram_dm_topic_mode (
+    chat_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+    activated_at REAL NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE telegram_dm_topic_bindings (
+    chat_id TEXT NOT NULL, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
+    session_key TEXT NOT NULL, session_id TEXT NOT NULL, managed_mode TEXT NOT NULL DEFAULT 'auto',
+    linked_at REAL NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY (chat_id, thread_id));
+"""
+
+
+def _create_v1_topic_tables(db):
+    """Topic tables as a store created before topic-migration v3 has them: no profile_name column.
+    The migration only runs on /topic enable/bind, so such stores are common in the wild."""
+    def _do(conn):
+        conn.executescript(_V1_TOPIC_DDL)
+        conn.execute(
+            "INSERT INTO telegram_dm_topic_mode VALUES ('chatA', 'userA', 1, 1.0, 1.0)")
+        conn.execute(
+            "INSERT INTO telegram_dm_topic_bindings VALUES "
+            "('chatA', 'tA', 'userA', 'agent:gone:telegram:dm:chatA', 'sess_gone', 'auto', 1.0, 1.0)")
+        conn.execute(
+            "INSERT INTO telegram_dm_topic_bindings VALUES "
+            "('chatB', 'tB', 'userB', 'agent:keepme:telegram:dm:chatB', 'sess_keep', 'auto', 1.0, 1.0)")
+    db._execute_write(_do)
+
+
+class TestPreV3TopicTables:
+    def test_purge_tolerates_topic_tables_without_profile_name(self, db):
+        _create_v1_topic_tables(db)
+        db.save_gateway_routing_entry(
+            "agent:gone:feishu:dm:chatA", json.dumps({"session_key": "agent:gone:feishu:dm:chatA"}),
+            scope="/root/sessions")
+
+        counts = db.purge_profile_state("gone")
+
+        # The whole write used to roll back on "no such column: profile_name"; routing is purged.
+        assert counts["gateway_routing"] == 1
+        assert "telegram_dm_topic_mode" not in counts
+        assert counts["telegram_dm_topic_bindings"] == 1
+        assert db._read_one(
+            "SELECT COUNT(*) AS n FROM telegram_dm_topic_bindings", ())["n"] == 1
+        assert db._read_one(
+            "SELECT COUNT(*) AS n FROM telegram_dm_topic_mode", ())["n"] == 1
+
+    def test_rekey_tolerates_topic_tables_without_profile_name(self, db):
+        _create_v1_topic_tables(db)
+
+        counts = db.rekey_profile_state("gone", "renamed")
+
+        assert "telegram_dm_topic_bindings_profile_name" not in counts
+        assert counts["telegram_dm_topic_bindings_session_key"] == 1
+        assert db._read_one(
+            "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = 'chatA'", ()
+        )["session_key"] == "agent:renamed:telegram:dm:chatA"

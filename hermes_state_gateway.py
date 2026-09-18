@@ -546,6 +546,21 @@ class SessionGatewayMixin:
             return
         self._write_sql("DELETE FROM gateway_hygiene_state WHERE session_key = ?", (session_key,))
 
+    @staticmethod
+    def _profile_name_tables(conn, existing) -> set:
+        """Telegram topic tables that carry ``profile_name`` (topic-migration v3+). A store whose
+        tables were created at v1/v2 and never re-migrated (the migration only runs on ``/topic``
+        enable/bind, not at startup) lacks the column; identity rekeys and purges must not raise on
+        it — see the 2026-09-18 gateway.log ``no such column: profile_name`` on profile delete."""
+        tables = set()
+        for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings"):
+            if table not in existing:
+                continue
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "profile_name" in columns:
+                tables.add(table)
+        return tables
+
     def rekey_profile_state(self, old_name: str, new_name: str) -> Dict[str, int]:
         """Atomically rewrite exact profile identity in this state database."""
         old, new = (old_name or "").strip(), (new_name or "").strip()
@@ -569,11 +584,12 @@ class SessionGatewayMixin:
             if collision is not None:
                 raise ValueError(
                     f"profile routing collision in scope {collision[0]!r}: {collision[1]!r}")
+            profiled = self._profile_name_tables(conn, existing)
             for table, columns in (
                 ("telegram_dm_topic_mode", ("chat_id",)),
                 ("telegram_dm_topic_bindings", ("chat_id", "thread_id")),
             ):
-                if table not in existing:
+                if table not in profiled:
                     continue
                 equality = " AND ".join(
                     f"target.{column} = old.{column}" for column in columns)
@@ -616,7 +632,7 @@ class SessionGatewayMixin:
                     "WHERE substr(session_key, 1, ?) = ?",
                     (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
             for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings"):
-                if table in existing:
+                if table in profiled:
                     counts[f"{table}_profile_name"] = conn.execute(
                         f"UPDATE {table} SET profile_name = ? WHERE profile_name = ?",
                         (new, old)).rowcount
@@ -702,16 +718,23 @@ class SessionGatewayMixin:
                     "WHERE (adapter_profile = ? OR substr(session_key, 1, ?) = ?) "
                     "AND state NOT IN ('delivered', 'abandoned')",
                     (time.time(), name, ns_len, ns)).rowcount
-            if "telegram_dm_topic_mode" in existing:
+            # Pre-v3 topic tables have no profile_name: topic_mode rows are then unowned (left
+            # alone), bindings are matched on their session_key namespace only.
+            profiled = self._profile_name_tables(conn, existing)
+            if "telegram_dm_topic_mode" in profiled:
                 counts["telegram_dm_topic_mode"] = conn.execute(
                     "DELETE FROM telegram_dm_topic_mode WHERE profile_name = ?", (name,)).rowcount
-            if "telegram_dm_topic_bindings" in existing:
+            if "telegram_dm_topic_bindings" in profiled:
                 # A rename rewrites a binding's session_key namespace as well as its profile_name
                 # (:meth:`rekey_profile_state`), so matching on one alone leaves the other behind.
                 counts["telegram_dm_topic_bindings"] = conn.execute(
                     "DELETE FROM telegram_dm_topic_bindings "
                     "WHERE profile_name = ? OR substr(session_key, 1, ?) = ?",
                     (name, ns_len, ns)).rowcount
+            elif "telegram_dm_topic_bindings" in existing:
+                counts["telegram_dm_topic_bindings"] = conn.execute(
+                    "DELETE FROM telegram_dm_topic_bindings WHERE substr(session_key, 1, ?) = ?",
+                    (ns_len, ns)).rowcount
 
         self._execute_write(_do)
         return counts

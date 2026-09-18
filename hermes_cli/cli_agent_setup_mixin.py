@@ -51,29 +51,44 @@ def _route_signature(model, runtime: dict) -> tuple:
         runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
 
 
-def _credential_pool_cooldown_lines(provider: str) -> list:
-    """Why *provider*'s pool has nothing selectable right now, for the startup notice: a
-    cooldown with its remaining time, or a dead (quarantined) sign-in naming the re-login."""
+def _cooldown_cause(entry) -> str:
+    """Why a benched (exhausted) row is cooling down, from what the pool recorded: a rate-limit or
+    quota response, a failed token refresh, or another HTTP failure."""
+    reason = (entry.last_error_reason or "").lower()
+    if entry.last_error_code in (402, 429) or any(k in reason for k in ("rate", "quota", "insufficient")):
+        return "after a rate-limit or quota response"
+    if entry.last_error_code is None or "refresh" in reason:
+        return "after a failed token refresh"
+    return f"after an HTTP {entry.last_error_code} response"
+
+
+def _credential_pool_notice(provider: str) -> tuple:
+    """``(cooling, lines)`` on why *provider*'s pool has nothing selectable right now, for the
+    startup notice. *cooling* is True when the first line is a live cooldown with its remaining
+    time; a dead (quarantined) sign-in adds a line naming the re-login."""
     import time
-    from agent.credential_pool import STATUS_DEAD, load_pool
+    from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
     try:
         pool = load_pool(provider)
         if not pool.has_credentials() or pool.has_available():
-            return []
+            return False, []
         next_at = pool.next_available_at()
-        dead = [e for e in pool.entries() if e.last_status == STATUS_DEAD]
+        entries = pool.entries()
     except Exception:
-        return []
+        return False, []
     lines = []
     if next_at is not None:
         minutes = max(1, int((next_at - time.time() + 59) // 60))
-        lines.append(f"The {provider} credential is cooling down after a failed refresh; "
+        benched = [e for e in entries if e.last_status == STATUS_EXHAUSTED]
+        cause = _cooldown_cause(benched[0]) if benched else "after a failed request"
+        lines.append(f"The {provider} credential is cooling down {cause}; "
                      f"it re-enters rotation in about {minutes}m.")
+    dead = [e for e in entries if e.last_status == STATUS_DEAD]
     if dead:
         reason = dead[0].last_error_message or dead[0].last_error_reason or "sign-in lost"
         lines.append(f"The {provider} sign-in was lost ({reason}); run `hermes auth add {provider}` "
                      "to sign in again.")
-    return lines
+    return next_at is not None, lines
 
 
 def _keyless_custom_base(base_url) -> bool:
@@ -397,11 +412,16 @@ class CLIAgentSetupMixin:
         if error is None or getattr(error, "code", None) == "no_provider_configured":
             return False
         provider = getattr(error, "provider", None) or self.requested_provider
+        cooling, lines = _credential_pool_notice(provider) if provider and provider != "auto" else (False, [])
         _cprint("")
-        _cprint(f"⚠️  {_escape(format_auth_error(error))}")
-        if provider and provider != "auto":
-            for line in _credential_pool_cooldown_lines(provider):
-                _cprint(f"  {_escape(line)}")
+        if cooling:
+            # A live cooldown is a wait, not a lost login: lead with it and skip the re-auth hint.
+            _cprint(f"⚠️  {_escape(lines.pop(0))}")
+            _cprint(f"  {_escape(str(error))}")
+        else:
+            _cprint(f"⚠️  {_escape(format_auth_error(error))}")
+        for line in lines:
+            _cprint(f"  {_escape(line)}")
         return True
 
     def _offer_first_run_setup(self) -> bool:

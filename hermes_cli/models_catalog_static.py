@@ -237,7 +237,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. Known-delisted models are
     # REMOVED (the live-first merge would otherwise keep offering a model that 401s): "ox-alpha-free"
-    # — the Go-subscription twin of Zen's keyless Ox Alpha — was delisted 2026-09-09.
+    # — the Go-subscription twin of Zen's Ox Alpha — was delisted 2026-09-09.
     "opencode-go": [
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "gpt-5.6-luna", "grok-4.5", "glm-5.3",
         "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro",

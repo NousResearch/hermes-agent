@@ -1434,9 +1434,8 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
 
 
 # ``-free`` slugs the relay still LISTS but no longer serves (or that are keyed twins, not
-# anonymous-servable). The keyless free-tier catalog is gone, but the live-first keyed Zen/Go
-# pickers still filter through this so a stale live listing can never route into a 400/403
-# (#111749). Kept as the extension point for future relay delistings.
+# anonymous-servable). The live-first keyed Zen/Go pickers filter through this so a stale live
+# listing can never route into a 400/403 (#111749).
 _OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
 
 
@@ -1458,7 +1457,7 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
     if live and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
         # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
-        # live-first, so it takes the same exclusion as the keyless catalog (#111749).
+        # live-first, so it filters them out here (#111749).
         live = [m for m in live if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
     if not live:
         return list(profile.fallback_models) if profile.fallback_models else None

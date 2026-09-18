@@ -183,10 +183,10 @@ class CLIAgentSetupMixin:
         _primary_exc = None
         runtime = None
         try:
-            # target_model: the ladder's model-keyed rungs (OpenCode free tier, Zen/Go api_mode,
-            # Copilot/Nous api_mode) must see the model this CLI will actually send, not
-            # config's `default` -- otherwise `hermes -m mimo-v2.5 --provider opencode-go` with a
-            # *-free default is routed to the keyless Zen relay (#112600).
+            # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
+            # api_mode) must see the model this CLI will actually send, not config's `default`,
+            # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the
+            # sent model cannot use (#112600).
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
                 explicit_base_url=self._explicit_base_url, target_model=self.model or None)

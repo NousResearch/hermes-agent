@@ -5104,8 +5104,6 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
-    # Keyless OpenCode free-tier routing was removed (OpenCode 403s anonymous traffic, so -free
-    # slugs now resolve with the caller's own Zen/Go credentials).
     if provider == "actual":
         with contextlib.suppress(Exception):
             from hermes_cli.auth import (

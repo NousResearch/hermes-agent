@@ -846,7 +846,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       2. requested-name shortcuts: moa, anthropic@azure, azure-foundry, vertex
       3. named custom provider / llamacpp alias / bare-custom direct alias
       4. local-endpoint bypass (no explicit creds, config base_url at a non-cloud host)
-      5. ``auth.resolve_provider`` → OpenCode free tier → explicit --api-key/--base-url path
+      5. ``auth.resolve_provider`` → explicit --api-key/--base-url path
       6. credential pool (OpenRouter pool only without custom endpoint/override)
       7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError and logs) → minimax-oauth
          → external-process → anthropic env → bedrock → registry api_key providers

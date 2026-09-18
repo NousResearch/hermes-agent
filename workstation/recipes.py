@@ -32,6 +32,8 @@ def sanitize(value):
             parsed = None
         if isinstance(parsed, (dict, list)):
             return json.dumps(sanitize(parsed), sort_keys=True)
+        from agent.redact import redact_sensitive_text
+        value = redact_sensitive_text(value)
         if re.search(r"(?i)\b(?:bearer\s+\S+|(?:api[_-]?key|token|password|cookie|secret|authorization)\s*[:=]\s*[^\s,;]+)", value):
             return "[REDACTED]"
     return value
@@ -158,11 +160,31 @@ class RecipeStore:
             body.setdefault("stats", {})["failures"] = body.get("stats", {}).get("failures", 0) + 1
             self.put(key, body)
 
+    def find_verified(self, *, fingerprint, scope, mutation_target, preflight,
+                      version=1):
+        """Exact compatibility only. Schema/effect drift is included in fingerprint.
+
+        Persisted preconditions are subsequently executed by TaskCompiler; finding
+        a recipe never grants authority or skips verification of the current state.
+        """
+        if not isinstance(fingerprint, str) or not isinstance(scope, dict) or not isinstance(preflight, (list, tuple)):
+            return None
+        with self._transaction():
+            keys = [key for key, entry in self._load_index().items()
+                    if entry.get('status') == 'VERIFIED' and entry.get('fingerprint') == fingerprint]
+        for key in sorted(keys):
+            recipe = self.get(key)
+            if recipe and recipe.get('status') == 'VERIFIED' and recipe.get('schema_version') == version and recipe.get('scope') == sanitize(scope) and recipe.get('mutation_target') == sanitize(mutation_target) and recipe.get('preflight') == sanitize(list(preflight)):
+                return recipe
+        return None
+
     def promote(self, key, graph, scope, preflight, verifier_ids, fingerprint, mutation_target=None):
         old = self.get(key)
         return self.put(key, {"operation_signature": digest(sanitize(graph)), "scope": scope,
             "graph": graph, "mutation_target": mutation_target, "verification": {"verifier_step_ids": verifier_ids},
             "preflight": preflight, "fingerprint": fingerprint, "status": "VERIFIED",
             "verified_at": datetime.now(timezone.utc).isoformat(),
+            'version': (old or {}).get('version', 1) + int(bool(old and old.get('fingerprint') != fingerprint)),
+            'previous_fingerprint': old.get('fingerprint') if old and old.get('fingerprint') != fingerprint else (old or {}).get('previous_fingerprint'),
             "stats": {"successes": (old or {}).get("stats", {}).get("successes", 0) + 1,
                       "failures": (old or {}).get("stats", {}).get("failures", 0)}})

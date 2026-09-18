@@ -34,9 +34,12 @@ registry.register(
             "mutation_target": {"type": "object", "description": "Intended resource scope (external/local), provider, kind and field. Declare external tasks so preparation-only plans fail before dispatch."},
             "plan_id": {"type": "string"}, "action": {"type": "string", "enum": ["execute", "resume", "status", "contract", "discover"]},
             "recipe_key": {"type": "string"}, "recipe_scope": {"type": "object", "description": "Stable route/host/path_family; no secrets or item IDs."},
+            "operation_fingerprint": {"type": "string", "description": "Exact verified fingerprint for automatic reuse; scope, target and preconditions must agree."},
+            "routine_preconditions": {"type": "array", "items": {"type": "string"}, "description": "Exact structured precondition contracts for harness-selected promoted routines."},
             "preflight": {"type": "array", "maxItems": 8, "items": {"type": "object"}, "description": "Read-only capability probes with expect; run once before cached fan-out."},
             "verbosity": {"type": "string", "enum": ["minimal", "summary", "full"]},
             "kind": {"type": "string", "enum": ["batch", "browser_transaction", "prompt_queue"]},
+            "transaction_contract": {"type": "string", "description": "Owner-registered UI operation contract; caller phase labels alone never relax evidence."},
             "items": {"type": "array", "items": {"type": "object"}},
             "items_ref": {"type": "string", "description": "ArtifactStore dataset reference instead of inline records."},
             "setup_steps": {"type": "array", "items": {"type": "object"}, "description": "Shared steps executed once; bind results with $setup.step_id.field."},
@@ -46,6 +49,8 @@ registry.register(
                 "verifies": {"type": "array", "items": {"type": "string"}, "description": "A read/discovery step with expect proves these mutation IDs."},
                 "readback": {"type": "object", "description": "Map intended resource field to a different serialized result path: field + path; expect must compare that path."},
                 "tool": {"type": "string"}, "args": {"type": "object"}, "expect": {"type": "object"},
+                "transaction_phase": {"type": "string", "enum": ["PREPARE", "INTERACT", "COMMIT", "VERIFY"]},
+                "semantic_anchor": {"type": "object"},
                 "wait": {"type": "object", "properties": {
                     "timeout_seconds": {"type": "number"}, "interval_seconds": {"type": "number"},
                     "max_polls": {"type": "integer"}}}},
@@ -55,5 +60,5 @@ registry.register(
                 "mutation_forbidden_routes": {"type": "array", "items": {"type": "string"}},
                 "allowed_routes": {"type": "array", "items": {"type": "string"}},
                 "forbidden_routes": {"type": "array", "items": {"type": "string"}}}},
-        }, "anyOf": [{"required": ["operation_key", "steps"]}, {"required": ["recipe_key"]}, {"required": ["plan_id"]}, {"properties": {"action": {"enum": ["contract", "discover"]}}, "required": ["action"]}]}},
+        }, "anyOf": [{"required": ["operation_key", "steps"]}, {"required": ["recipe_key"]}, {"required": ["operation_fingerprint", "recipe_scope"]}, {"required": ["plan_id"]}, {"properties": {"action": {"enum": ["contract", "discover"]}}, "required": ["action"]}]}},
 )

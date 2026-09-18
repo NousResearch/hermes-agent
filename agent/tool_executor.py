@@ -635,6 +635,8 @@ def _run_agent_tool_execution_middleware(
             state["args"] = final_args
 
         def _begin() -> None:
+            from workstation.batch_detection import prepare_mutation
+            prepare_mutation(agent, function_name, final_args)
             _begin_tool_execution(
                 agent,
                 function_name=function_name,
@@ -1831,7 +1833,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         display_function_result = function_result
         from workstation.batch_detection import record_mutation
-        record_mutation(agent, name, args, function_result, dispatched=r is not None and not blocked and not is_error)
+        record_mutation(agent, name, args, function_result, dispatched=r is not None and not blocked, duration_ms=tool_duration * 1000)
         from workstation.task_compiler import capture_raw_result
         capture_raw_result(tool_call_id, function_result)
         function_result = maybe_persist_tool_result(
@@ -2758,7 +2760,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         display_function_result = function_result
         from workstation.batch_detection import record_mutation
-        record_mutation(agent, function_name, function_args, function_result, dispatched=_execution_dispatched and not _execution_blocked)
+        record_mutation(agent, function_name, function_args, function_result, dispatched=_execution_dispatched and not _execution_blocked, duration_ms=tool_duration * 1000)
         from workstation.task_compiler import capture_raw_result
         capture_raw_result(tool_call_id, function_result)
         function_result = maybe_persist_tool_result(

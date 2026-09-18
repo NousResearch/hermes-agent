@@ -46,7 +46,7 @@ def prepare_turn_work(agent, content, envelope: MessageEnvelope | None = None) -
     intent = work_intent(envelope)
     agent._message_envelope = envelope
     agent._work_intent = intent
-    agent._work_batch_candidate = batch_intent(envelope.content)
+    agent._work_repeatability_hint = batch_intent(envelope.content)
     if intent.requires_task:
         from workstation.kanban import WorkstationKanbanBridge
         from hermes_cli import kanban_db

@@ -148,7 +148,7 @@ class ProcedureStep:
                 role_filter, _, name_filter = val.partition(":")
                 for el in available_elements:
                     el_role = str(el.get("role", el.get("tag", ""))).lower()
-                    el_name = str(el.get("name", el.get("text", ""))).lower()
+                    el_name = str(el.get("name", el.get("label", el.get("text", "")))).lower()
                     if role_filter in el_role and name_filter in el_name:
                         return str(el.get("ref", el.get("selector", self.target)))
 
@@ -157,7 +157,7 @@ class ProcedureStep:
             if anchor.get("type") == "text":
                 val = anchor.get("value", "").lower()
                 for el in available_elements:
-                    el_name = str(el.get("name", el.get("text", ""))).lower()
+                    el_name = str(el.get("name", el.get("label", el.get("text", "")))).lower()
                     if val and val in el_name:
                         return str(el.get("ref", el.get("selector", self.target)))
 
@@ -167,7 +167,7 @@ class ProcedureStep:
             if self.target and self.target == el_sel:
                 return str(el.get("ref", self.target))
 
-        return self.target or None
+        return None if self.fallback_anchors else self.target or None
 
 
 @dataclass(slots=True)
@@ -385,7 +385,7 @@ class ProceduralMemory:
 
         # Check if an existing procedure matches site + intent closely
         existing = self.discover(site, goal)
-        if existing and existing[0].confidence >= 0.5 and existing[0].lifecycle != ProcedureLifecycle.PROMOTED:
+        if existing and existing[0].confidence >= 0.5 and existing[0].lifecycle == ProcedureLifecycle.DISCOVERED and (not parsed_steps or [s.to_dict() for s in parsed_steps] == [s.to_dict() for s in existing[0].steps]):
             proc = existing[0]
             proc.success_count += 1
             proc.confidence = min(1.0, proc.confidence + 0.05)
@@ -407,6 +407,8 @@ class ProceduralMemory:
             success_count=1,
             failure_count=0,
             confidence=0.8,
+            version=existing[0].version + 1 if existing else 1,
+            scope={'supersedes': existing[0].id} if existing else {},
         )
         self._procedures[proc.id] = proc
         self._persist()
@@ -427,6 +429,12 @@ class ProceduralMemory:
 
     def get_procedure(self, procedure_id: str) -> WebProcedure | None:
         return self._procedures.get(procedure_id)
+
+    def find_promoted(self, *, fingerprint, scope, preconditions):
+        """Exact matching for the harness; similarity search never grants replay."""
+        return next((p for p in self._procedures.values() if p.lifecycle == ProcedureLifecycle.PROMOTED
+                     and p.capability_fingerprint == fingerprint and p.scope == scope
+                     and (preconditions is None or p.preconditions == list(preconditions))), None)
 
     def update_procedure(self, procedure: WebProcedure) -> WebProcedure:
         if procedure.id not in self._procedures:

@@ -51,7 +51,8 @@ def test_discovery_before_compilation(compiler):
     assert not requires_compilation(agent, [call("tool_call", {"name": "trello_list_columns", "arguments": {}})])
     assert requires_compilation(agent, [call("trello_create_card", {"id": i}) for i in range(12)])
     assert not requires_compilation(agent, [call("clarify", {})])
-    assert requires_compilation(agent, [call("delegate_task", {})])
+    # An unrelated cognitive operation cannot inherit another candidate's gate.
+    assert not requires_compilation(agent, [call("delegate_task", {})])
 
 
 @pytest.mark.parametrize("effect", list(ToolEffect))
@@ -194,7 +195,8 @@ def test_mixed_response_discovery_is_not_blocked_with_mutations(compiler):
     from workstation.tests.test_durable_agent_integration import make_agent
     agent = make_agent()
     agent.valid_tool_names.update({"trello_search_board", "trello_create_card"})
-    agent._work_batch_candidate = True
+    from workstation.batch_detection import structural_signature
+    agent._work_mutation_shapes = {structural_signature('trello_create_card', {}): 2}
     messages, calls = [], []
     with patch("run_agent.handle_function_call", side_effect=lambda name, *args, **kw: calls.append(name) or '{"board_id":"B"}'):
         agent._execute_tool_calls(SimpleNamespace(tool_calls=[call("trello_search_board", {}), call("trello_create_card", {})]), messages, "task")

@@ -9,6 +9,34 @@ class ConstraintViolation(RuntimeError):
     pass
 
 
+# Explicit first-party surface, not a wildcard alias for third-party browser tools.
+NATIVE_BROWSER_TOOLS = frozenset({
+    'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
+    'browser_press', 'browser_scroll', 'browser_extract_items', 'browser_console',
+    'browser_get_images', 'browser_back', 'browser_close', 'browser_tab',
+})
+
+
+def canonical_route_for_tool(name: str, *, runtime: str | None = None) -> str:
+    from tools.effects import tool_contract
+    _, metadata = tool_contract(name)
+    routes = metadata.get('routes') or []
+    if name in NATIVE_BROWSER_TOOLS and runtime == 'internal':
+        return 'native_browser'
+    if runtime and runtime != 'internal':
+        return runtime
+    if len(routes) == 1:
+        return routes[0]
+    return f'tool.{name}'
+
+
+def normalize_route_constraints(constraints):
+    return {k: [canonical_route_for_tool(p.removeprefix('tool.'), runtime='internal')
+                if p.removeprefix('tool.') in NATIVE_BROWSER_TOOLS else p for p in v]
+            if k.endswith(('allowed_routes', 'forbidden_routes')) and isinstance(v, list) else v
+            for k, v in constraints.items()}
+
+
 def require_allowed_route(route: str, constraints: Mapping[str, Any]) -> None:
     """Prune prohibited routes before dispatch, discovery, or credential probes."""
     def matches(pattern: str) -> bool:
@@ -19,6 +47,10 @@ def require_allowed_route(route: str, constraints: Mapping[str, Any]) -> None:
         if patterns is not None and (not isinstance(patterns, list) or len(patterns) > 64
                 or any(not isinstance(p, str) or not p or len(p) > 256 for p in patterns)):
             raise ConstraintViolation("Invalid bounded route constraints")
+    if route == 'native_browser':
+        normalized = normalize_route_constraints(constraints)
+        forbidden = normalized.get('forbidden_routes', [])
+        allowed = normalized.get('allowed_routes')
     if any(matches(p) for p in forbidden) or (
         allowed is not None and not any(matches(p) for p in allowed)
     ):

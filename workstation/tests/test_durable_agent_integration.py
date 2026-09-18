@@ -76,7 +76,9 @@ def test_quantified_request_cannot_enter_item_mutation_loop(tmp_path, monkeypatc
     from workstation.task_compiler import batch_intent
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = make_agent()
-    agent._work_batch_candidate = batch_intent("Crie 100 registros para estes itens")
+    agent._work_repeatability_hint = batch_intent("Crie 100 registros para estes itens")
+    from workstation.batch_detection import structural_signature
+    agent._work_mutation_shapes = {structural_signature('write_file', {'path': 'one.json', 'content': 'one'}): 2}
     call = SimpleNamespace(id="item-write", type="function", function=SimpleNamespace(
         name="write_file", arguments='{"path":"one.json","content":"one"}'))
     messages = []

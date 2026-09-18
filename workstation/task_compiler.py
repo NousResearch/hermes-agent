@@ -43,7 +43,7 @@ _execution_active: ContextVar[bool] = ContextVar("workstation_durable_active", d
 
 
 def batch_intent(prompt: Any) -> bool:
-    """Conservative structural signal; only requires compilation, never infers writes."""
+    """Repeatability hint for optimization; never grants or denies mutation authority."""
     if not isinstance(prompt, str):
         return False
     lower = prompt.lower().strip()
@@ -69,6 +69,8 @@ def batch_intent(prompt: Any) -> bool:
 
 
 def merge_constraints(user: dict, compiled: dict) -> dict:
+    from workstation.routing import normalize_route_constraints
+    user, compiled = normalize_route_constraints(user), normalize_route_constraints(compiled)
     combined = {k: compiled[k] for k in ("allowed_routes", "forbidden_routes") if k in compiled}
     combined["forbidden_routes"] = sorted(set(user.get("forbidden_routes", [])) | set(compiled.get("forbidden_routes", [])))
     if "allowed_routes" in user:
@@ -88,15 +90,8 @@ def merge_constraints(user: dict, compiled: dict) -> dict:
 
 
 def requires_compilation(agent: Any, calls: list) -> bool:
-    if not getattr(agent, "_work_batch_candidate", False) or "work_execute" not in agent.valid_tool_names:
-        return False
-    for call in calls:
-        name, _ = unwrap_call(call)
-        # Human clarification remains available; cognitive delegation must not
-        # outsource a repetitive mutation loop. Unknown effects fail closed.
-        if name != "work_execute" and tool_effect(name) not in READ_EFFECTS | {ToolEffect.INTERACTIVE}:
-            return True
-    return False
+    from workstation.execution_policy import CompilationDecision, decisions_for_calls
+    return CompilationDecision.REQUIRE_COMPILE in decisions_for_calls(agent, calls)
 
 
 def discovery_guidance(agent=None):
@@ -266,7 +261,18 @@ class TaskCompiler:
                 progress: Callable | None = None, provider_usage: dict | None = None,
                 environment: str | None = None, event_bus=None, canonical_task_id: str | None = None) -> dict:
         recipe_key = request.get("recipe_key")
+        if not recipe_key and request.get('operation_fingerprint'):
+            match = self.recipes.find_verified(fingerprint=request['operation_fingerprint'],
+                scope=request.get('recipe_scope'), mutation_target=request.get('mutation_target'),
+                preflight=request.get('preflight', []))
+            if match:
+                recipe_key = match['recipe_id']
+                request = {**request, 'recipe_key': recipe_key}
         recipe = self.recipes.get(recipe_key) if recipe_key else None
+        if not recipe and not request.get('steps') and request.get('operation_fingerprint'):
+            from workstation.routines import compiled_routine_request
+            from workstation.memory import ProceduralMemory
+            request = compiled_routine_request(request, ProceduralMemory())
         recipe_reused = bool(recipe and not request.get("steps"))
         if recipe_reused:
             if recipe["status"] != "VERIFIED":
@@ -306,6 +312,10 @@ class TaskCompiler:
         graph = prepare_graph(request) if any(k in request for k in ("setup_steps", "finalize_steps")) or any(
             "depends_on" in s or "id" in s or "verifies" in s for s in steps) else None
         canonical_graph = graph or prepare_graph(request)
+        from workstation.browser_transaction import transaction_contract
+        transaction = transaction_contract(request, canonical_graph)
+        if transaction:
+            graph = canonical_graph
         intended_target = request.get("mutation_target")
         if intended_target:
             if not isinstance(intended_target, dict) or intended_target.get("scope") not in {"local", "external"}:
@@ -322,6 +332,12 @@ class TaskCompiler:
                         matching.append(node["id"])
                 if not matching:
                     raise ValueError("External mutation target requires a real mutation step; preparation cannot establish persistence verification")
+                from workstation.browser_transaction import evidence_strength
+                for mutation in matching:
+                    for verifier in sum(canonical_graph.values(), []):
+                        if mutation in verifier.get('verifies', []) and verifier['tool'] == 'browser_snapshot':
+                            if int(evidence_strength(verifier)) < 2:
+                                raise ValueError('External commit requires persisted readback; native browser snapshot is same-session semantic evidence')
         scope = request.get("recipe_scope", {"route": "native_browser" if kind == WorkClass.BROWSER_TRANSACTION else "tool." + steps[0]["tool"]})
         if not isinstance(scope, dict) or not isinstance(scope.get("route"), str):
             raise ValueError("Invalid recipe scope")
@@ -338,6 +354,13 @@ class TaskCompiler:
             for record in request["items"]:
                 require_browser_scope(record, scope)
         recipe_hash = recipe_fingerprint(canonical_graph, scope, preflight, intended_target)
+        if not recipe_key:
+            recipe = self.recipes.find_verified(fingerprint=recipe_hash, scope=scope,
+                mutation_target=intended_target, preflight=preflight)
+            if recipe:
+                recipe_key, recipe_reused = recipe['recipe_id'], True
+            else:
+                recipe_key = 'auto.' + recipe_hash
         if recipe_reused and recipe["fingerprint"] != recipe_hash:
             self.recipes.invalidate(recipe_key)
             raise ValueError("recipe_fingerprint_mismatch: recipe marked STALE; provide corrected graph")
@@ -379,7 +402,8 @@ class TaskCompiler:
             effect, contract = tool_contract(tool)
             if effect in {ToolEffect.COGNITIVE, ToolEffect.INTERACTIVE} or tool == "tool_call":
                 raise ValueError("Cognitive/indirect steps must be resolved before compiling work")
-            route = "native_browser" if tool.startswith("browser_") else f"tool.{tool}"
+            from workstation.routing import canonical_route_for_tool, NATIVE_BROWSER_TOOLS
+            route = canonical_route_for_tool(tool, runtime='internal' if tool in NATIVE_BROWSER_TOOLS else None)
             if (constraints.get("forbidden_routes") and effect not in READ_EFFECTS and not contract.get("routes")
                     and not tool.startswith("browser_")
                     and any(not r.startswith(("tool.", "native_browser")) for r in constraints["forbidden_routes"])):
@@ -392,7 +416,7 @@ class TaskCompiler:
                 require_allowed_route(route, mutation_constraints)
                 for declared_route in contract.get("routes") or []:
                     require_allowed_route(declared_route, mutation_constraints)
-            if effect not in READ_EFFECTS and not step.get("expect"):
+            if effect not in READ_EFFECTS and not step.get("expect") and not (transaction and step.get('id') in transaction['interactions']):
                 raise ValueError(f"Mutation {tool} requires an explicit result verifier")
             if step.get("wait") and (effect not in READ_EFFECTS or not step.get("expect")):
                 raise ValueError("Completion waits require a read-only probe and explicit verifier")
@@ -429,6 +453,8 @@ class TaskCompiler:
             raise ValueError("Canonical task does not belong to the owning conversation")
         metadata["canonical_task_id"] = canonical.id if canonical and canonical.session_id == session_id else None
         metadata["canonical_identity_status"] = "resolved" if metadata["canonical_task_id"] else "unresolved"
+        metadata['canonical_run_id'] = str(canonical.current_run_id) if metadata['canonical_task_id'] and canonical.current_run_id is not None else None
+        metadata['run_id'] = metadata['canonical_run_id']
         metadata["session_id"] = session_id
         from workstation.journal import execution_provenance
         metadata.update(execution_provenance())
@@ -566,8 +592,29 @@ class TaskCompiler:
                 if current.checkpoints.get(f"step_{index}_dispatch") and tool_effect(step["tool"]) not in READ_EFFECTS:
                     return {"valid": False, "code": "uncertain_mutation_requires_review", "results": results}
                 args = _bind(step.get("args", {}), payload, bindings)
+                if step.get('semantic_anchor') and step['tool'] in {'browser_click', 'browser_type'}:
+                    from workstation.routines import semantic_browser_elements
+                    from workstation.memory import ProcedureStep
+                    observation = _decode_output(dispatch('browser_snapshot', {}, task_id, f'{item.id}_{index}_anchor'))
+                    metrics['tool_calls'] += 1
+                    anchor_ref = content_reference(self.artifacts, durable_id, observation)['artifact_ref']
+                    if not isinstance(observation, dict) or (scope.get('host') and not observation.get('url')) or classify_tool_failure('browser_snapshot', json.dumps(observation))[0]:
+                        return {'valid': False, 'code': 'unexpected_state', 'results': results,
+                                'anchor_state_ref': anchor_ref}
+                    require_browser_scope({'url': observation.get('url')} if isinstance(observation, dict) else {}, scope)
+                    anchor = ProcedureStep(action=step['tool'], fallback_anchors=[step['semantic_anchor']])
+                    target = anchor.resolve_anchor(semantic_browser_elements(observation)) if isinstance(observation, dict) and not observation.get('wall_detected') else None
+                    if not target:
+                        return {'valid': False, 'code': 'unexpected_state', 'results': results,
+                                'anchor_state_ref': anchor_ref}
+                    args = {**args, 'ref': target}
                 require_browser_scope(args, scope)
                 effect, contract = tool_contract(step["tool"])
+                if effect in WRITE_EFFECTS and metadata['canonical_task_id']:
+                    live_task = kanban_db.get_task(self.store.get_connection(), metadata['canonical_task_id'])
+                    pinned_run = self.store.get_plan(item.plan_id).run_id
+                    if not live_task or str(live_task.current_run_id) != str(pinned_run) or live_task.status in {'done', 'cancelled'}:
+                        return {'valid': False, 'code': 'stale_task_run', 'results': results}
                 if effect == ToolEffect.IDEMPOTENT_WRITE and not args.get(contract["idempotency_key"]):
                     return {"valid": False, "code": "idempotency_key_required", "results": results}
                 from workstation.batch_detection import call_key, mutation_identity
@@ -682,7 +729,11 @@ class TaskCompiler:
                     target_meta = self.store.get_item(item.id).checkpoints.get(checkpoint + "_meta", {})
                     target_identity = target_meta.get("mutation_identity")
                     if target_identity:
-                        target_identity.update({"persisted": True, "status": "persisted", "verifier_status": "verified",
+                        from workstation.browser_transaction import evidence_strength
+                        _, verifier_owner = tool_contract(step['tool'])
+                        strength = int(evidence_strength(step)) if transaction or 'evidence_strength' in verifier_owner or step['tool'] == 'browser_snapshot' else (1 if request.get('routine_id') else 3)
+                        target_identity.update({"persisted": strength >= 2, "status": "persisted" if strength >= 2 else 'semantically_observed', "verifier_status": "verified",
+                                                'evidence_strength': strength,
                                                 "verification_evidence_ref": ref["artifact_ref"]})
                         self.store.update_item_checkpoint(item.id, checkpoint, metadata={**target_meta, "mutation_identity": target_identity})
                 metrics["state_transitions"] += 1
@@ -733,6 +784,33 @@ class TaskCompiler:
             _execution_active.reset(execution_token)
             _constraints.reset(token)
         envelope = summary.to_dict()
+        if envelope['needs_reasoning']:
+            from workstation.reasoning_handoff import needs_reasoning
+            items = self.store.get_work_items(durable_id)
+            unresolved = next((i for i in items if i.status.value != 'completed'), None)
+            if unresolved:
+                checkpoints = unresolved.checkpoints
+                committed = [int(k.split('_')[1]) for k, v in checkpoints.items()
+                             if re.fullmatch(r'step_\d+_meta', k) and isinstance(v, dict) and v.get('result_ref')]
+                safe = not any(k.endswith('_dispatch') and
+                    i.checkpoints.get(k + '_meta', {}).get('mutation_identity') and
+                    not i.checkpoints.get(k.removesuffix('_dispatch') + '_meta', {}).get('result_ref')
+                    for i in items for k in i.checkpoints)
+                if self.store.get_plan(durable_id).metadata.get('circuit', {}).get('status') == 'SYSTEMIC_FAILURE_SUSPECTED':
+                    safe = False
+                if unresolved.validation_result.get('reason') != 'unexpected_state':
+                    safe = False
+                phase = unresolved.input_payload.get('_work_phase', 'fan_out')
+                phase_steps = graph[phase] if graph else steps
+                failed_index = next((n for n in range(len(phase_steps)) if n not in committed), None)
+                handoff = needs_reasoning(self.artifacts, durable_id,
+                    completed_until=f'step_{max(committed)}' if committed else None,
+                    expected=phase_steps[failed_index].get('expect') if failed_index is not None else 'verified item',
+                    observed={'result_ref': unresolved.raw_output_ref, 'reason': unresolved.validation_result.get('reason')},
+                    safe_to_resume=safe, context={'item_id': unresolved.id, 'phase': phase,
+                        'failed_index': failed_index, 'recipe_fingerprint': recipe_hash})
+                self.store.update_plan_metadata(durable_id, {'reasoning_handoff': handoff})
+                envelope.update(handoff)
         mutation_records = self.store.mutation_records(summary.plan_id)
         if mutation_records:
             mutation_ledger = self.artifacts.store(durable_id, "mutation_ledger.json", mutation_records)
@@ -795,6 +873,7 @@ class TaskCompiler:
                           "tokens_per_verified_transition", "uncached_tokens_per_verified_transition", "uncached_input_tokens_per_verified_transition", "uncached_tokens_per_completed_item"):
                 metrics[field] = None
         metrics["llm_calls_per_completed_item"] = metrics["planner_calls"] / max(1, envelope["completed"])
+        metrics['routine_reuse'] = int(bool(request.get('routine_id')))
         metrics["tool_calls_per_completed_item"] = metrics["tool_calls"] / max(1, envelope["completed"])
         envelope["metrics"] = metrics
         if normalize_verbosity(request.get("verbosity")) == VerbosityLevel.FULL:
@@ -815,6 +894,12 @@ class TaskCompiler:
             raise ValueError("Plan not found in the owning conversation")
         if status_only:
             return self.store.operational_ledger(plan_id)
+        reasoning = plan.metadata.get('reasoning_handoff') or {}
+        if reasoning.get('safe_to_resume'):
+            body = self.artifacts.read_json(reasoning['state_ref'])
+            item_id = body.get('context', {}).get('item_id')
+            if item_id:
+                self.store.resume_reasoning_item(item_id)
         handoff_metadata = plan.metadata.get("handoff") or {}
         handoff = self.handoffs.get(handoff_metadata.get("handoff_id", ""))
         if handoff is not None and handoff.status == "ready":
@@ -843,7 +928,13 @@ def execute_compiled_work(args: dict, **kwargs) -> str:
         return _execute_compiled_work(compiler, context, args, kwargs)
     except (ValueError, KeyError, TypeError, ConstraintViolation) as error:
         from workstation.work_contract import correction
-        return json.dumps(correction(error), ensure_ascii=False)
+        result = correction(error)
+        if not isinstance(error, ConstraintViolation) and not args.get('plan_id'):
+            from workstation.reasoning_handoff import needs_reasoning
+            result.update(needs_reasoning(compiler.artifacts, context[1], completed_until=None,
+                expected='decided, compatible executable contract', observed=str(error),
+                safe_to_resume=False, context={'phase': 'admission', 'dispatched': False}))
+        return json.dumps(result, ensure_ascii=False)
     finally:
         compiler.store.close()
 

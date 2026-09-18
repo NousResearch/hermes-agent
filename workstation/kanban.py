@@ -294,12 +294,21 @@ class WorkstationKanbanBridge:
         if report.repeatability_hint and report.procedure_steps:
             from workstation.memory import ProceduralMemory
             from workstation.routines import RoutinePromotionService
-            candidate = RoutinePromotionService(ProceduralMemory()).experience_candidate(
+            memory = ProceduralMemory()
+            candidate = RoutinePromotionService(memory).experience_candidate(
                 outcome, contract, site=report.procedure_scope,
                 steps=report.procedure_steps, repeatable=True,
                 metrics={"actions": len(report.actions), "tokens": report.input_tokens + report.output_tokens,
                          "duration_seconds": report.duration_seconds})
             if candidate:
+                compatibility = report.procedure_compatibility
+                if compatibility:
+                    candidate.scope = compatibility['scope']
+                    candidate.capability_fingerprint = compatibility['fingerprint']
+                    candidate.preconditions = compatibility.get('preconditions', [])
+                    candidate.postconditions = compatibility.get('postconditions', [])
+                    candidate.runtime_family = 'hermes-work-v1'
+                    memory.update_procedure(candidate)
                 journal.record(ExecutionEventKind.ACTION, "experience candidate created; validation required",
                                metadata={"procedure_id": candidate.id})
         return success
@@ -383,6 +392,17 @@ class WorkstationKanbanBridge:
             pending_items=pending, evidence=evidence, verifier_results=verifiers,
             deliverables=[e.uri for e in evidence], outcome_status=status,
             run_id=str(target_run_id) if target_run_id is not None else None)
+        report.repeatability_hint = turn_result.get('_adaptive_repeatability_hint', False)
+        report.procedure_steps = turn_result.get('_adaptive_procedure_steps', [])
+        report.procedure_scope = session_id
+        report.procedure_compatibility = turn_result.get('_adaptive_procedure_compatibility', {})
+        if report.procedure_compatibility:
+            report.procedure_scope = report.procedure_compatibility['scope']['host']
+            for _, _, plan_metadata in plans:
+                objective = artifacts.read_json(plan_metadata['objective_ref'])
+                for step in objective.get('steps', []):
+                    if step.get('tool') == 'browser_snapshot' and step.get('expect') and set(step['expect']) - {'ok', 'success', 'status_code', 'http_status', 'url'}:
+                        report.procedure_compatibility['postconditions'] = [json.dumps(step['expect'], sort_keys=True)]
         accepted = self.complete_task_with_report(task_id, report, expected_run_id=target_run_id)
         return {"task_id": task_id, "status": status.value if accepted else "uncertain", "acceptance_approved": accepted,
                 "pending_items": pending, "planned_handoffs": handoffs}

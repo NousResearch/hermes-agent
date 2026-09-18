@@ -572,6 +572,28 @@ class DurableTaskStore:
         assert item is not None
         return item
 
+    def resume_reasoning_item(self, item_id: str) -> None:
+        """Resume a diagnosed read drift; retain every confirmed step checkpoint.
+
+        Never reset an outstanding mutable dispatch. The compiler's owning-session
+        check precedes this call; the store rechecks effect uncertainty atomically.
+        """
+        with self._lock, self.get_connection() as conn:
+            row = conn.execute('SELECT status, checkpoints, validation_result FROM work_items WHERE id = ?', (item_id,)).fetchone()
+            if row is None or row[0] != WorkItemStatus.BLOCKED.value:
+                return
+            cp = json.loads(row[1] or '{}')
+            if json.loads(row[2] or '{}').get('reason') != 'unexpected_state':
+                return
+            for key in cp:
+                if key.endswith('_dispatch') and cp.get(key + '_meta', {}).get('mutation_identity') and not cp.get(key.removesuffix('_dispatch') + '_meta', {}).get('result_ref'):
+                    raise ValueError('uncertain_mutation_requires_review')
+            for key in ('persist', 'normalize', 'validate'):
+                cp.pop(key, None)
+            conn.execute("UPDATE work_items SET status = ?, raw_output_ref = NULL, normalized_output_ref = NULL, validation_result = '{}', checkpoints = ? WHERE id = ?",
+                         (WorkItemStatus.PENDING.value, json.dumps(cp), item_id))
+            conn.commit()
+
     def resume_waiting_item(self, item_id: str) -> None:
         """Reset only a waiting read result after the owning human handoff returns."""
         with self._lock, self.get_connection() as conn:
@@ -865,7 +887,7 @@ class DurableTaskStore:
                 if key.endswith("_meta") and isinstance(meta, dict) and meta.get("mutation_identity"):
                     record = meta["mutation_identity"]
                     identity = record["operation_id"]
-                    if identity not in by_identity or record.get("persisted") is True:
+                    if identity not in by_identity or record.get("persisted") is True or record.get('verifier_status') == 'verified':
                         by_identity[identity] = {**record, "item_id": item.id}
             records.extend(by_identity.values())
         return records

@@ -61,7 +61,9 @@ class EvaluationHarness:
         ratio = lambda numerator, denominator: numerator / denominator if denominator and numerator is not None else None
         known_sum = lambda key: sum(r[key] for r in eligible) if eligible and all(r.get(key) is not None for r in eligible) else None
         recoveries = [r for r in eligible if r.get("recovery_attempted") is True]
+        efficiency = self.efficiency_metrics(eligible)
         return {
+            **efficiency,
             "eligible_delegated_tasks": count, "verified_completion": complete,
             "AVCR": ratio(len(autonomous), count),
             "false_completion_rate": ratio(sum(r.get("done") is True and r not in verified for r in eligible), count),
@@ -79,6 +81,33 @@ class EvaluationHarness:
                 "model_interventions", "tool_calls", "no_progress_calls", "duplicate_calls_blocked", "routine_candidate")},
             "routine_reuse": sum(r.get("routine_reuse", 0) for r in eligible),
             "routine_savings": sum(r.get("routine_savings", 0) for r in eligible),
+        }
+
+    def efficiency_metrics(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
+        """Explicit sampled denominators; absent observations remain unknown.
+
+        Obstruction requires a caller-confirmed safe/authorized eligible path,
+        independently of whether the harness allowed that path to run.
+        """
+        verified = [r for r in runs if r.get('outcome_status') == 'verified_completed' and r.get('acceptance_approved') is True]
+        ratio = lambda n, d: n / d if n is not None and d else None
+        total = lambda key: sum(r[key] for r in runs) if runs and all(isinstance(r.get(key), (int, float)) for r in runs) else None
+        known_rate = lambda key: ratio(sum(bool(r[key]) for r in runs), len(runs)) if runs and all(key in r and r[key] is not None for r in runs) else None
+        eligible = [r for r in runs if r.get('safe_authorized_eligible') is True]
+        blocked = sum(r['harness_policy_blocked'] is True for r in eligible) if eligible and all(isinstance(r.get('harness_policy_blocked'), bool) for r in eligible) else None
+        discovery, replay = total('discovery_cost'), total('replay_cost')
+        return {
+            'llm_calls_per_verified_outcome': ratio(total('llm_calls'), len(verified)),
+            'tokens_per_verified_outcome': ratio(total('tokens'), len(verified)),
+            'tool_calls_per_verified_outcome': ratio(total('tool_calls'), len(verified)),
+            'context_reconstruction_overhead': total('context_reconstruction_overhead'),
+            'deterministic_replay_rate': known_rate('deterministic_replay'),
+            'routine_reuse_rate': known_rate('routine_reuse'), 'drift_rate': known_rate('drift'),
+            'human_rescue_rate': known_rate('unplanned_human_rescues'),
+            'discovery_cost': discovery, 'replay_cost': replay,
+            'estimated_savings': discovery - replay if discovery is not None and replay is not None else None,
+            'guardrail_obstruction_eligible_tasks': len(eligible),
+            'guardrail_obstruction_rate': ratio(blocked, len(eligible)),
         }
 
     def run(self, case: EvaluationCase, executor: Callable[[Any], dict[str, Any]]) -> EvaluationResult:

@@ -8402,21 +8402,30 @@ class AIAgent:
         while side-effect ordering is preserved.
         """
         tool_calls = assistant_message.tool_calls
-        from workstation.task_compiler import requires_compilation
-        from workstation.batch_detection import detects_fan_out
-        if detects_fan_out(self, tool_calls):
-            self._work_batch_candidate = True
-        if requires_compilation(self, tool_calls):
+        from workstation.execution_policy import CompilationDecision, decisions_for_calls
+        decisions = decisions_for_calls(self, tool_calls)
+        if any(d in {CompilationDecision.REQUIRE_COMPILE, CompilationDecision.REQUIRE_HUMAN} for d in decisions):
             from agent.tool_dispatch_helpers import make_tool_result_message
             self._work_compile_replans = getattr(self, "_work_compile_replans", 0) + 1
             # Refused writes did not execute. Keep the discovery dispatcher live;
             # ordinary no-progress/tool-budget guards still bound repeated refusal.
-            for call in tool_calls:
+            for call, decision in zip(tool_calls, decisions):
                 # Discovery and human clarification remain possible even when
                 # a single provider response also proposes uncompiled writes.
-                if not requires_compilation(self, [call]):
+                if decision not in {CompilationDecision.REQUIRE_COMPILE, CompilationDecision.REQUIRE_HUMAN}:
                     from types import SimpleNamespace
                     self._execute_tool_calls(SimpleNamespace(tool_calls=[call]), messages, effective_task_id, api_call_count)
+                    continue
+                if decision == CompilationDecision.REQUIRE_HUMAN:
+                    from hermes_constants import get_hermes_home
+                    from workstation.runtime import HumanHandoffManager
+                    handoff = HumanHandoffManager(get_hermes_home() / 'workstation' / 'human_handoffs.json').request(
+                        task_id=effective_task_id, session_id=self._conversation_root_id() or self.session_id,
+                        reason='uncertain_mutation_requires_review', scope={'tool_call_id': call.id})
+                    messages.append(make_tool_result_message(call.function.name, json.dumps({
+                        'status': 'NEEDS_REASONING', 'code': 'uncertain_mutation_requires_review',
+                        'safe_to_resume': False, 'handoff_id': handoff.handoff_id,
+                    }), call.id, effect_disposition='none'))
                     continue
                 from workstation.task_compiler import discovery_guidance
                 from workstation.batch_detection import mutation_summary
@@ -8554,10 +8563,11 @@ class AIAgent:
         context = getattr(self, "_turn_constraints", None)
         if context is not None and function_name != "work_execute":
             from tools.effects import tool_contract
-            from workstation.routing import require_allowed_route
+            from workstation.routing import require_allowed_route, canonical_route_for_tool, NATIVE_BROWSER_TOOLS
             target = function_args.get("name", "") if function_name == "tool_call" else function_name
             _, contract = tool_contract(target)
-            require_allowed_route("native_browser" if target.startswith("browser_") else f"tool.{target}", context.routes)
+            require_allowed_route(canonical_route_for_tool(target,
+                runtime='internal' if target in NATIVE_BROWSER_TOOLS else None), context.routes)
             for route in contract.get("routes") or []:
                 require_allowed_route(route, context.routes)
         return invoke_tool(

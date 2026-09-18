@@ -245,6 +245,7 @@ class BrowserTaskReport:
     repeatability_hint: bool = False
     procedure_steps: list[dict[str, Any]] = field(default_factory=list)
     procedure_scope: str = ""
+    procedure_compatibility: dict[str, Any] = field(default_factory=dict)
     run_id: str | None = None
     operation_id: str | None = None
 

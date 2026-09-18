@@ -513,6 +513,17 @@ def _dispatch(
         pass
     card_id = (kanban_card_id or session_card_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or None
     rid = (run_id or os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip() or None
+    if card_id and rid:
+        from hermes_cli import kanban_db
+        conn = kanban_db.connect()
+        try:
+            task = kanban_db.get_task(conn, card_id)
+            if task and (str(task.current_run_id) != str(rid) or task.status in {'done', 'cancelled'}):
+                raise WorkstationBrowserError('Stale TaskRun cannot control BrowserTask',
+                    error_code='STALE_RUN', retryable=False, state_changed=False,
+                    recommended_action='RECONCILE_BINDING')
+        finally:
+            conn.close()
     payload: Dict[str, Any] = {
         "action": action,
         "arguments": dict(args),
@@ -523,6 +534,8 @@ def _dispatch(
         payload["kanban_card_id"] = card_id
     if rid:
         payload["run_id"] = rid
+    from workstation.batch_detection import call_key
+    payload['operation_id'] = call_key(action, args)
     response = _request_json(
         "POST",
         "/v1/action",
@@ -596,12 +609,9 @@ def workstation_routed_browser_handler(
 
     # Enforce human-in-the-loop control lease invariants
     if task_id:
-        try:
-            from workstation.browser_session import BrowserControlLeaseManager
-            BrowserControlLeaseManager.get_instance().assert_action_allowed(task_id, action)
-        except Exception as exc:
-            if exc.__class__.__name__ == "HumanTakeoverActiveError":
-                raise
+        from workstation.browser_session import BrowserControlLeaseManager
+        BrowserControlLeaseManager.get_instance().assert_action_allowed(task_id, action,
+            fence_token=args.get('fence_token'))
 
     # Once selected, the internal browser is authoritative for this call.
     # Dispatch failures propagate and never trigger a second browser lane.

@@ -247,7 +247,8 @@ def test_repeated_compile_refusal_keeps_agent_discovery_available(incident):
     from workstation.tests.test_durable_agent_integration import make_agent
     agent = make_agent()
     agent.valid_tool_names.update({"incident_inspect", "incident_ui"})
-    agent._work_batch_candidate = True
+    from workstation.batch_detection import structural_signature
+    agent._work_mutation_shapes = {structural_signature('incident_ui', {'id': '0'}): 2}
     messages = []
     def handler(name, args, task, **kw):
         return execute_compiled_work(args, task_id=task) if name == "work_execute" else '{"selector":"textarea.description"}'

@@ -18,47 +18,10 @@ from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
 
 
-IDEMPOTENT_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "search_files",
-        "web_search",
-        "web_extract",
-        "session_search",
-        "browser_snapshot",
-        "browser_console",
-        "browser_get_images",
-        "mcp_filesystem_read_file",
-        "mcp_filesystem_read_text_file",
-        "mcp_filesystem_read_multiple_files",
-        "mcp_filesystem_list_directory",
-        "mcp_filesystem_list_directory_with_sizes",
-        "mcp_filesystem_directory_tree",
-        "mcp_filesystem_get_file_info",
-        "mcp_filesystem_search_files",
-    }
-)
-
-MUTATING_TOOL_NAMES = frozenset(
-    {
-        "terminal",
-        "execute_code",
-        "write_file",
-        "patch",
-        "todo",
-        "memory",
-        "skill_manage",
-        "browser_click",
-        "browser_type",
-        "browser_press",
-        "browser_scroll",
-        "browser_navigate",
-        "send_message",
-        "cronjob",
-        "delegate_task",
-        "process",
-    }
-)
+# Deprecated config slots retained for configuration compatibility. Effects are
+# resolved dynamically from tools.effects, including scoped registry metadata.
+IDEMPOTENT_TOOL_NAMES = frozenset()
+MUTATING_TOOL_NAMES = frozenset()
 
 # Tools that are legitimately re-invoked with identical arguments and may
 # legitimately return an unchanged result while waiting on external progress —
@@ -621,9 +584,8 @@ class ToolCallGuardrailController:
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
     def _is_idempotent(self, tool_name: str) -> bool:
-        if tool_name in self.config.mutating_tools:
-            return False
-        return tool_name in self.config.idempotent_tools
+        from tools.effects import READ_EFFECTS, ToolEffect, tool_effect
+        return tool_effect(tool_name) in READ_EFFECTS | {ToolEffect.IDEMPOTENT_WRITE}
 
     def observe_identical_call(
         self,

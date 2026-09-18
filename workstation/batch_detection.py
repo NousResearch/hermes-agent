@@ -49,6 +49,9 @@ def call_key(name, args):
 
 
 def structural_signature(name, args):
+    from tools.effects import tool_contract
+    contract = tool_contract(name)[1]
+    target = contract.get('mutation_target') or {}
     def shape(value, field=""):
         if isinstance(value, dict):
             return {k: shape(v, k) for k, v in sorted(value.items())}
@@ -56,7 +59,11 @@ def structural_signature(name, args):
             return sorted({json.dumps(shape(v), sort_keys=True) for v in value})
         # Operation selectors are semantic, not item-specific values.
         return value if field in {"action", "operation", "method"} else type(value).__name__
-    return call_key(name, shape(args))
+    family_fields = target.get('target_family_fields', [])
+    family = {k: args.get(k) for k in family_fields[:8] if isinstance(k, str)} if isinstance(family_fields, list) else {}
+    selectors = {k: args[k] for k in ('action', 'operation', 'method') if k in args}
+    return hashlib.sha256(json.dumps([call_key(name, shape(args)), target.get('provider'),
+        target.get('kind'), target.get('scope'), contract.get('routes', []), family, selectors], sort_keys=True).encode()).hexdigest()
 
 
 def detects_fan_out(agent, calls):
@@ -79,7 +86,7 @@ def detects_fan_out(agent, calls):
     return False
 
 
-def record_mutation(agent, name, args, raw, *, dispatched=True):
+def record_mutation(agent, name, args, raw, *, dispatched=True, duration_ms=None):
     from workstation.task_compiler import durable_execution_active
     if "work_execute" not in agent.valid_tool_names:
         return
@@ -87,6 +94,8 @@ def record_mutation(agent, name, args, raw, *, dispatched=True):
         return
     if name == "tool_call":
         name, args = args.get("name", ""), args.get("arguments", {})
+    from workstation.procedure_trace import record_trace
+    record_trace(agent, name, args, raw, duration_ms=duration_ms)
     from tools.effects import observe_capability
     capabilities = getattr(agent, "_work_capabilities", {})
     observe_capability(capabilities, name, args, raw)
@@ -112,7 +121,8 @@ def record_mutation(agent, name, args, raw, *, dispatched=True):
     record = mutation_identity(name, args, task_id=getattr(agent, "_canonical_work_task_id", None),
                                run_id=getattr(agent, "_canonical_work_run_id", None))
     record.update({"evidence_ref": ref, "verifier_status": "not_verified",
-                   "persisted": None, "status": "uncertain" if failed else "executed_unverified"})
+                   "persisted": None, "status": "uncertain" if failed else "executed_unverified",
+                   "operation_fingerprint": structural_signature(name, args)})
     evidence[key] = record
     agent._work_mutation_evidence = evidence
     store.store(owner, "mutation_" + key + ".json", record)
@@ -121,3 +131,58 @@ def record_mutation(agent, name, args, raw, *, dispatched=True):
     if key not in completed:
         completed[key] = ref
         agent._work_completed_mutations = completed
+
+
+def prepare_mutation(agent, name, args):
+    """Record mutable dispatch before crossing I/O, using existing artifacts.
+
+    A process death before acknowledgement leaves uncertainty durably visible.
+    Compiled steps already have their own WorkItem dispatch checkpoints.
+    """
+    from workstation.task_compiler import durable_execution_active
+    if durable_execution_active() or 'work_execute' not in getattr(agent, 'valid_tool_names', ()) or name == 'work_execute':
+        return
+    if name == 'tool_call':
+        name, args = args.get('name', ''), args.get('arguments', {})
+    if tool_effect(name) not in WRITE_EFFECTS:
+        return
+    # Middleware may have rewritten arguments after the model's admission check.
+    # Recheck the final operation before persisting or crossing mutable I/O.
+    from types import SimpleNamespace
+    from workstation.execution_policy import CompilationDecision, decisions_for_calls
+    call = SimpleNamespace(function=SimpleNamespace(name=name, arguments=json.dumps(args)))
+    decision = decisions_for_calls(agent, [call])[0]
+    if decision in {CompilationDecision.REQUIRE_COMPILE, CompilationDecision.REQUIRE_HUMAN}:
+        raise RuntimeError(decision.value + ': final mutable operation requires compiler or human review')
+    task_id, run_id = getattr(agent, '_canonical_work_task_id', None), getattr(agent, '_canonical_work_run_id', None)
+    if task_id:
+        from hermes_cli import kanban_db
+        conn = kanban_db.connect()
+        try:
+            task = kanban_db.get_task(conn, task_id)
+            if not task or task.current_run_id != run_id or task.status in {'done', 'cancelled'}:
+                raise RuntimeError('stale_task_run: mutation authority no longer belongs to this run')
+        finally:
+            conn.close()
+    from workstation.artifacts import ArtifactStore
+    from workstation.recipes import sanitize
+    key = call_key(name, args)
+    owner = agent._conversation_root_id() or agent.session_id
+    store = ArtifactStore()
+    uri = f'artifact://tasks/{owner}/mutation_{key}.json'
+    if store.resolve_ref(uri):
+        prior = store.read_json(uri)
+        if prior.get('status') == 'uncertain':
+            raise RuntimeError('uncertain_mutation_requires_review')
+    record = sanitize(mutation_identity(name, args, task_id=task_id, run_id=run_id))
+    record.update({'status': 'uncertain', 'persisted': None, 'verifier_status': 'pending',
+                   'operation_fingerprint': structural_signature(name, args)})
+    store.store(owner, 'mutation_' + key + '.json', record)
+    evidence = getattr(agent, '_work_mutation_evidence', {})
+    if key not in evidence:
+        shapes = getattr(agent, '_work_mutation_shapes', {})
+        signature = structural_signature(name, args)
+        shapes[signature] = shapes.get(signature, 0) + 1
+        agent._work_mutation_shapes = shapes
+    evidence[key] = record
+    agent._work_mutation_evidence = evidence

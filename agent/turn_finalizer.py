@@ -840,11 +840,18 @@ def finalize_turn(
         try:
             from workstation.kanban import WorkstationKanbanBridge
             root = agent._conversation_root_id() or agent.session_id
+            from workstation.procedure_trace import candidate_steps, trace_compatibility
+            result['_adaptive_procedure_steps'] = [] if getattr(agent, '_work_procedure_trace_truncated', False) else candidate_steps(getattr(agent, '_work_procedure_trace', []))
+            result['_adaptive_repeatability_hint'] = getattr(agent, '_work_repeatability_hint', False)
+            result['_adaptive_procedure_compatibility'] = trace_compatibility(getattr(agent, '_work_procedure_trace', []))
             result["work_outcome"] = WorkstationKanbanBridge().finalize_turn_candidate(
                 canonical_task_id, root, result, expected_run_id=canonical_run_id
             )
         except Exception as exc:
             logger.warning("canonical outcome candidate verification failed: %s", exc)
             result["work_outcome"] = {"task_id": canonical_task_id, "status": "uncertain", "acceptance_approved": False}
+        finally:
+            for key in ('_adaptive_procedure_steps', '_adaptive_repeatability_hint', '_adaptive_procedure_compatibility'):
+                result.pop(key, None)
 
     return result

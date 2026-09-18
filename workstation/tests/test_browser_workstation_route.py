@@ -256,3 +256,31 @@ def test_browser_extract_items_dispatches_with_selector_and_limit(controller):
 
 def test_workstation_schema_tools_includes_extract_items():
     assert "browser_extract_items" in bw._WORKSTATION_SCHEMA_TOOLS
+
+
+def test_adaptive_browser_loop_uses_one_task_despite_repeatability(controller):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from workstation.tests.test_durable_agent_integration import make_agent
+    from workstation.tests.test_durable_hardening import call
+    agent = make_agent()
+    sequence = [('browser_navigate', {'url': 'https://example.com'}),
+                ('browser_snapshot', {}), ('browser_type', {'ref': '@e5', 'text': 'query'}),
+                ('browser_press', {'key': 'Enter'}), ('browser_snapshot', {})]
+    agent.valid_tool_names.update(n for n, _ in sequence)
+    agent._work_repeatability_hint = True
+    agent._work_user_constraints = {'allowed_routes': ['browser_navigate', 'browser_snapshot', 'browser_type', 'browser_press']}
+    messages, decoded = [], []
+    def handler(name, args, task_id, **kw):
+        result = bw.workstation_routed_browser_handler(name, args, task_id=task_id,
+            session_id=agent.session_id, kanban_card_id='card-test', run_id='run-test',
+            fallback=lambda: pytest.fail('different browser'))
+        decoded.append(json.loads(result))
+        return result
+    with patch('run_agent.handle_function_call', side_effect=handler):
+        for name, args in sequence:
+            agent._execute_tool_calls(SimpleNamespace(tool_calls=[call(name, args, name)]), messages, 'task-a')
+    assert len(messages) == 5 and all('durable_compile_required' not in m['content'] for m in messages)
+    assert [r['action'] for r in decoded] == [n for n, _ in sequence]
+    assert {r['task_id'] for r in decoded} == {'task-a'}
+    assert all(r['run_id'] == 'run-test' and r['kanban_card_id'] == 'card-test' for r in decoded)

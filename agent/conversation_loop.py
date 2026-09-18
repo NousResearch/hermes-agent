@@ -1896,6 +1896,9 @@ def run_conversation(
     agent._work_completed_mutations = {}
     agent._work_mutation_evidence = {}
     agent._work_mutation_shapes = {}
+    agent._work_compilation_candidates = {}
+    agent._work_procedure_trace = []
+    agent._work_procedure_trace_truncated = False
     from agent.turn_constraints import TurnConstraintContext
     from workstation.routing import ConstraintViolation
     try:

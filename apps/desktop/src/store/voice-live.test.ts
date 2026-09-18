@@ -32,6 +32,16 @@ describe('selectedVoiceChatMode', () => {
 
     $voiceLiveStatus.set(null)
   })
+
+  it('falls back to the grok-live atom when the gpt-live status is chained/null', () => {
+    $voiceLiveStatus.set({ available: false, mode: 'chained', model: '', reason: 'no OpenAI API key', voice: '' })
+    $voiceLiveGrokStatus.set({ available: true, mode: 'grok-live', model: 'grok-voice-latest', reason: null, voice: 'eve' })
+
+    expect(selectedVoiceChatMode()).toBe('grok-live')
+
+    $voiceLiveStatus.set(null)
+    $voiceLiveGrokStatus.set(null)
+  })
 })
 
 describe('$voiceLiveGrokStatus', () => {

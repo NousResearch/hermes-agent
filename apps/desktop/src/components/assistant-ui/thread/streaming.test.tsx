@@ -1,4 +1,10 @@
-import { AssistantRuntimeProvider, MessagePrimitive, type ThreadMessage, ThreadPrimitive, useExternalStoreRuntime } from '@assistant-ui/react'
+import {
+  AssistantRuntimeProvider,
+  MessagePrimitive,
+  type ThreadMessage,
+  ThreadPrimitive,
+  useExternalStoreRuntime
+} from '@assistant-ui/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -485,18 +491,22 @@ describe('assistant-ui streaming renderer', () => {
   it.each([true, false])('honors reasoning visibility %j for grouped and standalone parts', async enabled => {
     setShowReasoningFromConfig(enabled)
 
-    const UngroupedMessage = () => <MessagePrimitive.Root>
-      <MessagePrimitive.Parts components={{ Reasoning: MESSAGE_PARTS_COMPONENTS.Reasoning }} />
-    </MessagePrimitive.Root>
+    const UngroupedMessage = () => (
+      <MessagePrimitive.Root>
+        <MessagePrimitive.Parts components={{ Reasoning: MESSAGE_PARTS_COMPONENTS.Reasoning }} />
+      </MessagePrimitive.Root>
+    )
 
-    const { container } = render(<>
-      <RunningReasoningHarness />
-      <ThreadRuntime messages={[assistantReasoningMessage('standalone reasoning', true)]}>
-        <ThreadPrimitive.Root>
-          <ThreadPrimitive.Messages components={{ AssistantMessage: UngroupedMessage, UserMessage: () => null }} />
-        </ThreadPrimitive.Root>
-      </ThreadRuntime>
-    </>)
+    const { container } = render(
+      <>
+        <RunningReasoningHarness />
+        <ThreadRuntime messages={[assistantReasoningMessage('standalone reasoning', true)]}>
+          <ThreadPrimitive.Root>
+            <ThreadPrimitive.Messages components={{ AssistantMessage: UngroupedMessage, UserMessage: () => null }} />
+          </ThreadPrimitive.Root>
+        </ThreadRuntime>
+      </>
+    )
 
     await waitFor(() => {
       expect(container.querySelectorAll('[data-slot="aui_reasoning-text"]')).toHaveLength(enabled ? 2 : 0)

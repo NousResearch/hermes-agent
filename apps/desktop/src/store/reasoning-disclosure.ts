@@ -13,15 +13,11 @@ export function setReasoningCollapsedByDefault(value: boolean) {
   $reasoningCollapsedByDefault.set(value)
 }
 
-// Mirrors backend display.show_reasoning; omission follows DEFAULT_CONFIG.
+// Mirrors `display.show_reasoning` (Settings → Chat → Reasoning Blocks). On
+// by default like DEFAULT_CONFIG; a quoted "false" in config.yaml still
+// means off (sibling: display-timestamps.ts).
 export const $showReasoning = atom(true)
 
 export function setShowReasoningFromConfig(value: unknown): void {
-  const enabled = value === undefined
-    ? true
-    : typeof value === 'string'
-      ? ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
-      : Boolean(value)
-
-  $showReasoning.set(enabled)
+  $showReasoning.set(!(value === false || value === 'false' || value === 0))
 }

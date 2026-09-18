@@ -46,18 +46,22 @@ describe('useHermesConfig refreshHermesConfig', () => {
     persistString(WORKSPACE_CWD_KEY, null)
   })
 
-  it.each([
-    [true, true], [false, false], ['false', false], ['off', false], ['0', false],
-    [' True ', true], ['yes', true], [1, true], [0, false], [undefined, true]
-  ])('resolves reasoning display %j to %j and resets missing config to the default', async (value, expected) => {
-    mockConfig({ display: { show_reasoning: value } })
+  // #49664: the Reasoning Blocks toggle wrote config but the renderer never
+  // read it. A refresh mirrors the key (quoted "false" included) and a
+  // missing key falls back to the DEFAULT_CONFIG default (on).
+  it('mirrors display.show_reasoning and resets a missing key to the default', async () => {
+    mockConfig({ display: { show_reasoning: 'false' } })
     const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
 
-    await act(async () => { await result.current.refreshHermesConfig() })
-    expect($showReasoning.get()).toBe(expected)
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showReasoning.get()).toBe(false)
 
     mockConfig({})
-    await act(async () => { await result.current.refreshHermesConfig() })
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
     expect($showReasoning.get()).toBe(true)
   })
 

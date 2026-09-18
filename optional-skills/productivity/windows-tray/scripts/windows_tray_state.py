@@ -116,3 +116,25 @@ def compute_state(home, now=None):
     if active:
         return "needs_input" if needs_input(os.path.join(home, "tray-needs-input.json"), now) else "active"
     return "error" if last_turn_status(gui_log) == "error" else "idle"
+
+
+def icon_visibility(pid, prev_pid, quit_flag_exists):
+    """Tray-icon visibility policy keyed on the desktop process PID.
+
+    The tray process is resident (single autostart entry, one pythonw); only
+    the ICON tracks the desktop session, which replaces the old standalone
+    watchdog. Returns ``(visible, clear_quit_flag)``.
+
+    - PID changed to a desktop  -> new session: show, honour no stale flag
+      from the previous session (fast relaunch / update restart gaps).
+    - PID changed to None       -> session over: hide, clear the flag so the
+      next desktop launch shows again.
+    - no change, desktop up     -> hidden only while the user's
+      "hide icon until next session" flag stands.
+    - no change, no desktop     -> stay hidden.
+    """
+    if pid != prev_pid:
+        return (pid is not None), True
+    if pid is None:
+        return False, False
+    return (not quit_flag_exists), False

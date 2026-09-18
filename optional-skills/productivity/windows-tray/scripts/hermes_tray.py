@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Hermes Windows tray icon.
+"""Hermes Windows tray icon (single resident process; no separate watchdog).
 
-A resident system-tray icon showing live agent state, with minimize-to-tray.
+A system-tray icon that mirrors live agent state and offers minimize-to-tray.
 Reads Hermes' own state files read-only; imports nothing from the Hermes core.
 
 Dot state (polled every 2s; derivation lives in windows_tray_state.py):
@@ -9,6 +9,18 @@ Dot state (polled every 2s; derivation lives in windows_tray_state.py):
   amber  the turn is parked waiting for you (clarify question / approval)
   grey   idle
   red    the last turn ended in error
+
+The ICON (not the process) tracks the desktop session: it appears when a
+Hermes.exe process shows up and hides when that process goes away. Keeping
+one resident process instead of tray+watchdog halves the memory footprint
+(~32 MB vs ~58 MB of pythonw processes) at the cost of no crash supervisor;
+the Startup shortcut and single-instance lock keep it in place.
+
+Desktop presence is probed with a kernel32 Toolhelp process snapshot, NOT
+EnumWindows: EnumWindows messages every window thread and blocks forever
+when a hung thread exists in the session (common around Electron relaunches)
+— an earlier watchdog architecture froze exactly that way and silently
+abandoned the tray. The snapshot touches no window thread and cannot hang.
 
 Requires pystray + pillow in a DEDICATED venv (Hermes' own venv is stripped by
 its dependency sync). Run under pythonw.exe so no console window exists.
@@ -26,24 +38,22 @@ import pystray
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from windows_tray_state import compute_state, hermes_home  # noqa: E402
+from windows_tray_state import (compute_state, hermes_home,  # noqa: E402
+                                icon_visibility)
 
 APP_NAME = "Hermes"
 POLL_SECS = 2
+TRAY_PORT = 45173
 
 HERMES_HOME = hermes_home()
 MY_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(MY_DIR, "tray.log")
-
-_single = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-try:
-    _single.bind(("127.0.0.1", 45173))
-except OSError:
-    sys.exit(0)  # another tray instance is running
+FLAG = os.path.join(MY_DIR, ".quit_flag")  # "hide until next desktop session"
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 SW_HIDE, SW_RESTORE, SW_SHOW = 0, 9, 5
+CREATE_NO_WINDOW = 0x08000000
 
 _cfg = {"autohide": True}
 
@@ -81,7 +91,7 @@ def draw_icon(state):
     return img
 
 
-# ---- window probes / actions --------------------------------------------------
+# ---- win32 probes ------------------------------------------------------------
 def _fn(mod, name, argtypes, restype=None):
     f = getattr(mod, name)
     f.argtypes = argtypes
@@ -90,6 +100,7 @@ def _fn(mod, name, argtypes, restype=None):
     return f
 
 
+_IsWindow = _fn(user32, "IsWindow", [ctypes.c_void_p], ctypes.c_bool)
 _IsWindowVisible = _fn(user32, "IsWindowVisible", [ctypes.c_void_p], ctypes.c_bool)
 _IsIconic = _fn(user32, "IsIconic", [ctypes.c_void_p], ctypes.c_bool)
 _ShowWindow = _fn(user32, "ShowWindow", [ctypes.c_void_p, ctypes.c_int], ctypes.c_bool)
@@ -102,6 +113,53 @@ _GetWindowThreadProcessId = _fn(user32, "GetWindowThreadProcessId", [ctypes.c_vo
 _AttachThreadInput = _fn(user32, "AttachThreadInput", [ctypes.c_uint, ctypes.c_uint, ctypes.c_bool], ctypes.c_bool)
 _GetCurrentThreadId = _fn(kernel32, "GetCurrentThreadId", [], ctypes.c_uint)
 
+TH32CS_SNAPPROCESS = 0x2
+_INVALID = ctypes.c_void_p(-1).value
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.c_uint32),
+        ("cntUsage", ctypes.c_uint32),
+        ("th32ProcessID", ctypes.c_uint32),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", ctypes.c_uint32),
+        ("cntThreads", ctypes.c_uint32),
+        ("th32ParentProcessID", ctypes.c_uint32),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", ctypes.c_uint32),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+# Without c_void_p restype the snapshot handle is truncated to int32 on x64
+# and every lookup silently fails — the exact bug the first rewrite shipped.
+kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+kernel32.CreateToolhelp32Snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+kernel32.Process32FirstW.restype = ctypes.c_bool
+kernel32.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.Process32NextW.restype = ctypes.c_bool
+kernel32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+
+def desktop_pid():
+    """PID owning a running Hermes.exe image, else None (never blocks)."""
+    h = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not h or h == _INVALID:
+        return None
+    entry = PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+    pid = None
+    ok = kernel32.Process32FirstW(h, ctypes.byref(entry))
+    while ok:
+        if entry.szExeFile.lower() == "hermes.exe":
+            pid = entry.th32ProcessID or None
+            break
+        ok = kernel32.Process32NextW(h, ctypes.byref(entry))
+    kernel32.CloseHandle(h)
+    return pid
+
 
 def _title(hwnd):
     n = _GetWindowTextLengthW(hwnd)
@@ -112,8 +170,21 @@ def _title(hwnd):
     return buf.value
 
 
-def hermes_windows():
-    """Top-level Hermes desktop windows, hidden/minimized included."""
+_hwnd_cache = {"ts": 0.0, "hwnd": None, "kind": None}
+
+
+def classify():
+    """-> (hwnd, kind) kind in visible|minimized|hidden|None; prefer a visible one.
+
+    EnumWindows is still needed here (find the window to hide/restore), but it
+    runs behind a 5s cache and only while the desktop process is up, so a
+    transiently hung third-party window thread costs at most one stale read
+    instead of freezing the whole tray.
+    """
+    now = time.time()
+    if now - _hwnd_cache["ts"] < 5 and (_hwnd_cache["hwnd"] is None
+                                        or _IsWindow(_hwnd_cache["hwnd"])):
+        return _hwnd_cache["hwnd"], _hwnd_cache["kind"]
     found = []
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
@@ -124,18 +195,18 @@ def hermes_windows():
         return True
 
     user32.EnumWindows(cb, 0)
-    return found
-
-
-def classify():
-    """-> (hwnd, kind) kind in visible|minimized|hidden|None; prefer a visible one."""
+    _hwnd_cache["ts"] = now
     hidden = None
-    for h in hermes_windows():
+    for h in found:
         if _IsWindowVisible(h):
-            return h, ("minimized" if _IsIconic(h) else "visible")
+            r = (h, "minimized" if _IsIconic(h) else "visible")
+            break
         if hidden is None:
             hidden = h
-    return (hidden, "hidden") if hidden else (None, None)
+    else:
+        r = (hidden, "hidden") if hidden else (None, None)
+    _hwnd_cache["hwnd"], _hwnd_cache["kind"] = r
+    return r
 
 
 def bring_to_front(hwnd):
@@ -147,6 +218,7 @@ def bring_to_front(hwnd):
     _SetForegroundWindow(hwnd)
     _BringWindowToTop(hwnd)
     _AttachThreadInput(mine, other, False)
+    _hwnd_cache["ts"] = 0.0
 
 
 def focus_or_launch():
@@ -156,7 +228,15 @@ def focus_or_launch():
         return
     exe = shutil.which("hermes")
     if exe:
-        subprocess.Popen([exe, "desktop"], creationflags=0x8 | 0x200, close_fds=True)
+        subprocess.Popen([exe, "desktop"],
+                         creationflags=0x8 | 0x200 | 0x80000, close_fds=True)
+
+
+def _rm(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _log(msg):
@@ -169,58 +249,90 @@ def _log(msg):
         pass
 
 
-# ---- tray ---------------------------------------------------------------------
-_lbl = {"agent": "..."}
+# ---- tray loop -------------------------------------------------------------
+_lbl = {"agent": "...", "win": "closed"}
 # pystray 3.x menu text is read-only: dynamic labels must be a callable, the
 # Win32 backend re-evaluates it every time the menu opens.
 status_item = pystray.MenuItem(lambda item: "Status: " + _lbl["agent"], None, enabled=False)
-_last = {"sig": None}
+win_item = pystray.MenuItem(lambda item: "Window: " + _lbl["win"], None, enabled=False)
+_last = {"sig": None, "desktop": object()}  # sentinel: first poll sees "change"
 
 
 def tick(icon):
+    pid = desktop_pid()
+    visible, clear_flag = icon_visibility(pid, _last["desktop"], os.path.exists(FLAG))
+    if clear_flag:
+        _rm(FLAG)  # new/ended session: a stale hide-request must not leak over
+    if pid != _last["desktop"]:
+        _last["desktop"] = pid
+        _hwnd_cache["ts"] = 0.0
+        _lbl["win"] = "closed"
+        if pid is None:
+            icon.visible = False
+            _log("desktop gone -> icon hidden")
+            return
+        _log("desktop up (pid=%s)" % pid)
+    if not visible:
+        if icon.visible:
+            icon.visible = False
+        return
+    try:
+        icon.visible = True
+    except Exception:
+        _last["desktop"] = None  # pystray loop not ready yet: retry next beat
+        return
+
     hwnd, kind = classify()
     if kind == "minimized" and _cfg["autohide"]:
         _ShowWindow(hwnd, SW_HIDE)  # leave the taskbar; dot still tracks agent state
         _log("hid minimized window %s" % hwnd)
+        _hwnd_cache["ts"] = 0.0
         kind = "hidden"
-    win = {"visible": "shown", "minimized": "in tray", "hidden": "in tray", None: "closed"}[kind]
+    win = {"visible": "shown", "minimized": "in tray", "hidden": "in tray"}.get(kind, "in tray")
     state = compute_state(HERMES_HOME)
     sig = (state, win)
     if sig != _last["sig"]:
         _last["sig"] = sig
-        _lbl["agent"] = LABELS[state]
+        _lbl["agent"], _lbl["win"] = LABELS[state], win
         icon.icon = draw_icon(state)
         icon.title = "Hermes - %s (%s)" % (LABELS[state], win)
 
 
 def poll_loop(icon):
+    beat = 0
     while True:
         try:
             tick(icon)
         except Exception as e:  # one failed probe must never kill the loop
             _log("poll error: %r" % e)
+        beat += 1
+        if beat % 300 == 0:  # ~10 min heartbeat: a frozen process stops logging
+            _log("heartbeat beat=%d desktop=%s visible=%s"
+                 % (beat, _last["desktop"], icon.visible))
         time.sleep(POLL_SECS)
 
 
-def quit_tray():
-    """User quit: the watchdog honours this flag until the desktop session ends."""
+def hide_until_new_session():
+    """Hide the icon until the next desktop session (v1 quit_flag semantics)."""
     try:
-        open(os.path.join(MY_DIR, ".quit_flag"), "a").close()
+        open(FLAG, "a").close()
     except OSError:
         pass
-    icon.stop()
+    icon.visible = False
 
 
 def build_icon():
     menu = pystray.Menu(
         status_item,
+        win_item,
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Open / restore Hermes", lambda: focus_or_launch(), default=True),
         pystray.MenuItem("Hide minimized window to tray",
                          lambda: _cfg.update(autohide=not _cfg["autohide"]),
                          checked=lambda item: _cfg["autohide"]),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Quit tray helper", quit_tray),
+        pystray.MenuItem("Hide icon until next Hermes launch", hide_until_new_session),
+        pystray.MenuItem("Quit tray helper", lambda: icon.stop()),
     )
     return pystray.Icon("hermes-tray", draw_icon("idle"), "Hermes tray", menu)
 
@@ -229,10 +341,20 @@ icon = build_icon()
 
 
 def main():
+    single = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # lock inside main(): importing this module for diagnostics stays clean
+        single.bind(("127.0.0.1", TRAY_PORT))
+    except OSError:
+        sys.exit(0)  # another tray instance is running
     threading.Thread(target=poll_loop, args=(icon,), daemon=True).start()
     _log("tray started (pid=%d home=%s)" % (os.getpid(), HERMES_HOME))
-    icon.run()
+    icon.run()  # pystray starts invisible; first tick lights it by desktop state
 
 
 if __name__ == "__main__":
+    def _hook(ty, val, tb):
+        import traceback
+        _log("FATAL " + "".join(traceback.format_exception(ty, val, tb)))
+    sys.excepthook = _hook
     main()

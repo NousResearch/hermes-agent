@@ -51,12 +51,17 @@ class TestSkillMetadata:
         assert set(_frontmatter()["platforms"]) == {"windows"}
 
     def test_required_files_ship(self):
-        for rel in ("scripts/hermes_tray.py", "scripts/tray_watchdog.py",
-                    "scripts/windows_tray_state.py", "scripts/start_watchdog.js",
+        for rel in ("scripts/hermes_tray.py",
+                    "scripts/windows_tray_state.py",
                     "scripts/install_tray.ps1",
                     "scripts/tray-needs-input/plugin.yaml",
                     "scripts/tray-needs-input/__init__.py"):
             assert (SKILL_DIR / rel).exists(), rel
+
+    def test_no_stale_watchdog_artifacts(self):
+        # v2 merged the watchdog into the tray; leftovers would contradict SKILL.md
+        for gone in ("scripts/tray_watchdog.py", "scripts/start_watchdog.js"):
+            assert not (SKILL_DIR / gone).exists(), gone
 
     def test_no_machine_local_paths_anywhere(self):
         bad = re.compile(r"[A-Za-z]:\\+Users\\+|/home/[a-z0-9_-]+/")
@@ -157,6 +162,43 @@ class TestComputeState:
         _db(home, time.time() - 1)
         _gui(home, "interrupted")
         assert state.compute_state(home) == "idle"
+
+
+# ---------------------------------------------------------------------------
+# Icon visibility policy: the resident tray shows/hides its icon as the
+# desktop process appears/changes/disappears. Pure function, no win32.
+# ---------------------------------------------------------------------------
+
+class TestIconVisibility:
+    def test_desktop_appears_shows_icon(self):
+        assert state.icon_visibility(100, None, False) == (True, True)
+
+    def test_new_session_clears_stale_hide_flag(self):
+        # desktop PID swapped: last session's quit flag must not leak over
+        visible, clear = state.icon_visibility(200, 100, True)
+        assert visible and clear
+
+    def test_desktop_gone_hides_and_clears_flag(self):
+        assert state.icon_visibility(None, 100, False) == (False, True)
+
+    def test_up_and_stable_follows_flag(self):
+        assert state.icon_visibility(100, 100, False) == (True, False)
+        assert state.icon_visibility(100, 100, True) == (False, False)
+
+    def test_down_and_stable_stays_hidden(self):
+        assert state.icon_visibility(None, None, False) == (False, False)
+
+    def test_first_poll_with_desktop_running_shows(self):
+        # sentinel prev_pid means "never observed": a desktop already up wins
+        assert state.icon_visibility(100, "sentinel", False)[0] is True
+
+    def test_flag_never_forces_visible(self):
+        # safety property: visible implies a live desktop process
+        for pid in (None, 5):
+            for prev in (None, 5, 9, "sentinel"):
+                for flag in (False, True):
+                    vis, _ = state.icon_visibility(pid, prev, flag)
+                    assert not vis or pid is not None
 
 
 # ---------------------------------------------------------------------------

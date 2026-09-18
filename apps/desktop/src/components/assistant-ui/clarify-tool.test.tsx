@@ -827,9 +827,13 @@ describe('ClarifyTool batch card', () => {
       question_id: 'q2',
       request_id: 'request-batch'
     })
+    // Settled, not unmounted. Keeping a restored batch visible when its
+    // message completes is the other half of this PR, so the card stays in the
+    // thread and drops back to the disabled preview state instead of vanishing.
     await waitFor(() => {
-      expect(batchForm?.isConnected).toBe(false)
+      expect(batchForm?.hasAttribute('data-clarify-batch-preview')).toBe(true)
     })
+    expect(batchForm?.isConnected).toBe(true)
   })
 
   it('Enter on a focused multi-select choice is suppressed while another batch question is incomplete', () => {

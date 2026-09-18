@@ -250,8 +250,8 @@ def _stall_guard_signature(
 
     Some tools declare a desired end state while also accepting arguments that
     only select how to apply it. ``STALL_GUARD_ARG_NORMALIZERS`` lists the
-    observed jitter patterns to normalize (currently just ``todo``'s ``merge``
-    selector) without weakening the stricter signatures used by failure and
+    observed jitter patterns to normalize (currently just ``todo_list``'s
+    ``merge`` selector) without weakening the stricter signatures used by failure and
     no-progress guardrails.
 
     All other tools and argument differences retain their exact canonical
@@ -496,8 +496,8 @@ class ToolCallGuardrailController:
           blocks the call. Allowlisted pollers (``is_stall_guard_repeatable``)
           are exempt from the NOTICE. Equivalence tolerates two observed
           no-progress jitter patterns: a declarative tool re-asserting the
-          same end state while toggling an apply-mode argument (``todo``
-          ``merge``), and an explicit unchanged/dedup envelope from a known
+          same end state while toggling an apply-mode argument
+          (``todo_list`` ``merge``), and an explicit unchanged/dedup envelope from a known
           emitter (``read_file`` / ``skill_view``) certifying the previously
           returned content is unchanged. The same threshold also drives the
           hard-stop halt and the batch-cycle lap counter.
@@ -699,8 +699,8 @@ def _is_explicit_unchanged_result(tool_name: str, result: str | None) -> bool:
 
     Trust-the-emitter contract: the guard does not re-verify content; it
     relies on the emitters in ``tools/file_tools.py`` (read_file) and
-    ``tools/skills_tool.py`` (skill_view) only stamping this envelope after
-    an mtime/size equality check. Each emitter carries a CONTRACT comment
+    ``tools/skills_tool_dedup.py`` (skill_view) only stamping this envelope
+    after an mtime/size equality check. Each emitter carries a CONTRACT comment
     keeping the two sides in sync.
     """
     if tool_name not in STALL_GUARD_UNCHANGED_RESULT_TOOLS or not isinstance(result, str):

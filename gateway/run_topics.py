@@ -451,6 +451,14 @@ class GatewayTopicThreadsMixin:
     # the same chat_id never share one.
     _telegram_group_rename_locks: Optional[dict] = None
 
+    # Bounded failure handling: one initial attempt plus at most one guided retry. Retries happen
+    # only on Telegram's own flood-control guidance (``retry_after``), never on a timer of ours.
+    _TELEGRAM_GROUP_TITLE_MAX_ATTEMPTS = 2
+    # Over-cap penalties fail closed instead of sleeping (adapter policy: a 97-minute flood
+    # penalty on a background path froze inbound on every platform, #91969).
+    _TELEGRAM_GROUP_TITLE_RETRY_CAP_S = 30.0
+    _TELEGRAM_GROUP_TITLE_RETRY_MIN_S = 1.0
+
     def _telegram_group_rename_lock(self, source: SessionSource) -> asyncio.Lock:
         if self._telegram_group_rename_locks is None:
             self._telegram_group_rename_locks = {}
@@ -478,23 +486,57 @@ class GatewayTopicThreadsMixin:
         # the older callback completes last. Ordering comes from session opening order (started_at,
         # id tiebreak) in the owning profile's store — never from callback completion time.
         async with self._telegram_group_rename_lock(source):
-            owned = await asyncio.to_thread(self._telegram_group_title_owned_by, source, session_id)
-            if not owned:
-                logger.debug(
-                    "Telegram group title rename skipped (newer session owns the group): session=%s", session_id)
-                return
-            current_title = await self._telegram_group_current_title(bot, source)
-            if current_title == title:
-                logger.debug(
-                    "Telegram group title rename skipped (already applied): session=%s", session_id)
-                return
-            try:
-                # Do not sanitize: rejection must not silently diverge from the stored title.
-                applied = await rename(chat_id=int(source.chat_id), title=title)
-                logger.info("Telegram group title rename: session=%s applied=%s", session_id, bool(applied))
-            except Exception as exc:
-                # Transport exceptions may contain credentials or message text; log only the type.
-                logger.warning("Telegram group title rename rejected: session=%s error=%s", session_id, type(exc).__name__)
+            for attempt in range(1, self._TELEGRAM_GROUP_TITLE_MAX_ATTEMPTS + 1):
+                # Revalidate before EVERY attempt, retries included: a delayed retry must never
+                # restore an older session's title after a newer session opens.
+                owned = await asyncio.to_thread(self._telegram_group_title_owned_by, source, session_id)
+                if not owned:
+                    logger.debug(
+                        "Telegram group title rename skipped (newer session owns the group): session=%s", session_id)
+                    await asyncio.to_thread(
+                        self._record_telegram_group_title_outcome, source, session_id, "skipped:superseded")
+                    return
+                current_title = await self._telegram_group_current_title(bot, source)
+                if current_title == title:
+                    logger.debug(
+                        "Telegram group title rename skipped (already applied): session=%s", session_id)
+                    await asyncio.to_thread(
+                        self._record_telegram_group_title_outcome, source, session_id, "applied")
+                    return
+                try:
+                    # Do not sanitize: rejection must not silently diverge from the stored title.
+                    applied = await rename(chat_id=int(source.chat_id), title=title)
+                    logger.info("Telegram group title rename: session=%s applied=%s", session_id, bool(applied))
+                    await asyncio.to_thread(
+                        self._record_telegram_group_title_outcome, source, session_id,
+                        "applied" if applied else "rejected:not_applied")
+                    return
+                except Exception as exc:
+                    # Transport exceptions may contain credentials or message text; log only the type.
+                    outcome = type(exc).__name__
+                    if attempt >= self._TELEGRAM_GROUP_TITLE_MAX_ATTEMPTS:
+                        logger.warning(
+                            "Telegram group title rename rejected: session=%s error=%s", session_id, outcome)
+                        await asyncio.to_thread(
+                            self._record_telegram_group_title_outcome, source, session_id, f"rejected:{outcome}")
+                        return
+                    delay = self._telegram_group_title_retry_delay(exc)
+                    if delay is None:
+                        logger.warning(
+                            "Telegram group title rename rejected (no retry): session=%s error=%s",
+                            session_id, outcome)
+                        await asyncio.to_thread(
+                            self._record_telegram_group_title_outcome, source, session_id, f"rejected:{outcome}")
+                        return
+                    logger.info(
+                        "Telegram group title rename failed (retry %d/%d in %.1fs): session=%s error=%s",
+                        attempt, self._TELEGRAM_GROUP_TITLE_MAX_ATTEMPTS - 1, delay, session_id, outcome)
+                    await asyncio.to_thread(
+                        self._record_telegram_group_title_outcome, source, session_id, f"retrying:{outcome}:{attempt}")
+                    # The parked lane holds the chat lock for at most one capped guidance window:
+                    # a newer session's rename queues behind it and the wake-up recheck below
+                    # decides ownership, so the delay can never reorder titles.
+                    await self._telegram_group_title_retry_wait(delay)
 
     def _telegram_group_title_owned_by(self, source: SessionSource, session_id: str) -> bool:
         """True when *session_id* still owns its chat origin for whole-chat naming, decided in the
@@ -528,6 +570,51 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("Telegram group title ownership recheck failed; keeping claim", exc_info=True)
             return True
+
+    def _record_telegram_group_title_outcome(self, source: SessionSource, session_id: str, outcome: str) -> None:
+        """Persist the rename outcome to the owning profile's ``state_meta`` — observable without
+        credentials or message content, no new schema. Best-effort: recording failures never
+        interrupt the conversation."""
+        try:
+            from hermes_state_registry import acquire, release_or_close
+
+            home = self._authorization_home_for_source(source)
+            multiplex = bool(getattr(getattr(self, "config", None), "multiplex_profiles", False))
+            if home is None and multiplex:
+                # Unresolvable under multiplex: record nothing rather than write into another
+                # profile's store.
+                return
+            db_path = Path(home) / "state.db" if home is not None else None
+            db = acquire(db_path)
+            try:
+                db.set_meta(
+                    f"tg_title:{source.platform.value}:{source.chat_id}:{session_id}",
+                    f"{int(time.time())}:{outcome}",
+                )
+            finally:
+                release_or_close(db)
+        except Exception:
+            logger.debug("Telegram group title outcome recording failed", exc_info=True)
+
+    def _telegram_group_title_retry_delay(self, exc: Exception) -> Optional[float]:
+        """Retry delay from Telegram's own guidance, or None when the failure is not retryable.
+        Only flood-control ``retry_after`` retries; permission/invalid-title rejections fail
+        closed. Over-cap penalties fail closed too (the adapter's long-wait policy, #91969)."""
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is None:
+            return None
+        try:
+            delay = float(retry_after)
+        except (TypeError, ValueError):
+            return None
+        if delay > self._TELEGRAM_GROUP_TITLE_RETRY_CAP_S:
+            return None
+        return max(delay, self._TELEGRAM_GROUP_TITLE_RETRY_MIN_S)
+
+    async def _telegram_group_title_retry_wait(self, delay: float) -> None:
+        """Park the rename lane for one Telegram flood-control guidance window. Tests replace
+        this per runner with a deterministic gate so they never depend on wall-clock timing."""
+        await asyncio.sleep(delay)
 
     async def _telegram_group_current_title(self, bot, source: SessionSource) -> Optional[str]:
         """Best-effort live title read-back so an already-matching group name issues no rename

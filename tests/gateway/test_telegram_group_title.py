@@ -8,11 +8,13 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from telegram.error import RetryAfter
 
 from agent.secret_scope import is_multiplex_active, set_multiplex_active
 from agent.title_generator import apply_instant_title, auto_title_session
 from gateway.config import Platform, PlatformConfig
 from gateway.run import GatewayRunner, _profile_runtime_scope
+from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
@@ -147,21 +149,22 @@ def _end_session(db, session_id, reason):
 
 async def _fire(adapter, runner, source, session_id, title):
     """Deliver a final llm title through the real attach + schedule path, waiting until the
-    scheduled rename coroutine completes its serialized turn — whether it issued a transport
-    request (skips never touch the bot) or was refused by ownership/read-back dedup."""
+    scheduled rename coroutine completes its serialized turn. The lane's own outcome record
+    (written on every terminal path) is the deterministic completion signal: skips and
+    rejections never touch the transport, so a called/lock-unlocked heuristic can return
+    before the turn runs and race the assertion that follows. Re-firing the SAME session
+    sees its earlier record and may return before the duplicate turn finishes; refires
+    assert only transport-stable state a skipped duplicate cannot change."""
     callback = _attach(runner, source, session_id)
     adapter._bot.called.clear()
     await asyncio.to_thread(callback, title, "llm")
-    key = f"{'default' if not source.profile else source.profile}:{source.chat_id or ''}"
-    locks = getattr(runner, "_telegram_group_rename_locks", None) or {}
-    for _ in range(500):
-        if adapter._bot.called.is_set():
-            return
-        lock = locks.get(key)
-        if lock is not None and not lock.locked():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("scheduled group-title rename never completed its turn")
+    db = SessionDB()
+    try:
+        await asyncio.to_thread(
+            _await_meta, db, f"tg_title:{source.platform.value}:{source.chat_id}:{session_id}", ":",
+            timeout_s=5.0)
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio
@@ -353,14 +356,29 @@ async def test_filtered_titles_and_rejection_do_not_interrupt_replies(tmp_path, 
         result = await asyncio.wait_for(adapter.send("-101", "Reply while rename waits"), timeout=2)
         assert result.success
         bot.release.set()
-        # A loop barrier gives the already-scheduled rename its error-handling turn.
-        await asyncio.sleep(0)
+        # Bounded failure handling: ValueError carries no retry guidance, so the lane fails
+        # closed after its first attempt. The release + two barriers let the coroutine reach
+        # its terminal warning before the reply assertion.
+        for _ in range(500):
+            if "Telegram group title rename rejected" in caplog.text:
+                break
+            await asyncio.sleep(0.01)
         result = await asyncio.wait_for(adapter.send("-101", "Reply after rejection"), timeout=2)
         assert result.success
         assert len(bot.replies) == 2
         assert "Telegram group title rename rejected" in caplog.text
         assert "ValueError" in caplog.text
         assert "sensitive transport details" not in caplog.text
+        # The terminal failure is observable without credentials or message content. The lane
+        # records through the ambient store (single profile: no stamp exists); poll because the
+        # warning logs a beat before the recording thread commits.
+        ambient = SessionDB()
+        try:
+            recorded = await asyncio.to_thread(
+                _await_meta, ambient, "tg_title:telegram:-101:group-session", "rejected:ValueError")
+        finally:
+            ambient.close()
+        assert "sensitive" not in (recorded or "")
     finally:
         bot.release.set()
         db.close()
@@ -386,3 +404,141 @@ async def test_disable_group_auto_rename_knob(disabled):
         assert len(adapter._bot.renames) == (0 if disabled else 1)
     finally:
         db.close()
+
+
+class FloodBot(RecordingBot):
+    """Transport double for Telegram's failure contract: a flood-control rejection raises
+    ``RetryAfter`` carrying Telegram's own ``retry_after`` guidance; acceptance is read back
+    via ``get_chat``."""
+
+    def __init__(self, plan):
+        super().__init__()
+        self.plan = list(plan)  # one entry per transport call: Exception to raise, or None = accept
+
+    async def set_chat_title(self, *, chat_id, title):
+        self.renames.append((chat_id, title, get_hermes_home()))
+        self.called.set()
+        action = self.plan.pop(0) if self.plan else None
+        if action is not None:
+            raise action
+        self.titles[str(chat_id)] = title
+        return True
+
+
+def _flood_runner(adapter):
+    """Single-profile runner whose retry wait is a deterministic gate (cleared = parked, set =
+    released) so tests never depend on wall-clock timing. Production awaits asyncio.sleep."""
+    runner = _wired_runner(adapter)
+    gate = asyncio.Event()
+
+    async def _gated_wait(delay):
+        await gate.wait()
+
+    runner._retry_gate = gate
+    runner._telegram_group_title_retry_wait = _gated_wait
+    return runner
+
+
+def _await_meta(db, key, needle, timeout_s=5.0):
+    """Poll until the lane's outcome record for *key* contains *needle*; the record is the
+    deterministic completion signal for a lane turn that never touches the transport."""
+    for _ in range(int(timeout_s / 0.01)):
+        recorded = db.get_meta(key)
+        if recorded is not None and needle in recorded:
+            return recorded
+        time.sleep(0.01)
+    raise AssertionError(f"outcome {needle!r} never recorded for {key}: last={db.get_meta(key)!r}")
+
+
+@pytest.mark.asyncio
+async def test_flood_retry_revalidates_and_applies():
+    """A RetryAfter rejection parks the lane for Telegram's guidance, then the retry applies
+    the same stored title — exactly one extra transport request, no second model call."""
+    bot = FloodBot([RetryAfter(2)])
+    adapter = _adapter()
+    adapter._bot = bot
+    runner = _flood_runner(adapter)
+    gate = runner._retry_gate
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _store_session(db, "flood-session", started_at=time.time())
+        await asyncio.to_thread(_attach(runner, source, "flood-session"), "Flooded conversation", "llm")
+        await asyncio.wait_for(bot.called.wait(), timeout=2)
+        # The lane is now parked inside its guided retry wait, holding the chat lock.
+        assert len(bot.renames) == 1
+        gate.set()  # release the parked retry
+        recorded = await asyncio.to_thread(_await_meta, db, "tg_title:telegram:-101:flood-session", "applied")
+        assert [text for _chat, text, _home in bot.renames] == [
+            "Flooded conversation", "Flooded conversation"]
+        assert bot.titles["-101"] == "Flooded conversation"
+        assert "applied" in recorded
+    finally:
+        gate.set()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_parked_retry_cannot_restore_older_session():
+    """A retry parked mid-wait when a newer session opens revalidates ownership on wake and
+    declines: the flood wait cannot smuggle an older title past a newer session."""
+    bot = FloodBot([RetryAfter(2)])
+    adapter = _adapter()
+    adapter._bot = bot
+    runner = _flood_runner(adapter)
+    gate = runner._retry_gate
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _store_session(db, "session-old", started_at=time.time() - 30)
+        await asyncio.to_thread(_attach(runner, source, "session-old"), "Older conversation", "llm")
+        await asyncio.wait_for(bot.called.wait(), timeout=2)
+        assert len(bot.renames) == 1  # parked inside the retry wait
+        # A newer session arrives while the older retry is parked; its rename queues behind
+        # the chat lock the parked lane holds.
+        _store_session(db, "session-new", started_at=time.time())
+        await asyncio.to_thread(_attach(runner, source, "session-new"), "Fresh conversation", "llm")
+        gate.set()  # wake: the old retry must lose; the newer session then applies
+        await asyncio.to_thread(_await_meta, db, "tg_title:telegram:-101:session-old", "skipped:superseded")
+        await asyncio.to_thread(_await_meta, db, "tg_title:telegram:-101:session-new", "applied")
+        assert [text for _chat, text, _home in bot.renames] == [
+            "Older conversation", "Fresh conversation"]
+        assert bot.titles["-101"] == "Fresh conversation"
+    finally:
+        gate.set()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_over_cap_flood_waits_fail_closed():
+    """A penalty beyond the adapter's inline-wait policy is not slept off: the lane records
+    the rejection and returns without a second transport request."""
+    bot = FloodBot([RetryAfter(97 * 60)])
+    adapter = _adapter()
+    adapter._bot = bot
+    runner = _flood_runner(adapter)
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _store_session(db, "penalized-session", started_at=time.time())
+        await asyncio.to_thread(_attach(runner, source, "penalized-session"), "Penalized conversation", "llm")
+        recorded = await asyncio.to_thread(
+            _await_meta, db, "tg_title:telegram:-101:penalized-session", "rejected:RetryAfter")
+        assert len(bot.renames) == 1
+        assert "rejected:RetryAfter" in recorded
+    finally:
+        runner._retry_gate.set()
+        db.close()
+
+
+def test_retry_delay_policy_table():
+    """Delays come from Telegram's own guidance only, clamped to the adapter policy bounds;
+    anything else fails closed."""
+    min_s = GatewayTopicThreadsMixin._TELEGRAM_GROUP_TITLE_RETRY_MIN_S
+    cap_s = GatewayTopicThreadsMixin._TELEGRAM_GROUP_TITLE_RETRY_CAP_S
+    lane = SimpleNamespace(_TELEGRAM_GROUP_TITLE_RETRY_MIN_S=min_s, _TELEGRAM_GROUP_TITLE_RETRY_CAP_S=cap_s)
+    delay = GatewayTopicThreadsMixin._telegram_group_title_retry_delay(lane, RetryAfter(97 * 60))
+    assert delay is None  # over-cap penalty: fail closed, never sleep it off
+    assert GatewayTopicThreadsMixin._telegram_group_title_retry_delay(lane, RetryAfter(3)) == 3.0
+    assert GatewayTopicThreadsMixin._telegram_group_title_retry_delay(lane, RetryAfter(0)) == min_s
+    assert GatewayTopicThreadsMixin._telegram_group_title_retry_delay(lane, ValueError("no guidance")) is None

@@ -1264,17 +1264,39 @@ def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list
     return drift
 
 
-def _print_scheduled_task_drift(task_name: str) -> None:
-    """Warn when the registered task predates ``_build_scheduled_task_xml``; silent when it cannot be
-    queried. Reports only — re-registration stays behind the explicit ``hermes gateway install``."""
+def scheduled_task_drift(task_name: str) -> list[str]:
+    """Drift fragments between the registered task and ``_build_scheduled_task_xml``; empty when
+    aligned or when the task cannot be queried."""
     registered = _query_scheduled_task_xml(task_name)
     if registered is None:
-        return
+        return []
     template = _build_scheduled_task_xml(task_name, get_task_script_path().with_suffix(".vbs"), _resolve_task_user())
-    drift = compare_scheduled_task_drift(registered, template)
+    return compare_scheduled_task_drift(registered, template)
+
+
+def _print_scheduled_task_drift(task_name: str) -> None:
+    """Warn when the registered task predates the current template (status is read-only; the
+    repair runs from ``start()`` / ``hermes update`` via ``reconcile_scheduled_task``)."""
+    drift = scheduled_task_drift(task_name)
     if drift:
         print(f"⚠ Scheduled Task registration predates the current template ({'; '.join(drift)})")
-        print("  Repair: hermes gateway install")
+        print("  Repair: hermes gateway start  (or: hermes gateway install)")
+
+
+def reconcile_scheduled_task(task_name: str) -> bool:
+    """Re-register the task from the current template when it drifts (#113670) — the Windows sibling
+    of ``gateway.py::refresh_systemd_unit_if_needed``. Template hardening (``RestartOnFailure``, logon
+    ``Delay``) otherwise only ever reaches fresh installs. False when aligned/unqueryable or when
+    ``schtasks`` refused (typically Access Denied — the elevating ``hermes gateway install`` is the fallback)."""
+    drift = scheduled_task_drift(task_name)
+    if not drift:
+        return False
+    print(f"↻ Repairing outdated Scheduled Task registration ({'; '.join(drift)})")
+    ok, detail = _install_scheduled_task(task_name, _write_task_script())
+    print(f"{'✓' if ok else '⚠'} {detail}")
+    if not ok:
+        print("  Repair manually: hermes gateway install")
+    return ok
 
 
 def is_installed() -> bool:
@@ -1482,6 +1504,8 @@ def start() -> None:
             print("⚠ Gateway install did not complete in this process.")
             print("  If a UAC prompt opened, approve it, then run: hermes gateway start")
             return
+    elif is_task_registered():
+        reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
 
     # Manual starts use the same console-less direct spawn as restart() and install --start-now;
     # Scheduled Task / Startup entries are only login persistence.

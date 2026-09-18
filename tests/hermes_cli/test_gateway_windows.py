@@ -447,6 +447,40 @@ def test_scheduled_task_drift_is_silent_when_aligned_or_unqueryable(monkeypatch)
     assert printed == []
 
 
+def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_path):
+    """The Windows sibling of ``refresh_systemd_unit_if_needed`` (#113670): a pre-hardening
+    registration is deleted and re-created from the current template (so ``RestartOnFailure`` and the
+    logon ``Delay`` reach existing installs), while an aligned one is left alone."""
+    script_path = tmp_path / "gateway.cmd"
+    launcher = script_path.with_suffix(".vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    calls: list[list[str]] = []
+    registered = {"xml": _PRE_HARDENING_TASK_XML}
+
+    def fake_schtasks(args):
+        calls.append(list(args))
+        if "/XML" in args and "/Query" in args:
+            return (0, registered["xml"], "")
+        if "/Create" in args:
+            registered["xml"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return (0, "", "")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
+
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is True
+    assert [c[0] for c in calls if c[0] in ("/Delete", "/Create")] == ["/Delete", "/Create"]
+    assert "<RestartOnFailure>" in registered["xml"]
+    assert gateway_windows.compare_scheduled_task_drift(registered["xml"], template) == []
+
+    calls.clear()
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
+    assert not any(c[0] in ("/Delete", "/Create") for c in calls)
+
+
 
 
 

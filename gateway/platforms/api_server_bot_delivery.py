@@ -295,21 +295,21 @@ async def drain_once(
     desktop session, a card worker) is skipped, never fought for -- the holder
     drains the queue when it releases.
 
-    ``home`` locates the root; the drainer enumerates the WHOLE roster (default
-    + every named profile) because a peer delivery is admitted into its TARGET
+    ``home`` locates the root; the drainer enumerates the WHOLE delivery roster (default
+    + every named profile, live or not) because a peer delivery is admitted into its TARGET
     lane's own home (``_bot_send_home`` resolves the request-scoped profile to
     ``profiles/<lane>``), not the default home. Draining only ``home`` left a
     named lane's backlog invisible (the live sweep logged ``actions=0`` while
     two lanes held 13 queued records).
     """
-    from tools.bot_mode_probe import _hermes_root, _roster
+    from tools.bot_mode_probe import _delivery_homes, _hermes_root
     from tools.bot_relay import TurnBusyError, acquire_turn_lock
 
     root = _hermes_root(home)
     budget = SWEEP_DRAIN_BUDGET_SECONDS if budget_seconds is None else budget_seconds
     deadline = time.monotonic() + budget
     drained = 0
-    for _name, profile_home in _roster(root):
+    for _name, profile_home in _delivery_homes(root):
         for profile in delivery_queue.queued_target_profiles(profile_home):
             while time.monotonic() < deadline:
                 try:
@@ -343,7 +343,7 @@ async def drain_once(
 
 async def sweep_loop(adapter: Any) -> None:
     """Trigger 3: every ``sweep_seconds``, recover expiries then drain free slots."""
-    from tools.bot_mode_probe import _default_home, _hermes_root, _roster
+    from tools.bot_mode_probe import _default_home, _delivery_homes, _hermes_root
 
     home = Path(_default_home())
     root = _hermes_root(home)
@@ -354,8 +354,8 @@ async def sweep_loop(adapter: Any) -> None:
             # Recover orphaned claims / expire over-age records in EVERY lane's
             # home first, so the drain below sees the real queue (and never
             # expires a busy target's). The drainer then enumerates the same
-            # roster, so a named lane's backlog is never invisible to the sweep.
-            for _name, profile_home in _roster(root):
+            # homes, so a named lane's backlog is never invisible to the sweep.
+            for _name, profile_home in _delivery_homes(root):
                 delivery_queue.sweep_delivery_queue(profile_home)
             drained = await drain_once(adapter, home)
             if drained:

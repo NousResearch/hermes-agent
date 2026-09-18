@@ -380,6 +380,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { resolvePosixGitBinary as _resolvePosixGitBinary } from './resolve-posix-git-binary'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import {
   classifyStoredSecret,
@@ -2947,13 +2948,24 @@ function makeDashboardReadyFile() {
 // standard Git-for-Windows locations, then PATH. Cached after first probe.
 let _gitBinaryCache = null
 
+function gitBinaryRuns(candidate) {
+  try {
+    execFileSync(candidate, ['--version'], { stdio: 'ignore', timeout: 5000, windowsHide: true })
+
+    return true
+  } catch {
+    return false
+  }
+}
+
 function resolveGitBinary() {
   if (_gitBinaryCache) {
     return _gitBinaryCache
   }
 
   if (!IS_WINDOWS) {
-    _gitBinaryCache = findOnPath('git') || 'git'
+    _gitBinaryCache =
+      _resolvePosixGitBinary({ pathEnv: process.env.PATH, fileExists, canExecute: gitBinaryRuns }) || 'git'
 
     return _gitBinaryCache
   }

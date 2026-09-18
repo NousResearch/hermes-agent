@@ -413,7 +413,6 @@ def test_present_plugins_section_is_validated_even_when_falsey(
             host._plugin_configuration_state
             is relay_runtime._RelayPluginConfigurationState.FAILED
         )
-        # Hermes hands the file to Relay as-is; a falsey section is Relay's to reject.
         assert relay.initialized_from == [str(config)]
         assert "'plugins' must be a table" in caplog.text
         assert "Hermes Relay plugin initialization failed" in caplog.text
@@ -539,7 +538,6 @@ manifest = "plugins/worker/relay-plugin.toml"
 
     assert host_a.managed_execution_enabled()
     assert host_b.managed_execution_enabled()
-    # Static components and [[plugins.dynamic]] travel together as the explicit file.
     assert relay.events == [("plugin.initialize", {})]
     assert relay.initialized_from == [str(config)]
 
@@ -891,8 +889,6 @@ mode = "strict"
 
     assert relay_runtime._configured_plugin_inputs() == config
 
-    # Relay, not Hermes, now reads and validates the [[plugins.dynamic]] records. This
-    # manifest is incomplete for Relay 0.9, and that rejection must fail Hermes open.
     with caplog.at_level("WARNING"):
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:

@@ -57,8 +57,7 @@ def test_legacy_env_becomes_validated_toml_selected_from_env(profile_env):
     sink = document["components"][0]["config"]["atof"]["sinks"][0]
     assert sink["type"] == "file" and sink["filename"] == "hermes-atof.jsonl"
     assert document["components"][0]["config"]["atif"]["filename_template"] == "trajectory-{session_id}.json"
-    # Relay itself accepts the file Hermes will load at runtime, through the same layer
-    # set the runtime uses: the explicit file, not the ambient user config.
+    # Relay itself accepts the file Hermes will load at runtime.
     report = nemo_relay.plugin.validate({}, additional_plugins_toml=toml_path)
     assert report["config"]["diagnostics"] == []
     # .env now selects the file; the legacy lines survive as comments (not deleted), so the

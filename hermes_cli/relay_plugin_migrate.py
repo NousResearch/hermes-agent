@@ -129,10 +129,9 @@ def validate_relay_plugin_payload(payload: Mapping[str, Any]) -> list:
     Raises when Relay rejects the document, including by error-level diagnostics."""
     from nemo_relay import plugin
 
-    # Exact: the runtime loads this document as the explicit file, never layered over the
-    # ambient user config that plain validate() would discover.
+    # validate() would layer the payload over the ambient user config; the runtime never does.
     diagnostics = list(plugin.validate_exact(dict(payload))["config"]["diagnostics"])
-    # Relay 0.8 raised on these from initialize(); 0.9's validator reports them instead.
+    # Relay 0.8's initialize() raised on these; 0.9's validator only reports them.
     if errors := [d for d in diagnostics if d.get("level") == "error"]:
         raise ValueError("; ".join(str(d.get("message") or d.get("code") or d) for d in errors))
     return diagnostics

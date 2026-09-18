@@ -432,3 +432,28 @@ class TestRequiresHermes:
             for attr in ("_rh_future", "_rh_current"):
                 if hasattr(sys, attr):
                     delattr(sys, attr)
+
+
+class TestDirectoryPluginKeepsIdentityOverEntryPoint:
+    """A pyproject-wrapper plugin depends on a pip package that ships a ``hermes_agent.plugins``
+    entry point under the SAME name. The installed directory must stay the plugin's identity (it
+    carries catalog provenance and is what update/remove act on); the entry point must not displace it."""
+
+    def test_loader_and_listing_prefer_the_installed_directory(self, hermes_home, monkeypatch):
+        from hermes_cli.plugins_manifest import PluginManifest
+        _write_plugin(hermes_home / "plugins", "twin")
+        _enable(hermes_home, ["twin"])
+        twin_ep = PluginManifest(name="twin", version="9.9.9", description="pip twin",
+                                 source="entrypoint", path="twin_pkg:register", key="twin")
+        monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [twin_ep])
+        monkeypatch.setattr("hermes_cli.plugins_cmd.discover_entrypoint_manifests", lambda: [twin_ep], raising=False)
+        monkeypatch.setattr("hermes_cli.plugins.discover_entrypoint_manifests", lambda: [twin_ep])
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins["twin"].manifest.source == "user"
+
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+        rows = [r for r in _discover_all_plugins() if r[0] == "twin"]
+        assert [r[3] for r in rows] == ["user"]
+        assert str(rows[0][4]).endswith("plugins/twin")

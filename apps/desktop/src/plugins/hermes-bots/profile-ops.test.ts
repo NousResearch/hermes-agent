@@ -116,6 +116,19 @@ describe('duplicating a bot', () => {
     expect(await duplicateBot({ name: 'ops' } as RosterRow, roster)).toBe('ops-4')
   })
 
+  it('uses a caller-chosen name and refuses a taken one instead of re-suffixing', async () => {
+    const roster = ['ops', 'ops-2'].map(name => ({ name }) as RosterRow)
+
+    // A free chosen name wins verbatim — no suffix is appended to it.
+    expect(await duplicateBot({ name: 'ops' } as RosterRow, roster, { name: 'night-crew' })).toBe('night-crew')
+
+    // A taken chosen name is an error the dialog can surface, never a silent
+    // fallback to an auto-suffix the user did not ask for.
+    await expect(duplicateBot({ name: 'ops' } as RosterRow, roster, { name: 'ops-2' })).rejects.toThrow(
+      /already taken/
+    )
+  })
+
   it('truncates the BASE so a max-length name still gets a distinct suffix (#19)', async () => {
     const base = 'b'.repeat(64)
 

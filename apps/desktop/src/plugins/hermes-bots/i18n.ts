@@ -130,6 +130,8 @@ type BotsMessages = {
     attentionBlocked: string
     duplicate: string
     duplicateFailed: string
+    duplicateNameHint: (base: string) => string
+    duplicateNameLabel: string
     deleteTitle: string
     removeFromAllGroups: string
     createFirstHint: string
@@ -393,6 +395,8 @@ const en: BotsMessages = {
     attentionBlocked: 'Bot is blocked — see its last message',
     duplicate: 'Duplicate',
     duplicateFailed: 'Duplicate failed',
+    duplicateNameHint: (base: string) => `Name the copy of ${base} — prefilled with the next free suffix.`,
+    duplicateNameLabel: 'New agent name',
     deleteTitle: 'Delete bot and profile?',
     removeFromAllGroups: 'Remove from all groups',
     createFirstHint: 'Open the Bots pane and hit “New Bot”.',
@@ -641,6 +645,8 @@ const ja: BotsMessages = {
     attentionBlocked: 'ボットがブロックされています — 最後のメッセージを確認してください',
     duplicate: '複製',
     duplicateFailed: '複製に失敗しました',
+    duplicateNameHint: (base: string) => `${base} の複製に名前を付けます（次の空き番号を初期値にします）。`,
+    duplicateNameLabel: '新しいエージェント名',
     deleteTitle: 'ボットとプロファイルを削除しますか？',
     removeFromAllGroups: 'すべてのグループから外す',
     createFirstHint: 'ボットパネルを開いて「新しいボット」を押してください。',
@@ -885,6 +891,8 @@ const zh: BotsMessages = {
     attentionBlocked: '机器人已被阻止 — 请查看其最后一条消息',
     duplicate: '复制',
     duplicateFailed: '复制失败',
+    duplicateNameHint: (base: string) => `为 ${base} 的副本命名（已预填下一个可用编号）。`,
+    duplicateNameLabel: '新智能体名称',
     deleteTitle: '删除机器人和配置档案？',
     removeFromAllGroups: '从所有群组中移除',
     createFirstHint: '打开机器人面板，点击“新建机器人”。',
@@ -1128,6 +1136,8 @@ const zhHant: BotsMessages = {
     attentionBlocked: '機器人已被封鎖 — 請查看其最後一則訊息',
     duplicate: '複製',
     duplicateFailed: '複製失敗',
+    duplicateNameHint: (base: string) => `為 ${base} 的副本命名（已預填下一個可用編號）。`,
+    duplicateNameLabel: '新智能體名稱',
     deleteTitle: '刪除機器人和設定檔？',
     removeFromAllGroups: '從所有群組中移除',
     createFirstHint: '開啟機器人面板，點「新增機器人」。',

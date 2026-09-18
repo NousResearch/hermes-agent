@@ -302,30 +302,44 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
 
 /** Clone a bot: profile (config/skills/SOUL/memory via clone_from) + look.
  *  Name is "<base>-2", "-3", … — first free slot against the live roster. */
-export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
+export async function duplicateBot(bot: RosterRow, roster: RosterRow[], opts: { name?: string } = {}) {
   await ensureBotMetadata(bot)
   const base = bot.name
   const ownerRoute = botConnectionRoute(bot)
   const ownerKey = ownerRoute ? botRouteKey(ownerRoute) : null
+  const wanted = opts.name?.trim().slice(0, 64)
   let name = null
 
-  for (let n = 2; n < 100; n++) {
-    // Truncate the BASE, never the suffix — slicing the joined string chops
-    // the "-2" off a max-length name and the candidate collides with the
-    // base forever (#19).
-    const suffix = `-${n}`
-    const candidate = base.slice(0, 64 - suffix.length) + suffix
+  // A caller-provided name wins when it is free on the roster; a collision is
+  // reported to the caller instead of silently falling back, so the dialog can
+  // keep its own field red rather than minting a name the user did not ask for.
+  if (wanted) {
+    if (roster.some(b => b.name === wanted && (!ownerKey || botMetaKey(b)?.startsWith(`${ownerRoute!.connectionId}::`)))) {
+      throw new Error(`The name "${wanted}" is already taken.`)
+    }
 
-    if (
-      !roster.some(
-        // A truthy ownerKey is minted from ownerRoute, so the route is present
-        // on every path that reads it — a correlation TS can't follow.
-        b => b.name === candidate && (!ownerKey || botMetaKey(b)?.startsWith(`${ownerRoute!.connectionId}::`))
-      )
-    ) {
-      name = candidate
+    name = wanted
+  }
 
-      break
+  if (!name) {
+    for (let n = 2; n < 100; n++) {
+      // Truncate the BASE, never the suffix — slicing the joined string chops
+      // the "-2" off a max-length name and the candidate collides with the
+      // base forever (#19).
+      const suffix = `-${n}`
+      const candidate = base.slice(0, 64 - suffix.length) + suffix
+
+      if (
+        !roster.some(
+          // A truthy ownerKey is minted from ownerRoute, so the route is present
+          // on every path that reads it — a correlation TS can't follow.
+          b => b.name === candidate && (!ownerKey || botMetaKey(b)?.startsWith(`${ownerRoute!.connectionId}::`))
+        )
+      ) {
+        name = candidate
+
+        break
+      }
     }
   }
 

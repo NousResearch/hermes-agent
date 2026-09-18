@@ -311,6 +311,45 @@ def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, 
             print(f"{icon} {label} '{name}': {', '.join(resolved) if resolved else 'no tools'}")
 
 
+_DISABLED_FUNCTIONS_CACHE: tuple = (None, frozenset())
+DISABLED_TOOLS_ENV = "HERMES_DISABLED_TOOLS"
+
+
+def disabled_function_names() -> frozenset:
+    """Tool names removed everywhere by ``tools.disabled_functions`` (#31375).
+
+    Below toolset granularity: e.g. keep the ``browser`` toolset but drop the few
+    of its tools a profile never uses, whose schemas are otherwise sent on every
+    request. Read from the active profile's config (re-read when the file
+    changes), so every agent constructor, cron, the gateway and delegated children
+    see the same list without threading a parameter through each of them."""
+    global _DISABLED_FUNCTIONS_CACHE
+    # ``hermes --disable-tools a,b`` (per-invocation layer; set by hermes_cli.main, inherited by
+    # the TUI backend and child processes). Part of the fingerprint so a change is never served stale.
+    flag_value = os.environ.get(DISABLED_TOOLS_ENV, "")
+    try:
+        from hermes_cli.config import get_config_path
+        path = get_config_path()
+        stat = path.stat()
+        fingerprint = (str(path), stat.st_mtime_ns, stat.st_size, flag_value)
+    except (OSError, ImportError):
+        fingerprint = None
+    if fingerprint is not None and _DISABLED_FUNCTIONS_CACHE[0] == fingerprint:
+        return _DISABLED_FUNCTIONS_CACHE[1]
+    try:
+        from agent.skill_utils import parse_config_string_list
+        from hermes_cli.config import load_config_readonly
+        raw = ((load_config_readonly() or {}).get("tools") or {}).get("disabled_functions")
+        configured = parse_config_string_list(raw or [])
+    except Exception:  # a config problem must never break tool loading
+        configured = []
+    # Legacy names (``todo`` for ``todo_list``) disable the tool they now resolve to.
+    names = frozenset(_LEGACY_TOOL_ALIASES.get(name.strip(), name.strip())
+                      for name in [*configured, *flag_value.split(",")] if name.strip())
+    _DISABLED_FUNCTIONS_CACHE = (fingerprint, names)
+    return names
+
+
 def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]], quiet_mode: bool) -> set:
     """Tool names requested by the toolset selection (before check_fn filtering)."""
     tools: set = set()
@@ -332,6 +371,9 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+    # Single tools named in tools.disabled_functions go last, after every toolset
+    # rule; the Tool Search bridge catalog is built from this set too.
+    tools.difference_update(disabled_function_names())
     return tools
 
 
@@ -887,6 +929,10 @@ def handle_function_call(
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
     start = time.monotonic()
+    if function_name in disabled_function_names():
+        # Schemas never offer a disabled tool; this also refuses direct registry calls
+        # (execute_code's sandbox, plugins) that do not go through the agent's name check.
+        return tool_error(f"Tool '{function_name}' is disabled by configuration (tools.disabled_functions or --disable-tools).")
 
     def _emit(result: Any, **extra: Any) -> Any:
         """Emit post_tool_call with this call's identity fields; returns *result*."""

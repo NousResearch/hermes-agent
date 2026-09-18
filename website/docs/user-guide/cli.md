@@ -40,6 +40,9 @@ hermes chat --provider openrouter  # Force OpenRouter
 # With specific toolsets
 hermes chat --toolsets "web,terminal,skills"
 
+# Drop single tools for this run (keeps the rest of their toolset)
+hermes chat --disable-tools web_extract,skill_manage
+
 # Start with one or more skills preloaded
 hermes -s hermes-agent-dev,github-auth
 hermes chat -s github-pr-workflow -q "open a draft PR"

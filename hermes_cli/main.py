@@ -2873,6 +2873,12 @@ def _prepare_agent_startup(args) -> None:
         set_mcp_server_filter(getattr(args, "toolsets", None))
     except Exception:
         logger.debug("MCP server filter setup failed", exc_info=True)
+    # --disable-tools rides on the environment, like HERMES_TUI_TOOLSETS: the TUI backend
+    # and delegated child processes inherit it, and model_tools.disabled_function_names()
+    # unions it with tools.disabled_functions without importing the tool stack here.
+    _disable_tools = getattr(args, "disable_tools", None)
+    if _disable_tools:
+        os.environ["HERMES_DISABLED_TOOLS"] = str(_disable_tools)
 
     # TUI launches hand off to a startup path that backgrounds MCP discovery
     # with a bounded join; acp/gateway/cron do their own on the runtime path.

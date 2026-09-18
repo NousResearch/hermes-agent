@@ -53,7 +53,15 @@ _CHILD_DELTA_EVENTS = {"subagent.thinking": "reasoning.delta", "subagent.text": 
 
 def _child_run_active(child_key: str) -> bool:
     ts = srv._active_child_runs.get(child_key)
-    return ts is not None and (time.time() - ts) < srv._CHILD_RUN_STALE_S
+    if ts is None:
+        return False
+    if (time.time() - ts) < srv._CHILD_RUN_STALE_S:
+        return True
+    # Nothing relayed for this child inside the stale window: its completion event is gone for
+    # good, so drop the entry here instead of retaining it for the life of the process (this is
+    # the only path that reclaims an entry whose complete frame never arrived).
+    srv._active_child_runs.pop(child_key, None)
+    return False
 
 
 def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:

@@ -22,13 +22,14 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
         {"name": "connectors__gmail__SEND_EMAIL" if mixed else "todo_list", "arguments": {}},
     ]
     name, args, error = resolve_underlying_call({"calls": calls})
-    assert name is None and "one entry per tool_call" in error
+    assert name is None and "exactly one local entry" in error
     invoked = []
     monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))
     monkeypatch.setattr(bridge, "_default_client_factory", lambda: invoked.append("gateway"))
     result = json.loads(model_tools.handle_function_call(
         "tool_call", {"calls": calls}, enabled_toolsets=["connections", "session_search", "todo"]))
-    assert "one entry per tool_call" in result["error"]
+    assert "exactly one local entry" in result["error"]
+    assert '"name":"session_search"' in result["error"]
     assert invoked == []
 
 

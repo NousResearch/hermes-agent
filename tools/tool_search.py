@@ -551,8 +551,11 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
         return None, {}, err
 
     if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries):
+        retry = json.dumps({"calls": [entries[0]]}, ensure_ascii=False, separators=(",", ":"))
         return None, {}, (
-            "Local tools require one entry per tool_call; mixed and multi-local batches are not supported."
+            f"tool_call takes exactly one local entry; you sent {len(entries)}. "
+            f"Retry with only: {retry}. Then issue each remaining call separately. "
+            "Only connectors__ entries may be batched together."
         )
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None

@@ -8,6 +8,7 @@ description: 'Spotify Connect remote for Hermes Desktop — status-bar mini play
   No agent tools; config via plugins.entries.spotify-desktop.settings (poll intervals).'
 maintainer: cruzlxyz
 tier: community
+version: "0.1.2"
 category: desktop
 docs_url: https://github.com/cruzlxyz/hermes-spotify-desktop
 platforms: []

@@ -303,6 +303,23 @@ def is_table_atom(text: str) -> bool:
     return _is_pipe_row(text.split('\n')[0])
 
 
+_CHUNK_INDICATOR_SUFFIX_RE = re.compile(r' \((\d+)/(\d+)\)$')
+_CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
+
+
+def separate_chunk_indicator_from_fence(text: str) -> str:
+    """Move a ``(N/M)`` chunk marker that ``truncate_message()`` appended to a synthesized closing
+    fence onto its own line — Telegram rejects ````` \\(1/2\\)`` as a fence."""
+    return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
+
+
+def escape_chunk_indicator(text: str) -> str:
+    """Make the raw `` (N/M)`` suffix ``truncate_message()`` appends safe for MarkdownV2:
+    its parentheses are special characters, and the marker must not ride a closing fence.
+    HTML chunks need neither — parentheses are literal there."""
+    return separate_chunk_indicator_from_fence(_CHUNK_INDICATOR_SUFFIX_RE.sub(r' \\(\1/\2\\)', text))
+
+
 _SENTENCE_END_NEWLINE_RE = re.compile(r'[。！？.!?]\n')
 
 

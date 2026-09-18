@@ -223,11 +223,22 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
             return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
 
 
+# The complete set of tags Telegram's HTML parse mode understands; anything else in angle
+# brackets (``<CoT>``, ``List<int>``, ``<name>``) is prose and must take the MarkdownV2 branch.
+_TELEGRAM_HTML_TAGS = ("b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "a",
+                       "code", "pre", "blockquote", "tg-spoiler", "span", "tg-emoji")
+# Opening tag (optionally with attributes) or closing tag. The name must end at ``>`` or
+# whitespace, so ``<b>`` never matches ``<body>``; longest-first keeps the alternation readable.
+_TELEGRAM_HTML_TAG_RE = re.compile(
+    r"</?(?:%s)(?:\s[^>]*)?>" % "|".join(sorted(_TELEGRAM_HTML_TAGS, key=len, reverse=True)),
+    re.IGNORECASE)
+
+
 def _telegram_format(message):
-    """``(formatted, parse_mode, has_html)``: text already containing HTML tags is sent as
-    HTML; otherwise Markdown -> MarkdownV2 via the adapter's ``format_message``."""
+    """``(formatted, parse_mode, has_html)``: text already containing a Telegram HTML tag is sent
+    as HTML; otherwise Markdown -> MarkdownV2 via the adapter's ``format_message``."""
     from telegram.constants import ParseMode
-    if re.search(r'<[a-zA-Z/][^>]*>', message):
+    if _TELEGRAM_HTML_TAG_RE.search(message):
         return message, ParseMode.HTML, True
     try:
         from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -243,6 +254,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         bot = _telegram_bot(token)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from gateway.platforms.base import BasePlatformAdapter, utf16_len
+        from gateway.platforms.helpers import escape_chunk_indicator
         # Telegram accepts a numeric chat_id OR an @username string; never force-int.
         # See #13206.
         int_chat_id = normalize_telegram_chat_id(chat_id)
@@ -257,7 +269,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
+        chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ()
+        if len(chunks) > 1 and not _has_html:
+            # truncate_message appends a raw " (1/2)" suffix; escape it as the gateway adapter does,
+            # or every multi-chunk MarkdownV2 send 400s and degrades to plain text.
+            chunks = [escape_chunk_indicator(chunk) for chunk in chunks]
+        for chunk in chunks:
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):

@@ -21,6 +21,7 @@ from agent.background_review import (
     _command_escapes_sandbox,
     _scan_executed_commands_for_escape,
     _analyze_skill_manage_activity,
+    _parse_verification_result,
     _VERIFY_PROMPT,
     _VERIFY_MAX_FIX_ATTEMPTS,
     _VERIFY_ACTIONS,
@@ -265,6 +266,80 @@ def test_scan_executed_commands():
     print("  ✅ test_scan_executed_commands PASSED")
 
 
+def test_no_escape_devnull_discard():
+    """Writing to /dev/null (a discard device) is NOT an escape."""
+    scratch = "/tmp/hermes-skill-verify-abc"
+    safe_commands = [
+        "rm -rf build 2>/dev/null",          # cleanup + stderr discard
+        "echo done 2>/dev/null",             # stderr discard
+        "tee /dev/null",                     # discard device
+        "cp a.txt b.txt > /dev/null",        # stdout discard
+        "python3 setup.py > /dev/null 2>&1", # stdout discard + stderr merge
+    ]
+    for cmd in safe_commands:
+        reason = _command_escapes_sandbox(cmd, scratch)
+        assert reason is None, f"Expected safe, got flagged: {cmd!r} -> {reason}"
+    print("  ✅ test_no_escape_devnull_discard PASSED")
+
+
+def test_devnull_exemption_does_not_hide_real_escape():
+    """The /dev/null exemption must not mask a genuine escape in the same command."""
+    scratch = "/tmp/hermes-skill-verify-abc"
+    reason = _command_escapes_sandbox("rm -rf /tmp/leak.bin 2>/dev/null", scratch)
+    assert reason is not None, "real escape must be flagged despite 2>/dev/null"
+    assert "/tmp/leak.bin" in reason, f"Expected /tmp/leak.bin in {reason}"
+    print("  ✅ test_devnull_exemption_does_not_hide_real_escape PASSED")
+
+
+def test_escape_mv_destination_outside():
+    """mv whose DESTINATION is outside scratch is an escape (the old source-only check missed it)."""
+    scratch = "/tmp/hermes-skill-verify-abc"
+    reason = _command_escapes_sandbox("mv out.log /var/tmp/x.log", scratch)
+    assert reason is not None, "mv dest outside should be flagged"
+    assert "/var/tmp/x.log" in reason, f"Expected /var/tmp/x.log in {reason}"
+    assert _command_escapes_sandbox("mv out.log build.log", scratch) is None, \
+        "in-sandbox mv should not be flagged"
+    print("  ✅ test_escape_mv_destination_outside PASSED")
+
+
+def test_escape_cp_destination_outside():
+    """cp whose DESTINATION is outside scratch (or a system file) is an escape."""
+    scratch = "/tmp/hermes-skill-verify-abc"
+    for cmd in ["cp out.log /var/tmp/x.log", "cp out.log /etc/passwd"]:
+        reason = _command_escapes_sandbox(cmd, scratch)
+        assert reason is not None, f"Expected flag, got None: {cmd!r}"
+    print("  ✅ test_escape_cp_destination_outside PASSED")
+
+
+def test_no_escape_cp_source_outside():
+    """cp whose SOURCE is outside scratch is fine — the source is read-only."""
+    reason = _command_escapes_sandbox("cp /etc/passwd .", "/tmp/hermes-skill-verify-abc")
+    assert reason is None, f"cp read-only source should not be flagged: {reason}"
+    print("  ✅ test_no_escape_cp_source_outside PASSED")
+
+
+def test_escape_mv_source_outside():
+    """mv whose SOURCE is a system file is an escape — mv deletes the source."""
+    reason = _command_escapes_sandbox("mv /etc/passwd .", "/tmp/hermes-skill-verify-abc")
+    assert reason is not None, "mv source in a system dir should be flagged"
+    print("  ✅ test_escape_mv_source_outside PASSED")
+
+
+def test_escape_rm_flag_variants():
+    """rm flag spellings other than plain -rf are still caught, incl. multi-target rm."""
+    scratch = "/tmp/hermes-skill-verify-abc"
+    for cmd in ["rm -fr /etc/passwd", "rm -rfv /etc/passwd", "rm -rf --force /etc/passwd"]:
+        reason = _command_escapes_sandbox(cmd, scratch)
+        assert reason is not None, f"Expected flag, got None: {cmd!r}"
+    # a later escaping target is caught even when an earlier one is in-sandbox
+    reason = _command_escapes_sandbox("rm -rf build /tmp/leak.bin", scratch)
+    assert reason is not None, "rm with an escaping target should be flagged"
+    assert "/tmp/leak.bin" in reason, f"Expected /tmp/leak.bin in {reason}"
+    # all in-sandbox targets stay clean
+    assert _command_escapes_sandbox("rm -rf build obj/", scratch) is None
+    print("  ✅ test_escape_rm_flag_variants PASSED")
+
+
 # ---------------------------------------------------------------------------
 # Repair-loop tests (_analyze_skill_manage_activity + prompt)
 # ---------------------------------------------------------------------------
@@ -357,6 +432,118 @@ def test_verify_prompt_formats_with_repair():
     print("  ✅ test_verify_prompt_formats_with_repair PASSED")
 
 
+# ---------------------------------------------------------------------------
+# Verdict parsing tests (_parse_verification_result)
+# ---------------------------------------------------------------------------
+
+def make_assistant_text(text: str) -> dict:
+    """Build an assistant message that is pure text (no tool calls)."""
+    return {"role": "assistant", "content": text}
+
+
+def test_parse_regression_prose_success():
+    """REGRESSION: a fork that summarises a successful run in prose must
+    verify.  The old strict-prefix parser read only the last assistant message
+    and reported this exact shape as 'unexpected response format' -> failed,
+    even though every step had executed."""
+    msgs = [
+        make_assistant_text(
+            "All four steps executed successfully: 1. `git status` — showed "
+            "pending changes (modified README.md, untracked feature.txt), "
+            "2. `git add -A`, 3. `git commit -m 'update'`, 4. `git log "
+            "--oneline -1` returned the commit."
+        )
+    ]
+    status, detail = _parse_verification_result(msgs)
+    assert status == "verified", f"Expected verified, got {status}: {detail}"
+    print("  ✅ test_parse_regression_prose_success PASSED")
+
+
+def test_parse_strict_verified():
+    """A strict 'VERIFIED: ...' reply parses to verified with its reason."""
+    status, detail = _parse_verification_result(
+        [make_assistant_text("VERIFIED: created a git repo and ran all 5 steps")]
+    )
+    assert status == "verified", f"Expected verified, got {status}"
+    assert "git repo" in detail, f"Expected detail extracted, got {detail!r}"
+    print("  ✅ test_parse_strict_verified PASSED")
+
+
+def test_parse_token_mid_text():
+    """A verdict token wrapped in prose is still found."""
+    status, _ = _parse_verification_result(
+        [make_assistant_text("I executed the skill.\nVERIFIED: it works end to end.")]
+    )
+    assert status == "verified", f"Expected verified, got {status}"
+    print("  ✅ test_parse_token_mid_text PASSED")
+
+
+def test_parse_strict_failed():
+    """A strict 'FAILED: ...' reply parses to failed with its reason."""
+    status, detail = _parse_verification_result(
+        [make_assistant_text("FAILED: step 2 references scripts/setup.sh which does not exist")]
+    )
+    assert status == "failed", f"Expected failed, got {status}"
+    assert "setup.sh" in detail, f"Expected reason, got {detail!r}"
+    print("  ✅ test_parse_strict_failed PASSED")
+
+
+def test_parse_unable():
+    """UNABLE is a distinct status, not a failure."""
+    status, _ = _parse_verification_result(
+        [make_assistant_text("UNABLE: requires AWS_ACCESS_KEY_ID which is not available")]
+    )
+    assert status == "unable", f"Expected unable, got {status}"
+    print("  ✅ test_parse_unable PASSED")
+
+
+def test_parse_prose_failure():
+    """Prose describing a broken step parses to failed without any token."""
+    status, _ = _parse_verification_result(
+        [make_assistant_text("Step 2 failed: the referenced script is missing.")]
+    )
+    assert status == "failed", f"Expected failed, got {status}"
+    print("  ✅ test_parse_prose_failure PASSED")
+
+
+def test_parse_negated_error_is_success():
+    """'ran without errors' is a success phrasing, not a failure signal."""
+    status, _ = _parse_verification_result(
+        [make_assistant_text("The workflow ran without errors and completed all 3 steps.")]
+    )
+    assert status == "verified", f"Expected verified, got {status}"
+    print("  ✅ test_parse_negated_error_is_success PASSED")
+
+
+def test_parse_newest_prose_older_token():
+    """A verdict in an earlier message is used when the newest is bare prose."""
+    msgs = [
+        make_assistant_text("VERIFIED: the skill ran cleanly"),
+        make_assistant_text("Done."),
+    ]
+    status, _ = _parse_verification_result(msgs)
+    assert status == "verified", f"Expected verified from earlier message, got {status}"
+    print("  ✅ test_parse_newest_prose_older_token PASSED")
+
+
+def test_parse_no_signal():
+    """Text with neither token nor signal words falls back to unexpected format."""
+    status, detail = _parse_verification_result(
+        [make_assistant_text("I inspected the skill and considered its steps.")]
+    )
+    assert status == "failed", f"Expected failed, got {status}"
+    assert "unexpected response format" in detail, f"Expected format detail, got {detail!r}"
+    print("  ✅ test_parse_no_signal PASSED")
+
+
+def test_parse_empty_messages():
+    """No assistant text at all reports a distinct error, not a crash."""
+    status, detail = _parse_verification_result([])
+    assert status == "failed", f"Expected failed, got {status}"
+    assert "no assistant response" in detail, f"Got {detail!r}"
+    print("  ✅ test_parse_empty_messages PASSED")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Skill Verification — Unit Tests")
@@ -382,12 +569,29 @@ if __name__ == "__main__":
         test_escape_global_git_config,
         test_no_escape_sandbox_commands,
         test_scan_executed_commands,
+        test_no_escape_devnull_discard,
+        test_devnull_exemption_does_not_hide_real_escape,
+        test_escape_mv_destination_outside,
+        test_escape_cp_destination_outside,
+        test_no_escape_cp_source_outside,
+        test_escape_mv_source_outside,
+        test_escape_rm_flag_variants,
         test_analyze_no_skill_manage,
         test_analyze_repair_target_success,
         test_analyze_writes_other_skill,
         test_analyze_failed_write,
         test_analyze_remove_file_on_target,
         test_verify_prompt_formats_with_repair,
+        test_parse_regression_prose_success,
+        test_parse_strict_verified,
+        test_parse_token_mid_text,
+        test_parse_strict_failed,
+        test_parse_unable,
+        test_parse_prose_failure,
+        test_parse_negated_error_is_success,
+        test_parse_newest_prose_older_token,
+        test_parse_no_signal,
+        test_parse_empty_messages,
     ]
 
     passed = 0

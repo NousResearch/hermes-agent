@@ -1515,6 +1515,24 @@ def _path_escapes_sandbox(path: str, scratch: str) -> bool:
     )
 
 
+def _is_discard_target(target: str) -> bool:
+    """True if *target* is the /dev/null discard device.
+
+    Writes to /dev/null are no-ops that never mutate real state — the shell's
+    most common way to swallow output (``2>/dev/null``, ``tee /dev/null``).
+    Treating it as an escape would flag the exact cleanup idiom every skill
+    uses, so the escape scanner exempts it (while still catching every real
+    escape, since the discard check is per-target).
+    """
+    raw = (target or "").strip().strip("'\"")
+    if not raw or not raw.startswith("/"):
+        return False
+    try:
+        return os.path.realpath(raw) == os.path.realpath("/dev/null")
+    except OSError:
+        return False
+
+
 def _command_escapes_sandbox(command: str, scratch: str) -> Optional[str]:
     """Return a reason string if *command* appears to operate outside the sandbox.
 
@@ -1523,6 +1541,12 @@ def _command_escapes_sandbox(command: str, scratch: str) -> Optional[str]:
     and the prompt's sandbox contract, this catches the common escape patterns
     a skill might encode — `cd` out, writes/deletes to absolute paths outside
     scratch, system-dir targets, and global git config writes.
+
+    Which arguments of a multi-arg write op are escape-relevant depends on the
+    verb: ``cp`` only writes its destination (source is read-only), ``mv`` both
+    deletes its source and writes its destination, and ``rm``/``touch`` etc.
+    touch every named path.  Writing to the ``/dev/null`` discard device is
+    always exempt (see :func:`_is_discard_target`).
     """
     cmd = (command or "").strip()
     if not cmd:
@@ -1539,29 +1563,43 @@ def _command_escapes_sandbox(command: str, scratch: str) -> Optional[str]:
     if "git config --global" in cmd or "git config --system" in cmd:
         return "global/system git config write"
 
-    # Write/delete/move/copy operations targeting absolute paths outside scratch.
+    # Multi-argument write/delete ops.  `rm` tolerates any flag spelling
+    # (`-rf`, `-fr`, `-rfv`, `--force`, ...).  `>` is excluded from the arg
+    # run so a trailing redirection is handled by the redirect check below.
     op_re = re.compile(
-        r"(?:^|[\s;|&])(?:rm\s+-rf?|rmdir|touch|mv|cp|ln\s+-s|tee|install)\s+"
-        r"([^\s;&|]+)"
+        r"(?:^|[\s;|&])(?P<op>rm(?:\s+-{1,2}[A-Za-z0-9]+)*|rmdir|touch|mv|cp|tee|install|ln\s+-s)"
+        r"\s+(?P<args>[^\s;&|>]+(?:\s+[^\s;&|>]+)*)"
     )
     for m in op_re.finditer(cmd):
-        target = m.group(1).strip("'\";")
-        if target and _path_escapes_sandbox(target, scratch):
-            return f"file op outside sandbox: {target}"
+        op = m.group("op").strip()
+        args = re.split(r"\s+", m.group("args").strip())
+        nonflag = [a for a in args if not a.startswith("-")]
+        if op in ("cp", "install", "ln -s"):
+            # Only the destination (last arg) is written; the source is read.
+            targets = nonflag[-1:] if nonflag else []
+        elif op == "mv":
+            # mv deletes the source and writes the destination — both matter.
+            targets = [nonflag[0], nonflag[-1]] if len(nonflag) >= 2 else nonflag
+        else:
+            # rm / rmdir / touch / tee — every named path is a target.
+            targets = nonflag
+        for target in targets:
+            t = target.strip("'\";")
+            if not t or _is_discard_target(t):
+                continue
+            if _path_escapes_sandbox(t, scratch):
+                return f"file op outside sandbox: {t}"
+            if re.match(r"^/(etc|usr|var|bin|sbin|opt|root|dev|proc|sys)(/|$)", t):
+                return f"system-dir operation: {t}"
 
-    # Shell redirection `>` / `>>` to a path outside scratch.
+    # Shell redirection `>` / `>>` to a path outside scratch (except the
+    # /dev/null discard device).
     for m in re.finditer(r">>?\s*([^\s;&|]+)", cmd):
         target = m.group(1).strip("'\";")
+        if target and _is_discard_target(target):
+            continue
         if target and _path_escapes_sandbox(target, scratch):
             return f"redirect outside sandbox: {target}"
-
-    # Direct writes into system directories.
-    for m in re.finditer(
-        r"(?:rm\s+-rf?|mv|cp|touch|>>?|install)\s+([^\s;&|]+)", cmd
-    ):
-        target = m.group(1).strip("'\";")
-        if re.match(r"^/(etc|usr|var|bin|sbin|opt|root|dev|proc|sys)(/|$)", target):
-            return f"system-dir operation: {target}"
 
     return None
 
@@ -1663,6 +1701,106 @@ def _analyze_skill_manage_activity(
         }:
             repaired = True
     return violations, repaired
+
+
+# Verdict tokens the verification prompt asks the fork to reply with.
+_VERIFY_VERDICTS = ("VERIFIED", "FAILED", "UNABLE")
+
+# Default detail when the fork emits a bare verdict with no reason.
+_VERIFY_DEFAULT_DETAIL = {
+    "verified": "skill ran successfully",
+    "failed": "unknown issue",
+    "unable": "requires environment unavailable in sandbox",
+}
+
+# Prose fallbacks.  Models routinely ignore the "reply with exactly
+# VERIFIED:/FAILED:/UNABLE:" contract and summarise in natural language
+# ("All four steps executed successfully: 1. git status ...").  These keywords
+# classify such a summary so a plainly-successful run is not reported as a
+# failure.  Failure words are checked first: calling a broken skill verified is
+# the costly direction, so an ambiguous summary resolves to failed.
+_VERIFY_FAIL_WORDS = (
+    "fail", "error", "missing", "not found", "does not exist",
+    "could not", "cannot", "unable", "broken", "unclear", "contradict",
+)
+_VERIFY_PASS_WORDS = (
+    "successfully", "completed", "passed", "all steps", "ran without",
+    "ran clean", "worked", "succeeded",
+)
+# Success phrasings that contain a failure word ("ran without errors" carries
+# "error").  Removed before the failure-word scan so the negation is not read
+# as a failure signal.
+_VERIFY_NEGATED_FAIL = ("without error", "no error", "error-free")
+
+
+def _verification_texts(session_messages: List[Dict]) -> List[str]:
+    """Assistant text blocks from *session_messages*, newest first."""
+    texts: List[str] = []
+    for msg in session_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = " ".join(
+                b.get("text", "") for b in content if isinstance(b, dict)
+            )
+        else:
+            continue
+        if text.strip():
+            texts.append(text.strip())
+    texts.reverse()
+    return texts
+
+
+def _parse_verification_result(session_messages: List[Dict]) -> Tuple[str, str]:
+    """Derive ``(status, detail)`` from the verification fork's messages.
+
+    Three tiers, because the fork does not reliably honour the prompt's
+    "reply with exactly VERIFIED:/FAILED:/UNABLE:" contract:
+
+    1. An assistant message that *starts* with a verdict token.
+    2. A verdict token anywhere in a message — models often lead with prose
+       ("I ran the skill. VERIFIED: ...") or wrap the token in a sentence.
+    3. No token at all — classify the newest message's prose, so an observed
+       "All four steps executed successfully: ..." still verifies.
+
+    Returns ``"failed"`` with an ``unexpected response format`` detail only
+    when even the prose carries no signal.
+
+    Note: the previous implementation read only the *last* assistant message
+    and demanded a strict prefix, so a fork that summarised its successful run
+    in prose was reported as failed — the bug this replaces.
+    """
+    texts = _verification_texts(session_messages)
+    if not texts:
+        return "failed", "no assistant response from the verification fork"
+
+    # Tiers 1-2: an explicit verdict token, newest message first.
+    for text in texts:
+        upper = text.upper()
+        for token in _VERIFY_VERDICTS:
+            pos = 0 if upper.startswith(token + ":") else upper.find(token + ":")
+            if pos == -1:
+                continue
+            detail = text[pos + len(token) + 1:].strip()
+            detail = detail.split("\n", 1)[0].strip()
+            status = token.lower()
+            return status, detail or _VERIFY_DEFAULT_DETAIL[status]
+
+    # Tier 3: no token — classify the newest message's prose.
+    newest = texts[0]
+    low = newest.lower()
+    preview = newest.replace("\n", " ")[:200]
+    probe = low
+    for phrase in _VERIFY_NEGATED_FAIL:
+        probe = probe.replace(phrase, " ")
+    if any(word in probe for word in _VERIFY_FAIL_WORDS):
+        return "failed", preview
+    if any(word in low for word in _VERIFY_PASS_WORDS):
+        return "verified", preview
+    return "failed", f"unexpected response format: {preview[:120]}"
 
 
 def _run_skill_verification(
@@ -1809,48 +1947,20 @@ def _run_skill_verification(
             getattr(verify_agent, "_session_messages", []), skill_name
         )
 
-        # Parse the verification agent's final text response.
-        final_text = ""
-        for msg in getattr(verify_agent, "_session_messages", []):
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    final_text = content
-                elif isinstance(content, list):
-                    final_text = " ".join(
-                        b.get("text", "") for b in content if isinstance(b, dict)
-                    )
-
-        final_text = final_text.strip()
-        if final_text.upper().startswith("VERIFIED:"):
-            detail = (
-                final_text.split(":", 1)[1].strip()
-                if ":" in final_text
-                else "skill ran successfully"
-            )
-        elif final_text.upper().startswith("FAILED:"):
-            detail = (
-                final_text.split(":", 1)[1].strip()
-                if ":" in final_text
-                else "unknown issue"
-            )
-        elif final_text.upper().startswith("UNABLE:"):
-            detail = (
-                final_text.split(":", 1)[1].strip()
-                if ":" in final_text
-                else "requires environment unavailable in sandbox"
-            )
-        else:
-            preview = final_text[:120].replace("\n", " ")
-            detail = f"unexpected response format: {preview}"
+        # Parse the verification fork's verdict (three-tier, see
+        # _parse_verification_result — the fork does not always honour the
+        # prompt's strict VERIFIED:/FAILED:/UNABLE: reply contract).
+        status, detail = _parse_verification_result(
+            getattr(verify_agent, "_session_messages", [])
+        )
 
         if violations:
             return "failed", f"skill_manage violations: {'; '.join(violations)}"
         if escapes:
             return "failed", f"escaped the sandbox: {'; '.join(escapes)}"
-        if final_text.upper().startswith("UNABLE:"):
+        if status == "unable":
             return "unable", detail
-        if final_text.upper().startswith("VERIFIED:"):
+        if status == "verified":
             if repaired:
                 return "repaired", detail
             return "verified", detail
@@ -2023,8 +2133,10 @@ __all__ = [
     "_run_skill_verification",
     "_verify_precipitated_skills",
     "_command_escapes_sandbox",
+    "_is_discard_target",
     "_scan_executed_commands_for_escape",
     "_analyze_skill_manage_activity",
+    "_parse_verification_result",
     "_skill_verification_enabled",
     "_skill_repair_enabled",
     "_VERIFY_MAX_FIX_ATTEMPTS",

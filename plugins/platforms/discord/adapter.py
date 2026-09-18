@@ -5273,6 +5273,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             pass
         return thread
 
+    @staticmethod
+    def _auto_thread_archive_minutes(channel: Any, fallback: int = 1440) -> int:
+        """Auto-archive window for a thread Hermes opens: inherit the parent channel's default.
+
+        A hardcoded 1440 (24 h) contradicted the channel's own default, so a thread the agent
+        opened on a channel set to 10080 (7 d) dropped out of the sidebar a day after its last
+        message while a thread a human opened in the SAME channel survived a week — two lifetimes
+        for identical content. An absent or non-conforming channel default still falls back, so
+        the value passed to ``create_thread`` is always one Discord accepts.
+        """
+        default = getattr(channel, "default_auto_archive_duration", None)
+        try:
+            default = int(default) if default is not None else None
+        except (TypeError, ValueError):
+            default = None
+        return default if default in VALID_THREAD_AUTO_ARCHIVE_MINUTES else fallback
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
         Primary path and seed-message fallback each retry once after a short backoff (transient errors).
@@ -5281,13 +5298,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         path (#20243).
         """
         thread_name = self._derive_auto_thread_name(message.content or "")
+        archive_minutes = self._auto_thread_archive_minutes(getattr(message, "channel", None))
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await message.create_thread(name=thread_name, auto_archive_duration=archive_minutes)
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
@@ -5295,7 +5313,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
                     )
-                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
+                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=archive_minutes, reason=reason)
                     return self._stamp_auto_thread_name(thread, thread_name)
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
@@ -5383,10 +5401,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return None
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
+        archive_minutes = self._auto_thread_archive_minutes(parent)
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(name=thread_name, auto_archive_duration=archive_minutes, reason=reason)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5399,7 +5418,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return None
             seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
             thread = await seed_msg.create_thread(
-                name=thread_name, auto_archive_duration=1440, reason=reason,
+                name=thread_name, auto_archive_duration=archive_minutes, reason=reason,
             )
             return str(thread.id)
         except Exception as fallback_error:

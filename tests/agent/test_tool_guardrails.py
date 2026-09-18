@@ -412,3 +412,41 @@ def test_a_real_tool_error_is_still_a_failure():
     assert _detect_tool_failure("read_file", real)[0] is True
     # The marker is only honoured as the literal boolean, never as truthy prose.
     assert classify_tool_failure("read_file", '{"error": "x", "guardrail_refusal": "yes"}')[0] is True
+
+
+def test_identical_streak_ignores_volatile_execution_metadata():
+    # execute_code results carry per-call metadata (execution_count, duration_seconds) that
+    # changes on every run. Hashing it made each empty replay look "new", so a model re-ran
+    # the same empty probe 147 times without the identical-call halt ever firing.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=5)
+    )
+    args = {"code": "import subprocess\nprint(subprocess.run(['true']).returncode) if False else None"}
+
+    def result(n):
+        return json.dumps({
+            "status": "success", "output": "", "exit_code": 0, "tool_calls_made": 0,
+            "duration_seconds": 1.0 + n / 100,
+            "kernel": {"mode": "session", "reused": True, "execution_count": 100 + n, "state_reset": False},
+            "stdout_truncated": False, "stdout_bytes_captured": 0,
+        })
+
+    for i in range(4):
+        controller.observe_call("execute_code", args, result(i), failed=False)
+        assert controller.halt_decision is None, f"halted early at {i}"
+    controller.observe_call("execute_code", args, result(4), failed=False)
+    halt = controller.halt_decision
+    assert halt is not None, "volatile metadata defeated the identical-call streak"
+    assert halt.code == "identical_call_streak_halt"
+
+
+def test_identical_streak_still_resets_when_real_output_changes():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    args = {"code": "print(1)"}
+    for i in range(6):
+        out = json.dumps({"status": "success", "output": f"line {i}", "duration_seconds": 1.0,
+                          "kernel": {"execution_count": i}})
+        controller.observe_call("execute_code", args, out, failed=False)
+    assert controller.halt_decision is None, "different real output must not count as a replay"

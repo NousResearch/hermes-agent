@@ -600,9 +600,26 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
 
 
+# Per-call bookkeeping that changes on every invocation even when the tool did the same
+# thing (execute_code reports a running kernel execution_count and wall-clock duration).
+# Left in the hash, every replay of an identical empty probe looks new and the identical-call
+# streak never forms — a model re-ran one empty execute_code call 147 times unflagged.
+_VOLATILE_RESULT_KEYS = frozenset({"duration_seconds", "execution_count"})
+
+
+def _without_volatile_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _without_volatile_keys(v) for k, v in value.items() if k not in _VOLATILE_RESULT_KEYS}
+    if isinstance(value, list):
+        return [_without_volatile_keys(v) for v in value]
+    return value
+
+
 def _result_hash(result: str | None) -> str:
     parsed = safe_json_loads(result or "")
-    return _sha256(_canonical_json(parsed) if parsed is not None else (result or ""))
+    if parsed is None:
+        return _sha256(result or "")
+    return _sha256(_canonical_json(_without_volatile_keys(parsed)))
 
 
 _BOOL_WORDS = {w: True for w in ("1", "true", "yes", "on", "enabled")} | {w: False for w in ("0", "false", "no", "off", "disabled")}

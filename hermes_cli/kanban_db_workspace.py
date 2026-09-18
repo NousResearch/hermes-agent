@@ -378,6 +378,27 @@ def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
     return result.returncode == 0
 
 
+def _resolve_start_commit(repo_root: Path, start_ref: str) -> str:
+    """Resolve one commit-ish to the exact commit used by ``worktree add``."""
+    result = _git(
+        repo_root,
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        f"{start_ref}^{{commit}}",
+        timeout=30,
+    )
+    stderr = (result.stderr or "").strip()
+    commits = (result.stdout or "").splitlines()
+    if result.returncode != 0 or len(commits) != 1 or "ambiguous" in stderr.lower():
+        detail = stderr or (result.stdout or "").strip() or "not a commit"
+        raise ValueError(
+            f"start_ref {start_ref!r} does not uniquely resolve to a commit "
+            f"in {repo_root}: {detail}"
+        )
+    return commits[0].strip()
+
+
 def _git_abs_path(path: Path, flag: str) -> Optional[Path]:
     out = _kb._git_out(path, "rev-parse", "--path-format=absolute", flag)
     return Path(out).expanduser().resolve(strict=False) if out else None
@@ -419,17 +440,31 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
-def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+def _ensure_git_worktree(
+    repo_root: Path,
+    target: Path,
+    branch_name: str,
+    start_ref: Optional[str] = None,
+) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
+    start_commit = _resolve_start_commit(repo_root, start_ref) if start_ref else "HEAD"
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _git_common_dir(target) == repo_common:
         return
+    branch_exists = _git_branch_exists(repo_root, branch_name)
+    if branch_exists and start_ref:
+        branch_commit = _resolve_start_commit(repo_root, f"refs/heads/{branch_name}")
+        if branch_commit != start_commit:
+            raise RuntimeError(
+                f"existing branch {branch_name!r} points to {branch_commit}, not requested "
+                f"start_ref commit {start_commit}; refusing to move or overwrite it"
+            )
     target.parent.mkdir(parents=True, exist_ok=True)
-    if _git_branch_exists(repo_root, branch_name):
+    if branch_exists:
         args = ["worktree", "add", str(target), branch_name]
     else:
-        args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
+        args = ["worktree", "add", "-b", branch_name, str(target), start_commit]
     result = _git(repo_root, *args, timeout=60)
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "").strip()
@@ -438,10 +473,15 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         )
 
 
-def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
+def _anchored_worktree(
+    repo_root: Path,
+    task_id: str,
+    branch_name: str,
+    start_ref: Optional[str] = None,
+) -> tuple[Path, str]:
     """Materialize the canonical ``<repo>/.worktrees/<task-id>`` worktree."""
     target = repo_root / ".worktrees" / task_id
-    _ensure_git_worktree(repo_root, target, branch_name)
+    _ensure_git_worktree(repo_root, target, branch_name, start_ref)
     return target, branch_name
 
 
@@ -452,6 +492,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     instead of the dispatcher's incidental CWD (whatever dir the gateway was
     launched from); with no anchor configured we fail loudly rather than guess."""
     branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    start_ref = (task.start_ref or "").strip() or None
     if not task.workspace_path:
         board_slug = board if board else _kb.get_current_board()
         board_default = (_kb.read_board_metadata(board_slug).get("default_workdir") or "").strip()
@@ -474,7 +515,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
                 f"task {task.id} has workspace_kind=worktree but board "
                 f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
-        return _anchored_worktree(repo_root, task.id, branch_name)
+        return _anchored_worktree(repo_root, task.id, branch_name, start_ref)
 
     requested = Path(task.workspace_path).expanduser()
     if not requested.is_absolute():
@@ -485,6 +526,8 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     requested_resolved = requested.resolve(strict=False)
 
     if requested.exists() and _is_linked_worktree_checkout(requested):
+        if start_ref:
+            _resolve_start_commit(requested, start_ref)
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
             return requested_resolved, actual_branch
@@ -497,7 +540,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         if fallback_root is not None:
             fallback = fallback_root / ".worktrees" / task.id
             if fallback.resolve(strict=False) != requested_resolved:
-                _ensure_git_worktree(fallback_root, fallback, branch_name)
+                _ensure_git_worktree(fallback_root, fallback, branch_name, start_ref)
                 return fallback.resolve(strict=False), branch_name
         # No repo to anchor a fallback on (or the occupied path IS this task's
         # own canonical worktree): keep the legacy reuse rather than fail dispatch.
@@ -505,7 +548,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:
-        return _anchored_worktree(repo_root, task.id, branch_name)
+        return _anchored_worktree(repo_root, task.id, branch_name, start_ref)
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
     if repo_root is None:
@@ -513,7 +556,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
             f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
             "and does not point at a git repo root"
         )
-    _ensure_git_worktree(repo_root, requested, branch_name)
+    _ensure_git_worktree(repo_root, requested, branch_name, start_ref)
     return requested, branch_name
 
 

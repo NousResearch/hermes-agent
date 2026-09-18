@@ -154,6 +154,8 @@ _SPECS = [
              help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch; "
                   "an explicit 'scratch' also opts out of a project-scoped board's project)"),
         _arg("--branch", help="Branch name for worktree tasks, e.g. wt/t6-wire"),
+        _arg("--start-ref",
+             help="Commit or Git ref to resolve in the target repo before creating the task branch"),
         _arg("--project",
              help="Link to a project (id or slug). Anchors the task's "
                   "worktree under the project's primary repo with a "

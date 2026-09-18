@@ -1,15 +1,24 @@
 # Workstation Known Issues
 
 
-## KI-011 — Durable compiler can obstruct stateful native-browser work [RESOLVED AT CONTRACT LAYER — NATIVE VALIDATION PENDING — 2026-09-18]
+## KI-011 — Durable compiler can obstruct stateful native-browser work [ROOT CAUSE FIXED — SEMANTIC HOMOGENEITY HARDENING OPEN — NATIVE VALIDATION PENDING — 2026-09-18]
 
-**Resolution:** implementation `365794e29d66cd63a6134c5c67ecc1ef603d70a6`
-replaces the global mutation latch with operation-scoped admission, canonical
-effect classification and native route normalization. The authenticated loopback
-controller regression completes navigate -> snapshot -> type -> press -> snapshot
-under one BrowserTask/card/run despite repeatability hints. Homogeneous third
-mutations still require compilation. Compact reasoning handoff, checkpoint resume,
-semantic E1 evidence and lost-ACK safety have regressions.
+**Implemented correction:** remote implementation
+`9e7292ab7825e5ce1ea294490eec57ba1f286069` (documentation/evidence
+`5e1b22527fd40d732ee4fa7a1035e6366953f6b7`; local pre-publish SHA
+`365794e29d66cd63a6134c5c67ecc1ef603d70a6`) correctly replaces the global
+mutation latch with operation-scoped admission, canonical effect classification,
+native route normalization, compact reasoning handoff, checkpoint resume,
+semantic E1 evidence and lost-ACK safety.
+
+**Residual AEPC-E002:** audit of `main@c4234200145162eefb60f6070c9f170b4bf79321`
+found that shape-equivalent calls can still be mistaken for one homogeneous
+operation family. Native `browser_type`, `browser_click` and
+`browser_press` do not currently declare a concrete mutation target/target
+family, while `structural_signature()` abstracts scalar values. A long stateful
+flow can therefore reach the third-call `REQUIRE_COMPILE` threshold even when
+each UI action has a different semantic target. The original immediate obstruction
+is fixed; long stateful-browser closure is not yet complete.
 
 **Evidence:** focused gate 113 passed; final Workstation + adjacent core gate
 570 passed / 2 skipped; Work100 30 PASS / 0 FAIL; Desktop contracts 36 passed.
@@ -41,12 +50,20 @@ step, plus a native_browser route-constraint namespace mismatch in one path.
   stateful UI workflow.
 
 **Target invariant:** safe authorized novel work may make bounded adaptive
-progress; homogeneous repeated mutations still require compiler/canary; learned
-stable segments progressively move to compiled/routine execution.
+progress; `REQUIRE_COMPILE` needs positive semantic evidence of one repeated
+operation family, not only structural call shape. Homogeneous repeated mutations
+still require compiler/canary; learned stable segments progressively move to
+compiled/routine execution.
 
-**Do not fix by:** making arbitrary browser JS read-only, disabling canary,
-allowing blind retry, weakening TaskRun/browser leases, adding a second memory or
-authority store, or globally bypassing work_execute.
+**Closure regressions:** prove both (1) a long stateful browser flow containing
+3+ `browser_type` / `browser_click` mutations against different semantic
+targets remains adaptive, and (2) three distinct mutations with the same
+owner-declared operation/provider/route/target family require compilation.
+
+**Do not fix by:** raising the threshold, resetting counters on navigation,
+hard-coding a browser exemption, making arbitrary browser JS read-only, disabling
+canary, allowing blind retry, weakening TaskRun/browser leases, adding a second
+memory or authority store, or globally bypassing work_execute.
 
 **Canonical design:** 
 [ADAPTIVE_EXECUTION_COMPILATION.md](ADAPTIVE_EXECUTION_COMPILATION.md).

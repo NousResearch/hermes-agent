@@ -138,6 +138,24 @@ def test_full_rebuild_keeps_every_tool_row_bounded(db):
         "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)"
     )
 
+    # The deferred chunked backfill + boundary sweep must feed the index through the
+    # same truncated tool projection; an untruncated write path leaves the
+    # external-content index disagreeing with the triggers and fails the strict probe.
+    with db._lock:
+        db._reset_fts_index_to_empty(db._conn)
+        db._seed_fts_rebuild_markers(db._conn, force=True)
+        db._conn.commit()
+    while db.fts_rebuild_step():
+        pass
+    assert db.get_meta("fts_rebuild_high_water") is None
+    assert db.search_messages("after-tail-token") == []
+    assert {
+        row["id"] for row in db.search_messages("prefix-token", role_filter=["tool"])
+    } == {before_id, after_id}
+    db._conn.execute(
+        "INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)"
+    )
+
 
 def test_role_changes_switch_between_bounded_and_full_indexing(db):
     message_id = db.append_message(

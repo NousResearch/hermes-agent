@@ -788,8 +788,13 @@ def read_lease_delivery(profile_home: Path | str, delivery_id: str) -> dict[str,
     return _read(_root(profile_home) / f"{_lease_queue_key(delivery_id)}.json")
 
 
+def _lease_body_bytes(record: dict[str, Any]) -> int:
+    """The byte size a caller spends its drain budget on: the stripped body in UTF-8."""
+    return len(str(record.get("message") or "").strip().encode("utf-8"))
+
+
 def claim_lease_delivery(
-    profile_home: Path | str, *, conversation_id: str,
+    profile_home: Path | str, *, conversation_id: str, max_bytes: int | None = None,
 ) -> dict[str, Any] | None:
     """Claim this conversation's oldest queued lease delivery, exactly once.
 
@@ -797,6 +802,11 @@ def claim_lease_delivery(
     here: the record is marked claimed and stays inspectable, so a crash mid-turn leaves a receipt
     of an unknown outcome rather than a message that runs twice. ``complete_delivery`` closes it
     once the body has been handed to the turn.
+
+    ``max_bytes`` is the room left in the batch the caller is assembling: when the oldest record's
+    body does not fit, ``None`` is returned and that record stays QUEUED and unclaimed, so a bounded
+    drain never claims a record it cannot run. The measure is the stripped body's UTF-8 length, the
+    same one the caller spends its budget with. ``None`` means no budget - take the head.
     """
     if not isinstance(conversation_id, str) or not conversation_id.strip():
         raise ValueError("conversation_id must be a non-empty string")
@@ -821,6 +831,8 @@ def claim_lease_delivery(
         if not candidates:
             return None
         _, _, record = min(candidates, key=lambda item: (item[0], item[1]))
+        if max_bytes is not None and _lease_body_bytes(record) > max_bytes:
+            return None
         record.update(status="claimed", claimed_at=time.time_ns())
         _write(root / f"{_lease_queue_key(str(record['delivery_id']))}.json", record)
         return record

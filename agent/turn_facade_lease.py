@@ -23,6 +23,13 @@ _REASON_LEASE_LOST = "session turn lease lost"
 LEASE_TTL_SECONDS = 300.0
 LEASE_WAIT_SECONDS = 1800.0
 
+# A drained spool becomes ONE turn message (the bodies are joined in order), so the drain is bounded
+# on both axes and whatever does not fit stays queued for the next turn instead of growing the
+# prompt without limit. The queue's head is always taken whatever its size, so an oversized body can
+# never wedge the queue behind a budget it will never fit.
+_LEASE_DRAIN_MAX_RECORDS = 8
+_LEASE_DRAIN_MAX_BYTES = 32 * 1024
+
 
 class DurableTurnLease:
     """An admitted session turn lease plus the periodic timers that keep it alive and watch the turn.
@@ -368,12 +375,14 @@ def carry_unadmitted_user_message(
 def _lease_queue_home():
     """Profile home whose delivery store holds this conversation's spooled inbound mail.
 
-    Resolved from the process ``HERMES_HOME`` (every profile-scoped process sets it) so the queue
-    lands in the same store ``deliver_to_live_owner`` uses for that profile.
+    Resolved from ``get_hermes_home()`` - the context-local override first, then ``HERMES_HOME``, then
+    the process default - so a multiplexed gateway serving several profiles from one process drains
+    the profile its task is scoped to, which is also where that profile's ``deliver_to_live_owner``
+    put the record. The process home alone would leave another profile's mail unread.
     """
-    from hermes_constants import get_process_hermes_home
+    from hermes_constants import get_hermes_home
 
-    return get_process_hermes_home()
+    return get_hermes_home()
 
 
 def _lease_queue_dir(home) -> str:
@@ -462,8 +471,10 @@ def _drain_lease_queue(session_id: str, conversation_history):
     Returns ``(history, delivery_ids)``. Records are claimed one at a time and settled as
     ``drained_into_turn`` once the body is in the transcript, so each message is run at most once. A
     delivery that arrives while a user message is already pending JOINS that message: strict role
-    alternation is never broken to inject mail. Any unexpected failure leaves the transcript
-    untouched — a turn admitted normally must not die because of what is in the spool.
+    alternation is never broken to inject mail. The batch is bounded - at most
+    ``_LEASE_DRAIN_MAX_RECORDS`` records and ``_LEASE_DRAIN_MAX_BYTES`` of bodies - and everything
+    that does not fit stays queued, in order, for the next turn. Any unexpected failure leaves the
+    transcript untouched — a turn admitted normally must not die because of what is in the spool.
     """
     history = list(conversation_history or [])
     if not session_id:
@@ -476,14 +487,24 @@ def _drain_lease_queue(session_id: str, conversation_history):
 
         bodies: List[str] = []
         drained: List[str] = []
-        while True:
-            record = claim_lease_delivery(home, conversation_id=session_id)
+        claims = 0
+        spent = 0
+        while claims < _LEASE_DRAIN_MAX_RECORDS:
+            # The head of the queue is always taken - deferring a body bigger than the whole budget
+            # would starve it forever - and every later record only while the batch it would join
+            # still fits. The rest stay queued, in order, for the next turn.
+            record = claim_lease_delivery(
+                home, conversation_id=session_id,
+                max_bytes=None if claims == 0 else _LEASE_DRAIN_MAX_BYTES - spent,
+            )
             if record is None:
                 break
+            claims += 1
             delivery_id = str(record.get("delivery_id") or "")
             body = str(record.get("message") or "").strip()
             if body:
                 bodies.append(body)
+                spent += len(body.encode("utf-8"))
             if delivery_id:
                 drained.append(delivery_id)
             try:

@@ -949,19 +949,7 @@ def _(rid, params: dict, session) -> dict:
         return _err(rid, 4009, busy_message("rollback restore"))
 
     def go(mgr, cwd):
-        # Container-backed session: the host checkpoints listed are not this session's tree. Classify
-        # with the identity and scopes a turn binds (prompt_turn.py): the session key is the tool-call
-        # task id, the session context drives the terminal registry lookup, and the profile scope
-        # supplies the terminal policy; otherwise a cached launch-profile environment or the launch
-        # config would answer for another profile's session.
-        task_id = session.get("session_key") or "default"
-        tokens = _set_session_context(task_id, cwd=cwd)
-        try:
-            with _session_profile_runtime_scope(session):
-                reason = getattr(mgr, "unsupported_backend_reason", lambda *_: None)(task_id)
-        finally:
-            _clear_session_context(tokens)
-        if reason:
+        if reason := _container_checkpoint_refusal(session, mgr, cwd):
             return {"success": False, "error": reason}
         result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)
         if result.get("success") and not file_path:
@@ -982,12 +970,34 @@ def _(rid, params: dict, session) -> dict:
 def _(rid, params: dict, session) -> dict:
     if not (target := params.get("hash", "")):
         return _err(rid, 4014, "hash required")
-    r = _with_checkpoints(session, lambda mgr, cwd: mgr.diff(cwd, _resolve_checkpoint_hash(mgr, cwd, target)))
-    raw = r.get("diff", "")[:4000]
-    payload = {"stat": r.get("stat", ""), "diff": raw}
-    if rendered := render_diff(raw, session.get("cols", 80)):
-        payload["rendered"] = rendered
-    return _ok(rid, payload)
+
+    def go(mgr, cwd):
+        # Host tree vs host checkpoint is not this session's diff either (same refusal as /rollback diff).
+        if reason := _container_checkpoint_refusal(session, mgr, cwd):
+            return _err(rid, 5022, reason)
+        r = mgr.diff(cwd, _resolve_checkpoint_hash(mgr, cwd, target))
+        raw = r.get("diff", "")[:4000]
+        payload = {"stat": r.get("stat", ""), "diff": raw}
+        if rendered := render_diff(raw, session.get("cols", 80)):
+            payload["rendered"] = rendered
+        return _ok(rid, payload)
+    return _with_checkpoints(session, go)
+
+
+def _container_checkpoint_refusal(session, mgr, cwd) -> str | None:
+    """Why host checkpoints are off limits for a container-backed session, else ``None``.
+
+    Classifies with the identity and scopes a turn binds (prompt_turn.py): the session key is the
+    tool-call task id, the session context drives the terminal registry lookup, and the profile
+    scope supplies the terminal policy; otherwise a cached launch-profile environment or the launch
+    config would answer for another profile's session."""
+    task_id = session.get("session_key") or "default"
+    tokens = _set_session_context(task_id, cwd=cwd)
+    try:
+        with _session_profile_runtime_scope(session):
+            return mgr.unsupported_backend_reason(task_id)
+    finally:
+        _clear_session_context(tokens)
 
 
 @method("browser.manage")

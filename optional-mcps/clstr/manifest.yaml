@@ -19,10 +19,6 @@ transport:
 
 auth:
   type: oauth
-  # Native MCP OAuth 2.1 — discovery, DCR, PKCE, token exchange and refresh
-  # are handled by Hermes's MCP client + mcp_oauth_manager. Sign-in creates a
-  # free CLSTR account (no card); the connection runs on that account's
-  # limits (100 requests/day on the free tier, 30-day history).
 
 # All four tools are read-only (readOnlyHint: true, destructiveHint: false,
 # openWorldHint: false on every one) and there is no meta-gateway, code-mode,

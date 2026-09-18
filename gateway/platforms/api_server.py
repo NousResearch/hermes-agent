@@ -2770,6 +2770,44 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
 
+    async def run_internal_session_turn(self, *, session_id: str, text: str,
+                                        notification_category: str = "result") -> None:
+        """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key).
+
+        The HTTP wake self-post cannot serve a multiplexed *served* profile: ``/p/<profile>/`` on
+        the shared listener authenticates with that profile's own ``API_SERVER_KEY`` — which a
+        route-only profile legitimately does not have — while an unprefixed self-post would resume
+        the session in the DEFAULT profile's store. ``gateway.wake`` therefore runs the turn here,
+        inside the owner profile's runtime scope (the session DB, model resolution and tool policy
+        all follow the ambient scope). Raises on failure so the caller can rewind its cursor; the
+        concurrent-run cap defers the wake instead of bypassing it.
+        """
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            raise RuntimeError("internal wake deferred: the API server is at its concurrent-run cap")
+        profile = _api_request_profile.get()
+        if not profile:
+            # The HTTP paths bind the profile from the /p/<profile>/ prefix; in-process we bind it
+            # ourselves so _run_agent's scope and the session DB resolve to the caller's profile.
+            from hermes_cli.profiles import get_active_profile_name
+            active = (get_active_profile_name() or "").strip()
+            profile = active if active and active != "default" else ""
+        token = _api_request_profile.set(profile) if profile else None
+        try:
+            session, err = await self._get_existing_session_or_404(session_id)
+            if err is not None or not session:
+                raise RuntimeError(
+                    f"internal wake target session {session_id!r} is not in the active profile store")
+            history = await self._conversation_history_for_session(session_id)
+            await self._run_agent(
+                user_message=text, conversation_history=history, session_id=session_id,
+                gateway_session_key=None, requested_runtime={}, route_source="global",
+                session_history_delivery="1", notification_category=notification_category,
+            )
+        finally:
+            if token is not None:
+                _api_request_profile.reset(token)
+
     @_require_auth
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""

@@ -131,6 +131,43 @@ def _platform_names(mapping: Any) -> set[str]:
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
 
 
+def _session_owned_by_profile(config: Any, profile: Optional[str], session_id: Any) -> bool:
+    """True when a stateless (``api_server``) subscription's raw session id is canonically owned by
+    served *profile*'s own session store.
+
+    A shared-listener mirror platform has no chat/thread/guild anchor a ``profile_routes`` entry
+    could match, so the session store itself is the ownership proof: the row must exist in that
+    profile's ``state.db`` under its own home and carry that profile's stamp (a NULL legacy stamp
+    belongs to the store's own profile — the same rule the dashboard's session routes apply). An
+    unserved profile, a missing row, a row stamped for another profile, or an unreadable store all
+    fail closed.
+    """
+    if not session_id or not profile:
+        return False
+    profile = str(profile)
+    try:
+        from gateway.run import _multiplex_profile_homes
+        home = dict(_multiplex_profile_homes(config)).get(profile)
+        if home is None:
+            return False
+        from hermes_state import SessionDB
+        db = SessionDB(Path(home) / "state.db", read_only=True)
+    except Exception as exc:
+        logger.debug("kanban notifier: session ownership check unavailable for %s/%s: %s",
+                     profile, session_id, exc)
+        return False
+    try:
+        row = db.get_session(str(session_id))
+    except Exception as exc:
+        logger.debug("kanban notifier: session ownership lookup failed for %s/%s: %s",
+                     profile, session_id, exc)
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            db.close()
+    return bool(row) and (row.get("profile_name") or profile) == profile
+
+
 def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profile: Optional[str]) -> Any:
     """Resolve a durable route without turning a missing secondary bot into primary authority."""
     adapter = runner._authorization_adapter(platform, owner_profile)
@@ -169,6 +206,14 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
         if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
                          thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None)):
             return None
+    # A stateless (api_server) subscription carries a RAW session id, not a routable chat, so no
+    # profile_routes entry can anchor it — and a platform-wide api_server route would deny the
+    # default profile's own api_server destinations. The shared listener mirrors /p/<profile>/ for
+    # every served profile, so the owner's own session store is the proof: authorize exactly the
+    # session that lives in the served profile's state.db, never the platform.
+    if getattr(platform, "value", platform) == "api_server" \
+            and _session_owned_by_profile(config, profile, chat):
+        return primary
     return primary if profile == primary_profile else None
 
 
@@ -569,8 +614,14 @@ class _KanbanNotification:
         from gateway.wake import deliver_wake
         sub = self.sub
         if not self.is_push_adapter:
-            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
-                               notification_category="diagnostic" if self.wake_diagnostic else "result")
+            # A served profile's raw-session wake runs in THAT profile's scope, in-process: the
+            # shared listener's /p/<profile>/ self-post would need the profile's own
+            # API_SERVER_KEY, which a route-only profile legitimately does not have, and an
+            # unprefixed self-post would resume the session in the DEFAULT profile's store.
+            async with self._owner_scope():
+                await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
+                                   profile=self.sub_profile or None,
+                                   notification_category="diagnostic" if self.wake_diagnostic else "result")
             self._log_woke()
             return
         from gateway.session import SessionSource

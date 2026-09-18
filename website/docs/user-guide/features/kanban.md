@@ -1217,6 +1217,16 @@ dispatch and delivery have separate owners:
   disabled or ambiguous routes remain undelivered and retryable. Old rows
   missing required routing anchors are not guessed into a profile. Wake turns keep
   the destination profile's runtime scope and the authorized transport.
+- **Stateless (`api_server`) subscriptions** carry a raw session id, which no
+  `profile_routes` entry can anchor (there is no chat/thread/guild discriminator
+  on a session). A served profile is authorized exactly when the subscription's
+  session lives in that profile's own `state.db` — the shared listener mirrors
+  `/p/<profile>/`, so the session store is the ownership proof, never the
+  platform. The wake then runs in that profile's runtime scope and resumes that
+  exact session in-process, so no second listener and no secondary
+  `API_SERVER_KEY` is involved. A session that is unknown, stamped for another
+  profile, or owned by an unserved profile stays undelivered and retryable, and
+  the default profile's own `api_server` subscriptions are unaffected.
 - **Legacy subscriptions** created before profile stamping (no
   `notifier_profile` on the row) are delivered only by the gateway that holds
   the actual dispatcher singleton lock, so two gateways never race for them.

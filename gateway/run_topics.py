@@ -471,6 +471,111 @@ class GatewayTopicThreadsMixin:
             "Discord semantic thread rename",
         )
 
+    def _schedule_telegram_group_title_rename(self, source: SessionSource, session_id: str, title: str) -> None:
+        """Reuse the final persisted title without spending another model call."""
+        self._schedule_rename_from_title_thread(
+            source,
+            lambda copied: self._rename_telegram_group_for_session_title(copied, session_id, title),
+            "Telegram group title rename",
+        )
+
+    # Group-title ownership serializes per chat on the gateway loop: the auto-title thread schedules
+    # these coroutines, so the check-then-rename sequence must not interleave with a newer session's
+    # rename. One lock per (profile, chat_id), kept for the runner's lifetime — popping a lock while
+    # a waiter still holds it would let a newcomer race on a second lock; entries are tiny and the
+    # cooldown-stamp dicts above accumulate the same way. Profile-scoped so multiplex profiles with
+    # the same chat_id never share one.
+    _telegram_group_rename_locks: Optional[dict] = None
+
+    def _telegram_group_rename_lock(self, source: SessionSource) -> asyncio.Lock:
+        if self._telegram_group_rename_locks is None:
+            self._telegram_group_rename_locks = {}
+        chat_id = str(source.chat_id or "")
+        key = f"{self._telegram_topic_profile_name(source)}:{chat_id}"
+        lock = self._telegram_group_rename_locks.get(key)
+        if lock is None:
+            lock = self._telegram_group_rename_locks[key] = asyncio.Lock()
+        return lock
+
+    async def _rename_telegram_group_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:
+        if source.platform != Platform.TELEGRAM or source.chat_type not in {"group", "forum"} or not source.chat_id:
+            return
+        adapter = self._delivery_adapter_for(source)
+        bot = getattr(adapter, "_bot", None)
+        rename = getattr(bot, "set_chat_title", None)
+        if rename is None:
+            logger.warning("Telegram group title rename unavailable: session=%s", session_id)
+            return
+        # Serialize competing sessions' renames per chat, then recheck ownership inside the lock:
+        # a delayed title from an older session must not reverse a newer session's name, even when
+        # the older callback completes last. Ordering comes from session opening order (started_at,
+        # id tiebreak) in the owning profile's store — never from callback completion time.
+        async with self._telegram_group_rename_lock(source):
+            owned = await asyncio.to_thread(self._telegram_group_title_owned_by, source, session_id)
+            if not owned:
+                logger.debug(
+                    "Telegram group title rename skipped (newer session owns the group): session=%s", session_id)
+                return
+            current_title = await self._telegram_group_current_title(bot, source)
+            if current_title == title:
+                logger.debug(
+                    "Telegram group title rename skipped (already applied): session=%s", session_id)
+                return
+            try:
+                # Do not sanitize: rejection must not silently diverge from the stored title.
+                applied = await rename(chat_id=int(source.chat_id), title=title)
+                logger.info("Telegram group title rename: session=%s applied=%s", session_id, bool(applied))
+            except Exception as exc:
+                # Transport exceptions may contain credentials or message text; log only the type.
+                logger.warning("Telegram group title rename rejected: session=%s error=%s", session_id, type(exc).__name__)
+
+    def _telegram_group_title_owned_by(self, source: SessionSource, session_id: str) -> bool:
+        """True when *session_id* still owns its chat origin for whole-chat naming, decided in the
+        OWNING profile's store. The store follows the source's admitting home (ingress-stamped
+        transport home under multiplex, ambient scope otherwise) — never the launch profile's.
+        Order is session opening order in the store (started_at, id tiebreak), never callback
+        completion time. Fail-open keeps the caller's claim when the recheck itself fails."""
+        try:
+            from hermes_state_registry import acquire, release_or_close
+
+            home = self._authorization_home_for_source(source)
+            multiplex = bool(getattr(getattr(self, "config", None), "multiplex_profiles", False))
+            if home is None:
+                if multiplex:
+                    # Unresolvable under multiplex must NOT read the launch profile's store —
+                    # fail open (keep the claim) rather than borrow another profile's ownership.
+                    return True
+                # Single-profile gateway: the transport IS the process, no stamp exists; the
+                # ambient store (db_path=None) is the owning store.
+            db_path = Path(home) / "state.db" if home is not None else None
+            db = acquire(db_path)
+            try:
+                return bool(db.session_owns_chat_origin(
+                    session_id=str(session_id),
+                    platform=source.platform.value,
+                    chat_id=str(source.chat_id),
+                    thread_id=None,  # group ownership spans all forum topics
+                ))
+            finally:
+                release_or_close(db)
+        except Exception:
+            logger.debug("Telegram group title ownership recheck failed; keeping claim", exc_info=True)
+            return True
+
+    async def _telegram_group_current_title(self, bot, source: SessionSource) -> Optional[str]:
+        """Best-effort live title read-back so an already-matching group name issues no rename
+        request; None when the transport cannot answer (the rename then proceeds)."""
+        get_chat = getattr(bot, "get_chat", None)
+        if not callable(get_chat):
+            return None
+        try:
+            chat = await get_chat(int(source.chat_id))
+            title = getattr(chat, "title", None)
+            return str(title) if title is not None else None
+        except Exception:
+            logger.debug("Telegram group title read-back failed; renaming anyway", exc_info=True)
+            return None
+
     def _schedule_telegram_topic_title_rename(self, source: SessionSource, session_id: str, title: str) -> None:
         """Schedule a topic rename from the auto-title background thread."""
         if not title or not self._is_telegram_topic_lane(source) or self._telegram_topic_auto_rename_disabled(source):

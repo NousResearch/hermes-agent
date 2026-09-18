@@ -2585,6 +2585,25 @@ class BasePlatformAdapter(ABC):
         """Escape hook for command preview/reason; HTML-mode platforms (Telegram) override."""
         return text
 
+    def _ea_fit(self, text: str, budget: int, suffix: str = "...", escape: Optional[Callable[[str], str]] = None) -> str:
+        """``_truncate_preview`` measured after ``escape`` (default ``_ea_escape``) in
+        ``message_len_fn`` units: the platform cap applies to the wire payload, and escaping
+        expands (``&`` → ``&amp;``), so a raw-length cut can still overflow. Returns raw text (the
+        caller escapes); ``suffix`` rides outside ``budget`` like ``_truncate_preview``."""
+        text = str(text or "")
+        escape = escape or self._ea_escape
+        len_fn = self.message_len_fn
+        if len_fn(escape(text)) <= budget:
+            return text
+        lo, hi = 0, len(text)
+        while lo < hi:  # escaped length is monotonic in the raw prefix, so bisect it
+            mid = (lo + hi + 1) // 2
+            if len_fn(escape(text[:mid])) <= budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo] + suffix
+
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         """Chars of command preview that fit; platforms with a hard message cap compute it."""
         return self._EA_CMD_BUDGET
@@ -2599,8 +2618,8 @@ class BasePlatformAdapter(ABC):
         flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
         platform-local."""
         if self._EA_REASON_BUDGET:
-            description = self._truncate_preview(str(description or ""), self._EA_REASON_BUDGET)
-        cmd_preview = self._truncate_preview(
+            description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
+        cmd_preview = self._ea_fit(
             str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
@@ -3392,6 +3411,15 @@ class BasePlatformAdapter(ABC):
         failures fall back to a plain-text send, exhausted retries notify the user."""
         async def _send(text: str) -> "SendResult":
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+
+        async def _send_again(previous: "SendResult") -> "Optional[SendResult]":
+            """Retry: the whole payload normally; only the undelivered remainder after a partial split
+            delivery (``raw_response["partial_overflow"]``). ``None`` when the adapter cannot resume — the
+            caller then keeps the partial failure rather than re-sending the already-visible head."""
+            if not self._is_partial_delivery(previous):
+                return await _send(content)
+            return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
+
         result = await _send(content)
         if result.success or self._send_retry_is_final(result):
             return result
@@ -3434,7 +3462,13 @@ class BasePlatformAdapter(ABC):
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
                                attempt, max_retries, delay, error_str)
                 await asyncio.sleep(delay)
-                result = await _send(content)
+                resumed = await _send_again(result)
+                if resumed is None:
+                    logger.warning(
+                        "[%s] Split send partly delivered and the remainder cannot be resumed safely; "
+                        "not re-sending the whole payload (would duplicate the visible head): %s", self.name, error_str)
+                    return result
+                result = resumed
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
@@ -3484,6 +3518,10 @@ class BasePlatformAdapter(ABC):
         # Non-network / post-retry formatting failure: try plain text as fallback. A
         # rate-limited error never reaches here: it classifies as network above and the
         # loop only breaks on a non-transient, non-rate-limited error.
+        if self._is_partial_delivery(result):
+            # Part of a split payload is already on screen; a plain-text re-send of the whole would duplicate it.
+            logger.warning("[%s] Send failed after partial delivery: %s — not re-sending as plain text", self.name, error_str)
+            return result
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self._send_plain_fallback(chat_id, content, reply_to=reply_to, metadata=metadata)
         if not fallback_result.success:
@@ -3494,6 +3532,21 @@ class BasePlatformAdapter(ABC):
         """True when a failed send must be returned as-is: neither a retry nor the plain-text
         fallback can fix it (a structured auth/target refusal). Default: never."""
         return False
+
+    @staticmethod
+    def _is_partial_delivery(result: "SendResult") -> bool:
+        """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
+        contract Telegram's send/edit-overflow paths set and the stream consumer reads): the visible
+        head must never be sent again."""
+        raw = getattr(result, "raw_response", None)
+        return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: "SendResult", *, reply_to: Optional[str], metadata: Any) -> "Optional[SendResult]":
+        """Deliver only the remainder of a partially delivered split payload. ``None`` (the default) means
+        this adapter cannot resume; ``_send_with_retry`` then returns the partial failure instead of
+        re-sending the whole payload. Override only where non-delivery of the remainder is CERTAIN."""
+        return None
 
     async def _send_plain_fallback(
             self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> "SendResult":
@@ -3951,24 +4004,25 @@ class BasePlatformAdapter(ABC):
         delivery_adapter: "BasePlatformAdapter") -> None:
         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent). On a flood-control refusal
-        arm the runner's timed redelivery, so the reply goes out once the penalty has passed instead
-        of waiting for the next restart."""
+        before this failure landed; atomic claiming keeps it idempotent). On any other rejection arm
+        the runner's timed redelivery, so the reply goes out once the flood penalty or the retry
+        backoff has passed instead of waiting for the next restart (#91653)."""
         try:
-            from gateway.delivery_ledger import is_flood_error, mark_delivered, mark_failed
+            from gateway.dead_targets import classify_dead_error
+            from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
             error = str(getattr(result, "error", "") or "")
             await asyncio.to_thread(mark_failed, obligation_id, error)
-            if error == "send_path_degraded":
+            if is_reconnect_only(error):
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
                 live = self._final_delivery_adapter(event.source)
                 if live is not delivery_adapter and callable(redeliver):
                     await redeliver(event.source.platform,
                                     profile=getattr(delivery_adapter, "_owner_profile", None))
-            elif is_flood_error(error):
+            elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
                 schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
                 if callable(schedule):
                     schedule(event.source.platform,

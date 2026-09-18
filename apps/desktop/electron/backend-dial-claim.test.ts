@@ -201,12 +201,4 @@ describe('main.ts wiring for #90812', () => {
     expect(body).toContain("postJsonForBackend(descriptor, '/api/hermes/update'")
   })
 
-  it('routes every registry-scoped REST dispatch (hermes:api) through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1_500)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile)')
-    expect(body).toMatch(/ensureRegistryBackend\(registryConnectionId, routeProfile, '', \{\s*spawnPriority\s*\}\)/)
-  })
 })

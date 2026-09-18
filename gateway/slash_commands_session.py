@@ -483,7 +483,8 @@ class GatewaySessionCommandsMixin:
         compressor = getattr(agent, "context_compressor", None)
         count_before = getattr(compressor, "compression_count", 0)
         try:
-            await self._run_in_executor_with_context(lambda: agent._compress_context([], "", force=True))
+            await self._run_in_executor_with_context(
+                lambda: agent._compress_context([], "", force=True, task_id=session_id or "default"))
         except Exception as exc:
             return t("gateway.compress.failed", error=exc)
         if getattr(compressor, "compression_count", 0) > count_before:
@@ -801,9 +802,11 @@ class GatewaySessionCommandsMixin:
     async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
         """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
         widen = allow_all and self._resume_caller_is_admin(source)
+        # Rank by lineage activity, not root started_at: a lineage compressed for days is projected
+        # onto its live tip and must sit where the user last touched it (#114271).
         sessions = await self._session_db.list_sessions_rich(
             source=source.platform.value if source.platform else None,
-            session_key=None if widen else session_key, limit=10)
+            session_key=None if widen else session_key, limit=10, order_by_last_active=True)
         titled = [s for s in sessions if s.get("title")][:10]
         return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
 

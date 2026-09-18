@@ -175,7 +175,9 @@ The docs build publishes the catalog as one JSON document
 (`https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json`).
 `search`/`install`/`update` fetch it at most every six hours and cache it under
 `~/.hermes/cache/`, so new entries and removals reach installed clients without
-updating Hermes. Offline, the copy shipped with your checkout is used. Removals
+updating Hermes. Offline, the copy shipped with your checkout is used (a failed
+fetch is remembered for a minute, so `plugins list` and the dashboard's Plugins
+page pay at most one connection timeout, not one per installed plugin). Removals
 from the in-tree list and the live list are always both enforced.
 
 ### Custom git URLs are different
@@ -221,5 +223,5 @@ checks out exactly the new pin.
 - [Plugins](plugins.md) — the plugin system itself: manifest format, enabling,
   configuration
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
-- [Build a Hermes Plugin](/developer-guide/plugins) — write your own
+- [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
 - [Plugin Catalog page](/plugins) — the browsable catalog

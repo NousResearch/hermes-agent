@@ -128,7 +128,13 @@ JUDGE_SYSTEM_PROMPT = (
     "user input to proceed.\n"
     "Return BLOCKED with the reason describing what is blocking. BLOCKED is "
     "a refusal, not a completion — never return BLOCKED for a goal that "
-    "was achieved.\n\n"
+    "was achieved.\n"
+    "When the block is an error the agent hit (an HTTP status, an API, "
+    "sign-in or token failure), quote the error text verbatim in the reason "
+    "and attribute it only to a provider, service or credential the response "
+    "itself names. Never infer one the response does not name — an unnamed "
+    "401 belongs to the model provider the agent was calling, not to some "
+    "other service's token.\n\n"
     "WAIT — the goal is NOT done, but the next step is to wait for async "
     "work to finish rather than act again. Choose this ONLY when the agent's "
     "progress is genuinely gated on something running on its own:\n"
@@ -1563,7 +1569,8 @@ KANBAN_GOAL_CONTINUATION_TEMPLATE = (
     "calling one of them."
 )
 
-# Judge says done but the worker never called kanban_complete/kanban_block: one explicit nudge.
+# Judge says done but the worker never made a terminal board call
+# (kanban_complete/kanban_request_review/kanban_block): one explicit nudge.
 KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "[The work looks complete, but the task is still open]\n"
     "Reason: {reason}\n\n"
@@ -1645,7 +1652,15 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
             return _result("stopped", f"status={status}")
 
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        # The between-turns judge runs outside any agent turn: bind the per-task relay-affinity
+        # scope (same shape as the handoff gates) so the relay does not reject the call (#113669).
+        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+        try:
+            verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        finally:
+            if affinity_token is not None:
+                reset_affinity_scope(affinity_token)
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")

@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
@@ -434,6 +435,48 @@ _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=Fa
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 
+# Generic markers a provider 400 puts next to the offending parameter name. Bedrock Converse
+# rejects sampling params for reasoning-first models with the contraction ("This model doesn't
+# support the temperature field", xAI Grok) and inference-profile Claude with "`temperature` is
+# deprecated for this model" (#111043); strict pydantic gateways (Fireworks) name the unknown
+# field as "extra inputs are not permitted" (#109774). Shared with the auxiliary retry ladder
+# (``agent.auxiliary_client._is_unsupported_parameter_error``).
+UNSUPPORTED_PARAM_MARKERS = (
+    "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
+    "doesn't support", "is deprecated for this model",
+    "unknown parameter", "unrecognized request argument", "unrecognized parameter",
+    "invalid parameter", "extra inputs are not permitted",
+)
+
+# Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.
+# Standalone only: never a model-id segment ("The model kimi-k2-thinking is not supported when
+# using this account" is route gating for the provider-fallback rung) nor the adjective in
+# "... not supported with reasoning models".
+_REASONING_FIELD_TOKEN = re.compile(
+    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
+    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+)
+
+
+def is_reasoning_field_rejection(error_msg: str) -> bool:
+    """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
+    ``thinking``/``think``): the field token plus either a generic unsupported marker ("Unrecognized
+    request argument supplied: reasoning_effort", #112781) or a standalone "unsupported" next to the
+    field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none' unsupported;
+    use minimal|low|medium|high|xhigh", #114460). The route default is the right answer for such a
+    model, so both the main loop and the auxiliary ladder retry once without the disable.
+
+    Known trade-off: a 400 about a thinking *state* ("Function calling is not supported when
+    thinking is enabled") also matches — the marker sits right next to the token, so no proximity
+    rule separates it from the forward wordings. Cost is one dropped-disable retry before the
+    spent path takes the fallback chain; the auxiliary ladder already treated it this way."""
+    msg = (error_msg or "").lower()
+    token = _REASONING_FIELD_TOKEN.search(msg)
+    if token is None:
+        return False
+    near = msg[max(0, token.start() - 32):token.end() + 32]
+    return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+
 
 def _billing_hints(error_msg: str) -> Verdict:
     """Billing verdict carrying the #82154 ambiguity marker when applicable."""
@@ -764,8 +807,26 @@ def classify_api_error(
         anonymous=is_anonymous_request(provider, api_key),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
-    base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}
+    message = _extract_message(error, body)
+    if verdict["reason"] in (_R.auth, _R.auth_permanent):
+        # An auth refusal from a non-stock route names the host, so a credential posted to the
+        # wrong endpoint (a stale ``model.base_url`` after a provider switch, #113719) reads as
+        # such — not as a bad key.
+        host = _off_route_host(c)
+        if host:
+            message = f"{message} (endpoint: {host})"
+    base = {"status_code": status_code, "provider": provider, "model": model, "message": message}
     return ClassifiedError(**{**base, **verdict})
+
+
+def _off_route_host(c: _Ctx) -> str:
+    """The contacted host when ``base_url`` is set and is not the provider's own endpoint; ``""`` otherwise."""
+    from hermes_cli.route_identity import provider_owns_route
+    from utils import base_url_hostname
+    host = base_url_hostname(c.base_url)
+    if not host or provider_owns_route(c.provider_slug, c.base_url) is True:
+        return ""
+    return host
 
 
 # ── Status code handlers ────────────────────────────────────────────────
@@ -893,10 +954,11 @@ def _classify_400(c: _Ctx) -> Verdict:
         "conflicting authenticated continuation identities" in msg
     ):
         return _V_INVALID_ENCRYPTED
-    # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
-    # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops
-    # the disable and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg:
+    # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /
+    # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
+    # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
+    # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
+    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

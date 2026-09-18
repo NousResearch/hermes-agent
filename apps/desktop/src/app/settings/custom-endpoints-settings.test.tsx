@@ -152,4 +152,32 @@ describe('CustomEndpointsSettings owner isolation', () => {
     expect(onConfigSaved).not.toHaveBeenCalled()
     expect(onMainModelChanged).not.toHaveBeenCalled()
   })
+
+  it('drops a pending save completion after its owner-scoped view unmounts', async () => {
+    let resolveSave!: (value: { endpoints: [typeof endpoint]; id: string }) => void
+    api.saveCustomEndpoint.mockReturnValue(
+      new Promise(resolve => {
+        resolveSave = resolve
+      })
+    )
+    const onConfigSaved = vi.fn()
+    const onMainModelChanged = vi.fn()
+    const scope = $settingsOwner.get()
+
+    expect(scope).toBeTruthy()
+
+    const view = render(
+      <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} scope={scope!} />
+    )
+
+    await screen.findByDisplayValue('Fixture')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveCustomEndpoint).toHaveBeenCalled())
+
+    view.unmount()
+    await act(async () => resolveSave({ endpoints: [endpoint], id: endpoint.id }))
+
+    expect(onConfigSaved).not.toHaveBeenCalled()
+    expect(onMainModelChanged).not.toHaveBeenCalled()
+  })
 })

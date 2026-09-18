@@ -241,6 +241,8 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     reply so the sender's waiter resolves (best effort). Unreadable envelopes are left for the claim."""
     try:
         env = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(env, dict):
+            raise ValueError(f"expected a JSON object, got {type(env).__name__}")
         created = float(env.get("created_at") or path.stat().st_mtime)
     except (OSError, ValueError):
         return False
@@ -287,7 +289,10 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         claimed = base / CLAIMED_DIR / path.name
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
-            out.append(json.loads(claimed.read_text(encoding="utf-8")))
+            envelope = json.loads(claimed.read_text(encoding="utf-8"))
+            if not isinstance(envelope, dict):
+                raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
+            out.append(envelope)
     return out
 
 

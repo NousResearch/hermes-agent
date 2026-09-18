@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 # Defined beside the sender-side waiter budget so the two Python sides cannot drift (#93911).
+from tools.bot_failure_reasons import delivery_failure_reason
 from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
 
 from .method_ctx import HandlerRegistry
@@ -57,7 +58,8 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 
 
 @method("bot_relay.deliver")
-def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
+def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
+      _failure_reason=delivery_failure_reason) -> dict:
     """Deliver a relayed DM (``profile``, attribution-prefixed ``message``) into a Bot Chat ON THIS
     GATEWAY via the one-turn ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use →
     ``{reply}``. Blocking by design (Desktop relay worker; the RPC pool keeps it off the reader)."""
@@ -172,10 +174,14 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         reply = _bot_mode_delivery_text((proc.stdout or "").strip(), successful=True)
         return _ok(rid, {"reply": reply})
     except subprocess.TimeoutExpired:
-        return _err(rid, 5093, "delivery turn timed out")
+        # Every classified refusal has to ride `data.reason`: the Desktop forwards only that field,
+        # and the sender re-classifies from free text, which cannot name these. This branch is also
+        # `delivery_timeout`'s only producer.
+        from tools.bot_failure_reasons import DELIVERY_TIMEOUT
+        return _err(rid, 5093, "delivery turn timed out", data={"reason": DELIVERY_TIMEOUT})
     except Exception as e:
-        # 'target_busy' extends the structured refusal enum.
-        return _err(rid, 5096 if getattr(e, "reason", "") == "target_busy" else 5094, str(e))
+        reason = _failure_reason(e)
+        return _err(rid, 5096 if reason == "target_busy" else 5094, str(e), data={"reason": reason})
 
 
 @method("bot_relay.reply")

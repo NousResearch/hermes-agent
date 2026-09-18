@@ -251,9 +251,15 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
             self._print_fn = None
             self.shutdown_memory_provider = MagicMock()
             self.close = MagicMock()
+            self.compress_task_id = None
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
+            # Capture the task scope the gateway forwards (#98206): the dedup
+            # reset inside compress_context is only effective under the live
+            # session row id, the same task_id the main turn hands to
+            # run_conversation.
+            self.compress_task_id = _kwargs.get("task_id")
             # No session_db → cannot rotate: session_id is UNCHANGED, and this
             # is a failure-to-rotate, not an in-place success.
             return ([{"role": "assistant", "content": "summary only"}], None)
@@ -341,6 +347,12 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     assert result == "ok"
     # The transcript must NOT be rewritten — the original is preserved.
     runner.session_store.rewrite_transcript.assert_not_called()
+    # #98206: hygiene compaction must scope the dedup reset to the LIVE
+    # session row id ("sess-1" from this test's SessionEntry) — the same
+    # task_id the main turn passes to run_conversation. Under the "default"
+    # fallback the skill_view/read_file dedup records survive compression
+    # and a re-read returns a stub pointing at pruned context.
+    assert NonRotatingCompressAgent.last_instance.compress_task_id == "sess-1"
 
     # This run neither rotated nor compacted in place, so it did NOT recover
     # the session: the reset must NOT have been reached. Spying on the module

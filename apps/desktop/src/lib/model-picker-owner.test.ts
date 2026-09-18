@@ -75,4 +75,17 @@ describe('resolveModelPickerOwner', () => {
 
     expect(resolveModelPickerProviderSetupScope(owner, ambientScope)).toBe(ambientScope)
   })
+
+  it('disables provider setup when no immutable descriptor matches the picker owner', () => {
+    const owner = { connectionId: 'connection-b', profile: 'backend-b' }
+
+    const ambientScope = {
+      connectionId: 'connection-a',
+      profile: 'backend-a',
+      connectionOwner: { mode: 'remote' as const, baseUrl: 'https://a.example', token: 'private-token' }
+    }
+
+    expect(resolveModelPickerProviderSetupScope(owner, ambientScope)).toBeUndefined()
+    expect(resolveModelPickerProviderSetupScope(owner)).toBeUndefined()
+  })
 })

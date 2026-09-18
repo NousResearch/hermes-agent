@@ -11,12 +11,70 @@ was never injected as a follow-up.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+import sys
 import time
 from typing import Any, Callable, MutableMapping
 
 # Nested A→B→C is one extra turn; this caps a runaway message_agent chain.
 _MAX_QUIET_NOTIFY_ROUNDS = 8
+
+# Last line a Kanban worker leaves in its own log: ``[kanban-worker-exit] rc=<code>``. A per-tick
+# ``hermes kanban dispatch`` process never reaped the worker, so ``os.waitpid`` cannot tell it how
+# the worker exited; the trailer is the process-independent witness the dead-worker sweep reads
+# instead, so a clean exit without a terminal board call is booked as the same protocol violation
+# (and a 75 as the same rate-limit requeue) whichever process notices the death.
+KANBAN_WORKER_EXIT_TRAILER = "[kanban-worker-exit] rc="
+
+
+def exit_single_query(code: int) -> None:
+    """``sys.exit(code)`` for a one-shot turn; a Kanban worker first writes the exit trailer to its log."""
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        with contextlib.suppress(Exception):
+            # stderr: stdout may be the ``--stream-json`` record stream, and the worker log
+            # captures both streams.
+            print(f"\n{KANBAN_WORKER_EXIT_TRAILER}{int(code)}", file=sys.stderr, flush=True)
+    sys.exit(code)
+
+
+# A spawner that bounds only the TURN (the cron Bot Chat lane) hands the quiet child a report
+# path here. The child records the turn's outcome there the moment the turn ends, BEFORE the
+# one-shot exit linger, so the spawner can book the delivery and stop waiting while the linger
+# keeps protecting nested ``notify_on_complete`` replies. Popped before the turn runs (same
+# contract as HERMES_TURN_AUTHOR): nothing the turn spawns inherits it, and a nested one-shot
+# never writes over its host's report — the record also carries the writer's pid.
+TURN_REPORT_FILE_ENV = "HERMES_QUIET_TURN_REPORT_FILE"
+
+
+def take_turn_report_path(environ: MutableMapping[str, str] = os.environ) -> str | None:
+    """Read and remove the spawner's turn-report path so subprocesses started during the turn do not inherit it."""
+    return environ.pop(TURN_REPORT_FILE_ENV, None) or None
+
+
+def write_turn_report(path: str | None, *, exit_code: int, error: str = "") -> None:
+    """Atomically record ``{pid, exit_code, error}`` at *path*; a no-op without a path. Never raises:
+    the report is the spawner's convenience, the turn itself is already persisted."""
+    if not path:
+        return
+    record = {"pid": os.getpid(), "exit_code": int(exit_code), "error": str(error or "")}
+    with contextlib.suppress(Exception):
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(record, fh)
+        os.replace(tmp, path)
+
+
+def read_turn_report(path: str, pid: int) -> dict | None:
+    """The child's turn report, or None while absent, unreadable, or written by another process."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("pid") != pid:
+        return None
+    return record
 
 
 @contextlib.contextmanager

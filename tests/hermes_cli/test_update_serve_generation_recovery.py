@@ -920,7 +920,7 @@ def test_stale_serve_warning_names_the_process_and_the_fix(capsys):
     out = capsys.readouterr().out
     assert "4242" in out
     assert "serve" in out
-    assert "systemctl --user restart hermes-serve.service" in out
+    assert "systemctl --user restart hermes-serve.service" not in out
 
 
 def test_no_survivors_prints_nothing(capsys):

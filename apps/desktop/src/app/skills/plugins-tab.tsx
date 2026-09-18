@@ -25,6 +25,7 @@ import {
 } from '@/store/agent-plugins'
 import { notify, notifyError } from '@/store/notifications'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { $connection } from '@/store/session'
 
 import { Pill } from '../settings/primitives'
 import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
@@ -193,6 +194,9 @@ function PackageRow({
   const desktopOn = desktop ? desktop.status !== 'disabled' : false
   const agentOn = agent?.status === 'enabled'
   const agentToggleable = Boolean(agent?.key)
+  // Electron's desktop-half reconcile only walks THIS machine's homes, so a
+  // package installed on a remote backend can never materialize here (#114079).
+  const remoteBackend = useStore($connection)?.mode === 'remote'
 
   return (
     <div
@@ -250,8 +254,10 @@ function PackageRow({
             }}
           />
         ) : pkg.desktopMissing ? (
-          <Tip label={p.desktopHalfPendingTip}>
-            <span className="text-[0.65rem] text-(--ui-text-tertiary)">{p.desktopHalfPending}</span>
+          <Tip label={remoteBackend ? p.desktopHalfRemoteTip : p.desktopHalfPendingTip}>
+            <span className="text-[0.65rem] text-(--ui-text-tertiary)">
+              {remoteBackend ? p.desktopHalfRemote : p.desktopHalfPending}
+            </span>
           </Tip>
         ) : (
           <Dash />

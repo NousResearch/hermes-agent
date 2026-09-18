@@ -95,6 +95,55 @@ class TestDirectAliasCredentialLoading:
         assert alias.key_env == ""
 
 
+class TestNestedModelAliasesCredentials:
+    """``model.aliases:`` dict entries must keep ``api_key``/``key_env`` like
+    top-level ``model_aliases:`` entries do (#114471)."""
+
+    def _install_nested(self, monkeypatch, name, entry):
+        cfg = {
+            "model": {
+                "default": "gpt-4",
+                "provider": "openrouter",
+                "aliases": {name: entry},
+            },
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
+        return cfg
+
+    def test_nested_alias_keeps_key_env(self, monkeypatch):
+        self._install_nested(
+            monkeypatch,
+            "qwen-local",
+            {
+                "model": "qwen3-next",
+                "provider": "custom",
+                "base_url": "http://192.168.1.50:8000/v1",
+                "key_env": "QWEN27B_KEY",
+            },
+        )
+        from hermes_cli.model_switch import _load_direct_aliases
+
+        alias = _load_direct_aliases()["qwen-local"]
+        assert alias.key_env == "QWEN27B_KEY"
+        assert alias.base_url == "http://192.168.1.50:8000/v1"
+
+    def test_nested_alias_keeps_api_key(self, monkeypatch):
+        self._install_nested(
+            monkeypatch,
+            "theta-nested",
+            {
+                "model": "theta-1",
+                "provider": "custom",
+                "base_url": ALIAS_HOST,
+                "api_key": "sk-literal",
+            },
+        )
+        from hermes_cli.model_switch import _load_direct_aliases
+
+        assert _load_direct_aliases()["theta-nested"].api_key == "sk-literal"
+
+
 class TestDirectAliasApiKeyHelper:
     @pytest.mark.parametrize(
         "entry, expected",

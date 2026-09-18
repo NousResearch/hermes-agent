@@ -82,6 +82,7 @@ export function ModelPickerOverlay({
   const sessionId = focusedRuntimeId ?? primarySessionId
   const currentModel = focusedRuntimeId && focusedModel !== null ? focusedModel : primaryModel
   const currentProvider = focusedRuntimeId && focusedProvider !== null ? focusedProvider : primaryProvider
+  const providerSetupScope = resolveModelPickerProviderSetupScope(pickerOwner, settingsOwner ?? undefined)
 
   if (!gatewayOpen) {
     return null
@@ -89,7 +90,7 @@ export function ModelPickerOverlay({
 
   return (
     <ModelPickerDialog
-      allowProviderSetup={!pickerOwner.route}
+      allowProviderSetup={!pickerOwner.route && providerSetupScope !== undefined}
       currentModel={currentModel}
       currentProvider={currentProvider}
       gw={gateway}
@@ -98,7 +99,7 @@ export function ModelPickerOverlay({
       open={open}
       ownerConnectionId={pickerOwner.connectionId}
       profile={pickerOwner.profile}
-      providerSetupScope={resolveModelPickerProviderSetupScope(pickerOwner, settingsOwner ?? undefined)}
+      providerSetupScope={providerSetupScope}
       request={pickerOwner.route ? requestPickerGateway : undefined}
       sessionId={sessionId}
     />

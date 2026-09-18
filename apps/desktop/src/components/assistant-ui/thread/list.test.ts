@@ -264,6 +264,21 @@ describe('firstVisibleGroupIndex', () => {
 
     expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(0)
   })
+
+  it('keeps the cut stable while the unbudgeted streaming tail grows', () => {
+    const history = [group('old', 50), group('mid', 30), group('recent', 30)]
+    const initial = [...history, group('streaming', 1)]
+    const grown = [...history, group('streaming', 5_000)]
+
+    expect(firstVisibleGroupIndex(initial, 60, 0, true)).toBe(1)
+    expect(firstVisibleGroupIndex(grown, 60, 0, true)).toBe(1)
+  })
+
+  it('exempts exactly one newest group while older history stays budgeted', () => {
+    const groups = [group('a', 200), group('b', 50), group('c', 50), group('d', 50), group('e', 10_000)]
+
+    expect(firstVisibleGroupIndex(groups, 60, 0, true)).toBe(2)
+  })
 })
 
 describe('liveTailStart', () => {

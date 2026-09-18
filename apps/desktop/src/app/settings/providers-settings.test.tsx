@@ -261,6 +261,31 @@ describe('ProvidersSettings', () => {
     expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
   })
 
+  it('does not run a remote provider disconnect command in the local terminal', async () => {
+    $connection.set({
+      mode: 'remote',
+      baseUrl: 'https://remote.example',
+      token: 'fixture-token',
+      connectionId: 'remote'
+    } as never)
+    listOAuthProviders.mockResolvedValue({
+      providers: [
+        provider('qwen-oauth', true, {
+          disconnect_command: 'qwen auth logout',
+          disconnectable: false,
+          flow: 'external',
+          name: 'Qwen (via Qwen CLI)'
+        })
+      ]
+    })
+
+    await renderProvidersSettings()
+
+    expect(await screen.findByText('Qwen Code')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Disconnect Qwen Code' })).toBeNull()
+    expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
+  })
+
   it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
     // A provider the backend catalog tags (provider/provider_label) but that has
     // no desktop PROVIDER_GROUPS prefix row must still render its own card —

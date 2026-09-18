@@ -116,7 +116,7 @@ export function createBotSection(name: string, bots: RosterRow[] = []): BotSecti
   return section
 }
 
-export function renameBotSection(id: string, name: string): void {
+export function renameBotSection(id: string, name: string, roster: RosterRow[] = []): void {
   const clean = String(name || '').trim()
 
   if (!clean) {
@@ -124,6 +124,82 @@ export function renameBotSection(id: string, name: string): void {
   }
 
   persistBotSections($botSections.get().map(s => (s.id === id ? { ...s, name: clean } : s)))
+  // Members carry the name with their membership (see moveBotsToSection), so
+  // a rename re-stamps them — that is how the new name reaches other desktops.
+  void moveBotsToSection(
+    (roster || []).filter(bot => botSectionId(bot, $botMeta.get()) === id),
+    id
+  )
+}
+
+/**
+ * Sections another desktop made. The section RECORD lives in that machine's
+ * plugin storage, but every member's ui_meta reaches this machine carrying the
+ * section's id AND name — so rebuild the records we have never seen, and the
+ * roster draws the same folders here. A known section takes the members' name
+ * only when every member agrees on it (a rename elsewhere, fully stamped);
+ * while members disagree — a re-stamp still in flight — the local name stays.
+ * Order and empty sections remain this desktop's own. The roster pane calls
+ * this on every roster/meta change.
+ */
+export function adoptBotSectionsFromMeta(roster: RosterRow[], metaByName: Record<string, BotMeta>): void {
+  const names = new Map<string, Set<string>>()
+
+  for (const bot of roster || []) {
+    const meta = bot ? botRosterMeta(bot, metaByName) : null
+    const id = meta?.sectionId ? String(meta.sectionId) : null
+    const name = String(meta?.sectionName || '').trim()
+
+    if (id && name) {
+      names.set(id, (names.get(id) || new Set()).add(name))
+    }
+  }
+
+  const agreed = (id: string): null | string => {
+    const set = names.get(id)
+
+    return set?.size === 1 ? [...set][0]! : null
+  }
+
+  const local = $botSections.get()
+  const known = new Set(local.map(s => s.id))
+  const renamed = local.map(s => ({ ...s, name: agreed(s.id) ?? s.name }))
+  const adopted = [...names.keys()].filter(id => !known.has(id)).map(id => ({ id, name: [...names.get(id)!][0]! }))
+  const next = [...renamed, ...adopted]
+
+  if (next.some((s, i) => s.id !== local[i]?.id || s.name !== local[i]?.name)) {
+    persistBotSections(next)
+  }
+}
+
+/**
+ * The other half of adoptBotSectionsFromMeta: bots filed before the name rode
+ * along carry only `sectionId`, and a desktop that never made that section
+ * has nothing to rebuild it from. So the desktop that DOES know the section —
+ * usually the one that created it — stamps the name onto every such member
+ * through the same one-write-per-profile path filing uses. Returns the members
+ * being stamped. Runs once per member: the write sets `sectionName`, so the
+ * next roster pass finds nothing to do. Members of a section nobody here
+ * knows are left alone — there is no name to give them.
+ */
+export function backfillBotSectionNames(roster: RosterRow[], metaByName: Record<string, BotMeta>): RosterRow[] {
+  const known = new Set($botSections.get().map(s => s.id))
+  const bySection = new Map<string, RosterRow[]>()
+
+  for (const bot of roster || []) {
+    const meta = bot ? botRosterMeta(bot, metaByName) : null
+    const id = meta?.sectionId ? String(meta.sectionId) : null
+
+    if (id && known.has(id) && !String(meta?.sectionName || '').trim()) {
+      bySection.set(id, [...(bySection.get(id) || []), bot])
+    }
+  }
+
+  for (const [id, members] of bySection) {
+    void moveBotsToSection(members, id)
+  }
+
+  return [...bySection.values()].flat()
 }
 
 /**
@@ -177,12 +253,22 @@ export function moveBotSection(id: string, delta: number): void {
  * `null` clears the assignment (back to Unassigned). One `saveBotMeta` per
  * bot — membership is a field on each bot's own profile, so that IS one write
  * per profile — and the writes run in sequence rather than fanned out, so the
- * shared local snapshot is never committed by two saves at once.
+ * shared local snapshot is never committed by two saves at once. The section's
+ * NAME rides along: the record itself is local to the desktop that made it,
+ * and the name is what lets another desktop rebuild it (adoptBotSectionsFromMeta).
  */
 export async function moveBotsToSection(bots: RosterRow[], sectionId: null | string): Promise<void> {
+  const sectionName = (sectionId && $botSections.get().find(s => s.id === sectionId)?.name) || null
+
   for (const bot of bots || []) {
-    if (bot && botSectionId(bot, $botMeta.get()) !== (sectionId || null)) {
-      await saveBotMeta(bot, { sectionId: sectionId || null })
+    if (!bot) {
+      continue
+    }
+
+    const current = botRosterMeta(bot, $botMeta.get())
+
+    if (botSectionId(bot, $botMeta.get()) !== (sectionId || null) || (current?.sectionName || null) !== sectionName) {
+      await saveBotMeta(bot, { sectionId: sectionId || null, sectionName })
     }
   }
 }

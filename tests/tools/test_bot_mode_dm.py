@@ -274,7 +274,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
             agent=agent,
         )
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     assert result["to"] == "@researcher"
     assert result["process_id"] == "proc_test1234"
     assert "do NOT wait" in result["detail"]
@@ -312,6 +312,53 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert '$(and this is not shell)' in content
 
 
+def test_cli_runner_ack_is_a_dispatch_ack_that_names_the_completion_notification(tmp_path, monkeypatch):
+    """``status: queued`` is returned before the background runner has delivered anything; the
+    detail (and the schema text the model reads) must say the completion notification carries
+    the outcome, so a runner that dies at exec is never read as a delivered message."""
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
+
+    assert result["status"] == "queued"
+    assert "not a delivery receipt" in result["detail"]
+    assert "completion notification" in result["detail"]
+    assert "delivery failure" in result["detail"]
+    description = bot_mode_dm.message_agent_tool_schema()["function"]["description"]
+    assert "dispatch acknowledgement" in description and "not a delivery receipt" in description
+
+
+def test_cli_runner_ack_is_queued_with_the_runner_delivery_id(tmp_path, monkeypatch):
+    """The CLI-runner ack speaks the same vocabulary as the live-owner and relay branches:
+    ``queued`` + ``delivery_id`` (+ ``process_id``). The id is the one the runner itself pins
+    for the same DM file when it admits to a live owner, so a sender can correlate both."""
+    import hashlib
+
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
+
+    assert result["status"] == "queued"
+    assert result["process_id"] == "proc_test1234"
+    _, dm_file, _ = _runner_parts(calls[0]["command"])
+    assert result["delivery_id"] == hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
+
+
+def test_relay_ack_is_queued_with_the_envelope_id(tmp_path, monkeypatch):
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1", "connection_label": "Hermes Cloud"},
+    ])
+    result = json.loads(bot_mode_dm.message_agent_tool(target="hermes", message="ping", agent=_FakeAgent(home)))
+
+    assert result["status"] == "queued"
+    (envelope,) = bot_relay.claim_pending_envelopes(home)
+    assert result["delivery_id"] == envelope["id"]
+
+
 def _rename(home: Path, folder: str, *, display_name: str = "", title: str = "") -> None:
     lines = ["description: teammate for tests", "ui_meta:", "  hermes-bots:", "    shape: cloud"]
     if title:
@@ -336,7 +383,7 @@ def test_friendly_names_and_desktop_slugs_resolve_to_folder_ids(tmp_path, monkey
 
     result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="ping", agent=_FakeAgent(home)))
 
-    assert result["status"] == "sent", result
+    assert result["status"] == "queued", result
     assert result["to"] == f"@{expected}"
     _mode, _dm_file, argv = _runner_parts(calls[0]["command"])
     assert argv[1:3] == ["-p", expected]
@@ -382,7 +429,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
     # The registry the tool validated against is the machine root's — the
@@ -400,7 +447,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="spark/researcher", message="ping", agent=agent)
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     assert "spark" in result["to"]
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
@@ -412,7 +459,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     result2 = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
-    assert result2["status"] == "sent"
+    assert result2["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
@@ -436,7 +483,7 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent)
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "query-file"
     assert transport_argv[0] == str(hermes_entry)
@@ -446,7 +493,7 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     result2 = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
-    assert result2["status"] == "sent"
+    assert result2["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
     assert transport_argv == [str(hermes_entry), "-p", "default", "peer", "dm", "spark"]
@@ -460,8 +507,8 @@ def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(t
     home = _managed_home(tmp_path, teammates=("researcher", "coder"), peers=("spark",))
     agent = _FakeAgent(home / "profiles" / "coder", title="Bot Chat")
 
-    assert json.loads(bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent))["status"] == "sent"
-    assert json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent))["status"] == "sent"
+    assert json.loads(bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent))["status"] == "queued"
+    assert json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent))["status"] == "queued"
 
     assert _runner_author(calls[0]["command"]) == {"id": "bot:erimac.local/coder", "name": "coder", "is_bot": True}
     assert _runner_author(calls[1]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
@@ -478,14 +525,14 @@ def test_renamed_primary_signs_with_its_friendly_name_and_is_reachable_by_it(tmp
     (home / "profile.yaml").write_text("display_name: Maia\n", encoding="utf-8")
 
     result = json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
     assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia (@hermes): ")
 
     coder = _FakeAgent(home / "profiles" / "coder")
     for target in ("maia", "@maia", "@hermes"):
         result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="pong", agent=coder))
-        assert result["status"] == "sent", (target, result)
+        assert result["status"] == "queued", (target, result)
         _mode, _dm_file, argv = _runner_parts(calls[-1]["command"])
         assert argv[1:3] == ["-p", "default"], (target, argv)
 
@@ -507,7 +554,7 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     _mode, dm_file, _transport_argv = _runner_parts(calls[0]["command"])
     assert Path(dm_file).read_text(encoding="utf-8").startswith(
         "Message from 🤖 coder (@coder): "
@@ -956,7 +1003,7 @@ def test_successful_spawn_transfers_cleanup_to_runner(tmp_path, monkeypatch):
         )
     )
 
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     assert dm_file.exists(), "the parent must not delete before the background runner reads"
 
 

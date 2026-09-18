@@ -21,7 +21,7 @@ export interface ModelPickerOwner {
 export function resolveModelPickerProviderSetupScope(
   owner: ModelPickerOwner,
   ambientScope?: ProfileScope
-): ProfileScope {
+): ProfileScope | undefined {
   if (ambientScope && typeof ambientScope === 'object') {
     const ambientProfile = (ambientScope.profile ?? '').trim() || 'default'
     const ambientConnectionId = (ambientScope.connectionId ?? '').trim() || undefined
@@ -31,7 +31,7 @@ export function resolveModelPickerProviderSetupScope(
     }
   }
 
-  return owner.connectionId ? { connectionId: owner.connectionId, profile: owner.profile } : owner.profile
+  return undefined
 }
 
 /** Resolve one coherent owner for every picker operation. A tile route wins

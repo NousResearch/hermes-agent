@@ -23,7 +23,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_terminal_first_party_env,
-    _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys)
+    _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
 from tools.environments.local_gitbash_probe import (
     _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
     _looks_like_msys_spawn_failure, _mandatory_aslr_enabled)
@@ -283,6 +283,12 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     out: dict[str, str] = {}
     for items, unwrap_force in parts:
         _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
+    # Declared names the bound profile scope holds but the process env never did (a routed
+    # profile's own .env / sources) — the filter above can only see names already present.
+    # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
+    # declared secret again (#114209); _scrub_child_env calls it the same way.
+    from tools.env_passthrough import scoped_passthrough_additions
+    out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
     path_key = _path_env_key(out)
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment
@@ -325,13 +331,19 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
 
 def build_subprocess_env(
     base: "Mapping[str, str] | None" = None, *, inherit_profile_home: bool = True,
-    scrub_secrets: bool = True, extra: "Mapping[str, str] | None" = None) -> dict[str, str]:
+    scrub_secrets: bool = True, extra: "Mapping[str, str] | None" = None,
+    strip_launch_profile: bool = False) -> dict[str, str]:
     """Single factory for child-process envs. ``base=None`` snapshots ``os.environ``.
     ``scrub_secrets=True`` -> :func:`_sanitize_subprocess_env` (profile home inherent,
     ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base
     byte-for-byte (git credential flows, ``bws``/``op``); ``inherit_profile_home``
-    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win."""
+    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
+    ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
+    (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
+    acts for a routed profile sees only that profile's declared names, never the launch profile's."""
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
+    if strip_launch_profile:
+        strip_launch_profile_env(env)
     if scrub_secrets:
         return _sanitize_subprocess_env(env, dict(extra) if extra else None)
     if inherit_profile_home:
@@ -414,7 +426,10 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
         if not _is_global_env(key) or key.startswith("TERMINAL_"):
             env.pop(key, None)
-    return env
+    # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
+    # or an operator export never appears in the launch ``.env``, the secret scrub ignores
+    # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).
+    return strip_profile_gate_env(env)
 
 
 # --- Shell discovery ---
@@ -637,8 +652,11 @@ def _path_env_key(run_env: dict) -> str | None:
 
 
 def _make_run_env(env: dict) -> dict:
-    """Build a run environment with a sane PATH and provider-var stripping."""
-    return _scrubbed_env([(dict(os.environ | env), True)], frozenset(),
+    """Build a run environment with a sane PATH and provider-var stripping. The process env is
+    the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
+    (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
+    and the served profile's declared passthrough names are what the child sees."""
+    return _scrubbed_env([(dict(strip_launch_profile_env(os.environ.copy()) | env), True)], frozenset(),
                          lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
 
 

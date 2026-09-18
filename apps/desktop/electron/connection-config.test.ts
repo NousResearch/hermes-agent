@@ -25,8 +25,6 @@ import {
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
-  cookiesHavePrivyAccessToken,
-  cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
@@ -50,6 +48,7 @@ import {
   resolveProfileBackendRoute,
   resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
+  resolveSettingsProfileConnection,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   sanitizeRemoteHeaderValue,
@@ -159,6 +158,37 @@ test('registered writes fail closed when the same id resolves to a replaced desc
     release()
     await assert.rejects(write, /Backend changed/)
   }
+})
+
+test('Settings profile acquisition accepts a same SSH gateway but rejects a cross-gateway target', async () => {
+  const source = {
+    mode: 'remote',
+    baseUrl: 'http://127.0.0.1:41001',
+    token: 'source-token',
+    authMode: 'token',
+    remoteKind: 'ssh',
+    remoteHost: 'operator@source-host',
+    remoteIdentity: 'operator@source-host'
+  }
+
+  const expectedOwner = { profile: 'default', connectionOwner: source }
+
+  await assert.doesNotReject(() =>
+    resolveSettingsProfileConnection('worker', expectedOwner, (profile: string) =>
+      Promise.resolve(
+        profile === 'worker'
+          ? { ...source, baseUrl: 'http://127.0.0.1:42002', token: 'profile-token' }
+          : source
+      )
+    )
+  )
+
+  await assert.rejects(
+    resolveSettingsProfileConnection('worker', expectedOwner, (profile: string) =>
+      Promise.resolve(profile === 'worker' ? { ...source, remoteHost: 'operator@replacement-host' } : source)
+    ),
+    /Backend changed/
+  )
 })
 
 // --- connectionScopeKey / normAuthMode ---
@@ -1204,71 +1234,6 @@ test('cookiesHaveLiveSession is false for unrelated cookies and non-arrays', () 
   assert.equal(cookiesHaveLiveSession(null), false)
   assert.equal(cookiesHaveLiveSession(undefined), false)
   assert.equal(cookiesHaveLiveSession([]), false)
-})
-
-// --- cookiesHavePrivySession (Nous portal / Privy auth, NOT gateway cookies) ---
-
-test('cookiesHavePrivySession detects the privy-token access cookie', () => {
-  assert.equal(cookiesHavePrivySession([{ name: 'privy-token', value: 'jwt' }]), true)
-})
-
-test('cookiesHavePrivySession detects __Host-/__Secure- prefixes and the legacy privy-session name', () => {
-  assert.equal(cookiesHavePrivySession([{ name: '__Host-privy-token', value: 'x' }]), true)
-  assert.equal(cookiesHavePrivySession([{ name: '__Secure-privy-token', value: 'x' }]), true)
-  assert.equal(cookiesHavePrivySession([{ name: 'privy-session', value: 'x' }]), true)
-})
-
-test('cookiesHavePrivySession is false for an empty value', () => {
-  assert.equal(cookiesHavePrivySession([{ name: 'privy-token', value: '' }]), false)
-})
-
-test('cookiesHavePrivySession does NOT treat hermes gateway cookies as a portal session', () => {
-  // The whole point of Q7: a gateway session cookie is NOT a portal sign-in.
-  assert.equal(cookiesHavePrivySession([{ name: 'hermes_session_at', value: 'x' }]), false)
-  assert.equal(cookiesHavePrivySession([{ name: '__Host-hermes_session_rt', value: 'x' }]), false)
-})
-
-test('cookiesHavePrivySession is false for unrelated cookies and non-arrays', () => {
-  assert.equal(cookiesHavePrivySession([{ name: 'other', value: 'x' }]), false)
-  assert.equal(cookiesHavePrivySession(null), false)
-  assert.equal(cookiesHavePrivySession(undefined), false)
-  assert.equal(cookiesHavePrivySession([]), false)
-})
-
-test('cookiesHavePrivySession treats refresh-token material as a (renewable) session', () => {
-  // #73495: after a restart the ~1h `privy-token` is often gone while the
-  // 30-day renewal cookies survive. That jar is still SIGNED IN (renewable),
-  // so the session check must accept it — the access check below is what
-  // distinguishes "can discovery succeed right now".
-  assert.equal(cookiesHavePrivySession([{ name: 'privy-refresh-token', value: 'x' }]), true)
-})
-
-// --- cookiesHavePrivyAccessToken (short-lived access state for /api/agents) ---
-
-test('cookiesHavePrivyAccessToken detects privy-token and its secured prefixes', () => {
-  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: 'jwt' }]), true)
-  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Host-privy-token', value: 'x' }]), true)
-  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Secure-privy-token', value: 'x' }]), true)
-})
-
-test('cookiesHavePrivyAccessToken rejects renewal-only jars (the #73495 cold-start state)', () => {
-  // Session/refresh material present, access token absent: signed in but
-  // discovery would 401 → the silent-renewal path must trigger, not re-login.
-  const renewalOnly = [
-    { name: 'privy-session', value: 'x' },
-    { name: 'privy-refresh-token', value: 'x' }
-  ]
-
-  assert.equal(cookiesHavePrivySession(renewalOnly), true)
-  assert.equal(cookiesHavePrivyAccessToken(renewalOnly), false)
-})
-
-test('cookiesHavePrivyAccessToken is false for empty values, gateway cookies, and non-arrays', () => {
-  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: '' }]), false)
-  assert.equal(cookiesHavePrivyAccessToken([{ name: 'hermes_session_at', value: 'x' }]), false)
-  assert.equal(cookiesHavePrivyAccessToken(null), false)
-  assert.equal(cookiesHavePrivyAccessToken(undefined), false)
-  assert.equal(cookiesHavePrivyAccessToken([]), false)
 })
 
 // --- tokenPreview ---

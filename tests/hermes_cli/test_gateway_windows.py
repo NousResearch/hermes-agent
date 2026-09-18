@@ -340,6 +340,147 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):
+    """The Startup folder is the staging dir: a leftover .tmp there is opened by Windows at every login."""
+    startup = tmp_path / "Startup"
+    startup.mkdir()
+    entry, staging = startup / "Hermes_Gateway.vbs", startup / "Hermes_Gateway.tmp"
+
+    def _denied(self, target):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(Path, "replace", _denied)
+    with pytest.raises(PermissionError):
+        gateway_windows._atomic_write(entry, "launcher\r\n", staging)
+
+    assert sorted(p.name for p in startup.iterdir()) == []
+
+
+def test_uninstall_and_reinstall_sweep_stale_startup_staging_file(monkeypatch, tmp_path):
+    """Debris from a pre-fix failed swap is removed by uninstall() and by an install() that takes the
+    Scheduled Task path (which never rewrites the Startup folder itself)."""
+    startup = tmp_path / "Startup"
+    startup.mkdir()
+    entry, staging = startup / "Hermes_Gateway_alice.vbs", startup / "Hermes_Gateway_alice.tmp"
+    script = tmp_path / "task" / "Hermes_Gateway_alice.cmd"
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: entry)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.cmd")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+
+    staging.write_text("stale", encoding="utf-8")
+    gateway_windows.uninstall()
+    assert not staging.exists()
+
+    staging.write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *a, **k: (False, True))
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script)
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_install_scheduled_task", lambda name, path: (True, "created"))
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
+    gateway_windows.install()
+    assert not staging.exists()
+
+
+# Reporter's `Export-ScheduledTask` of a task registered before the hardened template (#113670).
+_PRE_HARDENING_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+  </Settings>
+  <Triggers>
+    <LogonTrigger />
+  </Triggers>
+  <Actions Context="Author">
+    <Exec>
+      <Command>wscript.exe</Command>
+      <Arguments>"C:\\Users\\me\\.hermes\\gateway-service\\Hermes_Gateway.vbs"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def test_scheduled_task_drift_names_missing_hardening_leaves(monkeypatch):
+    """A pre-hardening registration is reported leaf by leaf, and the report is what
+    ``hermes gateway status`` prints together with the ``hermes gateway install`` repair hint."""
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    drift = gateway_windows.compare_scheduled_task_drift(_PRE_HARDENING_TASK_XML, template)
+    assert drift == [
+        "missing: RestartOnFailure, LogonTrigger Delay",
+        "launcher arguments differs",
+        "version 1.3 vs 1.4",
+    ]
+
+    printed: list[str] = []
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (0, _PRE_HARDENING_TASK_XML if "/XML" in args else "", ""))
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: launcher.with_suffix(".cmd"))
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    gateway_windows._print_scheduled_task_drift("Hermes_Gateway")
+    assert printed[0].startswith("⚠ Scheduled Task registration predates the current template (missing: RestartOnFailure")
+    assert "hermes gateway install" in printed[1]
+
+
+def test_scheduled_task_drift_is_silent_when_aligned_or_unqueryable(monkeypatch):
+    """The template compared to itself (with the SID-style <UserId> schtasks exports) is not drift, and
+    a failed ``schtasks /Query /XML`` prints nothing — status must never nag a healthy install."""
+    launcher = Path(r"C:\Users\me\.hermes\gateway-service\Hermes_Gateway.vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    exported = template.replace(r"<UserId>PC\me</UserId>", "<UserId>S-1-5-21-1-2-3-1001</UserId>")
+    assert exported != template
+    assert gateway_windows.compare_scheduled_task_drift(exported, template) == []
+    assert gateway_windows.compare_scheduled_task_drift("not xml", template) == []
+
+    printed: list[str] = []
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (1, "", "ERROR: The system cannot find the file specified."))
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    gateway_windows._print_scheduled_task_drift("Hermes_Gateway")
+    assert printed == []
+
+
+def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_path):
+    """The Windows sibling of ``refresh_systemd_unit_if_needed`` (#113670): a pre-hardening
+    registration is deleted and re-created from the current template (so ``RestartOnFailure`` and the
+    logon ``Delay`` reach existing installs), while an aligned one is left alone."""
+    script_path = tmp_path / "gateway.cmd"
+    launcher = script_path.with_suffix(".vbs")
+    template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
+    calls: list[list[str]] = []
+    registered = {"xml": _PRE_HARDENING_TASK_XML}
+
+    def fake_schtasks(args):
+        calls.append(list(args))
+        if "/XML" in args and "/Query" in args:
+            return (0, registered["xml"], "")
+        if "/Create" in args:
+            registered["xml"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return (0, "", "")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"PC\me")
+    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
+
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is True
+    assert [c[0] for c in calls if c[0] in ("/Delete", "/Create")] == ["/Delete", "/Create"]
+    assert "<RestartOnFailure>" in registered["xml"]
+    assert gateway_windows.compare_scheduled_task_drift(registered["xml"], template) == []
+
+    calls.clear()
+    assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is False
+    assert not any(c[0] in ("/Delete", "/Create") for c in calls)
+
+
 
 
 

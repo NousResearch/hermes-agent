@@ -352,11 +352,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
                     </Button>
                     {endpoint.source !== 'direct-config' && (
                       <Button
+                        aria-label={t.settings.customEndpoints.deleteEndpoint}
                         className="hover:text-destructive"
                         disabled={deleting === endpoint.id}
                         onClick={() => void handleDelete(endpoint)}
                         size="icon-sm"
-                        title={t.settings.customEndpoints.deleteEndpoint}
                         variant="ghost"
                       >
                         {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}

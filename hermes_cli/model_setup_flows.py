@@ -843,14 +843,6 @@ def _ollama_cloud_models(pconfig, curated, api_key, base_url):
     return model_list
 
 
-def _opencode_free_models(pconfig, curated, api_key, base_url):
-    """Keyless tier: the curated list is synced against anonymous live probes (models.dev's
-    cost.input==0 filter lags reality)."""
-    if curated:
-        print(f'  Showing {len(curated)} keyless free models — use "Enter custom model name" for others.')
-    return curated
-
-
 def _novita_models(pconfig, curated, api_key, base_url):
     """Novita: live first, then models.dev, then curated."""
     from hermes_cli.models import fetch_api_models
@@ -870,7 +862,6 @@ def _novita_models(pconfig, curated, api_key, base_url):
 _SPECIAL_MODEL_LISTS = {
     "lmstudio": _lmstudio_models,
     "ollama-cloud": _ollama_cloud_models,
-    "opencode-free": _opencode_free_models,
     "novita": _novita_models}
 
 
@@ -912,17 +903,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
-    is_opencode = provider_id in {"opencode-zen", "opencode-go", "opencode-free"}
+    is_opencode = provider_id in {"opencode-zen", "opencode-go"}
 
-    # OpenCode Free is keyless — the tier is served anonymously and any unrecognized
-    # bearer 401s, so there is no key to prompt for.
-    if provider_id == "opencode-free":
-        print("  OpenCode Free is keyless — no API key or account needed.")
-        existing_key = ""
-    else:
-        _, existing_key, abort = _ensure_flow_api_key(provider_id, pconfig)
-        if abort:
-            return
+    _, existing_key, abort = _ensure_flow_api_key(provider_id, pconfig)
+    if abort:
+        return
     if provider_id == "gemini" and existing_key and not _gemini_tier_ok(existing_key, pconfig, base_url_env):
         return
 

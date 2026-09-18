@@ -227,9 +227,9 @@ def _warn_stale_serve_runtimes(rows) -> None:
         print(
             f"      pid {row.get('pid')} — {row.get('kind')}"
             f" (profile {row.get('profile') or 'default'}, {row.get('supervisor') or 'unknown'})")
-    print(
-        "    Restart them before using Hermes again, e.g. `systemctl --user restart hermes-serve.service`"
-        " or by relaunching `hermes serve` / the Desktop app.")
+    print("    Ask their owner to relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend.")
+    if sys.platform == "linux" and any(row.get("supervisor") == "systemd" for row in rows):
+        print("    For unit-managed backends: `systemctl --user restart hermes-serve.service`.")
 
 
 def _owed_stale_serve_rows(rows) -> list[dict]:

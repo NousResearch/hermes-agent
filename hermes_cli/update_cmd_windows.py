@@ -1069,6 +1069,9 @@ def _refresh_windows_gateway_launchers() -> None:
         if gateway_windows.is_installed():
             gateway_windows._write_task_script()
             print("  ✓ Refreshed Windows gateway launcher scripts")
+            if gateway_windows.is_task_registered():
+                # A task registered by an older build never picks up template hardening otherwise (#113670).
+                gateway_windows.reconcile_scheduled_task(gateway_windows.get_task_name())
 
 
 def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:

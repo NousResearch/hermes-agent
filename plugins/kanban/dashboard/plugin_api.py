@@ -413,24 +413,24 @@ class CreateTaskBody(BaseModel):
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
-        # CreateTaskBody field names match create_task's keyword parameters.
-        try:
-            task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
-        except ValueError as e:
-            # Map structural-input validation failures (workspace_kind/worktree pairing, etc.) to
-            # a structured 422 so the UI gets a field-tagged error rather than a generic 400 — these
-            # are request-shape problems, not server-state problems. Anything else falls through to
-            # _value_error_400()'s generic 400.
-            msg = str(e)
-            if "workspace_path" in msg or "default_workdir" in msg:
+        # A pathless worktree task anchors on the board's default_workdir; with neither set it
+        # would be created but never spawn (#70865). Check the pairing here so the UI gets a
+        # field-tagged 422, rather than matching words in whatever ValueError the DB layer raises
+        # — unrelated server-state failures mentioning these fields are not request problems.
+        if payload.workspace_kind == "worktree" and not payload.workspace_path:
+            if not (kanban_db.read_board_metadata(board).get("default_workdir") or "").strip():
                 raise HTTPException(
                     status_code=422,
                     detail=[{
                         "loc": ["body", "workspace_path"],
-                        "msg": msg,
+                        "msg": (
+                            "workspace_kind='worktree' requires a workspace_path, or board "
+                            f"{board!r} must have a default_workdir set"
+                        ),
                         "type": "value_error",
                     }])
-            raise
+        # CreateTaskBody field names match create_task's keyword parameters.
+        task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
         # Dispatcher-presence warning so the UI can banner a ready+assigned task that would

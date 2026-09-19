@@ -190,6 +190,22 @@ def test_create_task_worktree_without_path_accepted_when_board_has_default(
     assert body["task"]["workspace_path"] == str(repo.resolve())
 
 
+def test_create_task_unrelated_error_mentioning_workspace_path_stays_400(client, monkeypatch):
+    """Only the request-shape failure is a 422; server-state errors keep the generic 400."""
+
+    def fake_create_task(*args, **kwargs):
+        raise ValueError("database is locked while reading workspace_path column")
+
+    monkeypatch.setattr(kb, "create_task", fake_create_task)
+
+    response = client.post(
+        "/api/plugins/kanban/tasks?board=default",
+        json={"title": "server-state failure", "workspace_kind": "scratch"},
+    )
+
+    assert response.status_code == 400, response.text
+
+
 def test_create_task_worktree_with_explicit_path_still_works(client):
     """The happy path must keep working — explicit worktree:<path> is the
     primary use case for coding tasks and cannot regress."""

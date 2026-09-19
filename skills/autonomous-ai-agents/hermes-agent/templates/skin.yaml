@@ -23,6 +23,11 @@ colors:
   banner_border: "#3a2a63"
   ui_border: "#3a2a63"
 
+  # Optional Ink transcript roles (omit to keep label/accent and no surface).
+  ui_user: "#ff5fd2"
+  ui_heading: "#7ef9ff"
+  user_message_bg: "#2a2040"  # full width, one-cell padding
+
   # Semantic status.
   ui_ok: "#5af7b0"
   ui_warn: "#ffcf5f"

@@ -678,7 +678,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         ctx = self._ctx
         from gateway.session_api_turn import api_execution
         api = api_execution.get()
-        if api is not None and isinstance(api.get('content'), list):
+        if api is not None and (isinstance(api.get('content'), list)
+                                or 'files_persist_user_message' in api):
+            # Only verified Files preparation may replace text with private file
+            # references. Ordinary API text must keep ctx.message's pending and
+            # recovery notes, not revert to the raw admitted payload.
             return api['content']
         native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
         if not native_imgs:
@@ -701,6 +705,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.run import _wrap_current_message_with_observed_context
         from tools.approval import register_gateway_notify, unregister_gateway_notify
         from tools.approval_context import reset_current_session_key, set_current_session_key
+        from gateway.session_api_turn import api_execution
+        api = api_execution.get()
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
@@ -710,14 +716,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if _accepts_keyword(agent.run_conversation, "turn_author"):
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.
-                from gateway.session_api_turn import api_execution
                 from gateway.session_ingress import admission_author
-                api = api_execution.get()
                 kwargs["turn_author"] = (api.get('turn_author') if api is not None else
                     admission_author.get() or {"id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
                                                "is_bot": bool(getattr(ctx.source, "is_bot", False))})
             if persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override
+            elif api is not None and 'files_persist_user_message' in api:
+                kwargs["persist_user_message"] = api['files_persist_user_message']
             elif observed_group_context:
                 kwargs["persist_user_message"] = ctx.message
             if ctx.persist_user_display_kind:

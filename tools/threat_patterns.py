@@ -21,10 +21,20 @@ _FILLER = r"(?:\w+\s+){0,8}"
 _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
+# Directives must stay blocked, but context files may document a directive as
+# part of security guidance (for example, "telling you to ignore previous
+# instructions").  Keep this narrow: only an explicit reporting clause that
+# immediately precedes the directive is documentation.
+_PROMPT_INJECTION = rf'ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions'
+_DOCUMENTED_INJECTION_PREFIX = re.compile(
+    r"(?:\b(?:telling|instructing)\s+you\s+to|\b(?:instructions?|content)\s+"
+    r"(?:that|which)\s+(?:tells?|instructs?)\s+you\s+to)\s*$",
+    re.IGNORECASE,
+)
 # (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
     # ── Classic prompt injection (applies everywhere) ────────────────
-    (rf'ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
+    (_PROMPT_INJECTION, "prompt_injection", "all"),
     (r'system\s+prompt\s+override', "sys_prompt_override", "all"),
     (rf'disregard\s+{_FILLER}(your|all|any)\s+{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
     (rf'act\s+as\s+(if|though)\s+{_FILLER}you\s+{_FILLER}(have\s+no|don\'t\s+have)\s+{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
@@ -136,6 +146,27 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     return findings
 
 
+def scan_context_file_for_threats(content: str) -> List[str]:
+    """Return context-file findings while allowing explicitly documented injections.
+
+    This is deliberately narrower than :func:`scan_for_threats`: user-mediated
+    writes retain the normal strict scan, while a context file may explain an
+    attack with an immediately preceding reporting clause.  Every occurrence
+    must be documented; a file that includes one direct imperative still blocks.
+    """
+    findings = scan_for_threats(content, scope="context")
+    if "prompt_injection" not in findings:
+        return findings
+
+    normalised = unicodedata.normalize("NFKC", content[:MAX_SCAN_CHARS])
+    matches = tuple(re.finditer(_PROMPT_INJECTION, normalised, re.IGNORECASE))
+    documented = matches and all(
+        _DOCUMENTED_INJECTION_PREFIX.search(normalised[max(0, match.start() - 96):match.start()])
+        for match in matches
+    )
+    return [finding for finding in findings if finding != "prompt_injection"] if documented else findings
+
+
 def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
     """User-facing error for the first threat found, or None (block-on-first-hit paths)."""
     findings = scan_for_threats(content, scope=scope)
@@ -150,4 +181,7 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
             f"injection or exfiltration payloads.")
 
 
-__all__ = ["INVISIBLE_CHARS", "MAX_SCAN_CHARS", "scan_for_threats", "first_threat_message"]
+__all__ = [
+    "INVISIBLE_CHARS", "MAX_SCAN_CHARS", "scan_context_file_for_threats",
+    "scan_for_threats", "first_threat_message",
+]

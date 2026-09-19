@@ -50,9 +50,10 @@ def _empty_status(path: Path) -> str:
 
 
 def _loaded_status(content: str, rendered_len: int, max_chars: int, user_authored: bool = False) -> str:
-    """Same scan the builder runs (``_scan_context_content``): a hit replaces a project file with a BLOCKED
-    marker; the user's own SOUL.md (*user_authored*) still loads and is reported as ``flagged``."""
-    if _pb._scan_for_threats(content.lstrip("\ufeff"), scope="context"):
+    '''Same scan the builder runs (``_scan_context_content``): a hit replaces a project file with a BLOCKED
+    marker; the user's own SOUL.md (*user_authored*) still loads and is reported as ``flagged``.
+    Documented reporting clauses are filtered by ``_scan_context_file_for_threats`` (#112570).'''
+    if _pb._scan_context_file_for_threats(content.lstrip('\ufeff')):
         return "flagged" if user_authored else "blocked"
     return "truncated" if rendered_len > max_chars else "loaded"
 

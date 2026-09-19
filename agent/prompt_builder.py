@@ -27,7 +27,10 @@ from agent.skill_utils import (
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
-from tools.threat_patterns import scan_for_threats as _scan_for_threats
+from tools.threat_patterns import (
+    scan_context_file_for_threats as _scan_context_file_for_threats,
+    scan_for_threats as _scan_for_threats,
+)
 from utils import atomic_json_write, file_signature
 
 logger = logging.getLogger(__name__)
@@ -96,7 +99,7 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
     # A leading UTF-8 BOM is a Windows-editor artifact, not an injection.
     if content.startswith("\ufeff"):
         content = content[1:]
-    findings = _scan_for_threats(content, scope="context")
+    findings = _scan_context_file_for_threats(content)
     if not findings:
         return content
     if user_authored:

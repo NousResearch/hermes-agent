@@ -84,7 +84,7 @@ def test_truncated_and_suppressed_statuses_follow_the_builder(project, monkeypat
 
     # Injection scan: the builder swaps the body for a BLOCKED marker, so the manifest must not say "loaded".
     monkeypatch.setattr(pb, "_get_context_file_max_chars", lambda *_a: 10_000)
-    monkeypatch.setattr(pb, "_scan_for_threats", lambda content, scope: ["fake-pattern"] if "evil" in content else [])
+    monkeypatch.setattr(pb, "_scan_context_file_for_threats", lambda content: ["fake-pattern"] if "evil" in content else [])
     (project / "AGENTS.md").write_text("evil")
     entry = _by_label(list_context_file_sources(cwd=str(project), home_override=home))["AGENTS.md"]
     assert entry["status"] == "blocked" and entry["loaded"] is False

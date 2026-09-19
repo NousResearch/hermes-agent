@@ -2837,6 +2837,39 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _build_minimax_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """AnthropicAuxiliaryClient for MiniMax OAuth (Anthropic-compatible endpoint).
+
+    MiniMax-M3 is served via ``api.minimax.io/anthropic``; the per-request token provider
+    survives 15-min OAuth expiry. Without this builder, minimax-oauth aux calls dead-end
+    in the generic ``oauth_external`` arm and re-route to the Step-2 fallback.
+    """
+    if not model:
+        logger.warning(
+            "Auxiliary client: minimax-oauth requested without a model; "
+            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
+        )
+        return None, None
+    try:
+        from hermes_cli.auth import build_minimax_oauth_token_provider
+        token_provider = build_minimax_oauth_token_provider()
+    except Exception as exc:
+        logger.debug("Auxiliary client: minimax-oauth token provider failed: %s", exc)
+        return None, None
+    if not token_provider:
+        return None, None
+    base_url = "https://api.minimax.io/anthropic"
+    if _aux_probe_active():
+        return _AuxProbeClientStub(api_key="", base_url=base_url), model
+    try:
+        from agent.anthropic_adapter import build_anthropic_client
+        real_client = build_anthropic_client(token_provider, base_url)
+    except ImportError:
+        return None, None
+    logger.debug("Auxiliary client: MiniMax OAuth (%s via Anthropic API)", model)
+    return AnthropicAuxiliaryClient(real_client, model, "", base_url, is_oauth=True), model
+
+
 def _codex_base_url_override() -> str:
     """Profile-scoped ``HERMES_CODEX_BASE_URL`` (same read as the API-key env vars: under a
     multiplexer the routed profile's .env decides the endpoint, never a sibling's process env)."""
@@ -4912,6 +4945,15 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+def _resolve_minimax_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
+    """MiniMax OAuth (Anthropic-compatible endpoint). Without this branch minimax-oauth falls to the
+    generic oauth arm, returns (None, None), and silently re-routes every aux task to Step-2 fallback."""
+    client, default = _build_minimax_oauth_aux_client(req.model)
+    return _route_or_warn(req, client, default,
+                          "resolve_provider_client: minimax-oauth requested but no MiniMax "
+                          "OAuth token found (run: hermes model -> MiniMax OAuth)")
+
+
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -5253,6 +5295,7 @@ _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResul
     "nous": _resolve_nous_branch,
     "openai-codex": _resolve_openai_codex_branch,
     "xai-oauth": _resolve_xai_oauth_branch,
+    "minimax-oauth": _resolve_minimax_oauth_branch,
     "custom": _resolve_custom_branch,
 }
 

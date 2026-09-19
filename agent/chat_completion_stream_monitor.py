@@ -1,9 +1,13 @@
 """Display and heartbeat phase of the request-local streaming monitor."""
 
+import contextlib
+import logging
 import time
 from types import SimpleNamespace
 
 from agent.model_metadata import is_local_endpoint
+
+logger = logging.getLogger(__name__)
 
 
 class StreamingWaitMonitor:
@@ -74,7 +78,31 @@ class StreamingWaitMonitor:
             if _stale_elapsed > self._stream_stale_timeout:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._kill_stale_stream(_stale_elapsed)
+            reasoning_seen = getattr(self, "reasoning_seen", {"yes": False})
+            last_content_chunk_time = getattr(self, "last_content_chunk_time", self.last_chunk_time)
+            reasoning_timeout = getattr(self, "_reasoning_only_stale_timeout", 0.0)
+            _reasoning_elapsed = time.time() - last_content_chunk_time["t"]
+            if reasoning_seen["yes"] and _reasoning_elapsed > reasoning_timeout:
+                logger.warning(
+                    "Reasoning-only stream for %.0fs (threshold %.0fs) — model=%s. Killing connection.",
+                    _reasoning_elapsed, reasoning_timeout,
+                    self.api_kwargs.get("model", "unknown"),
+                )
+                self.agent._buffer_diagnostic_status(
+                    f"⚠️ Model has been reasoning for {int(_reasoning_elapsed)}s "
+                    f"without producing output (model: {self.api_kwargs.get('model', 'unknown')}). "
+                    "Aborting stream..."
+                )
+                self.reasoning_stale_killed = getattr(self, "reasoning_stale_killed", {"yes": False})
+                self.reasoning_stale_killed["yes"] = True
+                with contextlib.suppress(Exception):
+                    self._cancel_current_stream_attempt("reasoning_only_stale_kill")
+                    self.clients.close_once("reasoning_only_stale_kill")
+                last_content_chunk_time["t"] = time.time()
+                reasoning_seen["yes"] = False
+                self.agent._touch_activity(
+                    f"reasoning-only stale after {int(_reasoning_elapsed)}s, reconnecting"
+                )
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return
-

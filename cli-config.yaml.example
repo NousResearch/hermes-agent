@@ -258,6 +258,11 @@ model:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
+# agent:
+#   # Bound streams that emit only reasoning (reasoning_content/thinking) without
+#   # visible content or tool output. 0 disables this watchdog.
+#   reasoning_only_stale_timeout: 300
+
 # =============================================================================
 # Unified Timeouts (operation deadlines)
 # =============================================================================

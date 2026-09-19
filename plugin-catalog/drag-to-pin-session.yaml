@@ -1,0 +1,16 @@
+name: drag-to-pin-session
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: f8244d3bb0920779856fc826ab300b1abd12e949
+subdir: plugins/drag-to-pin-session
+description: "Pin or unpin a session by dragging it into or out of the Pinned section."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/plugins/drag-to-pin-session
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

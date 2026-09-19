@@ -265,7 +265,9 @@ class GatewayModelCommandsMixin:
     ) -> str:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
         from gateway.run import _load_gateway_config
-        from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length_async
+        from hermes_cli.model_switch import (
+            format_model_for_display, openrouter_routing_summary, resolve_display_context_length_async,
+        )
 
         lines = [
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
@@ -274,13 +276,19 @@ class GatewayModelCommandsMixin:
         # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
         mi = result.model_info
         model_cfg: dict = {}
+        provider_routing: dict = {}
         config_ctx = None
         with contextlib.suppress(Exception):  # fail-open on config read errors
-            model_cfg = _load_gateway_config().get("model", {})
+            config = _load_gateway_config()
+            model_cfg = config.get("model", {})
+            provider_routing = config.get("provider_routing", {})
             if isinstance(model_cfg, dict) and model_cfg.get("context_length") is not None:
                 config_ctx = int(model_cfg["context_length"])
         if not isinstance(model_cfg, dict):
             model_cfg = {}
+        if not isinstance(provider_routing, dict):
+            provider_routing = {}
+        lines.extend(openrouter_routing_summary(result.new_model, result.target_provider, provider_routing))
         ctx_len = await resolve_display_context_length_async(
             result.new_model, result.target_provider,
             base_url=result.base_url or ctx.current_base_url or "",

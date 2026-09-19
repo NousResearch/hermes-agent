@@ -618,10 +618,10 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
         try:
             # Gate: only serve user plugins that are in plugins.enabled and not in plugins.disabled. This
             # prevents the frontend from loading JS/CSS from plugins the user has not explicitly activated.
-            # (#46435)
-            from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-            enabled_set = _get_enabled_set()
-            disabled_set = _get_disabled_set()
+            # (#46435) The sets cover every home discovery scanned (#87197): a profile-scoped process
+            # otherwise 404s root-enabled plugins its own config.yaml never mentions.
+            from hermes_cli.plugin_gate_sets import plugin_enable_sets
+            enabled_set, disabled_set = plugin_enable_sets()
         except Exception:
             enabled_set = set()
             disabled_set = set()

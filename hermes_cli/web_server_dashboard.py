@@ -790,9 +790,11 @@ def _mount_plugin_api_routes():
     """
     from hermes_cli.web_server import _get_dashboard_plugins, app
     try:
-        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-        enabled_set = _get_enabled_set()
-        disabled_set = _get_disabled_set()
+        # Same home coverage as discovery (#87197): a root-enabled plugin must mount in a
+        # profile-scoped process too, or discovery serves assets for a router that was never
+        # imported — the state the runtime gate then reports as "Plugin not found".
+        from hermes_cli.plugin_gate_sets import plugin_enable_sets
+        enabled_set, disabled_set = plugin_enable_sets()
     except Exception:
         enabled_set = set()
         disabled_set = set()

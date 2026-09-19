@@ -203,9 +203,7 @@ class TestBundledPluginAssetGate:
         with patch.object(web_server, "_get_dashboard_plugins", return_value=[fake_plugin]):
             # Sanity: asset is served when not disabled.
             with patch(
-                "hermes_cli.plugins_cmd._get_enabled_set", return_value=set()
-            ), patch(
-                "hermes_cli.plugins_cmd._get_disabled_set", return_value=set()
+                "hermes_cli.web_routers.dashboard_ui._plugin_enable_sets", return_value=(set(), set())
             ):
                 resp = test_client.get("/dashboard-plugins/bundledx/dist/index.js")
                 assert resp.status_code == 200, (
@@ -214,9 +212,7 @@ class TestBundledPluginAssetGate:
 
             # Disable it.
             with patch(
-                "hermes_cli.plugins_cmd._get_enabled_set", return_value=set()
-            ), patch(
-                "hermes_cli.plugins_cmd._get_disabled_set", return_value={"bundledx"}
+                "hermes_cli.web_routers.dashboard_ui._plugin_enable_sets", return_value=(set(), {"bundledx"})
             ):
                 resp = test_client.get("/dashboard-plugins/bundledx/dist/index.js")
                 assert resp.status_code == 404, (

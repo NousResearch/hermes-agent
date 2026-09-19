@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from unittest.mock import patch
 
 import pytest
 
@@ -117,6 +118,48 @@ def test_classic_notice_selects_registered_owning_action_and_replaces_with_next_
         "Team Tools · Team skill available",
         "Team Tools · Update available",
     ]
+
+
+def test_classic_notice_uses_neutral_prompt_marker_without_weakening_confirmations():
+    from cli import HermesCLI
+
+    class Surface(CLIModalMixin):
+        _app = object()
+        _approval_state = None
+        _clarify_state = None
+        _secret_state = None
+        _sudo_state = None
+        _slash_confirm_state = None
+
+        def _prompt_text_input_modal(self, **kwargs):
+            self.prompt = kwargs
+            return None
+
+    surface = Surface()
+    card = PluginCard(
+        title="Team update",
+        body="A routine plugin notice.",
+        actions=(PluginCardAction("Review", "skill-review"),),
+    )
+
+    assert surface._present_plugin_card("team-tools", "Team Tools", card) is True
+    assert surface.prompt["warning"] is False
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._voice_recording = cli._voice_processing = cli._voice_mode = False
+    cli._sudo_state = cli._secret_state = cli._approval_state = None
+    cli._clarify_state = None
+    cli._clarify_freetext = cli._command_running = cli._agent_running = False
+    with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=100):
+        setattr(cli, "_slash_confirm_state", {"warning": False})
+        assert "".join(text for _style, text in cli._get_tui_prompt_fragments()).startswith("ℹ")
+
+        setattr(cli, "_slash_confirm_state", {"title": "Destructive confirmation"})
+        assert "".join(text for _style, text in cli._get_tui_prompt_fragments()).startswith("⚠")
+
+        setattr(cli, "_slash_confirm_state", {"warning": False})
+        setattr(cli, "_approval_state", {"command": "needs approval"})
+        assert "".join(text for _style, text in cli._get_tui_prompt_fragments()).startswith("⚠")
 
 
 def test_classic_notice_is_readable_but_noninteractive_without_an_app(capsys):

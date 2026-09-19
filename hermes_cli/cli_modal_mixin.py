@@ -190,7 +190,8 @@ class CLIModalMixin:
                 return shown
             choices = [(str(index), action.label, "") for index, action in enumerate(actions)]
             raw = self._prompt_text_input_modal(
-                title=f"{plugin_name} · {current.title}", detail=current.body, choices=choices, timeout=120)
+                title=f"{plugin_name} · {current.title}", detail=current.body, choices=choices,
+                timeout=120, warning=False)
             shown = True
             if raw is None:
                 return shown
@@ -427,7 +428,8 @@ class CLIModalMixin:
                     paint()
 
     def _prompt_text_input_modal(
-        self, *, title: str, detail: str, choices: list[tuple[str, str, str]], timeout: float = 120
+        self, *, title: str, detail: str, choices: list[tuple[str, str, str]], timeout: float = 120,
+        warning: bool = True,
     ) -> str | None:
         """Slash-command confirmation through the prompt_toolkit composer (raw input() fought
         prompt_toolkit's stdin ownership: prompt above the TUI, Enter read as EOF). All platforms
@@ -472,6 +474,7 @@ class CLIModalMixin:
                 "title": title,
                 "detail": detail,
                 "choices": choices,
+                "warning": warning,
                 "selected": 0,
                 "response_queue": response_queue}
             self._slash_confirm_deadline = _time.monotonic() + timeout

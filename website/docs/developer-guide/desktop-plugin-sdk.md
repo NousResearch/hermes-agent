@@ -702,6 +702,9 @@ host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinne
 host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
 host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
+host.sidebar.hide(navId, hidden?)          // hide/show a sidebar nav row (built-in or contributed)
+host.sidebar.setOrder(ids)                 // nav rows in `ids` order first; unnamed rows keep
+                                           //   their default order after them
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,

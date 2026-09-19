@@ -134,6 +134,7 @@ import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } fr
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
+import { $sidebarHiddenNavIds, $sidebarNavOrderIds, orderSidebarNav } from '@/store/sidebar-nav'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
 import {
@@ -431,9 +432,18 @@ export function ChatSidebar({
   const interfaceMode = useStore($interfaceMode)
   const showsAdvancedChrome = useStore($showsAdvancedChrome)
 
+  // Nav preferences (host.sidebar): a plugin may hide rows or re-order them.
+  // Applied here, at render, so the preference never mutates the default list.
+  // They persist across a plugin disable → enable cycle by design (see
+  // store/sidebar-nav.ts) — which also means they outlive a plugin that is
+  // removed, so a row it hid stays hidden until something clears the store.
+  const hiddenNavIds = useStore($sidebarHiddenNavIds)
+  const navOrderIds = useStore($sidebarNavOrderIds)
+
   const navItems = useMemo(
-    () => [...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)),
-    [contributedNav, interfaceMode]
+    () =>
+      orderSidebarNav([...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)), hiddenNavIds, navOrderIds),
+    [contributedNav, hiddenNavIds, interfaceMode, navOrderIds]
   )
 
   const panesFlipped = useStore($panesFlipped)

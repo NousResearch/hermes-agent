@@ -20,6 +20,7 @@ import {
   $workspaceCwdOwner
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
+import { $sidebarHiddenNavIds } from '@/store/sidebar-nav'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { type AppView, ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
@@ -111,6 +112,7 @@ describe('ChatSidebar navigation activity', () => {
     $removedSessionIds.set(new Set())
     $layoutTree.set(null)
     noteActiveTreeGroup(null)
+    $sidebarHiddenNavIds.set([])
   })
 
   it('keeps navigation and session activity coherent with the focused pane', () => {
@@ -173,6 +175,23 @@ describe('ChatSidebar navigation activity', () => {
     expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
     expectOnlyCurrent(null)
     expectOnlySelectedSession(null)
+  })
+
+  it('drops a nav row hidden through the nav preference (host.sidebar.hide)', () => {
+    renderSidebar('/kanban', 'extension')
+    expect(screen.getByRole('button', { name: 'Kanban' })).toBeTruthy()
+
+    act(() => {
+      $sidebarHiddenNavIds.set(['kanban-nav'])
+    })
+    expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
+    // A hidden row is a preference, not a removal: the sibling nav row stays.
+    expect(screen.getByRole('button', { name: 'Reports' })).toBeTruthy()
+
+    act(() => {
+      $sidebarHiddenNavIds.set([])
+    })
+    expect(screen.getByRole('button', { name: 'Kanban' })).toBeTruthy()
   })
 })
 

@@ -988,3 +988,69 @@ def test_pending_fleet_restart_cleared_instead_of_exit_1(monkeypatch, tmp_path):
 
     assert seen["ran"] is False
     assert not marker.exists()
+def _fleet_row(code_sha: str, state: str = "current") -> dict:
+    return {"profile": "default", "pid": 4444, "code_sha": code_sha,
+            "code_version": "0.21.3", "state": state}
+
+
+def _covers(monkeypatch, expected_sha: str, row_sha: str, *, ancestor: bool) -> bool:
+    """Run the coverage check with a fleet at *row_sha* and a stubbed ancestry answer."""
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **_k: [_fleet_row(row_sha)],
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet, "_sha_is_ancestor",
+        lambda expected, code: ancestor and (expected, code) == (expected_sha, row_sha),
+    )
+    return update_cmd_fleet._live_fleet_covers_receipt(
+        expected_sha, {"plan": {"runtimes": []}}, {("gateway", "default")},
+    )
+
+
+def test_fleet_at_the_expected_sha_still_covers(monkeypatch):
+    assert _covers(monkeypatch, "aaa111", "aaa111", ancestor=False)
+
+
+def test_fleet_running_a_descendant_covers_the_obligation(monkeypatch):
+    """A gateway on code NEWER than the receipt's SHA has discharged the restart: the
+    checkout simply moved on afterwards (hand-merged branch, manual pull)."""
+    assert _covers(monkeypatch, "aaa111", "bbb222", ancestor=True)
+
+
+def test_an_unrelated_sha_does_not_cover(monkeypatch):
+    assert not _covers(monkeypatch, "aaa111", "ccc333", ancestor=False)
+
+
+def test_unresolvable_ancestry_fails_closed(monkeypatch):
+    """git cannot answer (unknown object, no repo) → no coverage, warning stays."""
+    def _boom(_expected, _code):
+        raise RuntimeError("not a git repository")
+
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **_k: [_fleet_row("bbb222")],
+    )
+    monkeypatch.setattr(update_cmd_fleet, "_sha_is_ancestor", _boom)
+    assert not update_cmd_fleet._live_fleet_covers_receipt(
+        "aaa111", {"plan": {"runtimes": []}}, {("gateway", "default")},
+    )
+
+
+def test_sha_is_ancestor_reports_git_verdict(monkeypatch):
+    calls = {}
+
+    def _git_run(_git_cmd, args, _cwd):
+        calls["args"] = args
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("hermes_cli.update_cmd._git_run", _git_run)
+    assert update_cmd_fleet._sha_is_ancestor("aaa111", "bbb222")
+    assert calls["args"] == ["merge-base", "--is-ancestor", "aaa111", "bbb222"]
+
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd._git_run",
+        lambda _g, _a, _c: SimpleNamespace(returncode=1),
+    )
+    assert not update_cmd_fleet._sha_is_ancestor("aaa111", "ccc333")
+    assert not update_cmd_fleet._sha_is_ancestor("", "bbb222")

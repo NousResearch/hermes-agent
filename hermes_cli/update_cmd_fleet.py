@@ -91,6 +91,34 @@ def _current_checkout_sha() -> str | None:
         return _capture_head_sha(["git"], _m().PROJECT_ROOT)
 
 
+def _sha_is_ancestor(expected_sha: str, code_sha: str) -> bool:
+    """True only when *code_sha* provably descends from *expected_sha* in this checkout.
+
+    A fleet running code NEWER than what a receipt restarted it onto has discharged that
+    obligation: the restart happened, and the checkout moved on afterwards. Requiring
+    equality instead makes the warning permanent for anyone who advances the checkout by
+    any means other than ``hermes update`` (a hand-merged fork branch, a manual pull).
+    Unknown or unreachable objects stay fail-closed — never claim coverage we cannot prove.
+    """
+    if not expected_sha or not code_sha:
+        return False
+    from hermes_cli.update_cmd import _git_run, _m
+    try:
+        result = _git_run(
+            ["git"], ["merge-base", "--is-ancestor", expected_sha, code_sha], _m().PROJECT_ROOT)
+    except Exception as exc:
+        logger.debug("Could not compare %s with %s: %s", expected_sha, code_sha, exc)
+        return False
+    return result.returncode == 0
+
+
+def _row_covers_sha(row: dict, expected_sha: str) -> bool:
+    code_sha = row.get("code_sha")
+    if not isinstance(code_sha, str) or not code_sha:
+        return False
+    return code_sha == expected_sha or _sha_is_ancestor(expected_sha, code_sha)
+
+
 def _receipt_looks_unfinished(receipt: dict) -> bool:
     """True when *receipt* is from an update that did not finish cleanly.
 
@@ -202,7 +230,7 @@ def _fleet_covered_gateways(fleet: list) -> set[tuple[str, str]] | None:
 
 
 def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: set[tuple[str, str]] | None, *, accept_states: tuple = ("current",)) -> bool:
-    """Require a successor at the expected SHA for every owed gateway identity."""
+    """Require a successor at (or after) the expected SHA for every owed gateway identity."""
     if not expected_sha:
         return False
     from hermes_cli.update_receipt import collect_fleet_versions
@@ -213,9 +241,11 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
         if not owed:
             return bool((receipt.get("plan") or {}).get("runtimes"))
         fleet = collect_fleet_versions()
-        # State labels are checkout-relative; completed restarts may accept stale rows at the pulled SHA.
+        # State labels are checkout-relative; completed restarts may accept stale rows at the
+        # pulled SHA. A row running a DESCENDANT of that SHA also covers it: the restart
+        # happened, and the checkout moved on afterwards.
         if not fleet or any(
-            row.get("state") not in accept_states or row.get("code_sha") != expected_sha
+            row.get("state") not in accept_states or not _row_covers_sha(row, expected_sha)
             for row in fleet
         ):
             return False

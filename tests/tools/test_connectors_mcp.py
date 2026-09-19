@@ -252,6 +252,19 @@ def test_the_bounded_wait_owns_the_deadline_not_the_sequential_guard():
     assert "manage_connections" in te._SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
 
 
+def test_retry_after_a_failed_attempt_can_still_reach_connected():
+    # A first attempt failed (e.g. a bad env var or a closed OAuth window); the renderer's "Try
+    # again" reports success on the retry. The target must be able to leave `failed` for
+    # `connected`, not just `pending` for `connected` (the contract has no direct failed->connected
+    # edge — apply_answer must step through `initiated` on the retry too, as it already does on
+    # the first attempt).
+    operation = op.ConnectionOperation([op.Target("linear", "mcp", "install")], session_key="s1")
+    operation.transition("linear", TargetState.initiated, op.Actor.renderer_flow)
+    operation.transition("linear", TargetState.failed, op.Actor.renderer_flow, detail="closed the OAuth window")
+    apply_answer(operation, json.dumps({"targets": [{"name": "linear", "status": "installed"}]}))
+    assert operation.target("linear").state == TargetState.connected
+
+
 def test_settle_reason_comes_from_target_state_not_the_renderer():
     # The renderer answered one of two targets and claimed all_resolved; the operation is not resolved.
     answer = json.dumps({"settled_by": "all_resolved", "targets": [{"name": "linear", "status": "declined"}]})

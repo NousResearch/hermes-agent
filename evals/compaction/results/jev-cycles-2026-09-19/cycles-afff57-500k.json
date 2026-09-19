@@ -11,7 +11,7 @@
    "before": 500301,
    "fallback": "history too large for Jev (~25972 tokens after truncation, limit 25000)",
    "floor": 22650,
-   "calls": 0
+   "calls": 542
   }
  ],
  "jev_usd_total": 0.0

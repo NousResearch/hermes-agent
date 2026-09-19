@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from evals.compaction.fixtures import estimate_tokens, load_transcript  # noqa: E402
-from evals.compaction.jev_arm import JevCompactor, JevOptions  # noqa: E402
+from evals.compaction.jev_arm import JevCompactor, JevOptions, collect_tool_calls  # noqa: E402
 
 path, threshold, max_cycles = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 name = Path(path).stem
@@ -40,7 +40,8 @@ while i < len(msgs) and len(cycles) < max_cycles:
         out = jc.compress(ctx)
     except ValueError as e:
         cycles.append({"cycle": len(cycles) + 1, "at_msg": i, "before": before, "fallback": str(e)[:90],
-                       "floor": text_floor(ctx), "calls": len(jc.decisions)})
+                       "floor": text_floor(ctx),
+                       "calls": len(collect_tool_calls(ctx, jc.opt.preserve_recent_messages))})
         break
     total_jev_usd += jc.usage.cost_usd
     after = tokens(out)

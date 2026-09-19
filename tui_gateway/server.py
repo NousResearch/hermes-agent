@@ -1527,11 +1527,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     reasoning_config = model_config.get("reasoning_config")
     # Heal a stale provider persisted by an older build (renamed/removed custom provider → "Unknown provider"):
     # recover ``custom:<name>`` from the stored base_url, then from the entry serving the model; else drop it.
-    if provider and not _is_routable_provider(provider):
+    if (provider and not _is_routable_provider(provider)) or (not provider and billing_provider.lower() == "custom"):
         healed = None
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
             healed = canonical_custom_identity(base_url=base_url or None, model=model or None)
+        except ValueError:
+            raise
         except Exception:
             logger.debug("custom provider identity recovery failed", exc_info=True)
         if healed:
@@ -1562,11 +1564,17 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
     if provider.lower() == "custom":
-        # ``agent.provider`` resolves every named custom entry to the literal "custom", losing the entry
-        # identity (api_key is never persisted): recover ``custom:<name>`` from the endpoint URL.
+        # ``requested_provider`` is the authoritative named entry selected before runtime
+        # canonicalization. Preserve it first; URL/model recovery is only for agents/rows created
+        # by older builds that did not carry that field. URL-only lookup is ambiguous when two
+        # accounts intentionally share one OpenAI-compatible endpoint.
+        requested_provider = attr("requested_provider")
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
-            provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
+            provider = canonical_custom_identity(
+                base_url=base_url, model=model or None,
+                requested_provider=requested_provider or None,
+            ) or provider
         except Exception:
             logger.debug("custom provider identity lookup failed", exc_info=True)
     reasoning_config = getattr(agent, "reasoning_config", None)

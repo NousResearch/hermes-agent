@@ -881,9 +881,9 @@ def _local_endpoint_bypass(requested_provider: str, explicit_api_key, explicit_b
 
 
 def _tag(runtime: Optional[Dict[str, Any]], requested_provider: str) -> Optional[Dict[str, Any]]:
-    """Stamp ``requested_provider`` on a runtime built by a collaborator that does not set it."""
+    """Stamp ``requested_provider`` when a runtime collaborator did not set a more precise identity."""
     if runtime:
-        runtime["requested_provider"] = requested_provider
+        runtime.setdefault("requested_provider", requested_provider)
     return runtime
 
 

@@ -27,12 +27,36 @@ import json
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.image_routing import decide_image_input_mode
 import hermes_cli.runtime_provider as rp
 from hermes_state import SessionDB
 
 MIMO_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 MIMO_KEY = "sk-mimo-entry-key"
+SHARED_URL = "https://shared-gateway.example/v1"
+GPT_KEY = "credential-gpt-account-123"
+DEEPSEEK_KEY = "credential-deepseek-account-456"
+DEEPSEEK_MODEL = "deepseek-v4.1-flash"
+
+SAME_URL_PROVIDERS_CONFIG = {
+    "model": {"default": DEEPSEEK_MODEL, "provider": "huanling"},
+    "providers": {
+        "custom": {
+            "name": "gpt account",
+            "base_url": SHARED_URL,
+            "key_env": "GPT_ACCOUNT_API_KEY",
+            "models": {"gpt-5.6-sol": {}},
+        },
+        "huanling": {
+            "name": "deepseek account",
+            "base_url": SHARED_URL,
+            "key_env": "DEEPSEEK_ACCOUNT_API_KEY",
+            "models": {DEEPSEEK_MODEL: {}},
+        },
+    },
+}
 
 LEGACY_LIST_CONFIG = {
     "custom_providers": [
@@ -137,6 +161,111 @@ def _make_agent_with_override(override, monkeypatch, config, model_cfg=None):
         _make_agent("sid-custom", "key-custom", model_override=override)
 
     return mock_agent.call_args.kwargs
+
+
+@pytest.fixture
+def same_url_home(monkeypatch):
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    (home / "config.yaml").write_text(json.dumps(SAME_URL_PROVIDERS_CONFIG), encoding="utf-8")
+    monkeypatch.setenv("GPT_ACCOUNT_API_KEY", GPT_KEY)
+    monkeypatch.setenv("DEEPSEEK_ACCOUNT_API_KEY", DEEPSEEK_KEY)
+    return home
+
+
+class TestSameUrlNamedProviders:
+    def test_real_resolver_lifecycle_preserves_account_through_refresh(self, same_url_home):
+        from run_agent import AIAgent
+        from tui_gateway import server
+
+        # At initial resolution, bare "custom" can name providers.custom. Its runtime
+        # must distinguish that selection from an old, lossy billing label.
+        named_custom = rp.resolve_runtime_provider(requested="custom", target_model="gpt-5.6-sol")
+        assert named_custom["requested_provider"] == "custom:custom"
+        assert named_custom["api_key"] == GPT_KEY
+        db = SessionDB(db_path=same_url_home / "identity.db")
+        try:
+            for requested, expected, key, env_name in (
+                ("huanling", "custom:huanling", DEEPSEEK_KEY, "DEEPSEEK_ACCOUNT_API_KEY"),
+                ("custom:custom", "custom:custom", GPT_KEY, "GPT_ACCOUNT_API_KEY"),
+            ):
+                # Deliberately use the other account's catalog model: an explicit
+                # selection takes precedence over both URL and model inference.
+                model, runtime = server._resolve_agent_model_runtime(
+                    {"model": DEEPSEEK_MODEL, "provider": requested}, None)
+                assert runtime["api_key"] == key
+                agent = object.__new__(AIAgent)
+                for attr in ("provider", "requested_provider", "base_url", "api_key", "api_mode"):
+                    setattr(agent, attr, runtime[attr])
+                agent.model = model
+                agent._client_kwargs = {"api_key": key, "base_url": runtime["base_url"]}
+                agent._replace_primary_openai_client = MagicMock(return_value=True)
+                agent._reapply_route_client_config = MagicMock()
+                persisted = server._runtime_model_config(agent)
+                assert persisted["provider"] == expected
+                assert "api_key" not in persisted
+                assert server._model_picker_context(agent).current_provider == expected
+                db.create_session(session_id=requested, source="desktop", model=model)
+                db.update_session_meta(requested, json.dumps(persisted), model=model)
+                restored = server._stored_session_runtime_overrides(db.get_session(requested))
+                _, rebuilt = server._resolve_agent_model_runtime(restored["model_override"], None)
+                assert rebuilt["requested_provider"] == expected
+                assert rebuilt["api_key"] == key
+                assert agent._try_refresh_env_client_credentials() is False
+                rotated = key + "-rotated"
+                (same_url_home / ".env").write_text(f"{env_name}={rotated}\n", encoding="utf-8")
+                assert agent._try_refresh_env_client_credentials() is True
+                assert agent.api_key == rotated
+                assert agent._client_kwargs["api_key"] == rotated
+                assert agent._try_refresh_env_client_credentials() is False
+                agent._replace_primary_openai_client.assert_called_once_with(reason="env_credential_refresh")
+                (same_url_home / ".env").unlink()
+        finally:
+            db.close()
+
+    def test_legacy_recovery_is_unique_or_requires_selection(self, same_url_home):
+        from run_agent import AIAgent
+        from tui_gateway import server
+
+        assert rp.find_custom_provider_identity(SHARED_URL) is None
+        generic = object.__new__(AIAgent)
+        generic.provider = generic.requested_provider = "custom"
+        generic.api_mode = "chat_completions"
+        generic.base_url = SHARED_URL
+        generic.api_key = "no-key-required"
+        assert generic._try_refresh_env_client_credentials() is False
+        assert generic.api_key == "no-key-required"
+        legacy = {"model": DEEPSEEK_MODEL, "provider": "custom", "base_url": SHARED_URL}
+        restored = server._stored_session_runtime_overrides({"model_config": legacy})
+        assert restored["provider_override"] == "custom:huanling"
+        _, runtime = server._resolve_agent_model_runtime(restored["model_override"], None)
+        assert runtime["api_key"] == DEEPSEEK_KEY
+        # Unknown models cannot disambiguate a shared URL, even if today's
+        # default names an account. A shared model without a URL is ambiguous too.
+        config = json.loads((same_url_home / "config.yaml").read_text(encoding="utf-8"))
+        for entry in config["providers"].values():
+            entry["models"]["shared-model"] = {}
+        (same_url_home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+        for model, url in (("unknown-model", SHARED_URL), ("shared-model", SHARED_URL), ("shared-model", None)):
+            override = {**legacy, "model": model, "base_url": url}
+            with pytest.raises(ValueError, match="Ambiguous custom provider"):
+                server._stored_session_runtime_overrides({"model_config": override})
+            with pytest.raises(ValueError, match="Ambiguous custom provider"):
+                server._stored_session_runtime_overrides({
+                    "billing_provider": "custom", "model_config": {**override, "provider": None}})
+            with pytest.raises(ValueError, match="Ambiguous custom provider"):
+                server._resolve_agent_model_runtime(override, None)
+        # A legacy list and the keyed config agree on the same recovery contract.
+        config = {"custom_providers": [
+            {"name": "first", "base_url": SHARED_URL, "model": "first-model"},
+            {"name": "second", "base_url": SHARED_URL, "model": "second-model"},
+        ]}
+        (same_url_home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+        assert rp.find_custom_provider_identity(SHARED_URL) is None
+        assert rp.canonical_custom_identity(base_url=SHARED_URL, model="second-model") == "custom:second"
+        with pytest.raises(ValueError, match="Ambiguous custom provider"):
+            rp.canonical_custom_identity(base_url=SHARED_URL)
 
 
 class TestResumeRoundTrip:
@@ -878,5 +1007,3 @@ class TestRuntimeModelConfigDropsStaleKeys:
         config = _runtime_model_config(_agent_like(provider="nous"), None)
 
         assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
-
-

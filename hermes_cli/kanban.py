@@ -133,6 +133,875 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
             "the gateway comes up.")
 
 
+# ---------------------------------------------------------------------------
+# Argparse builder
+# ---------------------------------------------------------------------------
+
+def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """Attach the ``kanban`` subcommand tree under an existing subparsers.
+
+    Returns the top-level ``kanban`` parser so caller can ``set_defaults``.
+    """
+    kanban_parser = parent_subparsers.add_parser(
+        "kanban",
+        help="Multi-profile collaboration board (tasks, links, comments)",
+        description=(
+            "Durable SQLite-backed task board shared across Hermes profiles. "
+            "Tasks are claimed atomically, can depend on other tasks, and "
+            "are executed by a named profile in an isolated workspace. "
+            "See https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban "
+            "or docs/hermes-kanban-v1-spec.pdf for the full design."
+        ),
+    )
+    # --- global --board flag ---
+    # Applies to every subcommand below. When set, scopes all reads and
+    # writes to that board's DB. When omitted, resolves via the
+    # HERMES_KANBAN_BOARD env var, then the persisted current-board
+    # file, then "default". See kanban_db.get_current_board().
+    kanban_parser.add_argument(
+        "--board",
+        default=None,
+        metavar="<slug>",
+        help=(
+            "Board slug to operate on. Defaults to the current board "
+            "(set via `hermes kanban boards switch <slug>` or the "
+            "HERMES_KANBAN_BOARD env var). Use `hermes kanban boards list` "
+            "to see all boards."
+        ),
+    )
+    sub = kanban_parser.add_subparsers(dest="kanban_action")
+
+    # --- init ---
+    sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
+
+    # --- boards (new in v2: multi-project support) ---
+    p_boards = sub.add_parser(
+        "boards",
+        help="Manage kanban boards (one board per project / workstream)",
+        description=(
+            "Boards let you separate unrelated streams of work "
+            "(projects, repos, domains) into isolated queues. Each "
+            "board has its own DB, workspaces directory, and dispatcher "
+            "loop — tasks on one board cannot collide with tasks on "
+            "another. The first board is 'default' and always exists."
+        ),
+    )
+    boards_sub = p_boards.add_subparsers(dest="boards_action")
+
+    b_list = boards_sub.add_parser(
+        "list", aliases=["ls"],
+        help="List all boards with task counts",
+    )
+    b_list.add_argument("--json", action="store_true")
+    b_list.add_argument("--all", action="store_true",
+                        help="Include archived boards too")
+
+    b_create = boards_sub.add_parser(
+        "create", aliases=["new"],
+        help="Create a new board",
+    )
+    b_create.add_argument("slug",
+                          help="Board slug (kebab-case, e.g. atm10-server)")
+    b_create.add_argument("--name", default=None,
+                          help="Human-readable display name (defaults to Title Case of slug)")
+    b_create.add_argument("--description", default=None,
+                          help="Optional description")
+    b_create.add_argument("--icon", default=None,
+                          help="Optional emoji or single-character icon for the dashboard")
+    b_create.add_argument("--color", default=None,
+                          help="Optional hex color (e.g. '#8b5cf6') for the dashboard")
+    b_create.add_argument("--switch", action="store_true",
+                          help="Switch to the new board after creating it")
+    b_create.add_argument("--default-workdir", default=None,
+                          help="Default workspace path for tasks created on this board")
+
+    b_rm = boards_sub.add_parser(
+        "rm", aliases=["remove", "delete"],
+        help="Archive (default) or delete a board",
+    )
+    b_rm.add_argument("slug")
+    b_rm.add_argument("--delete", action="store_true",
+                      help="Hard-delete the board directory instead of archiving it. "
+                           "Default is to move it to boards/_archived/ so it's recoverable.")
+
+    b_switch = boards_sub.add_parser(
+        "switch", aliases=["use"],
+        help="Set the active board for subsequent CLI calls",
+    )
+    b_switch.add_argument("slug")
+
+    boards_sub.add_parser(
+        "show", aliases=["current"],
+        help="Print the currently-active board slug",
+    )
+
+    b_rename = boards_sub.add_parser(
+        "rename",
+        help="Change a board's human-readable display name (slug is immutable)",
+    )
+    b_rename.add_argument("slug")
+    b_rename.add_argument("name", help="New display name")
+
+    b_set_wd = boards_sub.add_parser(
+        "set-default-workdir",
+        help="Set the default workspace path for tasks on a board",
+    )
+    b_set_wd.add_argument("slug")
+    b_set_wd.add_argument("path", nargs="?", default=None,
+                          help="Absolute path to use as default workdir. Omit to clear.")
+
+    b_export = boards_sub.add_parser(
+        "export",
+        help="Export a board to a portable .tar.gz archive",
+        description=(
+            "Package a board's tasks, comments, links, history, and file "
+            "attachments into one archive that can be imported on another "
+            "machine. Claims, worker PIDs, chat subscriptions, and paths "
+            "belonging to this machine are stripped. Workspaces are never "
+            "included — they are rebuilt on demand."
+        ),
+    )
+    b_export.add_argument("slug", nargs="?", default=None,
+                          help="Board to export (default: the current board)")
+    b_export.add_argument("-o", "--output", default=None,
+                          help="Archive path (default: ./<slug>.tar.gz)")
+    b_export.add_argument("--no-attachments", action="store_true",
+                          help="Skip attachment files, keeping the archive small")
+    b_export.add_argument("--include-logs", action="store_true",
+                          help="Include per-task worker logs")
+    b_export.add_argument("--json", action="store_true")
+
+    b_import = boards_sub.add_parser(
+        "import",
+        help="Import a board archive as a new board",
+        description=(
+            "Import a .tar.gz produced by `hermes kanban boards export`. "
+            "The board always lands as a NEW board — the slug gains a "
+            "numeric suffix if it is already taken — so an import can "
+            "never overwrite or merge into a board you already have."
+        ),
+    )
+    b_import.add_argument("archive", help="Path to the .tar.gz archive")
+    b_import.add_argument("--as", dest="as_slug", default=None,
+                          help="Slug for the imported board (default: from the archive)")
+    b_import.add_argument("--switch", action="store_true",
+                          help="Switch to the imported board afterwards")
+    b_import.add_argument("--json", action="store_true")
+
+    # --- create ---
+    p_create = sub.add_parser("create", help="Create a new task")
+    p_create.add_argument("title", help="Task title")
+    p_create.add_argument("--body", default=None, help="Optional opening post")
+    p_create.add_argument("--assignee", default=None, help="Profile name to assign")
+    p_create.add_argument("--parent", action="append", default=[],
+                          help="Parent task id (repeatable)")
+    p_create.add_argument("--workspace", default="scratch",
+                          help="scratch | worktree | worktree:<path> | dir:<path> "
+                               "(default: scratch)")
+    p_create.add_argument("--branch", default=None,
+                          help="Branch name for worktree tasks, e.g. wt/t6-wire")
+    p_create.add_argument("--project", default=None,
+                          help="Link to a project (id or slug). Anchors the task's "
+                               "worktree under the project's primary repo with a "
+                               "deterministic branch. See `hermes project list`.")
+    p_create.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_create.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_create.add_argument("--triage", action="store_true",
+                          help="Park in triage — a specifier will flesh out the spec and promote to todo")
+    p_create.add_argument("--idempotency-key", default=None,
+                          help="Dedup key. If a non-archived task with this key exists, "
+                               "its id is returned instead of creating a duplicate.")
+    p_create.add_argument("--max-runtime", default=None,
+                          help="Per-task runtime cap. Accepts seconds (300) or "
+                               "durations (90s, 30m, 2h, 1d). When exceeded, "
+                               "the dispatcher SIGTERMs (then SIGKILLs) the worker "
+                               "and re-queues the task.")
+    p_create.add_argument("--created-by", default="user",
+                          help="Author name recorded on the task (default: user)")
+    p_create.add_argument("--skill", action="append", default=[], dest="skills",
+                          help="Skill to force-load into the worker "
+                               "(repeatable). The kanban lifecycle is already "
+                               "injected automatically. Example: "
+                               "--skill translation --skill github-code-review")
+    p_create.add_argument("--max-retries", type=int, default=None,
+                          metavar="N",
+                          help="Per-task override for the consecutive-failure "
+                               "circuit breaker. Trip on the Nth failure — "
+                               "e.g. --max-retries 1 blocks on the first "
+                               "failure (no retries), --max-retries 3 allows "
+                               "two retries. Omit to use the dispatcher's "
+                               "kanban.failure_limit config "
+                               f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--model", default=None, dest="model_override",
+                          help="Pin the worker to this model (passed as "
+                               "-m <model>) without changing the profile's "
+                               "configured model. Combine with --provider "
+                               "when the model belongs to a different "
+                               "backend than the profile's default.")
+    p_create.add_argument("--provider", default=None, dest="provider_override",
+                          help="Provider the --model belongs to (passed as "
+                               "--provider <name> to the worker). Requires "
+                               "--model.")
+    p_create.add_argument("--goal", action="store_true", dest="goal_mode",
+                          help="Run the worker in a goal loop: after each "
+                               "turn a judge checks the response against the "
+                               "card title/body and, if not done, the worker "
+                               "keeps going in the same session until the "
+                               "judge agrees it's complete (or the turn "
+                               "budget runs out, which blocks the card for "
+                               "review). Best for open-ended cards one shot "
+                               "rarely finishes.")
+    p_create.add_argument("--goal-max-turns", type=int, default=None,
+                          metavar="N", dest="goal_max_turns",
+                          help="Turn budget for --goal workers (default 20). "
+                               "Ignored without --goal.")
+    p_create.add_argument("--initial-status",
+                          choices=sorted(kb.VALID_INITIAL_STATUSES),
+                          default="running",
+                          help="Initial card status. Use 'blocked' for cards "
+                               "that require immediate human ops (R3 gate) "
+                               "to skip the brief running-to-blocked transition.")
+    p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # --- swarm ---
+    p_swarm = sub.add_parser(
+        "swarm",
+        help="Create a Kanban Swarm v1 graph (parallel workers → verifier → synthesizer)",
+    )
+    p_swarm.add_argument("goal", help="Swarm goal / final outcome")
+    p_swarm.add_argument(
+        "--worker",
+        action="append",
+        default=[],
+        metavar="PROFILE:TITLE[:SKILL,SKILL]",
+        help="Parallel worker card (repeatable)",
+    )
+    p_swarm.add_argument("--verifier", required=True, help="Verifier profile")
+    p_swarm.add_argument("--synthesizer", required=True, help="Synthesizer/writer profile")
+    p_swarm.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_swarm.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
+    p_swarm.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
+    p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # --- list ---
+    p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
+    p_list.add_argument("--mine", action="store_true",
+                        help="Filter by $HERMES_PROFILE as assignee")
+    p_list.add_argument("--assignee", default=None)
+    p_list.add_argument("--status", default=None,
+                        choices=sorted(kb.VALID_STATUSES))
+    p_list.add_argument("--tenant", default=None)
+    p_list.add_argument("--session", default=None,
+                        help="Filter by originating chat/agent session id "
+                             "(set on tasks created from inside an ACP loop)")
+    p_list.add_argument("--archived", action="store_true",
+                        help="Include archived tasks")
+    p_list.add_argument("--json", action="store_true")
+    p_list.add_argument(
+        "--sort",
+        default=None,
+        choices=sorted(kb.VALID_SORT_ORDERS.keys()),
+        help="Sort order for listed tasks (default: priority)",
+    )
+    p_list.add_argument(
+        "--workflow-template-id",
+        default=None,
+        metavar="ID",
+        help="Restrict to tasks with this workflow_template_id",
+    )
+    p_list.add_argument(
+        "--step-key",
+        default=None,
+        dest="current_step_key",
+        metavar="KEY",
+        help="Restrict to tasks with this current_step_key",
+    )
+
+    # --- show ---
+    p_show = sub.add_parser("show", help="Show a task with comments + events")
+    p_show.add_argument("task_id")
+    p_show.add_argument("--json", action="store_true")
+    p_show.add_argument(
+        "--state-type",
+        choices=("status", "outcome"),
+        default=None,
+        help="With --state-name: filter listed runs by task_runs column",
+    )
+    p_show.add_argument(
+        "--state-name",
+        default=None,
+        metavar="VALUE",
+        help="With --state-type: keep runs whose column equals this value",
+    )
+
+    # --- assign ---
+    p_assign = sub.add_parser("assign", help="Assign or reassign a task")
+    p_assign.add_argument("task_id")
+    p_assign.add_argument("profile", help="Profile name (or 'none' to unassign)")
+
+    # --- set-model (per-task model/provider override) ---
+    p_set_model = sub.add_parser(
+        "set-model",
+        help="Set or clear a task's model/provider override "
+             "(takes effect on the next dispatch)",
+    )
+    p_set_model.add_argument("task_id")
+    p_set_model.add_argument(
+        "model", nargs="?", default=None,
+        help="Model to pin the worker to (or 'none' to clear the override)",
+    )
+    p_set_model.add_argument(
+        "--provider", default=None,
+        help="Provider the model belongs to (worker is spawned with "
+             "--provider <name>). Cleared together with the model.",
+    )
+
+    # --- reclaim / reassign (recovery) ---
+    p_reclaim = sub.add_parser(
+        "reclaim",
+        help="Release an active worker claim on a running task",
+    )
+    p_reclaim.add_argument("task_id")
+    p_reclaim.add_argument(
+        "--reason", default=None,
+        help="Human-readable reason (recorded on the reclaimed event)",
+    )
+
+    p_reassign = sub.add_parser(
+        "reassign",
+        help="Reassign a task to a different profile, optionally reclaiming first",
+    )
+    p_reassign.add_argument("task_id")
+    p_reassign.add_argument(
+        "profile",
+        help="New profile name (or 'none' to unassign)",
+    )
+    p_reassign.add_argument(
+        "--reclaim", action="store_true",
+        help="Release any active claim before reassigning (required if task is running)",
+    )
+    p_reassign.add_argument(
+        "--reason", default=None,
+        help="Human-readable reason (recorded on the reclaimed event)",
+    )
+
+    # --- diagnostics (board-wide health) ---
+    p_diag = sub.add_parser(
+        "diagnostics",
+        aliases=["diag"],
+        help="List active diagnostics on the current board",
+    )
+    p_diag.add_argument(
+        "--severity",
+        choices=["warning", "error", "critical"],
+        default=None,
+        help="Only show diagnostics at or above this severity",
+    )
+    p_diag.add_argument(
+        "--task",
+        default=None,
+        help="Only show diagnostics for one task id",
+    )
+    p_diag.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON (structured) instead of the default human table",
+    )
+
+    # --- link / unlink ---
+    p_link = sub.add_parser("link", help="Add a parent->child dependency")
+    p_link.add_argument("parent_id")
+    p_link.add_argument("child_id")
+    p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
+    p_unlink.add_argument("parent_id")
+    p_unlink.add_argument("child_id")
+
+    # --- claim ---
+    p_claim = sub.add_parser(
+        "claim",
+        help="Atomically claim a ready task (prints resolved workspace path)",
+    )
+    p_claim.add_argument("task_id")
+    p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
+                         help="Claim TTL in seconds (default: 900)")
+
+    # --- comment / complete / block / unblock / archive ---
+    p_comment = sub.add_parser("comment", help="Append a comment")
+    p_comment.add_argument("task_id")
+    p_comment.add_argument("text", nargs="+", help="Comment body")
+    p_comment.add_argument("--author", default=None,
+                           help="Author name (default: $HERMES_PROFILE or 'user')")
+    p_comment.add_argument("--max-len", type=int, default=None,
+                           help="Trim the stored comment body to this many characters")
+
+    # --- attach / attachments / attach-rm ---
+    p_attach = sub.add_parser("attach", help="Attach a local file to a task")
+    p_attach.add_argument("task_id")
+    p_attach.add_argument("path", help="Path to the local file to attach")
+    p_attach.add_argument("--content-type", default=None,
+                          help="MIME type (default: guessed from the file extension)")
+    p_attach.add_argument("--name", default=None,
+                          help="Stored filename (default: the source file's basename)")
+    p_attach.add_argument("--author", default=None,
+                          help="uploaded_by label (default: $HERMES_PROFILE or 'user')")
+
+    p_attachments = sub.add_parser("attachments", help="List a task's attachments")
+    p_attachments.add_argument("task_id")
+    p_attachments.add_argument("--json", action="store_true")
+
+    p_attach_rm = sub.add_parser("attach-rm", help="Delete an attachment by id")
+    p_attach_rm.add_argument("attachment_id", type=int)
+
+    p_complete = sub.add_parser("complete", help="Mark one or more tasks done")
+    p_complete.add_argument("task_ids", nargs="+",
+                            help="One or more task ids (only --result applies to all of them)")
+    p_complete.add_argument("--result", default=None, help="Result summary")
+    p_complete.add_argument("--summary", default=None,
+                            help="Structured handoff summary for downstream tasks. "
+                                 "Falls back to --result if omitted.")
+    p_complete.add_argument("--metadata", default=None,
+                            help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
+                                 '"tests_run": 12}\'). Stored on the closing run.')
+
+    p_edit = sub.add_parser(
+        "edit",
+        help="Edit recovery fields on an already-completed task",
+    )
+    p_edit.add_argument("task_id")
+    p_edit.add_argument(
+        "--result",
+        required=True,
+        help="Backfilled task result text for a done task",
+    )
+    p_edit.add_argument(
+        "--summary",
+        default=None,
+        help="Structured handoff summary. Falls back to --result if omitted.",
+    )
+    p_edit.add_argument(
+        "--metadata",
+        default=None,
+        help="JSON dict of structured facts to store on the latest completed run.",
+    )
+
+    p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
+    p_block.add_argument("task_id")
+    p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
+    p_block.add_argument("--ids", nargs="+", default=None,
+                         help="Additional task ids to block with the same reason (bulk mode)")
+    p_block.add_argument(
+        "--kind", default=None, choices=sorted(kb.VALID_BLOCK_KINDS),
+        help=(
+            "Typed block reason. 'dependency' waits in todo (auto-promoted "
+            "when parents finish, no human); 'needs_input'/'capability' go to "
+            "blocked for a human; 'transient' marks a maybe-flaky failure. "
+            "Repeated same-kind re-blocks after unblock route the task to "
+            "triage to break unblock loops. Omit for a generic block."
+        ),
+    )
+
+    p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
+    p_schedule.add_argument("task_id")
+    p_schedule.add_argument("reason", nargs="*", help="Reason/timing note (also appended as a comment)")
+    p_schedule.add_argument("--ids", nargs="+", default=None,
+                            help="Additional task ids to schedule with the same reason (bulk mode)")
+
+    p_unblock = sub.add_parser(
+        "unblock",
+        help="Return blocked/scheduled tasks to ready, or todo while parents remain open",
+    )
+    p_unblock.add_argument(
+        "--reason",
+        default=None,
+        help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
+    )
+    p_unblock.add_argument("task_ids", nargs="+")
+
+    p_request_review = sub.add_parser(
+        "request-review",
+        help="Move a task to 'review' (implementation done, awaiting review) — NOT a block",
+    )
+    p_request_review.add_argument("task_id")
+    p_request_review.add_argument(
+        "--summary", default=None,
+        help="What was implemented and how it was verified — shown to the reviewer.",
+    )
+    p_request_review.add_argument(
+        "--reviewer", default=None,
+        help="Optional reviewer profile; reassigns the task before review dispatch.",
+    )
+    p_request_review.add_argument(
+        "--metadata", default=None,
+        help="JSON object with structured reviewer handoff facts.",
+    )
+    p_request_review.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Override the live-claim guard: move a running, claimed task to "
+            "review even without owning its run (clears the worker's claim)."
+        ),
+    )
+
+    p_request_changes = sub.add_parser(
+        "request-changes",
+        help="Reviewer verdict: return the active review run to its implementer",
+    )
+    p_request_changes.add_argument("task_id")
+    p_request_changes.add_argument(
+        "reason", nargs="+", help="Concrete changes required before re-review",
+    )
+
+    p_reopen_review = sub.add_parser(
+        "reopen-review",
+        help="Send one or more review tasks back for changes (review -> ready/todo)",
+    )
+    p_reopen_review.add_argument("task_ids", nargs="+")
+    p_reopen_review.add_argument(
+        "--reason", default=None,
+        help="Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons.",
+    )
+
+    p_promote = sub.add_parser(
+        "promote",
+        help="Manually move one or more todo/blocked tasks to ready (recovery path)",
+    )
+    p_promote.add_argument("task_id")
+    p_promote.add_argument(
+        "reason",
+        nargs="*",
+        help="Audit-trail reason (recorded on the task_events row)",
+    )
+    p_promote.add_argument(
+        "--ids",
+        nargs="+",
+        default=None,
+        help="Additional task ids to promote with the same reason (bulk mode)",
+    )
+    p_promote.add_argument(
+        "--force",
+        action="store_true",
+        help="Promote even if parent dependencies are not yet done/archived",
+    )
+    p_promote.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the promotion without mutating state",
+    )
+    p_promote.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Emit machine-readable JSON result",
+    )
+
+    p_archive = sub.add_parser("archive", help="Archive one or more tasks")
+    p_archive.add_argument("task_ids", nargs="*",
+                           help="Task ids to archive (default mode)")
+    p_archive.add_argument(
+        "--rm",
+        dest="purge_ids",
+        nargs="+",
+        default=None,
+        help="Permanently delete already-archived task ids from the board",
+    )
+
+    # --- tail ---
+    p_tail = sub.add_parser("tail", help="Follow a task's event stream")
+    p_tail.add_argument("task_id")
+    p_tail.add_argument("--interval", type=float, default=1.0)
+
+    # --- dispatch ---
+    p_disp = sub.add_parser(
+        "dispatch",
+        help="One dispatcher pass: reclaim stale, promote ready, spawn workers",
+    )
+    p_disp.add_argument("--dry-run", action="store_true",
+                        help="Don't actually spawn processes; just print what would happen")
+    p_disp.add_argument("--max", type=int, default=None,
+                        help="Cap number of spawns this pass")
+    p_disp.add_argument("--failure-limit", type=int,
+                        default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
+                        help=f"Auto-block a task after this many consecutive non-success attempts "
+                             f"(spawn_failed, timed_out, or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
+    p_disp.add_argument("--json", action="store_true")
+
+    # --- daemon (deprecated) ---
+    p_daemon = sub.add_parser(
+        "daemon",
+        help="DEPRECATED — dispatcher now runs in the gateway. Use `hermes gateway start`.",
+    )
+    p_daemon.add_argument("--interval", type=float, default=60.0,
+                          help="Seconds between dispatch ticks (default: 60)")
+    p_daemon.add_argument("--max", type=int, default=None,
+                          help="Cap number of spawns per tick")
+    p_daemon.add_argument("--failure-limit", type=int,
+                          default=kb.DEFAULT_SPAWN_FAILURE_LIMIT)
+    p_daemon.add_argument("--pidfile", default=None,
+                          help="Write the daemon's PID to this file on start")
+    p_daemon.add_argument("--verbose", "-v", action="store_true",
+                          help="Log each tick's outcome to stdout")
+    # Undocumented escape hatch for users who truly cannot run the gateway.
+    # Intentionally excluded from --help so nobody discovers it casually and
+    # keeps the old double-dispatcher pattern alive.
+    p_daemon.add_argument("--force", action="store_true",
+                          help=argparse.SUPPRESS)
+
+    # --- watch ---
+    p_watch = sub.add_parser(
+        "watch",
+        help="Live-stream task_events to the terminal (Ctrl+C to exit)",
+    )
+    p_watch.add_argument("--assignee", default=None,
+                         help="Only show events for tasks assigned to this profile")
+    p_watch.add_argument("--tenant", default=None,
+                         help="Only show events from tasks in this tenant")
+    p_watch.add_argument("--kinds", default=None,
+                         help="Comma-separated event kinds to include "
+                              "(e.g. 'completed,blocked,gave_up,crashed,timed_out')")
+    p_watch.add_argument("--interval", type=float, default=0.5,
+                         help="Poll interval in seconds (default: 0.5)")
+
+    # --- stats ---
+    p_stats = sub.add_parser(
+        "stats", help="Per-status + per-assignee counts + oldest-ready age",
+    )
+    p_stats.add_argument("--json", action="store_true")
+
+    # --- notify subscribe / list / remove ---
+    p_nsub = sub.add_parser(
+        "notify-subscribe",
+        help="Subscribe a gateway source to a task's terminal events "
+             "(used by /kanban subscribe in the gateway adapter)",
+    )
+    p_nsub.add_argument("task_id")
+    p_nsub.add_argument("--platform", required=True)
+    p_nsub.add_argument("--chat-id", required=True)
+    p_nsub.add_argument("--thread-id", default=None)
+    p_nsub.add_argument("--user-id", default=None)
+    p_nsub.add_argument("--user-id-alt", default=None)
+    p_nsub.add_argument(
+        "--chat-type",
+        choices=("dm", "group", "channel", "thread"),
+        default=None,
+        help="Originating source chat_type, recorded so the active-wake "
+             "delivery modes resolve the operator's real session. Omit to "
+             "leave an existing sub unchanged (new subs default to 'dm').",
+    )
+    p_nsub.add_argument(
+        "--notifier-profile", default=None,
+        help="Profile gateway that owns/delivers this subscription (default: active profile)",
+    )
+    p_nsub.add_argument(
+        "--delivery-mode",
+        # Single source of truth shared with the DB/watcher enum.
+        choices=kb._NOTIFY_DELIVERY_MODES,
+        default=None,
+        help="How the kanban-notifier reacts to terminal events for this "
+             "subscription: 'notify' (passive message only; default), "
+             "'notify+wake' (message AND wake the destination gateway agent so "
+             "it reads the full board context and replies in its own voice), or "
+             "'wake' (wake the agent only, no passive message). Omit to leave an "
+             "existing subscription's mode unchanged (new subs default to 'notify').",
+    )
+
+    p_nlist = sub.add_parser(
+        "notify-list",
+        help="List notification subscriptions (optionally for a single task)",
+    )
+    p_nlist.add_argument("task_id", nargs="?", default=None)
+    p_nlist.add_argument("--json", action="store_true")
+
+    p_nrm = sub.add_parser(
+        "notify-unsubscribe",
+        help="Remove a gateway subscription from a task",
+    )
+    p_nrm.add_argument("task_id")
+    p_nrm.add_argument("--platform", required=True)
+    p_nrm.add_argument("--chat-id", required=True)
+    p_nrm.add_argument("--thread-id", default=None)
+
+    # --- log ---
+    p_log = sub.add_parser(
+        "log",
+        help="Print the worker log for a task (from <kanban-root>/kanban/logs/)",
+    )
+    p_log.add_argument("task_id")
+    p_log.add_argument("--tail", type=int, default=None,
+                       help="Only print the last N bytes")
+
+    # --- runs (per-attempt history for a task) ---
+    p_runs = sub.add_parser(
+        "runs",
+        help="Show attempt history for a task (one row per run: profile, "
+             "outcome, elapsed, summary)",
+    )
+    p_runs.add_argument("task_id")
+    p_runs.add_argument("--json", action="store_true")
+    p_runs.add_argument(
+        "--state-type",
+        choices=("status", "outcome"),
+        default=None,
+        help="With --state-name: filter runs by task_runs column",
+    )
+    p_runs.add_argument(
+        "--state-name",
+        default=None,
+        metavar="VALUE",
+        help="With --state-type: keep runs whose column equals this value",
+    )
+
+    # --- heartbeat (worker liveness signal) ---
+    p_hb = sub.add_parser(
+        "heartbeat",
+        help="Emit a heartbeat event for a running task (worker liveness signal)",
+    )
+    p_hb.add_argument("task_id")
+    p_hb.add_argument("--note", default=None,
+                      help="Optional short note attached to the heartbeat event")
+
+    # --- assignees ---
+    p_asg = sub.add_parser(
+        "assignees",
+        help="List known profiles + per-profile task counts "
+             "(union of ~/.hermes/profiles/ and current assignees on the board)",
+    )
+    p_asg.add_argument("--json", action="store_true")
+
+    # --- context --- (for spawned workers)
+    p_ctx = sub.add_parser(
+        "context",
+        help="Print the full context a worker sees for a task "
+             "(title + body + parent results + comments).",
+    )
+    p_ctx.add_argument("task_id")
+
+    # --- specify --- (triage → todo via auxiliary LLM)
+    p_specify = sub.add_parser(
+        "specify",
+        help="Flesh out a triage-column task into a concrete spec "
+             "(title + body) and promote it to todo. Uses the auxiliary "
+             "LLM configured under auxiliary.triage_specifier.",
+    )
+    p_specify.add_argument(
+        "task_id",
+        nargs="?",
+        default=None,
+        help="Task id to specify (required unless --all is given)",
+    )
+    p_specify.add_argument(
+        "--all",
+        dest="all_triage",
+        action="store_true",
+        help="Specify every task currently in the triage column",
+    )
+    p_specify.add_argument(
+        "--tenant",
+        default=None,
+        help="When used with --all, restrict the sweep to this tenant",
+    )
+    p_specify.add_argument(
+        "--author",
+        default=None,
+        help="Author name recorded on the audit comment "
+             "(default: $HERMES_PROFILE or 'specifier')",
+    )
+    p_specify.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one JSON object per task on stdout",
+    )
+
+    # --- decompose --- (triage → fan-out via auxiliary LLM + orchestrator)
+    p_decompose = sub.add_parser(
+        "decompose",
+        help="Decompose a triage-column task into a graph of child tasks "
+             "routed to specialist profiles by description. Falls back to "
+             "specify-style single-task promotion when the task doesn't "
+             "benefit from fan-out. Uses auxiliary.kanban_decomposer.",
+    )
+    p_decompose.add_argument(
+        "task_id",
+        nargs="?",
+        default=None,
+        help="Task id to decompose (required unless --all is given)",
+    )
+    p_decompose.add_argument(
+        "--all",
+        dest="all_triage",
+        action="store_true",
+        help="Decompose every task currently in the triage column",
+    )
+    p_decompose.add_argument(
+        "--tenant",
+        default=None,
+        help="When used with --all, restrict the sweep to this tenant",
+    )
+    p_decompose.add_argument(
+        "--author",
+        default=None,
+        help="Author name recorded on the audit comment "
+             "(default: $HERMES_PROFILE or 'decomposer')",
+    )
+    p_decompose.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one JSON object per task on stdout",
+    )
+
+    # --- gc ---
+    p_gc = sub.add_parser(
+        "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
+    )
+    p_gc.add_argument("--event-retention-days", type=int, default=30,
+                      help="Delete task_events older than N days for terminal tasks (default: 30)")
+    p_gc.add_argument("--log-retention-days", type=int, default=30,
+                      help="Delete worker log files older than N days (default: 30)")
+
+    # --- repair ---
+    p_repair = sub.add_parser(
+        "repair",
+        help="Check kanban.db integrity and auto-repair index-only corruption",
+        description=(
+            "Runs PRAGMA integrity_check on the board's DB and reports the "
+            "result. When the failure consists only of index-scoped errors "
+            "('wrong # of entries in index <name>' / 'row N missing from "
+            "index <name>'), the corrupt file is quarantined to a "
+            ".corrupt.<hash>.bak sibling first and the damaged indexes are "
+            "rebuilt with REINDEX — the same narrow auto-repair the "
+            "connect-time guard applies. Any other corruption class is "
+            "reported and left untouched (fail-closed). Exits 0 when the DB "
+            "is healthy or was repaired, non-zero when it is still corrupt."
+        ),
+    )
+    p_repair.add_argument("--json", action="store_true",
+                          help="Emit the repair report as JSON")
+
+    # --- delegation-status ---
+    p_delegation_status = sub.add_parser(
+        "delegation-status",
+        help="Read a background delegation's durable state from state.db",
+        description=(
+            "Reads the async_delegations table in state.db directly, "
+            "bypassing any in-memory or LLM self-report. Use this to "
+            "mechanically verify what actually happened to a background "
+            "delegation, independently of what the child subagent claims.\n\n"
+            "Exit codes: 0=found, 1=not found, 2=error."
+        ),
+    )
+    p_delegation_status.add_argument(
+        "delegation_id",
+        metavar="<delegation-id>",
+        help="The delegation_id to look up",
+    )
+    p_delegation_status.add_argument(
+        "--json", action="store_true",
+        help="Emit the full row as JSON (default: human-readable summary)",
+    )
+
+    kanban_parser.set_defaults(_kanban_parser=kanban_parser)
+    return kanban_parser
+
+
 # --- Command dispatch ---
 
 def kanban_command(args: argparse.Namespace) -> int:
@@ -821,6 +1690,40 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _cli_worker_completion_evidence(
+    task_id: str, *, run_started_at: Optional[int] = None
+) -> tuple[bool, Optional[dict]]:
+    """CLI-path mirror of tools/kanban_tools.py::_handle_complete's evidence gate.
+
+    ``hermes kanban complete`` is documented as a trusted-human entry point,
+    but a dispatcher-spawned worker inherits the same OS identity and env as
+    any human operator and can reach this CLI directly via its own
+    ``terminal`` tool (default ``TERMINAL_ENV=local``). Without this check, a
+    worker could shell out to ``hermes kanban complete $HERMES_KANBAN_TASK
+    --summary ...`` and defeat the completion-evidence gate that
+    ``kanban_complete`` (the tool) enforces — a confused-deputy bypass of the
+    entire evidence-hardening effort.
+
+    Delegates to the single source of truth
+    (``tools.kanban_tools._worker_completion_evidence``) rather than
+    reimplementing the identity/receipt logic here, so the two entry points
+    can never drift out of sync. Returns ``(False, None)`` — "not
+    applicable" — for every caller that is not itself the dispatcher-owned
+    worker for ``task_id`` (i.e. ordinary human/CLI use is unaffected);
+    import failures fail closed (evidence required, no receipt), matching
+    the tool path's own defensive posture.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return False, None
+    try:
+        from tools.kanban_tools import _worker_completion_evidence
+    except Exception:
+        # Same boundary the tool-path guards against malformed identity:
+        # uncertainty must not resolve to "no evidence needed".
+        return True, None
+    return _worker_completion_evidence(task_id, run_started_at=run_started_at)
+
+
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """Goal judge for every terminal worker handoff (including review).
 
@@ -914,14 +1817,37 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
+            # Completion-evidence gate (mirrors tools/kanban_tools.py
+            # _handle_complete). Without this, a dispatcher-spawned worker
+            # could bypass the evidence-hardening tool path entirely by
+            # shelling out to this CLI from its own terminal tool. No-op for
+            # every caller that isn't the dispatcher-owned worker for this
+            # exact task (i.e. genuine human/CLI completion is unaffected).
+            active_run = kb.latest_run(conn, tid)
+            evidence_required, completion_evidence = _cli_worker_completion_evidence(
+                tid,
+                run_started_at=(
+                    active_run.started_at
+                    if active_run and active_run.status == "running"
+                    else None
+                ),
+            )
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        force=bool(getattr(args, "force", False)),
+                                        require_completion_evidence=evidence_required,
+                                        completion_evidence=completion_evidence)
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
                                  f"--force to close its run and complete anyway.")
+                return False
+            except kb.CompletionEvidenceError as evidence_err:
+                fail_msg[tid] = (
+                    f"cannot complete {tid}: {evidence_err}. Run the repository's required "
+                    "verification after the latest edit, then retry, or use the kanban_complete "
+                    "tool instead of this CLI.")
                 return False
             if not done:
                 # complete_task returns bare False for a dependency refusal too;
@@ -1316,7 +2242,147 @@ _HANDLERS = {
 }
 
 
-# --- Slash-command entry point (used by /kanban from CLI and gateway) ---
+def _cmd_delegation_status(args: argparse.Namespace) -> int:
+    """Read a background delegation's durable state from state.db.
+
+    Reads async_delegations directly, bypassing all LLM self-report
+    and in-memory state. Exit 0=found, 1=not found, 2=error.
+    """
+    try:
+        from tools.async_delegation import query_delegation_status
+    except ImportError as exc:
+        print(f"kanban delegation-status: cannot import async_delegation: {exc}",
+              file=sys.stderr)
+        return 2
+
+    delegation_id = args.delegation_id
+    use_json = getattr(args, "json", False)
+
+    try:
+        row = query_delegation_status(delegation_id)
+    except Exception as exc:
+        # The observer raises a typed read error. Keep this boundary defensive:
+        # import/schema/runtime failures are verifier errors, never "not found".
+        if use_json:
+            import json
+            print(json.dumps({
+                "found": False,
+                "delegation_id": delegation_id,
+                "error": str(exc),
+            }))
+        else:
+            print(f"delegation-status: cannot read state.db: {exc}", file=sys.stderr)
+        return 2
+    if row is None:
+        if use_json:
+            import json
+            print(json.dumps({"found": False, "delegation_id": delegation_id}))
+        else:
+            print(f"delegation-status: {delegation_id!r} not found in state.db",
+                  file=sys.stderr)
+        return 1
+
+    if use_json:
+        import json
+        print(json.dumps(row, default=str))
+    else:
+        state = row.get("state", "?")
+        completed = row.get("completed_at")
+        result = row.get("result") or {}
+        summary = result.get("summary") if isinstance(result, dict) else None
+        status_line = result.get("status") if isinstance(result, dict) else None
+        print(f"delegation_id : {delegation_id}")
+        print(f"state         : {state}")
+        if completed:
+            import datetime
+            ts = datetime.datetime.fromtimestamp(completed).isoformat()
+            print(f"completed_at  : {ts}")
+        if status_line:
+            print(f"result.status : {status_line}")
+        if summary:
+            first_line = str(summary).strip().splitlines()[0][:200]
+            print(f"result.summary: {first_line}")
+    return 0
+
+
+_HANDLERS["delegation-status"] = _cmd_delegation_status
+
+
+def _cmd_repair(args: argparse.Namespace) -> int:
+    """Check DB integrity and apply the narrow index-REINDEX auto-repair.
+
+    Dispatched BEFORE the auto ``kb.init_db()`` in :func:`kanban_command`
+    (init itself refuses corrupt DBs), so this is reachable on exactly the
+    boards that need it. Exit codes: 0 = healthy / repaired / no DB file,
+    1 = still corrupt (non-index corruption, or REINDEX did not produce a
+    clean re-check).
+    """
+    try:
+        report = kb.repair_db()
+    except Exception as exc:  # locked/busy probe, unexpected I/O
+        print(f"kanban repair: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "status": report.status,
+            "db_path": str(report.db_path),
+            "messages": report.messages,
+            "post_repair_messages": report.post_repair_messages,
+            "backup_path": (
+                str(report.backup_path) if report.backup_path else None
+            ),
+            "reindexed": report.reindexed,
+        }, indent=2))
+        return 0 if report.status in {"ok", "repaired", "missing"} else 1
+
+    if report.status == "missing":
+        print(f"No kanban DB at {report.db_path} — nothing to repair.")
+        return 0
+    if report.status == "ok":
+        print(f"{report.db_path}: integrity_check ok — no repair needed.")
+        return 0
+    if report.status == "repaired":
+        print(f"{report.db_path}: repaired.")
+        print(f"  reindexed: {', '.join(report.reindexed)}")
+        if report.backup_path:
+            print(f"  pre-repair backup: {report.backup_path}")
+        print("  integrity_check now ok.")
+        return 0
+    # still corrupt
+    print(f"{report.db_path}: CORRUPT.", file=sys.stderr)
+    for line in (report.messages or [])[:10]:
+        print(f"  {line}", file=sys.stderr)
+    if report.reindexed:
+        print(
+            f"  REINDEX ({', '.join(report.reindexed)}) attempted but "
+            f"integrity_check is still failing:",
+            file=sys.stderr,
+        )
+        for line in (report.post_repair_messages or [])[:10]:
+            print(f"    {line}", file=sys.stderr)
+    else:
+        print(
+            "  Not an index-only failure — automatic REINDEX repair does "
+            "not apply (fail-closed).",
+            file=sys.stderr,
+        )
+    if report.backup_path:
+        print(f"  corrupt copy quarantined at: {report.backup_path}",
+              file=sys.stderr)
+    print(
+        "  Recover manually (copy kanban.db aside FIRST, then run "
+        "`sqlite3 <copy> \".recover\"` into a fresh file — never against "
+        "the live path, a WAL-reset-vulnerable sqlite3 CLI can corrupt it "
+        "further) or move the file aside to start a new board.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Slash-command entry point (used by /kanban from CLI and gateway)
+# ---------------------------------------------------------------------------
 
 _SLASH_KANBAN_HELP = """\
 **/kanban** — manage the shared task board.

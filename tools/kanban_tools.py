@@ -182,6 +182,66 @@ def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Op
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
 
 
+def _worker_completion_evidence(
+    task_id: str,
+    *,
+    run_started_at: Optional[int] = None,
+) -> tuple[bool, Optional[dict]]:
+    """Return whether code evidence is required and its trusted receipt.
+
+    The verification ledger is populated by terminal execution, not by the
+    worker's completion prose. Non-code workspaces report ``not_applicable``
+    and retain the existing completion path.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return False, None
+    # At this point we know HERMES_KANBAN_TASK == task_id, so this IS a
+    # dispatcher-owned worker call on its own task.  Missing or unparseable
+    # identity variables are NOT a signal that evidence is not applicable;
+    # they are a signal that the environment is malformed.  Falling back to
+    # (False, None) here would be a fail-open transition at exactly the
+    # boundary this gate is meant to harden.  Return (True, None) instead:
+    # "evidence required, but we cannot build a receipt" — which causes
+    # complete_task to reject the transition.
+    session_id = os.environ.get("HERMES_SESSION_ID")
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
+    run_id = _worker_run_id(task_id)
+    if not session_id or not workspace or run_id is None:
+        return True, None
+    try:
+        from agent.verification_evidence import verification_status
+
+        status = verification_status(session_id=session_id, cwd=workspace)
+    except Exception:
+        # A verifier read failure is uncertainty, not evidence of absence.
+        return True, None
+    if status.get("status") == "not_applicable":
+        return False, None
+    event = status.get("evidence")
+    if status.get("status") != "passed" or not isinstance(event, dict):
+        return True, None
+    created_at = event.get("created_at")
+    if run_started_at is not None:
+        try:
+            from datetime import datetime
+
+            event_time = datetime.fromisoformat(str(created_at)).timestamp()
+        except (TypeError, ValueError):
+            return True, None
+        if event_time < run_started_at:
+            return True, None
+    return True, {
+        "receipt_id": event.get("id"),
+        "source": f"verification_evidence:{event.get('kind', 'unknown')}",
+        "status": "passed",
+        "task_id": task_id,
+        "run_id": run_id,
+        "session_id": status.get("session_id") or session_id,
+        "root": status.get("root") or workspace,
+        "created_at": created_at,
+    }
+
+
 def _enforce_worker_task_ownership(tid: str) -> None:
     """A dispatcher-spawned worker may only mutate its own HERMES_KANBAN_TASK; a
     prompt-injected ``task_id`` must not corrupt sibling/cross-tenant runs.
@@ -624,16 +684,26 @@ def _handle_complete(args: dict, **kw) -> str:
         task = kb.get_task(conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
         try:
+            active_run = kb.latest_run(conn, tid)
+            evidence_required, completion_evidence = _worker_completion_evidence(
+                tid,
+                run_started_at=(
+                    active_run.started_at if active_run and active_run.status == "running"
+                    else None
+                ),
+            )
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid),
+                require_completion_evidence=evidence_required,
+                completion_evidence=completion_evidence)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
             # gate runs before the write txn), so the worker can simply call kanban_complete again. Spell
             # that out — without it the model often interprets a tool_error as a terminal failure and either
             # blocks or crashes the run instead of retrying. See #22923.
-            return tool_error(
+            raise _Reject(
                 f"kanban_complete could not preserve the declared artifacts: {artifact_err}. "
                 f"Your task is still in-flight and its scratch workspace was kept. Fix the "
                 f"artifact path or storage error, then retry kanban_complete with the same "
@@ -641,19 +711,24 @@ def _handle_complete(args: dict, **kw) -> str:
         except kb.LiveClaimError as claim_err:
             # Env-less caller (orchestrator, another session) on a card a dispatcher
             # worker is executing: refusing here is what keeps that worker's run open.
-            return tool_error(
+            raise _Reject(
                 f"kanban_complete refused: {claim_err}. Nothing changed. Wait for the worker "
                 f"to finish, or an operator can run `hermes kanban complete --force {tid}`.")
         except kb.HallucinatedCardsError as hall_err:
             # The gate runs before the write txn, so the task was NOT mutated;
             # say so explicitly or the model treats the error as terminal and
             # blocks/crashes instead of retrying. Audit event already landed.
-            return tool_error(
+            raise _Reject(
                 f"kanban_complete blocked: the following created_cards do not exist or were not "
                 f"created by this worker: {', '.join(hall_err.phantom)}. Your task is still "
                 f"in-flight (no state change). Retry kanban_complete with the same "
                 f"summary/metadata and either drop these ids from created_cards, or pass "
                 f"created_cards=[] to skip the card-claim check entirely.")
+        except kb.CompletionEvidenceError as evidence_err:
+            raise _Reject(
+                f"kanban_complete blocked: {evidence_err}. Your task is still in-flight. Run "
+                "the repository's required verification after the latest edit, then retry "
+                "kanban_complete.")
         task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or

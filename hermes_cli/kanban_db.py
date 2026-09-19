@@ -2678,6 +2678,18 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class CompletionEvidenceError(ValueError):
+    """Raised when a required independent completion receipt is invalid."""
+
+    def __init__(self, *, task_id: str, reason: str):
+        self.task_id = task_id
+        self.reason = reason
+        super().__init__(
+            f"completion blocked for task {task_id!r}: independent evidence "
+            f"is required ({reason})"
+        )
+
+
 class LiveClaimError(ValueError):
     """``complete_task`` refused: the task is ``running`` under a live claim and
     the caller neither owns its run (``expected_run_id``) nor passed ``force``.
@@ -2708,10 +2720,18 @@ def _claim_is_live(trow) -> bool:
 
 
 def complete_task(
-    conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
-    summary: Optional[str] = None, metadata: Optional[dict] = None,
-    created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None,
+    expected_run_id: Optional[int] = None,
+    require_completion_evidence: bool = False,
+    completion_evidence: Optional[Mapping[str, Any]] = None,
+    fire_lifecycle_hook: bool = True,
+    force: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2725,13 +2745,69 @@ def complete_task(
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
+
+    When ``require_completion_evidence`` is true, ``completion_evidence``
+    must carry a passed terminal-verification receipt bound to this exact
+    ``task_id`` and ``expected_run_id``. Rejections are audited without
+    copying worker prose into the event. The worker tool enables this gate
+    for code workspaces and leaves non-code/manual completion compatible.
+    Missing or malformed evidence (no receipt, wrong task/run, untrusted
+    source, not ``passed``) always fails closed via
+    :class:`CompletionEvidenceError` — it never silently falls back to
+    fail-open completion.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
+
+    # Gate: verify created_cards BEFORE the main write txn (main's helper —
+    # a rejected completion still needs an auditable event, emitted in its
+    # own tiny txn, then raised; this function never mutates task state on
+    # a phantom-card rejection).
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
+
+    # A worker's summary is a claim, never acceptance proof. Code-workspace
+    # callers can require a receipt captured by the terminal verification
+    # ledger. The trusted tool wrapper binds that receipt to this exact task
+    # and dispatcher run; stale evidence from an earlier retry fails closed.
+    verified_completion_evidence: Optional[dict[str, Any]] = None
+    if require_completion_evidence:
+        evidence = dict(completion_evidence or {})
+        if evidence.get("receipt_id") is None:
+            evidence_reason = "missing_receipt"
+        elif evidence.get("status") != "passed":
+            evidence_reason = "not_passed"
+        elif evidence.get("task_id") != task_id:
+            evidence_reason = "task_mismatch"
+        elif expected_run_id is None or evidence.get("run_id") != int(expected_run_id):
+            evidence_reason = "run_mismatch"
+        elif evidence.get("source", "").split(":", 1)[0] != "verification_evidence":
+            evidence_reason = "untrusted_source"
+        else:
+            evidence_reason = None
+        if evidence_reason is not None:
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "completion_blocked_missing_evidence",
+                    {
+                        "reason": evidence_reason,
+                        "receipt_id": evidence.get("receipt_id"),
+                        "evidence_run_id": evidence.get("run_id"),
+                        "expected_run_id": expected_run_id,
+                    },
+                )
+            raise CompletionEvidenceError(task_id=task_id, reason=evidence_reason)
+        verified_completion_evidence = {
+            key: evidence.get(key)
+            for key in (
+                "receipt_id", "source", "status", "task_id", "run_id",
+                "session_id", "root", "created_at",
+            )
+        }
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
@@ -2864,11 +2940,15 @@ def _cleaned_artifact_paths(metadata: Any) -> list[str]:
 
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
+    completion_evidence: Optional[dict] = None,
 ) -> dict:
     """``completed`` event payload: first summary line (400 chars) so gateway
     notifiers / dashboard WS render without a second round-trip; verified
-    cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
+    cards; ``metadata["artifacts"]`` promoted so the notifier can upload
+    them as native attachments without fetching the run row; and, when the
+    caller required independent completion evidence, the verified receipt
+    (subset of fields only) so the audit trail shows the completion was
+    backed by proof, not just a worker's claim."""
     # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
     # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
     # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
@@ -2880,6 +2960,8 @@ def _completed_event_payload(
     }
     if verified_cards:
         payload["verified_cards"] = verified_cards
+    if completion_evidence is not None:
+        payload["completion_evidence"] = completion_evidence
     if isinstance(metadata, dict):
         cleaned = _cleaned_artifact_paths(metadata)
         if cleaned:
@@ -4366,6 +4448,7 @@ _PLUGIN_COMPAT_LAZY = {
     'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS': ('hermes_cli.kanban_db_dispatch', 'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS'),
     'KanbanDbCorruptError': ('hermes_cli.kanban_db_connect', 'KanbanDbCorruptError'),
     'MEMORY_GUARD_MB_PER_WORKER': ('hermes_cli.kanban_db_dispatch', 'MEMORY_GUARD_MB_PER_WORKER'),
+    '_NOTIFY_DELIVERY_MODES': ('hermes_cli.kanban_db_notify', '_NOTIFY_DELIVERY_MODES'),
     'RepairResult': ('hermes_cli.kanban_db_connect', 'RepairResult'),
     'add_notify_sub': ('hermes_cli.kanban_db_notify', 'add_notify_sub'),
     'advance_notify_cursor': ('hermes_cli.kanban_db_notify', 'advance_notify_cursor'),

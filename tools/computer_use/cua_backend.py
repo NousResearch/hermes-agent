@@ -309,11 +309,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
         # context.
         self._snapshot_tokens: Dict[int, str] = {}
+        # Whole-snapshot handle from the same capture (`structuredContent.snapshot_id`): cua-driver's second accepted
+        # addressing mode ("pass element_token, or snapshot_id together with element_index"), and the only one left
+        # when a capture carries no per-element tokens. Lives and dies with `_snapshot_tokens`.
+        self._snapshot_id: Optional[str] = None
 
     def _set_active_target(self, target: Dict[str, Any]) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        self._snapshot_id = None
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
@@ -364,6 +369,13 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         if token and (self._session.supports_input_property(name, "element_token")
                       or self._session.supports_capability("accessibility.element_tokens", tool=name)):
             args["element_token"] = token
+        elif isinstance(idx, int):
+            # No per-element token to attach: fall back to the whole-snapshot handle the same capture produced, so
+            # the driver resolves the index against THAT snapshot (and reports "stale" once it is superseded) instead
+            # of refusing a bare index outright. Same gate as the token: the live schema must advertise the property.
+            snapshot_id = getattr(self, "_snapshot_id", None)
+            if snapshot_id and self._session.supports_input_property(name, "snapshot_id"):
+                args["snapshot_id"] = snapshot_id
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

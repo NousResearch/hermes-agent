@@ -66,8 +66,6 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        # Authority decisions must inspect the file instead of accepting a
-        # normalized or previously recovered cache entry.
         if not fail_closed and cached is not None and cache_sig is not None and cached[:8] == cache_sig:
             if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
                 return copy.deepcopy(cached[8])

@@ -305,7 +305,6 @@ class SessionTelegramTopicsMixin:
                         (time.time(), profile_name, chat_id),
                     )
             except self.database_operational_errors:
-                # PostgreSQL errors abort the transaction unless rolled back to a savepoint.
                 conn.execute("ROLLBACK TO SAVEPOINT topic_mode_cleanup")
             finally:
                 conn.execute("RELEASE SAVEPOINT topic_mode_cleanup")
@@ -375,6 +374,5 @@ class SessionTelegramTopicsMixin:
                 (str(user_id), profile_name, int(limit)),
             )
         except self.database_operational_errors:
-            # PostgreSQL aborts the failed transaction; retry on a fresh read context.
             rows = self._read_all(_UNLINKED_SELECT_HEAD + _UNLINKED_SELECT_TAIL, (str(user_id), int(limit)))
         return [self._rich_row(row) for row in rows]

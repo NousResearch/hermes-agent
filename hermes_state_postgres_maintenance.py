@@ -55,8 +55,6 @@ class SessionPostgresMaintenanceMixin:
             return result
         lock_key = f"{self.schema}:maintenance"
         try:
-            # Keep the lock on one borrowed connection while shared operations use
-            # their normal transactions. Another host can skip immediately.
             with self._pool.connection() as conn:
                 acquired = conn.execute(
                     "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (lock_key,)).fetchone()[0]
@@ -71,7 +69,6 @@ class SessionPostgresMaintenanceMixin:
                         return result
                     result["pruned"] = self.prune_sessions(
                         older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
-                    # Prune before closing orphans so they receive a full recovery window.
                     closed = self.sweep_orphaned_sessions(
                         max_idle_seconds=float(retention_days) * 86400,
                         sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES, exclude_pinned=True,
@@ -81,7 +78,6 @@ class SessionPostgresMaintenanceMixin:
                 finally:
                     conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (lock_key,))
         except Exception as exc:
-            # Startup maintenance has the same non-fatal contract as SQLite.
             logger.warning("PostgreSQL session maintenance failed: %s", exc)
             result["error"] = str(exc)
         return result

@@ -15,8 +15,6 @@ from hermes_constants import get_hermes_home
 from hermes_state import SessionDB
 
 
-# Foreign-key parents first. Runtime leases/heartbeats and application ledgers
-# belong to running processes and are deliberately not transferred.
 _TABLES = (
     'system_prompts', 'sessions', 'messages', 'session_model_usage',
     'state_meta', 'gateway_routing', 'gateway_hygiene_state', 'conversation_generations',
@@ -49,10 +47,8 @@ def migrate_sqlite_to_postgres(source_path: Path, target: SessionDB, *, batch_si
             if 'telegram_dm_topic_mode' in source_tables:
                 from hermes_state_postgres_schema import TELEGRAM_SCHEMA_SQL
                 conn.execute(TELEGRAM_SCHEMA_SQL)
-            # Refuse any existing history rather than guessing which records win.
             for table in tables:
                 if conn.execute(sql.SQL('SELECT 1 FROM {} LIMIT 1').format(sql.Identifier(table))).fetchone():
-                    # The optional topic migration only installs its version marker.
                     if table == 'state_meta':
                         if not conn.execute("SELECT 1 FROM state_meta WHERE key <> 'telegram_dm_topic_schema_version' LIMIT 1").fetchone():
                             conn.execute("DELETE FROM state_meta WHERE key = 'telegram_dm_topic_schema_version'")
@@ -76,8 +72,6 @@ def migrate_sqlite_to_postgres(source_path: Path, target: SessionDB, *, batch_si
                             values = dict(row)
                             if table == 'messages':
                                 values['content'] = target._encode_content(SessionDB._decode_content(values['content']))
-                                # Display hashes depend on the encoded content; rebuild
-                                # these derived values with the destination's encoder.
                                 for column in ('display_identity', 'display_order'):
                                     if column in values:
                                         values[column] = None
@@ -87,7 +81,6 @@ def migrate_sqlite_to_postgres(source_path: Path, target: SessionDB, *, batch_si
                 if actual != count:
                     raise RuntimeError(f'Row count mismatch for {table}: {count} source, {actual} target')
                 counts[table] = count
-            # Explicit copied IDs must not collide with the next generated message.
             conn.execute("SELECT setval(pg_get_serial_sequence('messages', 'id'), "
                          "COALESCE((SELECT MAX(id) FROM messages), 1), EXISTS(SELECT 1 FROM messages))")
             return counts

@@ -26,8 +26,6 @@ from hermes_state_postgres_schema import (
 from hermes_state_postgres_search import SessionPostgresSearchMixin
 from hermes_state_postgres_maintenance import SessionPostgresMaintenanceMixin
 
-# Only DB-API bindings differ here. SQL dialect differences stay in the schema
-# or in the operation that owns them, rather than being rewritten at execution.
 _BINDING_TOKEN = re.compile(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--[^\n]*|/\*.*?\*/|::|:[A-Za-z_]\w*|\?|%", re.S)
 
 
@@ -84,7 +82,6 @@ class PostgresSessionDB(SessionPostgresSearchMixin, SessionPostgresMaintenanceMi
     database_errors = (psycopg.Error,)
     database_operational_errors = (psycopg.OperationalError, psycopg.ProgrammingError)
     _unlimited_sql_limit = None
-    # PostgreSQL TEXT cannot contain SQLite's NUL-prefixed multimodal marker.
     _CONTENT_JSON_PREFIX = "\x01json:"
     _CONTENT_BYTES_PREFIX = "\x01bytes:"
 
@@ -103,7 +100,6 @@ class PostgresSessionDB(SessionPostgresSearchMixin, SessionPostgresMaintenanceMi
         return super()._decode_content(content)
 
     def _holder_process_is_dead(self, holder):
-        # A PostgreSQL lease may belong to another host; only expiry proves it stale.
         return False
 
     def __init__(self, db_path: Path = None, read_only: bool = False, *, database_settings=None):
@@ -182,7 +178,6 @@ class PostgresSessionDB(SessionPostgresSearchMixin, SessionPostgresMaintenanceMi
         if self._closed:
             raise RuntimeError('SessionDB connection is closed')
         with self._pool.connection() as conn:
-            # Read helpers cannot accidentally write even when the owner is writable.
             with conn.transaction():
                 conn.execute('SET TRANSACTION READ ONLY')
                 yield PostgresConnection(conn)
@@ -207,13 +202,10 @@ class PostgresSessionDB(SessionPostgresSearchMixin, SessionPostgresMaintenanceMi
             raise RuntimeError('SessionDB connection is closed')
         patience = self._WRITE_PATIENCE_S if patience_s is None else patience_s
         deadline = time.monotonic() + patience
-        with self._pool.connection(timeout=max(patience, 0.001)) as conn:
+        with self._pool.connection() as conn:
             with conn.transaction():
                 remaining = max(1, int((deadline - time.monotonic()) * 1000))
                 conn.execute("SELECT set_config('lock_timeout', %s, true)", (str(remaining),))
-                # Shared methods perform read/check/write operations under SQLite's
-                # single-writer contract. Keep that contract across PostgreSQL clients;
-                # readers use independent connections and never acquire this lock.
                 conn.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))', (self.schema,))
                 result = fn(PostgresConnection(conn))
             self._write_count += 1

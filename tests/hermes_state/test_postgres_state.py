@@ -249,7 +249,6 @@ def test_compacted_display_deduplicates_tail_and_refreshes_edited_identity(state
     ):
         state_db.append_message("compacted", role, content)
     tail = state_db.get_messages_as_conversation("compacted")[-2:]
-    # Historical compactions retain visible copies of the carried tail.
     state_db.archive_and_compact(
         "compacted", [{"role": "user", "content": "Summary of earlier turns"}, *tail]
     )

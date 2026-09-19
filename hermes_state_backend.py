@@ -49,8 +49,6 @@ def resolve_database_settings(db_path: str | Path | None = None) -> DatabaseSett
 
     from dotenv import dotenv_values
 
-    # Disabling dotenv interpolation prevents another profile's process secrets being used
-    # to expand this profile's credentials.
     env_path = home / ".env"
     try:
         with env_path.open(encoding="utf-8") as stream:

@@ -244,8 +244,6 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
             with lifecycle_lock:
                 db = _open_session_db(path)
                 db._shared_registry_owned = True
-                # PostgreSQL uses this path for profile identity, not storage. A
-                # local SQLite ledger or retained migration source can change independently.
                 identity = None if getattr(db, "backend", "sqlite") == "postgres" else _stat_db_file_identity(path)
         except BaseException:
             with _lock:

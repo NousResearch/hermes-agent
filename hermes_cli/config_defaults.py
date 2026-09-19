@@ -31,10 +31,7 @@ DEFAULT_CONFIG = {
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).
     "database": {
-        # Session storage; other local databases continue using SQLite.
-        "backend": "sqlite",  # sqlite | postgres; PostgreSQL requires HERMES_DATABASE_URL.
-        # PostgreSQL schema. None derives an isolated name from the profile's database path.
-        # Set explicitly when the same profile is shared across hosts.
+        "backend": "sqlite",
         "schema": None,
         "journal_mode": "wal",
         # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).

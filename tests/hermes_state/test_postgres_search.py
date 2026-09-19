@@ -83,7 +83,6 @@ def test_index_bounds_preserve_long_messages_and_not_exclusions(postgres_db):
     metadata = db.append_message("long", "assistant", "done", tool_calls=[{
         "function": {"name": "inspect", "arguments": "x " * SEARCH_TOOL_CALLS_CHARS + "metadatareceipt"}}])
     tool_name = db.append_message("long", "tool", "done", tool_name="x " * SEARCH_TOOL_NAME_CHARS + "namereceipt")
-    # PostgreSQL stops retaining distinct word positions after 16,383.
     late_phrase = db.append_message("long", "assistant", "x " * 17_000 + "alpha beta")
 
     assert set(_ids(db, "needle NOT forbidden")) == {short, long}

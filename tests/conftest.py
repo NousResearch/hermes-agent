@@ -2084,7 +2084,6 @@ def postgres_home(tmp_path, monkeypatch):
     )
     (tmp_path / ".env").write_text(f"HERMES_DATABASE_URL={database_url}\n", encoding="utf-8")
 
-    # With the opt-in set, missing drivers or an unreachable database must fail.
     with psycopg.connect(database_url, autocommit=True, connect_timeout=5) as connection:
         try:
             yield tmp_path

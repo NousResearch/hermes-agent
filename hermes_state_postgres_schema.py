@@ -2,7 +2,6 @@
 
 from hermes_state_common import FTS_TOOL_CONTENT_PREFIX_CHARS
 
-# Keep all indexed fields below PostgreSQL's 16,383-word position limit.
 SEARCH_CONTENT_CHARS = 8_192
 SEARCH_TOOL_CALLS_CHARS = 4_096
 SEARCH_TOOL_NAME_CHARS = 256
@@ -242,8 +241,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
     ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
 """
 
-# These schema-local functions keep the shared session queries in one place.
-# PostgreSQL's search_path explicitly puts this schema before pg_catalog.
 FUNCTION_SQL = """
 CREATE FUNCTION json_valid(raw TEXT) RETURNS INTEGER
 LANGUAGE SQL IMMUTABLE PARALLEL SAFE AS $$

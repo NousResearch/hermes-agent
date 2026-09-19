@@ -135,7 +135,6 @@ def _sessions_sig():
             else:
                 signature = _newest_mtime_ns((path, home / "state.db-wal"))
         except Exception:
-            # One unavailable profile must not hide changes from its healthy siblings.
             signature = "unavailable"
         signatures.append((str(home), signature))
     return tuple(signatures)

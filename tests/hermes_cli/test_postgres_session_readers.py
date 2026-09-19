@@ -163,7 +163,6 @@ def test_sidebar_cache_invalidates_on_postgres_changes(postgres_db, postgres_hom
     monkeypatch.setattr(profiles, "_profile_targets", lambda *args, **kwargs: [("default", postgres_home)])
     profiles._sidebar_profile_cache_clear()
     try:
-        # Bypass only the request-coalescing TTL so each request checks the database revision.
         sidebar = profiles.get_profiles_sessions_sidebar.__wrapped__
         before = profiles._sidebar_db_fingerprint(postgres_home / "state.db")
         first = sidebar()

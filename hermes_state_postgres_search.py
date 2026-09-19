@@ -42,7 +42,6 @@ def _compile_tsquery(query: str) -> tuple[str, list[str]]:
             continue
         expression = "phraseto_tsquery('simple', ?)"
         if token.endswith("*"):
-            # PostgreSQL quotes the parsed lexemes before the prefix modifier is added.
             expression = f"to_tsquery('simple', NULLIF({expression}::text, '') || ':*')"
         if negate_next:
             expression = f"!!({expression})"
@@ -76,7 +75,6 @@ class SessionPostgresSearchMixin:
         else:
             matches = self._search_messages_postgres(query, **route)
             if not matches:
-                # Match Latin embedded in Unicode text, e.g. 修改youer服务端.
                 matches = self._search_messages_like_fallback(query, **route)
         return self._finalize_search_matches(matches, result_fields=result_fields)
 
@@ -84,7 +82,6 @@ class SessionPostgresSearchMixin:
         predicate, params, snippet_term = self._compile_like_boolean_query(query)
         predicate = predicate.replace(" LIKE ?", " ILIKE ?")
         if not full_tool_content:
-            # Large tool bodies require an explicit tool-role search, as with SQLite.
             content = ("CASE WHEN m.role = 'tool' "
                        f"THEN left(m.content, {FTS_TOOL_CONTENT_PREFIX_CHARS}) ELSE m.content END")
             predicate = predicate.replace("m.content", content)
@@ -100,8 +97,6 @@ class SessionPostgresSearchMixin:
         where: list[str] = []
         filter_params: list = []
         _search_filter_clauses(where, filter_params, **filters)
-        # Each branch can use its own index. Overflow rows use canonical text for both
-        # positive and NOT terms; a truncated vector cannot decide those predicates.
         candidates_sql = f"""WITH search_query AS (SELECT {tsquery_sql} AS query),
             candidates AS (
                 SELECT m.id FROM messages m CROSS JOIN search_query q
@@ -140,7 +135,7 @@ class SessionPostgresSearchMixin:
         return [dict(row) for row in self._read_all(sql, [snippet_term, *params, limit, offset])]
 
     def fts_rebuild_status(self):
-        return None  # Stored vectors and their index change in the message transaction.
+        return None
 
     def fts_cjk_rebuild_status(self):
         return None

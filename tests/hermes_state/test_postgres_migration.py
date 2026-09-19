@@ -15,7 +15,6 @@ def sqlite_source(postgres_home):
     path = postgres_home / "sqlite-source" / "state.db"
     with SessionDB(path) as source:
         assert source.backend == "sqlite"
-        # Existing databases can store a child before its eventual parent.
         source.create_session("child", "cli", model_config={"_branched_from": "parent"})
         source.create_session(
             "parent", "telegram", model="test-model", model_config={"temperature": 0.25},

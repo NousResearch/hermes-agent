@@ -70,8 +70,17 @@ function dragTo(source: HTMLElement, x: number, y: number) {
     pointerId: 1
   } as unknown as ReactPointerEvent<HTMLElement>)
 
-  window.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: x, clientY: y }))
-  window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: x, clientY: y }))
+  for (const type of ['pointermove', 'pointerup']) {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      clientX: x,
+      clientY: y,
+      buttons: type === 'pointermove' ? 1 : 0
+    })
+
+    Object.defineProperty(event, 'pointerId', { value: 1 })
+    window.dispatchEvent(event)
+  }
 }
 
 beforeEach(() => {

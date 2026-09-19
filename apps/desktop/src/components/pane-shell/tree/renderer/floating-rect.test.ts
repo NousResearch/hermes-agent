@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { anchoredRect, clampFloatingRect, floatingPx, reflowRect } from './floating-rect'
+import {
+  anchoredRect,
+  clampFloatingRect,
+  clampFloatingRectSize,
+  MIN_FLOATING_HEIGHT,
+  MIN_FLOATING_WIDTH,
+  floatingPx,
+  reflowRect
+} from './floating-rect'
 
 const viewport = { width: 1440, height: 900, top: 34 }
 const size = { width: 240, height: 180 }
@@ -72,6 +80,38 @@ describe('reflowRect', () => {
     const rect = { ...size, x: 300, y: 300 }
 
     expect(reflowRect(rect, 'top-right', viewport, viewport)).toEqual(rect)
+  })
+})
+
+describe('clampFloatingRectSize', () => {
+  it('passes through a size already inside the bounds', () => {
+    const rect = { ...size, x: 400, y: 200 }
+
+    expect(clampFloatingRectSize(rect, viewport)).toEqual(rect)
+  })
+
+  it('floors each axis at the minimum usable card size', () => {
+    const rect = clampFloatingRectSize({ x: 100, y: 100, width: 20, height: 20 }, viewport)
+
+    expect(rect.width).toBe(MIN_FLOATING_WIDTH)
+    expect(rect.height).toBe(MIN_FLOATING_HEIGHT)
+  })
+
+  it('caps each axis at the viewport extent', () => {
+    const rect = clampFloatingRectSize({ x: 0, y: 0, width: 5000, height: 5000 }, viewport)
+
+    expect(rect.width).toBe(viewport.width)
+    expect(rect.height).toBe(viewport.height)
+  })
+
+  it('re-clamps the position with the NEW size (a grown card stays grabbable)', () => {
+    // x = 1430 with width 400 would leave only 10px on screen (1430..1830 in
+    // a 1440 viewport); the clamp pulls x back so the MIN_VISIBLE 48px sliver
+    // stays grabbable: maxX = 1440 - 48 = 1392.
+    const rect = clampFloatingRectSize({ x: 1430, y: 100, ...size, width: 400 }, viewport)
+
+    expect(rect.width).toBe(400)
+    expect(rect.x).toBe(1392)
   })
 })
 

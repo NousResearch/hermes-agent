@@ -802,3 +802,93 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+_MULTI_CALL_BYPASS = [
+    # Shutdown / reboot / halt / poweroff applets
+    "busybox reboot",
+    "busybox poweroff",
+    "busybox halt",
+    "busybox shutdown",
+    "toybox reboot",
+    "toybox poweroff",
+    "toybox halt",
+    # Path-qualified multi-call binary
+    "/bin/busybox reboot",
+    "/usr/bin/busybox poweroff",
+    "./busybox reboot",
+    "usr/bin/busybox reboot",
+    "bin/busybox halt",
+    "/bin/toybox reboot",
+    # Multi-call after ordinary wrappers already in _CMDPOS
+    "sudo busybox reboot",
+    "sudo -E busybox poweroff",
+    "env FOO=1 busybox reboot",
+    "nohup busybox reboot",
+    "setsid busybox poweroff",
+    # Multi-call after separators / subshell
+    "ls; busybox reboot",
+    "true && busybox poweroff",
+    "false || busybox halt",
+    "$(busybox reboot)",
+    "(busybox reboot)",
+    "{ busybox poweroff; }",
+    # init as multi-call applet (next word is the applet)
+    "busybox init 0",
+    "busybox init 6",
+    # Root wipe via multi-call rm (hardline floor is the only yolo residual)
+    "busybox rm -rf /",
+    "toybox rm -rf /",
+    "busybox rm -rf ~",
+    "/bin/busybox rm -rf /",
+    "sudo busybox rm -rf /",
+    "busybox rm -rf /etc",
+    'busybox rm -rf "/"',
+]
+
+_MULTI_CALL_NOT_HARDLINE = [
+    "busybox ls",
+    "busybox cat /etc/hosts",
+    "busybox echo reboot",
+    "toybox ps",
+    "toybox echo poweroff",
+    "echo busybox reboot",
+    "echo 'busybox reboot'",
+    "grep busybox reboot.log",
+    "find . -name busybox",
+    "git commit -m 'busybox reboot note'",
+    'gh pr create --title "block busybox reboot"',
+    "busybox",  # no applet selected
+    "toybox",
+    # Benign multi-call after wrappers
+    "sudo busybox ls",
+    "env FOO=1 busybox true",
+    "nohup busybox sleep 1",
+    # Option-first: next token is a flag, not the hardline applet
+    "busybox --help reboot",
+    "busybox -h reboot",
+    "busybox --list reboot",
+    "toybox --help poweroff",
+    "toybox -h halt",
+    "busybox --help",
+    "busybox --login reboot",
+    "/bin/busybox --help reboot",
+    "sudo busybox --help reboot",
+]
+
+
+@pytest.mark.parametrize("command", _MULTI_CALL_BYPASS)
+@pytest.mark.parametrize("yolo", [False, True])
+def test_multicall_hardline_applies_through_guards(command, yolo, clean_session, monkeypatch):
+    if yolo:
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    else:
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    assert detect_hardline_command(command)[0]
+    result = check_all_command_guards(command, "local")
+    assert result["approved"] is False
+
+
+@pytest.mark.parametrize("command", _MULTI_CALL_NOT_HARDLINE)
+def test_multicall_data_and_benign_applets_are_not_hardline(command):
+    assert detect_hardline_command(command)[0] is False

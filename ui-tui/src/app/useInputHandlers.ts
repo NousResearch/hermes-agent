@@ -20,7 +20,7 @@ import {
   type InputHandlerResult,
   type OverlayState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import { $isBlocked, $overlayState, dismissPluginNotice, patchOverlayState } from './overlayStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -115,6 +115,26 @@ export function shouldFallThroughForScroll(key: {
   }
 
   return false
+}
+
+type ScrollPromptOverlay = Partial<
+  Pick<OverlayState, 'approval' | 'billing' | 'clarify' | 'confirm' | 'pluginNotice' | 'subscription'>
+>
+
+export function shouldPromptOverlayFallThroughForScroll(
+  overlay: ScrollPromptOverlay,
+  key: Parameters<typeof shouldFallThroughForScroll>[0]
+): boolean {
+  const promptOverlay = Boolean(
+    overlay.approval ||
+      overlay.billing ||
+      overlay.clarify ||
+      overlay.confirm ||
+      overlay.pluginNotice ||
+      overlay.subscription
+  )
+
+  return promptOverlay && shouldFallThroughForScroll(key)
 }
 
 export function applyVoiceRecordResponse(
@@ -236,6 +256,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
+    }
+
+    if (overlay.pluginNotice) {
+      return dismissPluginNotice(overlay.pluginNotice.notice)
     }
 
     if (overlay.modelPicker) {
@@ -410,10 +434,16 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // answering felt like the prompt had locked the entire UI.  Explicitly
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
-      const promptOverlay =
-        overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.subscription
+      const promptOverlay = Boolean(
+        overlay.approval ||
+          overlay.billing ||
+          overlay.clarify ||
+          overlay.confirm ||
+          overlay.pluginNotice ||
+          overlay.subscription
+      )
 
-      const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
+      const fallThroughForScroll = shouldPromptOverlayFallThroughForScroll(overlay, key)
 
       if (promptOverlay && !fallThroughForScroll) {
         if (isCtrl(key, ch, 'c')) {

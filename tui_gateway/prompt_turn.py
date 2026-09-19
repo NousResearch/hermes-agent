@@ -673,7 +673,11 @@ def _invoke_agent(
     _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
-        with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
+        from hermes_cli.plugin_cards import card_publisher_scope
+        with (
+            notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid),
+            card_publisher_scope(lambda payload: _publish_plugin_card(sid, payload)),
+        ):
             st.result = agent.run_conversation(run_message, **st.run_kwargs)
     finally:
         # Stop AND join before anything emits: a tick surviving past message.complete would

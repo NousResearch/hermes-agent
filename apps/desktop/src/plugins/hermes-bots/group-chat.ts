@@ -703,12 +703,10 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       }
     }
 
+    // Keep the local order for equal timestamps: random UUID ordering would
+    // move entries across the room's positional watermarks on a sync echo.
     const log = assignLegacyThreads(
-      [...entries.values()].sort((left, right) => {
-        const byTime = Number(left?.at || 0) - Number(right?.at || 0)
-
-        return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
-      })
+      [...entries.values()].sort((left, right) => Number(left?.at || 0) - Number(right?.at || 0))
     )
 
     const bounded = trimGroupChatLog(log, existing.watermarks || {})

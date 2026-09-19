@@ -14,7 +14,7 @@ import threading
 import time as _time
 
 from hermes_cli.callbacks import prompt_for_secret
-from typing import Optional
+from typing import Any, Optional
 
 _TIMED_OUT = object()  # sentinel returned by _poll_modal_queue when the deadline passes
 
@@ -80,6 +80,146 @@ def _gated_confirm(self, command, key, *, title, detail, choices, unchanged, alw
 class CLIModalMixin:
     """Modal overlays for the interactive CLI: clarify, approval, sudo/secret capture, command
     palette, slash-confirm, external editor."""
+
+    _plugin_notice_lock: Any
+
+    def _plugin_card_publisher(self):
+        from functools import partial
+
+        return partial(
+            self._present_plugin_card_payload,
+            session_id=getattr(self, "session_id", None), app=getattr(self, "_app", None),
+        )
+
+    def _present_plugin_card_payload(self, payload: dict, *, session_id, app, manager=None) -> bool:
+        """Accept a published card without making its hook/model caller wait for a choice."""
+        from agent.memory_provider import spawn_context_thread
+        from hermes_cli.plugin_cards import PluginCard, PluginCardAction
+
+        try:
+            card = PluginCard(
+                title=payload["title"],
+                body=payload["body"],
+                actions=tuple(
+                    PluginCardAction(action["label"], action["command"], action.get("args", ""))
+                    for action in payload.get("actions", ())
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        if not self._plugin_notice_is_live(session_id, app):
+            return False
+        if self._plugin_notice_has_blocker():
+            return False
+        lock = self._plugin_notice_lock
+        if not lock.acquire(blocking=False):
+            return False
+
+        def _present() -> None:
+            try:
+                if self._plugin_notice_is_live(session_id, app):
+                    self._present_plugin_card(
+                        str(payload["plugin_id"]),
+                        str(payload.get("plugin_name") or payload["plugin_id"]),
+                        card,
+                        manager=manager,
+                        expected_session_id=session_id,
+                        expected_app=app,
+                    )
+            finally:
+                lock.release()
+
+        try:
+            spawn_context_thread(
+                _present, name="hermes-plugin-notice", daemon=True,
+            ).start()
+        except Exception:
+            lock.release()
+            return False
+        return True
+
+    def _plugin_notice_has_blocker(self) -> bool:
+        return any(getattr(self, name, None) for name in (
+            "_approval_state", "_clarify_state", "_command_palette_state", "_model_picker_state",
+            "_secret_state", "_sudo_state", "_slash_confirm_state",
+        ))
+
+    def _plugin_notice_is_live(self, session_id, app) -> bool:
+        return bool(
+            getattr(self, "_app", None) is app
+            and getattr(app, "is_running", False)
+            and not getattr(self, "_should_exit", False)
+            and getattr(self, "session_id", None) == session_id
+        )
+
+    def _present_plugin_card(
+        self, plugin_id: str, plugin_name: str, card, *, manager=None,
+        expected_session_id=None, expected_app=None,
+    ) -> bool:
+        """Show a plugin card immediately and route choices only to that plugin's commands.
+
+        The full body is printed before the compact prompt so terminal scrollback remains the
+        accessible source when the panel has to truncate. Headless clients and an already-active
+        native prompt get readable text but never execute an action.
+        """
+        from hermes_cli.plugin_cards import PluginCard
+        from hermes_cli.plugins import get_plugin_manager, resolve_plugin_command_result
+
+        if not isinstance(card, PluginCard):
+            raise TypeError("plugin notice expects a PluginCard")
+
+        print(card.text_fallback())
+        if not getattr(self, "_app", None):
+            return False
+        if self._plugin_notice_has_blocker():
+            return False
+
+        manager = manager or get_plugin_manager()
+        current = card
+        shown = False
+        while True:
+            if expected_app is not None and not self._plugin_notice_is_live(
+                expected_session_id, expected_app,
+            ):
+                return shown
+            if self._plugin_notice_has_blocker():
+                return shown
+            actions = list(current.actions)
+            if not actions:
+                return shown
+            choices = [(str(index), action.label, "") for index, action in enumerate(actions)]
+            raw = self._prompt_text_input_modal(
+                title=f"{plugin_name} · {current.title}", detail=current.body, choices=choices,
+                timeout=120, warning=False)
+            shown = True
+            if raw is None:
+                return shown
+            if expected_app is not None and (
+                not self._plugin_notice_is_live(expected_session_id, expected_app)
+                or self._plugin_notice_has_blocker()
+            ):
+                return shown
+            try:
+                action = actions[int(raw)]
+            except (ValueError, IndexError):
+                return shown
+            entry = manager._plugin_commands.get(action.command)
+            if not entry or str(entry.get("plugin_key") or "") != plugin_id:
+                print("Plugin notice action is no longer available.")
+                return shown
+            try:
+                result = resolve_plugin_command_result(entry["handler"](action.args))
+            except Exception as exc:
+                print(f"Action failed: {exc}")
+                continue
+            if isinstance(result, PluginCard):
+                current = result
+                print(current.text_fallback())
+                continue
+            if result:
+                print(str(result))
+            return shown
 
     def _open_external_editor(self, buffer=None) -> bool:
         """Open the active input buffer in an external editor."""
@@ -288,7 +428,8 @@ class CLIModalMixin:
                     paint()
 
     def _prompt_text_input_modal(
-        self, *, title: str, detail: str, choices: list[tuple[str, str, str]], timeout: float = 120
+        self, *, title: str, detail: str, choices: list[tuple[str, str, str]], timeout: float = 120,
+        warning: bool = True,
     ) -> str | None:
         """Slash-command confirmation through the prompt_toolkit composer (raw input() fought
         prompt_toolkit's stdin ownership: prompt above the TUI, Enter read as EOF). All platforms
@@ -333,6 +474,7 @@ class CLIModalMixin:
                 "title": title,
                 "detail": detail,
                 "choices": choices,
+                "warning": warning,
                 "selected": 0,
                 "response_queue": response_queue}
             self._slash_confirm_deadline = _time.monotonic() + timeout

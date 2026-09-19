@@ -1,5 +1,5 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
-import type { Usage } from '@hermes/shared/gateway-events'
+import type { PluginCardWire, Usage } from '@hermes/shared/gateway-events'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
@@ -297,6 +297,7 @@ export interface OverlayState {
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean
+  pluginNotice: null | { notice: PluginCardWire; sessionId: string }
   secret: null | SecretReq
   vaultUnlock: null | VaultUnlockReq
   sessions: boolean
@@ -617,6 +618,7 @@ export interface AppLayoutStatusProps {
 
 export interface AppLayoutTranscriptProps {
   historyItems: Msg[]
+  panel: (title: string, sections: PanelSection[]) => void
   scrollRef: RefObject<null | ScrollBoxHandle>
   virtualHistory: VirtualHistoryState
   virtualRows: TranscriptRow[]
@@ -643,6 +645,7 @@ export interface AppOverlaysProps {
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void
+  onPluginResult: (title: string, body: string) => void
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void

@@ -58,6 +58,11 @@ def _num_prefix(i: int) -> str:
     return str(i + 1) if i < 9 else ("0" if i == 9 else " ")
 
 
+def _slash_confirm_selection_hint(choices) -> str:
+    quick_keys = "/".join(str(index) for index in range(1, min(len(choices), 9) + 1))
+    return f"{quick_keys} quick pick · ↑/↓ then Enter"
+
+
 def _term_rows() -> int:
     return shutil.get_terminal_size((100, 24)).lines
 
@@ -131,7 +136,8 @@ class CLITuiMixin:
         detail = state.get("detail") or ""
         choices = state.get("choices") or []
         selected = state.get("selected", 0)
-        footer = "Type 1/2/3 or use ↑/↓ then Enter. ESC/Ctrl+C cancels."
+        selection_hint = _slash_confirm_selection_hint(choices)
+        footer = f"{selection_hint} · Esc/Ctrl+C cancel"
         choice_labels = [
             f"{'❯' if idx == selected else ' '} [{idx + 1}] {label} — {desc}"
             for idx, (_value, label, desc) in enumerate(choices)]
@@ -306,8 +312,12 @@ class CLITuiMixin:
             return _state_fragment("class:sudo-prompt", "🔐")
         if self._secret_state:
             return _state_fragment("class:sudo-prompt", "🔑")
-        if self._approval_state or getattr(self, "_slash_confirm_state", None):
+        if self._approval_state:
             return _state_fragment("class:prompt-working", "⚠")
+        slash_confirm_state = getattr(self, "_slash_confirm_state", None)
+        if slash_confirm_state:
+            icon = "⚠" if slash_confirm_state.get("warning", True) else "ℹ"
+            return _state_fragment("class:prompt-working", icon)
         if self._clarify_freetext:
             return _state_fragment("class:clarify-selected", "✎")
         if self._clarify_state:
@@ -769,12 +779,15 @@ class CLITuiMixin:
         ("_sudo_state", "_sudo_deadline", '  password hidden · Enter to skip'),
         ("_secret_state", "_secret_deadline", '  secret hidden · Enter to skip'),
         ("_approval_state", "_approval_deadline", '  ↑/↓ to select, Enter to confirm'),
-        ("_slash_confirm_state", "_slash_confirm_deadline", '  type 1/2/3, or ↑/↓ to select, Enter to confirm'),
+        ("_slash_confirm_state", "_slash_confirm_deadline", None),
     )
 
     def _tui_hint_text(self):
         for state_attr, deadline_attr, hint in self._TUI_MODAL_HINTS:
-            if getattr(self, state_attr):
+            state = getattr(self, state_attr)
+            if state:
+                if state_attr == "_slash_confirm_state":
+                    hint = "  " + _slash_confirm_selection_hint(state.get("choices") or [])
                 if state_attr == "_sudo_state" and ((self._sudo_state.get("vault_save") or {}).get("step") == "identifier"
                                                     or self._sudo_state.get("vault_code")):
                     hint = '  shown as you type · Enter to continue'
@@ -818,7 +831,7 @@ class CLITuiMixin:
         if self._approval_state:
             return ""
         if self._slash_confirm_state:
-            return "type 1/2/3, or use ↑/↓ then Enter"
+            return _slash_confirm_selection_hint(self._slash_confirm_state.get("choices") or [])
         if self._clarify_freetext:
             return "type your answer here and press Enter"
         if self._clarify_state:
@@ -1863,6 +1876,10 @@ class CLITuiMixin:
         # composer, not raw input(), so the labels stay visible and Enter can't EOF the app.
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
+        # Published plugin notices are best-effort and never queue behind one another.  The worker
+        # holds this for the complete modal/action lifecycle so two hook publications cannot race
+        # the shared slash-confirm state.
+        self._plugin_notice_lock = threading.Lock()
         self._command_running = False
         self._command_blocks_input = False
         self._command_status = ""

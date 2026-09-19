@@ -129,6 +129,35 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().info?.stored_session_id).toBe('durable-2')
   })
 
+  it('shows a published plugin notice directly in the prompt zone', () => {
+    patchUiState({ sid: 'focused' })
+    const approval = { command: 'dangerous command', request_id: 'approval-1' } as any
+    patchOverlayState({ approval })
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        actions: [{ args: 'share', command: 'build-choice', label: 'Share' }],
+        body: 'Checks passed.',
+        plugin_id: 'build-tools',
+        plugin_name: 'Build Tools',
+        title: 'Build ready'
+      },
+      type: 'plugin.card.show'
+    } as any)
+
+    expect(getOverlayState().pluginNotice).toEqual({
+      notice: expect.objectContaining({ body: 'Checks passed.', title: 'Build ready' }),
+      sessionId: 'focused'
+    })
+    expect(getOverlayState().approval).toBe(approval)
+    expect(appended).toContainEqual(expect.objectContaining({
+      kind: 'panel',
+      panelData: { sections: [{ text: 'Checks passed.' }], title: 'Build Tools · Build ready' }
+    }))
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

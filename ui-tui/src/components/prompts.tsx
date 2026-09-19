@@ -1,5 +1,6 @@
 import { Box, Text, useInput, wrapAnsi } from '@hermes/ink'
-import { useEffect, useState } from 'react'
+import type { PluginCardWire } from '@hermes/shared/gateway-events'
+import { useEffect, useRef, useState } from 'react'
 
 import { isMac } from '../lib/platform.js'
 import { clarifyBatchRevisitState } from '../lib/text.js'
@@ -15,6 +16,157 @@ const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
 const CMD_PREVIEW_LINES = 10
+
+function boundedPromptPreview(text: string, width: number) {
+  const lines = text
+    .split('\n')
+    .flatMap(line => wrapAnsi(line, width, { hard: true, trim: false }).split('\n'))
+
+  const shown = lines.slice(0, CMD_PREVIEW_LINES)
+
+  return { overflow: lines.length - shown.length, shown }
+}
+
+interface PluginCardActionResult {
+  card?: null | PluginCardWire
+  kind: 'card' | 'text'
+  text?: null | string
+}
+
+interface PluginNoticePromptProps {
+  cols?: number
+  notice: PluginCardWire
+  onAction: (command: string, args: string) => Promise<PluginCardActionResult>
+  onCancel: () => void
+  onReplace: (notice: PluginCardWire) => boolean
+  onResult: (text: string) => boolean
+  t: Theme
+}
+
+export const isPluginNoticeCancelInput = (ch: string, key: { ctrl: boolean; escape: boolean }) =>
+  key.escape || (key.ctrl && ch.toLowerCase() === 'c')
+
+/** Direct plugin notice using the same single-owner prompt controls as other choices. */
+export function PluginNoticePrompt({ cols = 80, notice, onAction, onCancel, onReplace, onResult, t }: PluginNoticePromptProps) {
+  const [current, setCurrent] = useState(notice)
+  const [selected, setSelected] = useState(0)
+  const selectedRef = useRef(0)
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  const completedRef = useRef(false)
+  const generation = useRef(0)
+  const [feedback, setFeedback] = useState('')
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    setCurrent(notice)
+    setSelected(0)
+    selectedRef.current = 0
+    busyRef.current = false
+    setBusy(false)
+    completedRef.current = false
+    setFeedback('')
+    setFailed(false)
+
+    return () => { generation.current += 1 }
+  }, [notice])
+
+  const actions = current.actions
+  const bodyPreview = boundedPromptPreview(current.body, Math.max(20, cols - 6))
+
+  const run = (index: number) => {
+    const action = actions[index]
+
+    if (!action || busyRef.current || completedRef.current) {
+      return
+    }
+
+    busyRef.current = true
+    setBusy(true)
+    setFeedback('')
+    setFailed(false)
+
+    const actionGeneration = generation.current
+    void onAction(action.command, action.args)
+      .then(result => {
+        if (actionGeneration !== generation.current) {return}
+        busyRef.current = false
+        setBusy(false)
+
+        if (result.kind === 'card' && result.card) {
+          if (onReplace(result.card)) {
+            setCurrent(result.card)
+            setSelected(0)
+            selectedRef.current = 0
+          }
+        } else if (result.text?.trim()) {
+          if (onResult(result.text.trim())) {
+            completedRef.current = true
+            onCancel()
+          }
+        } else {
+          completedRef.current = true
+          onCancel()
+        }
+      })
+      .catch((reason: unknown) => {
+        if (actionGeneration !== generation.current) {return}
+        busyRef.current = false
+        setBusy(false)
+        setFeedback(reason instanceof Error ? reason.message : String(reason))
+        setFailed(true)
+      })
+  }
+
+  useInput((ch, key) => {
+    if (isPluginNoticeCancelInput(ch, key)) {
+      onCancel()
+    } else if (key.upArrow && selected > 0) {
+      selectedRef.current -= 1
+      setSelected(value => value - 1)
+    } else if (key.downArrow && selected < actions.length - 1) {
+      selectedRef.current += 1
+      setSelected(value => value + 1)
+    } else if (key.return) {
+      run(selectedRef.current)
+    } else {
+      const number = Number.parseInt(ch, 10)
+
+      if (number >= 1 && number <= actions.length) {
+        run(number - 1)
+      }
+    }
+  })
+
+  return (
+    <Box borderColor={t.color.accent} borderStyle="double" flexDirection="column" paddingX={1}>
+      <Text bold color={t.color.accent}>
+        {current.plugin_name} · {current.title}
+      </Text>
+      <Box flexDirection="column" paddingLeft={1} width={Math.max(20, cols - 6)}>
+        {bodyPreview.shown.map((line, index) => (
+          <Text color={t.color.text} key={index} wrap="truncate-end">
+            {line || ' '}
+          </Text>
+        ))}
+      </Box>
+      {bodyPreview.overflow > 0 ? <Text color={t.color.muted}> Full notice shown above · preview truncated</Text> : null}
+      <Text />
+      {actions.map((action, index) => (
+        <Text key={index}>
+          <Text color={t.color.muted} {...chipRowProps(t, selected === index)}>
+            {selected === index ? '▸ ' : '  '}
+            {index + 1}. {action.label}
+          </Text>
+        </Text>
+      ))}
+      {feedback ? <Text color={failed ? t.color.error : t.color.text}>{feedback}</Text> : null}
+      <Text color={t.color.muted}>
+        {busy ? 'Working…' : `↑/↓ select · Enter confirm · 1-${actions.length} quick pick · Esc dismiss`}
+      </Text>
+    </Box>
+  )
+}
 
 type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
@@ -100,12 +252,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   // reviewable before approving). Border + paddingX + inner padding ≈ 8 cols.
   const innerWidth = Math.max(20, cols - 8)
 
-  const rawLines = req.command
-    .split('\n')
-    .flatMap(line => wrapAnsi(line, innerWidth, { hard: true, trim: false }).split('\n'))
-
-  const shown = rawLines.slice(0, CMD_PREVIEW_LINES)
-  const overflow = rawLines.length - shown.length
+  const preview = boundedPromptPreview(req.command, innerWidth)
 
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
@@ -114,15 +261,15 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
       </Text>
 
       <Box flexDirection="column" paddingLeft={1}>
-        {shown.map((line, i) => (
+        {preview.shown.map((line, i) => (
           <Text color={t.color.text} key={i} wrap="truncate-end">
             {line || ' '}
           </Text>
         ))}
 
-        {overflow > 0 ? (
+        {preview.overflow > 0 ? (
           <Text color={t.color.muted}>
-            … +{overflow} more line{overflow === 1 ? '' : 's'} (full text above)
+            … +{preview.overflow} more line{preview.overflow === 1 ? '' : 's'} (full text above)
           </Text>
         ) : null}
       </Box>

@@ -795,6 +795,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     switch (ev.type) {
       case 'gateway.ready':
         handleReady(ev.payload?.skin)
+        void rpc('client.capabilities', { plugin_cards: true, server_requests: true })
 
         return
 
@@ -962,6 +963,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // Key-matched clear only — a stale/late clear must not wipe a newer
         // notice (turnController guards the key match).
         turnController.clearNotice(ev.payload?.key)
+
+        return
+
+      case 'plugin.card.show':
+        if (sid && ev.payload) {
+          const notice = ev.payload
+
+          ctx.transcript.panel(`${notice.plugin_name} · ${notice.title}`, [{ text: notice.body }])
+          patchOverlayState({ pluginNotice: { notice, sessionId: sid } })
+        }
 
         return
       case 'billing.step_up.verification': {

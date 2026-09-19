@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as data from './data'
 import type { GroupActivityEntry } from './group-activity'
@@ -69,6 +69,11 @@ function feed(room: Room, group: string): ActivityRow[] {
 
 beforeEach(() => {
   runTimersInline()
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('turn arc', () => {
@@ -182,10 +187,15 @@ describe('turn arc', () => {
 })
 
 describe('epoch scoping', () => {
-  it('queues follow-ups without cancelling the active turn or losing its reply delta', async () => {
+  // A sync echo must not reorder same-millisecond entries by UUID: these
+  // orders used to replay a turn or skip the queued follow-up, respectively.
+  it.each([[1, 3, 2], [2, 1, 3]])('queues follow-ups without losing their reply delta (UUID order %i, %i, %i)', async (firstId, followUpId, replyId) => {
     let release!: (reply: string) => void
     const first = new Promise<string>(resolve => { release = resolve })
     const room = await loadRoom({ turn: ({ n }) => n === 1 ? first : '(pass)' })
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+    const ids = [firstId, followUpId, replyId]
+    vi.spyOn(crypto, 'randomUUID').mockImplementation(() => `00000000-0000-4000-8000-${String(ids.shift()).padStart(12, '0')}`)
     const member: GroupMember[] = [{ name: 'research', title: '' }]
     const thread = room.rounds.sendToGroupChat('Busy', member, 'first ask')!
     await drain(() => room.gateway.calls.length < 1, 50)

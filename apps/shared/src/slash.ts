@@ -5,6 +5,7 @@
  * as the multi-line argument bug (#41323, #55510) reaches desktop and TUI at
  * once instead of landing in whichever copy the reporter happened to use.
  */
+import type { PluginCardWire } from './gateway-contract.generated.js'
 
 /** A slash COMMAND invocation: `/` at position 0, a bare name, then whitespace
  *  or end. `/usr/local` (second slash) and `run /clean` (not at 0) are prose. */
@@ -43,6 +44,11 @@ export interface ExecCommandDispatchResponse {
   type: 'exec' | 'plugin'
 }
 
+export interface PluginCardCommandDispatchResponse {
+  card: PluginCardWire
+  type: 'plugin_card'
+}
+
 export interface AliasCommandDispatchResponse {
   target: string
   type: 'alias'
@@ -74,6 +80,7 @@ export interface PrefillCommandDispatchResponse {
 export type CommandDispatchResponse =
   | AliasCommandDispatchResponse
   | ExecCommandDispatchResponse
+  | PluginCardCommandDispatchResponse
   | PrefillCommandDispatchResponse
   | SendCommandDispatchResponse
   | SkillCommandDispatchResponse
@@ -97,6 +104,11 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
 
     case 'plugin':
       return { output: str(row.output), type: row.type }
+
+    case 'plugin_card':
+      return row.card && typeof row.card === 'object' && !Array.isArray(row.card)
+        ? { card: row.card as unknown as PluginCardWire, type: 'plugin_card' }
+        : null
 
     case 'prefill':
       return typeof row.message === 'string' ? { message: row.message, notice: str(row.notice), type: 'prefill' } : null

@@ -1380,6 +1380,7 @@ export interface GatewayCapabilitiesResult {
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
+  plugin_cards?: boolean
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
@@ -3116,6 +3117,30 @@ export interface CommandResolveResult {
   description: string
   category: string
 }
+export interface PluginCardActionParams {
+  session_id: string
+  plugin_id: string
+  command: string
+  args?: string
+}
+export interface PluginCardActionResult {
+  kind: PluginCardResultKind
+  text?: string | null
+  card?: PluginCardWire | null
+}
+export type PluginCardResultKind = 'card' | 'text'
+export interface PluginCardWire {
+  plugin_id: string
+  plugin_name: string
+  title: string
+  body: string
+  actions: PluginCardActionWire[]
+}
+export interface PluginCardActionWire {
+  label: string
+  command: string
+  args: string
+}
 export interface CommandDispatchParams {
   name: string
   arg?: string | null
@@ -3126,6 +3151,7 @@ export interface CommandDispatchParams {
 export interface CommandDispatchResult {
   type: DispatchType
   output?: string | null
+  card?: PluginCardWire | null
   target?: string | null
   message?: string | null
   notice?: string | null
@@ -3134,7 +3160,7 @@ export interface CommandDispatchResult {
   status?: string | null
 }
 /** ``apps/shared/src/slash.ts::parseCommandDispatch`` branches on this. */
-export type DispatchType = 'exec' | 'alias' | 'plugin' | 'send' | 'skill' | 'prefill'
+export type DispatchType = 'exec' | 'alias' | 'plugin' | 'plugin_card' | 'send' | 'skill' | 'prefill'
 export interface SlashExecParams {
   session_id: string
   command: string
@@ -3145,6 +3171,7 @@ export interface SlashExecResult {
   output?: string | null
   warning?: string | null
   type?: DispatchType | null
+  card?: PluginCardWire | null
   target?: string | null
   message?: string | null
   notice?: string | null
@@ -4405,6 +4432,8 @@ export interface RpcMethods {
   'pet.thumb': { params: PetThumbParams; result: PetThumbResult }
   /** Cheapest liveness probe; answered on the WS reader thread even while every agent is mid-turn. */
   ping: { params: PingParams; result: PingResult }
+  /** Run one card action through the exact command currently registered by its originating plugin. */
+  'plugin.card.action': { params: PluginCardActionParams; result: PluginCardActionResult }
   /** Loaded plugin manager entries (legacy flat view); the Plugins Hub uses plugins.manage list. */
   'plugins.list': { params: PluginsListParams; result: PluginsListResult }
   /** Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install. */
@@ -4736,6 +4765,7 @@ export const RPC_METHODS = [
   'pet.select',
   'pet.thumb',
   'ping',
+  'plugin.card.action',
   'plugins.list',
   'plugins.manage',
   'preview.restart',
@@ -4957,6 +4987,8 @@ export interface BackendGatewayEventMap {
   'pet.hatch.progress': PetHatchProgressPayload
   /** gateway_state.json moved; refetch platform status. */
   'platforms.changed': ChangeSignalPayload
+  /** Present a direct actionable notice attributed to its originating plugin. */
+  'plugin.card.show': PluginCardWire
   /** Close the preview pane or one tab. */
   'preview.close': PreviewClosePayload
   /** Open a URL / file in the desktop preview pane. */
@@ -5066,6 +5098,7 @@ export const GATEWAY_EVENT_TYPES = [
   'pet.generate.progress',
   'pet.hatch.progress',
   'platforms.changed',
+  'plugin.card.show',
   'preview.close',
   'preview.open',
   'preview.restart.complete',

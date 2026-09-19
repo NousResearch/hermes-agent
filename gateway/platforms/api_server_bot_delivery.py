@@ -29,8 +29,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 from tools import bot_delivery_queue as delivery_queue
 
@@ -152,6 +153,37 @@ def _finalize_reply(payload: Any) -> str:
         return str(payload.get("final_response", "") or "")
 
 
+@contextmanager
+def target_profile_scope(adapter: Any, record: dict[str, Any]) -> Iterator[None]:
+    """Run a DRAINED turn inside its target lane's own runtime scope.
+
+    A drained record has no live request behind it, so nothing has scoped the
+    turn: ``_api_request_profile`` is unset, and the ``_profile_scope(None)`` that
+    ``_run_agent`` applies for an unset profile enters the DEFAULT profile's scope
+    whenever ``multiplex_profiles`` is on. The lane's own session id would then be
+    applied against the DEFAULT home's ``state.db``: the record still settles
+    ``delivered``, but the lane's Bot Chat never sees the message and the sender's
+    text is echoed into a brand-new "Message from ..." session in the default home.
+
+    Set the request profile to the record's target lane for the duration of the
+    turn -- and enter that lane's scope, so every home-relative read in between
+    (the session history included) resolves to the lane that owns the record --
+    then restore both. The target profile is the lane the record was admitted into
+    (``_bot_send_home``), so scope and ``home`` agree by construction; ``"default"``
+    resolves back to the default home in ``get_profile_dir``, so a default-lane
+    record is scoped exactly as before.
+    """
+    from gateway.platforms.api_server import _api_request_profile
+
+    profile = str(record.get("target_profile") or "")
+    token = _api_request_profile.set(profile)
+    try:
+        with adapter._profile_scope(profile):
+            yield
+    finally:
+        _api_request_profile.reset(token)
+
+
 async def run_record(
     adapter: Any,
     home: Path,
@@ -177,19 +209,26 @@ async def run_record(
         session_id = resolve_delivery_session(home, record)
         kwargs = delivery_run_kwargs(record)
         kwargs["session_id"] = session_id
+        # ...and nothing has scoped the turn to that lane: a drained record has no
+        # request behind it, so enter its target profile's scope for the turn
+        # itself. Otherwise the lane's session id is applied to the DEFAULT home.
+        scope = target_profile_scope(adapter, record)
     else:
         session_id = str(record.get("target_session_id") or "")
         kwargs = dict(ctx.get("run_kwargs") or {})
         kwargs["session_id"] = session_id
-    history = await adapter._conversation_history_for_session(session_id)
+        # The caller's own request already set the profile it was routed to.
+        scope = nullcontext()
     started = time.monotonic()
     log_delivery_event("turn_start", record, drained=ctx is None)
     try:
-        result, _usage = await adapter._run_agent(
-            conversation_history=history,
-            lease_wait_seconds=delivery_queue.lease_probe_seconds(),
-            **kwargs,
-        )
+        with scope:
+            history = await adapter._conversation_history_for_session(session_id)
+            result, _usage = await adapter._run_agent(
+                conversation_history=history,
+                lease_wait_seconds=delivery_queue.lease_probe_seconds(),
+                **kwargs,
+            )
     except Exception as exc:  # noqa: BLE001 - any turn failure settles the record
         logger.exception("[api_server] peer delivery turn failed: %s", delivery_id)
         error = str(exc) or exc.__class__.__name__

@@ -1,6 +1,6 @@
 name: better-session-appearance
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: 5504f3050005ece2be9d31a199ec21208572370e
+sha: 37fe9446bed8660fcf6c007a9f80226d6bd9e105
 subdir: plugins/better-session-appearance
 description: "Color and bold the full session name, and show a Codicon when a session is idle."
 maintainer: apoapostolov
@@ -8,6 +8,7 @@ tier: community
 category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/plugins/better-session-appearance
 version: "1.2.1"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/37fe9446bed8660fcf6c007a9f80226d6bd9e105/plugins/better-session-appearance/docs/hero.png
 platforms: []
 capabilities:
   provides_tools: []

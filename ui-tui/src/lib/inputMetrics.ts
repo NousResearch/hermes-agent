@@ -170,6 +170,13 @@ export function inputVisualHeight(value: string, columns: number) {
   return cursorLayout(value, value.length, columns).line + 1
 }
 
+/** Floor for the composer box so empty drafts are not a single ~20px cell. */
+export const COMPOSER_INPUT_MIN_ROWS = 3
+
+export function composerInputHeight(value: string, columns: number) {
+  return Math.max(COMPOSER_INPUT_MIN_ROWS, inputVisualHeight(value, columns))
+}
+
 export function composerPromptWidth(promptText: string) {
   return Math.max(1, stringWidth(promptText)) + COMPOSER_PROMPT_GAP_WIDTH
 }

@@ -1016,7 +1016,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         # Use the ``flood_control:<seconds>`` shape so the delivery ledger recognises
                         # the flood and redelivers after the cooldown (the raw wording was not matched
                         # by ``is_flood_error``).
-                        last_error = RuntimeError(f"flood_control:{self._send_chunk_retry_delay_seconds * 3:.1f}")
+                        last_error = RuntimeError(f"flood_control:{self._rate_limit_circuit_open_seconds:.1f}")
                         if self._record_rate_limit_event():
                             last_error = RuntimeError(
                                 f"flood_control:{self._rate_limit_cooldown_remaining():.1f}")

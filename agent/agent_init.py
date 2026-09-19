@@ -1340,7 +1340,7 @@ def _apply_agent_section(agent, _agent_cfg):
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
     for _key in (
-        "stall_guards", "task_completion_guidance", "parallel_tool_call_guidance",
+        "stall_guards", "promise_stop_guard", "task_completion_guidance", "parallel_tool_call_guidance",
         "environment_probe", "bot_mode_protocol",
     ):
         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))

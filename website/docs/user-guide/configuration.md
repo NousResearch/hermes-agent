@@ -1972,6 +1972,15 @@ agent:
 
 The same gate also enables **result-reference stubbing**: when a re-issued identical tool call returns a byte-identical fresh result, the duplicate payload enters context as a short reference stub pointing at the earlier result (tool name, `tool_call_id`, an args summary, and — if the first result was persisted to disk — its spillover path) instead of repeating the full output. The tool still executes every time, so polling semantics are preserved: a changed result always flows through whole. Results under 512 characters, error results, and multimodal results are never stubbed, and pollers *are* stubbed (an unchanged poll is exactly the case where the duplicate payload carries no information).
 
+### Premature-action-promise stop guard
+
+`agent.promise_stop_guard` (default `true`) closes the remaining "says it will act, then stops" gap that the intent-ack continuation and the stall-guard continue-intent recovery both miss because they key off first-person phrasing ("I'll…", "Let me…"). Some models end a turn with a text-only response (no tool calls) whose **final sentence announces the immediate next action** in imperative/gerund form — "Both writes landed. Running the full verification battery now — …:", "Two real bugs caught in the harness. Fixing all of it now." Hermes now recognises that shape (short final sentence, action verb at the head of the last sentence, an immediate marker or a hanging colon/ellipsis) and appends a synthetic continuation nudge asking the model to execute the announced action instead of stopping, bounded to **2 re-prompts per turn** like the sibling verification guards. Questions, option lists, quoted or fenced text, completed reports ("…all done.", "…41/41 passed."), and background/delegated phrasing ("the subagent is running…") deliberately never trigger it, and a delegate-only session has the guard off by design (handing the work off *is* the correct end state). When the bounded continuations are exhausted and the delivered reply still ends on an unperformed promise, the turn is **never** presented as a clean completion: the result carries `action_promise_unfulfilled: true`, `completed` is forced false, and an explicit ⚠️ notice is appended to the delivered text (post-persist, like the file-mutation footer, so it never contaminates the replayed transcript). Disable it with the profile-scoped setting below.
+
+```yaml
+agent:
+  promise_stop_guard: false
+```
+
 ### Turn liveness watchdog
 
 `agent.turn_liveness` bounds how long a conversation turn may make **no observable progress** before Hermes force-recovers it. The watchdog keys off the activity clock (the same signal that stamps API waits, stream tokens, and tool heartbeats — lease renewal never counts), so a turn that silently wedges mid-flight (observed as issue #95548: no tool execution, no API call, no error, but the session stays "busy" indefinitely) is surfaced loudly, interrupted so it unwinds as a retriable interrupted turn, and — when the interrupt cannot unwind the wedge — its durable turn lease stops renewing so stale-turn cleanup can reclaim the session instead of it hanging until the process is killed.

@@ -437,7 +437,9 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
             and not _is_codex_interim(msg) and not _is_codex_interim(prev)
         ):
             # A provisional verification candidate is superseded, not unioned.
-            if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
+            if prev.get("finish_reason") in {
+                "verification_required", "verify_hook_continue", "promise_unfulfilled",
+            }:
                 collapsed[-1] = msg
             else:
                 _merge_assistant_into(prev, msg)

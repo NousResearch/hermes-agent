@@ -1,21 +1,21 @@
 import { refusalPolicy } from './billing-policy.js'
-import type { BillingChargeStatusResponse } from './billing-types.js'
+import type { BillingChargeStatusResult } from './gateway-contract.generated.js'
 
 export interface SettlementDeps {
-  fetchStatus(): Promise<BillingChargeStatusResponse>
+  fetchStatus(): Promise<BillingChargeStatusResult>
   sleep(ms: number): Promise<void>
   isCancelled(): boolean
   now(): number
 }
 
 export type SettlementOutcome =
-  | { kind: 'settled'; status: BillingChargeStatusResponse }
-  | { kind: 'failed'; status: BillingChargeStatusResponse }
-  | { kind: 'refused'; error: string; status: BillingChargeStatusResponse }
+  | { kind: 'settled'; status: BillingChargeStatusResult }
+  | { kind: 'failed'; status: BillingChargeStatusResult }
+  | { kind: 'refused'; error: string; status: BillingChargeStatusResult }
   | {
       kind: 'ambiguous'
       error: string
-      status?: BillingChargeStatusResponse
+      status?: BillingChargeStatusResult
       cause?: unknown
     }
   | { kind: 'timed_out' }
@@ -34,7 +34,7 @@ export async function driveChargeSettlement(deps: SettlementDeps): Promise<Settl
       return { kind: 'cancelled' }
     }
 
-    let status: BillingChargeStatusResponse
+    let status: BillingChargeStatusResult
 
     try {
       status = await deps.fetchStatus()

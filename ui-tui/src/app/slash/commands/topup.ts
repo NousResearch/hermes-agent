@@ -1,4 +1,3 @@
-import type { BillingChargeStatusResponse } from '@hermes/shared/billing'
 import { driveChargeSettlement, type SettlementOutcome } from '@hermes/shared/charge-settlement'
 import type { BillingChargeStatusResult, BillingStateResult, JsonValue } from '@hermes/shared/gateway-events'
 
@@ -6,20 +5,6 @@ import { openExternalUrl } from '../../../lib/openExternalUrl.js'
 import type { BillingChargeOutcome, BillingEnvelope, BillingOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
-
-// `@hermes/shared`'s settlement driver still takes the hand-written envelope, which
-// spells "absent" as undefined where the contract spells it null. See shared_diffs.
-const settlementStatus = (r: BillingChargeStatusResult): BillingChargeStatusResponse => ({
-  amount_usd: r.amount_usd === null ? null : String(r.amount_usd),
-  error: r.error ?? undefined,
-  message: r.message ?? undefined,
-  ok: r.ok,
-  portal_url: r.portal_url,
-  reason: r.reason,
-  retry_after: r.retry_after,
-  settled_at: r.settled_at,
-  status: r.status ?? undefined
-})
 
 const UNCONFIRMED_CHARGE_MESSAGE =
   '🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.'
@@ -247,7 +232,7 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
 
       lastStatus = status
 
-      return settlementStatus(status)
+      return status
     },
     isCancelled: () => ctx.stale(),
     now: () => Date.now(),

@@ -1,5 +1,5 @@
 /**
- * Compile-time guard for BillingPaymentMethod.
+ * Compile-time guard for the generated `BillingStateResult['payment_method']` union.
  *
  * There is nothing to run here — the point is that `tsc` accepts this file.
  * An earlier revision typed the fallback arm's `kind` as `string & {}`, which
@@ -8,7 +8,9 @@
  * keeps `kind` narrowable.
  */
 
-import type { BillingPaymentMethod } from './billing-types'
+import type { BillingStateResult } from './gateway-contract.generated.js'
+
+type BillingPaymentMethod = NonNullable<BillingStateResult['payment_method']>
 
 export function describePaymentMethod(pm: BillingPaymentMethod): string {
   switch (pm.kind) {
@@ -19,6 +21,6 @@ export function describePaymentMethod(pm: BillingPaymentMethod): string {
       return pm.email ?? 'Link'
 
     case 'unknown':
-      return pm.raw_kind
+      return pm.raw_kind ?? 'unknown'
   }
 }

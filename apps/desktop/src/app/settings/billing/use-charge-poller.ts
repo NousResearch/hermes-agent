@@ -1,5 +1,4 @@
 import { isRecord } from '@hermes/shared'
-import type { BillingChargeStatusResponse as SettlementStatus } from '@hermes/shared/billing'
 import { refusalPolicy } from '@hermes/shared/billing-policy'
 import {
   driveChargeSettlement,
@@ -12,8 +11,7 @@ import { useCallback, useRef, useState } from 'react'
 import type { BillingApi, BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
-import type { BillingErrorPayload } from './types'
-import type { BillingChargeStatusResult } from './types'
+import type { BillingChargeStatusResult, BillingErrorPayload } from './types'
 
 export const CHARGE_POLL_INTERVAL_MS = SETTLEMENT_POLL_INTERVAL_MS
 export const CHARGE_POLL_CAP_MS = SETTLEMENT_POLL_CAP_MS
@@ -71,7 +69,7 @@ export async function pollChargeSettlement(
 ): Promise<ChargeFlowOutcome> {
   const sleep = opts.sleep ?? defaultSleep
   const now = opts.now ?? Date.now
-  const observed: { refusal?: BillingRefusal; status?: SettlementStatus } = {}
+  const observed: { refusal?: BillingRefusal; status?: BillingChargeStatusResult } = {}
 
   const settlement = await driveChargeSettlement({
     fetchStatus: async () => {
@@ -79,7 +77,7 @@ export async function pollChargeSettlement(
 
       if (result.ok) {
         observed.refusal = undefined
-        observed.status = settlementStatus(result.data)
+        observed.status = result.data
 
         return observed.status
       }
@@ -97,7 +95,7 @@ export async function pollChargeSettlement(
   switch (settlement.kind) {
     case 'settled':
       return {
-        amountUsd: settlement.status.amount_usd,
+        amountUsd: settlement.status.amount_usd === null ? null : String(settlement.status.amount_usd),
         kind: 'success',
         message: settlement.status.amount_usd ? `$${settlement.status.amount_usd} added.` : 'Credits added.'
       }
@@ -147,40 +145,33 @@ export async function pollChargeSettlement(
   }
 }
 
-// The shared settlement driver (apps/shared/charge-settlement.ts) still reads the
-// hand-written status type, which spells "absent" as undefined where the wire says null.
-function settlementStatus(status: BillingChargeStatusResult): SettlementStatus {
+function statusFromRefusal(refusal: BillingRefusal): BillingChargeStatusResult {
   return {
-    amount_usd: status.amount_usd === null ? null : String(status.amount_usd),
-    error: status.error ?? undefined,
-    message: status.message ?? undefined,
-    ok: status.ok,
-    // SAFETY: `payload` is opaque JSON on the wire; a record is read as the error-payload fields the UI knows.
-    payload: isRecord(status.payload) ? (status.payload as BillingErrorPayload) : undefined,
-    portal_url: status.portal_url,
-    reason: status.reason,
-    retry_after: status.retry_after,
-    settled_at: status.settled_at,
-    status: status.status ?? undefined
-  }
-}
-
-function statusFromRefusal(refusal: BillingRefusal): SettlementStatus {
-  return {
+    actor: refusal.actor ?? null,
+    amount_usd: null,
+    code: refusal.code ?? null,
     error: refusal.kind,
     message: refusal.message,
     ok: false,
-    payload: refusal.payload,
-    portal_url: refusal.portalUrl,
-    retry_after: refusal.retryAfter
+    payload: refusal.payload ?? null,
+    portal_url: refusal.portalUrl ?? null,
+    reason: null,
+    recovery: refusal.recovery ?? null,
+    retry_after: refusal.retryAfter ?? null,
+    settled_at: null,
+    status: null
   }
 }
 
-function refusalFromStatus(error: string, status: SettlementStatus): BillingRefusal {
+// SAFETY: `payload` is opaque JSON on the wire; a record is read as the error-payload fields the UI knows.
+const asErrorPayload = (value: unknown): BillingErrorPayload | undefined =>
+  isRecord(value) ? (value as BillingErrorPayload) : undefined
+
+function refusalFromStatus(error: string, status: BillingChargeStatusResult): BillingRefusal {
   return {
     kind: error,
     message: status.message || error,
-    payload: status.payload,
+    payload: asErrorPayload(status.payload),
     portalUrl: status.portal_url ?? undefined,
     retryAfter: status.retry_after ?? undefined
   }

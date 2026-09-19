@@ -301,6 +301,89 @@ class TestResolveConfigPath:
         assert _get_default_hermes_home() == default_home
         assert result == default_cfg
 
+    def test_falls_back_to_global_when_no_config_exists_anywhere(self, tmp_path, monkeypatch):
+        """Exercise the REAL resolver chain rather than stubbing it out.
+
+        The earlier version of this test patched `get_hermes_home()` and
+        `_get_default_hermes_home()` directly, so it only demonstrated that the patched values flowed
+        through — it could not have caught a regression in either resolver, nor in the ordering
+        between them (flagged in review).
+        """
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(fake_home))       # Windows platform default home
+        monkeypatch.setattr(Path, "home", lambda: fake_home)     # POSIX home + the ~/.honcho root
+
+        assert resolve_config_path() == fake_home / ".honcho" / "config.json"
+
+    def test_default_profile_config_wins_over_global(self, tmp_path, monkeypatch):
+        """The middle branch of the chain, which the stubbed version could not reach.
+
+        Active (profile) home has no honcho.json but the default profile home does, so the default
+        one is used rather than falling through to the global path.
+        """
+        fake_home = tmp_path / "fakehome"
+        default_home = fake_home / "hermes"
+        profile_home = default_home / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        (default_home / "honcho.json").write_text(
+            json.dumps({"apiKey": "default-key"}), encoding="utf-8"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        assert resolve_config_path() == default_home / "honcho.json"
+
+    def test_global_fallback_uses_home_at_call_time(self, tmp_path):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=fake_home):
+            assert resolve_global_config_path() == fake_home / ".honcho" / "config.json"
+            assert resolve_config_path() == fake_home / ".honcho" / "config.json"
+
+    def test_from_global_config_uses_default_profile_fallback(self, tmp_path, monkeypatch):
+        # Profile mode: from_global_config() reads the default-profile honcho.json
+        # via the HOME-anchored helper, not Path.home() / ".hermes".
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        default_home = fake_home / ".hermes"
+        profile_home = default_home / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        default_cfg = default_home / "honcho.json"
+        default_cfg.write_text(json.dumps({
+            "apiKey": "default-key",
+            "workspace": "default-ws",
+        }))
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        config = HonchoClientConfig.from_global_config()
+
+        assert config.api_key == "default-key"
+        assert config.workspace_id == "default-ws"
+
+    def test_from_global_config_uses_local_path(self, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        local_cfg = hermes_home / "honcho.json"
+        local_cfg.write_text(json.dumps({
+            "apiKey": "***",
+            "workspace": "local-ws",
+        }))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=tmp_path):
+            config = HonchoClientConfig.from_global_config()
+        assert config.api_key == "***"
+        assert config.workspace_id == "local-ws"
+
 
 class TestResolveActiveHost:
     def test_profile_host_key_uses_honcho_safe_separator(self):

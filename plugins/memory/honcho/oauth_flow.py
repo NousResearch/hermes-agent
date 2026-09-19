@@ -45,10 +45,16 @@ _LOCAL_TOKEN_URL = "http://localhost:8000/oauth/token"
 _DEFAULT_CLIENT_ID = "hermes-agent"
 
 def _display_config_path(path: object) -> str:
-    """Home-relative display string for the consent screen (never the write path); outside ``$HOME``, the bare name."""
+    """Home-relative display string for the consent screen (never the write path); outside ``$HOME``, the bare name.
+
+    Imported at call time so tests can patch ``pathlib.Path`` and exercise
+    genuine Windows separator semantics on POSIX hosts.
+    """
+    from pathlib import Path
+
     p = Path(str(path))
     try:
-        return "~/" + str(p.relative_to(Path.home()))
+        return "~/" + p.relative_to(Path.home()).as_posix()
     except ValueError:
         return p.name
 

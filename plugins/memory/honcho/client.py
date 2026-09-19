@@ -235,6 +235,36 @@ class _HostLookup:
         return {k: v for k, v in pairs if k and v}
 
 
+def _coerce_string_list(value) -> list[str]:
+    """Filter a config value to a clean list of non-blank strings.
+
+    Explicit non-list values fail closed and emit a warning so a typo does not
+    silently disable observation opt-out. ``None`` is treated as an explicit
+    null (off) without a warning.
+    """
+    if not isinstance(value, list):
+        if value is not None:
+            logger.warning(
+                "Honcho config: expected a list of strings but got %s — "
+                "value ignored (feature stays off). Use a YAML/JSON array, "
+                "e.g. ['off the record'], not a bare string.",
+                type(value).__name__,
+            )
+        return []
+    return [str(v).strip() for v in value if isinstance(v, str) and str(v).strip()]
+
+
+def _parse_string_list(host_obj: dict, root_obj: dict, key: str) -> list[str]:
+    """Resolve a list field with host-level whole-value override.
+
+    A present host key wins even when its value is empty, null, or invalid;
+    absent host keys use the root value. This keeps explicit profile-local
+    settings from accidentally inheriting a root opt-out list.
+    """
+    source = host_obj[key] if key in host_obj else root_obj.get(key)
+    return _coerce_string_list(source)
+
+
 def _is_local_base_url(base_url: str | None) -> bool:
     """True for loopback/RFC1918/link-local/ULA/CGNAT self-hosted Honcho URLs. Local
     deployments can run without auth but the SDK needs a non-empty api_key, so LAN/VPN
@@ -329,6 +359,7 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         "first_turn_dialectic_wait": look.parsed("firstTurnDialecticWait", lambda v: max(0.0, float(v)), 2.0),
         "observation_mode": observation_mode,
         **_resolve_observation(observation_mode, look.pick("observation")),
+        "observation_opt_out_phrases": _parse_string_list(look.host, look.raw, "observationOptOutPhrases"),
         "session_strategy": look.pick("sessionStrategy", "per-directory"),
         "session_peer_prefix": look.pick_set("sessionPeerPrefix", False),
         "a2a_sessions": look.flag("a2aSessions", default=True),
@@ -392,6 +423,10 @@ class HonchoClientConfig:
     user_observe_others: bool = True
     ai_observe_me: bool = True
     ai_observe_others: bool = True
+    # Per-turn observation opt-out: user-message substrings that mark a turn
+    # "no_observe" while retaining the message for search and replay. Empty by
+    # default; phrase-based opt-out is disabled unless explicitly configured.
+    observation_opt_out_phrases: list[str] = field(default_factory=list)
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False

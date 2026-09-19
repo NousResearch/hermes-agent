@@ -119,6 +119,17 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
 
+    def test_tool_search_defer_is_recognized_and_parses_lists(
+            self, _isolated_hermes_home, capsys):
+        """tools.tool_search.defer is runtime-read on every tools assembly (#116404):
+        the key must be recognized (no unknown-key notice) and the JSON list must be
+        stored as a real list so the isinstance-gated reader in tool_search obeys it."""
+        set_config_value("tools.tool_search.defer", '["todo_list", "cronjob_manage"]')
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        stored = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert stored["tools"]["tool_search"]["defer"] == ["todo_list", "cronjob_manage"]
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)

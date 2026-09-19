@@ -131,13 +131,14 @@ _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 # config replaces this wholesale ([] = everything eager). POST-rename names. ``clarify``
 # is deliberately absent: A/B showed deferring it collapsed structured-clarify usage
 # (18/18 -> 7/18) — the ask-the-user affordance must be ambient, a stub is not enough.
-_DEFAULT_DEFERRED_TOOLS = frozenset({
-    "computer_use", "session_search", "image_generate",
-    "todo_list", "process_manage", "cronjob_manage",
-    # Desktop GUI surface (desktop_ui + project toolsets)
-    "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
-    "show_tip", "desktop_project", "close_terminal",
-    "apply_layout", "read_terminal", "read_window_below", "focus_pane"})
+# Derived from the DEFAULT_CONFIG entry (single source of truth, #116404): the value
+# `hermes config` shows is the value the assembly obeys. config_defaults is a pure-data
+# leaf module, so this import cannot cycle.
+from hermes_cli.config_defaults import DEFAULT_CONFIG as _SCHEMA_DEFAULTS
+
+_schema_defer = _SCHEMA_DEFAULTS.get("tools", {}).get("tool_search", {}).get("defer", ())
+_DEFAULT_DEFERRED_TOOLS = frozenset(
+    str(n).strip() for n in _schema_defer if str(n).strip())
 
 
 def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:

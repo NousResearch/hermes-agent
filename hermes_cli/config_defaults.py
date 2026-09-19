@@ -1926,7 +1926,8 @@ DEFAULT_CONFIG = {
     },
     # Tool Search: deferrable (MCP / non-core plugin) tools are replaced in the model-facing array
     # by tool_search / tool_describe / tool_call bridges and surfaced on demand. Core Hermes tools
-    # (terminal, file tools, todo, memory, browser_*, ...) are NEVER deferred.
+    # (terminal, file tools, todo, memory, browser_*, ...) stay direct UNLESS named in ``defer``
+    # below — event-triggered tools a catalog stub suffices for.
     "tools": {
         "tool_search": {
             # Tiered: tier 0 (no deferrable tools) = everything eager; tier 1 = bridge + a
@@ -1952,6 +1953,20 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
             # Range 200..60000.
             "listing_max_tokens": 4000,
+            # Core/GUI tools deferred behind the bridge by default — event-triggered tools a
+            # catalog stub suffices for. A user list REPLACES this wholesale ([] = defer no
+            # core tools; MCP/plugin tools still defer as usual). tools/tool_search.py derives
+            # its curated default from this entry, so `hermes config` shows the value the
+            # assembly obeys. MUST be a list (not a string sentinel): the set-value guardrail
+            # echoes string-typed keys verbatim, which would defeat `config set` list parsing.
+            "defer": [
+                "computer_use", "session_search", "image_generate",
+                "todo_list", "process_manage", "cronjob_manage",
+                # Desktop GUI surface (desktop_ui + project toolsets)
+                "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
+                "show_tip", "desktop_project", "close_terminal",
+                "apply_layout", "read_terminal", "read_window_below", "focus_pane",
+            ],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires

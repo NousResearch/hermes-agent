@@ -15,13 +15,18 @@ problem. When activated, MCP and plugin tools are replaced in the
 model-visible tools array by three bridge tools, and the model loads each
 specific tool's schema on demand.
 
-:::info Built-in Hermes tools never defer
-The tools that make up Hermes' core capability set (`terminal`,
+:::info Built-in Hermes tools defer only when named in `tools.tool_search.defer`
+The tools that make up Hermes' core working set (`terminal`,
 `read_file`, `write_file`, `patch`, `search_files`, `todo`, `memory`,
 `browser_*`, `web_search`, `web_extract`, `clarify`, `execute_code`,
-`delegate_task`, `session_search`, and the rest of
-`_HERMES_CORE_TOOLS`) are *always* loaded directly. Only MCP tools and
-non-core plugin tools are eligible for deferral.
+`delegate_task`, and the rest of `_HERMES_CORE_TOOLS`) are loaded
+directly by default. The exception is the curated `defer` list (see
+the table below): a handful of event-triggered core and desktop-GUI
+tools — `todo_list`, `session_search`, `cronjob_manage`,
+`computer_use`, `image_generate`, the `desktop_*`/GUI helpers, and
+friends — are deferred by default because a one-line catalog stub
+suffices for them. Deferral only changes how the tool's schema is
+presented, never its behavior once loaded.
 :::
 
 ## How it works
@@ -103,6 +108,13 @@ tools:
     max_search_limit: 25
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
+    # core/GUI tools deferred behind the bridge (replaces the default list
+    # wholesale; [] = defer no core tools)
+    defer: [computer_use, session_search, image_generate, todo_list,
+            process_manage, cronjob_manage, drive_preview, gui_tour,
+            desktop_preview, annotate_preview, show_tip, desktop_project,
+            close_terminal, apply_layout, read_terminal, read_window_below,
+            focus_pane]
 ```
 
 | Key | Default | Meaning |
@@ -113,6 +125,7 @@ tools:
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
+| `defer` | curated list (see above) | Core and desktop-GUI tools deferred behind the bridge by default — event-triggered tools a catalog stub suffices for. This is the supported way to shrink the built-in tool surface: the fixed schema block for core tools is paid on every call, and naming cold ones here removes them from that block. A user list **replaces** the default wholesale (`[]` = defer no core tools; MCP and plugin tools are still eligible). `clarify` is deliberately not in the default set — A/B showed deferring it collapsed structured-clarify usage, since the ask-the-user affordance must stay ambient. |
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.

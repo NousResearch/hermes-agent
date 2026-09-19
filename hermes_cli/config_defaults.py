@@ -1804,6 +1804,10 @@ DEFAULT_CONFIG = {
         # Profile for the root/orchestration task after Triage decomposition; "" = default profile.
         # Does not control the decomposer LLM path (see auxiliary.kanban_decomposer).
         "orchestrator_profile": "",
+        # Show board worker sessions in the desktop/TUI sidebar (they fold into the repo's single
+        # "kanban" lane). Off by default: a busy board's throwaway runs bury interactive chats.
+        # On, an operator can open a card's session, read it live and steer it.
+        "show_worker_sessions": False,
         # Assignee when the orchestrator can't match one to an installed profile; "" = default
         # profile. A task never ends up with assignee=None.
         "default_assignee": "",

@@ -4318,6 +4318,33 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
         return _text_fallback()
 
 
+def _seed_kanban_session_title(cli) -> None:
+    """Kanban workers: name the session after the task, so an operator scanning the sidebar sees
+    "#12 Fix the swap modal", not an opaque timestamp. Runs before ``_init_agent`` so the existing
+    ``_pending_title`` path writes it the moment the session row exists."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not task_id or getattr(cli, "_pending_title", None):
+        return
+    try:
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_db_connect as _kbc
+
+        with _kbc.connect_closing() as conn:
+            task = _kb.get_task(conn, task_id)
+        title = (getattr(task, "title", "") or "").strip() if task is not None else ""
+        if not title:
+            return
+        # Session titles are unique: a re-dispatched card (retry, second run) would collide and
+        # end up untitled, which defeats the point. Take the next title in the lineage instead.
+        db = getattr(cli, "_session_db", None)
+        if db is not None and db.get_session_by_title(title):
+            title = db.get_next_title_in_lineage(title) or title
+        cli._pending_title = title
+    except Exception as exc:
+        # Best-effort naming; an untitled worker still does the task.
+        logger.debug("kanban session title seed failed: %s", exc)
+
+
 def _collect_kanban_task_images(single_query_images):
     """Kanban workers: image paths/URLs in the task body join the first turn's attachments."""
     single_query_image_urls: list[str] = []
@@ -4576,6 +4603,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     try:
         query, single_query_images = _collect_query_images(query, image)
         single_query_image_urls = _collect_kanban_task_images(single_query_images)
+        _seed_kanban_session_title(cli)
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             cli.tool_progress_mode = "off"

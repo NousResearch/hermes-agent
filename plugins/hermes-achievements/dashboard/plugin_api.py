@@ -266,7 +266,7 @@ def _count_tool(tool_names: List[str], *needles: str) -> int:
 
 
 _PROVIDER_MARKERS = ["openai", "anthropic", "google", "gemini", "mistral", "meta", "qwen", "deepseek", "xai", "nous", "ollama", "groq", "openrouter", "codex"]
-_LOCAL_MARKERS = ["ollama", "llama.cpp", "localhost", "127.0.0.1", "local/", "local:", "gguf", "vllm-local"]
+_LOCAL_MARKERS = ["ollama", "llama.cpp", "localhost", "127.0.0.1", "local/", "local:", "gguf", "vllm-local", "omlx", "lmstudio"]
 
 
 def model_provider(model_name: str) -> Optional[str]:

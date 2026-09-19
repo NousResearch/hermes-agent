@@ -79,6 +79,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `recall_sync` | `false` | Recall synchronously against the *current* message each turn (higher relevance, adds recall latency). Default off: recall runs in the background and is injected on the next turn. |
 | `recall_indicator` | `true` | Show a `👁️ Hindsight — recalled N memories` status line when auto-recall injects memory. Turn off for customer-facing agents. |
+| `desktop_context_root` | — | Root directory for Desktop workstream recall (see "Desktop workstream recall" below). A session whose working directory resolves under `<root>/<domain>/` gets that domain key's `extra_tags` from `thread_routing.json` as an `any_strict` recall filter. Absent/empty = layer inert. |
 
 > **Behavior change — `recall_types` defaults to `observation` only.**
 >
@@ -87,6 +88,50 @@ Config file: `~/.hermes/hindsight/config.json`
 > Per [Hindsight's docs](https://hindsight.vectorize.io/developer/observations), observations are the **consolidated** knowledge layer Hindsight builds on top of raw facts: deduplicated beliefs grounded in evidence, refined as new facts arrive, with proof counts and freshness signals. Raw `world` / `experience` facts are the individual supporting evidence that feeds them. For per-turn context injection, observations are denser per token and avoid feeding the model multiple raw facts that one observation already summarizes.
 >
 > Restore the broad recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.hermes/hindsight/config.json`. This applies to **both** auto-recall and the `hindsight_recall` tool — both read the same `recall_types` setting (the tool schema has no per-call `types` argument), so narrowing the default narrows both paths.
+
+### Desktop workstream recall
+
+Per-session, workstream-scoped recall for Desktop sessions. Desktop sessions do not carry a messaging `thread_id`, so recall normally falls back to the global `recall_tags` filter for every project. This opt-in layer derives a domain-specific tag filter from the session's working directory instead.
+
+**Prerequisites**
+
+- `desktop_context_root` (config key, see the Recall table) AND `"recall_sync": true` must both be set. With asynchronous prefetch the layer trips closed and the configured `recall_tags` baseline stays in force — feature disablement, not a confidentiality guarantee.
+- `thread_routing.json` must contain a bare domain key — e.g. `{"myproject": {"extra_tags": ["myproject"]}}` — for each domain being routed. A key without the `<platform>:<id>` colon form is a domain key; it uses the same entry shape and validation as thread keys.
+- The routed domain's memories must already carry those tags. This filters memories that already carry the selected tags; it does **not** infer tags from folders or context files, backfill existing memories, or add domain tags to retains. Retain and channel-tag generation are unchanged.
+
+Both files are profile-scoped and live under the **selected profile's** Hermes home: `$HERMES_HOME/hindsight/config.json` and `$HERMES_HOME/hindsight/thread_routing.json`. `$HERMES_HOME` resolves per `get_hermes_home()` — a context-local override first, then the `HERMES_HOME` environment variable, then the platform default (`~/.hermes` on Linux/macOS; `%LOCALAPPDATA%\hermes` on native Windows, with `~/AppData/Local/hermes` as the fallback when `LOCALAPPDATA` is unset) — so in a named profile the files belong in that profile's home, not in the default profile's platform-native home. Add them as additions to the existing connection config:
+
+**Settings keys** — `$HERMES_HOME/hindsight/config.json` (add to your existing connection config):
+
+```json
+{
+  "desktop_context_root": "/srv/workspaces",
+  "recall_sync": true
+}
+```
+
+**Routing table** — `$HERMES_HOME/hindsight/thread_routing.json` (a bare domain-key table):
+
+```json
+{
+  "myproject": { "extra_tags": ["myproject"] }
+}
+```
+
+Profiles do not read each other's files, with one legacy exception: `thread_routing.json` has no legacy path, but `config.json` does — `_load_config()` still falls back to the shared `~/.hindsight/config.json` when the profile's own `config.json` does not exist, so a profile that has never created one can pick up Hindsight settings from that legacy shared file. Both files are loaded at provider initialize(); changing either file requires provider reinitialization (another recall call is not enough). The session working directory is resolved per recall call.
+
+**Matching**
+
+- The session cwd is resolved per recall call through the same resolver that selects the project context pack (session override first, terminal-scope fallback), and compared against `desktop_context_root` after canonical `Path.resolve()` on both sides — symlinks are followed, so a link that escapes the root does not match.
+- The first path component below the root is the route key: `/workspaces/myproject/src` routes as `myproject`.
+- A cwd equal to the root or outside the root does not match and keeps the global recall filter.
+
+**Semantics**
+
+- Relevance filtering, not authorization or isolation: sessions that share a bank or a filter still see whatever the effective filter admits.
+- A matching domain route REPLACES `recall_tags` (it is not intersected with it) and uses `tags_match: any_strict`, so memories carrying at least one selected tag are eligible — including multi-tag memories shared across domains — while untagged memories are excluded.
+- The Desktop domain layer activates only when the provider's platform is exactly `desktop` and no `platform:thread` override applied. The separate `platform:thread` branch activates on its own and does not require `desktop_context_root`.
+- No match, missing/malformed routing table, missing root key, blank domain tags, or an unresolvable cwd keeps the configured baseline. One deliberate exception: a terminal-policy refusal propagates instead of falling back.
 
 ### Retain
 

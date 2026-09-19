@@ -733,7 +733,7 @@ def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) 
         if report is not None:
             # Turn over, child still lingering for a nested reply: not this lane's wait.
             return subprocess.CompletedProcess(argv, int(report["exit_code"]), "", report.get("error") or "")
-        report = read_turn_report(report_path, proc.pid)
+        report = read_turn_report(report_path)
         if report is None and time.monotonic() >= deadline:
             proc.kill()
             drain.join(timeout=5.0)

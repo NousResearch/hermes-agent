@@ -96,7 +96,7 @@ def test_turn_report_is_written_before_the_exit_linger_and_the_path_is_not_inher
         return {"final_response": "ok"}
 
     def linger(*args, **kwargs):
-        seen["report_at_linger"] = qsq.read_turn_report(str(report), os.getpid())
+        seen["report_at_linger"] = qsq.read_turn_report(str(report))
         return {"waited": [], "completed": [], "timed_out": []}
 
     monkeypatch.setattr("tools.process_registry.process_registry.wait_for_pending_completions", linger)
@@ -107,5 +107,12 @@ def test_turn_report_is_written_before_the_exit_linger_and_the_path_is_not_inher
         assert exc.code == 0
     assert seen["env_during_turn"] is None and seen["report_during_turn"] is False
     assert seen["report_at_linger"] == {"pid": os.getpid(), "exit_code": 0, "error": ""}
-    # Another process's record is not this child's report.
-    assert qsq.read_turn_report(str(report), os.getpid() + 1) is None
+    # Identity is the path, not the writer's pid: the spawner owns a fresh per-delivery temp
+    # name and pops it before the turn, and a launcher that re-execs makes the pid unknowable.
+    # What must still fail closed is a record that is not a turn report.
+    report.write_text('{"pid": 1}', encoding="utf-8")
+    assert qsq.read_turn_report(str(report)) is None
+    report.write_text("not json", encoding="utf-8")
+    assert qsq.read_turn_report(str(report)) is None
+    report.unlink()
+    assert qsq.read_turn_report(str(report)) is None

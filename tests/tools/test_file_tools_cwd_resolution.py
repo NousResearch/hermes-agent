@@ -311,3 +311,48 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
     # The decoy (backend cwd) was left untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
+
+
+def test_cwd_shaped_relative_path_gets_leading_slash(_isolated_cwd, monkeypatch):
+    """A cwd-shaped relative path missing its leading "/" is treated as absolute.
+
+    Regression for issue #67185: a model emitting ``home/user/dev/notes/x.md``
+    (an absolute path without the leading slash) used to be joined with the
+    task base directory, producing a doubled path like
+    ``/home/user/dev/home/user/dev/notes/x.md``.  The structural check in
+    ``_resolve_path_for_task`` now prepends the missing "/" so the file lands
+    where the model intended instead of being silently nested under the cwd.
+    """
+    workspace, decoy = _isolated_cwd
+    # Make the workspace path end with the same segments the model drops,
+    # so the structural check (base-dir tail match) fires.
+    cwd_shaped_workspace = workspace / "home" / "user" / "dev"
+    cwd_shaped_workspace.mkdir(parents=True)
+    monkeypatch.setenv("TERMINAL_CWD", str(cwd_shaped_workspace))
+
+    resolved = ftp._resolve_path_for_task("home/user/dev/notes/x.md", task_id="default")
+
+    # The path must be absolute (not doubled under the workspace).
+    assert str(resolved) == str(Path("/home/user/dev/notes/x.md").resolve())
+    # Must NOT be doubled under the workspace root.
+    assert str(cwd_shaped_workspace) not in str(resolved)
+
+
+def test_cwd_shaped_relative_path_with_non_root_base_dir(_isolated_cwd, monkeypatch):
+    """End-to-end: a cwd-shaped path under a non-standard base dir is coerced.
+
+    Proves detection is structural (base-dir-tail match) rather than
+    allowlist-driven: the workspace's first segment is NOT a known
+    filesystem root.
+    """
+    workspace, decoy = _isolated_cwd
+    custom = workspace.parent / "myproject"
+    custom.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", str(custom))
+
+    resolved = ftp._resolve_path_for_task("myproject/src/main.py", task_id="default")
+
+    assert str(resolved) == "/myproject/src/main.py"
+    # The key assertion: the path must NOT be doubled under the workspace.
+    doubled = str(custom) + str(custom).lstrip("/")
+    assert not str(resolved).startswith(doubled)

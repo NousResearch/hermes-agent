@@ -107,6 +107,9 @@ import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { desktopSettings } from './settings'
+
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -684,6 +687,9 @@ export const host = {
     /** Window geometry ({ width, height, narrow }). */
     viewport: readonlyAtom<ViewportRect>($viewport)
   },
+
+  /** Read, update, and observe the allowlisted Desktop appearance preferences. */
+  settings: desktopSettings,
 
   /** Toast into the app's notification stack. */
   notify,

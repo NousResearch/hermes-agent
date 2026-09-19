@@ -35,6 +35,7 @@ GATE_VARS = [
     "GATEWAY_ALLOWED_USERS",
     "DISCORD_NO_THREAD_CHANNELS",
     "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_FORCE_THREAD_CHANNELS",
     "DISCORD_ALLOW_BOTS",
 ]
 
@@ -113,6 +114,14 @@ class TestTwoAdapterChannelIsolation:
         _snapshot(b, {"DISCORD_IGNORED_CHANNELS": "322"})
         assert a._get_ignored_channels() == {"311"}
         assert b._get_ignored_channels() == {"322"}
+
+    def test_force_thread_channels_isolated(self):
+        a = _adapter()
+        b = _adapter()
+        _snapshot(a, {"DISCORD_FORCE_THREAD_CHANNELS": "411"})
+        _snapshot(b, {"DISCORD_FORCE_THREAD_CHANNELS": "422"})
+        assert a._discord_force_thread_channels() == {"411"}
+        assert b._discord_force_thread_channels() == {"422"}
 
 
 class TestTwoAdapterUserRoleIsolation:

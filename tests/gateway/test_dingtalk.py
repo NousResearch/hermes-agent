@@ -1,5 +1,7 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import json
+import os
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -197,6 +199,297 @@ class TestSend:
 # ---------------------------------------------------------------------------
 # Connect / disconnect
 # ---------------------------------------------------------------------------
+
+
+class TestNativeVoice:
+    @pytest.fixture
+    def adapter(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={
+            "client_id": "robot-test", "client_secret": "secret-test",
+            "allowed_users": ["staff-test"],
+        }))
+        adapter._mark_connected()
+        adapter._get_access_token = AsyncMock(return_value="token-sentinel")
+        adapter._resolve_media_codes = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    async def inbound(self, adapter, conversation_type="2"):
+        message = _FakeChatbotMessage.from_dict({
+            "msgId": "message-test", "conversationId": "chat-test",
+            "conversationType": conversation_type, "senderId": "encrypted-test",
+            "senderStaffId": "staff-test", "text": {"content": "hello"},
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/send?access_token=webhook-test",
+            "sessionWebhookExpiredTime": int(datetime.now(timezone.utc).timestamp() * 1000) + 3600000,
+        })
+        await adapter._on_message(message)
+        assert adapter.handle_message.await_count == 1
+        return message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("conversation_type", ["1", "2"])
+    async def test_inbound_route_upload_and_caption_contract(self, adapter, monkeypatch, conversation_type):
+        import httpx
+        from plugins.platforms.dingtalk import voice
+        message = await self.inbound(adapter, conversation_type)
+        media = b"#!AMR\nfixture-only"
+        monkeypatch.setattr(voice, "prepare_voice", AsyncMock(return_value=(media, 1234)))
+        requests = []
+
+        def transport(request):
+            requests.append(request)
+            if request.url.path == "/media/upload":
+                assert request.url.params["access_token"] == "token-sentinel"
+                assert b'name="type"\r\n\r\nvoice' in request.content
+                assert b"Content-Type: audio/amr" in request.content
+                assert media in request.content
+                return httpx.Response(200, json={"errcode": 0, "media_id": "media-test"})
+            if request.url.path == "/robot/send":
+                assert json.loads(request.content)["markdown"]["text"] == "caption-test"
+                return httpx.Response(200, json={"errcode": 0})
+            payload = json.loads(request.content)
+            assert request.headers["x-acs-dingtalk-access-token"] == "token-sentinel"
+            assert payload["msgKey"] == "sampleAudio"
+            assert payload["robotCode"] == "robot-test"
+            assert json.loads(payload["msgParam"]) == {"mediaId": "media-test", "duration": "1234"}
+            if conversation_type == "2":
+                assert request.url.path.endswith("/groupMessages/send")
+                assert payload["openConversationId"] == message.conversation_id
+                assert "userIds" not in payload
+            else:
+                assert request.url.path.endswith("/oToMessages/batchSend")
+                assert payload["userIds"] == [message.sender_staff_id]
+                assert "openConversationId" not in payload
+            return httpx.Response(200, json={"processQueryKey": "task-test"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            adapter._http_client = client
+            result = await adapter.send_voice("chat-test", "fixture.amr", caption="caption-test",
+                                              metadata={"session_webhook": "https://untrusted.invalid", "userIds": ["wrong"]})
+        assert result.success and result.message_id == "task-test"
+        assert len(requests) == 3
+        assert requests[-1].url == message.session_webhook
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ["missing", "expired", "mismatch", "unknown_type", "missing_staff", "denied", "disconnected"])
+    async def test_route_fails_closed_before_local_or_network_io(self, adapter, monkeypatch, case):
+        from plugins.platforms.dingtalk import voice
+        message = await self.inbound(adapter, "1")
+        adapter._http_client = AsyncMock()
+        prepare = AsyncMock()
+        monkeypatch.setattr(voice, "prepare_voice", prepare)
+        if case == "missing":
+            adapter._message_contexts.clear()
+        elif case == "expired":
+            adapter._session_webhooks["chat-test"] = (message.session_webhook, 1)
+        elif case == "mismatch":
+            message.conversation_id = "another-chat"
+        elif case == "unknown_type":
+            message.conversation_type = "3"
+        elif case == "missing_staff":
+            message.sender_staff_id = ""
+        elif case == "denied":
+            adapter._allowed_users = {"someone-else"}
+        else:
+            adapter._mark_disconnected()
+        result = await adapter.send_voice("chat-test", "unused.amr")
+        assert not result.success
+        prepare.assert_not_awaited()
+        adapter._get_access_token.assert_not_awaited()
+        adapter._http_client.post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stage,status,data", [
+        ("upload", 403, {"message": "token-sentinel"}),
+        ("upload", 200, {"errcode": 40014, "media_id": "not-accepted"}),
+        ("upload", 200, {}), ("upload", 200, []),
+        ("send", 503, {}), ("send", 200, {"code": "Forbidden", "processQueryKey": "not-accepted"}),
+        ("send", 200, {"code": "", "errcode": 1, "processQueryKey": "not-accepted"}),
+        ("send", 200, {}), ("send", 200, {"processQueryKey": {"invalid": "type"}}),
+        ("send", 200, {"processQueryKey": "not-accepted", "invalidStaffIdList": ["staff-test"]}),
+        ("send", 200, {"processQueryKey": "not-accepted", "flowControlledStaffIdList": ["staff-test"]}),
+    ])
+    async def test_provider_acceptance_is_required(self, adapter, monkeypatch, stage, status, data):
+        import httpx
+        from plugins.platforms.dingtalk import voice
+        await self.inbound(adapter, "1")
+        monkeypatch.setattr(voice, "prepare_voice", AsyncMock(return_value=(b"#!AMR\nfixture", 800)))
+        requests = []
+        def transport(request):
+            requests.append(request)
+            if stage == "send" and len(requests) == 1:
+                return httpx.Response(200, json={"media_id": "media-test"})
+            return httpx.Response(status, json=data)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            adapter._http_client = client
+            result = await adapter.send_voice("chat-test", "unused.amr", caption="must-not-send")
+        assert not result.success and result.message_id is None
+        assert "token-sentinel" not in result.error and "not-accepted" not in result.error
+        assert len(requests) == (1 if stage == "upload" else 2)
+
+    @pytest.mark.asyncio
+    async def test_token_and_transport_errors_are_redacted(self, adapter, monkeypatch, caplog):
+        from plugins.platforms.dingtalk import voice
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        await self.inbound(adapter)
+        monkeypatch.setattr(voice, "prepare_voice", AsyncMock(return_value=(b"#!AMR\nfixture", 800)))
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post.side_effect = RuntimeError("token-sentinel private-path")
+        result = await adapter.send_voice("chat-test", "unused.amr")
+        assert not result.success
+        assert "token-sentinel" not in result.error + caplog.text
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.get_access_token.side_effect = RuntimeError("secret-sentinel")
+        assert await DingTalkAdapter._get_access_token(adapter) is None
+        assert "secret-sentinel" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_caption_partial_failure_preserves_voice_receipt(self, adapter, monkeypatch):
+        import httpx
+        from plugins.platforms.dingtalk import voice
+        from gateway.platforms.base import SendResult
+        await self.inbound(adapter)
+        monkeypatch.setattr(voice, "prepare_voice", AsyncMock(return_value=(b"#!AMR\nfixture", 800)))
+        adapter.send = AsyncMock(return_value=SendResult(success=False, error="private-provider-detail"))
+        def transport(request):
+            return httpx.Response(200, json={"media_id": "media-test", "processQueryKey": "task-test"})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            adapter._http_client = client
+            result = await adapter.send_voice("chat-test", "unused.amr", caption="caption-test")
+        assert result.success and result.message_id == "task-test"
+        assert result.raw_response == {"voice_sent": True, "caption_sent": False}
+        assert result.error is None
+
+
+    @pytest.mark.asyncio
+    async def test_local_wav_to_native_voice_smoke(self, adapter, tmp_path):
+        import httpx
+        import shutil
+        import wave
+        from plugins.platforms.dingtalk.voice import prepare_voice, run_audio_tool
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            pytest.skip("ffmpeg and ffprobe are required for the local audio smoke")
+        encoders = await run_audio_tool("ffmpeg", "-hide_banner", "-encoders", timeout=10)
+        if b"libopencore_amrnb" not in encoders:
+            pytest.skip("ffmpeg has no libopencore_amrnb encoder")
+        source = tmp_path / "synthetic.wav"
+        with wave.open(str(source), "wb") as audio:
+            audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            audio.writeframes(b"\0\0" * 16000)
+        original = source.read_bytes()
+        await self.inbound(adapter)
+        requests = []
+        def transport(request):
+            requests.append(request)
+            if request.url.path == "/media/upload":
+                assert b"#!AMR\n" in request.content
+                return httpx.Response(200, json={"errcode": 0, "media_id": "local-smoke-media"})
+            duration = int(json.loads(json.loads(request.content)["msgParam"])["duration"])
+            # AMR framing and ffprobe's bitrate estimate add small padding.
+            assert 1000 <= duration <= 1100
+            return httpx.Response(200, json={"processQueryKey": "local-smoke-task"})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            adapter._http_client = client
+            result = await adapter.play_tts("chat-test", str(source))
+        assert result.success and result.message_id == "local-smoke-task"
+        assert len(requests) == 2 and source.read_bytes() == original
+        media, duration = await prepare_voice(str(source))
+        amr = tmp_path / "existing.amr"
+        amr.write_bytes(media)
+        assert await prepare_voice(str(amr)) == (media, duration)
+        print(f"LOCAL AUDIO SMOKE: WAV -> AMR-NB, 8000 Hz, mono; {len(media)} bytes; {duration} ms; mock upload/send accepted")
+
+
+class TestVoicePreparation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("probe", [
+        {}, {"streams": []},
+        {"streams": [{"codec_name": "amr_wb", "sample_rate": "8000", "channels": 1}], "format": {"duration": "1"}},
+        {"streams": [{"codec_name": "amr_nb", "sample_rate": "16000", "channels": 1}], "format": {"duration": "1"}},
+        {"streams": [{"codec_name": "amr_nb", "sample_rate": "8000", "channels": 2}], "format": {"duration": "1"}},
+        *[{"streams": [{"codec_name": "amr_nb", "sample_rate": "8000", "channels": 1}], "format": {"duration": d}}
+          for d in ("nan", "inf", "0", "-1", "invalid")],
+    ])
+    async def test_codec_and_duration_not_extension_determine_validity(self, tmp_path, monkeypatch, probe):
+        from plugins.platforms.dingtalk import voice
+        source = tmp_path / "voice.amr"
+        source.write_bytes(b"#!AMR\nfixture")
+        tool = AsyncMock(return_value=json.dumps(probe).encode())
+        monkeypatch.setattr(voice, "run_audio_tool", tool)
+        with pytest.raises(ValueError, match="AMR-NB, 8 kHz, mono"):
+            await voice.prepare_voice(str(source))
+        snapshot = tool.await_args.args[-1]
+        assert snapshot != str(source) and not os.path.exists(snapshot)
+        assert source.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("data,error", [(b"RIFF-not-amr", "AMR-NB file"), (b"#!AMR\n" + b"x" * (2 * 1024 * 1024), "2 MB")], ids=["invalid-header", "oversized"])
+    async def test_invalid_or_oversized_media_never_reaches_probe(self, tmp_path, monkeypatch, data, error):
+        from plugins.platforms.dingtalk import voice
+        source = tmp_path / "voice.amr"
+        source.write_bytes(data)
+        tool = AsyncMock()
+        monkeypatch.setattr(voice, "run_audio_tool", tool)
+        with pytest.raises(ValueError, match=error):
+            await voice.prepare_voice(str(source))
+        tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool", ["ffmpeg", "ffprobe"])
+    async def test_missing_binary_errors_are_actionable(self, monkeypatch, tool):
+        from plugins.platforms.dingtalk import voice
+        monkeypatch.setattr(voice.asyncio, "create_subprocess_exec", AsyncMock(side_effect=FileNotFoundError("private-path")))
+        with pytest.raises(ValueError, match=tool + " is required") as exc:
+            await voice.run_audio_tool(tool, timeout=1)
+        assert "private-path" not in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_missing_encoder_error_is_actionable(self, monkeypatch):
+        from plugins.platforms.dingtalk import voice
+        process = MagicMock(returncode=1)
+        process.communicate = AsyncMock(return_value=(b"", b"Unknown encoder 'libopencore_amrnb' private-path"))
+        monkeypatch.setattr(voice.asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+        with pytest.raises(ValueError, match="needs the libopencore_amrnb encoder") as exc:
+            await voice.run_audio_tool("ffmpeg", timeout=1)
+        assert "private-path" not in str(exc.value)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancel", [False, True])
+    async def test_subprocess_timeout_and_cancellation_reap_child(self, tmp_path, monkeypatch, cancel):
+        from pathlib import Path
+        from plugins.platforms.dingtalk import voice
+        source = tmp_path / "voice.wav"
+        source.write_bytes(b"fixture")
+        started = asyncio.Event()
+        process = MagicMock(returncode=None)
+        paths = []
+        async def communicate():
+            started.set()
+            if process.returncode is None:
+                await asyncio.Future()
+            return b"", b""
+        def kill():
+            process.returncode = -9
+        async def spawn(*args, **kwargs):
+            paths.append(args[-1])
+            return process
+        process.kill.side_effect = kill
+        process.communicate = AsyncMock(side_effect=communicate)
+        monkeypatch.setattr(voice.asyncio, "create_subprocess_exec", spawn)
+        if cancel:
+            task = asyncio.create_task(voice.prepare_voice(str(source)))
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not Path(paths[0]).exists()
+        else:
+            with pytest.raises(ValueError, match="timed out"):
+                await voice.run_audio_tool("ffmpeg", timeout=0.01)
+        process.kill.assert_called_once()
+        assert process.communicate.await_count == 2
+        assert source.exists()
 
 
 class TestConnect:

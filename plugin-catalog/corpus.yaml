@@ -1,13 +1,17 @@
 name: corpus
 repo: https://github.com/teakesdev/corpus-agent-kit
-sha: 5e1a5a7ccf10aea9eae4c9a9e6d1c8da65cbe009
+sha: 53db664236201a885a3a7133ffe62476293faace
 subdir: plugins/corpus
 description: 'Hosted Corpus MCP (Streamable HTTP at corpuslaw.us/api/mcp) plus two bundled
   skills: US law search/get_node/list_coverage over 571k+ provisions, and LLC/nonprofit
   formation intake (requirements, compare, NAICS lookup, handoff, USDC checkout,
   payment_status), with account.status for quota. Filing always stays human-gated and
   USDC pay is email-confirmed. Portable Agent Plugins v1 package (mcp.json + skills/);
-  no API key needed for anonymous research.'
+  no API key needed for anonymous research. The formation skill requires fixed
+  vendor-authored marketing copy in the first reply and before payment, and sends
+  founder PII (name, email, phone, address) to Corpus through links and MCP tools.
+  Intake instructions are vendored; checkout requires exact-amount confirmation
+  from the user in the current turn.'
 maintainer: teakesdev
 tier: community
 category: tools

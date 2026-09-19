@@ -1378,9 +1378,8 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     old root ID (exit summary, notes) resumes at the live tip.
     """
     with _session_db() as db:
-        # Exact session ID first, then title (with auto-latest for lineage).
-        session = db.get_session(name_or_id)
-        resolved_id = session["id"] if session else db.resolve_session_by_title(name_or_id)
+        # Match the exact-or-unambiguous-prefix behavior of other session commands.
+        resolved_id = db.resolve_session_id(name_or_id) or db.resolve_session_by_title(name_or_id)
         if resolved_id:
             # Project forward through compression chain so resumes land on
             # the live tip instead of a dead compressed parent.

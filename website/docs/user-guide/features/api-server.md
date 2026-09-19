@@ -623,6 +623,20 @@ curl http://localhost:8642/v1/toolsets \
 
 `/v1/skills` returns the same metadata the skills hub uses internally. `/v1/toolsets` returns toolsets resolved for the `api_server` platform with the concrete `tools` list each one expands to. Both are advertised under `endpoints.*` in `/v1/capabilities`.
 
+## MCP reload
+
+`POST /v1/mcp/reload` is the [`/reload-mcp`](mcp.md#hot-reload) slash command over REST: it re-reads `config.yaml` and `.env`, disconnects and reconnects this agent's MCP servers, and refreshes the tool list of its cached sessions. Use it from an orchestrator after rotating a credential that an `mcp_servers` entry references through `${VAR}` — the gateway's config watcher only reacts to entries being added or removed, and a live server's own reconnect keeps the headers it started with, so a rotated token is only picked up by an explicit reload (or a restart).
+
+```bash
+curl -X POST http://localhost:8642/v1/mcp/reload \
+  -H "Authorization: Bearer $API_SERVER_KEY"
+# → {"object": "hermes.mcp_reload", "ok": true, "profile": "default",
+#    "summary": "🔄 **MCP Servers Reloaded**\n\n♻️ Reconnected: ...",
+#    "servers": [{"name": "...", "status": "connected", "connected": true, "tools": 8}]}
+```
+
+Under [`gateway.multiplex_profiles`](../multi-profile-gateways.md) address the agent with the `/p/<profile>/` prefix: only that profile's servers are torn down and rediscovered, the other profiles' connections are untouched. `ok` is false (HTTP 500) when the reload itself failed (`summary` carries its error text) or when any configured server ended up `failed` — a single server's connect failure is otherwise only a warning in the reload text — and `servers` lists each configured server's cached state (`connected` / `configured` for a lazily registered server / `failed` with `error`). The endpoint is gated by the profile's `API_SERVER_KEY` and does not go through the chat-side `approvals.mcp_reload_confirm` prompt — the key is the authorization. Advertised as `endpoints.mcp_reload` in `/v1/capabilities`.
+
 ## Long-term memory scoping (`X-Hermes-Session-Key`)
 
 Multi-user frontends like Open WebUI need a stable per-channel identifier for long-term memory (Honcho, etc.) that is **independent** of the transcript-scoped `X-Hermes-Session-Id` (which rotates on `/new`). Pass `X-Hermes-Session-Key` on `/v1/chat/completions`, `/v1/responses`, or `/v1/runs` and Hermes threads it through to `AIAgent(gateway_session_key=...)`, where the Honcho memory provider uses it to derive a stable scope.

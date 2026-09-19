@@ -84,7 +84,8 @@ _CAPABILITY_ENDPOINTS = (
     ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
-    ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
+    ("toolsets", ("GET", "/v1/toolsets")), ("mcp_reload", ("POST", "/v1/mcp/reload")),
+    ("sessions", ("GET", "/api/sessions")),
     ("session_create", ("POST", "/api/sessions")),
     ("session", ("GET", "/api/sessions/{session_id}")),
     ("session_update", ("PATCH", "/api/sessions/{session_id}")),
@@ -1569,6 +1570,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/v1/artifacts/download/{artifact_id}", self._handle_artifact_download),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
+            ("POST", "/v1/mcp/reload", self._handle_mcp_reload),
             ("GET", "/api/sessions", self._handle_list_sessions),
             ("POST", "/api/sessions", self._handle_create_session),
             ("GET", "/api/sessions/{session_id}", self._handle_get_session),
@@ -2715,6 +2717,63 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.exception("GET /v1/toolsets failed")
             return _error_response("Failed to enumerate toolsets", 500, err_type="server_error")
         return web.json_response({"object": "list", "platform": "api_server", "data": data})
+
+    # Session identity of the synthetic event a REST-triggered MCP reload runs under (the reload
+    # appends its "servers reloaded" note to this session's transcript, never to a user's).
+    _MCP_RELOAD_CHAT_ID = "mcp-reload"
+
+    @_require_auth
+    async def _handle_mcp_reload(self, request: "web.Request") -> "web.Response":
+        """POST /v1/mcp/reload — the ``/reload-mcp`` slash command over REST: re-read config + ``.env``
+        and reconnect this agent's MCP servers.
+
+        Under multiplex the ``/p/<profile>/`` prefix names the agent: only that profile's servers are
+        torn down and rediscovered (``_execute_mcp_reload`` owns the scoping; the prefix middleware has
+        already entered the profile's runtime scope). This is the only path that picks up a rotated
+        credential for a server whose config entry did not change: the housekeeping reconciler only
+        acts on name-set drift (added/removed entries), and a server's own reconnect reuses the
+        headers it was started with. No interactive confirmation — the API key IS the authorization;
+        ``approvals.mcp_reload_confirm`` gates the chat-side button flow only.
+        """
+        runner = self.gateway_runner or request.app.get("gateway_runner")
+        if runner is None:
+            return _error_response(
+                "Gateway runner unavailable", 503, err_type="server_error", code="gateway_unavailable")
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        multiplex = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
+        profile = _api_request_profile.get() if multiplex else None
+        source = SessionSource(
+            platform=Platform.API_SERVER, chat_id=self._MCP_RELOAD_CHAT_ID, chat_type="dm",
+            user_id="api_server", user_name="api_server", profile=profile)
+        event = MessageEvent(
+            text="/reload-mcp", message_type=MessageType.TEXT, source=source, internal=True)
+        summary = await runner._execute_mcp_reload(event)
+        # ``_execute_mcp_reload`` reports its own failure as text (the success text always opens with
+        # the localized header), but a single server failing to connect is swallowed into a warning by
+        # discovery — so also read back per-server state; any ``failed`` server fails the call.
+        from agent.i18n import t
+        servers = self._mcp_server_status()
+        ok = (isinstance(summary, str) and summary.startswith(t("gateway.reload_mcp.header"))
+              and not any(s.get("status") == "failed" for s in servers))
+        logger.info("[%s] MCP reload via REST (profile=%s): %s", self.name, profile or "default",
+                    "ok" if ok else "failed")
+        return web.json_response(
+            {"object": "hermes.mcp_reload", "ok": ok, "profile": profile or "default",
+             "summary": summary, "servers": servers},
+            status=200 if ok else 500)
+
+    @staticmethod
+    def _mcp_server_status() -> List[Dict[str, Any]]:
+        """``{name, status, connected, tools, error?}`` per configured server in the current scope
+        (cached runtime state only; never connects). Empty on any failure — it is a report, not a gate."""
+        try:
+            from tools.mcp_tool_discovery import get_mcp_status
+            return [{k: v for k, v in entry.items() if k in ("name", "status", "connected", "tools", "error")}
+                    for entry in get_mcp_status()]
+        except Exception:
+            logger.debug("MCP status read after reload failed", exc_info=True)
+            return []
 
     # -- /api/sessions: thin client/session resource API -------------------------------
 

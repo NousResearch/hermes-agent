@@ -82,6 +82,28 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+def _pr_urls_in(text: str | None) -> set[str]:
+    """Return normalized GitHub PR URLs from durable or comment text."""
+    return {match.rstrip(".,;:!?)]}'\"").lower() for match in _RESPAWN_GUARD_PR_URL_RE.findall(text or "")}
+
+
+def _attributed_pr_urls(conn: sqlite3.Connection, task_id: str) -> set[str]:
+    """PR URLs declared in this card's durable worker handoff fields.
+
+    Free-form comments are deliberately excluded: they can cite unrelated PRs.
+    A task result or run summary/metadata is the local producer-owned record of
+    a worker handoff, so it retains duplicate-PR protection without a network
+    lookup or an unproduced comment marker.
+    """
+    texts: list[str] = []
+    task = conn.execute("SELECT result FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if task is not None and task["result"]:
+        texts.append(task["result"])
+    for run in conn.execute("SELECT summary, metadata FROM task_runs WHERE task_id = ?", (task_id,)).fetchall():
+        texts.extend(value for value in (run["summary"], run["metadata"]) if value)
+    return set().union(*(_pr_urls_in(text) for text in texts)) if texts else set()
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass.
@@ -1575,19 +1597,21 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. A comment only guards when its PR URL is also present in this card's
+    #    durable worker handoff. A citation alone is not attribution (#111862).
     #    Exception: a handoff AFTER the newest PR comment (operator reassign,
     #    reviewer changes_requested, review reopen) names the profile that must
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    attributed = _attributed_pr_urls(conn, task_id)
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
+        if not attributed.intersection(_pr_urls_in(c["body"])):
             continue
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).

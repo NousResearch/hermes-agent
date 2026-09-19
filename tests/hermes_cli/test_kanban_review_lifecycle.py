@@ -456,6 +456,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         # Ready-lane task with the same fresh PR comment.
         ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
         kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
+        conn.execute("UPDATE tasks SET result = ? WHERE id = ?", (pr_comment, ready_id))
 
         assert kbd.check_respawn_guard(conn, ready_id) == "active_pr"
         assert kbd.check_respawn_guard(conn, review_id, lane="review") is None
@@ -493,6 +494,20 @@ def _backdate_comments(conn, tid, seconds=60):
         )
 
 
+def test_active_pr_guard_ignores_citation_without_this_tasks_handoff(kanban_home: Path) -> None:
+    """A PR URL in discussion is not evidence that this card opened that PR."""
+    pr_url = "https://github.com/example/repo/pull/123"
+    with kbc.connect() as conn:
+        citation_id = kb.create_task(conn, title="citation only", assignee="worker")
+        kb.add_comment(conn, citation_id, author="worker", body=f"Prior art: {pr_url}")
+        assert kbd.check_respawn_guard(conn, citation_id) is None
+
+        attributed_id = kb.create_task(conn, title="own handoff", assignee="worker")
+        kb.add_comment(conn, attributed_id, author="worker", body=f"Opened {pr_url}")
+        conn.execute("UPDATE tasks SET result = ? WHERE id = ?", (f"Delivered {pr_url}", attributed_id))
+        assert kbd.check_respawn_guard(conn, attributed_id) == "active_pr"
+
+
 def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -516,8 +531,10 @@ def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     with kbc.connect() as conn:
         dev_id = kb.create_task(conn, title="dev own pr", assignee="dev")
         kb.add_comment(conn, dev_id, author="dev", body=pr_comment)
+        conn.execute("UPDATE tasks SET result = ? WHERE id = ?", (pr_comment, dev_id))
         closer_id = kb.create_task(conn, title="closer recovery", assignee="dev")
         kb.add_comment(conn, closer_id, author="dev", body=pr_comment)
+        conn.execute("UPDATE tasks SET result = ? WHERE id = ?", (pr_comment, closer_id))
         _backdate_comments(conn, closer_id)
         assert kb.assign_task(conn, closer_id, "closer") is True
 
@@ -554,6 +571,7 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="same assign", assignee="dev")
         kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        conn.execute("UPDATE tasks SET result = ? WHERE id = ?", (pr_comment, tid))
         _backdate_comments(conn, tid)
         assert kb.assign_task(conn, tid, "dev") is True
         assert kbd.check_respawn_guard(conn, tid) == "active_pr"

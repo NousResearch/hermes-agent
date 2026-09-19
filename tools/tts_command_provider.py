@@ -23,6 +23,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
 
+from hermes_cli._subprocess_compat import (
+    windows_detach_flags_without_breakaway,
+    windows_hide_flags,
+)
 from utils import is_truthy_value
 
 
@@ -102,7 +106,8 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL)
+                           stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL,
+                           creationflags=windows_hide_flags())
         except Exception:
             proc.kill()
         return
@@ -148,7 +153,10 @@ def run_command_provider(
             scrubbed[key] = value
     # Own process group so the whole tree can be signalled on idle timeout. Lossy UTF-8 decode:
     # locale-mismatched bytes must not raise in the reader threads.
-    group = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
+    # Windows: CREATE_NO_WINDOW is mandatory — shell=True routes through cmd.exe, which would
+    # otherwise pop a visible console on every call. No BREAKAWAY_FROM_JOB: the child must stay
+    # in the parent's job so terminate_command_process_tree() / job teardown still reap it.
+    group = ({"creationflags": windows_detach_flags_without_breakaway()} if os.name == "nt"
              else {"start_new_session": True})
     proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),

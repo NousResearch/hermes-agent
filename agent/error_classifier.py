@@ -728,8 +728,13 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # retry loop strips them. Exclude the Qwen/vLLM "No user query found" error
     # local engines wrap as "Unable to generate parser for this template" —
     # that is a poisoned transcript (→ format_error), not a grammar problem.
-    grammar_hit = "error parsing grammar" in msg or "json-schema-to-grammar" in msg or (
-        "unable to generate parser" in msg and "template" in msg
+    grammar_hit = (
+        "error parsing grammar" in msg
+        or "json-schema-to-grammar" in msg
+        # LM Studio's engine wraps the same failure as "Failed to initialize
+        # samplers: failed to parse grammar".
+        or "failed to parse grammar" in msg
+        or ("unable to generate parser" in msg and "template" in msg)
     )
     if status == 400 and grammar_hit and _NO_USER_QUERY_SIGNAL not in msg:
         return _v(_R.llama_cpp_grammar_pattern)

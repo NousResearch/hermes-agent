@@ -268,6 +268,49 @@ def test_strip_responses_mixed_formats():
     assert result[1]["parameters"]["type"] == "object"
 
 
+
+def test_strip_pattern_and_format_removes_bounded_repetition_keywords():
+    """Bounded repetition also breaks json-schema-to-grammar.
+
+    ``maxLength``/``minLength`` on strings and ``maxItems``/``minItems`` on
+    arrays are expanded literally into the GBNF, so a large bound (an MCP
+    tool's ``"maxLength": 2000`` on array-item strings) produces a grammar
+    llama.cpp rejects with 400 "failed to parse grammar". Stripping only
+    pattern/format left those requests unrecoverable.
+    """
+    from tools.schema_sanitizer import strip_pattern_and_format
+
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "search",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "q": {"type": "string", "maxLength": 2000, "minLength": 1},
+                    "tags": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "minItems": 1,
+                        "items": {"type": "string", "maxLength": 2000},
+                    },
+                },
+            },
+        },
+    }]
+
+    result, stripped = strip_pattern_and_format(tools)
+
+    props = result[0]["function"]["parameters"]["properties"]
+    assert "maxLength" not in props["q"] and "minLength" not in props["q"]
+    assert "maxItems" not in props["tags"] and "minItems" not in props["tags"]
+    assert "maxLength" not in props["tags"]["items"], "nested item bounds must be stripped too"
+    assert stripped == 5, f"expected 5 keywords stripped, got {stripped}"
+    # Structure and non-hostile keywords survive.
+    assert props["q"]["type"] == "string"
+    assert props["tags"]["items"]["type"] == "string"
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # strip_slash_enum — reactive recovery when xAI's /v1/responses (and
 # /v1/chat/completions) grammar-compiler rejects enum values containing

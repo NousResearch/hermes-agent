@@ -468,16 +468,16 @@ def _recover_format_errors(
             logger.warning("%sllama.cpp grammar recovery: strip helper failed: %s", agent.log_prefix, _strip_exc)
             _stripped = 0
         if _stripped:
-            _vlines(agent, f"⚠️  llama.cpp rejected tool schema grammar — stripped {_stripped} pattern/format keyword(s), retrying...")
+            _vlines(agent, f"⚠️  llama.cpp rejected tool schema grammar — stripped {_stripped} grammar-hostile keyword(s), retrying...")
             logger.warning(
                 "%sllama.cpp grammar recovery: stripped %d "
-                "pattern/format keyword(s) from tool schemas",
+                "grammar-hostile keyword(s) from tool schemas",
                 agent.log_prefix, _stripped,
             )
             return True
         # Nothing to strip — fall through to normal retry rather than loop on the same error.
         logger.warning(
-            "%sllama.cpp grammar error but no pattern/format "
+            "%sllama.cpp grammar error but no grammar-hostile "
             "keywords to strip — falling through to normal retry",
             agent.log_prefix,
         )

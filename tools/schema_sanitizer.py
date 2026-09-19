@@ -322,7 +322,18 @@ def _sanitize_node(node: Any, path: str) -> Any:
 
 
 # ---- Reactive strips — only invoked after a backend rejects a schema ----
-_STRIP_ON_RECOVERY_KEYS = frozenset({"pattern", "format"})
+# Keywords llama.cpp's json-schema-to-grammar converter cannot express, which
+# make it reject the whole request. Two families:
+#   * regex/format: ``pattern`` (escape classes ``\d``/``\w``/``\s``) and
+#     ``format`` (``date-time``, ``email``, ...).
+#   * bounded repetition: ``maxLength``/``minLength`` on strings and
+#     ``maxItems``/``minItems`` on arrays. A large bound (e.g. an MCP tool's
+#     ``"maxLength": 2000`` on array-item strings) is expanded literally into
+#     the GBNF, so the generated grammar is too large or malformed and
+#     llama.cpp returns 400 "failed to parse grammar".
+_STRIP_ON_RECOVERY_KEYS = frozenset(
+    {"pattern", "format", "maxLength", "minLength", "maxItems", "minItems"}
+)
 _SCHEMA_MARKERS = frozenset({"type", "anyOf", "oneOf", "allOf"})  # a node with one IS a schema
 
 
@@ -365,7 +376,8 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
         return len(hits)
     return _reactive_strip(
         tools, _strip,
-        "schema_sanitizer: stripped %d pattern/format keyword(s) from "
+        "schema_sanitizer: stripped %d grammar-hostile keyword(s) "
+        "(pattern/format/maxLength/minLength/maxItems/minItems) from "
         "tool schemas (llama.cpp grammar-parse recovery)")
 
 

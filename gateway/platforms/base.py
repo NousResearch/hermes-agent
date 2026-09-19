@@ -3444,7 +3444,7 @@ class BasePlatformAdapter(ABC):
         """The runner's CURRENT adapter for a new final-response send: a reconnect can swap the
         registry adapter mid-task; an unsent final response belongs on the replacement transport,
         while message IDs, edits and deletes stay owned by the old one (nothing is migrated)."""
-        resolve = getattr(self.gateway_runner, "_adapter_for_source", None)
+        resolve = getattr(self.gateway_runner, "_delivery_adapter_for", None)
         if not callable(resolve):
             return self
         try:

@@ -29,6 +29,9 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 
 
+_CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK = threading.Lock()
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """cwd to stamp on a new session row (``hermes -c`` / ``--resume``), or None.
 
@@ -882,16 +885,31 @@ class AIAgent(
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider and context engine at session end (idempotent: gateway cleanup and
         ``close()`` may both call it)."""
-        if getattr(self, "_memory_provider_shutdown", False):
-            return
-        self._memory_provider_shutdown = True
-        if self._memory_manager:
+        if not getattr(self, "_memory_provider_shutdown", False):
+            self._memory_provider_shutdown = True
+            if self._memory_manager:
+                try:
+                    self._memory_manager.on_session_end(messages or [])
+                except Exception as e:
+                    logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+                _quietly(lambda: self._memory_manager.shutdown_all())
+            _notify_context_engine_session_end(self, messages)
+
+        context_engine = None
+        # Bare test doubles and legacy construction share this fallback lock. It guards only
+        # hook selection; invocation stays outside the lock for re-entrant engine cleanup.
+        shutdown_lock = getattr(
+            self, "_context_engine_shutdown_lock", _CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK
+        )
+        with shutdown_lock:
+            if not getattr(self, "_context_engine_shutdown", False):
+                self._context_engine_shutdown = True
+                context_engine = getattr(self, "context_compressor", None)
+        if context_engine is not None:
             try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
-            _quietly(lambda: self._memory_manager.shutdown_all())
-        _notify_context_engine_session_end(self, messages)
+                context_engine.shutdown()
+            except Exception:
+                logger.debug("Context engine shutdown failed", exc_info=True)
 
     def commit_memory_session(self, messages: list = None) -> None:
         """Flush end-of-session extraction on session_id rotation (/new, compression) without tearing providers

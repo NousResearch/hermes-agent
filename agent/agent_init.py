@@ -538,6 +538,8 @@ _CONTROL_STATE: Dict[str, Any] = {
     "_delegate_depth": 0,
     "_active_children": list,
     "_active_children_lock": threading.Lock,
+    "_context_engine_shutdown_lock": threading.Lock,
+    "_context_engine_shutdown": False,
     # Background review (agent/background_review.py): the run is installed before the worker
     # starts and fences its first provider phase; the agent pointer enables interrupt fan-out.
     "_background_review_agent": None,
@@ -1828,10 +1830,17 @@ def _compressor_max_tokens(agent):
     return None
 
 
+def _replace_context_engine(agent, engine) -> None:
+    """Install ``engine`` and re-arm its process-lifetime teardown."""
+    with agent._context_engine_shutdown_lock:
+        agent.context_compressor = engine
+        agent._context_engine_shutdown = False
+
+
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
-        agent.context_compressor = _selected_engine
+        _replace_context_engine(agent, _selected_engine)
         # External engines own compaction policy — the host threshold (and its Codex
         # autoraise) never reaches the plugin, so drop the notice.
         agent._compression_threshold_autoraised = None
@@ -1855,7 +1864,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
-        agent.context_compressor = ContextCompressor(
+        context_engine = ContextCompressor(
             model=agent.model, threshold_percent=cs.threshold, protect_first_n=cs.protect_first,
             protect_last_n=cs.protect_last, summary_target_ratio=cs.target_ratio,
             summary_model_override=None, quiet_mode=agent.quiet_mode, base_url=agent.base_url,
@@ -1870,6 +1879,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
         )
+        _replace_context_engine(agent, context_engine)
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
         with suppress(Exception):

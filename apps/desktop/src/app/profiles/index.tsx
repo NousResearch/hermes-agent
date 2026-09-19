@@ -33,6 +33,7 @@ import {
 
 import { CreateProfileDialog } from './create-profile-dialog'
 import { DeleteProfileDialog } from './delete-profile-dialog'
+import { ProfilePasscodeSection } from './profile-passcode-section'
 import { RenameProfileDialog } from './rename-profile-dialog'
 
 interface ProfilesViewProps {
@@ -263,6 +264,8 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
       </header>
 
       <SoulEditor profileName={profile.name} />
+
+      <ProfilePasscodeSection profileName={profile.name} />
     </PanelDetail>
   )
 }

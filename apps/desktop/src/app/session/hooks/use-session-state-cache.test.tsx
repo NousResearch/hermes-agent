@@ -2,6 +2,27 @@ import { act, cleanup, render } from '@testing-library/react'
 import { type MutableRefObject, useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// v18 port tests: control $focusedRuntimeId directly — the real computed
+// derives from the layout tree, which a unit harness doesn't build.
+const focusedRuntimeIdMock = vi.hoisted(() => {
+  const { atom } = require('nanostores') as { atom: <T>(value: T) => { get(): T; set(value: T): void } }
+
+  return atom<string | null>(null)
+})
+
+vi.mock('@/store/session-states', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/store/session-states')>()
+
+  return {
+    ...actual,
+    $focusedRuntimeId: focusedRuntimeIdMock
+  }
+})
+
+function mockFocusedRuntimeId(runtimeId: null | string): void {
+  focusedRuntimeIdMock.set(runtimeId)
+}
+
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   $activeSessionStoredIdRotation,
@@ -29,6 +50,7 @@ import {
   setSessionTileDelegate
 } from '@/store/session-states'
 
+import { computeLastUsedSelection, noteModelSelectionInUse } from '@/store/session'
 import { useSessionStateCache } from './use-session-state-cache'
 
 type Cache = ReturnType<typeof useSessionStateCache>
@@ -688,5 +710,82 @@ describe('useSessionStateCache — reconnect busy reconcile (#93059)', () => {
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.busy).toBe(false)
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.awaitingResponse).toBe(false)
     expect($sessionStates.get()['runtime-1']?.busy).toBe(false)
+  })
+})
+
+// v18 port — focus authority for the sticky: a PASSIVE session.info may only
+// rewrite the global last-used sticky when its runtime is the one the user is
+// focused on. A non-focused session updates its slice/view but never the
+// sticky (proven repro: tile pick confirmed Flash → old primary's heartbeat
+// glm-5.3 rolled the sticky back before the next session.create).
+describe('useSessionStateCache — sticky focus authority (ported)', () => {
+  beforeEach(() => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
+      cb(0)
+
+      return null as unknown as number
+    })
+    window.localStorage.removeItem('hermes.desktop.composer.last-model')
+    window.localStorage.removeItem('hermes.desktop.composer.last-provider')
+    window.localStorage.removeItem('hermes.desktop.composer.last-scope')
+    setCurrentModel('')
+    setCurrentProvider('')
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearAllSessionStates()
+    setActiveSessionId(null)
+    mockFocusedRuntimeId(null)
+    window.localStorage.removeItem('hermes.desktop.composer.last-model')
+    window.localStorage.removeItem('hermes.desktop.composer.last-provider')
+    window.localStorage.removeItem('hermes.desktop.composer.last-scope')
+  })
+
+  it('T1 (repro): a NON-focused primary heartbeat does not roll back a confirmed tile pick', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-primary')
+    mockFocusedRuntimeId('runtime-tile') // the user is on the TILE
+    render(
+      <Harness activeSessionId="runtime-primary" onReady={value => (cache = value)} selectedStoredSessionId="stored-primary" />
+    )
+
+    // The tile pick was confirmed: sticky = Flash.
+    noteModelSelectionInUse('glm-5.3-flash', 'zai', '')
+
+    // The old primary's heartbeat arrives (not focused).
+    act(() => {
+      cache.updateSessionState(
+        'runtime-primary',
+        state => ({ ...state, model: 'glm-5.3', provider: 'zai' }),
+        'stored-primary'
+      )
+    })
+
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-primary')?.model).toBe('glm-5.3')
+    expect(computeLastUsedSelection().model).toBe('glm-5.3-flash')
+  })
+
+  it('T2 (inverse): focus back on the primary → its session.info becomes the sticky', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-primary')
+    mockFocusedRuntimeId('runtime-primary') // focus homed to the primary
+    render(
+      <Harness activeSessionId="runtime-primary" onReady={value => (cache = value)} selectedStoredSessionId="stored-primary" />
+    )
+
+    noteModelSelectionInUse('glm-5.3-flash', 'zai', '')
+
+    act(() => {
+      cache.updateSessionState(
+        'runtime-primary',
+        state => ({ ...state, model: 'glm-5.3', provider: 'zai' }),
+        'stored-primary'
+      )
+    })
+
+    expect(computeLastUsedSelection().model).toBe('glm-5.3')
   })
 })

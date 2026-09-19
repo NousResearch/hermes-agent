@@ -17,6 +17,12 @@ import {
 import * as SessionStates from '@/store/session-states'
 
 import { deferred } from '../../../test/deferred'
+import {
+  consumePendingModelPick,
+  resetPendingModelPicksForTests,
+  setPrimaryRuntimeProvider
+} from '@/lib/model-pick-pending'
+import { computeLastUsedSelection } from '@/store/session'
 
 import { useModelControls } from './use-model-controls'
 
@@ -774,5 +780,58 @@ describe('useModelControls', () => {
     expect(queryClient.getQueryData(ownerBKey)).toMatchObject({ model: 'old-b', provider: 'provider-b' })
     expect(queryClient.getQueryData(ambientAKey)).toMatchObject({ model: 'model-a', provider: 'provider-a' })
     expect(notifyError).toHaveBeenCalled()
+  })
+})
+
+// v16 port — the pending model pick: a pick whose RPC fails/hangs is PENDING,
+// not failed; the reconciling session.info commits it. The catch rolls back
+// ONLY when this exact pick is still pending (seq match).
+describe('useModelControls pending pick (ported)', () => {
+  afterEach(() => {
+    cleanup()
+    resetPendingModelPicksForTests()
+    setPrimaryRuntimeProvider(null)
+    window.localStorage.removeItem('hermes.desktop.composer.last-model')
+    window.localStorage.removeItem('hermes.desktop.composer.last-provider')
+    window.localStorage.removeItem('hermes.desktop.composer.last-scope')
+  })
+
+  it('a transport failure keeps the pending registered for the reconciler, and rolls the paint back', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('glm-5.3')
+    setCurrentProvider('zai')
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('ECONNRESET')
+    })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'glm-5.3-flash', provider: 'zai' })).resolves.toBe(false)
+
+    expect($currentModel.get()).toBe('glm-5.3')
+    expect(notifyError).toHaveBeenCalled()
+    // The pending SURVIVED — the durable intent for a late session.info.
+    expect(consumePendingModelPick('session-1')).toMatchObject({ model: 'glm-5.3-flash', provider: 'zai' })
+  })
+
+  it('a confirmed switch feeds the sticky — manual pick glm-5.3-flash → last-used glm-5.3-flash', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('glm-5.3')
+    setCurrentProvider('zai')
+
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'glm-5.3-flash' }) as never)
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'glm-5.3-flash', provider: 'zai' })).resolves.toBe(true)
+
+    expect($currentModel.get()).toBe('glm-5.3-flash')
+    expect(computeLastUsedSelection().model).toBe('glm-5.3-flash')
+    expect(computeLastUsedSelection().provider).toBe('zai')
   })
 })

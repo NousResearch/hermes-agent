@@ -118,8 +118,13 @@ export function ModelPill({
   // pin whenever a draft (no live session) is running on a manual override. A
   // live session's footer reflects that session's model, so no badge there.
   // Tiles always have a runtime — pin badge is primary-draft only.
+  // v17 port: a sticky_seed (restored last-used) is pinned to the user's eye
+  // just the same — the pill is stating "the next chat runs this", which is true.
   const pinnedOverride =
-    view.kind === 'primary' && !runtimeId && modelSource === 'manual' && Boolean(currentModel.trim())
+    view.kind === 'primary' &&
+    !runtimeId &&
+    (modelSource === 'manual' || modelSource === 'sticky_seed') &&
+    Boolean(currentModel.trim())
 
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text

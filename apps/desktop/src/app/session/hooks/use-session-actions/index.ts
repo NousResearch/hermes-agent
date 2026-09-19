@@ -68,8 +68,10 @@ import {
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
-  getCurrentModelSource,
+  computeLastUsedSelection,
+  getCurrentComposerScope,
   getSessionOwnerHint,
+  isUserPickedModel,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
   sessionPinId,
@@ -80,6 +82,9 @@ import {
   setCurrentBranch,
   setCurrentCwd,
   setCurrentCwdTransient,
+  setCurrentModel,
+  setCurrentModelSource,
+  setCurrentProvider,
   setCurrentServiceTier,
   setCurrentUsage,
   setFreshDraftReady,
@@ -292,7 +297,7 @@ function reconcileAuthoritativeMessages(
 // profile to None). Effort/fast still ride as per-session overrides. Model and
 // provider only ride when the composer source is 'manual' — a default-sourced
 // value is a mirror of Settings → Model and must not pin the new chat.
-async function desktopSessionCreateParams(
+export async function desktopSessionCreateParams(
   cwd: string,
   capturedRoute = resolveNewChatOwnerRoute(),
   requestedProfile?: string,
@@ -307,13 +312,32 @@ async function desktopSessionCreateParams(
   // the live agent (applySavedMainModel) and only flips the source to 'default'.
   // Shipping that stale value as an override pins every new chat to the old
   // model. Omit model/provider unless the source is 'manual'.
-  const isManualSelection = getCurrentModelSource() === 'manual'
+  // v17 port precedence: an explicit user pick wins; otherwise the CURRENT
+  // last-used sticky travels (scope-matched) — a pick confirmed on a focused
+  // TILE updates the sticky but deliberately never repaints the primary
+  // composer, so the create must consult the sticky, not the stale composer.
+  // A sticky_seed provenance (restored last-used) is NOT an override: it falls
+  // through to the fresh sticky exactly like 'default'/''.
+  const sticky = computeLastUsedSelection()
+
+  const stickyUsable =
+    !isUserPickedModel() &&
+    Boolean(sticky.model && sticky.provider) &&
+    sticky.scope === getCurrentComposerScope()
 
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
     fast: $currentFastMode.get(),
-    model: isManualSelection ? $currentModel.get().trim() : '',
-    provider: isManualSelection ? $currentProvider.get().trim() : ''
+    model: isUserPickedModel()
+      ? $currentModel.get().trim()
+      : stickyUsable
+        ? sticky.model
+        : '',
+    provider: isUserPickedModel()
+      ? $currentProvider.get().trim()
+      : stickyUsable
+        ? sticky.provider
+        : ''
   }
 
   const profile =
@@ -534,6 +558,20 @@ export function useSessionActions({
       // is cleared.
       setCurrentServiceTier('')
       setYoloActive(false)
+      // v17 port: reseed the composer from the CURRENT last-used sticky,
+      // resolved synchronously before the first paint — with 'sticky_seed'
+      // provenance (a RESTORE, not a user pick), so a fresher sticky (e.g. a
+      // confirmed tile pick that never repainted the primary) still wins at
+      // session.create. Scope-matched only (v14b): another gateway's sticky
+      // legitimately loses to that context's own default.
+      const lastUsed = computeLastUsedSelection()
+
+      if (lastUsed.model && lastUsed.provider && lastUsed.scope === getCurrentComposerScope()) {
+        setCurrentModel(lastUsed.model)
+        setCurrentProvider(lastUsed.provider)
+        setCurrentModelSource('sticky_seed')
+      }
+
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
 
       if (!hasWorkspaceTarget) {

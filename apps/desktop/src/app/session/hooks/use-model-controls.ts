@@ -8,6 +8,11 @@ import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
 import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { modelOptionsQueryKey } from '@/lib/model-options'
+import {
+  clearPendingModelPickIfSeqMatches,
+  pendingModelPickSeqMatches,
+  registerPendingModelPick
+} from '@/lib/model-pick-pending'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -16,7 +21,9 @@ import {
   $currentProvider,
   getComposerSelectionGeneration,
   getCurrentModelSource,
+  isRefreshProtectedModel,
   markComposerSelectionManual,
+  noteModelSelectionInUse,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider
@@ -128,7 +135,9 @@ export function useModelControls({
       // A manual pick is sticky. It is never diffed against the catalog: rows
       // are hints, and a custom slug the row lacks is still the user's choice
       // (the gateway validates it on switch).
-      const keepManualPick = () => !force && Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
+      // v17 port: a sticky_seed (restored last-used) is ALSO protected from an
+      // automatic refresh — only an explicit context switch (`force`) reseeds.
+      const keepManualPick = () => !force && Boolean($currentModel.get()) && isRefreshProtectedModel()
 
       if (keepManualPick()) {
         return
@@ -202,6 +211,9 @@ export function useModelControls({
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
+          // v14 port: an explicit user pick is a real-use selection — feed the
+          // cross-scope New Session sticky.
+          noteModelSelectionInUse(selection.model, selection.provider)
         } else if (liveSessionId) {
           // Optimistic tile paint — session.info will confirm; rollback on error.
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
@@ -278,6 +290,12 @@ export function useModelControls({
         }
       }
 
+      // v16 port: a pick whose RPC fails or hangs is PENDING, not failed — the
+      // backend may still apply the switch and the authoritative session.info
+      // reconciles it. Registered BEFORE the await so the hung-promise path is
+      // covered too.
+      const pendingSeq = registerPendingModelPick(liveSessionId ?? '', selection.model, selection.provider)
+
       try {
         const result = await requestSwitch()
 
@@ -317,6 +335,12 @@ export function useModelControls({
         }
 
         finishSwitch(result)
+        // v16 port: the switch is CONFIRMED — consume the pending (only if it
+        // is still THIS pick; a newer pick replaced the entry) and paint
+        // composer + sticky with the pair the user picked.
+        clearPendingModelPickIfSeqMatches(liveSessionId ?? '', pendingSeq)
+        paintSelection()
+        cacheSelection(selection.provider, selection.model)
 
         return true
       } catch (err) {
@@ -329,8 +353,16 @@ export function useModelControls({
           return true
         }
 
-        rollbackSelection()
-        notifyError(err, copy.modelSwitchFailed)
+        // v16b port: a transport failure does NOT mean the switch failed — the
+        // backend may have applied it (response lost, session.info confirmed
+        // seconds later). Roll back the optimistic paint ONLY if this exact
+        // pick is still pending (seq match); if the reconciler already
+        // consumed it (a confirming session.info arrived while the RPC hung),
+        // the confirmed state is authoritative and must survive.
+        if (pendingModelPickSeqMatches(liveSessionId ?? '', pendingSeq)) {
+          rollbackSelection()
+          notifyError(err, copy.modelSwitchFailed)
+        }
 
         return false
       }

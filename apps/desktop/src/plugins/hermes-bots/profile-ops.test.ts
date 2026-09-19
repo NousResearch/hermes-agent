@@ -15,15 +15,16 @@ import { $botMeta } from './data'
 import { duplicateBot } from './profile-ops'
 import type { RosterRow } from './types'
 
-const { ensureBotMetadataMock, faceOnlyMock, hostMock, storageMock } = vi.hoisted(() => ({
+const { ensureBotMetadataMock, faceOnlyMock, hostMock, storageMock, invalidateQueries } = vi.hoisted(() => ({
+  invalidateQueries: vi.fn(),
   ensureBotMetadataMock: vi.fn(),
   faceOnlyMock: vi.fn((_data: string) => false),
   hostMock: {
     request: vi.fn(),
     requestProfile: vi.fn(),
-    state: { connectionId: { get: () => 'local' }, focusedSessionOwner: null, profile: { get: () => 'default' } }
+    state: { connectionId: { get: (): string => 'local' }, focusedSessionOwner: null, profile: { get: (): string => 'default' } }
   },
-  storageMock: { get: vi.fn(), set: vi.fn() }
+  storageMock: { get: vi.fn(), set: vi.fn(), remove: vi.fn() }
 }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
@@ -33,7 +34,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     atom,
     forgetSessionUnread: vi.fn(),
     host: hostMock,
-    queryClient: { invalidateQueries: vi.fn() },
+    queryClient: { invalidateQueries },
     useQuery: vi.fn(),
     useValue: vi.fn()
   }
@@ -59,6 +60,53 @@ beforeEach(() => {
 })
 
 describe('duplicating a bot', () => {
+  it.each(['local', 'remote', 'alias', 'appearance-failure'])(
+    'keeps a delayed %s clone on its destination owner and refreshes its appearance',
+    async kind => {
+      const connectionId = kind === 'local' ? 'local' : 'studio'
+      const sourceRoute = { connectionId, mode: kind === 'local' ? 'local' : 'remote', profile: 'source', targetProfile: kind === 'alias' ? 'actual-source' : 'source' } as const
+      const bot = { name: 'source', sourceScoped: true, route: sourceRoute, canonical_session: { id: 'source-chat' } } as RosterRow
+      const sourceKey = `${connectionId}::source`
+      const destinationKey = `${connectionId}::canonical-copy`
+      const sourceMeta = { title: 'Source', image: 'data:image/png;base64,source', chat: 'source-chat', created: 123 }
+      const otherMeta = { title: 'Other connection' }
+      $botMeta.set({ [sourceKey]: sourceMeta })
+      let resolveCreate!: (value: unknown) => void
+      const created = new Promise(resolve => { resolveCreate = resolve })
+      hostMock.requestProfile.mockImplementation(async (_route, method) => {
+        if (method === 'profiles.create') return created
+        return { applied: { ui_meta: kind !== 'appearance-failure' } }
+      })
+      const pending = duplicateBot(bot, [bot])
+      await vi.waitFor(() => expect(hostMock.requestProfile).toHaveBeenCalled())
+      // Foreground A -> B before A's create reply. B's cache is not A's source look.
+      hostMock.state.connectionId.get = () => 'other'
+      hostMock.state.profile.get = () => 'elsewhere'
+      $botMeta.set({ [sourceKey]: sourceMeta, 'other::canonical-copy': otherMeta })
+      resolveCreate({ name: 'canonical-copy' })
+      const result = await pending
+      expect($botMeta.get()[sourceKey]).toEqual(sourceMeta)
+      expect(result).toEqual({ name: 'canonical-copy', appearanceSaved: kind !== 'appearance-failure' })
+      expect(hostMock.requestProfile).toHaveBeenCalledWith(sourceRoute, 'profiles.create', expect.objectContaining({ clone_from: sourceRoute.targetProfile }))
+      for (const [route, method, params] of hostMock.requestProfile.mock.calls) {
+        if (method === 'profiles.create') continue
+        expect(route).toEqual({ ...sourceRoute, profile: 'canonical-copy', targetProfile: 'canonical-copy' })
+        expect(params.name).toBe('canonical-copy')
+      }
+      expect(hostMock.requestProfile.mock.calls.map(([, method]) => method)).toContain('profiles.set_asset')
+      expect($botMeta.get()[sourceKey]).toEqual(sourceMeta)
+      expect($botMeta.get()['other::canonical-copy']).toEqual(otherMeta)
+      expect($botMeta.get()[destinationKey]).toMatchObject({ title: 'Source (copy)', image: sourceMeta.image })
+      expect($botMeta.get()[destinationKey].chat).toBeUndefined()
+      expect($botMeta.get()[destinationKey].created).toBeUndefined()
+      expect(storageMock.set).toHaveBeenCalledWith('bot-meta-v2', expect.objectContaining({ [destinationKey]: expect.objectContaining({ title: 'Source (copy)' }) }))
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['hermes-bots', 'roster'] })
+      hostMock.state.connectionId.get = () => connectionId
+      hostMock.state.profile.get = () => 'source'
+      expect($botMeta.get()[sourceKey]).toEqual(sourceMeta)
+    }
+  )
+
   it('copies the look but neither the chat pointer nor the creation stamp', async () => {
     $botMeta.set({
       researcher: {
@@ -71,7 +119,7 @@ describe('duplicating a bot', () => {
       }
     })
 
-    const name = await duplicateBot({ description: 'finds things', name: 'researcher' } as RosterRow, [
+    const { name } = await duplicateBot({ description: 'finds things', name: 'researcher' } as RosterRow, [
       { name: 'researcher' } as RosterRow
     ])
 
@@ -104,7 +152,7 @@ describe('duplicating a bot', () => {
   it('duplicates the look of a bot that never had a pointer', async () => {
     $botMeta.set({ painter: { color: '#38bdf8', shape: 'cloud', title: 'Painter' } })
 
-    const name = await duplicateBot({ name: 'painter' } as RosterRow, [{ name: 'painter' } as RosterRow])
+    const { name } = await duplicateBot({ name: 'painter' } as RosterRow, [{ name: 'painter' } as RosterRow])
 
     expect($botMeta.get()[name]).toMatchObject({ shape: 'cloud', title: 'Painter (copy)' })
     expect($botMeta.get()[name].chat).toBeUndefined()
@@ -113,13 +161,13 @@ describe('duplicating a bot', () => {
   it('walks past taken suffixes to the first free slot', async () => {
     const roster = ['ops', 'ops-2', 'ops-3'].map(name => ({ name }) as RosterRow)
 
-    expect(await duplicateBot({ name: 'ops' } as RosterRow, roster)).toBe('ops-4')
+    expect(await duplicateBot({ name: 'ops' } as RosterRow, roster)).toMatchObject({ name: 'ops-4' })
   })
 
   it('truncates the BASE so a max-length name still gets a distinct suffix (#19)', async () => {
     const base = 'b'.repeat(64)
 
-    const name = await duplicateBot({ name: base } as RosterRow, [{ name: base } as RosterRow])
+    const { name } = await duplicateBot({ name: base } as RosterRow, [{ name: base } as RosterRow])
 
     expect(name).toHaveLength(64)
     expect(name.endsWith('-2')).toBe(true)
@@ -152,7 +200,7 @@ describe('duplicating a bot', () => {
 
     hostMock.requestProfile.mockResolvedValue({ ok: true })
 
-    expect(await duplicateBot(bot, [bot, elsewhere])).toBe('ops-2')
+    expect(await duplicateBot(bot, [bot, elsewhere])).toMatchObject({ name: 'ops-2' })
   })
 })
 

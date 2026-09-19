@@ -23,6 +23,8 @@ from hermes_cli.plugin_capabilities import _child_dict
 from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import atomic_write_text
 
+from hermes_cli.plugin_installation import installation_transaction
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,6 +114,7 @@ def _config_str(*keys: str, default: str) -> str:
     return _config_value(*keys, default=default) or default
 
 
+@installation_transaction
 def _write_config_value(section: str, key: str, value: Any) -> None:
     """Persist ``config[section][key] = value`` to config.yaml (creating the section)."""
     from hermes_cli.config import load_config, save_config
@@ -314,6 +317,7 @@ def _looks_like_plugin_dir(target: Path) -> bool:
         or (target / "__init__.py").exists())
 
 
+@installation_transaction
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy ``*.example`` files to their real names (``config.yaml.example`` -> ``config.yaml``),
     never overwriting an existing file so reinstall keeps user config."""
@@ -488,6 +492,7 @@ def _read_install_metadata() -> dict[str, dict[str, object]]:
     return value
 
 
+@installation_transaction
 def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
     """Atomically replace the profile-local plugin install metadata sidecar."""
     path = _install_metadata_path()
@@ -698,6 +703,7 @@ def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: 
         raise
 
 
+@installation_transaction
 def _install_plugin_core(
     identifier: str,
     *,
@@ -706,12 +712,15 @@ def _install_plugin_core(
     scan_decision_cb=None,
     reviewed_pin: Optional[str] = None,
     python_deps: bool = True,
+    catalog_entry=None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
     *reviewed_pin* is the curated-catalog sha for this install; the scan trusts the tree
     only when the checked-out revision is exactly that sha. *python_deps* False skips the
-    dependency conflict gate (``--no-deps``: the user installs them by hand)."""
+    dependency conflict gate (``--no-deps``: the user installs them by hand).
+    *catalog_entry* writes provenance into the staged tree before publication so
+    a sidecar failure cannot replace a working install with unlabelled code."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _resolve_git_url(identifier)
@@ -742,7 +751,18 @@ def _install_plugin_core(
         except ValueError as e:
             raise PluginOperationError(str(e)) from e
         _check_manifest_version(manifest, plugin_name)
-        # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
+        from hermes_cli.plugin_inventory import capture_install_inventory, PluginInventoryError
+        prior_catalog = None
+        if catalog_entry is None and old_metadata.get(plugin_name, {}).get("source") == source:
+            from hermes_cli.plugins_cmd_catalog import read_catalog_sidecar
+            prior_catalog = read_catalog_sidecar(target)
+        inventory = None
+        if catalog_entry is not None or prior_catalog is not None or "files" in old_metadata.get(plugin_name, {}):
+            try:
+                inventory = capture_install_inventory(tmp_clone, tmp_target)
+            except (PluginInventoryError, OSError, subprocess.SubprocessError) as exc:
+                raise PluginOperationError(f"Could not capture pristine plugin inventory: {exc}") from exc
+        # Capture before scanner side effects; still scan before publication.
         _scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb,
                           reviewed_pin=bool(reviewed_pin) and installed_revision == reviewed_pin)
         if python_deps:
@@ -762,6 +782,19 @@ def _install_plugin_core(
             **old_metadata,
             plugin_name: {"pinned": requested_revision is not None, "revision": installed_revision, "source": source},
         }
+        if inventory is not None:
+            new_metadata[plugin_name]["files"] = inventory
+        if prior_catalog is not None and catalog_entry is None:
+            # Explicit repair of the saved selector/pin retains its catalog identity.
+            prior_catalog["sha"] = installed_revision
+            atomic_write_text(tmp_target / ".hermes-catalog.json", json.dumps(prior_catalog, indent=2) + "\n")
+        if catalog_entry is not None:
+            from dataclasses import replace
+            from hermes_cli.plugins_cmd_catalog import write_catalog_sidecar
+            try:
+                write_catalog_sidecar(tmp_target, replace(catalog_entry, sha=installed_revision))
+            except OSError as exc:
+                raise PluginOperationError(f"Could not write catalog sidecar: {exc}") from exc
         _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", old_metadata, new_metadata)
 
     if not _looks_like_plugin_dir(target):
@@ -771,6 +804,7 @@ def _install_plugin_core(
     return target, installed_manifest, installed_manifest.get("name") or target.name
 
 
+@installation_transaction
 def cmd_install(
     identifier: str,
     force: bool = False,
@@ -860,6 +894,7 @@ def cmd_install(
     console.print()
 
 
+@installation_transaction
 def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None) -> str:
     """Shared ``update`` core: refuse pinned / non-git checkouts, ``git pull``, record the new
     revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
@@ -872,18 +907,53 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
         raise PluginOperationError(not_git_msg())
     if before_pull is not None:
         before_pull()
-    ok, output = _git_pull_plugin_dir(target)
-    if not ok:
-        raise PluginOperationError(output)
-    # Store the new HEAD in the plugin's install-metadata record (if it has one).
-    git_exe = _resolve_git_executable() if install_record else None
-    if git_exe:
-        install_record["revision"] = _git_head_revision(target, git_exe)
-        metadata[target.name] = install_record
-        _write_install_metadata(metadata)
-    return output
+    # Copy, rather than clone, to retain the index, ignored/untracked files and
+    # the user's existing stash stack. Pull only the staged checkout: metadata
+    # failure can then restore the untouched original with the install swap.
+    git_dir = target / ".git"
+    if (not git_dir.is_dir() or git_dir.is_symlink()
+            or (git_dir / "commondir").exists()
+            or any(path.is_symlink() for path in git_dir.rglob("*"))):
+        raise PluginOperationError(
+            "Cannot transactionally update linked git metadata; use a standalone clone.")
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
+    with tempfile.TemporaryDirectory(prefix=".update-", dir=target.parent) as tmp:
+        staged = Path(tmp) / target.name
+        shutil.copytree(target, staged, symlinks=True)
+        if "files" in install_record:
+            from hermes_cli.plugin_inventory import validate_install_modes, PluginInventoryError
+            try:
+                validate_install_modes(staged, install_record["files"])
+            except (PluginInventoryError, OSError) as exc:
+                raise PluginOperationError(f"Could not refresh pristine plugin inventory: {exc}") from exc
+        inventory = None
+        def capture_pristine():
+            nonlocal inventory
+            from hermes_cli.plugin_inventory import capture_install_inventory, PluginInventoryError
+            try:
+                inventory = capture_install_inventory(staged, staged)
+            except (PluginInventoryError, OSError, subprocess.SubprocessError) as exc:
+                raise PluginOperationError(f"Could not refresh pristine plugin inventory: {exc}") from exc
+
+        ok, output = _git_pull_plugin_dir(
+            staged, before_restore=capture_pristine if "files" in install_record else None)
+        if not ok:
+            raise PluginOperationError(output.replace(str(staged), str(target)))
+        new_metadata = dict(metadata)
+        if install_record:
+            new_metadata[target.name] = {
+                **install_record,
+                "revision": _git_head_revision(staged, git_exe),
+            }
+            if "files" in install_record:
+                new_metadata[target.name]["files"] = inventory
+        _swap_in_plugin(staged, target, Path(tmp) / "previous-plugin", metadata, new_metadata)
+        return output.replace(str(staged), str(target))
 
 
+@installation_transaction
 def cmd_update(name: str) -> None:
     """Update an installed plugin by pulling latest from its git remote."""
     from rich.markup import escape
@@ -949,6 +1019,7 @@ def _rescan_after_update(target: Path, name: str, console) -> None:
             f"if you trust them.")
 
 
+@installation_transaction
 def _post_pull_housekeeping(target: Path, console) -> None:
     """After ``git pull``: drop stale ``__pycache__``, copy any new ``.example`` files, and install
     dependencies the new revision declares (a version bump commonly adds or moves a package)."""
@@ -959,6 +1030,7 @@ def _post_pull_housekeeping(target: Path, console) -> None:
     _install_python_dependencies(target, console)
 
 
+@installation_transaction
 def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
     metadata = _read_install_metadata()
@@ -984,6 +1056,7 @@ def _remove_plugin_core(target: Path) -> None:
     shutil.rmtree(staging)
 
 
+@installation_transaction
 def cmd_remove(name: str) -> None:
     """Remove an installed plugin by name."""
     console = _console()
@@ -1011,6 +1084,7 @@ def _save_enabled_set(enabled: set) -> None:
     _write_config_value("plugins", "enabled", sorted(enabled))
 
 
+@installation_transaction
 def _save_plugin_sets(enabled: set, disabled: set) -> None:
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
@@ -1041,6 +1115,7 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
     names.discard(key.split("/")[-1])
 
 
+@installation_transaction
 def _set_plugin_enabled(name: str, *, enable: bool) -> None:
     """Move *name* between the enabled allow-list and the disabled deny-list and persist both."""
     enabled = _get_enabled_set()
@@ -1075,6 +1150,7 @@ def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
     return leaf_matches[0] if len(leaf_matches) == 1 else None
 
 
+@installation_transaction
 def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     """Write ``plugins.entries.<plugin_id>.<key> = value`` into config.yaml."""
     from hermes_cli.config import load_config, save_config
@@ -1084,6 +1160,7 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     save_config(config)
 
 
+@installation_transaction
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
@@ -1164,6 +1241,7 @@ def _declared_capabilities_for_key(key: str) -> list:
     return _declared_capabilities_from_manifest(_read_manifest(Path(entry[4])), entry[0])
 
 
+@installation_transaction
 def _run_capability_consent(console, plugin_id: str, declared: list, *, context: str = "install") -> bool:
     """Show the capability consent screen and record the decision; True when granted.
 
@@ -1280,6 +1358,7 @@ def _resolve_tool_override_grant(console, key: str, allow_tool_override: Optiona
             "this later.[/dim]")
 
 
+@installation_transaction
 def cmd_disable(name: str) -> None:
     """Remove a plugin from the enabled allow-list (and add to disabled)."""
     console = _console()
@@ -1614,6 +1693,7 @@ def cmd_toggle() -> None:
         _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disabled_set, categories, console)
 
 
+@installation_transaction
 def _persist_plugin_selection(plugin_keys, chosen, disabled) -> tuple[bool, set]:
     """Save the composite UI's checkbox state; returns ``(changed, new_enabled)``.
 
@@ -1806,6 +1886,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
     print()
 
 
+@installation_transaction
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
     ref: Optional[str] = None,
@@ -1900,6 +1981,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
     return None
 
 
+@installation_transaction
 def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
     """Add/remove a plugin's toolset in ``platform_toolsets`` for all platforms (no-op when the
     plugin provides no tools)."""
@@ -1922,6 +2004,7 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
         save_config(config)
 
 
+@installation_transaction
 def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
     """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists)."""
     if _resolve_plugin_key(name) is None:
@@ -1944,6 +2027,7 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
     return target if target.is_dir() else None
 
 
+@installation_transaction
 def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     """``git pull`` inside ``~/.hermes/plugins/<name>``."""
     from hermes_cli import plugins_cmd_catalog as catalog
@@ -1971,6 +2055,7 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     return {"ok": True, "name": name, "output": msg, "unchanged": "Already up to date" in msg}
 
 
+@installation_transaction
 def _clear_plugin_bytecode(target: Path) -> int:
     """Remove ``__pycache__`` dirs under a just-updated plugin checkout. Plugin dirs sit outside
     the repo, so the launch-time bytecode sweep never covers them and stale bytecode after a pull
@@ -1996,8 +2081,22 @@ def _run_plugin_git(
     a network verb talks to; it runs anonymously first and a stored user credential for that host
     is attached only when the remote refuses anonymous access (private repos)."""
     from hermes_cli.git_credentials import run_git_with_credential_fallback
+
+    env = noninteractive_git_env()
+    # cwd is not a Git boundary: inherited repository/index/object paths and
+    # core.worktree in a copied config can still mutate the original checkout.
+    # Keep authentication transport settings, but discard caller repository scope.
+    for key in (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE", "GIT_SHALLOW_FILE", "GIT_CONFIG",
+    ):
+        env.pop(key, None)
+    if args and args[0] != "clone":
+        env["GIT_DIR"] = str(target.resolve() / ".git")
+        env["GIT_WORK_TREE"] = str(target.resolve())
     return run_git_with_credential_fallback(
-        [git_exe, *args], auth_url, env=noninteractive_git_env(), capture_output=True, text=True,
+        [git_exe, *args], auth_url, env=env, capture_output=True, text=True,
         encoding='utf-8', errors='replace', timeout=timeout, cwd=str(target))
 
 
@@ -2041,7 +2140,8 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
     return True, ""
 
 
-def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
+@installation_transaction
+def _git_pull_plugin_dir(target: Path, *, before_restore=None) -> tuple[bool, str]:
     """``git pull --ff-only`` a plugin checkout, autostashing local edits (users patch installed
     plugins in place, and a plain ff-only pull would then refuse forever).
 
@@ -2050,6 +2150,10 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     un-updatable until they hand-run git. Same UX class Factory Droid fixed in v0.188 ("Updating a plugin
     marketplace now succeeds when its checkout has local changes"), and the same autostash approach ``hermes
     update`` already uses for the main checkout (PR #70161).
+
+    ``before_restore`` captures inventory after a successful pull, before local
+    edits (including .gitattributes) return. Only the staged updater supplies it;
+    a capture failure discards staging and leaves the original tree untouched.
     """
     git_exe = _resolve_git_executable()
     if not git_exe:
@@ -2071,6 +2175,8 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
                 note = "Local changes are preserved in git stash (restore with: git stash pop)."
             return False, f"{err}\n{note}"
 
+        if before_restore is not None:
+            before_restore()
         pulled = result.stdout.strip()
         if not stash_created:
             return True, pulled
@@ -2091,6 +2197,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         return False, "Git operation timed out after 60 seconds."
 
 
+@installation_transaction
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
     plugins_dir = _plugins_dir()

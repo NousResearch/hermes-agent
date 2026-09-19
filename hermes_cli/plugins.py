@@ -59,6 +59,7 @@ from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
     is_valid_system_prompt_section_id,
 )
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
+from hermes_cli.plugin_installation import PluginDiscoveryLock, installation_lock_held
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry,
@@ -280,7 +281,8 @@ class PluginContext:
         partial = _nested_plugin_mapping(full_path[:4], _nested_plugin_mapping(segments, value))
         # The lock covers merge-read plus atomic save so sibling plugin writes (threads or
         # processes) cannot race between the two steps.
-        with _locked_plugin_state(config_mod.get_config_path()), config_mod._CONFIG_LOCK:
+        from hermes_cli.plugin_installation import plugin_installation_lock
+        with plugin_installation_lock(), _locked_plugin_state(config_mod.get_config_path()), config_mod._CONFIG_LOCK:
             # Fail closed on malformed YAML: save_config degrades parse failures to {} — safe
             # for reads, destructive for read-modify-write.
             config_mod.read_user_config_raw()
@@ -1139,7 +1141,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # inverse must target the registration's original scope.
         self.scope_key = scope_key or hermes_home_key()
         self.home_path = Path(self.scope_key)
-        self._discovery_lock = threading.RLock()
+        self._discovery_lock = PluginDiscoveryLock(self.home_path)
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
@@ -1600,13 +1602,15 @@ def discover_plugins(force: bool = False) -> None:
 
 _background_discovery_thread: Optional[threading.Thread] = None
 _background_discovery_lock = threading.Lock()
+_background_discovery_cancelled = threading.Event()
+_background_discovery_home: Optional[Path] = None
 
 
 def start_background_plugin_discovery() -> None:
     """Run discovery in a daemon thread to overlap the rest of CLI startup (~150ms). Every
     synchronous consumer joins it via :func:`discover_plugins`, so no one sees a half-loaded
     registry. No-op when already done or in flight."""
-    global _background_discovery_thread
+    global _background_discovery_thread, _background_discovery_cancelled, _background_discovery_home
     manager = get_plugin_manager()
     if manager._discovered:
         return
@@ -1614,10 +1618,16 @@ def start_background_plugin_discovery() -> None:
         if _background_discovery_thread is not None and _background_discovery_thread.is_alive():
             return
 
+        cancelled = _background_discovery_cancelled = threading.Event()
+        _background_discovery_home = manager.home_path
+
         def _run() -> None:
             try:
-                manager.discover_and_load()
-                _persist_plugin_toolset_keys()
+                with manager._discovery_lock:
+                    if cancelled.is_set():
+                        return
+                    manager.discover_and_load()
+                    _persist_plugin_toolset_keys()
             except Exception:
                 logger.warning("background plugin discovery failed", exc_info=True)
 
@@ -1627,6 +1637,15 @@ def start_background_plugin_discovery() -> None:
 
 def _join_background_discovery(timeout: float = 30.0) -> None:
     """Wait for an in-flight background discovery (no-op from its own thread)."""
+    # The worker needs installation before discovery. A transaction owner must
+    # use the reentrant manager gate itself, never join a worker waiting on it.
+    if installation_lock_held():
+        # The synchronous consumer takes over. A queued startup sweep must not
+        # run afterward and resurrect registrations that consumer just unloaded.
+        with _background_discovery_lock:
+            if _background_discovery_home is not None and installation_lock_held(_background_discovery_home):
+                _background_discovery_cancelled.set()
+        return
     t = _background_discovery_thread
     if t is None or not t.is_alive() or t is threading.current_thread():
         return

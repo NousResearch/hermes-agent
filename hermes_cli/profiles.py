@@ -104,7 +104,8 @@ def _clone_all_copytree_ignore(source_dir: Path):
     """copytree ignore for --clone-all: history artifacts for any source, infrastructure
     only when the source is the default profile (see the two exclude sets above)."""
     source_resolved = source_dir.resolve()
-    root_exclude = set(_CLONE_ALL_HISTORY_EXCLUDE_ROOT)
+    # Plugin packages have their own verified snapshot path in BOTH clone modes.
+    root_exclude = set(_CLONE_ALL_HISTORY_EXCLUDE_ROOT) | {"plugins", ".plugin-installation.lock", ".clone-report.json"}
     if source_resolved == _get_default_hermes_home().resolve():
         root_exclude |= _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
 
@@ -1069,18 +1070,28 @@ def create_profile(
     # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
     # below has not removed yet.
     staging = _clone_staging_dir(profile_dir)
+    from hermes_cli.plugin_installation import plugin_installation_lock
     try:
-        if clone_all and source_dir:
-            _clone_all_into(source_dir, staging, canon)
-        else:
-            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
-        if source_dir is not None and not clone_channels:
-            from hermes_cli.profile_channels import strip_channel_settings
-            stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
-            if stripped:
-                logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-        _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
-        os.rename(staging, profile_dir)
+        # Keep config, package metadata and publication in the same installation
+        # transaction. Native provider state retains the existing clone semantics.
+        with contextlib.ExitStack() as transaction:
+            if source_dir is not None:
+                transaction.enter_context(plugin_installation_lock(source_dir))
+            if clone_all and source_dir:
+                _clone_all_into(source_dir, staging, canon)
+            else:
+                _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
+            if source_dir is not None:
+                from hermes_cli.profile_plugins import copy_profile_plugins
+                plugin_report = copy_profile_plugins(source_dir, staging)
+                _write_package_clone_report(staging, plugin_report)
+            if source_dir is not None and not clone_channels:
+                from hermes_cli.profile_channels import strip_channel_settings
+                stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
+                if stripped:
+                    logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
+            _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
+            os.rename(staging, profile_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -1093,6 +1104,17 @@ def create_profile(
     # rescans periodically, so a missed signal only delays serving).
     _notify_multiplexer(canon)
     return profile_dir
+
+
+def _write_package_clone_report(staging: Path, report: dict[str, list[str]]) -> None:
+    """Retain package warnings without changing create_profile's Path return API."""
+    import json
+
+    path = staging / ".clone-report.json"
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump({"plugins": report}, stream, indent=2)
+        stream.write("\n")
+    path.chmod(0o600)
 
 
 def _clone_staging_dir(profile_dir: Path) -> Path:

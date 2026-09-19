@@ -23,9 +23,9 @@
  *    English where it is WRITTEN (`group-chat-parts.tsx`, `group-rounds.ts`);
  *    the places that RENDER the reader's own lines use `group.you` instead.
  *
- * Locales follow kanban: `en` / `ja` / `zh` / `zh-hant`. Arabic falls through
- * the resolution chain (active locale → this plugin's `en` → the key) the
- * same way a missing string in any locale does. Nouns match core: ボット /
+ * Full locales follow kanban: `en` / `ja` / `zh` / `zh-hant`. Arabic and Russian
+ * cover clone feedback; other keys fall through to this plugin's `en`.
+ * Nouns match core: ボット /
  * 机器人 / 機器人, プロファイル / 配置档案 / 設定檔, ゲートウェイ / 网关 / 閘道.
  */
 
@@ -130,6 +130,9 @@ type BotsMessages = {
     attentionBlocked: string
     duplicate: string
     duplicateFailed: string
+    duplicating: (name: string) => string
+    duplicated: (name: string) => string
+    cloneAppearanceFailed: (name: string) => string
     deleteTitle: string
     removeFromAllGroups: string
     createFirstHint: string
@@ -393,6 +396,9 @@ const en: BotsMessages = {
     attentionBlocked: 'Bot is blocked — see its last message',
     duplicate: 'Duplicate',
     duplicateFailed: 'Duplicate failed',
+    duplicating: name => `Duplicating ${name}…`,
+    duplicated: name => `Created ${name}`,
+    cloneAppearanceFailed: name => `${name} was created, but its appearance could not be saved.`,
     deleteTitle: 'Delete bot and profile?',
     removeFromAllGroups: 'Remove from all groups',
     createFirstHint: 'Open the Bots pane and hit “New Bot”.',
@@ -641,6 +647,9 @@ const ja: BotsMessages = {
     attentionBlocked: 'ボットがブロックされています — 最後のメッセージを確認してください',
     duplicate: '複製',
     duplicateFailed: '複製に失敗しました',
+    duplicating: name => `${name} を複製中…`,
+    duplicated: name => `${name} を作成しました`,
+    cloneAppearanceFailed: name => `${name} を作成しましたが、外観を保存できませんでした。`,
     deleteTitle: 'ボットとプロファイルを削除しますか？',
     removeFromAllGroups: 'すべてのグループから外す',
     createFirstHint: 'ボットパネルを開いて「新しいボット」を押してください。',
@@ -885,6 +894,9 @@ const zh: BotsMessages = {
     attentionBlocked: '机器人已被阻止 — 请查看其最后一条消息',
     duplicate: '复制',
     duplicateFailed: '复制失败',
+    duplicating: name => `正在复制 ${name}…`,
+    duplicated: name => `已创建 ${name}`,
+    cloneAppearanceFailed: name => `已创建 ${name}，但无法保存外观。`,
     deleteTitle: '删除机器人和配置档案？',
     removeFromAllGroups: '从所有群组中移除',
     createFirstHint: '打开机器人面板，点击“新建机器人”。',
@@ -1128,6 +1140,9 @@ const zhHant: BotsMessages = {
     attentionBlocked: '機器人已被封鎖 — 請查看其最後一則訊息',
     duplicate: '複製',
     duplicateFailed: '複製失敗',
+    duplicating: name => `正在複製 ${name}…`,
+    duplicated: name => `已建立 ${name}`,
+    cloneAppearanceFailed: name => `已建立 ${name}，但無法儲存外觀。`,
     deleteTitle: '刪除機器人和設定檔？',
     removeFromAllGroups: '從所有群組中移除',
     createFirstHint: '開啟機器人面板，點「新增機器人」。',
@@ -1286,7 +1301,23 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = {
+  en, ja, zh, 'zh-hant': zhHant,
+  ar: {
+    bot: {
+      duplicating: (name: string) => `جارٍ نسخ ${name}…`,
+      duplicated: (name: string) => `تم إنشاء ${name}`,
+      cloneAppearanceFailed: (name: string) => `تم إنشاء ${name}، لكن تعذّر حفظ مظهره.`
+    }
+  },
+  ru: {
+    bot: {
+      duplicating: (name: string) => `Копирование ${name}…`,
+      duplicated: (name: string) => `Создан ${name}`,
+      cloneAppearanceFailed: (name: string) => `${name} создан, но сохранить его оформление не удалось.`
+    }
+  }
+}
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …).

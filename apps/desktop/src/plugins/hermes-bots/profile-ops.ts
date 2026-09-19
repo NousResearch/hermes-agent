@@ -303,9 +303,10 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
 /** Clone a bot: profile (config/skills/SOUL/memory via clone_from) + look.
  *  Name is "<base>-2", "-3", … — first free slot against the live roster. */
 export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
+  const ownerRoute = botConnectionRoute(bot)
   await ensureBotMetadata(bot)
   const base = bot.name
-  const ownerRoute = botConnectionRoute(bot)
+  const meta = $botMeta.get()[botMetaKey(bot)]
   const ownerKey = ownerRoute ? botRouteKey(ownerRoute) : null
   let name = null
 
@@ -333,38 +334,41 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
     throw new Error('No free name for the duplicate.')
   }
 
-  await requestForBot(bot, 'profiles.create', {
+  const result = await requestForBot<{ name?: string }>(bot, 'profiles.create', {
     name,
-    clone_from: base,
+    clone_from: ownerRoute?.targetProfile || ownerRoute?.profile || base,
     description: bot.description || ''
   })
 
   // Same look: avatar shape/color/image and a "(copy)" title so the two
   // are tellable apart in the roster until the user renames. Do not copy
   // chat or created. Those belong to the original bot.
-  const meta = $botMeta.get()[botMetaKey(bot)]
-
-  if (meta) {
-    const { chat, created, ...look } = meta
-    await saveBotMeta(
-      {
-        ...bot,
-        name,
-        // TODO(bot-mode-types): botConnectionRoute() returns null for an unrouted bot, so this
-        // synthesized row can carry `route: null`, which RosterRow['route'] (ProfileRoute |
-        // undefined) does not admit. Benign at runtime — every read of it is optional-chained —
-        // but the assertion below is covering for a domain type that is too narrow.
-        route: ownerRoute,
-        sourceScoped: Boolean(ownerRoute)
-      } as RosterRow,
-      {
+  const destinationName = result?.name || name
+  // A new profile is a new owner, not an alias of the source. Build only its
+  // route/identity; never inherit the source's canonical session or activity.
+  const destination: RosterRow = {
+    name: destinationName,
+    ...(ownerRoute ? {
+      route: { ...ownerRoute, profile: destinationName, targetProfile: destinationName },
+      sourceScoped: true
+    } : {})
+  }
+  let appearanceSaved = true
+  try {
+    if (meta) {
+      const { chat, created, ...look } = meta
+      const saved = await saveBotMeta(destination, {
         ...look,
         title: meta.title ? `${meta.title} (copy)` : ''
-      }
-    )
+      })
+      appearanceSaved = saved.serverOutcome !== 'failed'
+    }
+  } finally {
+    // Publication already succeeded, even if saving the look fails afterward.
+    void queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
   }
 
-  return name
+  return { name: destinationName, appearanceSaved }
 }
 
 /** `cli.exec` reply, as the legacy delete path reads it. */

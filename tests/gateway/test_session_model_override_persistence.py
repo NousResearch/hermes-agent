@@ -33,6 +33,7 @@ OVERRIDE = {
     "api_key": "sk-SUPER-SECRET-do-not-persist",
     "base_url": "https://api.openai.example/v1",
     "api_mode": "responses",
+    "reasoning_effort": "high",
 }
 
 
@@ -83,6 +84,7 @@ def test_override_persists_and_survives_restart(store_factory, tmp_path):
         "model": "gpt-5o",
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
+        "reasoning_effort": "high",
     }
 
 
@@ -128,6 +130,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert override["requested_provider"] == "custom:chatgpt-tier"
     assert override["capabilities"] == {"openai_native_compaction": True}
     assert override["max_tokens"] == 32_768
+    assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "high"}
 
     model, runtime = runner._resolve_session_agent_runtime(
         session_key=session_key,
@@ -190,4 +193,8 @@ def test_sanitize_model_override():
         "model": "gpt-5o",
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
+        "reasoning_effort": "high",
+    }
+    assert sanitize_model_override({"model": "safe", "reasoning_effort": "invented"}) == {
+        "model": "safe"
     }

@@ -16,6 +16,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "delegate_task",  # no recursive delegation
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
+        "select_model",  # child model selection cannot switch or report the parent session route
         "send_message",  # no cross-platform side effects
         "cronjob_manage",  # no scheduling more work in the parent's name
     ]

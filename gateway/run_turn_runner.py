@@ -1175,6 +1175,30 @@ class TurnRunner:
         render_notification(present, platform=self._ctx.source.platform,
                             user_config=self._ctx.user_config, diagnostic=diagnostic)
 
+    def _model_selection_callback_sync(self, selection: dict) -> None:
+        """Keep an in-turn autonomous model selection pinned to this gateway conversation."""
+        ctx = self._ctx
+        runner = self._runner
+        if not ctx.session_key:
+            return
+        runtime = dict(selection.get("runtime") or {})
+        reasoning = dict(selection.get("reasoning_config") or {})
+        runtime["reasoning_effort"] = str(selection.get("reasoning_effort") or "")
+        runner._session_model_overrides[ctx.session_key] = runtime
+        runner._set_session_reasoning_override(ctx.session_key, reasoning)
+        store = getattr(runner, "async_session_store", None)
+        if store is not None:
+            self._schedule(
+                store.set_model_override(ctx.session_key, runtime),
+                "autonomous model selection persistence error",
+            )
+        message = str(selection.get("message") or "")
+        if message and self._status_live():
+            self._schedule(
+                runner._deliver_platform_notice(ctx.source, message),
+                "autonomous model selection report delivery error",
+            )
+
     def _make_bg_review_callbacks(self):
         """(send, release): background-review messages ("💾 Memory updated") are held until the
         adapter's post-delivery hook releases them after the main response lands."""
@@ -1249,6 +1273,7 @@ class TurnRunner:
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
+        agent.model_selection_callback = self._model_selection_callback_sync
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
         self._merge_turn_request_overrides(agent, turn_route)

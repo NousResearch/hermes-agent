@@ -1756,11 +1756,26 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     from types import SimpleNamespace
     from agent.terminal_approval_batch import terminal_approval_batch, terminal_approval_runs
-    for calls in terminal_approval_runs(agent, assistant_message.tool_calls):
+    original_calls = assistant_message.tool_calls
+    processed_count = 0
+    for calls in terminal_approval_runs(agent, original_calls):
         with terminal_approval_batch(agent, calls, messages, effective_task_id):
             _execute_tool_calls_sequential(agent, SimpleNamespace(tool_calls=calls), messages, effective_task_id, api_call_count, finalize=False)
         if getattr(agent, "_incremental_persistence_failed", False):
             return
+        processed_count += len(calls)
+        if getattr(agent, "_model_selection_attempted_in_tool_batch", False):
+            remaining_calls = original_calls[processed_count:]
+            if remaining_calls and not _append_skipped_tool_results(
+                agent, messages, remaining_calls, effective_task_id,
+                content=(
+                    "[Tool execution skipped — {name} must be regenerated after the model-selection "
+                    "result is known]"
+                ),
+                flush_stage="post-model-selection skipped tool result",
+            ):
+                return
+            break
     if finalize:
         _finalize_tool_batch(agent, messages, effective_task_id, len(assistant_message.tool_calls), _budget_for_agent(agent))
 
@@ -1788,11 +1803,26 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
                 return
             break
 
+        is_model_selection = _tc_name(tool_call) == "select_model"
+        if is_model_selection:
+            agent._model_selection_attempted_in_tool_batch = True
         pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
         ref = pc.ref(effective_task_id)
         if pc.parse_error is not None:
             if not _append_invalid_arguments_result(agent, messages, ref, pc.parse_error):
                 return
+            if is_model_selection and i < len(tool_calls):
+                if not _skip_remaining_sequential(
+                    agent, messages, tool_calls[i:], effective_task_id,
+                    notice="tool call(s) emitted beside a model selection",
+                    content=(
+                        "[Tool execution skipped — {name} must be regenerated after the model-selection "
+                        "result is known]"
+                    ),
+                    flush_stage="post-model-selection skipped tool result",
+                ):
+                    return
+                break
             continue
 
         tool_start_time = time.time()
@@ -1807,6 +1837,19 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
         )
         if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i, budget=_tool_budget):
             return
+
+        if getattr(agent, "_model_selection_attempted_in_tool_batch", False) and i < len(tool_calls):
+            if not _skip_remaining_sequential(
+                agent, messages, tool_calls[i:], effective_task_id,
+                notice="tool call(s) emitted beside a model selection",
+                content=(
+                    "[Tool execution skipped — {name} must be regenerated after the model-selection "
+                    "result is known]"
+                ),
+                flush_stage="post-model-selection skipped tool result",
+            ):
+                return
+            break
 
         if agent._interrupt_requested and i < len(tool_calls):
             if not _skip_remaining_sequential(
@@ -1835,7 +1878,7 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    for segment_index, (kind, calls) in enumerate(segments):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
         segment_message = SimpleNamespace(tool_calls=list(calls))
@@ -1843,6 +1886,21 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         run_segment(agent, segment_message, messages, effective_task_id, api_call_count, finalize=False)
         if getattr(agent, "_incremental_persistence_failed", False):
             return
+        if getattr(agent, "_model_selection_attempted_in_tool_batch", False):
+            remaining_calls = [
+                call for _, later_calls in segments[segment_index + 1:] for call in later_calls
+            ]
+            if remaining_calls:
+                if not _append_skipped_tool_results(
+                    agent, messages, remaining_calls, effective_task_id,
+                    content=(
+                        "[Tool execution skipped — {name} must be regenerated after the model-selection "
+                        "result is known]"
+                    ),
+                    flush_stage="post-model-selection skipped tool result",
+                ):
+                    return
+            break
 
     total_tools = len(assistant_message.tool_calls)
     if total_tools > 0:

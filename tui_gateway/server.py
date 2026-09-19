@@ -1657,7 +1657,9 @@ def _is_pivot_marker(entry: Any) -> bool:
     return _is_model_switch_marker(entry) or (isinstance(entry, dict) and entry.get("display_kind") == "personality_switch")
 
 
-def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
+def _append_model_switch_marker(
+    session: dict | None, *, model: str, provider: str, detail: str | None = None
+) -> None:
     """Record a real system-history pivot after a live model switch. Only the newest marker is kept (each
     switch strips prior ones, so N switches leave one marker, not N re-sent every API call; self-healing
     across resumes because the next switch collapses whatever a reload brought back).
@@ -1671,6 +1673,8 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     marker = (
         f"{_MODEL_SWITCH_MARKER_PREFIX}{model}{provider_part}. From this point forward, use this runtime "
         "metadata when answering questions about what model/provider is active.]")
+    if detail:
+        marker = f"{marker}\n\n{detail}"
     # A user message, not system: strict OpenAI-compatible providers (vLLM, Qwen) reject non-leading system messages.
     # See #48338.
     entry = {"role": "user", "content": marker, "display_kind": "model_switch"}

@@ -272,6 +272,7 @@ class AIAgent(
         stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None, status_callback: callable = None,
         notice_callback: callable = None, notice_clear_callback: callable = None,
+        model_selection_callback: Optional[Callable] = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
         reaction_callback: Optional[Callable[[str], None]] = None,
         max_tokens: int = None, reasoning_config: Dict[str, Any] = None, service_tier: str = None,
@@ -1316,6 +1317,8 @@ class AIAgent(
         targets, opted-in MCP) separated by sequential barriers, run in emission order.
         """
         tool_calls = assistant_message.tool_calls
+        self._model_selection_attempted_in_tool_batch = False
+        self._model_selected_in_tool_batch = False
         args = (assistant_message, messages, effective_task_id, api_call_count)
         self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
         try:

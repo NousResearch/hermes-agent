@@ -116,6 +116,28 @@ def _agent_notice_update(sid: str, notice) -> None:
            "ttl_ms": notice.ttl_ms, "key": notice.key, "id": notice.id})
 
 
+def _record_model_selection(sid: str, selection: dict) -> None:
+    """Pin an agent-selected route and add its report to the Desktop/TUI timeline."""
+    with _sessions_lock:
+        session = _sessions.get(sid)
+        if session is None:
+            return
+        session["model_override"] = dict(selection.get("runtime") or {})
+        session["create_reasoning_override"] = dict(selection.get("reasoning_config") or {})
+    runtime = selection.get("runtime") or {}
+    message = str(selection.get("message") or "")
+    _append_model_switch_marker(
+        session,
+        model=str(runtime.get("model") or ""),
+        provider=str(runtime.get("provider") or ""),
+        detail=message or None,
+    )
+    _persist_live_session_runtime(session)
+    _emit_session_info(sid, session)
+    if message:
+        _emit("message.interim", sid, {"text": message, "already_streamed": False})
+
+
 def _agent_cbs(sid: str) -> dict:
     def _read_block(method: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): server request like clarify; the preview
@@ -139,6 +161,7 @@ def _agent_cbs(sid: str) -> dict:
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _agent_notice_update(sid, n),
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
+        "model_selection_callback": lambda selection: _record_model_selection(sid, selection),
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
         "read_terminal_callback": _read_block("terminal.read", 30),

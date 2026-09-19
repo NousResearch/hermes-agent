@@ -156,6 +156,12 @@ class GatewayAgentCacheMixin:
         if not persisted:
             return
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
+        persisted_effort = str(persisted.get("reasoning_effort") or "").strip().lower()
+        if persisted_effort:
+            from hermes_constants import parse_reasoning_effort
+            parsed_reasoning = parse_reasoning_effort(persisted_effort)
+            if parsed_reasoning is not None:
+                self._set_session_reasoning_override(session_key, parsed_reasoning)
         provider = persisted.get("provider")
         if provider:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed

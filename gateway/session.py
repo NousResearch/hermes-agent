@@ -454,7 +454,7 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
 
 
 # /model override keys safe to persist; ``api_key``/``api_mode`` must NEVER reach sessions.json.
-PERSISTABLE_MODEL_OVERRIDE_KEYS = ("model", "provider", "base_url")
+PERSISTABLE_MODEL_OVERRIDE_KEYS = ("model", "provider", "base_url", "reasoning_effort")
 
 
 def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
@@ -463,8 +463,13 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
         return None
     cleaned = {
         k: str(v) for k, v in override.items()
-        if k in PERSISTABLE_MODEL_OVERRIDE_KEYS and v not in (None, "")
+        if k in PERSISTABLE_MODEL_OVERRIDE_KEYS and k != "reasoning_effort" and v not in (None, "")
     }
+    effort = str(override.get("reasoning_effort") or "").strip().lower()
+    if effort:
+        from hermes_constants import parse_reasoning_effort
+        if parse_reasoning_effort(effort) is not None:
+            cleaned["reasoning_effort"] = effort
     return cleaned or None
 
 
@@ -517,7 +522,7 @@ class SessionEntry:
     # SIGKILL/OOM so unclean startup recovers the exact session instead of guessing.
     active_turn_token: Optional[str] = None
     active_turn_started_at: Optional[datetime] = None
-    # Session-scoped /model override (model/provider/base_url ONLY — never credentials, see
+    # Session-scoped /model override (model/provider/base_url/reasoning effort — never credentials, see
     # sanitize_model_override). Persisted so a restart keeps the chosen model.
     model_override: Optional[Dict[str, str]] = None
     # Profile owning the bot that received this lane's traffic (``RoutingIdentity.transport_profile``,

@@ -135,6 +135,18 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
     return result
 
 
+def _select_model(agent, args: dict, ctx: InlineToolContext) -> Any:
+    from tools.model_selection_tool import select_model_tool
+
+    return select_model_tool(
+        agent,
+        route=args.get("route", ""),
+        reason=args.get("reason", ""),
+        reasoning_effort=args.get("reasoning_effort"),
+        reasoning_reason=args.get("reasoning_reason"),
+    )
+
+
 _read_preview = _callback_tool(
     "tools.read_preview_tool", "read_preview_tool", "read_preview_callback",
     ("start", "start"), ("count", "count"),
@@ -186,6 +198,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     ),
     "session_search": _session_search,
     "memory": _memory,
+    "select_model": _select_model,
     "clarify": _tool(
         "tools.clarify_tool", "clarify_tool",
         ("question", "question", ""), ("choices", "choices"), ("multi_select", "multi_select", False),

@@ -355,6 +355,28 @@ def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
         for msg in messages])
 
 
+def _rename_thread(token: str, channel_id: str, name: str, **_kwargs: Any) -> str:
+    """Rename an existing Discord thread.
+
+    Rate-limited to ~2 edits per 10 minutes per thread (Discord channel-update
+    bucket). Requires the bot to own the thread or have MANAGE_THREADS.
+    Fails on locked or archived threads unless bot has MANAGE_THREADS.
+    """
+    from gateway.platforms.base import utf16_len, _prefix_within_utf16_limit
+    cleaned = " ".join(str(name or "").split()).strip()
+    if not cleaned:
+        return tool_error("'name' must be a non-empty string.")
+    # Discord measures thread names in UTF-16 code units (emoji = 2 units).
+    if utf16_len(cleaned) > 80:
+        cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
+    thread = _discord_request("PATCH", f"/channels/{channel_id}", token, body={"name": cleaned})
+    return json.dumps({
+        "success": True,
+        "thread_id": thread.get("id", channel_id),
+        "name": thread.get("name", cleaned),
+    })
+
+
 def _create_thread(
     token: str, channel_id: str, name: str, message_id: Optional[str] = None,
     auto_archive_duration: int = 1440, **_kwargs: Any) -> str:
@@ -405,6 +427,7 @@ _ACTION_MANIFEST = [
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
     ("delete_message", _delete_message, "(channel_id, message_id)", "delete a message"),
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("rename_thread", _rename_thread, "(channel_id, name)", "rename a thread to a new name (rate-limited: ~2 edits/10 min per thread; requires MANAGE_THREADS or bot to be thread owner; fails on locked/archived threads)"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -415,7 +438,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
 
 # Two tools share one action table: ``discord`` (core, the participation trio every bot
 # user wants) and ``discord_admin`` (everything else).
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "rename_thread"})
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAMES}
 
@@ -554,6 +577,7 @@ _ACTION_403_HINT = {
     "unpin_message": f"{_NO_MANAGE_MESSAGES}.",
     "delete_message": f"{_NO_MANAGE_MESSAGES}, or cannot view the channel/message.",
     "create_thread": "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it.",
+    "rename_thread": "Bot lacks MANAGE_THREADS permission in this channel, or the thread is locked/archived.",
     "add_role": (
         f"{_ROLE_HIERARCHY} Roles can only be assigned below the bot's own position in the role hierarchy."),
     "remove_role": _ROLE_HIERARCHY,

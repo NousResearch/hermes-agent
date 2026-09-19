@@ -30,7 +30,7 @@ logger = logging.getLogger("cron.scheduler")
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "telegram", "discord", "slack", "whatsapp", "signal",
+    "telegram", "discord", "slack", "whatsapp", "whatsapp_cloud", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot", "yuanbao"})

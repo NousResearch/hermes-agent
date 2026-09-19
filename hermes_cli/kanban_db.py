@@ -790,6 +790,9 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    # ``"<host>:<pid>"`` of the caller that wrote the terminal row (#113004);
+    # NULL on legacy rows closed before this column existed.
+    closed_by: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -798,6 +801,7 @@ class Run:
                 col: _lossy_text(row[col]) for col in (
                     "task_id", "profile", "step_key", "status", "claim_lock", "claim_expires",
                     "worker_pid", "max_runtime_seconds", "last_heartbeat_at", "outcome", "summary", "error",
+                    "closed_by",
                 )
             },
             id=int(row["id"]),
@@ -1948,6 +1952,7 @@ def _append_event(
 def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
+    closed_by: Optional[str] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
     ``current_run_id``; None when no run was active (never-claimed task).
@@ -1955,11 +1960,20 @@ def _end_run(
     ``worker_pid`` / ``worker_started_at`` / ``claim_lock`` stay on the closed
     row: they are the only evidence left of the OS process once the task row
     is wiped, and :func:`kanban_db_dispatch.reap_terminal_workers` needs them
-    to end a worker that survived its own terminal transition."""
+    to end a worker that survived its own terminal transition.
+
+    ``closed_by`` records the ``"<host>:<pid>"`` of the caller that wrote the
+    terminal row (#113004). Distinct from ``profile`` (= the claimant at open
+    time): ``profile`` says who owned the work, ``closed_by`` says who finally
+    closed it. ``None`` falls back to ``_claimer_id()`` so the field is always
+    populated on freshly-closed rows; pass an explicit ``closed_by`` to record
+    a non-default actor (e.g. a forced operator override).
+    """
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    actor = closed_by if closed_by is not None else _claimer_id()
     conn.execute(
         """
         UPDATE task_runs
@@ -1969,11 +1983,12 @@ def _end_run(
                error         = ?,
                metadata      = ?,
                ended_at      = ?,
-               claim_expires = NULL
+               claim_expires = NULL,
+               closed_by     = ?
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, actor, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id

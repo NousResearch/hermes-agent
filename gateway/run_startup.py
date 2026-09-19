@@ -881,7 +881,16 @@ class GatewayStartupMixin:
             entries = platform_registry.plugin_entries()
             allowed_vars += [e.allowed_users_env for e in entries if e.allowed_users_env]
             allow_all_vars += [e.allow_all_env for e in entries if e.allow_all_env]
-        if not any(os.getenv(v) for v in allowed_vars) and not any(
+        # Only warn when at least one messaging platform is connected. An API-server-only
+        # gateway (no TELEGRAM/DISCORD/…) has no inbound surface to protect, so the
+        # allowlist reminder is noise (#115439). Fail open (warn) when the platform
+        # list can't be determined — the warning is harmless and a silent miss is not.
+        _non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
+        _has_messaging = True
+        with suppress(Exception):
+            if not any(p not in _non_messaging for p in self.config.get_connected_platforms()):
+                _has_messaging = False
+        if _has_messaging and not any(os.getenv(v) for v in allowed_vars) and not any(
             os.getenv(v, "").lower() in {"true", "1", "yes"} for v in allow_all_vars
         ):
             logger.warning(

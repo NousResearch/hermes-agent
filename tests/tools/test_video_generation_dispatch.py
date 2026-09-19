@@ -116,3 +116,42 @@ class TestUnifiedDispatch:
 
         self._run({"prompt": "a dog"}, configured="fake")
         assert "upscale" not in provider.last_kwargs
+
+    def test_new_capability_param_is_forwarded_not_dropped(self, monkeypatch):
+        """A parameter added to _CAPABILITY_PARAMS reaches provider.generate().
+
+        The dynamic schema advertises every entry in that table whose capability
+        flag the active provider sets. The handler used to rebuild its forwarded
+        set by hand, so a newly declared parameter was shown to the model and
+        then silently dropped before dispatch — the schema and the handler could
+        disagree with no error anywhere.
+        """
+        from tools import video_generation_tool as vgt
+
+        monkeypatch.setattr(
+            vgt, "_CAPABILITY_PARAMS",
+            vgt._CAPABILITY_PARAMS + (
+                ("supports_end_image", "end_image_url", {"type": "string"}),
+                ("supports_widget_count", "widget_count", {"type": "integer"}),
+                ("supports_widget_mode", "widget_mode", {"type": "boolean"}),
+            ),
+        )
+
+        provider = _RecordingProvider()
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {"prompt": "a dog", "end_image_url": "  data:image/png;base64,AAAA  ",
+             "widget_count": "3", "widget_mode": True},
+            configured="fake")
+        assert result["success"] is True
+        # String values are stripped, ints and bools coerced, as for the built-ins.
+        assert provider.last_kwargs["end_image_url"] == "data:image/png;base64,AAAA"
+        assert provider.last_kwargs["widget_count"] == 3
+        assert provider.last_kwargs["widget_mode"] is True
+
+        # Unset stays omitted rather than arriving as None.
+        self._run({"prompt": "a dog"}, configured="fake")
+        assert "end_image_url" not in provider.last_kwargs
+        assert "widget_count" not in provider.last_kwargs
+        assert "widget_mode" not in provider.last_kwargs

@@ -110,6 +110,9 @@ Author the JSON spec with `write_file`, inspect script JSON output with
    `"full_calc_on_load": true` (spec) or `--recalc` (editor); this sets
    the workbook's `fullCalcOnLoad` flag so Excel/LibreOffice recompute
    everything on open. openpyxl itself NEVER evaluates formulas.
+
+Formula syntax: when writing formula strings through these openpyxl-backed helpers, use the stored Excel/OOXML form: built-in function names in English, commas between function arguments, and `.` as the decimal point. In an array constant such as `{1,2;3,4}`, commas separate columns and semicolons separate rows; an array constant is not an array formula. Excel's localized UI/formula bar may display or accept localized names and separators, and CSV delimiter/decimal conventions are separate from stored XLSX formula syntax, so do not copy localized UI or CSV syntax blindly into formula strings.
+
 3. **Read**: `--sheets` for inventory (names, dimensions, merged
    ranges, chart count, tables, protection, defined names),
    `--json`/`--csv` for data, `--formulas` to

@@ -390,7 +390,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         for _key, _v in [("WHATSAPP_MODE", _wenv("WHATSAPP_MODE", "self-chat"))] + [(k, _wenv(k)) for k in _BRIDGE_PASSTHROUGH_ENV]:
             if _v:
                 bridge_env[_key] = _v
-            else:
+            elif _key not in bridge_env:
+                # Only pop keys that were NOT already set explicitly (e.g. reply_prefix
+                # from config.yaml).  Empty string is a valid value for keys like
+                # WHATSAPP_REPLY_PREFIX where it means "no prefix".
                 bridge_env.pop(_key, None)
         # bridge.js gates DMs BEFORE Python sees them: it must run the same dm_policy / allow_from the
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML

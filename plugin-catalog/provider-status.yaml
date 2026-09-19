@@ -1,6 +1,6 @@
 name: provider-status
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: f8244d3bb0920779856fc826ab300b1abd12e949
+sha: 37fe9446bed8660fcf6c007a9f80226d6bd9e105
 subdir: plugins/provider-status
 description: "Multi-provider quota chips in the desktop status bar, with OAuth, color warnings, extra keys, and Hermes key rotation on exhaust."
 maintainer: apoapostolov
@@ -8,6 +8,7 @@ tier: community
 category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/plugins/provider-status
 version: "1.5.7"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/37fe9446bed8660fcf6c007a9f80226d6bd9e105/plugins/provider-status/docs/hero.png
 platforms: []
 capabilities:
   provides_tools: []

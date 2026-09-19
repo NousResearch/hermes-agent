@@ -76,11 +76,21 @@ export function observeMessageStartInput(state: ClientSessionState, ctx: Gateway
   if (own.length) {
     const first = own[0]!
     const matched = new Set(own)
+    const localAttachments = own.flatMap(row => row.attachmentRefs ?? [])
+
+    const attachmentRefs = [
+      ...localAttachments,
+      ...(message.attachmentRefs ?? []).filter(ref => !localAttachments.includes(ref))
+    ]
 
     return {
       ...next,
       messages: state.messages.flatMap(row =>
-        row === first ? [{ ...first, ...message, id: first.id, inputIds: ids }] : matched.has(row) ? [] : [row]
+        row === first
+          ? [{ ...first, ...message, id: first.id, inputIds: ids, attachmentRefs }]
+          : matched.has(row)
+            ? []
+            : [row]
       )
     }
   }

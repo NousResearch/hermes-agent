@@ -181,7 +181,8 @@ describe('shared starting input observation', () => {
         messages: Array.from({ length: ownCount }, (_, index) => ({
           id: `own-${index}`,
           role: 'user' as const,
-          parts: [textPart(`Part ${index}`)]
+          parts: [textPart(`Part ${index}`)],
+          attachmentRefs: [`@image:local-${index}`]
         }))
       })
 
@@ -201,7 +202,13 @@ describe('shared starting input observation', () => {
       expect(h.state().messages.map(chatMessageText)).toEqual(['Part 0\nPart 1\nPeer addition'])
       expect(h.state().messages[0]?.inputIds).toEqual(['first', 'second', 'peer'])
 
-      if (ownCount) {expect(h.state().messages[0]?.id).toBe('own-0')}
+      if (ownCount) {
+        expect(h.state().messages[0]?.id).toBe('own-0')
+        expect(h.state().messages[0]?.attachmentRefs).toEqual(
+          Array.from({ length: ownCount }, (_, index) => `@image:local-${index}`)
+        )
+      }
+
       cleanup()
     }
 

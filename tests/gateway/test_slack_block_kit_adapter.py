@@ -59,6 +59,34 @@ def _slack_connection_key():
 
 class TestSendMessageBlocks:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("rich", [False, True])
+    async def test_standalone_preserves_live_rendering_and_text(self, monkeypatch, rich):
+        config = PlatformConfig(enabled=True, token="xoxb-fake", extra={"rich_blocks": rich})
+        monkeypatch.setattr(slack_module, "_load_slack_bot_tokens", lambda *a, **k: ["xoxb-fake"])
+        post = AsyncMock(return_value={"ok": True, "ts": "111.222"})
+        monkeypatch.setattr(slack_module, "_slack_json_post", post)
+        result = await slack_module._standalone_send(config, "C1", RICH_TABLE_MD, thread_id="100.1")
+        payload = post.await_args.args[3]
+        assert result["success"]
+        assert payload["text"] == slack_module._standalone_format_mrkdwn(RICH_TABLE_MD)
+        assert payload["thread_ts"] == "100.1"
+        assert payload.get("blocks") == SlackAdapter(config)._maybe_blocks(RICH_TABLE_MD)
+
+    @pytest.mark.asyncio
+    async def test_standalone_rejected_blocks_retry_text_only(self, monkeypatch):
+        config = PlatformConfig(enabled=True, token="xoxb-fake", extra={"rich_blocks": True})
+        monkeypatch.setattr(slack_module, "_load_slack_bot_tokens", lambda *a, **k: ["xoxb-fake"])
+        payloads = []
+        async def post(session, token, method, payload, request):
+            payloads.append(dict(payload))
+            return {"ok": False, "error": "invalid_blocks"} if len(payloads) == 1 else {"ok": True, "ts": "111.222"}
+        monkeypatch.setattr(slack_module, "_slack_json_post", post)
+        result = await slack_module._standalone_send(config, "C1", RICH_TABLE_MD)
+        assert result["success"]
+        assert "blocks" in payloads[0] and "blocks" not in payloads[1]
+        assert payloads[0]["text"] == payloads[1]["text"]
+
+    @pytest.mark.asyncio
     async def test_disabled_by_default_no_blocks(self):
         adapter, client = _make_adapter()
         await adapter.send("C1", RICH_MD)
@@ -197,5 +225,4 @@ class TestMarkdownBlockMode:
         kwargs = client.chat_update.await_args.kwargs
         assert kwargs["blocks"][0]["type"] == "markdown"
         assert kwargs["blocks"][0]["text"] == RICH_TABLE_MD
-
 

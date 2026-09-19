@@ -656,8 +656,7 @@ class SearchMixin:
         """Search for files by name (glob-like) across one or more roots: rg --files,
         else a bounded find. ``order``: "discovery" (fast, bounded) or "modified"
         (exact global newest-first; needs rg 14+ or GNU find)."""
-        search_pattern = pattern if (not pattern.startswith('**/') and '/' not in pattern) \
-            else pattern.split('/')[-1]
+        search_pattern = pattern
         roots = [path] if isinstance(path, str) else path
         if not roots:
             return SearchResult(error="File search requires at least one search root in 'path'.")
@@ -692,6 +691,12 @@ class SearchMixin:
                 error="File search requires 'rg' (ripgrep) or 'find'. "
                       "Install ripgrep for best results: "
                       "https://github.com/BurntSushi/ripgrep#installation")
+
+        if '/' in pattern:
+            return SearchResult(error=(
+                "Path-aware file globs require ripgrep. Set `path` to the "
+                "directory to search and use a basename glob such as `*.py`, "
+                "or install ripgrep."))
 
         # Prune hidden descendant dirs (and hidden files, matching rg's default) while
         # still allowing an explicitly selected hidden root; dash-prefixed roots get

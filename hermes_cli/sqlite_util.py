@@ -71,7 +71,9 @@ def open_db(
 def transaction(conn: sqlite3.Connection, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
     """Commit on success, roll back on error, and ALWAYS close ``conn`` (see the module docstring)."""
     try:
-        if immediate:
+        if getattr(conn, "backend", "sqlite") == "postgres":
+            conn.begin_write()
+        elif immediate:
             conn.execute("BEGIN IMMEDIATE")
         with conn:
             yield conn
@@ -86,6 +88,12 @@ def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl
     ``column`` is the human-readable name for the call site; ``ddl`` carries the actual definition. See
     #21708.
     """
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        from hermes_cli.postgres_util import table_columns
+        if column in table_columns(conn, table):
+            return False
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {ddl}")
+        return True
     try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
         return True
@@ -100,6 +108,10 @@ def write_txn(conn: sqlite3.Connection):
     """An IMMEDIATE write transaction on a long-lived connection (stays open). The explicit ROLLBACK is
     guarded so a SQLite auto-rollback (no transaction left under EIO / contention / corruption) cannot
     shadow the original error."""
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        with conn.write():
+            yield conn
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn

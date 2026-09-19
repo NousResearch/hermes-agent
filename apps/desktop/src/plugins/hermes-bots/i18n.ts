@@ -152,6 +152,10 @@ type BotsMessages = {
     chatEmpty: string
     /** First line of a brand-new bot's forever-chat — see `kickoffText`. */
     kickoff: string
+    reconnect: string
+    reconnecting: string
+    reconnected: (name: string) => string
+    reconnectFailed: string
   }
   /** Avatar picker: shapes, blobs, pets, uploads, generation. */
   avatar: {
@@ -410,7 +414,11 @@ const en: BotsMessages = {
     openChatFailedMessage: 'Try again.',
     openGateways: 'Open Gateways',
     chatEmpty: 'Say something to get started.',
-    kickoff: 'Hey, tell me about yourself!'
+    kickoff: 'Hey, tell me about yourself!',
+    reconnect: 'Reconnect',
+    reconnecting: 'Reconnecting…',
+    reconnected: name => `Reconnected ${name}`,
+    reconnectFailed: 'Reconnect failed'
   },
   avatar: {
     classicShapes: 'Classic shapes',
@@ -658,7 +666,11 @@ const ja: BotsMessages = {
     openChatFailedMessage: 'もう一度お試しください。',
     openGateways: 'ゲートウェイを開く',
     chatEmpty: '何か書いて始めましょう。',
-    kickoff: 'こんにちは、自己紹介をしてください！'
+    kickoff: 'こんにちは、自己紹介をしてください！',
+    reconnect: '再接続',
+    reconnecting: '再接続中…',
+    reconnected: name => `${name} を再接続しました`,
+    reconnectFailed: '再接続に失敗しました'
   },
   avatar: {
     classicShapes: 'クラシックシェイプ',
@@ -902,7 +914,11 @@ const zh: BotsMessages = {
     openChatFailedMessage: '请重试。',
     openGateways: '打开网关',
     chatEmpty: '说点什么开始吧。',
-    kickoff: '你好，介绍一下你自己吧！'
+    kickoff: '你好，介绍一下你自己吧！',
+    reconnect: '重连',
+    reconnecting: '重连中…',
+    reconnected: name => `已重连 ${name}`,
+    reconnectFailed: '重连失败'
   },
   avatar: {
     classicShapes: '经典形状',
@@ -1145,7 +1161,11 @@ const zhHant: BotsMessages = {
     openChatFailedMessage: '請再試一次。',
     openGateways: '開啟閘道',
     chatEmpty: '說點什麼開始吧。',
-    kickoff: '你好，介紹一下你自己吧！'
+    kickoff: '你好，介紹一下你自己吧！',
+    reconnect: '重新連線',
+    reconnecting: '重新連線中…',
+    reconnected: name => `已重新連線 ${name}`,
+    reconnectFailed: '重新連線失敗'
   },
   avatar: {
     classicShapes: '經典形狀',

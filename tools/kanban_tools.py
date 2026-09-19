@@ -20,7 +20,7 @@ from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
-    KANBAN_ATTACH_SCHEMA,
+    KANBAN_EDIT_SCHEMA, KANBAN_ARCHIVE_SCHEMA, KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
@@ -1098,11 +1098,40 @@ def _handle_link(args: dict, **kw) -> str:
                    **({"gated_by": parent_id} if gated else {}))
 
 
+@_kanban_handler("kanban_edit")
+def _handle_edit(args: dict, **kw) -> str:
+    from hermes_cli.kanban_db_admin import edit_fields
+    _reject_delegated_child_mutation("kanban_edit")
+    _require_orchestrator_tool("kanban_edit")
+    _check(_profile_has_kanban_toolset(), "kanban toolset must be enabled")
+    tid = _require_task_id(args)
+    changes = {k: args[k] for k in ("title", "body", "priority") if k in args}
+    expected = {k: args["expected_" + k] for k in changes if "expected_" + k in args}
+    with _board(args.get("board")) as (kb, conn):
+        changed = edit_fields(conn, tid, changes, expected)
+        return _ok(task_id=tid, changed_fields=changed,
+                   **_fields(kb.get_task(conn, tid), ("title", "body", "priority", "status")))
+
+
+@_kanban_handler("kanban_archive")
+def _handle_archive(args: dict, **kw) -> str:
+    from hermes_cli.kanban_db_admin import archive_leaf
+    _reject_delegated_child_mutation("kanban_archive")
+    _require_orchestrator_tool("kanban_archive")
+    _check(_profile_has_kanban_toolset(), "kanban toolset must be enabled")
+    tid = _require_task_id(args)
+    with _board(args.get("board")) as (kb, conn):
+        archive_leaf(conn, tid, _require_text(args, "expected_status"), _require_text(args, "reason"))
+        return _ok(task_id=tid, status="archived", workspace_retained=True)
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_edit", "kanban_archive"})
 _TOOLS = (
+    ("kanban_edit", KANBAN_EDIT_SCHEMA, _handle_edit, "✏"),
+    ("kanban_archive", KANBAN_ARCHIVE_SCHEMA, _handle_archive, "📦"),
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),

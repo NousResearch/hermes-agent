@@ -60,16 +60,16 @@ def resolve_repo_root(path: Optional[str]) -> Optional[str]:
 
 
 def _ensure_gitignore_entry(repo_root: str) -> None:
-    """Best-effort: keep ``.worktrees/`` out of git status."""
-    gitignore = Path(repo_root) / ".gitignore"
+    """Best-effort: keep `.worktrees/` out of git status using local exclude."""
+    exclude = Path(repo_root) / ".git" / "info" / "exclude"
     try:
-        existing = gitignore.read_text(encoding="utf-8-sig", errors="replace") if gitignore.exists() else ""
+        existing = exclude.read_text(encoding="utf-8-sig", errors="replace") if exclude.exists() else ""
         if ".worktrees/" not in existing.splitlines():
-            with open(gitignore, "a", encoding="utf-8") as f:
+            with open(exclude, "a", encoding="utf-8") as f:
                 sep = "\n" if existing and not existing.endswith("\n") else ""
                 f.write(f"{sep}.worktrees/\n")
     except Exception as exc:
-        logger.debug("subagent worktree: could not update .gitignore: %s", exc)
+        logger.debug("subagent worktree: could not update .git/info/exclude: %s", exc)
 
 
 def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[Dict[str, str]]:

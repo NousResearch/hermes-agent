@@ -297,6 +297,7 @@ Create and manage scheduled cron jobs that run agent prompts on a recurring sche
 
 - **Create** — fill in a name (optional), prompt, cron expression (e.g. `0 9 * * *`), and delivery target (local, Telegram, Discord, Slack, or email)
 - **Job list** — each job shows its name, prompt preview, schedule expression, state badge (enabled/paused/error), delivery target, last run time, and next run time
+- **Group by category** — jobs can carry an optional free-form `category`, set in the create/edit dialog with a picker that autocompletes the labels already in use (or offers a new one); when any job has a category the list offers a grouping toggle and renders the jobs under one collapsible heading per category
 - **Pause / Resume** — toggle a job between active and paused states
 - **Edit** — open a pre-filled modal to change a job's prompt, schedule, name, or delivery target
 - **Trigger now** — immediately execute a job outside its normal schedule

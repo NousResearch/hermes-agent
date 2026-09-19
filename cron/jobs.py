@@ -1648,12 +1648,14 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "monitor_url": _normalize_job_optional_text,
     "enabled_toolsets": lambda v: _normalize_str_list(v) if v else None,
     "workdir": _normalize_workdir,
+    "category": _normalize_job_optional_text,
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
+    "category": _normalize_job_optional_text,
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
@@ -1762,6 +1764,7 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    category: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
@@ -1776,7 +1779,8 @@ def create_job(
     deliver defaults to "origin" when ``origin`` is given, else "local"; repeat None = forever.
     script: stdout is injected as prompt context, or with ``no_agent=True`` IS the job (stdout
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
-    injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
+    injected. workdir: absolute cwd for tools/scripts. category: free-form grouping label, used by
+    the dashboard's grouped job list. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
     if not isinstance(paused, bool):
@@ -1859,6 +1863,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
+        "category": f["category"],
     }
     # Optional keys are persisted only when explicitly set: an absent key falls back to global
     # config (attach/reasoning) or to ``deliver`` (failure_deliver), byte-identical to pre-feature

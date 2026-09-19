@@ -279,6 +279,21 @@ export interface Translations {
     newJob: string;
     nameOptional: string;
     namePlaceholder: string;
+    /** Optional — English fallback until translated. Grouping control on the
+     *  Jobs list; `uncategorised` labels jobs with no category,
+     *  `collapseGroup`/`expandGroup` label the per-category fold buttons, and
+     *  the rest are the editor's tag-style category picker. */
+    groupNone?: string;
+    groupCategory?: string;
+    uncategorised?: string;
+    collapseGroup?: string;
+    expandGroup?: string;
+    categoryPlaceholder?: string;
+    categoryClear?: string;
+    categoryExisting?: string;
+    categoryCreateNew?: string;
+    categoryCurrent?: string;
+    categorySingleHint?: string;
     prompt: string;
     promptPlaceholder: string;
     schedule: string;

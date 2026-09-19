@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   type CronTriggerController,
   createCronTriggerController,
 } from "@hermes/shared";
-import { Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock, FolderTree, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -29,6 +29,12 @@ import {
   focusCronField,
   type CronJobFormState,
 } from "@/lib/cron-job";
+import {
+  cronJobCategories,
+  groupCronJobsByCategory,
+  hasCategorisedJobs,
+} from "@/lib/cron-groups";
+import { CronCategoryField } from "@/components/CronCategoryField";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import {
   DEFAULT_SCHEDULE_STATE,
@@ -138,6 +144,8 @@ interface CronJobFormResources {
   availableToolsets: ToolsetInfo[];
   modelOptions: ModelOptionsResult | null;
   deliveryTargets: CronDeliveryTarget[];
+  /** Labels already in use, for the category autocomplete. */
+  categoryOptions: string[];
 }
 
 function emptyCronJobForm(): CronJobEditorState {
@@ -156,6 +164,7 @@ function emptyCronJobForm(): CronJobEditorState {
     continuity: false,
     enabled_toolsets: [],
     workdir: "",
+    category: "",
     scheduleState: { ...DEFAULT_SCHEDULE_STATE },
   };
 }
@@ -200,12 +209,14 @@ function CronAdvancedFields({
   onChange,
   modelOptions,
   availableToolsets,
+  categoryOptions,
 }: {
   idPrefix: string;
   form: CronJobEditorState;
   onChange: (form: CronJobEditorState) => void;
   modelOptions: ModelOptionsResult | null;
   availableToolsets: ToolsetInfo[];
+  categoryOptions: string[];
 }) {
   const update = <K extends keyof CronJobEditorState,>(
     key: K,
@@ -300,6 +311,20 @@ function CronAdvancedFields({
           />
         </div>
 
+        <div className="grid gap-1">
+          <Label htmlFor={`${idPrefix}-category`}>Category (one per job)</Label>
+          <CronCategoryField
+            id={`${idPrefix}-category`}
+            value={form.category}
+            options={categoryOptions}
+            onChange={(next) => update("category", next)}
+          />
+          <span className="text-xs text-muted-foreground">
+            Groups this job in the list when grouping is on. Picking another label replaces the
+            current one.
+          </span>
+        </div>
+
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
           <input
             type="checkbox"
@@ -353,7 +378,8 @@ function CronJobFormFields({
   onChange,
 }: CronJobFormFieldsProps) {
   const { t } = useI18n();
-  const { availableSkills, availableToolsets, deliveryTargets, modelOptions } = resources;
+  const { availableSkills, availableToolsets, deliveryTargets, modelOptions, categoryOptions } =
+    resources;
   const update = <K extends keyof CronJobEditorState,>(
     key: K,
     next: CronJobEditorState[K],
@@ -442,6 +468,7 @@ function CronJobFormFields({
         onChange={onChange}
         modelOptions={modelOptions}
         availableToolsets={availableToolsets}
+        categoryOptions={categoryOptions}
       />
     </>
   );
@@ -558,6 +585,18 @@ export default function CronPage() {
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("all");
   const [view, setView] = useState<"jobs" | "blueprints">("jobs");
+  // Group the Jobs list by each job's optional category. The toggle is only
+  // offered once some job actually carries one. Groups start expanded; a
+  // collapsed group is remembered by its label for this visit only.
+  const [groupByCategory, setGroupByCategory] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
+  const toggleGroup = useCallback((category: string) => {
+    setCollapsedGroups((prev) =>
+      prev.includes(category)
+        ? prev.filter((item) => item !== category)
+        : [...prev, category],
+    );
+  }, []);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t, locale } = useI18n();
@@ -869,6 +908,28 @@ export default function CronPage() {
     };
   }, [setEnd, t.common.create, loading, selectedProfile]);
 
+  // Rows for the Jobs list: one per job, or a category header followed by that
+  // category's jobs. Headers are rows rather than wrappers, so the job-card
+  // markup below stays in exactly one place.
+  // Declared ABOVE the `loading` early return: a hook after it would change the
+  // hook count between renders (Rules of Hooks) and crash the page.
+  const showsCategoryGroups = groupByCategory && hasCategorisedJobs(jobs);
+  const jobRows = useMemo(() => {
+    if (!showsCategoryGroups) {
+      return jobs.map((job) => ({ kind: "job" as const, job }));
+    }
+    return groupCronJobsByCategory(jobs).flatMap((group) => {
+      const header = {
+        kind: "header" as const,
+        category: group.category,
+        size: group.jobs.length,
+      };
+      // Collapsed: the header row only — its jobs are simply not emitted.
+      if (collapsedGroups.includes(group.category)) return [header];
+      return [header, ...group.jobs.map((job) => ({ kind: "job" as const, job }))];
+    });
+  }, [jobs, showsCategoryGroups, collapsedGroups]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -991,6 +1052,7 @@ export default function CronPage() {
                   availableToolsets,
                   modelOptions,
                   deliveryTargets,
+                  categoryOptions: cronJobCategories(jobs),
                 }}
               />
 
@@ -1051,6 +1113,7 @@ export default function CronPage() {
                   availableToolsets,
                   modelOptions,
                   deliveryTargets,
+                  categoryOptions: cronJobCategories(jobs),
                 }}
               />
 
@@ -1083,6 +1146,17 @@ export default function CronPage() {
             <Clock className="h-4 w-4" />
             {t.cron.scheduledJobs} ({jobs.length})
           </H2>
+
+          {hasCategorisedJobs(jobs) && (
+            <Segmented
+              value={groupByCategory ? "category" : "none"}
+              onChange={(v) => setGroupByCategory(v === "category")}
+              options={[
+                { value: "none", label: t.cron.groupNone ?? en.cron.groupNone! },
+                { value: "category", label: t.cron.groupCategory ?? en.cron.groupCategory! },
+              ]}
+            />
+          )}
 
           <div className="grid gap-1 min-w-[220px]">
             <Label htmlFor="cron-profile-filter">Profile</Label>
@@ -1121,7 +1195,37 @@ export default function CronPage() {
           </Card>
         )}
 
-        {jobs.map((job) => {
+        {jobRows.map((row) => {
+          if (row.kind === "header") {
+            const collapsed = collapsedGroups.includes(row.category);
+            return (
+              <button
+                key={`category:${row.category}`}
+                type="button"
+                onClick={() => toggleGroup(row.category)}
+                aria-expanded={!collapsed}
+                aria-label={
+                  collapsed
+                    ? t.cron.expandGroup ?? en.cron.expandGroup
+                    : t.cron.collapseGroup ?? en.cron.collapseGroup
+                }
+                className="flex w-full items-center gap-2 pt-2 text-left text-muted-foreground hover:text-foreground"
+                data-testid="cron-category-header"
+              >
+                {collapsed ? (
+                  <ChevronRight className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+                <FolderTree className="h-4 w-4" />
+                <span className="text-sm font-medium">
+                  {row.category || t.cron.uncategorised || en.cron.uncategorised}
+                </span>
+                <span className="text-xs">({row.size})</span>
+              </button>
+            );
+          }
+          const job = row.job;
           const state = getJobState(job);
           const promptText = getJobPrompt(job);
           const title = getJobTitle(job);

@@ -22,6 +22,11 @@ from agent.message_sanitization import (
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
+from agent.think_scrubber import (
+    DSML_BLOCK_CLOSE_RE as _DSML_BLOCK_CLOSE_RE,
+    DSML_BLOCK_OPEN_RE as _DSML_BLOCK_OPEN_RE,
+    DSML_LINE_RE as _DSML_LINE_RE,
+)
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, credential_pool_matches_provider, resolve_runtime_pool_key
@@ -629,13 +634,57 @@ _THINK_STRIP_PATTERNS = (
     _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN,
 )
 
+# DeepSeek DSML (DeepSeek Markup Language) tool-call serialization leaks into the text
+# channel as line-based markup instead of native tool_calls (#115475). Each markup line
+# starts with the DSML marker, optionally angle-bracketed: ``DSML | tool_calls`` /
+# ``<DSML | tool_calls>``. ``tool_calls`` and ``function_results`` are the block openers;
+# their ``/``-prefixed forms close the block. Value lines (a parameter's plain payload)
+# live between directive lines and belong to the block. The recognizers are the one set
+# from ``agent.think_scrubber`` — every DSML-aware surface binds to the same three.
+
+
+def strip_dsml_blocks(text: Optional[str]) -> Optional[str]:
+    """Remove DeepSeek DSML tool-call markup blocks from visible text.
+
+    Line-based scan (never a full-text regex): every line whose stripped form starts
+    with the ``DSML |`` marker (``<DSML |`` included) is markup and is dropped; plain
+    lines between a block opener (``tool_calls`` / ``function_results``) and its closer
+    are the block's value payloads and are dropped with it. A block with no closer is
+    unterminated — the scan ends still inside the block, so the tail is already gone
+    (mirrors ``_UNTERMINATED_TOOL_CALL_PATTERN``). Prose that *mentions* DSML mid-line
+    is untouched: only lines that START with the marker are markup.
+
+    ``None`` in, ``None`` out; non-strings are returned unchanged.
+    """
+    if not isinstance(text, str) or "dsml" not in text.lower():
+        return text
+    kept: List[str] = []
+    in_block = False
+    for line in text.split("\n"):
+        if in_block:
+            if _DSML_BLOCK_CLOSE_RE.match(line):
+                in_block = False
+            continue
+        if _DSML_BLOCK_OPEN_RE.match(line):
+            in_block = True
+            continue
+        if _DSML_LINE_RE.match(line):
+            # Stray directive outside a block (split-off markup): still markup noise.
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text: closed tag
     pairs, unterminated open tags at a block boundary (mirrors ``gateway/stream_consumer.py``),
-    stray orphan tags (all case-insensitive variants), and standalone tool-call XML blocks some
-    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
+    stray orphan tags (all case-insensitive variants), standalone tool-call XML blocks some
+    open models emit, and DeepSeek DSML tool-call markup (#115475); ``<function>`` is
+    boundary- and ``name=``-gated so prose mentions survive."""
     content = _flatten_content_text(content) if content else ""
+    if isinstance(content, str) and content:
+        stripped = strip_dsml_blocks(content)
+        content = stripped if stripped is not None else content
     for pattern in _THINK_STRIP_PATTERNS if content else ():
         content = pattern.sub('', content)
     return content

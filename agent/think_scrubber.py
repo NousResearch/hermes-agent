@@ -13,7 +13,10 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
-__all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THINK_CLOSE_TAGS"]
+__all__ = [
+    "StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THINK_CLOSE_TAGS",
+    "DSML_LINE_RE", "DSML_BLOCK_OPEN_RE", "DSML_BLOCK_CLOSE_RE",
+]
 
 # The one list of model reasoning tag names. Every surface that hides reasoning (this scrubber,
 # the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to
@@ -22,6 +25,19 @@ __all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THIN
 THINK_TAG_NAMES: Tuple[str, ...] = ("think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD")
 THINK_OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
 THINK_CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
+
+# The one set of DeepSeek DSML tool-call markup recognizers (#115475). DSML is line-based
+# (``DSML | tool_calls`` … ``DSML | /tool_calls``, optionally angle-bracketed ``<DSML | …>``)
+# and leaks into visible text on deepseek models served through OpenAI-compatible gateways.
+# Every surface that strips it (this scrubber, the final-response regex stripper
+# ``strip_dsml_blocks``, the gateway sanitizer, the CLI display stripper) binds to these.
+DSML_LINE_RE = re.compile(r"^\s*<?DSML\s*\|\s*", re.IGNORECASE)
+DSML_BLOCK_OPEN_RE = re.compile(
+    r"^\s*<?DSML\s*\|\s*(?:tool_calls|function_results)\b", re.IGNORECASE,
+)
+DSML_BLOCK_CLOSE_RE = re.compile(
+    r"^\s*<?DSML\s*\|\s*/(?:tool_calls|function_results)\b", re.IGNORECASE,
+)
 
 
 class StreamingThinkScrubber:
@@ -41,6 +57,10 @@ class StreamingThinkScrubber:
     _ORPHAN_CLOSE_RE = re.compile(
         "(?:" + "|".join(re.escape(t) for t in _CLOSE_TAGS) + r")[ \t\n\r]*", re.IGNORECASE
     )
+    # DSML recognition binds to the module-level one-set recognizers (#115475).
+    _DSML_LINE_RE = DSML_LINE_RE
+    _DSML_BLOCK_OPEN_RE = DSML_BLOCK_OPEN_RE
+    _DSML_BLOCK_CLOSE_RE = DSML_BLOCK_CLOSE_RE
 
     def __init__(self) -> None:
         self.reset()
@@ -50,6 +70,8 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+        self._dsml_line: str = ""
+        self._in_dsml_block: bool = False
 
     def _emit(self, out: list[str], text: str) -> None:
         """Append visible prose to *out* (orphan close tags stripped) and track the newline flag."""
@@ -64,6 +86,9 @@ class StreamingThinkScrubber:
             return ""
         buf = self._buf + text
         self._buf = ""
+        buf = self._prefilter_dsml(buf)
+        if not buf:
+            return ""
         out: list[str] = []
 
         while buf:
@@ -113,8 +138,115 @@ class StreamingThinkScrubber:
         tail = "" if self._in_block else self._buf
         self._buf = ""
         self._in_block = False
+        # A held DSML partial line that never completed into a directive is prose; inside an
+        # unterminated DSML block the tail is markup and stays dropped (#115475).
+        dsml_tail = "" if self._in_dsml_block else self._dsml_line
+        self._dsml_line = ""
+        self._in_dsml_block = False
         self._last_emitted_ended_newline = True
+        if dsml_tail:
+            tail = tail + dsml_tail
         return self._strip_orphan_close_tags(tail) if tail else ""
+
+    # ── DSML line prefilter (#115475) ───────────────────────────────────
+
+    def _prefilter_dsml(self, buf: str) -> str:
+        """Strip DeepSeek DSML markup lines from *buf*, holding the trailing partial line.
+
+        Runs before the think-tag state machine on the same buffer. Every line whose
+        stripped form starts with the ``DSML |`` marker (``<DSML |`` included) is markup:
+        block openers (``tool_calls`` / ``function_results``) start a discard state that
+        swallows plain value lines until the matching closer; stray directives outside a
+        block are dropped outright. A trailing line without a newline is held back when it
+        could still grow into a DSML directive, so a line split across deltas is handled;
+        ``flush()`` releases it as prose if it never completed.
+        """
+        if not self._in_dsml_block and not self._dsml_line and "dsml" not in buf.lower():
+            return buf
+        if self._dsml_line:
+            buf = self._dsml_line + buf
+            self._dsml_line = ""
+        if "\n" not in buf:
+            s = buf.strip()
+            if self._DSML_BLOCK_CLOSE_RE.match(s):
+                self._in_dsml_block = False
+                return ""
+            if self._in_dsml_block:
+                return ""
+            if self._DSML_BLOCK_OPEN_RE.match(s):
+                self._in_dsml_block = True
+                return ""
+            if self._could_be_dsml_line(buf):
+                self._dsml_line = buf
+                return ""
+            if self._DSML_LINE_RE.match(s):
+                return ""
+            return buf
+        out: list[str] = []
+        lines = buf.split("\n")
+        held = False
+        for i, line in enumerate(lines):
+            last = i == len(lines) - 1
+            s = line.strip()
+            if last and line:
+                if self._DSML_BLOCK_CLOSE_RE.match(s):
+                    self._in_dsml_block = False
+                    continue
+                if self._in_dsml_block:
+                    continue
+                if self._DSML_BLOCK_OPEN_RE.match(s):
+                    self._in_dsml_block = True
+                    continue
+                if self._could_be_dsml_line(line):
+                    self._dsml_line = line
+                    held = True
+                    continue
+                if self._DSML_LINE_RE.match(s):
+                    continue
+                out.append(line)
+                continue
+            if self._in_dsml_block:
+                if self._DSML_BLOCK_CLOSE_RE.match(s):
+                    self._in_dsml_block = False
+                continue
+            if self._DSML_BLOCK_OPEN_RE.match(s):
+                self._in_dsml_block = True
+                continue
+            if self._DSML_LINE_RE.match(s):
+                continue
+            out.append(line)
+        # Holding the tail must not swallow the newline that terminated the last kept
+        # line — downstream boundary detection (think tags, markdown) depends on it.
+        return "\n".join(out) + ("\n" if held and out else "")
+
+    @classmethod
+    def _could_be_dsml_line(cls, line: str) -> bool:
+        """True when *line* is a strict prefix of a DSML directive and could still complete.
+
+        A line that IS a directive (matches ``_DSML_LINE_RE`` with a complete command, or is
+        a full block opener/closer) returns False — callers process those immediately. Only
+        partial forms (``DSML``, ``<DSML |``, ``DSML | tool``, ``DSML | /tool``, …) are held
+        so a block split across deltas isn't missed.
+        """
+        s = line.strip().lower()
+        if not s:
+            return False
+        core = s[1:] if s.startswith("<") else s
+        if core.startswith("dsml"):
+            rest = core[4:].lstrip()
+            if not rest or rest == "|":
+                return True
+            if rest.startswith("|"):
+                cmd = rest[1:].strip()
+                if cmd.startswith("/"):
+                    cmd = cmd[1:].lstrip()
+                if not cmd:
+                    return True
+                return any(
+                    keyword.startswith(cmd) and len(keyword) > len(cmd)
+                    for keyword in ("tool_calls", "function_results")
+                )
+        return False
 
     # ── internal helpers ───────────────────────────────────────────────
 

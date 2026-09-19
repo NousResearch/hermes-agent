@@ -66,6 +66,71 @@ class TestOrphanClose:
 
 
 
+class TestDsmlBlocks:
+    """DSML tool-call markup (DeepSeek) must never reach stream callbacks (#115475).
+
+    DSML is line-based: ``DSML | tool_calls`` … ``DSML | /tool_calls`` (optionally
+    angle-bracketed ``<DSML | …>``). Value lines between ``parameter`` open/close are
+    plain lines belonging to the block. Blocks may be split across deltas mid-line.
+    """
+
+    DSML_BLOCK = (
+        'DSML | tool_calls\n'
+        'DSML | invoke name="terminal"\n'
+        'DSML | parameter name="command" string="true"\n'
+        'python3 /path/to/script.py --flag\n'
+        'DSML | /parameter\n'
+        'DSML | /invoke\n'
+        'DSML | /tool_calls\n'
+    )
+
+    def test_full_block_single_delta(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["Intro\n" + self.DSML_BLOCK + "Outro"]) == "Intro\nOutro"
+
+    def test_block_split_across_deltas(self) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["Intro\nDSML | tool", "_calls\nDSML | invoke name=\"t", "erminal\"\nrun --flag\nDSML | /tool_calls\nOutro"])
+        assert "DSML" not in out
+        assert "run --flag" not in out
+        assert out == "Intro\nOutro"
+
+    def test_angled_block_stripped(self) -> None:
+        s = StreamingThinkScrubber()
+        block = "<DSML | tool_calls>\n<DSML | invoke name=\"x\">\n<DSML | /invoke>\n<DSML | /tool_calls>\n"
+        assert _drive(s, [block + "Visible."]) == "Visible."
+
+    def test_function_results_block_stripped(self) -> None:
+        s = StreamingThinkScrubber()
+        block = 'DSML | function_results\nDSML | result_item name="terminal"\n{"ok":true}\nDSML | /result_item\nDSML | /function_results\n'
+        assert _drive(s, [block + "Done."]) == "Done."
+
+    def test_unterminated_block_discarded_at_flush(self) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["Working…\nDSML | tool_calls\nDSML | invoke name=\"terminal\"\nvalue line"])
+        assert "DSML" not in out
+        assert "value line" not in out
+        # The boundary newline before an unterminated block goes with it, matching the
+        # whole-string regex stripper's unterminated-block semantics.
+        assert out == "Working…"
+
+    def test_value_lines_only_inside_block_kept_outside(self) -> None:
+        # Plain lines before/after the block are prose; identical text inside is dropped.
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["before\nDSML | tool_calls\nmiddle\nDSML | /tool_calls\nafter"])
+        assert out == "before\nafter"
+
+    def test_prose_mentioning_dsml_mid_line_preserved(self) -> None:
+        s = StreamingThinkScrubber()
+        text = "The DSML | tool_calls syntax is interesting.\nReal answer."
+        assert _drive(s, [text]) == text
+
+    def test_held_partial_dsml_line_released_at_flush(self) -> None:
+        # A trailing "DSML" that never completes into a directive is prose, not markup.
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["Answer: DSML"]) == "Answer: DSML"
+
+
 class TestPartialTagsAcrossDeltas:
     """Partial tags at delta boundaries must be held back, not emitted raw."""
 

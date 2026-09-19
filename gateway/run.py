@@ -651,6 +651,16 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
     text = _sanitize_surrogates(str(text))
 
+    # DeepSeek DSML tool-call markup can survive into final text (e.g. the proxy relay path,
+    # which accumulates remote SSE content without the agent's finalizer). Strip it here so
+    # chat surfaces never see raw tool-call serialization (#115475).
+    if isinstance(text, str) and "dsml" in text.lower():
+        from agent.agent_runtime_helpers import strip_dsml_blocks
+
+        stripped = strip_dsml_blocks(text)
+        if stripped is not None:
+            text = stripped
+
     # Cancellation metadata, not prose; ACP/TUI already suppress this sentinel, chat surfaces should too.
     # See #7921.
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):

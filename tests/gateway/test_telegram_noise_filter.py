@@ -341,3 +341,43 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+_DSML_FINAL = (
+    'DSML | tool_calls\n'
+    'DSML | invoke name="terminal"\n'
+    'DSML | parameter name="command" string="true"\n'
+    'python3 /path/to/script.py --flag\n'
+    'DSML | /parameter\n'
+    'DSML | /invoke\n'
+    'DSML | /tool_calls\n'
+)
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_strip_dsml_tool_call_markup(platform):
+    """DSML tool-call markup must never reach a chat surface (#115475).
+
+    The proxy relay path accumulates remote SSE text into ``final_response`` without
+    passing through the agent's finalizer, so this sanitizer is the only strip point
+    for that path; the normal path strips in ``strip_think_blocks``. Both must agree.
+    """
+    raw = "Sure, running it now.\n" + _DSML_FINAL + "Done — exit code 0."
+
+    sanitized = _sanitize_gateway_final_response(platform, raw)
+
+    assert "DSML" not in sanitized
+    assert "python3 /path/to/script.py" not in sanitized
+    assert "Sure, running it now." in sanitized
+    assert sanitized.endswith("Done — exit code 0.")
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_keep_prose_mentioning_dsml(platform):
+    """Mid-line mentions of the DSML syntax are prose and must survive."""
+    raw = "The DSML | tool_calls syntax is how DeepSeek serializes calls.\nReal answer."
+
+    sanitized = _sanitize_gateway_final_response(platform, raw)
+
+    assert "DSML | tool_calls syntax" in sanitized
+    assert "Real answer." in sanitized

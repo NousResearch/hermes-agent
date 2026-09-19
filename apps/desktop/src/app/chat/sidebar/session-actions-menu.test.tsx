@@ -2,9 +2,15 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $selectedStoredSessionId } from '@/store/session'
+import { openSessionTile } from '@/store/session-states'
+
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $selectedStoredSessionId.set(null)
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -55,6 +61,7 @@ vi.mock('@/i18n', () => ({
           export: 'Export',
           hideTabBar: 'Hide tab bar',
           markRead: 'Mark as read',
+          openInSplit: 'Open in split',
           pin: 'Pin',
           rename: 'Rename',
           renameDesc: 'Leave empty to clear.',
@@ -286,5 +293,34 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers "Open in split" for an existing session row, docking it via openSessionTile', async () => {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const splitItem = await screen.findByRole('menuitem', { name: /open in split/i })
+    fireEvent.click(splitItem)
+
+    // The row (not the submenu's directional entries) splits right by default —
+    // the same primitive drag-and-drop splits use, per the New-session parity.
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'right')
+  })
+
+  it('hides "Open in split" for the session currently loaded in main', async () => {
+    $selectedStoredSessionId.set('s1')
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menuitem', { name: /rename/i })
+    expect(screen.queryByRole('menuitem', { name: /open in split/i })).toBeNull()
   })
 })

@@ -168,7 +168,44 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
         return None, None
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
-_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
+_PRIVATE_RECORD_KEYS = frozenset({
+    "agent", "owner_session_id", "owner_session_key", "owner_transport", "owner_session_record", "accepting_steer",
+})
+
+
+def reclaim_subagent_owners_for_session(session_id: str, owner: Any) -> None:
+    """Re-point live children at a conversation that resumed under a new UI sid (#114909).
+
+    Spawn freezes ``owner_session_id`` to the then-current UI sid. Desktop reconnect / resume
+    remints that sid while the durable ``session_key`` stays the same, so the panel filter and
+    the exact steer/interrupt checks would miss every still-running child. Matching on
+    ``owner_session_key`` (and never on a missing key) re-attaches only this conversation's
+    tree to the live owner record — foreign trees and cron/CLI hosts without a key are untouched.
+    """
+    if not session_id or not isinstance(owner, dict):
+        return
+    key = str(owner.get("session_key") or "").strip()
+    if not key:
+        return
+    with _active_subagents_lock:
+        for record in _active_subagents.values():
+            if record.get("owner_session_key") == key:
+                record["owner_session_id"] = session_id
+                record["owner_session_record"] = owner
+
+
+def rewrite_subagent_owner_session_keys(old_key: str, new_key: str) -> None:
+    """Follow compression rotation of the durable session_key (#114909)."""
+    old = (old_key or "").strip()
+    new = (new_key or "").strip()
+    if not old or not new or old == new:
+        return
+    with _active_subagents_lock:
+        for record in _active_subagents.values():
+            if record.get("owner_session_key") == old:
+                record["owner_session_key"] = new
+            if record.get("owner_agent_session_id") == old:
+                record["owner_agent_session_id"] = new
 
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,

@@ -2132,6 +2132,9 @@ def _(rid, params: dict) -> dict:
         return err
     owner_id = _str_param(params, "session_id")
     transport, owner = _current_session_steer_authority(owner_id)
+    if transport is not None and owner is not None:
+        from tools.delegate_tool_registry import reclaim_subagent_owners_for_session
+        reclaim_subagent_owners_for_session(owner_id, owner)
     queued = transport is not None and owner is not None and steer_subagent(
         subagent_id, text, owner_session_id=owner_id, owner_transport=transport, owner_session_record=owner)
     return _ok(rid, {"status": "queued" if queued else "rejected", "subagent_id": subagent_id, "text": text})

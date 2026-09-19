@@ -251,3 +251,49 @@ def test_any_attach_path_carries_subagent_authority_without_registry_sync(runtim
         denied = call("subagent." + method, via=old, subagent_id="child", text="stale")
         assert "error" in denied or denied["result"].get("status") == "rejected"
     assert steered == ["go"] and len(stopped) == 1
+
+
+def test_ui_sid_rotation_reclaims_children_for_same_durable_session(runtime):
+    """#114909: reminted UI sid must still list (and control) children spawned under the old sid."""
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _unregister_subagent
+
+    server, owner, transport, call = runtime
+    owner["session_key"] = "durable-parent"
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test",
+                            hard_interrupt=lambda message: None)
+    _register_child(
+        child, None, "owned", owner_session_id="ui-old",
+        owner_transport=transport, owner_session_record=owner, owner_session_key="durable-parent",
+    )
+    try:
+        # Conversation resumes under a new UI sid; same durable session_key + live owner record.
+        server._sessions["ui-new"] = owner
+        assert [r["subagent_id"] for r in call("subagent.list", session_id="ui-new")["result"]["subagents"]] == ["child"]
+        assert call("subagent.interrupt", session_id="ui-new", subagent_id="child")["result"]["found"]
+        # A different conversation with another key must not adopt the child.
+        foreign = {**owner, "session_key": "other-parent", "transport": transport}
+        server._sessions["ui-foreign"] = foreign
+        assert call("subagent.list", session_id="ui-foreign")["result"]["subagents"] == []
+    finally:
+        _unregister_subagent("child")
+
+
+def test_compress_rewrites_owner_session_key_so_reclaim_still_finds_children(runtime):
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _unregister_subagent, rewrite_subagent_owner_session_keys
+
+    server, owner, transport, call = runtime
+    owner["session_key"] = "parent-v1"
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test")
+    _register_child(
+        child, None, "owned", owner_session_id="ui-owner",
+        owner_transport=transport, owner_session_record=owner, owner_session_key="parent-v1",
+    )
+    try:
+        rewrite_subagent_owner_session_keys("parent-v1", "parent-v2")
+        owner["session_key"] = "parent-v2"
+        server._sessions["ui-rotated"] = owner
+        assert [r["subagent_id"] for r in call("subagent.list", session_id="ui-rotated")["result"]["subagents"]] == ["child"]
+    finally:
+        _unregister_subagent("child")

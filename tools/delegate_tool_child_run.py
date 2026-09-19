@@ -300,9 +300,35 @@ def _start_heartbeat(child: Any, parent_agent: Any, task_index: int) -> _Heartbe
     """Build (not start) one child's heartbeat; see ``_Heartbeat``."""
     return _Heartbeat(child, parent_agent, task_index)
 
+def _resolve_owner_session_key(
+    child: Any, parent_agent: Any, *, owner_session_key: Optional[str] = None,
+) -> Optional[str]:
+    """Durable conversation key for panel visibility across UI-sid rotations (#114909).
+
+    ``HERMES_UI_SESSION_ID`` is ephemeral (reconnect / resume remints it). ``HERMES_SESSION_KEY``
+    (and the parent's durable ``session_id``) survive, so list/reclaim can re-attach children to
+    the live owner. Empty for cron/CLI hosts that never bound a gateway key — those keep the
+    exact ``owner_session_id`` filter only.
+    """
+    if isinstance(owner_session_key, str) and owner_session_key.strip():
+        return owner_session_key.strip()
+    with _quiet(None):
+        from gateway.session_context import get_session_env
+
+        env_key = get_session_env("HERMES_SESSION_KEY", "")
+        if isinstance(env_key, str) and env_key.strip():
+            return env_key.strip()
+    durable = (
+        str(getattr(child, "_parent_session_id", "") or "")
+        or str(getattr(parent_agent, "session_id", "") or "")
+        or ""
+    ).strip()
+    return durable or None
+
+
 def _register_child(
     child: Any, parent_agent: Any, goal: str, *, owner_session_id: Optional[str], owner_transport: Any,
-    owner_session_record: Any,
+    owner_session_record: Any, owner_session_key: Optional[str] = None,
 ) -> Optional[str]:
     """Register the live child in the module registry; return its subagent_id. Test doubles without a stable string
     ``_subagent_id`` are not registered (None) and the caller skips every registry interaction for them."""
@@ -315,6 +341,7 @@ def _register_child(
             owner_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or None
     if owner_session_id and (owner_transport is None or owner_session_record is None):
         owner_transport, owner_session_record = _capture_gateway_steer_authority(owner_session_id)
+    durable_key = _resolve_owner_session_key(child, parent_agent, owner_session_key=owner_session_key)
     _raw_depth = getattr(child, "_delegate_depth", 1)
     _register_subagent({
         "subagent_id": _subagent_id,
@@ -330,6 +357,8 @@ def _register_child(
         "owner_agent_session_id": (
             str(getattr(child, "_parent_session_id", "") or "") or str(getattr(parent_agent, "session_id", "") or "") or None
         ),
+        # Durable gateway conversation key — survives UI-sid rotation (#114909). Internal only.
+        "owner_session_key": durable_key,
         # Immutable live gateway/TUI session that commissioned this child.
         # Empty outside those hosts; RPC authority fails closed.
         "owner_session_id": owner_session_id,

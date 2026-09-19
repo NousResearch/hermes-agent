@@ -1308,6 +1308,13 @@ DEFAULT_CONFIG = {
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+        # Opt-in "dispatcher mode": when true, every user turn is handed to a
+        # child agent via delegate_task before the main loop starts; the parent
+        # only receives the child's summary (parent context stays summary-only).
+        # Turn-handoff happens in agent/conversation_loop.py before the loop —
+        # system prompt and prompt caching are untouched. Off by default;
+        # failures fall back to the normal loop.
+        "auto_delegate": False,
         # Subagent threads ALWAYS resolve approvals non-interactively (the parent TUI owns stdin;
         # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
         # log a warning audit line. true only for trusted batch work.

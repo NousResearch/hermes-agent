@@ -1712,6 +1712,11 @@ delegation:
                                               # Raise to 2 to allow workers to spawn their own subagents.
                                               # Requires role="orchestrator" on intermediate agents.
   # orchestrator_enabled: true                # Kill switch for role="orchestrator" children (default: true).
+  # auto_delegate: false                      # Dispatcher mode: delegate every turn to a child agent
+                                              # before the main loop; the parent only receives the
+                                              # child's summary (protects long-lived context, gives
+                                              # every task isolated execution). Default: false.
+                                              # Failures fall back to the normal loop.
   # subagent_auto_approve: false              # When a subagent hits a dangerous-command approval prompt, auto-deny (default: false)
                                               # or auto-approve "once" (true) instead of blocking on stdin.
                                               # The parent TUI owns stdin, so blocking would deadlock; non-interactive resolution is required.

@@ -7,7 +7,10 @@ import {
   recordPreviewArtifact
 } from './preview-status'
 
-beforeEach(() => $previewStatusBySession.set({}))
+beforeEach(() => {
+  window.localStorage.clear()
+  $previewStatusBySession.set({})
+})
 
 describe('recordPreviewArtifact', () => {
   it('appends new targets newest-last and is idempotent', () => {
@@ -37,5 +40,16 @@ describe('recordPreviewArtifact', () => {
 
     clearPreviewArtifacts('s1')
     expect($previewStatusBySession.get().s1).toBeUndefined()
+  })
+
+  it('suppresses a dismissed historical target when the row mounts again', () => {
+    recordPreviewArtifact('runtime-a', '/a/index.html', '/work', 'stored-a')
+    dismissPreviewArtifact('runtime-a', '/a/index.html', 'stored-a')
+    $previewStatusBySession.set({})
+
+    recordPreviewArtifact('runtime-b', '/a/index.html', '/work', 'stored-a')
+
+    expect($previewStatusBySession.get()['runtime-b']).toBeUndefined()
+    expect(window.localStorage.getItem('hermes.desktop.previewDismissals.v1')).toContain('stored-a')
   })
 })

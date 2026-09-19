@@ -262,6 +262,13 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     if entry is not None and now - entry[0] < _RUNTIME_CACHE_TTL_SECONDS:
         return entry[1]
     out: dict[str, Any] = {"provider": provider, "model": model}
+    # The active scope is the authority for ownerless MoA calls. A session-owned
+    # runtime can replace this with its verified owner before a metadata preflight.
+    with contextlib.suppress(Exception):
+        from hermes_cli.routing_policy import profile_home_for_config_path
+        owner = profile_home_for_config_path(hermes_home_key() + "/config.yaml")
+        if owner is not None:
+            out["profile_home"] = str(owner)
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         rt = resolve_runtime_provider(requested=provider, target_model=model)
@@ -428,6 +435,7 @@ def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cac
     try:
         context_length = get_model_context_length(
             model=model, base_url=str(runtime.get("base_url") or ""), api_key=str(runtime.get("api_key") or ""), provider=provider,
+            profile_home=runtime.get("profile_home"),
         )
     except Exception:
         logger.debug("MoA reference context-length resolution failed for %s", _slot_label(slot))

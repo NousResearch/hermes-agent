@@ -342,6 +342,39 @@ class TestGenerateSummary:
 
         assert summary == "[CONTEXT SUMMARY]:"
 
+    def test_denied_custom_summary_route_sends_nothing_sync_or_async(self, monkeypatch):
+        """Raw custom-endpoint summary sends are policy-guarded before either SDK call."""
+        import asyncio
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        class SyncCreate:
+            def __init__(self): self.calls = []
+            def create(self, **kwargs): self.calls.append(kwargs)
+
+        class AsyncCreate:
+            def __init__(self): self.calls = []
+            async def create(self, **kwargs): self.calls.append(kwargs)
+
+        tc = _make_compressor(CompressionConfig(
+            summarization_model="denied-model", base_url="https://denied.example/v1", max_retries=3,
+        ))
+        sync_create, async_create = SyncCreate(), AsyncCreate()
+        tc._use_call_llm = False
+        tc.client = SimpleNamespace(base_url="https://denied.example/v1", chat=SimpleNamespace(completions=sync_create))
+        tc._get_async_client = lambda: SimpleNamespace(
+            base_url="https://denied.example/v1", chat=SimpleNamespace(completions=async_create))
+        monkeypatch.setitem(TrajectoryCompressor._generate_summary.__globals__, "current_routing_policy", lambda: {
+            "enabled": True, "deny": {"base_url_hosts": ["denied.example"]},
+        })
+
+        with pytest.raises(RoutingPolicyError):
+            tc._generate_summary("content", TrajectoryMetrics())
+        with pytest.raises(RoutingPolicyError):
+            asyncio.run(tc._generate_summary_async("content", TrajectoryMetrics()))
+
+        assert sync_create.calls == []
+        assert async_create.calls == []
+
 
 
 # ---------------------------------------------------------------------------

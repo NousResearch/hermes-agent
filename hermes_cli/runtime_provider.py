@@ -32,6 +32,7 @@ from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
+from hermes_cli.routing_policy import check_requested_route, check_route
 from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
 
 
@@ -392,19 +393,27 @@ def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
 # ── model config ───────────────────────────────────────────────────────────────────────────
 
 
-def _auto_detect_local_model(base_url: str) -> str:
+def _auto_detect_local_model(
+    base_url: str, *, provider: str = "lmstudio", profile_home: Any = None,
+) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
         return ""
     try:
         import requests
         url = base_url.rstrip("/")
-        resp = requests.get((url if url.endswith("/v1") else url + "/v1") + "/models", timeout=(2, 3))
+        models_url = (url if url.endswith("/v1") else url + "/v1") + "/models"
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(provider=provider, model="", base_url=models_url, profile_home=profile_home)
+        resp = requests.get(models_url, timeout=(2, 3))
         if resp.ok:
             models = resp.json().get("data", [])
             if len(models) == 1 and models[0].get("id", ""):
                 return models[0]["id"]
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.debug("Auto-detect model from %s failed: %s", base_url, exc)
     return ""
 
@@ -431,7 +440,7 @@ def _get_model_config() -> Dict[str, Any]:
         _default = cfg_model
     base_url = (cfg.get("base_url") or "").strip()
     if not str(_default or "").strip() and base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1"):
-        detected = _auto_detect_local_model(base_url)
+        detected = _auto_detect_local_model(base_url, provider=str(cfg.get("provider") or "lmstudio"))
         if detected:
             cfg["default"] = detected
     return cfg
@@ -909,9 +918,19 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
+    model_cfg = _get_model_config()
+    policy = load_config().get("routing_policy") or {}
+    effective_model = str(target_model or model_cfg.get("default") or model_cfg.get("model") or "")
+    check_requested_route(
+        policy,
+        requested_provider=requested_provider,
+        model=effective_model,
+    )
     _raise_if_provider_disabled(requested_provider)
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    check_route(policy, provider=str(runtime.get("provider") or ""), model=effective_model,
+                base_url=str(runtime.get("base_url") or ""))
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
     return runtime
 

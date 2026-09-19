@@ -2229,7 +2229,10 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
                 logging.getLogger(__name__).warning(
                     "Primary auth failed (%s), falling back to %s model %s", primary_exc, fb_provider, fb_model)
                 return _RuntimeFallbackResolution(runtime, fb_model, True)
-            except Exception:
+            except Exception as exc:
+                from hermes_cli.routing_policy import RoutingPolicyError
+                if isinstance(exc, RoutingPolicyError):
+                    raise
                 continue
         raise
 
@@ -2817,6 +2820,12 @@ def _main_runtime_from_agent(agent) -> dict | None:
             runtime[field] = value.strip()
         elif field == "api_key" and callable(value):
             runtime[field] = value
+    try:
+        from hermes_cli.routing_policy import profile_home_for_session_db
+        if home := profile_home_for_session_db(getattr(agent, "_session_db", None)):
+            runtime["profile_home"] = str(home)
+    except (OSError, RuntimeError, ValueError):
+        pass
     return runtime or None
 
 

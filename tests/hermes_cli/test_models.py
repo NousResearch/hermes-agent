@@ -45,6 +45,19 @@ class TestOpenRouterModels:
 
 class TestFetchOpenRouterModels:
 
+    def test_denied_openrouter_catalog_never_opens_transport(self, monkeypatch):
+        """Catalog refresh is an OpenRouter send, not a harmless local picker read."""
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(
+            "hermes_cli.routing_policy.current_routing_policy",
+            lambda *_args: {"enabled": True, "deny": {"providers": ["openrouter"]}},
+        )
+        opener = MagicMock()
+        with patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]), \
+             patch("hermes_cli.models._urlopen_model_catalog_request", opener):
+            with pytest.raises(Exception):
+                fetch_openrouter_models(force_refresh=True)
+        assert opener.call_count == 0
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)

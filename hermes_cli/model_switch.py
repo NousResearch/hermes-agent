@@ -1183,7 +1183,7 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
                 f"Provider '{pdef.name}' has no base URL configured. "
                 f"Specify a model: /model <model-name> --provider {st.explicit_provider}")
         from hermes_cli.runtime_provider import _auto_detect_local_model
-        st.new_model = _auto_detect_local_model(pdef.base_url)
+        st.new_model = _auto_detect_local_model(pdef.base_url, provider=pdef.id)
         if not st.new_model:
             return st.fail_on_target(
                 f"No model detected on {pdef.name} ({pdef.base_url}). "
@@ -1706,7 +1706,18 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     from hermes_cli.config import get_config_path, read_user_config_raw, warn_unpinned_cron_jobs_after_model_config_change
     from utils import atomic_roundtrip_yaml_update
     path = Path(config_path) if config_path else get_config_path()
-    for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
+    current_config = read_user_config_raw(path)
+    from hermes_cli.routing_policy import (
+        RoutingPolicyError, check_persisted_route, profile_home_for_config_path,
+    )
+    policy_home = profile_home_for_config_path(path)
+    if policy_home is None:
+        raise RoutingPolicyError("refusing to persist a model selection to an untrusted config path")
+    check_persisted_route(
+        provider=result.target_provider, model=result.new_model, base_url=result.base_url,
+        profile_home=policy_home,
+    )
+    for key, value in model_selection_config_updates(result, current_config.get("model")).items():
         atomic_roundtrip_yaml_update(path, f"model.{key}", value)
         # Same unpinned-cron notice as `hermes config set` for every model switch.
         warn_unpinned_cron_jobs_after_model_config_change(f"model.{key}", value)

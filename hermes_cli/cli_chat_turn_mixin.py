@@ -140,10 +140,12 @@ class CLIChatTurnMixin:
         try:
             from agent.context_references import preprocess_context_references
             from agent.model_metadata import get_model_context_length
+            from hermes_cli.routing_policy import profile_home_for_session_db
             _ctx_len = get_model_context_length(
                 self.model, base_url=self.base_url or "", api_key=self.api_key or "",
                 provider=self.provider or "",
-                config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None)
+                config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
+                profile_home=profile_home_for_session_db(getattr(self.agent, "_session_db", None)))
             _ctx_result = preprocess_context_references(message, cwd=os.getcwd(), context_length=_ctx_len)
             if _ctx_result.expanded or _ctx_result.blocked:
                 if _ctx_result.references:

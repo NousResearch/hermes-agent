@@ -22,6 +22,17 @@ from utils import base_url_host_matches
 
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
+# Generic API-key probes are dispatched from display labels, while routing policy uses canonical
+# provider identifiers. Keep static doctor rows explicit; plugin-derived labels normalize below.
+_APIKEY_PROBE_PROVIDER_IDS = {
+    "Z.AI / GLM": "zai", "Kimi / Moonshot": "kimi-for-coding", "StepFun Step Plan": "stepfun",
+    "Kimi / Moonshot (China)": "kimi-for-coding", "Arcee AI": "arcee", "GMI Cloud": "gmi",
+    "DeepSeek": "deepseek", "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
+    "Alibaba/DashScope": "alibaba", "MiniMax": "minimax", "MiniMax (China)": "minimax-cn",
+    "Vercel AI Gateway": "vercel", "Kilo Code": "kilo", "OpenCode Zen": "opencode",
+    "OpenCode Go": "opencode-go",
+}
+
 
 class ProbeResult(NamedTuple):
     label: str
@@ -140,8 +151,13 @@ def _probe_openrouter() -> ProbeResult:
         return _row(name, "warn", "(not configured)")
     try:
         import httpx
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(provider="openrouter", model="", base_url=OPENROUTER_MODELS_URL)
         r = httpx.get(OPENROUTER_MODELS_URL, headers={"Authorization": f"Bearer {key}"}, timeout=10)
     except Exception as e:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(e, RoutingPolicyError):
+            raise
         return _row(name, "fail", f"({e})", ["Check network connectivity"])
     if r.status_code == 200:
         return _row(name, "ok")
@@ -163,13 +179,19 @@ def _probe_anthropic() -> ProbeResult:
         headers = {"anthropic-version": "2023-06-01", **({"Authorization": f"Bearer {key}", "anthropic-beta": ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)}
                                                          if is_oauth else {"x-api-key": key})}
         url = "https://api.anthropic.com/v1/models"
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(provider="anthropic", model="", base_url=url)
         r = httpx.get(url, headers=headers, timeout=10)
         # OAuth subscriptions without 1M context reject with 400 "long context beta is not yet available";
         # retry once with that beta stripped so doctor doesn't falsely report Anthropic as unreachable.
         if is_oauth and r.status_code == 400 and "long context beta" in r.text.lower() and "not yet available" in r.text.lower():
             headers["anthropic-beta"] = ",".join([b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS))
+            check_outbound_route(provider="anthropic", model="", base_url=url)
             r = httpx.get(url, headers=headers, timeout=10)
     except Exception as e:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(e, RoutingPolicyError):
+            raise
         return _row(name, "warn", f"({e})")
     return _row(name, *{200: ("ok",), 401: ("fail", "(invalid API key)")}.get(r.status_code, ("warn", "(couldn't verify)")))
 
@@ -184,10 +206,19 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
     try:
         import httpx
         base, url, headers = _apikey_request(key, base_env, default_url)
+        from hermes_cli.providers import normalize_provider
+        from hermes_cli.routing_policy import check_outbound_route
+        provider = _APIKEY_PROBE_PROVIDER_IDS.get(pname, normalize_provider(pname))
+        check_outbound_route(provider=provider, model="", base_url=url)
         r = httpx.get(url, headers=headers, timeout=10)
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
-            r = httpx.get("https://dashscope.aliyuncs.com/compatible-mode/v1/models", headers=headers, timeout=10)
+            retry_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+            check_outbound_route(provider=provider, model="", base_url=retry_url)
+            r = httpx.get(retry_url, headers=headers, timeout=10)
     except Exception as e:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(e, RoutingPolicyError):
+            raise
         return _row(pname, "warn", f"({e})", label=label)
     if r.status_code == 401:
         return _row(pname, "fail", "(invalid API key)", [f"Check {env_vars[0]} in .env"], label=label)
@@ -234,6 +265,8 @@ def _probe_bedrock() -> ProbeResult:
         import boto3
         from botocore.config import Config as _BotoConfig
         # Trim retries so a transient failure doesn't pad the doctor run by 30+ seconds.
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(provider="bedrock", model="", base_url=f"https://bedrock.{region}.amazonaws.com")
         client = boto3.client("bedrock", region_name=region, config=_BotoConfig(connect_timeout=5, read_timeout=10, retries={"max_attempts": 1}))
         n = len(client.list_foundation_models().get("modelSummaries", []))
         return _row(name, "ok", f"({auth_var}, {region}, {n} models)", label=label)
@@ -241,6 +274,9 @@ def _probe_bedrock() -> ProbeResult:
         pip = f"{sys.executable} -m pip install boto3"
         return _row(name, "warn", f"(boto3 not installed — {pip})", [f"Install boto3 for Bedrock: {pip}"], label=label)
     except Exception as e:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(e, RoutingPolicyError):
+            raise
         err_name = type(e).__name__
         return _row(name, "warn", f"({err_name}: {e})", [f"AWS Bedrock: {err_name} — check IAM permissions for bedrock:ListFoundationModels"], label=label)
 

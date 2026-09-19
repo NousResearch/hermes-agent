@@ -58,3 +58,28 @@ def test_run_task_public_moonshot_kimi_k2_5_omits_temperature():
 
     assert result["completed"] is True
     assert "temperature" not in client.chat.completions.create.call_args.kwargs
+
+
+def test_denied_mini_swe_route_sends_nothing(monkeypatch):
+    """The direct Mini-SWE client checks policy before its completion send."""
+    import pytest
+    from hermes_cli.routing_policy import RoutingPolicyError
+    from mini_swe_runner import MiniSWERunner
+
+    create = MagicMock()
+    runner = object.__new__(MiniSWERunner)
+    runner.model = "z-ai/glm-5.2"
+    runner.tools = []
+    runner.logger = MagicMock()
+    runner.client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    )
+    monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+        "enabled": True, "deny": {"models": ["z-ai/*"]},
+    })
+
+    with pytest.raises(RoutingPolicyError):
+        runner._call_model([])
+
+    create.assert_not_called()

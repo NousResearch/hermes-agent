@@ -177,6 +177,13 @@ class GatewayTurnMixin:
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
                     skey or "", model, override_model, override_runtime.get("provider"),
                 )
+                from hermes_cli.routing_policy import check_route
+                cfg = getattr(self, "config", None)
+                check_route(
+                    (cfg.get("routing_policy") or {}) if isinstance(cfg, dict) else {},
+                    provider=str(override_runtime.get("provider") or ""), model=str(override_model or ""),
+                    base_url=str(override_runtime.get("base_url") or ""),
+                )
                 return override_model, override_runtime
             # No api_key on the override: env-based resolution below, override model/provider on top.
             logger.debug(
@@ -219,6 +226,16 @@ class GatewayTurnMixin:
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
 
+        # Preserve the caller's route intent before this gateway supplies a catalog default
+        # or restores a last-known-good model.  A strict policy must reject the missing intent,
+        # not retrospectively bless the value recovery happened to choose.
+        from hermes_cli.routing_policy import check_requested_route
+        check_requested_route(
+            (cfg.get("routing_policy") or {}) if isinstance(cfg, dict) else {},
+            requested_provider=str(runtime_kwargs.get("requested_provider") or runtime_kwargs.get("provider") or ""),
+            model=str(model or ""),
+        )
+
         # Provider resolved but no model.default (`hermes auth add` without `hermes model`): use the
         # provider's first catalog model.
         if not model and runtime_kwargs.get("provider"):
@@ -246,7 +263,17 @@ class GatewayTurnMixin:
                     "empty; see #35314)", skey or "", _recovered,
                 )
                 model = _recovered
-        else:
+
+        # This sees defaults and last-known-good recovery, neither of which is visible to the
+        # runtime resolver. It must remain outside the default-fill suppress(Exception) block.
+        from hermes_cli.routing_policy import check_route
+        check_route(
+            (cfg.get("routing_policy") or {}) if isinstance(cfg, dict) else {},
+            provider=str(runtime_kwargs.get("provider") or ""),
+            model=str(model or ""),
+            base_url=str(runtime_kwargs.get("base_url") or ""),
+        )
+        if model:
             # Cache the good resolution for future recovery turns.
             if skey:
                 self._session_state(skey).conversation.last_resolved_model = model

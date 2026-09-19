@@ -622,12 +622,97 @@ class TestSessionLifecycle:
         assert "browser_model_lock" not in model_config
         assert model_config["_branched_from"] == "parent-session"
 
+    def test_denied_session_model_update_uses_existing_base_url_and_leaves_row_unchanged(self, db, monkeypatch):
+        """A model-only update inherits the stored endpoint for its pre-write policy check."""
+        from hermes_cli.routing_policy import RoutingPolicyError
 
+        db.create_session(
+            session_id="s-policy-update", source="cli", model="old-model",
+            model_config={"provider": "openrouter", "base_url": "https://denied.example/v1"},
+        )
+        before = db.get_session("s-policy-update")
+        monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+            "enabled": True, "deny": {"base_url_hosts": ["denied.example"]},
+        })
 
+        with pytest.raises(RoutingPolicyError):
+            db.update_session_model("s-policy-update", "new-model")
 
+        after = db.get_session("s-policy-update")
+        assert after["model"] == before["model"]
+        assert after["model_config"] == before["model_config"]
 
+    def test_denied_session_model_config_patch_leaves_row_unchanged(self, db, monkeypatch):
+        """Patching a route is guarded before the merged config reaches SQLite."""
+        from hermes_cli.routing_policy import RoutingPolicyError
 
+        db.create_session(
+            session_id="s-policy-patch", source="cli",
+            model_config={"provider": "openrouter", "base_url": "https://allowed.example/v1"},
+        )
+        before = db.get_session("s-policy-patch")
+        monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+            "enabled": True, "deny": {"models": ["denied-*"]},
+        })
 
+        with pytest.raises(RoutingPolicyError):
+            db.patch_session_model_config("s-policy-patch", {"model": "denied-model"})
+
+        after = db.get_session("s-policy-patch")
+        assert after["model"] == before["model"]
+        assert after["model_config"] == before["model_config"]
+
+    def test_update_session_meta_rejects_top_level_model_that_disagrees_with_allowed_config(self, db, monkeypatch):
+        """The persisted top-level model, not only config.model, must pass admission."""
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        db.create_session(
+            session_id="s-policy-meta", source="cli", model="original-model",
+            model_config={"provider": "openrouter", "model": "original-model"},
+        )
+        before = db.get_session("s-policy-meta")
+        monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+            "enabled": True, "deny": {"models": ["denied-*"]},
+        })
+
+        with pytest.raises(RoutingPolicyError):
+            db.update_session_meta(
+                "s-policy-meta",
+                json.dumps({"provider": "openrouter", "model": "allowed-model"}),
+                model="denied-model",
+            )
+
+        after = db.get_session("s-policy-meta")
+        assert after["model"] == before["model"]
+        assert after["model_config"] == before["model_config"]
+
+    def test_denied_archive_model_config_patch_is_atomic_before_compaction(self, db, monkeypatch):
+        """A denied compaction patch cannot archive messages or persist a route."""
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        db.create_session(
+            session_id="s-policy-compact", source="cli",
+            model_config={"provider": "openrouter", "base_url": "https://allowed.example/v1"},
+        )
+        db.append_message("s-policy-compact", role="user", content="original user turn")
+        db.append_message("s-policy-compact", role="assistant", content="original assistant turn")
+        before_session = db.get_session("s-policy-compact")
+        before_messages = db.get_messages("s-policy-compact", include_inactive=True)
+        monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+            "enabled": True, "deny": {"models": ["denied-*"]},
+        })
+
+        with pytest.raises(RoutingPolicyError):
+            db.archive_and_compact(
+                "s-policy-compact",
+                [{"role": "assistant", "content": "compacted summary"}],
+                model_config_patch={"model": "denied-model"},
+            )
+
+        after_session = db.get_session("s-policy-compact")
+        after_messages = db.get_messages("s-policy-compact", include_inactive=True)
+        assert after_session["model_config"] == before_session["model_config"]
+        assert after_messages == before_messages
 
     def test_first_accounted_route_replaces_all_route_fields_atomically(self, db):
         db.create_session(session_id="route", source="cli", model="primary")

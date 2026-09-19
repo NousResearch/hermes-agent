@@ -449,12 +449,15 @@ def _publish_runtime_main(agent: Any) -> None:
         # (#79017). Resolved with the never-raising variant OUTSIDE the argument list, so a resolution
         # failure can only lose the scope — never the whole runtime binding.
         _cache_scope = resolve_prompt_cache_scope_safe(agent) or ""
+        from hermes_cli.routing_policy import profile_home_for_session_db
+        _policy_home = profile_home_for_session_db(getattr(agent, "_session_db", None))
         set_runtime_main(
             _str_attr(agent, "provider"), _str_attr(agent, "model"),
             **{k: _str_attr(agent, k) for k in (
                 "requested_provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id"
             )},
             cache_scope=_cache_scope,
+            profile_home=str(_policy_home) if _policy_home is not None else "",
         )
 
 

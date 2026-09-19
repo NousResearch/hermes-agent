@@ -379,7 +379,10 @@ class CLIAgentSetupMixin:
                 self.model = _fb_model
                 # reasoning_config follows the swap in _ensure_runtime_credentials (the only caller).
                 return runtime
-            except Exception:
+            except Exception as exc:
+                from hermes_cli.routing_policy import RoutingPolicyError
+                if isinstance(exc, RoutingPolicyError):
+                    raise
                 continue
         return None
 

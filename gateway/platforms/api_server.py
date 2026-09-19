@@ -2877,6 +2877,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # The normalized requested["model"] (prefix split, virtual alias nulled) — the raw body
         # would persist "hermes-agent" and later send it to the provider literally.
         model_name = self._clean_runtime_id(requested.get("model")) or None
+        if requested.get("model") or requested.get("provider"):
+            from hermes_cli.routing_policy import RoutingPolicyError, check_persisted_route, profile_home_for_session_db
+            try:
+                check_persisted_route(
+                    provider=str(requested.get("provider") or ""), model=str(model_name or ""), base_url="",
+                    profile_home=profile_home_for_session_db(db),
+                )
+            except RoutingPolicyError as exc:
+                return _error_response(str(exc), 403, code="routing_policy_denied")
         model_config = None
         if requested.get("model") or requested.get("provider"):
             model_config = {"browser_model_lock": {

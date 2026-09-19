@@ -83,6 +83,38 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_create_session_rejects_denied_runtime_lock_before_raw_insert(adapter, session_db, monkeypatch):
+    """The raw-SQL create endpoint must not bypass durable route admission."""
+    monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+        "enabled": True, "deny": {"models": ["z-ai/*"]},
+    })
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post("/api/sessions", json={
+            "id": "denied-lock", "provider": "openrouter", "model": "z-ai/glm-5.2",
+            "require_model_lock": True,
+        })
+        assert response.status == 403
+        assert (await response.json())["error"]["code"] == "routing_policy_denied"
+    assert session_db.get_session("denied-lock") is None
+
+
+@pytest.mark.asyncio
+async def test_create_session_require_explicit_rejects_model_only_lock_before_raw_insert(adapter, session_db, monkeypatch):
+    """The raw-SQL create endpoint cannot defer provider discovery to later restore."""
+    monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda: {
+        "enabled": True, "require_explicit": True,
+    })
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post("/api/sessions", json={
+            "id": "model-only-lock", "model": "permitted-model", "require_model_lock": True,
+        })
+        assert response.status == 403
+    assert session_db.get_session("model-only-lock") is None
+
+
+@pytest.mark.asyncio
 async def test_session_messages_default_to_latest_bounded_page(adapter, session_db):
     session_id = session_db.create_session("bounded-messages", "api_server")
     session_db.replace_messages(

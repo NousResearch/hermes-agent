@@ -1,5 +1,6 @@
 """Tests for empty model fallback — when provider is configured but model is missing."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -69,6 +70,68 @@ class TestGatewayEmptyModelFallback:
         assert model, "Model should not be empty when provider is known"
         assert isinstance(model, str)
         assert kwargs["provider"] == "openai-codex"
+
+    def test_empty_model_policy_denies_catalog_default_before_agent_construction(self):
+        """A model deny policy must see the model selected by the gateway's silent default fill."""
+        import pytest
+        from gateway.run import GatewayRunner
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        runner.config = {"routing_policy": {"enabled": True, "deny": {"models": ["z-ai/*"]}}}
+
+        with patch("gateway.run._resolve_gateway_model", return_value=""), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "provider": "openrouter",
+                 "api_key": "test-key",
+                 "base_url": "https://openrouter.ai/api/v1",
+                 "api_mode": "chat_completions",
+             }), \
+             patch("hermes_cli.models.get_default_model_for_provider", return_value="z-ai/glm-5.2"):
+            with pytest.raises(RoutingPolicyError, match="selected model"):
+                runner._resolve_session_agent_runtime()
+
+    def test_require_explicit_rejects_before_catalog_default_or_recovery(self):
+        """Strict policy sees missing intent before gateway-derived model recovery."""
+        import pytest
+        from gateway.run import GatewayRunner
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        runner.config = {"routing_policy": {"enabled": True, "require_explicit": True}}
+
+        with patch("gateway.run._resolve_gateway_model", return_value=""), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "requested_provider": "openai-codex", "provider": "openai-codex",
+                 "base_url": "https://chatgpt.com/backend-api/codex",
+             }), \
+             patch("hermes_cli.models.get_default_model_for_provider", side_effect=pytest.fail) as catalog:
+            with pytest.raises(RoutingPolicyError, match="explicit model"):
+                runner._resolve_session_agent_runtime()
+        assert not catalog.called
+
+    def test_persisted_fast_override_is_denied_before_return(self):
+        """A durable override with its own API key cannot bypass the gateway policy gate."""
+        import pytest
+        from gateway.run import GatewayRunner
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        runner.config = {"routing_policy": {"enabled": True, "deny": {"models": ["z-ai/*"]}}}
+        runner._session_state = lambda _key: SimpleNamespace(
+            conversation=SimpleNamespace(model_override={
+                "model": "z-ai/glm-5.2", "provider": "openrouter", "api_key": "test-key",
+                "base_url": "https://openrouter.ai/api/v1", "capabilities": {},
+            })
+        )
+        runner._peek_session_state = runner._session_state
+
+        with patch("gateway.run._resolve_gateway_model", return_value="allowed-model"):
+            with pytest.raises(RoutingPolicyError):
+                runner._resolve_session_agent_runtime(session_key="s1")
 
     def test_nonempty_model_not_overridden(self):
         """When config has a model set, don't override it."""

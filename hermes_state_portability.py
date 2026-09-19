@@ -467,6 +467,7 @@ class SessionPortabilityMixin:
             session_id = str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
             try:
                 item = self._validate_import_session(raw, session_id, seen_ids, totals)
+                self._check_import_session_route(item["session"])
             except ValueError as exc:
                 item = {"index": index, "error": str(exc)}
                 if session_id:
@@ -476,6 +477,17 @@ class SessionPortabilityMixin:
             seen_ids.add(session_id)
             normalized.append({"index": index, **item})
         return normalized, errors
+
+    def _check_import_session_route(self, raw: Dict[str, Any]) -> None:
+        """Admit an imported session's effective route before it reaches a write transaction."""
+        model_config = safe_json_loads(raw.get("model_config"), default={})
+        if not isinstance(model_config, dict):
+            model_config = {}
+        from hermes_cli.routing_policy import RoutingPolicyError
+        try:
+            self._check_persisted_model_config_route(model_config, raw.get("model"))
+        except RoutingPolicyError as exc:
+            raise ValueError(str(exc)) from None
 
     def _validate_import_session(self, raw: Any, session_id: str, seen_ids: set, totals: Dict[str, int]) -> Dict[str, Any]:
         """One payload session -> normalized item; ValueError(message) on rejection. *totals*
@@ -513,6 +525,7 @@ class SessionPortabilityMixin:
 
     def _import_session_row(self, conn, raw: Dict[str, Any], messages: List[Dict[str, Any]], session_id: str) -> None:
         """INSERT one normalized session + its messages; counts fixed up after."""
+        self._check_import_session_route(raw)
         started_at = coerce_epoch(raw.get("started_at"), session_id=session_id, field="started_at")
         params = {
             "id": session_id, "source": str(raw.get("source") or "import"),

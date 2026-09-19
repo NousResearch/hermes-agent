@@ -17,6 +17,7 @@ from agent.stream_single_writer import claim_stream_writer, stream_writer_is_cur
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
 from agent.usage_anchor import set_usage_anchor
+from hermes_cli.routing_policy import check_outbound_route
 
 logger = logging.getLogger(__name__)
 _codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -845,6 +846,13 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
 
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
+    from hermes_cli.routing_policy import profile_home_for_session_db
+    check_outbound_route(
+        provider=str(getattr(agent, "provider", "") or ""),
+        model=str(api_kwargs.get("model") or getattr(agent, "model", "") or ""),
+        base_url=str(getattr(agent, "base_url", "") or ""),
+        profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)),
+    )
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError
     from agent import relay_llm
@@ -908,6 +916,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
+        # Relay mutates the callback request after the entry check; admit the sanitized
+        # final payload against the durable session owner before every physical send.
+        from hermes_cli.routing_policy import profile_home_for_session_db
+        check_outbound_route(
+            provider=str(getattr(agent, "provider", "") or ""),
+            model=str(stream_kwargs.get("model") or getattr(agent, "model", "") or ""),
+            base_url=str(getattr(active_client, "base_url", "") or getattr(agent, "base_url", "") or ""),
+            profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)),
+        )
         return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:

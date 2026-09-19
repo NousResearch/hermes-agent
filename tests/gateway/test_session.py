@@ -1797,3 +1797,56 @@ class TestGatewayRoutingTable:
         restarted._db.close()
 
 
+class TestSessionModelOverrideRoutingPolicy:
+    def test_require_explicit_rejects_unqualified_override_before_routing_write(self, tmp_path, monkeypatch):
+        """A persisted /model override cannot defer provider selection to a silent default."""
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        entry = store.get_or_create_session(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="policy-chat", chat_name="Policy", user_id="user",
+        ))
+        writes = []
+        monkeypatch.setattr("hermes_cli.routing_policy.current_routing_policy", lambda *_args: {
+            "enabled": True, "require_explicit": True,
+        })
+        monkeypatch.setattr(store, "_persist_routing_data", lambda *args: writes.append(args))
+
+        with pytest.raises(RoutingPolicyError, match="explicit provider"):
+            store.set_model_override(entry.session_key, {"model": "allowed-model"})
+
+        assert store.get_model_override(entry.session_key) is None
+        assert writes == []
+
+    def test_multiplexed_owner_policy_rejects_locked_profile_override_before_write(self, tmp_path, monkeypatch):
+        """The route key's locked profile wins even while the default policy permits the model."""
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        root = tmp_path / "hermes"
+        locked = root / "profiles" / "locked"
+        locked.mkdir(parents=True)
+        (root / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+        (locked / "config.yaml").write_text(
+            "routing_policy:\n  enabled: true\n  deny:\n    models: ['z-ai/*']\n", encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        store = SessionStore(
+            sessions_dir=root / "sessions",
+            config=GatewayConfig(multiplex_profiles=True),
+        )
+        key = "agent:locked:telegram:dm:policy-chat"
+        entry = store.get_or_create_session(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="policy-chat", chat_name="Policy", user_id="user",
+            profile="locked",
+        ))
+        assert entry.session_key == key
+        writes = []
+        monkeypatch.setattr(store, "_persist_routing_data", lambda *args: writes.append(args))
+
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            store.set_model_override(key, {"provider": "openrouter", "model": "z-ai/glm-5.2"})
+
+        assert store.get_model_override(key) is None
+        assert writes == []
+
+

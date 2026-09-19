@@ -18,6 +18,7 @@ from typing import Any, Dict, List
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from hermes_cli.routing_policy import profile_home_for_session_db
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -224,6 +225,7 @@ def record_response_usage(
     cost_result = estimate_usage_cost(
         _agg_cost_model, aggregator_usage, provider=_agg_cost_provider,
         base_url=_agg_cost_base_url, api_key=getattr(agent, "api_key", ""),
+        profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)),
     )
     # Cost delta = aggregator + MoA advisor cost (already priced per-advisor at each
     # advisor's own model rate), so state.db's estimated_cost_usd matches the folded

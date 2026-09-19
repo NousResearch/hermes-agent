@@ -165,7 +165,8 @@ def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
 
 
 def probe_gemini_tier(
-    api_key: str, base_url: str = DEFAULT_GEMINI_BASE_URL, *, model: str = "gemini-3.7-flash", timeout: float = 10.0
+    api_key: str, base_url: str = DEFAULT_GEMINI_BASE_URL, *, model: str = "gemini-3.7-flash", timeout: float = 10.0,
+    profile_home: Any = None,
 ) -> str:
     """Probe a Google AI Studio key → ``"free"`` | ``"paid"`` | ``"unknown"`` (probe failed; callers proceed without blocking)."""
     key = (api_key or "").strip()
@@ -174,6 +175,9 @@ def probe_gemini_tier(
     base = normalize_gemini_base_url(base_url, key)
     payload = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}}
     headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _API_CLIENT}
+    # Tier discovery is a real generation request, not a harmless local check.
+    from hermes_cli.routing_policy import check_outbound_route
+    check_outbound_route(provider="gemini", model=model, base_url=base, profile_home=profile_home)
     try:
         with httpx.Client(timeout=timeout) as client:
             resp = client.post(f"{base}/models/{model}:generateContent", params={"key": key}, json=payload, headers=headers)
@@ -776,6 +780,19 @@ class GeminiNativeClient:
         return {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
 
+    def _guard_final_wire_route(self, model: str, provider: Optional[str], profile_home: Optional[str]) -> None:
+        """Check the canonical native model immediately before its HTTP wire send."""
+        from hermes_cli.routing_policy import check_outbound_route, check_route, current_routing_policy
+
+        if profile_home is None:
+            check_route(
+                current_routing_policy(), provider=str(provider or "gemini"), model=model, base_url=self.base_url,
+            )
+            return
+        check_outbound_route(
+            provider=str(provider or "gemini"), model=model, base_url=self.base_url, profile_home=profile_home,
+        )
+
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:
         chunk = next(iterator, _END)
@@ -784,18 +801,24 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
+        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None,
+        _hermes_routing_policy_home: Optional[str] = None, _hermes_routing_policy_provider: Optional[str] = None, **_: Any,
     ) -> Any:
+        # Private auxiliary routing metadata is consumed here, never serialized into the Gemini body.
+        model = bare_gemini_model_id(model)
         extra = extra_body if isinstance(extra_body, dict) else {}
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
-        model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:
-            return self._stream_completion(model, url + "streamGenerateContent?alt=sse", request, timeout)
+            return self._stream_completion(
+                model, url + "streamGenerateContent?alt=sse", request, timeout,
+                provider=_hermes_routing_policy_provider, profile_home=_hermes_routing_policy_home,
+            )
+        self._guard_final_wire_route(model, _hermes_routing_policy_provider, _hermes_routing_policy_home)
         response = self._http.post(url + "generateContent", json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
             raise gemini_http_error(response, api_key=self.api_key)
@@ -807,8 +830,11 @@ class GeminiNativeClient:
             ) from exc
         return translate_gemini_response(payload, model=model)
 
-    def _stream_completion(self, model: str, url: str, request: Dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
+    def _stream_completion(
+        self, model: str, url: str, request: Dict[str, Any], timeout: Any, *, provider: Optional[str], profile_home: Optional[str],
+    ) -> Iterator[_GeminiStreamChunk]:
         try:
+            self._guard_final_wire_route(model, provider, profile_home)
             headers = {**self._headers(), "Accept": "text/event-stream"}
             with self._http.stream("POST", url, json=request, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:

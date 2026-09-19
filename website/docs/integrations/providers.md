@@ -1665,6 +1665,32 @@ Notes:
 - See OpenRouter's [Pareto Router docs](https://openrouter.ai/docs/guides/routing/routers/pareto-router) for the full router behavior.
 - To use the Pareto Code router for a specific **auxiliary task** (compression, vision, etc.) instead of the main agent, set `extra_body.plugins` under that task — see [Auxiliary Models → OpenRouter routing & Pareto Code for auxiliary tasks](../user-guide/configuration.md#openrouter-routing--pareto-code-for-auxiliary-tasks).
 
+## Route-denial policy
+
+`routing_policy` is an opt-in local authorization boundary for model routes. It evaluates the effective provider, model, and endpoint host during runtime resolution, before route persistence, and immediately before Hermes' built-in model transports send a request. A matching rule raises a terminal error: Hermes does not retry it or advance to another fallback.
+
+```yaml
+routing_policy:
+  enabled: true
+  require_explicit: true   # reject credential-driven provider selection and silent model defaults
+  deny:
+    providers: [zai]
+    models: ["z-ai/*", "glm-*"]
+    base_url_hosts: [api.z.ai, open.bigmodel.cn]
+```
+
+Use `require_explicit: true` for profiles where an available credential must never authorize automatic provider selection. Deny entries are case-insensitive; model entries support shell-style patterns, and endpoint entries accept either a host or an absolute URL (its host is matched; a URL path is ignored). Invalid enabled policy syntax is rejected rather than silently weakened. A route policy does not inspect arbitrary third-party/plugin-owned HTTP clients; it covers Hermes' built-in model transports.
+
+### Mandatory launch floor
+
+For a supervised or multi-profile runtime, pass a policy file explicitly at process launch:
+
+```text
+hermes --model-policy /etc/hermes/model-policy.yaml gateway run
+```
+
+The selected file must be readable, valid YAML, and set `enabled: true`; otherwise Hermes exits before plugin or credential startup. It is a process-wide floor, not profile inheritance: every served profile retains its own configuration, while its policy can only add restrictions—not weaken the selected file's denials or `require_explicit` setting. The flag is preserved by Hermes self-relaunches. Use an absolute, administrator-controlled path for a service unit.
+
 ## Fallback Providers
 
 Configure a chain of backup providers Hermes tries in order when the primary model fails (rate limits, server errors, auth failures). The canonical format is a top-level `fallback_providers:` list:

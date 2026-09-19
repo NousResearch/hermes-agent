@@ -418,7 +418,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
         agent.api_mode = _mandated if _mandated is not None else "chat_completions"
 
 
-def _finalize_routing(agent, api_mode, credential_pool):
+def _finalize_routing(agent, api_mode, credential_pool, session_db=None):
     from hermes_cli.providers import is_actual_route
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
@@ -496,8 +496,11 @@ def _finalize_routing(agent, api_mode, credential_pool):
     if (agent.provider == "openrouter" or agent._is_openrouter_url()) and \
             not _ra()._openrouter_prewarm_done.is_set():
         _ra()._openrouter_prewarm_done.set()
+        from hermes_cli.routing_policy import profile_home_for_session_db
+        profile_home = profile_home_for_session_db(session_db)
         threading.Thread(
-            target=fetch_model_metadata, daemon=True, name="openrouter-prewarm",
+            target=fetch_model_metadata, kwargs={"profile_home": profile_home},
+            daemon=True, name="openrouter-prewarm",
         ).start()
 
 
@@ -1829,6 +1832,8 @@ def _compressor_max_tokens(agent):
 
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
+    from hermes_cli.routing_policy import profile_home_for_session_db
+    profile_home = profile_home_for_session_db(session_db)
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
@@ -1842,7 +1847,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
             config_context_length=_effective_context_length, provider=agent.provider,
-            custom_providers=_custom_providers,
+            custom_providers=_custom_providers, profile_home=profile_home,
         )
         # Per-model overrides BEFORE the initial update_model() so the first threshold
         # resolution already sees them.
@@ -1868,7 +1873,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
-            custom_providers=_custom_providers,
+            custom_providers=_custom_providers, profile_home=profile_home,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -2294,7 +2299,7 @@ def init_agent(
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
     _resolve_api_mode(agent, api_mode, provider_name, base_url)
-    _finalize_routing(agent, api_mode, credential_pool)
+    _finalize_routing(agent, api_mode, credential_pool, session_db=session_db)
 
     # Platform callbacks are stored under their parameter names verbatim.
     for _cb in _CALLBACK_PARAMS:

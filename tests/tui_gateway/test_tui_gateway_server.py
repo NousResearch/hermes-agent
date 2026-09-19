@@ -20404,6 +20404,33 @@ class TestResolveRuntimeWithFallback:
         assert resolution.selected_model == "deepseek-v4-pro"
         assert resolution.used_fallback is True
 
+    def test_denied_fallback_is_terminal_and_does_not_resolve_next(self, monkeypatch):
+        """A routing-policy denial must not be treated as a recoverable fallback failure."""
+        from hermes_cli.auth import AuthError
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        resolved = []
+
+        def fake_resolve(**kwargs):
+            requested = kwargs.get("requested")
+            resolved.append(requested)
+            if requested == "primary":
+                raise AuthError("No primary credentials")
+            if requested == "denied":
+                raise RoutingPolicyError("denied")
+            return {"provider": "recording"}
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        monkeypatch.setattr(server, "_load_fallback_model", lambda: [
+            {"provider": "denied", "model": "first"},
+            {"provider": "recording", "model": "second"},
+        ])
+
+        with pytest.raises(RoutingPolicyError, match="denied"):
+            server._resolve_runtime_with_fallback({"requested": "primary"})
+
+        assert resolved == ["primary", "denied"]
+
     def test_auth_error_skips_provider_only_fallback(self, monkeypatch):
         """Auth fallback requires one complete provider/model pair."""
         from hermes_cli.auth import AuthError

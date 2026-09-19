@@ -113,6 +113,49 @@ def test_same_route_repick_keeps_the_context_pin(seeded_home):
     assert block["api_key"] == "sk-stale"  # custom targets keep their inline key
 
 
+def test_denied_global_model_selection_leaves_config_unchanged(seeded_home):
+    """Policy validation happens before the first targeted config.yaml write."""
+    from hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    config_path = seeded_home / "config.yaml"
+    before = config_path.read_text(encoding="utf-8")
+    denied = ModelSwitchResult(
+        success=True, new_model="denied-model", target_provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", api_mode="chat_completions", is_global=True)
+
+    # The policy loader reads the same profile config that persistence would mutate.
+    config_path.write_text(before + "routing_policy:\n  enabled: true\n  deny:\n    models: [denied-*]\n", encoding="utf-8")
+    before = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(RoutingPolicyError):
+        persist_model_selection(denied)
+
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_require_explicit_rejects_auto_global_model_selection_without_mutating_config(seeded_home):
+    """An unresolved ``auto`` provider cannot become durable global model config."""
+    from hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    config_path = seeded_home / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "routing_policy:\n  enabled: true\n  require_explicit: true\n",
+        encoding="utf-8",
+    )
+    before = config_path.read_text(encoding="utf-8")
+    unresolved = ModelSwitchResult(
+        success=True, new_model="selected-model", target_provider="auto",
+        base_url="", api_mode="", is_global=True)
+
+    with pytest.raises(RoutingPolicyError, match="explicit provider"):
+        persist_model_selection(unresolved)
+
+    assert config_path.read_text(encoding="utf-8") == before
+
+
 def test_custom_to_other_custom_endpoint_drops_the_inline_key(seeded_home):
     """``custom`` -> ``custom:other-box``: endpoint A's inline ``api_key`` must not become endpoint B's
     credential (the pointer-not-secret rule, #88990). Same provider *string* but a different
@@ -166,7 +209,8 @@ def test_gateway_persists_to_the_profile_config_it_was_given(tmp_path, monkeypat
     """Multiplexed gateway: the write lands in the routed profile's config.yaml, never the
     process-level HERMES_HOME."""
     from gateway.slash_commands_model import _persist_model_switch_to_config
-    process_home, profile_home = tmp_path / "default", tmp_path / "profiles" / "named"
+    process_home = tmp_path / "hermes"
+    profile_home = process_home / "profiles" / "named"
     for home in (process_home, profile_home):
         home.mkdir(parents=True)
         (home / "config.yaml").write_text("model:\n  default: old\n  provider: openai-codex\n")
@@ -174,3 +218,85 @@ def test_gateway_persists_to_the_profile_config_it_was_given(tmp_path, monkeypat
     asyncio.run(_persist_model_switch_to_config(_RESULT, profile_home / "config.yaml"))
     assert _model_block(profile_home)["default"] == "claude-haiku"
     assert _model_block(process_home)["default"] == "old"
+
+
+def test_named_profile_global_selection_uses_target_profile_policy_not_ambient_home(tmp_path, monkeypatch):
+    """A→B persistence validates against B before its first config write."""
+    from hermes_cli.model_switch import persist_model_selection
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    default_home = tmp_path / "hermes"
+    restricted_home = default_home / "profiles" / "restricted"
+    restricted_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    (default_home / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+    target = restricted_home / "config.yaml"
+    target.write_text(
+        _SEED + "routing_policy:\n  enabled: true\n  deny:\n    models: [denied-*]\n",
+        encoding="utf-8",
+    )
+    before = target.read_bytes()
+
+    with pytest.raises(RoutingPolicyError, match="selected model"):
+        persist_model_selection(
+            ModelSwitchResult(
+                success=True, new_model="denied-model", target_provider="openrouter",
+                base_url="https://openrouter.ai/api/v1", api_mode="chat_completions", is_global=True,
+            ),
+            target,
+        )
+
+    assert target.read_bytes() == before
+
+
+def test_symlinked_named_profile_global_selection_uses_logical_owner_policy_without_mutation(tmp_path, monkeypatch):
+    """A symlinked B config validates against B, not ambient A, before writing it."""
+    from hermes_cli.model_switch import persist_model_selection
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    default_home = tmp_path / "hermes"
+    logical_profile = default_home / "profiles" / "restricted"
+    outside_profile = tmp_path / "outside" / "restricted"
+    default_home.mkdir()
+    logical_profile.parent.mkdir()
+    outside_profile.mkdir(parents=True)
+    logical_profile.symlink_to(outside_profile, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    (default_home / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+    target = logical_profile / "config.yaml"
+    (outside_profile / "config.yaml").write_text(
+        _SEED + "routing_policy:\n  enabled: true\n  deny:\n    models: [denied-*]\n",
+        encoding="utf-8",
+    )
+    before = target.read_bytes()
+
+    with pytest.raises(RoutingPolicyError, match="selected model"):
+        persist_model_selection(
+            ModelSwitchResult(
+                success=True, new_model="denied-model", target_provider="openrouter",
+                base_url="https://openrouter.ai/api/v1", api_mode="chat_completions", is_global=True,
+            ),
+            target,
+        )
+
+    assert target.read_bytes() == before
+
+
+def test_global_selection_refuses_ad_hoc_config_path_without_mutating_it(tmp_path, monkeypatch):
+    """A path outside the active profile tree cannot borrow ambient policy."""
+    from hermes_cli.model_switch import persist_model_selection
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    home, ad_hoc = tmp_path / "hermes", tmp_path / "ad-hoc"
+    home.mkdir()
+    ad_hoc.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+    target = ad_hoc / "config.yaml"
+    target.write_text(_SEED, encoding="utf-8")
+    before = target.read_bytes()
+
+    with pytest.raises(RoutingPolicyError, match="untrusted config path"):
+        persist_model_selection(_RESULT, target)
+
+    assert target.read_bytes() == before

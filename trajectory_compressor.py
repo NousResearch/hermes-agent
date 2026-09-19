@@ -32,6 +32,7 @@ from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
 from agent.retry_utils import jittered_backoff
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.routing_policy import RoutingPolicyError, check_route, current_routing_policy
 
 # Load .env from HERMES_HOME first, then project root as a dev fallback.
 load_hermes_dotenv(hermes_home=get_hermes_home(), project_env=Path(__file__).parent / ".env")
@@ -464,8 +465,14 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     from agent.auxiliary_client import call_llm
                     response = call_llm(provider=self._llm_provider, temperature=temperature, **kwargs)
                 else:
+                    check_route(
+                        current_routing_policy(), provider="custom", model=str(kwargs.get("model") or ""),
+                        base_url=str(getattr(self.client, "base_url", self.config.base_url) or ""),
+                    )
                     response = self.client.chat.completions.create(**kwargs)
                 return self._finish_summary(response)
+            except RoutingPolicyError:
+                raise
             except Exception as e:
                 delay = self._summary_attempt_failed(metrics, attempt, e)
                 if delay is None:
@@ -483,8 +490,15 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     from agent.auxiliary_client import async_call_llm
                     response = await async_call_llm(provider=self._llm_provider, temperature=temperature, **kwargs)
                 else:
-                    response = await self._get_async_client().chat.completions.create(**kwargs)
+                    async_client = self._get_async_client()
+                    check_route(
+                        current_routing_policy(), provider="custom", model=str(kwargs.get("model") or ""),
+                        base_url=str(getattr(async_client, "base_url", self.config.base_url) or ""),
+                    )
+                    response = await async_client.chat.completions.create(**kwargs)
                 return self._finish_summary(response)
+            except RoutingPolicyError:
+                raise
             except Exception as e:
                 delay = self._summary_attempt_failed(metrics, attempt, e)
                 if delay is None:

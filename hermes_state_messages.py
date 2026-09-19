@@ -612,6 +612,10 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            if patch:
+                session_row = conn.execute("SELECT model FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                self._check_persisted_model_config_route(
+                    json.loads(patched_model_config) if patched_model_config else {}, session_row["model"])
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)))

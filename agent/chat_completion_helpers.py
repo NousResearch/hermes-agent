@@ -24,6 +24,16 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_cli.routing_policy import (
+    check_route, current_routing_policy, current_routing_policy_for_session_db, profile_home_for_session_db,
+)
+
+
+def _agent_routing_policy(agent: Any):
+    """Prefer the durable session owner's policy; bare test/one-shot agents use active scope."""
+    session_db = getattr(agent, "_session_db", None)
+    return current_routing_policy_for_session_db(session_db) if session_db is not None else current_routing_policy()
+
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
@@ -678,7 +688,17 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     return next((f for f in map(get_reasoning_stale_timeout_floor, candidates) if f is not None), None)
 
 
-def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=None):
+def _guard_bedrock_wire_route(agent: Any | None, api_kwargs: dict) -> None:
+    """Admit a physical Bedrock Converse payload using its actual ``modelId``."""
+    check_route(
+        _agent_routing_policy(agent) if agent is not None else current_routing_policy(),
+        provider=str(getattr(agent, "provider", "") or "bedrock"),
+        model=str(api_kwargs.get("modelId") or ""),
+        base_url=str(getattr(agent, "base_url", "") or ""),
+    )
+
+
+def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=None, agent: Any | None = None):
     """Pop the Hermes routing keys and call ``converse`` / ``converse_stream`` (boto3
     directly) with the shared recovery: a cachePoint rejection (Nova: toolConfig.tools,
     #97281) drops the marker and resends once inside the same attempt; a streaming IAM
@@ -693,13 +713,20 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     client = _get_bedrock_runtime_client(region)
     method = client.converse_stream if stream else client.converse
     finish = (lambda raw: raw.get("stream", [])) if stream else normalize_converse_response
+
+    def send(final_kwargs: dict):
+        _guard_bedrock_wire_route(agent, final_kwargs)
+        return method(**final_kwargs)
+
     try:
-        raw_response = method(**api_kwargs)
+        raw_response = send(api_kwargs)
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, api_kwargs)
         if retry_kwargs is not None:
-            return finish(method(**retry_kwargs))
+            return finish(send(retry_kwargs))
         if on_stream_denied is not None and is_streaming_access_denied_error(exc):
+            # The fallback issues another physical request; admit this exact payload too.
+            _guard_bedrock_wire_route(agent, api_kwargs)
             return on_stream_denied(client, api_kwargs, exc)
         if is_stale_connection_error(exc):
             invalidate_runtime_client(region)
@@ -715,6 +742,12 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     so callers can register it with their abort/close machinery; bedrock / MoA
     manage their own clients. Interrupt/abort/close semantics stay in callers.
     """
+    check_route(
+        _agent_routing_policy(agent),
+        provider=str(getattr(agent, "provider", "") or ""),
+        model=str(api_kwargs.get("model") or getattr(agent, "model", "") or ""),
+        base_url=str(getattr(agent, "base_url", "") or ""),
+    )
     if agent.api_mode == "codex_responses":
         return agent._run_codex_stream(api_kwargs, client=make_client("codex_stream_request"),
             on_first_delta=getattr(agent, "_codex_on_first_delta", None))
@@ -724,7 +757,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         request_client = make_client("anthropic_messages_request", kind="anthropic_messages")
         return agent._anthropic_messages_create(api_kwargs, client=request_client)
     if agent.api_mode == "bedrock_converse":
-        return _bedrock_converse_call(api_kwargs, stream=False)
+        return _bedrock_converse_call(api_kwargs, stream=False, agent=agent)
     if agent.provider == "moa":
         # MoA is a virtual provider backed by the in-process MoAClient facade — never
         # rebuild a request-local client from the virtual metadata. After a client
@@ -1854,6 +1887,7 @@ def _update_fallback_context_compressor(agent) -> None:
         provider=agent.provider,
         config_context_length=getattr(agent, "_config_context_length", None),
         custom_providers=getattr(agent, "_custom_providers", None),
+        profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)),
     )
     compressor.update_model(  # callable api_key preserved → call_llm
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
@@ -2159,8 +2193,25 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
+        check_route(
+            _agent_routing_policy(agent),
+            provider=str(getattr(agent, "provider", "") or ""),
+            model=str(summary_kwargs.get("model") or ""),
+            base_url=str(getattr(summary_client, "base_url", "") or ""),
+        )
+        def _send_final_summary_request(request):
+            # Relay owns this payload and may have changed its model after the admission above.
+            # Guard the exact final wire request with the durable session owner's policy.
+            check_route(
+                _agent_routing_policy(agent),
+                provider=str(getattr(agent, "provider", "") or ""),
+                model=str(request.get("model") or ""),
+                base_url=str(getattr(summary_client, "base_url", "") or ""),
+            )
+            return summary_client.chat.completions.create(**request)
+
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
+            agent, api_request_id, summary_kwargs, _send_final_summary_request, retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
 
@@ -2401,7 +2452,9 @@ class _BedrockStream:
         return _on
 
     def _open_stream(self, next_api_kwargs: dict[str, Any]):
-        return _bedrock_converse_call(dict(next_api_kwargs), stream=True, on_stream_denied=self._fall_back_to_converse)
+        return _bedrock_converse_call(
+            dict(next_api_kwargs), stream=True, on_stream_denied=self._fall_back_to_converse, agent=self.agent,
+        )
 
     def _fall_back_to_converse(self, client, final_kwargs: dict, exc: Exception):
         # InvokeModel-only IAM policies cannot stream; fall back inside the same Relay
@@ -2413,6 +2466,7 @@ class _BedrockStream:
             "   Grant that action to restore streaming output.\n", diagnostic=True)
         logger.info("bedrock: converse_stream denied by IAM (%s) — "
             "using non-streaming converse() for this session.", type(exc).__name__)
+        _guard_bedrock_wire_route(self.agent, final_kwargs)
         return normalize_converse_response(client.converse(**final_kwargs))
 
     def _worker(self):
@@ -2806,6 +2860,12 @@ class _StreamingCall(StreamingWaitMonitor):
         # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
         if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
             stream_kwargs["stream_options"] = {"include_usage": True}
+        check_route(
+            _agent_routing_policy(self.agent),
+            provider=str(getattr(self.agent, "provider", "") or ""),
+            model=str(stream_kwargs.get("model") or getattr(self.agent, "model", "") or ""),
+            base_url=str(getattr(self.agent, "base_url", "") or ""),
+        )
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
@@ -3135,6 +3195,15 @@ class _StreamingCall(StreamingWaitMonitor):
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
             final_kwargs = dict(next_api_kwargs)
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
+            # This is the physical native-Anthropic send.  Earlier planning may be mutated by
+            # adapters, so check the final wire model and endpoint immediately before opening it.
+            from hermes_cli.routing_policy import check_outbound_route, profile_home_for_session_db
+            check_outbound_route(
+                provider=str(getattr(self.agent, "provider", "") or ""),
+                model=str(final_kwargs.get("model") or getattr(self.agent, "model", "") or ""),
+                base_url=str(getattr(request_client, "base_url", None) or getattr(self.agent, "base_url", "") or ""),
+                profile_home=profile_home_for_session_db(getattr(self.agent, "_session_db", None)),
+            )
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager
             return manager.__enter__()

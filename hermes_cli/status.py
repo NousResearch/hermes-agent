@@ -332,9 +332,14 @@ def _render_deep(ctx):
     if openrouter_key:
         try:
             import httpx
+            from hermes_cli.routing_policy import check_outbound_route
+            check_outbound_route(provider="openrouter", model="", base_url=OPENROUTER_MODELS_URL)
             response = httpx.get(OPENROUTER_MODELS_URL, headers={"Authorization": f"Bearer {openrouter_key}"}, timeout=10)
             _kv_flag("OpenRouter:", response.status_code == 200, "reachable", f"error ({response.status_code})")
         except Exception as e:
+            from hermes_cli.routing_policy import RoutingPolicyError
+            if isinstance(e, RoutingPolicyError):
+                raise
             _kv("OpenRouter:", f"{check_mark(False)} error: {e}")
     try:  # gateway port, informational: in use == gateway likely running
         import socket

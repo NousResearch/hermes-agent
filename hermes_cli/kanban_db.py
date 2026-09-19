@@ -1111,6 +1111,14 @@ def _validate_model_override(model: Optional[str], provider: Optional[str]) -> t
     return model, provider
 
 
+def _check_model_override_route(model: Optional[str], provider: Optional[str]) -> None:
+    """Reject a prohibited task route before it enters the durable board."""
+    if not model:
+        return
+    from hermes_cli.routing_policy import check_persisted_route
+    check_persisted_route(provider=str(provider or ""), model=str(model), base_url="")
+
+
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
     if assignee is None:
@@ -1281,6 +1289,7 @@ def create_task(
 
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
+    _check_model_override_route(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -1582,6 +1591,7 @@ def set_model_override(
     Allowed while ``running``: it applies on the NEXT dispatch, which is the
     rate-limit-recovery flow (set, then reclaim/retry)."""
     model, provider = _validate_model_override(model, provider)
+    _check_model_override_route(model, provider)
     return _set_task_override(
         conn, task_id,
         "UPDATE tasks SET model_override = ?, provider_override = ? WHERE id = ?", (model, provider),

@@ -2032,9 +2032,11 @@ def check_compression_model_feasibility(agent: Any) -> None:
             # the session threshold to a catch-all catalog value (#89500, #45519).
             aux_context = int(agent.context_compressor.context_length)
         else:
+            from hermes_cli.routing_policy import profile_home_for_session_db
             aux_context = get_model_context_length(
                 aux_model, base_url=aux_base_url, api_key=aux_api_key, config_context_length=_aux_cfg_ctx,
                 provider=_aux_provider, custom_providers=agent._custom_providers,
+                profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)),
             )
         # Aux model must meet MINIMUM_CONTEXT_LENGTH like the main model, else it cannot summarise a full window.
         if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:

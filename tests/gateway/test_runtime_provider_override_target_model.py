@@ -35,3 +35,30 @@ def test_fallback_chain_runtime_uses_the_entry_model(_zen_free_default_home, mon
     assert fb is not None
     assert fb["model"] == "mimo-v2.5"
     assert fb["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
+def test_denied_fallback_is_terminal_and_does_not_resolve_next(monkeypatch):
+    """A policy denial is an operator decision, not a failed fallback credential lookup."""
+    import gateway.run as gateway_run
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    resolved = []
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {
+        "fallback_model": [
+            {"provider": "denied", "model": "first"},
+            {"provider": "recording", "model": "second"},
+        ]
+    })
+
+    def resolve(**kwargs):
+        resolved.append(kwargs["requested"])
+        if kwargs["requested"] == "denied":
+            raise RoutingPolicyError("denied")
+        return {"provider": "recording"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+
+    with pytest.raises(RoutingPolicyError, match="denied"):
+        gateway_run._try_resolve_fallback_provider()
+
+    assert resolved == ["denied"]

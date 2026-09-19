@@ -1,9 +1,0 @@
-name: ftask full suite
-
-on:
-  push:
-  pull_request:
-
-jobs:
-  full-suite:
-    uses: ./.github/workflows/tests.yml

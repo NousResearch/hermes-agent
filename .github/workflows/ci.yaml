@@ -68,7 +68,7 @@ jobs:
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
   # Skipped workflows (if condition is false) don't spin up runners.
   # ─────────────────────────────────────────────────────────────────────
-  tests:
+  full-suite:
     name: Python tests
     needs: detect
     if: needs.detect.outputs.python == 'true'
@@ -227,7 +227,7 @@ jobs:
     name: All required checks pass
     needs:
       - detect
-      - tests
+      - full-suite
       - tests-os
       - lint
       - js-tests

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import asyncio
 import inspect
 import logging
 import queue
@@ -25,7 +26,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # Allowlist of agent-turn hot-path hooks bounded by plugins.hook_callback_timeout (fail-open:
 # abandon without join — joining reintroduced a shutdown hang). Unlisted hooks run synchronously.
 # Intentionally unbounded: on_session_finalize/reset (last-chance flush — abandon can lose state);
-# subagent_start (observer); pre_gateway_dispatch (policy gate — neither fail mode is acceptable);
+# subagent_start (observer); pre_gateway_dispatch is bounded at gateway ingress and fails open;
 # pre/post_approval_* (approval UX has its own timeout); kanban_* (own heartbeat/stale reclaim).
 # The goal is to stop a hung Python plugin callback from wedging the conversation loop (#76821) without
 # joining the worker (avoids the #6622 ThreadPoolExecutor shutdown hang). Hooks not listed below run
@@ -42,6 +43,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_verify", "on_session_start", "on_session_end",
+    "pre_gateway_dispatch",
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
@@ -185,6 +187,25 @@ class PluginDispatchMixin:
             if name in parameters and parameters[name].kind in keyword_kinds
         }))
 
+    @staticmethod
+    async def _invoke_hook_callback_async(callback: Callable, payload: Dict[str, Any]) -> Any:
+        """Invoke an async-capable hook without leaving the caller's event loop."""
+        try:
+            parameters = inspect.signature(callback).parameters
+        except (TypeError, ValueError):
+            parameters = None
+        if parameters is None or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+        ):
+            result = callback(**payload)
+        else:
+            keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+            result = callback(**{
+                name: value for name, value in payload.items()
+                if name in parameters and parameters[name].kind in keyword_kinds
+            })
+        return await result if inspect.isawaitable(result) else result
+
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 
@@ -242,6 +263,25 @@ class PluginDispatchMixin:
         logger.warning(
             "%s '%s' callback %s raised: %s (%s provides: %s; identical failures are logged at DEBUG from now on)",
             surface, hook_name, callback_name, exc, surface.lower(), ", ".join(sorted(kwargs)) or "no fields")
+
+    async def invoke_hook_async(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Await callbacks on the current loop with the shared hook timeout."""
+        from hermes_cli.plugins import _resolve_hook_callback_timeout
+
+        if hook_name != "gateway_platform_event":
+            kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        timeout = _resolve_hook_callback_timeout()
+        use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
+        results: List[Any] = []
+        for cb in self._hooks.get(hook_name, []):
+            try:
+                invocation = self._invoke_hook_callback_async(cb, kwargs)
+                ret = await asyncio.wait_for(invocation, timeout) if use_timeout else await invocation
+                if ret is not None:
+                    results.append(ret)
+            except Exception as exc:
+                self._report_hook_failure(hook_name, cb, kwargs, exc)
+        return results
 
     def _run_hook_callback_bounded(
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float

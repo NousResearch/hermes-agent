@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import asyncio
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
@@ -68,14 +69,14 @@ async def test_internal_events_bypass_hook(monkeypatch):
 
     called = {"count": 0}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         called["count"] += 1
         return [{"action": "skip"}]
 
     async def _capture(event, source, _quick_key, _run_generation):
         return "ok"
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, _adapter = _make_runner(Platform.WHATSAPP)
     runner._handle_message_with_agent = _capture  # noqa: SLF001
@@ -102,13 +103,13 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
 
     seen = {}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             seen["session_store"] = kwargs.get("session_store", "MISSING")
             return [{"action": "skip", "reason": "plugin-handled"}]
         return []
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, adapter = _make_runner(Platform.WHATSAPP)
     del runner.session_store
@@ -118,3 +119,25 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_pre_gateway_hook_times_out(monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    import hermes_cli.plugins as plugins
+
+    manager = PluginManager()
+    cancelled = asyncio.Event()
+
+    async def _hung_hook(**_kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    manager._hooks["pre_gateway_dispatch"] = [_hung_hook]
+    monkeypatch.setattr(plugins, "_resolve_hook_callback_timeout", lambda: 0.01)
+
+    assert await manager.invoke_hook_async("pre_gateway_dispatch") == []
+    assert cancelled.is_set()

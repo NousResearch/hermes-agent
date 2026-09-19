@@ -288,7 +288,7 @@ class SessionSessionsMixin:
         """Admit top-level and restorable nested model routes before a session write."""
         from hermes_cli.routing_policy import check_persisted_route
 
-        fallback_model = str(config.get("model") or model or "")
+        fallback_model = str(model or config.get("model") or "")
         check_persisted_route(
             provider=str(config.get("provider") or ""), model=fallback_model,
             base_url=str(config.get("base_url") or ""), profile_home=self._routing_policy_home(),
@@ -654,9 +654,20 @@ class SessionSessionsMixin:
     def update_session_meta(
         self, session_id: str, model_config_json: str, model: Optional[str] = None,
     ) -> None:
-        """Update model_config and (COALESCE) optionally model after route admission."""
+        """Update model_config and (COALESCE) optionally model after route admission.
+
+        Resume selects ``sessions.model`` before ``model_config.model``.  Admit
+        that prospective stored route, not the independently supplied config
+        model, so a denied top-level model cannot hide behind an allowed config
+        model.
+        """
         config = _parse_model_config(model_config_json)
-        self._check_persisted_model_config_route(config, model)
+        session = self.get_session(session_id) or {}
+        effective_model = model if model is not None else session.get("model")
+        route_config = dict(config)
+        if effective_model:
+            route_config["model"] = effective_model
+        self._check_persisted_model_config_route(route_config, effective_model)
         self.flush_token_counts()  # barrier against queued token deltas — see update_session_model
         self._write_sql(
             "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",

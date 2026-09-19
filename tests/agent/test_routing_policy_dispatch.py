@@ -177,7 +177,7 @@ def test_multiplex_owner_policy_denies_session_writes_and_dispatch_after_a_to_b_
             secondary_db.update_session_model("b-update", "z-ai/glm-5.2", provider="openrouter")
         assert secondary_db.get_session("b-update")["model"] == "allowed"
 
-        secondary_db.create_session("b-patch", "cli", model="allowed", model_config={"provider": "openrouter"})
+        secondary_db.create_session("b-patch", "cli", model_config={"provider": "openrouter"})
         with pytest.raises(RoutingPolicyError):
             secondary_db.patch_session_model_config("b-patch", {"model": "z-ai/glm-5.2"})
         assert secondary_db.get_session_model_config_value("b-patch", "model") is None
@@ -197,6 +197,205 @@ def test_multiplex_owner_policy_denies_session_writes_and_dispatch_after_a_to_b_
     finally:
         secondary_db.close()
         default_db.close()
+
+
+def test_symlinked_named_profile_session_db_uses_owner_policy_after_a_to_b_to_a(tmp_path, monkeypatch):
+    """A logical named-profile symlink keeps B's policy for writes and dispatch."""
+    from agent import chat_completion_helpers as helpers
+    from hermes_state import SessionDB
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    root = tmp_path / "hermes"
+    restricted = root / "profiles" / "restricted"
+    outside_restricted = tmp_path / "outside" / "restricted"
+    root.mkdir()
+    outside_restricted.mkdir(parents=True)
+    restricted.parent.mkdir()
+    restricted.symlink_to(outside_restricted, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    (root / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+    (outside_restricted / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['z-ai/*']\n", encoding="utf-8",
+    )
+
+    default_db = SessionDB(db_path=root / "state.db")
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    create = _RecordingCreate()
+    try:
+        default_db.create_session("a-before", "cli", model="allowed", model_config={"provider": "openrouter"})
+        with pytest.raises(RoutingPolicyError):
+            restricted_db.create_session(
+                "b-denied", "cli", model="z-ai/glm-5.2", model_config={"provider": "openrouter"},
+            )
+        assert restricted_db.get_session("b-denied") is None
+
+        agent = SimpleNamespace(
+            api_mode="chat_completions", provider="openrouter", model="z-ai/glm-5.2",
+            base_url="https://openrouter.ai/api/v1", _session_db=restricted_db,
+        )
+        with pytest.raises(RoutingPolicyError):
+            helpers._dispatch_nonstreaming_api_request(
+                agent, {"model": "z-ai/glm-5.2"},
+                make_client=lambda *_args, **_kwargs: SimpleNamespace(chat=SimpleNamespace(completions=create)),
+            )
+        assert create.calls == []
+
+        default_db.create_session("a-after", "cli", model="allowed", model_config={"provider": "openrouter"})
+    finally:
+        restricted_db.close()
+        default_db.close()
+
+
+def test_auxiliary_fallback_send_uses_session_owner_after_a_to_b_to_a(tmp_path, monkeypatch):
+    """A fallback final-send remains governed by B after A's ambient scope resumes."""
+    from agent import auxiliary_client as auxiliary
+    from hermes_state import SessionDB
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+
+    root = tmp_path / "hermes"
+    restricted = root / "profiles" / "restricted"
+    for config, policy in (
+        (root / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: ['z-ai/*']\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))  # A → B → A: A is ambient at final send.
+    db = SessionDB(db_path=restricted / "state.db")
+    class RecordingCreate:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(choices=[])
+
+    create = RecordingCreate()
+    client = SimpleNamespace(
+        base_url="https://allowed.example/v1", chat=SimpleNamespace(completions=create),
+    )
+    try:
+        with pytest.raises(RoutingPolicyError):
+            auxiliary._call_fallback_candidate_sync(
+                client, "z-ai/glm-5.2", "fallback", task="title_generation", messages=[],
+                temperature=None, max_tokens=None, tools=None, effective_timeout=1,
+                effective_extra_body={}, reasoning_config=None,
+                profile_home=profile_home_for_session_db(db),
+            )
+    finally:
+        db.close()
+
+    assert create.calls == []
+
+
+def test_compression_publish_rejects_denied_config_route_without_closing_parent(tmp_path, monkeypatch):
+    """A rejected compression child must not publish any half of its handoff."""
+    from hermes_state import SessionDB
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['denied-*']\n", encoding="utf-8",
+    )
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session("parent", "cli", model="allowed-model", model_config={"provider": "openrouter"})
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            db.publish_compression_child(
+                parent_session_id="parent", child_session_id="child", source="cli",
+                messages=[{"role": "user", "content": "handoff"}],
+                model=None,
+                model_config={"provider": "openrouter", "model": "denied-model"},
+                require_compression_lease=False,
+            )
+        assert db.get_session("child") is None
+        assert db.get_session("parent")["ended_at"] is None
+        assert db.get_session("parent")["end_reason"] is None
+    finally:
+        db.close()
+
+
+def test_import_rejects_denied_persisted_route_without_importing_batch(tmp_path, monkeypatch):
+    """Portability admission is preflighted, so one denied route writes no batch rows."""
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['denied-*']\n", encoding="utf-8",
+    )
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        result = db.import_sessions([
+            {"id": "allowed", "model": "allowed-model", "model_config": {"provider": "openrouter"},
+             "messages": [{"role": "user", "content": "allowed"}]},
+            {"id": "denied", "model": "denied-model",
+             "model_config": {"provider": "openrouter"},
+             "messages": [{"role": "user", "content": "denied"}]},
+        ])
+        assert result == {
+            "ok": False, "imported": 0, "skipped": 0, "detached": 0,
+            "errors": [{"index": 1, "session_id": "denied", "error": "routing policy denies the selected model"}],
+        }
+        assert db.get_session("allowed") is None
+        assert db.get_session("denied") is None
+    finally:
+        db.close()
+
+
+def test_create_rejects_denied_top_level_model_when_nested_model_is_allowed(tmp_path, monkeypatch):
+    """Resume uses sessions.model first, so admission must do the same."""
+    from hermes_state import SessionDB
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['denied-*']\n", encoding="utf-8",
+    )
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            db.create_session(
+                "conflict", "cli", model="denied-model",
+                model_config={"provider": "openrouter", "model": "allowed-model"},
+            )
+        assert db.get_session("conflict") is None
+    finally:
+        db.close()
+
+
+def test_import_rejects_denied_top_level_model_when_nested_model_is_allowed(tmp_path, monkeypatch):
+    """One conflicting imported route rejects the whole batch before writes."""
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['denied-*']\n", encoding="utf-8",
+    )
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        result = db.import_sessions([
+            {"id": "allowed", "model": "allowed-model", "model_config": {"provider": "openrouter"},
+             "messages": [{"role": "user", "content": "allowed"}]},
+            {"id": "conflict", "model": "denied-model",
+             "model_config": {"provider": "openrouter", "model": "allowed-model"},
+             "messages": [{"role": "user", "content": "conflict"}]},
+        ])
+        assert result == {
+            "ok": False, "imported": 0, "skipped": 0, "detached": 0,
+            "errors": [{"index": 1, "session_id": "conflict", "error": "routing policy denies the selected model"}],
+        }
+        assert db.get_session("allowed") is None
+        assert db.get_session("conflict") is None
+    finally:
+        db.close()
 
 
 def test_nested_profile_session_db_uses_named_owner_policy_for_persistence_and_dispatch(tmp_path, monkeypatch):
@@ -380,6 +579,38 @@ def test_auxiliary_primary_denial_blocks_sync_async_and_stream_sends(monkeypatch
 
     assert sync_create.calls == []
     assert async_create.calls == []
+
+
+def test_auxiliary_runtime_symlinked_owner_blocks_send_after_a_to_b_to_a(tmp_path, monkeypatch):
+    """Auxiliary primary sends retain logical B's policy when A is ambient again."""
+    from agent import auxiliary_client as auxiliary
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    root = tmp_path / "hermes"
+    logical_profile = root / "profiles" / "restricted"
+    outside_profile = tmp_path / "outside" / "restricted"
+    root.mkdir()
+    logical_profile.parent.mkdir()
+    outside_profile.mkdir(parents=True)
+    logical_profile.symlink_to(outside_profile, target_is_directory=True)
+    (root / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+    (outside_profile / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['z-ai/*']\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))  # A → B → A: A is ambient at send time.
+
+    create = _RecordingCreate()
+    client = SimpleNamespace(
+        base_url="https://allowed.example/v1", chat=SimpleNamespace(completions=create),
+    )
+    owner = auxiliary._routing_profile_home({"profile_home": str(logical_profile)})
+
+    assert owner == str(logical_profile)
+    with pytest.raises(RoutingPolicyError, match="selected model"):
+        auxiliary._guard_auxiliary_wire_route(
+            client, {"model": "z-ai/glm-5.2"}, "openrouter", profile_home=owner,
+        )
+    assert create.calls == []
 
 
 def test_iteration_summary_denial_blocks_direct_create(monkeypatch):

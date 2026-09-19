@@ -204,6 +204,37 @@ class TestAddCommand:
         assert cfg["model"] == primary
         assert "fallback_providers" not in cfg
 
+    def test_require_explicit_rejects_auto_fallback_without_mutating_chain(self, isolated_home):
+        """An incomplete fallback route must not replace an existing durable chain."""
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        primary = {"provider": "anthropic", "default": "claude-sonnet-4-6"}
+        existing_chain = [{"provider": "nous", "model": "Hermes-4"}]
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        original_config = {
+            "_config_version": DEFAULT_CONFIG["_config_version"],
+            "model": primary,
+            "fallback_providers": existing_chain,
+            "routing_policy": {"enabled": True, "require_explicit": True},
+        }
+        _write_config(isolated_home, original_config)
+
+        def fake_picker(args=None):
+            from hermes_cli.config import load_config, save_config
+
+            cfg = load_config()
+            cfg["model"] = {"provider": "auto", "default": "selected-model"}
+            save_config(cfg)
+
+        with patch("hermes_cli.main.select_provider_and_model", side_effect=fake_picker), \
+                patch("hermes_cli.main._require_tty"):
+            from hermes_cli.fallback_cmd import cmd_fallback_add
+            with pytest.raises(RoutingPolicyError, match="explicit provider"):
+                cmd_fallback_add(types.SimpleNamespace())
+
+        assert _read_config(isolated_home) == original_config
+
     def test_add_preserves_primary_when_picker_changes_it(self, isolated_home):
         """The picker mutates config["model"]; fallback_add must restore the primary."""
         _write_config(isolated_home, {

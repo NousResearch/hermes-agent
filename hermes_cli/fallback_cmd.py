@@ -187,9 +187,9 @@ def cmd_fallback_add(args) -> None:
         print(f"\n  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
         return
     chain.append(new_entry)
-    from hermes_cli.routing_policy import check_route, current_routing_policy
-    check_route(current_routing_policy(), provider=str(new_entry.get("provider") or ""),
-                model=str(new_entry.get("model") or ""), base_url=str(new_entry.get("base_url") or ""))
+    from hermes_cli.routing_policy import check_persisted_route
+    check_persisted_route(provider=str(new_entry.get("provider") or ""),
+                          model=str(new_entry.get("model") or ""), base_url=str(new_entry.get("base_url") or ""))
     _write_chain(final_cfg, chain)
     save_config(final_cfg)
     print(f"\n  Added fallback: {_format_entry(new_entry)}")

@@ -2820,6 +2820,12 @@ def _main_runtime_from_agent(agent) -> dict | None:
             runtime[field] = value.strip()
         elif field == "api_key" and callable(value):
             runtime[field] = value
+    try:
+        from hermes_cli.routing_policy import profile_home_for_session_db
+        if home := profile_home_for_session_db(getattr(agent, "_session_db", None)):
+            runtime["profile_home"] = str(home)
+    except (OSError, RuntimeError, ValueError):
+        pass
     return runtime or None
 
 

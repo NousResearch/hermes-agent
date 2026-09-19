@@ -246,6 +246,9 @@ class SessionCompressionMixin:
         ``None`` = unbounded (no internal flush happened). See #47202.
         """
         from hermes_state_errors import CompressionSessionBusyError
+        self._check_persisted_model_config_route(
+            model_config if isinstance(model_config, dict) else {}, model,
+        )
         def _do(conn):
             if require_lease_refresh and compression_lock_holder:
                 conn.execute(

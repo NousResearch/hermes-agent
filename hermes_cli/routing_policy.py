@@ -61,15 +61,65 @@ def profile_home_for_session_db(session_db: Any) -> Path | None:
     try:
         from hermes_constants import get_default_hermes_root, named_profile_home
 
-        home = Path(db_path).expanduser().parent.resolve(strict=False)
-        root = get_default_hermes_root().resolve(strict=False)
-        if home == root:
-            return home
-        profile_home = named_profile_home(home)
-        if profile_home is not None and profile_home.parent.resolve(strict=False) == (root / "profiles").resolve(strict=False):
-            return profile_home
+        # Preserve the path SessionDB was opened through before canonicalizing it:
+        # ``<root>/profiles/<name>`` may itself be a live profile symlink.
+        # Resolving first loses that owner boundary and incorrectly falls back
+        # to the ambient profile's policy.
+        logical_home = Path(db_path).expanduser().parent.absolute()
+        logical_root = get_default_hermes_root().expanduser().absolute()
+        logical_owner = named_profile_home(logical_home) or logical_home
+        trusted = _trusted_profile_home(logical_owner, logical_root)
+        if trusted is not None:
+            return trusted
+
+        home = logical_home.resolve(strict=False)
+        root = logical_root.resolve(strict=False)
+        return _trusted_profile_home(named_profile_home(home) or home, root)
     except (OSError, RuntimeError, ValueError):
-        pass
+        return None
+
+
+def profile_home_for_config_path(config_path: str | Path) -> Path | None:
+    """Return a config file's trusted profile owner, never inferring one for ad-hoc paths."""
+    try:
+        from hermes_constants import get_default_hermes_root, named_profile_home
+
+        # Validate the config path as supplied before canonicalizing it: a live
+        # ``<root>/profiles/<name>`` may point at a profile maintained elsewhere.
+        # Resolving it first loses the named-profile authority and would let the
+        # caller fall back to the ambient profile's policy.
+        logical_path = Path(config_path).expanduser().absolute()
+        if logical_path.name != "config.yaml":
+            return None
+        logical_root = get_default_hermes_root().expanduser().absolute()
+        logical_home = logical_path.parent
+        logical_owner = named_profile_home(logical_home) or logical_home
+        trusted = _trusted_profile_home(logical_owner, logical_root)
+        if trusted is not None:
+            return trusted
+
+        path = logical_path.resolve(strict=False)
+        root = logical_root.resolve(strict=False)
+        return _trusted_profile_home(named_profile_home(path.parent) or path.parent, root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _trusted_profile_home(home: Path, root: Path) -> Path | None:
+    """Return only a repository-valid default or live named profile under *root*."""
+    from hermes_constants import named_profile_home, named_profile_is_live
+    from hermes_cli.profiles import _PROFILE_ID_RE
+
+    if home == root:
+        return home
+    named = named_profile_home(home)
+    if (
+        named == home
+        and home.parent == root / "profiles"
+        and _PROFILE_ID_RE.fullmatch(home.name)
+        and named_profile_is_live(home)
+    ):
+        return home
     return None
 
 

@@ -1069,8 +1069,26 @@ class SessionStore(
 
         cleaned = sanitize_model_override(override)
         if cleaned:
-            from hermes_cli.routing_policy import check_route, current_routing_policy
-            check_route(current_routing_policy(), **{
+            # Use the existing durable routing entry as the ownership authority.  In a multiplexed
+            # gateway the caller's ambient profile is whichever turn happened to be active, not
+            # necessarily the profile whose route this override will persist under.
+            with self._lock:
+                entry = self._entry_locked(session_key)
+                if entry is None or entry.model_override == cleaned:
+                    return
+                owner_key = entry.session_key
+            named_owner = self._named_profile_for_key(owner_key)
+            profile_home = self._profile_home_for_key(owner_key)
+            if named_owner is not None and profile_home is None:
+                from hermes_cli.routing_policy import RoutingPolicyError
+                raise RoutingPolicyError(
+                    f"routing policy owner profile {named_owner!r} cannot be resolved for persisted override"
+                )
+            if profile_home is None and getattr(self.config, "multiplex_profiles", False):
+                from hermes_constants import get_default_hermes_root
+                profile_home = get_default_hermes_root()
+            from hermes_cli.routing_policy import check_persisted_route
+            check_persisted_route(profile_home=profile_home, **{
                 "provider": cleaned.get("provider", ""), "model": cleaned.get("model", ""),
                 "base_url": cleaned.get("base_url", ""),
             })

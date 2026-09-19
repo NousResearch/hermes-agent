@@ -55,6 +55,56 @@ def test_default_config_exposes_disabled_routing_policy():
     assert DEFAULT_CONFIG["routing_policy"] == {"enabled": False, "require_explicit": False, "deny": {"providers": [], "models": [], "base_url_hosts": []}}
 
 
+def test_config_path_owner_uses_installation_root_while_another_profile_is_active(tmp_path, monkeypatch):
+    """A config path is owned by its real profile, not by active HERMES_HOME."""
+    from hermes_cli.routing_policy import profile_home_for_config_path
+
+    root = tmp_path / "hermes"
+    default = root / "config.yaml"
+    alpha = root / "profiles" / "alpha" / "config.yaml"
+    beta = root / "profiles" / "beta" / "config.yaml"
+    for config in (default, alpha, beta):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text("routing_policy: {}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(beta.parent))
+
+    assert profile_home_for_config_path(alpha) == alpha.parent
+    assert profile_home_for_config_path(default) == root
+
+
+def test_config_path_owner_rejects_invalid_profile_lookalike(tmp_path, monkeypatch):
+    """A directory under profiles is not trusted unless it has a valid profile id."""
+    from hermes_cli.routing_policy import profile_home_for_config_path
+
+    root = tmp_path / "hermes"
+    active = root / "profiles" / "beta"
+    lookalike = root / "profiles" / "Not-A-Profile" / "config.yaml"
+    for config in (active / "config.yaml", lookalike):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text("routing_policy: {}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(active))
+
+    assert profile_home_for_config_path(lookalike) is None
+
+
+def test_config_path_owner_preserves_logical_named_profile_symlink(tmp_path, monkeypatch):
+    """A config reached through ``profiles/<name>`` retains that trusted owner."""
+    from hermes_cli.routing_policy import profile_home_for_config_path
+
+    root = tmp_path / "hermes"
+    logical_profile = root / "profiles" / "restricted"
+    outside_profile = tmp_path / "outside" / "restricted"
+    root.mkdir()
+    logical_profile.parent.mkdir()
+    outside_profile.mkdir(parents=True)
+    logical_profile.symlink_to(outside_profile, target_is_directory=True)
+    (root / "config.yaml").write_text("routing_policy: {}\n", encoding="utf-8")
+    (outside_profile / "config.yaml").write_text("routing_policy: {}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    assert profile_home_for_config_path(logical_profile / "config.yaml") == logical_profile
+
+
 def test_runtime_policy_rejects_auto_before_credential_discovery(monkeypatch):
     import hermes_cli.runtime_provider as runtime_provider
     from hermes_cli.routing_policy import RoutingPolicyError

@@ -401,6 +401,38 @@ def test_close_returns_every_permit(db):
 
 
 @pytest.mark.requires_wal
+def test_duplicate_read_conn_close_does_not_crash_or_widen_permits(db):
+    """A teardown/reader overlap may close one acquired connection twice (#110604)."""
+    from hermes_state import _READ_POOL_MAX
+
+    conn = db._checkout_read_conn()
+    assert conn is not None
+    db._close_read_conn(conn)
+
+    errors = []
+
+    def duplicate_close():
+        try:
+            db._close_read_conn(conn)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target=duplicate_close)
+    thread.start()
+    thread.join()
+
+    assert not errors, f"duplicate close crashed the reader thread: {errors}"
+    acquired = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
+    try:
+        assert all(acquired), "duplicate close stranded a permit"
+        assert db._checkout_read_conn() is None, "duplicate close widened permits"
+    finally:
+        for read_conn in acquired:
+            if read_conn is not None:
+                db._close_read_conn(read_conn)
+
+
+@pytest.mark.requires_wal
 def test_peak_is_bounded_across_two_SessionDBs_on_one_path(db):
     """Two handles on one file must share one read-connection ceiling."""
     from hermes_state import SessionDB, _READ_POOL_MAX

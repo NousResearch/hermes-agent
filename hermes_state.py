@@ -856,11 +856,17 @@ class SessionDB(
 
     def _close_read_conn(self, conn) -> None:
         """Close a pooled read connection and release its permit even when the close fails (withholding
-        it would narrow the read path forever). Over-releasing the BoundedSemaphore raises ValueError."""
+        it would narrow the read path forever). A teardown overlap may already have released it."""
         try:
             self._close_conn_logged(conn, "read-conn")
         finally:
-            self._read_budget.release()
+            try:
+                self._read_budget.release()
+            except ValueError:
+                logger.warning(
+                    "read-conn permit was already released for %s; ignoring duplicate close",
+                    self.db_path,
+                )
 
     def _checkout_read_conn(self) -> Optional[sqlite3.Connection]:
         """Borrow a read connection, opening on a miss; None when the read path is unavailable.

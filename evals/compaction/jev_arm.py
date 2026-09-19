@@ -112,6 +112,13 @@ class JevOptions:
     max_state_tokens: int = 25_000
     max_request_tokens: int = 30_000
     truncate_head_chars: int = 300
+    # Eval-only extension (not in the plugin): instead of thresholding, keep
+    # whole call+result pairs in rank order until `result_budget_tokens` of
+    # tool content is retained; everything else is dropped. `select="jev"`
+    # ranks by Jev's keep_result, `select="recency"` by position and never
+    # calls Jev — the control that tells whether Jev's ranking carries signal.
+    select: Optional[str] = None
+    result_budget_tokens: int = 0
 
 
 @dataclass
@@ -475,6 +482,36 @@ class JevCompactor:
 
         return {c.id: {"keep_call": noul(f"call_{c.id}"), "keep_result": noul(f"result_{c.id}")} for c in batch}
 
+    def _budget_decisions(self, messages, calls, candidates, answers) -> List[Decision]:
+        """Keep ranked call+result pairs until the tool-content budget is spent; drop the rest."""
+        opt = self.opt
+
+        def pair_tokens(c: ToolCall) -> int:
+            return (c.result_chars + len(_json(c.input))) // 4
+
+        if opt.select == "jev":
+            ranked = sorted(candidates, key=lambda c: -answers.get(c.id, {}).get("keep_result", 0.0))
+        else:
+            ranked = sorted(candidates, key=lambda c: -c.result_index)
+        kept, spent = set(), 0
+        for c in ranked:
+            t = pair_tokens(c)
+            if spent + t > opt.result_budget_tokens:
+                continue
+            kept.add(c.id)
+            spent += t
+        out = []
+        for c in calls:
+            a = answers.get(c.id, {})
+            base = dict(id=c.id, tool=c.tool, keep_call=a.get("keep_call", 1.0), keep_result=a.get("keep_result", 1.0))
+            if c.pinned:
+                out.append(Decision(**base, action="keep", reason="pinned"))
+            elif c.id in kept:
+                out.append(Decision(**base, action="keep", reason="kept"))
+            else:
+                out.append(Decision(**base, action="drop_call", reason="call_dropped"))
+        return out
+
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = 0, force: bool = True):
         t0 = time.time()
         opt = self.opt
@@ -483,16 +520,19 @@ class JevCompactor:
         answers: Dict[str, Dict[str, float]] = {}
         fitted = {"tokens": 0, "stage": ""}
         batches: List[List[ToolCall]] = []
-        if candidates:
+        if candidates and opt.select != "recency":
             fitted = fit_state(messages, calls, opt)
             batches = batch_calls(candidates, fitted["tokens"], opt)
             with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
                 for result in pool.map(lambda b: self._ask_batch(fitted["state"], b), batches):
                     answers.update(result)
-        self.decisions = [
-            decide_call(c, *(answers.get(c.id, {}).get(k, 1.0) for k in ("keep_call", "keep_result")), opt)
-            for c in calls
-        ]
+        if opt.select:
+            self.decisions = self._budget_decisions(messages, calls, candidates, answers)
+        else:
+            self.decisions = [
+                decide_call(c, *(answers.get(c.id, {}).get(k, 1.0) for k in ("keep_call", "keep_result")), opt)
+                for c in calls
+            ]
         kept = apply_decisions(messages, self.decisions, calls, opt.truncate_head_chars)
         reasons = [d.reason for d in self.decisions]
         self.stats = {

@@ -65,6 +65,17 @@ POLICIES: Dict[str, Dict[str, Any]] = {
         "engine": "jev",
         "jev": {"keep_threshold": 0.15},
     },
+    # Matched-budget pair (eval-only extension): keep 60K tokens of tool
+    # call+result pairs ranked by Jev's keep_result vs. ranked by recency.
+    # Same retained size, so the recall gap is Jev's judgment alone.
+    "jev_top60k": {
+        "engine": "jev",
+        "jev": {"select": "jev", "result_budget_tokens": 60_000},
+    },
+    "recent_top60k": {
+        "engine": "jev",
+        "jev": {"select": "recency", "result_budget_tokens": 60_000},
+    },
 }
 
 

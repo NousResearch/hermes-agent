@@ -184,23 +184,22 @@ def gateway_lifecycle_block(
     workdir: Optional[str],
     session_key: str,
 ) -> Optional[str]:
-    """Refuse gateway lifecycle commands issued from inside the supervised gateway.
+    """Refuse gateway lifecycle commands inside a supervised gateway or its descendants.
 
     ``systemctl``/``launchctl``/``hermes gateway restart|stop|uninstall``
     targeting hermes-gateway would SIGTERM the gateway — and this very
     subprocess — before completing, so the service may never come back.
-    Applies unconditionally (``force=True`` cannot bypass it). Gated on the
-    SUPERVISED-gateway probe, not the raw ``_HERMES_GATEWAY`` marker: that
-    marker leaks into every process that merely imports gateway.run (hermes
-    serve, CLI, web server), which must still be able to restart the gateway;
-    an unsupervised foreground ``hermes gateway run`` has no KeepAlive to turn
-    a self-restart into a respawn loop, so it passes too.
+    Applies unconditionally (``force=True`` cannot bypass it). Descendants
+    are identified by validated gateway ancestry even when inherited markers
+    are removed. The raw ``_HERMES_GATEWAY`` marker alone is not authority:
+    unrelated processes and the unsupervised gateway itself still pass.
     Returns the JSON error string when blocked, else None.
     """
+    from hermes_cli.gateway_process_context import _is_running_inside_gateway_process_tree
     from tools.process_registry import _is_supervised_gateway_process
     from tools.terminal_tool import _resolve_command_cwd, get_session_cwd
 
-    if not _is_supervised_gateway_process():
+    if not (_is_supervised_gateway_process() or _is_running_inside_gateway_process_tree()):
         return None
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,

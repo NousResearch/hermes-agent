@@ -74,7 +74,15 @@ import {
   isViewportPinnedToBottom,
   parseResumeControlMessage,
   shouldFollowPtyOutput,
+  shouldRejectViewportJumpToTop,
 } from "@/lib/pty-scroll";
+import {
+  advanceTouchAnchor,
+  isTouchPan,
+  touchLineTravel,
+  touchScrollLines,
+  wheelScrollLines,
+} from "@/lib/pty-touch-scroll";
 import {
   imageFilesFromTransfer,
   transferMayContainImage,
@@ -840,21 +848,104 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
+    let lastTouchScrollAt = 0;
+    const coarsePointer =
+      typeof window !== "undefined" &&
+      window.matchMedia("(pointer: coarse)").matches;
+
     // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
+    // mouse-wheel protocol bytes through the PTY. iPhone Safari synthesizes
+    // wheel from the same finger as touchmove — ignore wheel on coarse
+    // pointers so the caret and the viewport are not both yanked.
     term.attachCustomWheelEventHandler((ev) => {
-      const delta = ev.deltaY;
-      if (!delta) {
+      if (coarsePointer || Date.now() - lastTouchScrollAt < 450) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        return false;
+      }
+      const lines = wheelScrollLines(ev.deltaY);
+      if (!lines) {
         return false;
       }
 
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
+      term.scrollLines(lines);
 
       ev.preventDefault();
       ev.stopPropagation();
       return false;
     });
+
+    // xterm's custom wheel hook does not receive touch drags. On a phone this
+    // otherwise leaves the browser trying to scroll its fixed dashboard chrome
+    // while the terminal history remains stuck. Keep one active finger and
+    // translate each movement into whole terminal rows.
+    let touchId: number | null = null;
+    let touchY: number | null = null;
+    let touchOriginY: number | null = null;
+    let touchPanning = false;
+    let suppressClickAfterPan = false;
+    let lastViewportY = 0;
+    let restoringViewport = false;
+    const touchRoot = termWrap ?? host;
+    touchRoot.style.touchAction = "none";
+    const activeTouch = (list: TouchList) => {
+      for (let i = 0; i < list.length; i += 1) {
+        if (list[i].identifier === touchId) return list[i];
+      }
+      return null;
+    };
+    const onTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) {
+        touchId = null;
+        touchY = null;
+        touchOriginY = null;
+        touchPanning = false;
+        return;
+      }
+      touchId = ev.touches[0].identifier;
+      touchY = ev.touches[0].clientY;
+      touchOriginY = ev.touches[0].clientY;
+      touchPanning = false;
+    };
+    const onTouchMove = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1 || touchId === null || touchY === null || touchOriginY === null) return;
+      const touch = activeTouch(ev.touches);
+      if (!touch) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!touchPanning && !isTouchPan(touchOriginY, touch.clientY)) {
+        return;
+      }
+      touchPanning = true;
+      const rowHeight = Math.min(36, Math.max(1, host.clientHeight / Math.max(1, term.rows)));
+      const lines = touchScrollLines(touchY, touch.clientY, rowHeight);
+      if (lines) {
+        touchY = advanceTouchAnchor(touchY, lines, touchLineTravel(rowHeight));
+        term.scrollLines(lines);
+        lastTouchScrollAt = Date.now();
+      }
+    };
+    const onTouchEnd = (ev: TouchEvent) => {
+      if (!activeTouch(ev.touches)) {
+        if (touchPanning) suppressClickAfterPan = true;
+        touchId = null;
+        touchY = null;
+        touchOriginY = null;
+        touchPanning = false;
+      }
+    };
+    const onSuppressedClick = (ev: Event) => {
+      if (!suppressClickAfterPan) return;
+      suppressClickAfterPan = false;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    touchRoot.addEventListener("touchstart", onTouchStart, { passive: true, capture: true });
+    touchRoot.addEventListener("touchmove", onTouchMove, { passive: false, capture: true });
+    touchRoot.addEventListener("touchend", onTouchEnd, { passive: true, capture: true });
+    touchRoot.addEventListener("touchcancel", onTouchEnd, { passive: true, capture: true });
+    host.addEventListener("mousedown", onSuppressedClick, true);
+    host.addEventListener("click", onSuppressedClick, true);
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -870,6 +961,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       sendComposedText(data);
     });
     term.open(host);
+    if (coarsePointer) {
+      const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
+      if (viewport) {
+        viewport.style.overflowY = "hidden";
+        viewport.style.overscrollBehavior = "none";
+      }
+    }
 
     // IME composition guard (fixes #52111).
     //
@@ -1566,6 +1664,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // we only auto-follow during the resume replay — not their manual
       // review of the backlog (#59591).
       onScrollDisposable = term.onScroll(() => {
+        const nextY = term.buffer.active.viewportY;
+        if (!restoringViewport && shouldRejectViewportJumpToTop(lastViewportY, nextY, touchPanning)) {
+          restoringViewport = true;
+          try {
+            term.scrollToLine(lastViewportY);
+          } catch {
+            /* ignore */
+          } finally {
+            restoringViewport = false;
+          }
+        } else {
+          lastViewportY = nextY;
+        }
         stickToBottomRef.current = isViewportPinnedToBottom(term.buffer.active);
       });
     })();
@@ -1587,6 +1698,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
+      touchRoot.removeEventListener("touchstart", onTouchStart, true);
+      touchRoot.removeEventListener("touchmove", onTouchMove, true);
+      touchRoot.removeEventListener("touchend", onTouchEnd, true);
+      touchRoot.removeEventListener("touchcancel", onTouchEnd, true);
+      host.removeEventListener("mousedown", onSuppressedClick, true);
+      host.removeEventListener("click", onSuppressedClick, true);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.clearTimeout(keyboardRevealTimer);

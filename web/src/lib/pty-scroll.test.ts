@@ -4,6 +4,7 @@ import {
 	isViewportPinnedToBottom,
 	parseResumeControlMessage,
 	shouldFollowPtyOutput,
+	shouldRejectViewportJumpToTop,
 } from "./pty-scroll";
 
 describe("isViewportPinnedToBottom", () => {
@@ -49,6 +50,15 @@ describe("shouldFollowPtyOutput", () => {
 
 	it("treats an empty resume param as non-resume", () => {
 		expect(shouldFollowPtyOutput("", true)).toBe(false);
+	});
+});
+
+describe("shouldRejectViewportJumpToTop", () => {
+	it("undoes Safari's yank to the top unless the user is panning there", () => {
+		expect(shouldRejectViewportJumpToTop(80, 0, false)).toBe(true);
+		expect(shouldRejectViewportJumpToTop(80, 0, true)).toBe(false);
+		// A short buffer legitimately sits at the top.
+		expect(shouldRejectViewportJumpToTop(2, 0, false)).toBe(false);
 	});
 });
 

@@ -49,6 +49,17 @@ export function shouldFollowPtyOutput(
 	return Boolean(resumeParam) && stickToBottom;
 }
 
+/** Safari sometimes yanks `.xterm-viewport` to scrollTop 0 to reveal the helper. */
+export function shouldRejectViewportJumpToTop(
+	prevViewportY: number,
+	nextViewportY: number,
+	userPanning: boolean,
+): boolean {
+	if (userPanning) return false;
+	if (nextViewportY > 0) return false;
+	return prevViewportY >= 3;
+}
+
 /**
  * When `pty_ws` falls back to the per-channel active-session file (no
  * `?resume=` on the URL), the server sends a one-off JSON text frame naming

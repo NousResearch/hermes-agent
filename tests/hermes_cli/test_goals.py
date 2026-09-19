@@ -996,3 +996,52 @@ def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     finally:
         goals._DB_CACHE.clear()
         registry.release_or_close(db)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Unlimited turn budgets (0/"unlimited" disables the cap)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestNormalizeGoalTurns:
+    def test_values(self):
+        import sys
+        from hermes_cli.goals import normalize_goal_turns, DEFAULT_MAX_TURNS
+
+        assert normalize_goal_turns(20) == 20
+        assert normalize_goal_turns("20") == 20
+        assert normalize_goal_turns(None) == DEFAULT_MAX_TURNS
+        assert normalize_goal_turns(True) == DEFAULT_MAX_TURNS
+        assert normalize_goal_turns("garbage") == DEFAULT_MAX_TURNS
+        for raw in (0, -1, "0", "unlimited", "infinite", "∞", "none"):
+            assert normalize_goal_turns(raw) == sys.maxsize, raw
+
+    def test_budget_labels(self):
+        import sys
+        from hermes_cli.goals import format_turn_budget
+
+        assert format_turn_budget(20) == "20"
+        assert format_turn_budget(sys.maxsize) == "∞"
+
+
+class TestUnlimitedGoalBudget:
+    def test_unlimited_goal_never_budget_pauses(self, hermes_home):
+        """A 0-budget goal keeps going past 20 turns when the judge says continue."""
+        import sys
+        from hermes_cli import goals
+
+        mgr = goals.GoalManager(session_id="unlimited-sid", default_max_turns=0)
+        assert mgr.default_max_turns == sys.maxsize
+        state = mgr.set("ship it")
+        assert state.max_turns == sys.maxsize
+        assert "∞" in mgr.status_line()
+
+        with patch.object(
+            goals, "judge_goal",
+            return_value=("continue", "more to do", False, None, False),
+        ):
+            for _ in range(25):
+                decision = mgr.evaluate_after_turn("progress...")
+                assert decision["should_continue"] is True, decision
+                assert mgr.state.status == "active"
+        assert mgr.state.turns_used == 25

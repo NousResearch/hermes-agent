@@ -456,7 +456,11 @@ def delegate_task(
         )
 
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    from hermes_cli.config import resolve_turn_limit
+    default_max_iter = resolve_turn_limit(
+        cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS),
+        default=DEFAULT_MAX_ITERATIONS,
+    )
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
     if max_iterations is not None and max_iterations != default_max_iter:

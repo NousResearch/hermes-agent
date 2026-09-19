@@ -229,7 +229,8 @@ Add to `~/.hermes/config.yaml`:
 goals:
   # Max continuation turns before Hermes auto-pauses and asks you to
   # /goal resume. Default 20. Lower this if you want tighter loops;
-  # raise it for long-running refactors.
+  # raise it for long-running refactors. Set to 0 or "unlimited" to
+  # remove the cap — the loop runs until the judge declares done.
   max_turns: 20
 ```
 

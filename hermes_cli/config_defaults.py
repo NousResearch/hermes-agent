@@ -1287,6 +1287,7 @@ DEFAULT_CONFIG = {
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
         # Per-subagent iteration cap (own budget, independent of the parent's).
+        # 0/"unlimited" disables it (runs until done); None/garbage → 250.
         "max_iterations": 250,
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each
         # summary is sized to the parent's remaining context headroom; trimmed text spills to
@@ -1325,7 +1326,8 @@ DEFAULT_CONFIG = {
     # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
     "goals": {
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
-        # negatives and unbounded spend.
+        # negatives and unbounded spend. 0/"unlimited" disables it (runs until the judge
+        # declares done); None/garbage → 20.
         "max_turns": 20,
     },
     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires

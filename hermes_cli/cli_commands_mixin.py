@@ -500,8 +500,14 @@ def _launch_default_cdp_browser(port: int):
 
 
 def _browser_connect(cli, cdp_url: str) -> None:
-    """/browser connect [url] — validate the CDP URL, find or launch a debug browser, then
-    point the browser tools at it (BROWSER_CDP_URL) and tell the model."""
+    """/browser connect [url|name] — validate the CDP URL, find or launch a debug browser, then
+    point the browser tools at it (BROWSER_CDP_URL) and tell the model.
+
+    ``url`` may be a ``browser.cdp_endpoints`` name (no scheme) — expanded before connect.
+    """
+    with suppress(Exception):
+        from tools.browser_tool_cdp import expand_cdp_connect_target
+        cdp_url = expand_cdp_connect_target(cdp_url) or cdp_url
     normalized = _normalize_cdp_url(cdp_url)
     if normalized is None:
         return
@@ -2161,7 +2167,7 @@ class CLICommandsMixin:
         else:
             _say_block(
                 "Usage: /browser connect|disconnect|status|use", "",
-                "   connect      Connect browser tools to your live Chromium-family browser session",
+                "   connect      Connect browser tools to a live Chromium-family browser (URL or cdp_endpoints name)",
                 "   disconnect   Revert to default browser backend",
                 "   status       Show current browser mode",
                 "   use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools")

@@ -433,7 +433,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     """Point the harness at the configured backend's CDP endpoint; error string on failure.
 
     Precedence: (1) ``BU_CDP_WS``/``BU_CDP_URL`` already in env (operator override); (2) ``BROWSER_CDP_URL``
-    env / ``browser.cdp_url`` (``/browser connect``); (3) a cloud provider via the legacy ``_get_session_info()``
+    env / ``browser.cdp_endpoints[session]`` / ``browser.cdp_url`` (``/browser connect``); (3) a cloud provider via the legacy ``_get_session_info()``
     so browser_exec shares the SAME session machinery (per-task cache, expiry, reaper, atexit);
     (4) the local engine — ``browser.engine: lightpanda`` or Hermes' packaged Chromium via agent-browser
     (never the harness's own discovery of the user's installed Chrome); (5) BU direct-API configs → None:
@@ -449,9 +449,35 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
         logger.debug("browser_tool backend resolution unavailable: %s", e)
         return None
-    override = _quiet(_get_cdp_override, "")
+    # Named ``session=`` / ``cdp_endpoints`` bind here. Zero-arg test stubs of
+    # ``_get_cdp_override`` stay valid (TypeError → unnamed call).
+    def _override_for(name: str) -> str:
+        try:
+            return _get_cdp_override(endpoint=name) or ""
+        except TypeError:
+            return _get_cdp_override() or ""
+
+    override = _quiet(lambda: _override_for(session_name), "")
     if override:
         _set_cdp_env(env, override)
+        # Distinct Chrome (sidecar CDP) is exclusive to this named session — skip the
+        # shared-browser own-tab preamble. Same URL as the unnamed default stays shared.
+        if session_name:
+            try:
+                from tools.browser_tool_cdp import _get_cdp_override_raw
+            except Exception:
+                _get_cdp_override_raw = None  # type: ignore[assignment]
+            if _get_cdp_override_raw is not None:
+                try:
+                    named_raw = _get_cdp_override_raw(endpoint=session_name) or ""
+                except TypeError:
+                    named_raw = ""
+                try:
+                    unnamed_raw = _get_cdp_override_raw(endpoint="") or ""
+                except TypeError:
+                    unnamed_raw = _quiet(_get_cdp_override_raw, "")
+                if named_raw and named_raw.rstrip("/") != (unnamed_raw or "").rstrip("/"):
+                    env[_PRIVATE_BROWSER_SENTINEL] = "1"
         return None
     provider = _quiet(_get_cloud_provider, None, "Cloud provider lookup failed")
     if provider is None:
@@ -630,6 +656,22 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
+    try:
+        from tools.browser_tool_cdp import _cdp_override_is_stay_put
+        from tools.browser_tool_session import run_fenced
+        stay_put = bool(_cdp_override_is_stay_put(session))
+    except Exception:
+        stay_put = False
+    if stay_put:
+        refused = run_fenced(
+            {"features": {"stay_put": True}},
+            lambda: {"success": True},
+        )
+        if refused.get("code") == "human_has_control":
+            return tool_error(
+                refused.get("error") or "A human has taken over this desktop.",
+                success=False, code="human_has_control",
+            )
     _attach_vault_supervisor(env, task_id)
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see

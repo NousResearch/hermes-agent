@@ -4,10 +4,17 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 import contextlib
 import os
-from typing import Tuple
+import re
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from agent.proxy_bypass import loopback_request_kwargs
 from tools.browser_tool_origin import origin_module as _origin
+from utils import is_truthy_value
+
+# Same shape as browser_exec ``session=`` / BU_NAME: 1-64 letters, digits, underscore, hyphen.
+_ENDPOINT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# Last-segment auto-bind must not treat a UUID-ish Hermes session id as a map key.
+_UUIDISH_RE = re.compile(r"^[0-9a-f]{8,}$", re.IGNORECASE)
 
 
 def _resolve_cdp_override(cdp_url: str) -> str:
@@ -48,26 +55,191 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
-def _get_cdp_override_raw() -> str:
+def _parse_cdp_endpoint_records(value) -> Dict[str, Dict[str, Any]]:
+    """Normalize ``browser.cdp_endpoints`` to ``{name: {url, stay_put}}``.
+
+    String form (``lab2: http://127.0.0.1:9223``) stays allowed and is *not* stay-put.
+    Object form (``primary: {url: ..., stay_put: true}``) opts that Chrome into the Bot
+    Screen lease fence. Invalid names / missing URLs are dropped.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for raw_name, raw in value.items():
+        name = str(raw_name or "").strip()
+        if not name or not _ENDPOINT_NAME_RE.match(name):
+            continue
+        if isinstance(raw, dict):
+            url = str(raw.get("url") or "").strip()
+            stay_put = is_truthy_value(raw.get("stay_put"), default=False)
+        else:
+            url = str(raw or "").strip()
+            stay_put = False
+        if not url:
+            continue
+        out[name] = {"url": url, "stay_put": stay_put}
+    return out
+
+
+def _parse_cdp_endpoints(value) -> Dict[str, str]:
+    """Normalize ``browser.cdp_endpoints`` to ``{name: url}``. Invalid names/URLs are dropped."""
+    return {name: rec["url"] for name, rec in _parse_cdp_endpoint_records(value).items()}
+
+
+def _cdp_endpoint_records() -> Dict[str, Dict[str, Any]]:
+    """``browser.cdp_endpoints`` records from config, or ``{}``. No network I/O."""
+    return _origin()._browser_cfg(
+        "cdp_endpoints", {}, _parse_cdp_endpoint_records, "browser.cdp_endpoints from config"
+    )
+
+
+def _cdp_endpoints_map() -> Dict[str, str]:
+    """``browser.cdp_endpoints`` from config, or ``{}``. No network I/O."""
+    return {name: rec["url"] for name, rec in _cdp_endpoint_records().items()}
+
+
+def _unnamed_cdp_url() -> str:
+    return _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
+
+
+def _unnamed_cdp_is_stay_put() -> bool:
+    """``browser.cdp_stay_put`` — opt-in fence for the unnamed ``cdp_url`` default."""
+    return _origin()._browser_cfg(
+        "cdp_stay_put", False, lambda v: is_truthy_value(v, default=False), "browser.cdp_stay_put from config"
+    )
+
+
+def _cdp_urls_equal(left: str, right: str) -> bool:
+    return (left or "").rstrip("/") == (right or "").rstrip("/")
+
+
+def _url_is_stay_put(url: str) -> bool:
+    """True when ``url`` is a stay-put CDP (named ``stay_put: true`` or unnamed ``cdp_stay_put``)."""
+    url = (url or "").strip()
+    if not url:
+        return False
+    for rec in _cdp_endpoint_records().values():
+        if rec["stay_put"] and _cdp_urls_equal(rec["url"], url):
+            return True
+    unnamed = _unnamed_cdp_url()
+    return bool(unnamed and _cdp_urls_equal(unnamed, url) and _unnamed_cdp_is_stay_put())
+
+
+def _cdp_override_is_stay_put(endpoint: Optional[str] = None) -> bool:
+    """True when the CDP that ``_get_cdp_override_raw`` would select is marked stay-put.
+
+    Unmarked user/cloud CDP stays unfenced (#108914). Opt-in only — a random Browserbase
+    URL is never fenced just because some other endpoint is stay-put.
+    """
+    try:
+        raw = _get_cdp_override_raw(endpoint=endpoint)
+    except TypeError:
+        raw = _get_cdp_override_raw()
+    return _url_is_stay_put(raw)
+
+
+def _cdp_url_for_endpoint_name(name: str) -> str:
+    """Exact map lookup for ``name`` (``session=`` / ``/browser connect <name>``). ``""`` on miss."""
+    name = (name or "").strip()
+    if not name:
+        return ""
+    return _cdp_endpoints_map().get(name, "")
+
+
+def _hermes_session_identity_names() -> list:
+    """Candidate endpoint names from the live Hermes conversation identity (no network I/O)."""
+    try:
+        from gateway.session_context import get_session_env
+        getter = get_session_env
+    except Exception:
+        getter = lambda n, d="": os.environ.get(n, d)  # noqa: E731 — env fallback when gateway is absent
+    names: list = []
+    for var in ("HERMES_SESSION_ID", "HERMES_SESSION_KEY"):
+        val = str(getter(var, "") or "").strip()
+        if not val:
+            continue
+        names.append(val)
+        for sep in (":", "/", "."):
+            if sep in val:
+                tail = val.rsplit(sep, 1)[-1].strip()
+                if tail and tail != val and not _UUIDISH_RE.match(tail):
+                    names.append(tail)
+    return names
+
+
+def _named_cdp_candidates(endpoint: Optional[str] = None) -> Iterable[str]:
+    """Ordered names to look up in ``browser.cdp_endpoints`` (first hit wins)."""
+    seen: set = set()
+    ordered: list = []
+
+    def _add(raw: str) -> None:
+        name = (raw or "").strip()
+        if not name or name in seen:
+            return
+        seen.add(name)
+        ordered.append(name)
+
+    _add(endpoint or "")
+    _add(os.environ.get("BROWSER_CDP_ENDPOINT", ""))
+    for name in _hermes_session_identity_names():
+        _add(name)
+    return ordered
+
+
+def _lookup_cdp_endpoint(endpoint: Optional[str] = None) -> str:
+    """First ``cdp_endpoints`` hit for ``endpoint`` / ``BROWSER_CDP_ENDPOINT`` / Hermes session identity."""
+    mapping = _cdp_endpoints_map()
+    if not mapping:
+        return ""
+    for name in _named_cdp_candidates(endpoint):
+        url = mapping.get(name, "")
+        if url:
+            return url
+    return ""
+
+
+def expand_cdp_connect_target(raw: str) -> str:
+    """Expand a ``cdp_endpoints`` alias used as ``/browser connect <name>``; pass URLs through."""
+    raw = (raw or "").strip()
+    if not raw or "://" in raw:
+        return raw
+    # host:port is a URL-shaped target, not a map key.
+    if ":" in raw and "/" not in raw:
+        host, _, port = raw.partition(":")
+        if host and port.isdigit():
+            return raw
+    return _cdp_url_for_endpoint_name(raw) or raw
+
+
+def _get_cdp_override_raw(endpoint: Optional[str] = None) -> str:
     """Return the *configured* CDP override without any network I/O.
 
-    Precedence: ``BROWSER_CDP_URL`` env (live ``/browser connect``), then ``browser.cdp_url``. Is-it-configured
-    gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``) MUST use this, not
-    :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url`` would stall every startup's
-    schema build with no error.
+    Precedence:
+      1. ``BROWSER_CDP_URL`` env (live ``/browser connect`` URL — process-global)
+      2. ``browser.cdp_endpoints`` hit for ``endpoint`` / ``BROWSER_CDP_ENDPOINT`` / Hermes session identity
+      3. ``browser.cdp_url`` (unnamed default)
+
+    Is-it-configured gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``)
+    MUST use this, not :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url``
+    would stall every startup's schema build with no error.
     """
     env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
-    return env_override or _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
+    if env_override:
+        return env_override
+    mapped = _lookup_cdp_endpoint(endpoint)
+    if mapped:
+        return mapped
+    return _unnamed_cdp_url()
 
 
-def _get_cdp_override() -> str:
+def _get_cdp_override(endpoint: Optional[str] = None) -> str:
     """Resolved CDP URL override, or "" (skips cloud AND local launch).
 
     May perform HTTP ``/json/version`` discovery — only call on paths about to *connect*; pure gates must use
-    :func:`_get_cdp_override_raw`.
+    :func:`_get_cdp_override_raw`. ``endpoint`` is a ``cdp_endpoints`` / ``session=`` name; omitted uses the
+    unnamed default (``BROWSER_CDP_URL`` → session identity → ``cdp_url``).
     """
-    _bt = _origin()
-    return _resolve_cdp_override(raw) if (raw := _get_cdp_override_raw()) else ""
+    return _resolve_cdp_override(raw) if (raw := _get_cdp_override_raw(endpoint=endpoint)) else ""
 
 
 def _get_dialog_policy_config() -> Tuple[str, float]:

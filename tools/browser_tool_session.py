@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.browser_tool_origin import origin as _bt
@@ -249,9 +249,16 @@ def _local_backend_process_dead(session_info: Dict[str, Any]) -> bool:
     return server is None or not server.is_alive()
 
 
-def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
-    """Session connecting to a user-supplied CDP endpoint."""
-    info = _session_record("cdp", cdp_url, {"cdp_override": True})
+def _create_cdp_session(task_id: str, cdp_url: str, *, stay_put: bool = False) -> Dict[str, str]:
+    """Session connecting to a user-supplied CDP endpoint.
+
+    ``stay_put`` is opt-in provenance from ``browser.cdp_endpoints[].stay_put`` or
+    ``browser.cdp_stay_put``. Unmarked user/cloud CDP stays unfenced (#108914).
+    """
+    features: Dict[str, Any] = {"cdp_override": True}
+    if stay_put:
+        features["stay_put"] = True
+    info = _session_record("cdp", cdp_url, features)
     _bt.logger.info("Created CDP browser session %s → %s for task %s",
                 info["session_name"], _bt._sanitize_url_for_logs(cdp_url), task_id)
     return info
@@ -286,9 +293,21 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
 def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
     """Fresh session for ``task_id`` (runs OUTSIDE the lock: cloud mode makes a network call).
     Precedence: CDP override > hybrid local sidecar (never real-profile) > cloud > local."""
-    cdp_override = _cdp._get_cdp_override()
+    named = ""
+    key = (task_id or "").strip()
+    if key.startswith("bu-named-"):
+        named = key[len("bu-named-"):].split("@", 1)[0]
+    try:
+        cdp_override = _cdp._get_cdp_override(endpoint=named or None)
+    except TypeError:
+        cdp_override = _cdp._get_cdp_override()
     if cdp_override and not force_local:
-        return _create_cdp_session(task_id, cdp_override)
+        stay_put = False
+        try:
+            stay_put = bool(_cdp._cdp_override_is_stay_put(named or None))
+        except (TypeError, AttributeError):
+            stay_put = False
+        return _create_cdp_session(task_id, cdp_override, stay_put=stay_put)
     if force_local:
         return _create_local_session(task_id, allow_real_profile=False)
     provider = _cloud._get_cloud_provider()
@@ -615,6 +634,68 @@ def _run_browser_command(
     except Exception as e:
         _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+    return run_fenced(session_info, lambda: _run_browser_command_unfenced(
+        task_id, command, args, timeout, _engine_override, browser_cmd, session_info))
+
+
+def _bot_desktop_lease():
+    """``tools.bot_desktop.lease`` when Bot Screen is present, else ``None`` (fence is a no-op)."""
+    try:
+        from tools.bot_desktop import lease as _bd_lease
+        return _bd_lease
+    except ImportError:
+        return None
+
+
+def run_fenced(session_info: Dict[str, Any], fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
+    """Run ``fn`` under the Bot Screen lease fence when ``session_info`` is a fenced browser.
+
+    Local bot-desktop sessions (#108914, ``features.local``) and *opt-in stay-put CDP*
+    (``features.stay_put``) share this seam. Unmarked user/cloud CDP stays unfenced.
+    If ``tools.bot_desktop.lease`` is not importable (Bot Screen not merged), this is a
+    no-op — stay-put provenance is recorded either way and lights up when the lease exists.
+    """
+    if not _shares_bot_desktop_browser(session_info):
+        return fn()
+    lease = _bot_desktop_lease()
+    if lease is None:
+        return fn()
+    try:
+        admitted = lease.assert_agent_may_act()
+    except lease.HumanHasControl as e:
+        return {"success": False, "error": str(e), "code": "human_has_control"}
+    result = fn()
+    if lease.get().epoch != admitted.epoch:
+        return {"success": False, "code": "human_has_control",
+                "error": "A human took over the bot's screen while this browser command ran; its result was "
+                         "discarded. Tell the user what you need; retry once they hand back."}
+    return result
+
+
+def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
+    """Decided by provenance, not transport.
+
+    Stay-put CDP is opt-in (``features.stay_put``) so a shared cookie-jar Chrome can honour
+    the Bot Screen lease without fencing every remote CDP. Local sessions (``features.local``)
+    match #108914 when ``tools.bot_desktop`` is present; without that module they stay unfenced.
+    """
+    features = session_info.get("features") or {}
+    if features.get("stay_put"):
+        return True
+    if not features.get("local"):
+        return False
+    try:
+        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    except ImportError:
+        return False
+    try:
+        return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
+    except Exception:
+        return False
+
+
+def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], timeout: int,
+                                  _engine_override: Optional[str], browser_cmd, session_info: Dict[str, Any]) -> Dict[str, Any]:
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)

@@ -22299,7 +22299,10 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
         model = "test-model"
         provider = "test"
         session_id = None
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, persist_user_message=None, **_kwargs):
+            # New flow: the agent persists the user message (submit-time persist is dead code post-merge).
+            if persist_user_message is not None:
+                db.append_message(session_id=session_key, role="user", content=persist_user_message)
             return {"role": "assistant", "content": "ok"}
 
     sess = _session(history=list(live_history), session_key=session_key, agent=_MockAgent())
@@ -22657,7 +22660,10 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         model = "test-model"
         provider = "test"
         session_id = None
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, persist_user_message=None, **_kwargs):
+            # New flow: the agent persists the user message (submit-time persist is dead code post-merge).
+            if persist_user_message is not None:
+                db.append_message(session_id=session_key, role="user", content=persist_user_message)
             return {"role": "assistant", "content": "ok"}
 
     sess = _session(history=[dict(m) for m in msgs], session_key=session_key, agent=_MockAgent())

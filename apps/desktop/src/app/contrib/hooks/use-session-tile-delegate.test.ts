@@ -18,6 +18,17 @@ vi.mock('@/store/gateway', async importActual => ({
   requestGatewayForProfile: vi.fn()
 }))
 
+const controlMocks = vi.hoisted(() => ({
+  probe: null as null | ((runtimeId: string) => Promise<unknown>)
+}))
+
+vi.mock('@/store/session-control', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  setSessionControlOwnerProbe: (probe: ((runtimeId: string) => Promise<unknown>) | null) => {
+    controlMocks.probe = probe
+  }
+}))
+
 const { getLatestSessionMessages } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
 
@@ -503,6 +514,41 @@ describe('useSessionTileDelegate retireBusyClaim', () => {
     expect(sessionTileDelegate()!.retireBusyClaim!('runtime-unknown')).toBe(false)
     expect(sessionTileDelegate()!.retireBusyClaim!('runtime-idle')).toBe(false)
     expect(updateSessionState).not.toHaveBeenCalled()
+  })
+})
+
+describe('useSessionTileDelegate session-control owner probe (#107502)', () => {
+  beforeEach(() => {
+    setSessions([])
+    controlMocks.probe = null
+  })
+
+  afterEach(() => {
+    setSessions([])
+    controlMocks.probe = null
+  })
+
+  it('re-resolves an ownerless runtime id through the cache binding and the row ladder', async () => {
+    // The runtime's mirror entry was dropped by the profile-backend lifecycle,
+    // but this cache still maps stored -> runtime and the durable row still
+    // names the owning profile — the poller must find it here.
+    renderTile(vi.fn(), { runtimeIdByStoredSessionIdRef: { current: new Map([['stored-x', 'rt-dead']]) } })
+    setSessions([row({ id: 'stored-x', profile: 'research' })])
+
+    await expect(controlMocks.probe!('rt-dead')).resolves.toBe('research')
+  })
+
+  it('falls back to the runtime id itself when the cache knows no durable id', async () => {
+    renderTile(vi.fn())
+    setSessions([row({ id: 'rt-orphan', profile: 'research' })])
+
+    await expect(controlMocks.probe!('rt-orphan')).resolves.toBe('research')
+  })
+
+  it('names no owner for a runtime nothing knows, so the read stays fail-closed', async () => {
+    renderTile(vi.fn())
+
+    await expect(controlMocks.probe!('rt-unknown')).resolves.toBeUndefined()
   })
 })
 

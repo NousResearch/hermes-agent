@@ -335,11 +335,11 @@ def _inherit_launch_model(path) -> bool:
 
 def _mirror_launch_credentials(path, params: dict) -> dict:
     """Copy launch .env / auth.json / voice sections into a new profile (best-effort per item).
-    ``mirror_credentials`` false skips everything. ``model_inherited`` is filled in by the caller.
-
-    ``share_auth`` is accepted from older clients and ignored: a profile never reads the launch
-    profile's auth.json (#111724), so "shared" auth would leave it with no provider at all."""
-    mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
+    ``share_auth`` reports ``auth: "shared"`` and skips the auth copy; ``mirror_credentials``
+    false skips everything. ``model_inherited`` is filled in by the caller."""
+    share_auth = is_truthy_value(params.get("share_auth", False))
+    mirrored = {"env": False, "auth": "shared" if share_auth else False, "model_inherited": False,
+                "voice": False}
     if not is_truthy_value(params.get("mirror_credentials", True)):
         return mirrored
     launch_home = get_hermes_home()
@@ -350,12 +350,15 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
         # Provider/tool keys are what "mirror credentials" means; the launch profile's bot tokens
         # and allowlists would make the new bot collide with it over one Telegram/Discord bot.
         _best_effort(lambda: _lazy("hermes_cli.profile_channels", "strip_channel_env_file")(path / ".env"))
-    mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
-                                                   lambda src, dst: not dst.exists()), False)
-    if mirrored["auth"]:
-        # Drop single-use OAuth grants (a copy forks token state: the first refresh in either store
-        # strands the other); the new profile signs into those providers itself. API keys stay.
-        _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
+    if not share_auth:  # a copy forks token state: the first refresh in either store strands the other
+        mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
+                                                       lambda src, dst: not dst.exists()), False)
+        if mirrored["auth"]:
+            # Drop single-use OAuth grants (first refresh strands every sibling); they read from the
+            # root grant via the pool fallback. API keys stay.
+            _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
+    elif share_auth:
+        _best_effort(lambda: (path / ".share_auth").write_text("1\n", encoding="utf-8"))
     mirrored["voice"] = _mirror_voice_sections(path)
     return mirrored
 

@@ -663,6 +663,38 @@ class TestHasAnyProviderConfigured:
             f"provider registry sweep ran before auth.json short-circuit: {calls}"
         )
 
+    def test_shared_root_auth_counts_for_a_strict_profile(self, monkeypatch, tmp_path):
+        """A Bot profile with share_auth inherits the root OAuth identity."""
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "bot"
+        profile.mkdir(parents=True)
+        (profile / ".share_auth").write_text("1\n")
+        (root / "auth.json").write_text(json.dumps({"active_provider": "nous"}))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        self._clear_provider_env(monkeypatch)
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda provider: {"logged_in": provider == "nous"})
+
+        from hermes_cli.main import _has_any_provider_configured
+
+        assert _has_any_provider_configured(strict_profile_scope=True) is True
+
+    def test_strict_profile_without_share_auth_does_not_inherit_root_auth(self, monkeypatch, tmp_path):
+        """A profile without an explicit sharing marker must keep auth readiness local."""
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "strict"
+        profile.mkdir(parents=True)
+        (root / "auth.json").write_text(json.dumps({"active_provider": "nous"}))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        self._clear_provider_env(monkeypatch)
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda _provider: {"logged_in": True})
+        monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: False)
+
+        from hermes_cli.main import _has_any_provider_configured
+
+        assert _has_any_provider_configured(strict_profile_scope=True) is False
+
 
 # =============================================================================
 # Kimi Code auto-detection tests

@@ -150,6 +150,19 @@ def test_error_truncated_to_bounded_length(monkeypatch, tmp_path):
     assert len(inc.get_incident(inc_id)["error"]) <= 500
 
 
+def test_error_truncation_length_configurable(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+    long_error = "x" * 2000
+    monkeypatch.setattr(
+        cron_jobs, "_cron_config_number",
+        lambda key, default, cast: cast(1200) if key == "incident_max_error_chars" else cast(default),
+    )
+
+    inc_id, _ = inc.upsert_incident("job-1", long_error)
+
+    assert len(inc.get_incident(inc_id)["error"]) == 1200
+
+
 def test_failure_type_classification(monkeypatch, tmp_path):
     inc = _point_db(monkeypatch, tmp_path)
     cases = [

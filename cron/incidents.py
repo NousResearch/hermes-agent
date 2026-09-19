@@ -111,6 +111,13 @@ def _normalize_error(error: str) -> str:
     return re.sub(r"\s+", " ", str(error or "")).strip().lower()
 
 
+def _max_error_chars() -> int:
+    """``cron.incident_max_error_chars``; default ``MAX_ERROR_CHARS`` (byte-identical unless set)."""
+    from cron.jobs import _cron_config_number
+
+    return _cron_config_number("incident_max_error_chars", MAX_ERROR_CHARS, int)
+
+
 def _redact_error(error: str) -> str:
     """Redact secrets (best-effort; the scheduler path never fails on it) then bound the length."""
     text = str(error or "")
@@ -120,7 +127,7 @@ def _redact_error(error: str) -> str:
         text = redact_sensitive_text(text, force=True)  # persisted to disk: always scrub
     except Exception:
         pass
-    return text[:MAX_ERROR_CHARS]
+    return text[:_max_error_chars()]
 
 
 def _error_signature(job_id: str, error: str) -> str:

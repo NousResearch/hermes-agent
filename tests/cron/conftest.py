@@ -11,6 +11,8 @@ edge cases — call ``monkeypatch.delenv("HERMES_MODEL", raising=False)``
 inside the test, which overrides this fixture's value for that scope.
 """
 
+import sys
+
 import pytest
 
 
@@ -49,6 +51,51 @@ def make_cron_provider():
 def _default_cron_test_model(monkeypatch):
     """Pin a default HERMES_MODEL so cron run_job tests have a resolvable model."""
     monkeypatch.setenv("HERMES_MODEL", "test-cron-default-model")
+    yield
+
+
+def _heal_croniter_cache() -> None:
+    """Heal a croniter cache poisoned by an earlier test directory (#105838).
+
+    A module-reload/import-mocking fixture in an earlier directory (gateway,
+    agent, cli) can leave ``sys.modules["croniter"]`` pointing at a module
+    whose ``croniter`` attribute is the *module* itself instead of the
+    callable class. ``cron.jobs._ensure_croniter`` then binds that module
+    object, and every later ``parse_schedule``/blueprint test fails with
+    ``'module' object is not callable`` — the four-directory batch run fails
+    ~55 cron tests that are green when the directory runs solo.
+
+    Heal both caches: evict the poisoned module so the genuine package is
+    re-imported, then re-probe the ``cron.jobs`` binding. A healthy
+    ``sys.modules`` entry (callable ``croniter`` attribute) and legitimate
+    monkeypatches (``HAS_CRONITER = False`` modeling a missing dependency,
+    or a callable fake) are left untouched. Kept as a plain function so
+    ``test_croniter_cache_healing.py`` can drive it directly — CI shards
+    per directory, so the real cross-directory trigger never occurs there.
+    """
+    mod = sys.modules.get("croniter")
+    if mod is not None and not callable(getattr(mod, "croniter", None)):
+        for name in [
+            k for k in sys.modules if k == "croniter" or k.startswith("croniter.")
+        ]:
+            del sys.modules[name]
+        import croniter  # noqa: F401  # re-import the genuine package
+
+    import cron.jobs as jobs
+
+    if jobs.HAS_CRONITER and not callable(jobs.croniter):
+        # The lazy probe cached the poisoned object; reset and re-probe so
+        # ``_ensure_croniter`` picks up the healed ``sys.modules`` entry.
+        jobs.croniter = None
+        jobs.HAS_CRONITER = None
+        jobs._ensure_croniter()
+
+
+@pytest.fixture(autouse=True)
+def _heal_poisoned_croniter_cache():
+    """Run the croniter poisoning guard (see ``_heal_croniter_cache``) before
+    each cron test so cross-directory batch runs match per-directory runs."""
+    _heal_croniter_cache()
     yield
 
 

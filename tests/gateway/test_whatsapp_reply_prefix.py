@@ -83,6 +83,38 @@ class TestAdapterInit:
         assert adapter._reply_prefix == "Bot\\n"
 
 
+class TestBridgeReplyPrefix:
+    @staticmethod
+    def _bridge_env(tmp_path, configured, scoped_value):
+        from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+        cache_dirs = (tmp_path / "image", tmp_path / "audio", tmp_path / "video", tmp_path / "document")
+
+        def scoped_env(name, default=""):
+            if name == "WHATSAPP_REPLY_PREFIX" and scoped_value is not None:
+                return scoped_value
+            return default
+
+        config = PlatformConfig(enabled=True, extra={"reply_prefix": configured})
+        with (
+            patch.object(whatsapp_adapter, "with_hermes_node_path", return_value={}),
+            patch.object(whatsapp_adapter, "_cache_dirs", return_value=cache_dirs),
+            patch.object(whatsapp_adapter, "_wenv", side_effect=scoped_env),
+        ):
+            return whatsapp_adapter.WhatsAppAdapter(config)._bridge_env()
+
+    def test_config_reply_prefix_reaches_bridge_when_env_is_unset(self, tmp_path):
+        env = self._bridge_env(tmp_path, "Configured Bot", None)
+        assert env["WHATSAPP_REPLY_PREFIX"] == "Configured Bot"
+
+    def test_explicit_env_reply_prefix_keeps_precedence(self, tmp_path):
+        env = self._bridge_env(tmp_path, "Configured Bot", "Environment Bot")
+        assert env["WHATSAPP_REPLY_PREFIX"] == "Environment Bot"
+
+    def test_empty_config_reply_prefix_reaches_bridge(self, tmp_path):
+        env = self._bridge_env(tmp_path, "", None)
+        assert env["WHATSAPP_REPLY_PREFIX"] == ""
+
+
 class TestReadReceiptPolicyOrdering:
     @pytest.mark.asyncio
     async def test_accepted_receipt_key_is_sent_to_bridge(self):

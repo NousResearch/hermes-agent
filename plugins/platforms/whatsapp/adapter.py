@@ -392,6 +392,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 bridge_env[_key] = _v
             else:
                 bridge_env.pop(_key, None)
+        # Preserve the adapter's resolved YAML value when the scoped env has no
+        # value. An explicit environment value already won in the loop above.
+        if self._reply_prefix is not None:
+            bridge_env.setdefault("WHATSAPP_REPLY_PREFIX", self._reply_prefix)
         # bridge.js gates DMs BEFORE Python sees them: it must run the same dm_policy / allow_from the
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML
         # ``dm_policy: pairing`` runs under the default profile's allowlist and drops valid pairing DMs.

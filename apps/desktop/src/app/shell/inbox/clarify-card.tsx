@@ -8,6 +8,7 @@ import {
   type ClarifyAnswerResult
 } from '@/store/inbox'
 import { $gateway } from '@/store/gateway'
+import { bareChoice, RECOMMENDED_LABEL } from '@/store/clarify'
 import { $activeGatewayProfile } from '@/store/profile'
 
 interface ClarifyCardProps {
@@ -15,7 +16,23 @@ interface ClarifyCardProps {
   onResolved?: () => void
 }
 
-const OTHER_PLACEHOLDER = 'Other — type your own…'
+const OTHER_PLACEHOLDER = 'Other (type your answer)'
+
+/** Bare text plus the backend's `(Recommended)` tag in tertiary text — the same
+ *  treatment the chat card gives `mark_recommended` choices. */
+function ChoiceLabel({ choice }: { choice: string }) {
+  const bare = bareChoice(choice)
+
+  if (bare === choice) {
+    return <>{choice}</>
+  }
+
+  return (
+    <>
+      {bare} <span className="text-(--ui-text-tertiary)">{RECOMMENDED_LABEL}</span>
+    </>
+  )
+}
 
 /** A/B/C… option letters, the same convention as the chat's clarify card. The trailing
  *  "Other" row takes the letter after the last choice (choices A–C → Other is D). */
@@ -213,7 +230,7 @@ function SingleClarifyCard({
               onSelect={() => handleSelectChoice(choice)}
               selected={selectedChoices.includes(choice)}
             >
-              {choice}
+              <ChoiceLabel choice={choice} />
             </OptionRow>
           ))}
           {/* The chat card always offers a type-your-own row (D after A–C, or the next
@@ -477,7 +494,7 @@ function BatchClarifyCard({
                       type="button"
                     >
                       <span className="text-[0.55rem] font-medium opacity-70">{letterFor(index)}</span>
-                      {choice}
+                      <ChoiceLabel choice={choice} />
                     </button>
                   ))}
                 </div>

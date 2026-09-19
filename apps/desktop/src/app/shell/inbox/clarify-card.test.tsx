@@ -282,7 +282,7 @@ describe('ClarifyCard', () => {
         expect(screen.getByText(letter)).toBeTruthy()
       }
 
-      expect(screen.getByPlaceholderText('Other — type your own…')).toBeTruthy()
+      expect(screen.getByPlaceholderText('Other (type your answer)')).toBeTruthy()
     })
 
     it('a single-choice question can be answered with typed text', async () => {
@@ -295,7 +295,7 @@ describe('ClarifyCard', () => {
 
       render(<ClarifyCard clarification={clarification} />)
 
-      fireEvent.change(screen.getByPlaceholderText('Other — type your own…'), { target: { value: 'Go, actually' } })
+      fireEvent.change(screen.getByPlaceholderText('Other (type your answer)'), { target: { value: 'Go, actually' } })
       fireEvent.click(screen.getByText('Submit'))
 
       await waitFor(() => {
@@ -315,7 +315,7 @@ describe('ClarifyCard', () => {
 
       render(<ClarifyCard clarification={clarification} />)
 
-      const other = screen.getByPlaceholderText('Other — type your own…') as HTMLInputElement
+      const other = screen.getByPlaceholderText('Other (type your answer)') as HTMLInputElement
 
       // Typing clears the pick…
       fireEvent.click(screen.getByText('TypeScript'))
@@ -328,6 +328,33 @@ describe('ClarifyCard', () => {
       expect(screen.getByText('Python').closest('button')!.className).toContain('bg-accent/55')
     })
 
+    // Same treatment as the chat card: the backend's `mark_recommended` tag renders
+    // dimmed, and the answer is still the full choice text.
+    it('dims the (Recommended) tag and answers with the full choice text', async () => {
+      const gw = { request: vi.fn().mockResolvedValue({ status: 'ok' }) }
+      ;(await getGatewayMock()).mockReturnValue(gw as never)
+
+      const clarification = makeSingleClarification({
+        params: { answers: null, choices: ['staging (Recommended)', 'production'], multi_select: false, question: 'Deploy where?', questions: null }
+      })
+
+      render(<ClarifyCard clarification={clarification} />)
+
+      const recommended = screen.getByRole('button', { name: /staging/ })
+      expect(recommended.querySelector('.text-\\(--ui-text-tertiary\\)')?.textContent).toBe('(Recommended)')
+
+      fireEvent.click(recommended)
+      fireEvent.click(screen.getByText('Submit'))
+
+      await waitFor(() => {
+        expect(gw.request).toHaveBeenCalledWith('request.answer', {
+          id: 'req-clarify-1',
+          result: { answer: 'staging (Recommended)' },
+          profile: 'test-profile'
+        })
+      })
+    })
+
     // ── Defect 3 regression: multi_select with Other free-text ──
     it('multi_select: includes Other free-text option', async () => {
       ;(await getGatewayMock()).mockReturnValue({ request: vi.fn() } as never)
@@ -338,7 +365,7 @@ describe('ClarifyCard', () => {
       render(<ClarifyCard clarification={clarification} />)
       expect(screen.getByText('Red')).toBeTruthy()
       expect(screen.getByText('Blue')).toBeTruthy()
-      expect(screen.getByPlaceholderText('Other — type your own…')).toBeTruthy()
+      expect(screen.getByPlaceholderText('Other (type your answer)')).toBeTruthy()
     })
   })
 
@@ -453,7 +480,7 @@ describe('ClarifyCard', () => {
       render(<ClarifyCard clarification={clarification} />)
       // Both questions offer the type-your-own row — single-select included.
       expect(screen.getByText('Red')).toBeTruthy()
-      expect(screen.getAllByPlaceholderText('Other — type your own…')).toHaveLength(2)
+      expect(screen.getAllByPlaceholderText('Other (type your answer)')).toHaveLength(2)
     })
 
     // ── Defect 3 regression: batch multi_select selects two options independently ──

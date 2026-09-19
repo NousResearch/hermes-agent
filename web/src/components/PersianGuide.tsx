@@ -89,6 +89,69 @@ const CLI_TIPS: Array<{ cmd: string; desc: string }> = [
 ];
 
 /**
+ * راه‌اندازی سریع در ۶ گام — mirror of the guide.html بخش ۱۷ (id=quickstart).
+ * Commands must stay verbatim-identical to guide.html; keep row-for-row in sync.
+ */
+const QUICKSTART: Array<{ cmd: string; desc: string }> = [
+  {
+    cmd: "npm install",
+    desc: "از ریشهٔ مخزن (تک‌قفل‌نامه: هرگز از زیرپوشه‌ها مثل ui-tui نصب نکنید). بک‌اند: pip install -e \".[web,dev]\". آزمون سلامت: hermes doctor.",
+  },
+  {
+    cmd: "hermes setup --portal",
+    desc: "وارد حساب Nous Portal شوید، مدل را انتخاب کنید و دروازه ابزارها (وب، تصویر، TTS، مرورگر) همان‌جا وصل می‌شود. انتخاب تک‌تک ابزارها: hermes setup tools.",
+  },
+  {
+    cmd: "hermes gateway run",
+    desc: "اجرای دروازه. بازرسی: hermes gateway status باید «در حال اجرا» را نشان دهد.",
+  },
+  {
+    cmd: "hermes dashboard --port 9119",
+    desc: "پس از چند ده ثانیه http://127.0.0.1:9119/ باز می‌شود (پرچم --no-open هم هست).",
+  },
+  {
+    cmd: "hermes config set display.language fa",
+    desc: "انتخاب زبان فارسی؛ در داشبورد هم دکمهٔ «تغییر زبان» در پایین نوار کناری. فونت Vazirmatn و چیدمان راست‌به‌چپ خودکار فعال می‌شود.",
+  },
+  {
+    cmd: "start-hermes-stack.cmd",
+    desc: "بررسی نهایی: hermes doctor بدون هشدار وابستگی + «وضعیت دروازه: در حال اجرا» در داشبورد. برای شروع خودکار پس از هر ری‌استارت ویندوز، این اسکریپت را یک‌بار اجرا کنید.",
+  },
+];
+
+/**
+ * وابستگی‌های اختیاری تست‌ها — mirror of the guide.html بخش ۱۸ (id=test-extras).
+ * Extra names must stay identical to pyproject [project.optional-dependencies].
+ */
+const TEST_EXTRAS: Array<{ extra: string; cmd: string; desc: string }> = [
+  {
+    extra: "dev",
+    cmd: "pip install -e \".[dev]\"",
+    desc: "خود pytest و pytest-asyncio، mcp، httpx، ruff و ty — پیش‌نیاز هر اجرای تستی",
+  },
+  {
+    extra: "messaging",
+    cmd: "pip install -e \".[messaging]\"",
+    desc: "تست‌های تلگرام، Discord، Slack و کانال‌های پیام‌رسانی (tests/gateway، tests/tools)",
+  },
+  {
+    extra: "anthropic",
+    cmd: "pip install -e \".[anthropic]\"",
+    desc: "تست‌های آداپتور Anthropic در tests/agent (سایر ارائه‌دهنده‌ها از طریق کلید API قلابی stub می‌شوند)",
+  },
+  {
+    extra: "web",
+    cmd: "pip install -e \".[web]\"",
+    desc: "سرور داشبورد/دروازه که تست‌های یکپارچگی به آن وصل می‌شوند",
+  },
+  {
+    extra: "pytest-timeout · pytest-xdist",
+    cmd: "pip install pytest-timeout pytest-xdist",
+    desc: "اجرای قطعه‌قطعهٔ suite دروازه روی ویندوز با تایم‌اوت در هر تست (فقط برای توسعه؛ پین نشده‌اند)",
+  },
+];
+
+/**
  * عیب‌یابی — full mirror of the guide.html بخش ۱۷ troubleshooting table:
  * all 15 rows in table order (IPC bridge, desktop setup, (-6) dist error,
  * WS "session token" boot failure, pip drift, npm drift, postinstall
@@ -255,6 +318,33 @@ export function PersianGuide() {
 
           <div className="mt-3 rounded-sm border border-current/10 bg-background/40 px-3 py-2">
             <div className="mb-1.5 text-xs font-bold text-foreground">
+              ⚡ راه‌اندازی سریع در ۶ گام
+            </div>
+            <dl className="grid gap-1">
+              {QUICKSTART.map((step, i) => (
+                <div key={step.cmd} className="flex items-baseline gap-2">
+                  <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-bold text-primary tabular-nums">
+                    {i + 1}
+                  </span>
+                  <code
+                    dir="ltr"
+                    className={cn(
+                      "shrink-0 rounded-sm bg-muted px-1.5 py-0.5",
+                      "font-mono text-[11px] text-primary",
+                    )}
+                  >
+                    {step.cmd}
+                  </code>
+                  <dd className="text-[11px] leading-relaxed text-muted-foreground">
+                    {step.desc}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          <div className="mt-3 rounded-sm border border-current/10 bg-background/40 px-3 py-2">
+            <div className="mb-1.5 text-xs font-bold text-foreground">
               🛠 عیب‌یابی رایج
             </div>
             <dl className="grid gap-2">
@@ -289,6 +379,31 @@ export function PersianGuide() {
                   </code>
                   <dd className="text-[11px] text-muted-foreground">
                     {tip.desc}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          <div className="mt-3 rounded-sm border border-current/10 bg-background/40 px-3 py-2">
+            <div className="mb-1.5 text-xs font-bold text-foreground">
+              🧪 وابستگی‌های اختیاری تست‌ها (توسعه‌دهندگان)
+            </div>
+            <dl className="grid gap-1">
+              {TEST_EXTRAS.map((item) => (
+                <div key={item.extra} className="flex items-baseline gap-2">
+                  <code
+                    dir="ltr"
+                    className={cn(
+                      "shrink-0 rounded-sm bg-muted px-1.5 py-0.5",
+                      "font-mono text-[11px] text-primary",
+                    )}
+                  >
+                    {item.cmd}
+                  </code>
+                  <dd className="text-[11px] leading-relaxed text-muted-foreground">
+                    <span className="font-bold text-foreground">[{item.extra}]</span>{" "}
+                    {item.desc}
                   </dd>
                 </div>
               ))}

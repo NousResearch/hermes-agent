@@ -244,6 +244,8 @@
     <li><a href="#starmap">گراف حافظه (Starmap)</a></li>
     <li><a href="#settings">تنظیمات — همه بخش‌ها</a></li>
     <li><a href="#keybinds">کلیدهای میان‌بر</a></li>
+    <li><a href="#quickstart">راه‌اندازی سریع در ۶ گام</a></li>
+    <li><a href="#test-extras">وابستگی‌های اختیاری برای اجرای تست‌ها</a></li>
     <li><a href="#troubleshooting">عیب‌یابی و پرسش‌های رایج</a></li>
   </ol>
 </nav>
@@ -350,6 +352,37 @@ hermes portal tools</code></pre>
 
   <div class="tip">اگر در طول راه‌اندازی به خطا خوردید، بخش «عیب‌یابی» در انتهای همین راهنما و بخش «اجرای برنامه در حالت توسعه» را ببینید — رایج‌ترین خطاها و راه‌حل آن‌ها آنجا فهرست شده است.</div>
 </section>
+
+<section id="quickstart">
+  <h2><span class="num">۱۷</span> راه‌اندازی سریع در ۶ گام</h2>
+  <p class="lead">برای کسانی که فقط می‌خواهند استک محلی بالا بیاید: هر گام یک فرمان است. در صورت بروز خطا، جدول عیب‌یابی (بخش ۱۹) را ببینید.</p>
+  <ol class="steps">
+    <li><strong>نصب وابستگی‌ها</strong> — از ریشهٔ مخزن: <code dir="ltr">npm install</code> (تک‌قفل‌نامه: هرگز از زیرپوشه‌ها مثل <code dir="ltr">ui-tui</code> نصب نکنید) و برای بک‌اند <code dir="ltr">pip install -e ".[web,dev]"</code>. آزمون سلامت: <code dir="ltr">hermes doctor</code>.</li>
+    <li><strong>راه‌اندازی یک‌مرحله‌ای</strong> — <code dir="ltr">hermes setup --portal</code>: وارد حساب Nous Portal شوید، مدل را انتخاب کنید و دروازه ابزارها (وب، تصویر، TTS، مرورگر) همان‌جا وصل می‌شود. برای انتخاب تک‌تک ابزارها: <code dir="ltr">hermes setup tools</code>.</li>
+    <li><strong>اجرای دروازه</strong> — <code dir="ltr">hermes gateway run</code>. بازرسی: <code dir="ltr">hermes gateway status</code> باید «در حال اجرا» را نشان دهد.</li>
+    <li><strong>اجرای داشبورد</strong> — <code dir="ltr">hermes dashboard --port 9119</code>؛ پس از چند ده ثانیه <code dir="ltr">http://127.0.0.1:9119/</code> باز می‌شود (پرچم <code dir="ltr">--no-open</code> هم هست).</li>
+    <li><strong>انتخاب زبان فارسی</strong> — دکمهٔ «تغییر زبان» در پایین نوار کناری داشبورد؛ در ترمینال هم <code dir="ltr">hermes config set display.language fa</code>. فونت Vazirmatn و چیدمان راست‌به‌چپ خودکار فعال می‌شود.</li>
+    <li><strong>بررسی نهایی</strong> — <code dir="ltr">hermes doctor</code> باید بدون هشدار وابستگی تمام شود و نوار وضعیت داشبورد «وضعیت دروازه: در حال اجرا» را نشان دهد. برای شروع خودکار پس از هر ری‌استارت ویندوز، یک‌بار <code dir="ltr">start-hermes-stack.cmd</code> را اجرا کنید.</li>
+  </ol>
+</section>
+
+<section id="test-extras">
+  <h2><span class="num">۱۸</span> وابستگی‌های اختیاری برای اجرای تست‌ها (توسعه‌دهندگان)</h2>
+  <p class="lead">بخش بزرگی از تست‌ها به ارائه‌دهنده‌های اختیاری وابسته‌اند که پیش‌فرض نصب نمی‌شوند؛ بدون آن‌ها pytest به‌جای پاس، skip می‌زند یا خطای جمع‌آوری می‌دهد. همه در <code dir="ltr">pyproject.toml</code> تحت <code dir="ltr">[project.optional-dependencies]</code> پین شده‌اند.</p>
+  <table>
+    <thead><tr><th>بستهٔ اضافی</th><th>دستور نصب</th><th>چه چیزی را باز می‌کند</th></tr></thead>
+    <tbody>
+      <tr><td><code dir="ltr">dev</code></td><td><code dir="ltr">pip install -e ".[dev]"</code></td><td>خود pytest و pytest-asyncio، mcp، httpx، ruff و ty — پیش‌نیاز هر اجرای تستی</td></tr>
+      <tr><td><code dir="ltr">messaging</code></td><td><code dir="ltr">pip install -e ".[messaging]"</code></td><td>تست‌های تلگرام، Discord، Slack و کانال‌های پیام‌رسانی (tests/gateway، tests/tools)</td></tr>
+      <tr><td><code dir="ltr">anthropic</code></td><td><code dir="ltr">pip install -e ".[anthropic]"</code></td><td>تست‌های آداپتور Anthropic در tests/agent (سایر ارائه‌دهنده‌ها از طریق کلید API قلابی stub می‌شوند)</td></tr>
+      <tr><td><code dir="ltr">web</code></td><td><code dir="ltr">pip install -e ".[web]"</code></td><td>سرور داشبورد/دروازه که تست‌های یکپارچگی به آن وصل می‌شوند</td></tr>
+      <tr><td>افزونه‌های pytest</td><td><code dir="ltr">pip install pytest-timeout pytest-xdist</code></td><td>اجرای قطعه‌قطعهٔ suite دروازه روی ویندوز با تایم‌اوت در هر تست (هر دو فقط برای توسعه؛ پین نشده‌اند)</td></tr>
+    </tbody>
+  </table>
+  <div class="note">روی ویندوز suite کامل دروازه را قطعه‌قطعه با تایم‌اوت اجرا کنید (دستور در سند run مخزن آمده) — اجرای یک‌جا زیر بار ماشین به‌راحتی گیر می‌کند. اگر پکیجی نبود، pytest خودش نام ماژول گم‌شده را می‌گوید؛ همان extra جدول بالا را نصب کنید و دوباره جمع‌آوری کنید.</div>
+</section>
+
+<!-- ════════════════ 18. عیب‌یابی ════════════════ -->
 
 <section id="layout">
   <h2><span class="num">۳</span> چیدمان کلی پنجره</h2>
@@ -611,7 +644,7 @@ hermes cron list</code></pre>
 
 <!-- ════════════════ 16. عیب‌یابی ════════════════ -->
 <section id="troubleshooting">
-  <h2><span class="num">۱۷</span> عیب‌یابی و پرسش‌های رایج</h2>
+  <h2><span class="num">۱۹</span> عیب‌یابی و پرسش‌های رایج</h2>
 
   <div class="warn">خطای <strong>«پل IPC دسکتاپ در دسترس نیست» (Desktop IPC bridge is unavailable)</strong> تقریباً همیشه یعنی نشانی <code>127.0.0.1:5174</code> را در یک مرورگر معمولی باز کرده‌اید — نه اینکه برنامه خراب باشد. پنجره برنامه دسکتاپ Hermes را باز کنید؛ توضیح کامل در «تفاوت مرورگر و برنامه دسکتاپ» پایین همین بخش.</div>
 

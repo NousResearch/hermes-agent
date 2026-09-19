@@ -680,10 +680,77 @@ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str
     return base_url, _validated_main_model_selection(cfg, provider, model, base_url, api_key)
 
 
+def _read_profile_telegram_creds(profile_dir) -> tuple:
+    """Read TELEGRAM_BOT_TOKEN/TELEGRAM_HOME_CHANNEL straight from a profile's own ``.env``.
+
+    Per-profile secret (not process-global os.environ), and this runs from the dashboard
+    process which is always scoped to the "default" profile's env — so a notification for
+    profile X must read X's own .env file directly rather than go through get_secret().
+    """
+    from pathlib import Path
+    env_path = Path(profile_dir) / ".env" if profile_dir else Path.home() / ".hermes" / ".env"
+    token, chat_id = "", ""
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("TELEGRAM_BOT_TOKEN="):
+                token = line.split("=", 1)[1].strip().strip('"').strip("'")
+            elif line.startswith("TELEGRAM_HOME_CHANNEL="):
+                chat_id = line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return token, chat_id
+
+
+def _notify_model_change_via_telegram(prev_provider: str, prev_model: str, new_provider: str, new_model: str) -> None:
+    """Best-effort Telegram notice on a dashboard-driven main model switch (Dan request).
+
+    Fires only when provider or model actually changed. Reads the CURRENT profile's own
+    ``.env`` (resolved via ``get_hermes_home()``, which already honors the ``_profile_scope``
+    contextvar this function runs inside) — each profile notifies through its own bot/chat,
+    not always Daniele's default one. Uses the out-of-process standalone sender (same one
+    cron's deliver=telegram relies on) since the dashboard is a separate process from the
+    gateway. Never raises: a notification failure must not block the model switch itself.
+    """
+    if prev_provider == new_provider and prev_model == new_model:
+        return
+    try:
+        import asyncio
+        from hermes_constants import get_hermes_home
+        profile_dir = get_hermes_home()
+        token, chat_id = _read_profile_telegram_creds(profile_dir)
+        if not chat_id or not token:
+            logging.getLogger(__name__).debug(
+                "Model-change notification skipped for %s: no Telegram creds", profile_dir)
+            return
+
+        message = (
+            "🔀 Modello cambiato dalla dashboard\n"
+            f"Prima: {prev_provider}/{prev_model}\n"
+            f"Ora: {new_provider}/{new_model}"
+        )
+
+        async def _send():
+            from tools.send_message_tool import _send_telegram
+            await _send_telegram(token, chat_id, message)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_send())
+        except RuntimeError:
+            asyncio.run(_send())
+    except Exception:
+        logging.getLogger(__name__).debug("Model-change Telegram notification failed", exc_info=True)
+
+
 def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
                                 prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
     from hermes_cli.free_tier_bootstrap import reconcile_record
+    _prev_raw = cfg.get("model")
+    prev_cfg: dict = _prev_raw if isinstance(_prev_raw, dict) else {}
+    prev_provider = str(prev_cfg.get("provider", "") or "").strip().lower()
+    prev_model = str(prev_cfg.get("default") or prev_cfg.get("model") or "").strip()
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
     provider_entry = _provider_entry(cfg, provider)
@@ -698,6 +765,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
         _register_custom_endpoint(base_url, api_key, model)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
     reconcile_record()
+    _notify_model_change_via_telegram(prev_provider, prev_model, new_provider, model.strip())
 
     return {
         "ok": True,

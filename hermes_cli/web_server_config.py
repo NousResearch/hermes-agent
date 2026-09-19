@@ -194,6 +194,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `runtime.nofile_soft_limit` (#78873) is the only schema-surfaced runtime field — fold it into the
     # agent tab rather than spawning a one-field orphan category.
     "runtime": "agent",
+    # `vision.embed_target_bytes` (#112095, upstream f37336522b port) is our only schema-surfaced
+    # vision field — same fold. Upstream main later grew the section to 2 keys (max_calls_per_image,
+    # abc56351aa); drop this entry if that feature is ever ported.
+    "vision": "agent",
     "session": "general",
     "nous": "agent",
 }

@@ -1027,12 +1027,13 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
             delivery_metadata["direct_messages_topic_id"] = str(thread_id)
         if message_id:
             delivery_metadata["telegram_reply_to_message_id"] = str(message_id)
+    from hermes_cli import kanban_db_notify as _kbn
     return dict(
         platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=thread_id,
         user_id=env("HERMES_SESSION_USER_ID", "") or None,
         user_id_alt=env("HERMES_SESSION_USER_ID_ALT", "") or None,
         notifier_profile=notifier_profile,
-        delivery_mode="notify+wake" if platform != "tui" else None,
+        delivery_mode=_kbn.auto_subscribe_delivery_mode(platform),
         delivery_metadata=delivery_metadata or None)
 
 
@@ -1058,7 +1059,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
                and (sub["thread_id"] or "") == (target["thread_id"] or "")
                for sub in _kbn.list_notify_subs(conn, task_id)):
             return True
-        _kbn.add_notify_sub(conn, task_id=task_id, **target)
+        _kbn.add_notify_sub(conn, task_id=task_id, origin=_kbn.ORIGIN_AUTO, **target)
         return True
     except Exception as _exc:
         logger.warning(

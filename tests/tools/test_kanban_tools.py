@@ -1082,6 +1082,62 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     assert _list_subs_for_task(d["task_id"]) == []
 
 
+def test_create_auto_subscribe_mode_wake(monkeypatch, worker_env, tmp_path):
+    """kanban.auto_subscribe_mode=wake stamps the auto-created
+    subscription as wake-only (#108913): the origin session still gets
+    an agent turn on terminal events, but no passive chat ping is sent."""
+    home = tmp_path / "mode-home" / ".hermes"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_mode: wake\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-mode")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "wake mode",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "wake"
+    # Provenance 'auto': children inheriting this sub must follow the knob,
+    # not the stamped mode (test_kanban_notify covers the inherit side).
+    assert subs[0]["origin"] == "auto"
+
+
+def test_create_auto_subscribe_mode_invalid_falls_back(monkeypatch, worker_env, tmp_path):
+    """An invalid kanban.auto_subscribe_mode is ignored (soft contract):
+    the historical split applies — notify+wake on gateway platforms."""
+    home = tmp_path / "badmode-home" / ".hermes"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_mode: loud\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-badmode")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "bad mode",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "notify+wake"
+
+
 def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worker_env):
     """If add_notify_sub itself raises (e.g. DB locked, schema drift),
     _maybe_auto_subscribe must NOT bubble that up and fail the parent

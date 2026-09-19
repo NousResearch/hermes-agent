@@ -405,8 +405,15 @@ class GatewaySlashCommandsMixin(
                     # the same session key only when the alt id survives the round-trip.
                     user_id_alt=_field("user_id_alt"),
                     notifier_profile=_field("profile") or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                    # Subscribing from chat: deliver the passive message and wake the destination agent.
-                    delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
+                    # Subscribing from chat: the delivery mode comes from
+                    # kanban.auto_subscribe_mode (legacy default: notify+wake —
+                    # the passive message AND a wake of the destination agent).
+                    delivery_mode=_kbn.auto_subscribe_delivery_mode(platform_str),
+                    # Side effect of card creation, not an explicit subscribe:
+                    # provenance 'auto' keeps the row on the auto_subscribe_mode
+                    # policy when the task's children inherit it.
+                    origin=_kbn.ORIGIN_AUTO,
+                    delivery_metadata=delivery_metadata)
             finally:
                 conn.close()
         await asyncio.to_thread(_sub)

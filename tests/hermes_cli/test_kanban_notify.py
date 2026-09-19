@@ -782,6 +782,71 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         conn.close()
 
 
+def test_auto_subscribe_delivery_mode_config(kanban_home):
+    """``kanban.auto_subscribe_mode`` overrides the mode stamped onto
+    auto-created subscriptions; unset/invalid keeps the historical
+    split (#108913)."""
+    from hermes_cli import kanban_db_notify as kbn
+
+    # Unset: historical split — gateway platforms get notify+wake, TUI
+    # falls back to the DB default (None -> "notify").
+    assert kbn.auto_subscribe_delivery_mode("telegram") == "notify+wake"
+    assert kbn.auto_subscribe_delivery_mode("tui") is None
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_mode: wake\n"
+    )
+    assert kbn.auto_subscribe_delivery_mode("telegram") == "wake"
+    # An explicit valid value applies uniformly, TUI included.
+    assert kbn.auto_subscribe_delivery_mode("tui") == "wake"
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_mode: loud\n"
+    )
+    assert kbn.auto_subscribe_delivery_mode("telegram") == "notify+wake"
+    assert kbn.auto_subscribe_delivery_mode("tui") is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_auto_subscribe_mode_wake(kanban_home):
+    """``kanban.auto_subscribe_mode=wake`` must stamp `/kanban create`
+    subscriptions as wake-only (#108913)."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_mode: wake\n"
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="chat-wake",
+        chat_type="dm",
+        thread_id=None,
+        user_id="u1",
+    )
+    event = SimpleNamespace(
+        text='/kanban create "wake mode" --assignee alice',
+        source=source,
+        message_id="463",
+        reply_to_message_id=None,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert "subscribed" in out.lower()
+
+    conn = kbc.connect()
+    try:
+        subs = kbn.list_notify_subs(conn)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "wake"
+
+
 @pytest.mark.parametrize(
     "chat_type,thread_id,thread_sessions_per_user",
     [
@@ -1171,6 +1236,87 @@ def test_create_with_parents_inherits_delivery_metadata(kanban_home):
     finally:
         conn.close()
     _assert_full_inherited_sub(subs)
+
+
+# ---------------------------------------------------------------------------
+# Inheritance x kanban.auto_subscribe_mode (#108913): auto-originated subs
+# follow the configured policy down the lineage (a pre-knob notify+wake sub
+# must not leak passive pings to every child); explicit ("user") and legacy
+# (NULL origin) rows are copied verbatim.
+# ---------------------------------------------------------------------------
+
+
+def test_inherit_auto_sub_follows_configured_mode(kanban_home):
+    """With kanban.auto_subscribe_mode=wake, an auto-originated parent sub
+    stamped notify+wake (e.g. created before the knob existed) inherits as
+    wake: no passive ping on child completion."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    (kanban_home / "config.yaml").write_text("kanban:\n  auto_subscribe_mode: wake\n")
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kbn.add_notify_sub(
+            conn, task_id=parent, platform="weixin", chat_id="dm-1",
+            delivery_mode="notify+wake", origin=kbn.ORIGIN_AUTO,
+        )
+        child = kb.create_task(conn, title="child", assignee="w1", parents=[parent])
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "wake"
+    assert subs[0]["origin"] == "auto"
+
+
+def test_inherit_auto_sub_verbatim_when_knob_unset(kanban_home):
+    """No explicit kanban.auto_subscribe_mode: inheritance keeps the verbatim
+    historical copy — installs that never set the knob see no change."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kbn.add_notify_sub(
+            conn, task_id=parent, platform="weixin", chat_id="dm-1",
+            delivery_mode="notify+wake", origin=kbn.ORIGIN_AUTO,
+        )
+        child = kb.create_task(conn, title="child", assignee="w1", parents=[parent])
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "notify+wake"
+
+
+def test_inherit_never_rewrites_user_subs(kanban_home):
+    """The knob owns auto subs only: an explicitly subscribed chat inherited
+    into a child keeps its delivery_mode even with auto_subscribe_mode=wake."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    (kanban_home / "config.yaml").write_text("kanban:\n  auto_subscribe_mode: wake\n")
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kbn.add_notify_sub(
+            conn, task_id=parent, platform="weixin", chat_id="dm-1",
+            delivery_mode="notify+wake", origin=kbn.ORIGIN_USER,
+        )
+        child = kb.create_task(conn, title="child", assignee="w1", parents=[parent])
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "notify+wake"
+    assert subs[0]["origin"] == "user"
 
 
 # ---------------------------------------------------------------------------

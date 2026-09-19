@@ -849,6 +849,9 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+    # Provenance: 'auto' rows follow kanban.auto_subscribe_mode on
+    # inheritance; 'user'/NULL are copied verbatim. NULL = pre-provenance row.
+    ("origin", "origin TEXT"),
 )
 
 _TASK_RUN_COLUMNS = (

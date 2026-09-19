@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from math import isfinite
 from typing import Iterable, Optional
 from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
@@ -68,6 +69,38 @@ class MCPServerHealthMixin:
         task = asyncio.create_task(_run())
         self._pending_refresh_tasks.add(task)
         task.add_done_callback(self._pending_refresh_tasks.discard)
+        return task
+
+    def _cancel_ttl_tools_refresh(self) -> None:
+        """Cancel the current session's ttl timer, if any."""
+        task = self._tools_ttl_refresh_task
+        self._tools_ttl_refresh_task = None
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    def _schedule_ttl_tools_refresh(self) -> Optional[asyncio.Task]:
+        """Re-list tools once a valid SEP-2549 ``ttlMs`` hint expires."""
+        ttl_ms = self._list_cache_meta.get("ttl_ms")
+        if (isinstance(ttl_ms, bool) or not isinstance(ttl_ms, (int, float))
+                or not isfinite(ttl_ms) or ttl_ms <= 0):
+            self._cancel_ttl_tools_refresh()
+            return None
+
+        self._cancel_ttl_tools_refresh()
+
+        async def _run():
+            await asyncio.sleep(ttl_ms / 1000)
+            if not self._shutdown_event.is_set():
+                await self._refresh_tools()
+
+        task = asyncio.create_task(_run())
+        self._tools_ttl_refresh_task = task
+
+        def _clear(done_task: asyncio.Task) -> None:
+            if self._tools_ttl_refresh_task is done_task:
+                self._tools_ttl_refresh_task = None
+
+        task.add_done_callback(_clear)
         return task
 
     def _make_logging_callback(self):
@@ -146,7 +179,9 @@ class MCPServerHealthMixin:
                 if session is None:
                     logger.debug("MCP server '%s': skipping dynamic tool refresh; session not connected", self.name)
                     return
-                new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
+                cache_meta = {}
+                new_mcp_tools = await _core._paginate_full_list(
+                    session.list_tools, "tools", self.name, cache_meta_out=cache_meta)
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
             self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})
@@ -156,6 +191,8 @@ class MCPServerHealthMixin:
             registered_names = _registration._register_server_tools(self.name, self, self._config)
             self._deregister_owned(old_tool_names - set(registered_names))
             self._registered_tool_names = registered_names
+            self._list_cache_meta = cache_meta
+            self._schedule_ttl_tools_refresh()
             new_tool_names = set(registered_names)
             changes = [f"{label}: {', '.join(sorted(names))}" for label, names in
                        (("added", new_tool_names - old_tool_names), ("removed", old_tool_names - new_tool_names)) if names]

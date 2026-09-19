@@ -303,6 +303,9 @@ class MCPServerRunMixin:
                 if not await self._on_transport_error(exc, budget):
                     break
             finally:
+                # A ttl timer belongs to this transport session. Never let it refresh a
+                # replacement session after reconnect or teardown.
+                self._cancel_ttl_tools_refresh()
                 self.session = None
                 # Stale PIDs must never fast-fail the NEXT transport's calls.
                 self._stdio_child_pids = set()
@@ -473,6 +476,7 @@ class MCPServerRunMixin:
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
         self._shutdown_event.set()
+        self._cancel_ttl_tools_refresh()
         # Also set reconnect: closes any race where _wait_for_lifecycle_event misses the
         # shutdown flag after returning "reconnect".
         self._reconnect_event.set()

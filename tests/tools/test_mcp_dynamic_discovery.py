@@ -185,6 +185,43 @@ class TestRefreshTools:
             assert server._registered_tool_names == ["mcp__restored_srv__live_tool"]
 
 
+class TestToolsListTtlRefresh:
+    @pytest.mark.asyncio
+    async def test_ttl_expiry_refreshes_live_session(self):
+        """A positive tools/list ttlMs re-fetches tools without a notification."""
+        server = MCPServerTask("ttl_srv")
+        server._list_cache_meta = {"ttl_ms": 1}
+
+        with patch("tools.mcp_tool_health.asyncio.sleep", new=AsyncMock()) as sleep:
+            with patch.object(server, "_refresh_tools", new=AsyncMock()) as refresh:
+                task = server._schedule_ttl_tools_refresh()
+                await task
+
+        sleep.assert_awaited_once_with(0.001)
+        refresh.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_or_invalid_ttl_does_not_schedule_refresh(self):
+        """Absent, zero, and malformed cache hints leave a live session untouched."""
+        server = MCPServerTask("no_ttl_srv")
+        for ttl_ms in (None, 0, -1, "1000", True):
+            server._list_cache_meta = {"ttl_ms": ttl_ms}
+            assert server._schedule_ttl_tools_refresh() is None
+        assert server._tools_ttl_refresh_task is None
+
+    @pytest.mark.asyncio
+    async def test_ttl_timer_cleanup_cancels_pending_refresh(self):
+        """Reconnect and shutdown can cancel a pending ttl timer before it touches a new session."""
+        server = MCPServerTask("cleanup_ttl_srv")
+        server._list_cache_meta = {"ttl_ms": 60_000}
+        task = server._schedule_ttl_tools_refresh()
+
+        server._cancel_ttl_tools_refresh()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert server._tools_ttl_refresh_task is None
+
+
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""
 

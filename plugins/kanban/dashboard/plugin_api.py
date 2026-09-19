@@ -82,12 +82,13 @@ def _existing_board_slug(slug: str) -> str:
 
 
 def _conn(board: Optional[str] = None):
-    """Connect to the already-normalised ``board`` (``None`` = active). ``init_db`` is
-    idempotent; running it here lets a fresh install self-heal if POST /tasks arrives first."""
-    try:
-        kanban_db.init_db(board=board)
-    except Exception as exc:
-        log.warning("kanban init_db failed: %s", exc)
+    """Connect to the already-normalised ``board`` (``None`` = active).
+
+    ``connect`` initializes a fresh database on first use and re-initializes a
+    database whose schema disappeared. Calling ``init_db`` here would discard
+    that per-path cache and repeat migrations and the integrity check for every
+    dashboard request.
+    """
     return kbc.connect(board=board)
 
 

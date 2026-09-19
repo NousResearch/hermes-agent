@@ -91,7 +91,7 @@ Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscr
 
 
 :::info Codex Note
-The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required. Automatic adoption of the Codex CLI login (when Hermes' own refresh fails) is controlled by `auth.adopt_external_logins` — see [Borrowed CLI logins](/docs/user-guide/security#borrowed-cli-logins).
+The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required. Automatic adoption of the Codex CLI login (when Hermes' own refresh fails) is controlled by `auth.adopt_external_logins` — see [Borrowed CLI logins](../user-guide/security.md#borrowed-cli-logins).
 
 If a token refresh fails with a terminal error (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and stops replaying it so you don't see a flood of identical auth failures. The next request surfaces a typed re-auth message instead. Run `hermes auth add openai-codex` (or `hermes model` → **ChatGPT or Codex Subscription**) to start a fresh device-code login; the quarantine clears on the next successful exchange.
 
@@ -166,7 +166,7 @@ in the credential pool take precedence over a borrowed Claude Code login. The
 borrowed login remains the fallback when no owned OAuth grant is available —
 unless `auth.adopt_external_logins: false` is set, in which case Hermes never
 reads or refreshes Claude Code's credentials (see
-[Borrowed CLI logins](/docs/user-guide/security#borrowed-cli-logins)).
+[Borrowed CLI logins](../user-guide/security.md#borrowed-cli-logins)).
 Auxiliary authentication recovery refreshes the credential used by the failed
 request, not an unrelated ambient login; rotating a borrowed login can otherwise
 invalidate its owner's refresh token.

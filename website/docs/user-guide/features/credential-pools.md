@@ -166,6 +166,27 @@ credential_pool_strategies:
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
 
+### Demoting a healthy credential {#demoting-a-healthy-credential}
+
+The pool only benches a credential *after* the provider rejects it (429/402/401). To keep a
+credential you are actively using elsewhere — for example a Codex login whose weekly window
+you want to save for interactive work — out of the gateway's first pick *before* it runs dry,
+move it to the back of the `fill_first` order instead of removing it:
+
+```bash
+hermes auth list openai-codex                 # find the index, id or label
+hermes auth priority openai-codex 1 99        # 1-based index, entry id, or exact label; large n = last
+hermes auth priority openai-codex work-seat 0 # ...and back to the front later
+```
+
+`hermes auth priority <provider> <target> <priority>` reorders one credential and renumbers the
+others, then persists the new order to `auth.json`. The demoted entry stays healthy: it is not
+exhausted, so it is never touched by the Codex quota-reset probe and there is nothing for
+`hermes auth reset` to clear; it is not refreshed on a timer, and it is still used once every
+credential ahead of it is benched.
+Sessions that already hold a credential keep it until they rotate; new sessions (and the next
+gateway start) follow the new order.
+
 ## Error Recovery
 
 The pool handles different errors differently:
@@ -201,6 +222,16 @@ command (`hermes auth add <provider>`), and the credential leaves rotation — m
 when it only mirrored a token file the pool has just cleared — until you sign in again. This applies to Anthropic, Codex, xAI
 and Nous OAuth logins alike. A dead credential never re-enters rotation on a timer, so a lost login
 shows up once in the log instead of failing quietly every hour.
+
+**Every Codex login in an always-on home is dead: sign in again, do not wait for adoption.** Hermes
+imports the Codex CLI's `~/.codex/auth.json` automatically only to *repair a login it already has*
+— when its own refresh of the `openai-codex` entry fails and `auth.adopt_external_logins` is on
+(see [Borrowed CLI logins](../security.md#borrowed-cli-logins)). A pool whose Codex entries are
+all `dead` (or removed) has nothing left to repair, so a headless gateway or cron profile stays
+without a Codex credential until you run `hermes auth add openai-codex` in *that* home
+(`hermes -p <profile> auth add openai-codex` for a named profile), which offers the Codex CLI import
+interactively. Profiles that should share one login can point at the same `HERMES_HOME` instead of
+each holding a copy of a single-use refresh token.
 
 **A cooling-down or dead credential is not a blank install.** When a configured profile starts the
 CLI while its only credential is benched or quarantined, startup prints the failure and, for a bench,

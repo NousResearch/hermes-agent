@@ -23,6 +23,14 @@ export interface KanbanTask {
   started_at?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
+  /** Per-card runtime cap (seconds); null/absent = no cap. */
+  max_runtime_seconds?: null | number
+  /** Board-computed "needs triage": the card was unblocked and re-blocked, or
+   *  its worker failed repeatedly — a loop only a human can break. */
+  triage_signal?: boolean
+  /** Last event time (epoch seconds) — the payload's "last touched" clock
+   *  (the tasks table has no updated_at); drives the stale-blocked dot. */
+  last_event_at?: null | number
 }
 
 export interface KanbanColumn {

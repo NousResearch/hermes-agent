@@ -987,6 +987,29 @@ export const zhHant = defineLocale({
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
       showOptions: '顯示選項'
     },
+    screenshot: {
+      enabledTitle: '螢幕截圖快速鍵',
+      enabledDesc:
+        '在任何應用程式中同時按下左右兩個 Command 鍵，即可擷取最前方的視窗並附加到目前的 Hermes 草稿。絕不會自動傳送。預設關閉，僅適用於這台 Mac。視窗可能包含敏感內容，請在傳送前檢查附件。',
+      statusTitle: '螢幕截圖快速鍵狀態',
+      checking: '正在檢查螢幕截圖快速鍵…',
+      disabled: '螢幕截圖快速鍵已關閉。',
+      starting: '正在啟動快速鍵偵測，尚未就緒。',
+      ready: '快速鍵已就緒。截圖會附加到目前的草稿，不會傳送。',
+      inputPermission:
+        '輸入監控權限可讓 Hermes 在其他應用程式使用中時偵測兩個 Command 鍵。請在系統設定 → 隱私權與安全性 → 輸入監控中允許 Hermes，然後返回此處重試。',
+      screenPermission:
+        '螢幕錄製權限可讓 Hermes 在你使用此快速鍵時擷取最前方的應用程式視窗。請在系統設定 → 隱私權與安全性 → 螢幕錄製中允許 Hermes，然後返回此處重試。如果 macOS 提示，請重新啟動 Hermes。',
+      openSettings: '開啟系統設定',
+      retry: '重試',
+      unavailable: '螢幕截圖快速鍵無法使用。請重試或將其關閉。',
+      errorTitle: '螢幕截圖快速鍵錯誤',
+      loadFailed: '無法讀取快速鍵狀態。請重試以檢查目前的設定。',
+      saveFailed: '無法確認快速鍵變更。請重試以檢查目前的設定。',
+      permissionFailed: '無法開啟系統設定。請手動開啟「隱私權與安全性」，然後重試。',
+      captureFailed: '無法擷取最前方的視窗。未附加或傳送任何內容。',
+      contextChanged: '截圖期間目前的草稿已變更。截圖未附加或傳送。'
+    },
     quickEntry: {
       enabledTitle: '快速輸入',
       enabledDesc: '用全域快速鍵在任何地方喚出一個小輸入框，無需開啟 Hermes 即可送出提示。',
@@ -1219,7 +1242,11 @@ export const zhHant = defineLocale({
       providerDefault: '(提供方預設)',
       moaTitle: '混合代理（Mixture of Agents）',
       moaPreset: '預設',
+      moaDescription:
+        '設定以「混合代理」提供者下模型形式出現的命名預設。聚合模型是執行模型——它執行工具迴圈的每一步，整個運行幾乎全部費用都計入其提供者。參考模型預設每輪使用者訊息僅提供一次建議。',
       moaAggregator: '聚合模型',
+      moaAggregatorBilled: '執行模型 · 整個運行在此計費',
+      moaReferenceHint: '默認每輪僅建議一次',
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
@@ -2261,6 +2288,7 @@ export const zhHant = defineLocale({
       sectionLabel: '專案',
       home: '主頁',
       autoDiscovered: '自動探索',
+      showAllCount: count => `顯示全部 ${count} 個工作階段`,
       newButton: '新增專案',
       createTitle: '新增專案',
       createDesc: '為工作區命名並新增一個或多個資料夾。',
@@ -3070,6 +3098,8 @@ export const zhHant = defineLocale({
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',
     collapseAll: '收合所有資料夾',
+    showIgnored: '顯示 gitignore 的檔案',
+    hideIgnored: '隱藏 gitignore 的檔案',
     previewUnavailable: '預覽不可用',
     couldNotPreview: path => `無法預覽 ${path}`,
     noProjectTitle: '沒有專案',
@@ -3534,7 +3564,13 @@ export const zhHant = defineLocale({
     cwdChangeFailed: '工作目錄變更失敗',
     cwdStagedTitle: '工作目錄已暫存',
     cwdStagedMessage: '重新啟動桌面後端後，工作目錄變更才會套用至此作用中工作階段。',
+    modelSwitchConfirmBody: '此模型切換需要確認。',
+    modelSwitchConfirmLabel: '仍然切換',
+    modelSwitchConfirmTitle: (model: string) => `切換到 ${model}？`,
+    modelSwitchConfirmTitleFallback: '切換模型？',
     modelSwitchFailed: '模型切換失敗',
+    modelSwitchKeepLabel: '保留目前模型',
+    modelSwitchStaleNotice: '選擇已變更 — 未套用模型切換。',
     hydrationSyncing: (profile: string) => `正在同步 ${profile}\u2026`,
     sessionExported: '工作階段已匯出',
     sessionExportFailed: '無法匯出工作階段',

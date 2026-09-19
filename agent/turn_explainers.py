@@ -39,10 +39,6 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
         "no new content was produced this turn; showing recovered "
         "prior context. Send `continue` to retry."
     ),
-    "interrupted_during_api_call": (
-        "the request was interrupted mid-call before a reply was "
-        "received. Send `continue` to retry."
-    ),
     "redirect_restart_limit_exceeded": (
         "the request was cancelled by a new correction on every attempt, "
         "so the turn stopped instead of retrying forever. Your last "
@@ -70,6 +66,11 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
 
 # Parameterised reasons (``max_iterations_reached(3/3)`` …) matched by prefix.
 _EXIT_REASON_PREFIX_EXPLANATIONS = (
+    # ``interrupted_during_api_call(<issuer>)`` names a system watchdog (#112647).
+    ("interrupted_during_api_call", (
+        "the request was interrupted mid-call before a reply was "
+        "received. Send `continue` to retry."
+    )),
     ("max_iterations_reached", (
         "the maximum tool-iteration limit was reached before a "
         "final answer. Send `continue` to keep going, or raise "

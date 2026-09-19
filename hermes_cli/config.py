@@ -187,7 +187,10 @@ def validate_env_var_name_for_write(key: str) -> None:
 # Serializes all config read/write paths and guards the module-level caches below. libyaml's
 # C extension is not thread-safe for concurrent safe_load() on one file, and tool threads
 # (approval, browser, setup flows) load/save config concurrently during long agent runs.
-# RLock because save_config internally calls read_raw_config.
+# RLock because callers hold it across a read-modify-write and then call save_config(), which
+# acquires it again (hermes_cli/plugins.py: `with ..., config_mod._CONFIG_LOCK:` then
+# read_user_config_raw() + save_config()). save_config itself no longer re-enters via
+# read_raw_config; it takes its raw mapping from require_readable_config_before_write.
 _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
@@ -1091,7 +1094,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
-    "ssl_ca_cert", "ssl_verify", "key_env"}
+    "ssl_ca_cert", "ssl_verify", "key_env", "catalog_provider"}
 
 # Fields that look like they should be inside custom_providers, not at root
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
@@ -2401,10 +2404,12 @@ def save_config(
 
         ensure_hermes_home()
         config_path = get_config_path()
-        require_readable_config_before_write(config_path)
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
-        # agent.max_turns) so _strip_default_values keeps exactly what the user set.
-        _raw_for_paths = read_raw_config()
+        # agent.max_turns) so _strip_default_values keeps exactly what the user set. The
+        # fail-closed read is the single authority here: ``read_raw_config()`` is cached and
+        # swallows transient stat/open errors into ``{}``, and a ``{}`` at this point makes the
+        # strip pass drop every user section whose value matches a default (#113301).
+        _raw_for_paths = require_readable_config_before_write(config_path)
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 
@@ -2426,39 +2431,21 @@ def save_config(
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
-# load_env() memo keyed on (path, *file_signature). Editing .env bumps mtime/inode -> rebuild;
-# invalidate_env_cache() is the explicit knob for writers on coarse-mtime filesystems.
-_env_cache: Optional[Tuple[Tuple[str, Optional[Tuple[int, int, int, int]]], Dict[str, str]]] = None
-
-
 def load_env() -> Dict[str, str]:
-    """Load ~/.hermes/.env as a dict (memoised; ``get_env_value()`` runs hundreds of times per
-    interactive menu render). Each assignment's value is opaque data for boundary discovery."""
-    global _env_cache
-    env_path = get_env_path()
-
-    try:
-        st = env_path.stat()
-        cache_key = (str(env_path), file_signature(st))
-    except FileNotFoundError:
-        cache_key = (str(env_path), None)
-    except Exception:
-        cache_key = None
-    if cache_key is not None and _env_cache is not None and _env_cache[0] == cache_key:
-        return dict(_env_cache[1])
-
+    """Load ~/.hermes/.env as a dict. Memoised inside ``load_env_file`` (``get_env_value()`` runs
+    hundreds of times per interactive menu render). Each assignment's value is opaque data for
+    boundary discovery."""
     from agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
 
-    env_vars = load_env_file(env_path)
-    if cache_key is not None:
-        _env_cache = (cache_key, dict(env_vars))
-    return env_vars
+    return load_env_file(get_env_path())
 
 
 def invalidate_env_cache() -> None:
-    """Clear the load_env() memo so the next call sees a write even on coarse-mtime filesystems."""
-    global _env_cache
-    _env_cache = None
+    """Drop the ``.env`` memo so the next ``load_env()`` sees a write even on coarse-mtime filesystems
+    (save_env_value / remove_env_value / sanitize_env_file call this)."""
+    from agent.secret_scope import invalidate_env_file_cache
+
+    invalidate_env_file_cache()
 
 
 def _sanitize_env_lines(lines: list) -> list:
@@ -3314,17 +3301,40 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
         if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict) or not node:
             return True, None
         if seg not in node:
-            sibling = _suggest_closest_key(seg, set(node.keys()))
-            if sibling is not None:
-                return False, ".".join(consumed + [sibling])
             # ``gateway.discord.<field>``: the path minus its wrong prefix is itself a known key.
+            # Checked BEFORE the fuzzy sibling: a structural match is proof, a fuzzy match is a
+            # guess, and ``agent.gateway.strict`` must be refused as ``gateway.strict`` rather
+            # than written with a misleading ``agent.gateway_timeout`` did-you-mean.
             rest = ".".join(segments[len(consumed):])
             if _split_key_path(rest)[0] in _known_top_level_keys() and _validate_config_key(rest)[0]:
                 return False, rest
+            sibling = _suggest_closest_key(seg, set(node.keys()))
+            if sibling is not None:
+                return False, ".".join(consumed + [sibling])
             return False, None
         consumed.append(seg)
         node = node[seg]
     return True, None
+
+
+def _is_wrong_prefix_suggestion(key: str, suggestion: Optional[str]) -> bool:
+    """Whether *suggestion* proves that *key* has only an extra prefix.
+
+    ``DEFAULT_CONFIG`` is not a complete registry of runtime-read settings, so a
+    sibling spelling suggestion alone cannot prove an unseeded path is a typo.
+    A known suffix, such as ``gateway.discord.gateway_restart_notification``
+    -> ``discord.gateway_restart_notification``, is the narrow case where the
+    pre-write refusal is safe.
+    """
+    if not suggestion:
+        return False
+    key_segments = _split_key_path(key)
+    suggestion_segments = _split_key_path(suggestion)
+    return (
+        len(suggestion_segments) < len(key_segments)
+        and key_segments[-len(suggestion_segments):] == suggestion_segments
+        and _validate_config_key(suggestion)[0]
+    )
 
 
 def _looks_structured_value(value: str) -> bool:
@@ -3509,10 +3519,15 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "but Hermes may not read it.", Colors.YELLOW))
     if suggestion:
         print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-    print(color(
-        "  (Custom top-level keys are supported and bridged to the "
-        "environment for skills/external tools. Use --force to skip "
-        "this notice.)", Colors.DIM))
+    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path (``stt.provider``)
+    # is written but not bridged, so the footer would be a false promise there.
+    if len(_split_key_path(key)) == 1:
+        print(color(
+            "  (Custom top-level keys are supported and bridged to the "
+            "environment for skills/external tools. Use --force to skip "
+            "this notice.)", Colors.DIM))
+    else:
+        print(color("  (Use --force to skip this notice.)", Colors.DIM))
 
 
 def _unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:
@@ -3526,9 +3541,10 @@ def _unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:
 
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
-    ``force`` writes an unknown path under a known section (otherwise refused), skips the
-    unknown-top-level-key notice AND authorizes replacing a mapping section with a
-    scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
+    ``force`` writes a known key given under the wrong prefix (``gateway.discord.foo`` where
+    ``discord.foo`` is known; otherwise refused — any other unknown path under a known section
+    is written with a did-you-mean notice), skips the unknown-top-level-key notice AND
+    authorizes replacing a mapping section with a scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
     to ``model.default``."""
     if is_managed():
         managed_error("set configuration values")
@@ -3569,12 +3585,10 @@ def set_config_value(key: str, value: str, force: bool = False):
     if _redirect_note:
         print(_redirect_note)
     is_known, suggestion = _validate_config_key(key)
-    # Unknown-key handling (#34067, #112003): an unknown path UNDER a known section can only be a
-    # typo (``gateway.discord.gateway_restart_notification``), so it is refused before anything is
-    # written. Unknown lowercase TOP-LEVEL keys stay writable with a post-write notice — their
-    # scalars are bridged into os.environ for skills/external apps, so that namespace is open by
-    # design (UPPER_SNAKE names were already routed to .env above).
-    if not is_known and not force and _split_key_path(key)[0] in _known_top_level_keys():
+    # DEFAULT_CONFIG is an incomplete schema: runtime-read settings may deliberately have no
+    # seeded default. Refuse only the positive wrong-prefix case from #112003; other unknown
+    # paths keep the post-write warning so valid runtime settings remain configurable.
+    if not is_known and not force and _is_wrong_prefix_suggestion(key, suggestion):
         _exit_invalid(_unknown_subkey_refusal(key, suggestion))
 
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
@@ -3652,7 +3666,24 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
         else:
             value = redact_config_value(value)
 
-    print(_format_config_get_value(value, as_json=as_json))
+    print(_format_config_get_value(value, as_json=as_json), flush=True)
+
+    # Phantom-key notice (#112348): a nested path under a KNOWN section that the schema does not
+    # define (``compression.compressor.enabled``) is echoed straight from the user's file and is
+    # usually read by nothing, so it must not look like a live setting. The check is a
+    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``browser.cloud_provider``,
+    # ``stt.provider``, ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
+    # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
+    # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
+    # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.
+    if _split_key_path(key)[0] in _known_top_level_keys():
+        is_known, suggestion = _validate_config_key(key)
+        if not is_known:
+            print(color(
+                f"⚠ '{key}' is not a recognized config key — Hermes may not read it; the value "
+                "printed above comes from your config file.", Colors.YELLOW), file=sys.stderr)
+            if suggestion:
+                print(color(f"  Did you mean: {suggestion}", Colors.YELLOW), file=sys.stderr)
 
 
 def unset_config_value(key: str):

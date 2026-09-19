@@ -163,6 +163,25 @@ class TestCreateProfile:
         assert cfg["model"]["default"] == "some/model"
 
 
+    def test_fresh_profile_inherits_its_custom_provider_gateway(self, profile_env):
+        """The inherited model may point at a custom `providers:` gateway (self-hosted / local
+        endpoint). Copying `model` alone left the new bot with `model.provider: my-gateway` and
+        "Unknown provider 'my-gateway'" on its first turn (#101885 / #94071 class); the provider
+        definition must travel with the model it backs, and nothing else from `providers:` does.
+        """
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: my-gateway\n  default: my-finetune\n"
+            "providers:\n  my-gateway:\n    api: https://llm.internal.example.com/v1\n    key_env: GW_KEY\n"
+            "  unrelated:\n    api: https://other.example.com/v1\n"
+        )
+
+        profile_dir = create_profile("coder", no_alias=True)
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg["model"] == {"provider": "my-gateway", "default": "my-finetune"}
+        assert cfg["providers"] == {"my-gateway": {"api": "https://llm.internal.example.com/v1", "key_env": "GW_KEY"}}
+
     def test_fresh_profile_model_is_copied_not_linked(self, profile_env):
         """Profiles stay independent islands.
 
@@ -1452,10 +1471,10 @@ class TestResolveProfileEnvSpelling:
         never fall back to the platform default.
         """
         root = tmp_path / "configured-root"
-        (root / "profiles" / "beta").mkdir(parents=True)
-        (root / "profiles" / "coder").mkdir(parents=True)
         custom = tmp_path / "custom-hermes"
-        (custom / "profiles" / "beta").mkdir(parents=True)
+        for profile_dir in (root / "profiles" / "beta", root / "profiles" / "coder", custom / "profiles" / "beta"):
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "config.yaml").write_text("{}\n")  # identity marker: a bare dir does not resolve
         cases = [
             (root, "coder", root / "profiles" / "coder"),
             (root / "profiles" / "alpha", "beta", root / "profiles" / "beta"),

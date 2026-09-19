@@ -27,9 +27,10 @@ import {
 import { $unreadSessionCount } from '@/store/session-dot-state'
 import { $titlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
-import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
+import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView, isWorkspacePageRoute } from '../routes'
 
 import {
+  TITLEBAR_CHROME_CHANGED_EVENT,
   TITLEBAR_ICON_BADGE_SCALE,
   titlebarButtonClass,
   titlebarIconSizeCss,
@@ -148,9 +149,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // only while that surface is up — so a non-empty area means a page is
   // actively projecting chrome into the band right now.
   const titleBarLeft = useContributions('titleBar.left')
-  const titleBarCenter = useContributions('titleBar.center')
   const titleBarRight = useContributions('titleBar.right')
-  const pageOwnsTitlebar = titleBarLeft.length + titleBarCenter.length + titleBarRight.length > 0
+  const workspacePage = isWorkspacePageRoute(location.pathname)
+  const pageOwnsTitlebar = titleBarLeft.length + titleBarRight.length > 0
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they
@@ -249,20 +250,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const view = appViewForPath(location.pathname)
 
+  // Route changes can replace measured clusters without resizing the panels.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(TITLEBAR_CHROME_CHANGED_EVENT))
+  }, [location.pathname, pageOwnsTitlebar])
+
   // Overlays own the window. These clusters are `fixed` at a higher z-index
   // than the overlay card, so they'd otherwise bleed over it — hide them (and
   // the nested titleBar slots) and let the overlay's own chrome take over.
   if (isOverlayView(view)) {
     return null
   }
-
-  const titlebarSlots = (
-    <>
-      <Slot area="titleBar.left" />
-      <Slot area="titleBar.center" />
-      <Slot area="titleBar.right" />
-    </>
-  )
 
   const leftClusterClass = cn(
     titlebarToolClusterClass,
@@ -278,13 +276,22 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
     const pageTools = [...leftTools, ...tools].filter(tool => !tool.hidden)
 
+    // Both markers are required even when a page contributes to only one side.
     return (
-      <div className={leftClusterClass}>
-        {pageTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
-        {titlebarSlots}
-      </div>
+      <>
+        <div className={leftClusterClass} data-titlebar-cluster="left">
+          {pageTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+          <Slot area="titleBar.left" />
+        </div>
+        <div
+          className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
+          data-titlebar-cluster="right"
+        >
+          <Slot area="titleBar.right" />
+        </div>
+      </>
     )
   }
 
@@ -302,7 +309,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
         <Slot area="titleBar.left" />
-        <Slot area="titleBar.center" />
+        {!workspacePage && <Slot area="titleBar.center" />}
       </div>
 
       {visiblePaneTools.length > 0 && (

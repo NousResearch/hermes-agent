@@ -43,6 +43,7 @@ import {
   setSidebarShowAllSessions,
   setSidebarShowArchived,
   setWorkspaceNodesOpen,
+  SIDEBAR_GROUPING_ORDER,
   type SidebarGrouping,
   type SidebarOrdering,
   type SidebarRowMeta,
@@ -75,12 +76,14 @@ interface Option<T extends string = string> {
   label: string
 }
 
-const GROUPINGS: Option<SidebarGrouping>[] = [
-  { icon: 'clock', id: 'date', label: 'Updated' },
-  { icon: 'root-folder', id: 'project', label: 'Project' },
-  { icon: 'pulse', id: 'status', label: 'Status' },
-  { icon: 'account', id: 'profile', label: 'Profile' }
-]
+const GROUPING_OPTIONS: Record<SidebarGrouping, Omit<Option<SidebarGrouping>, 'id'>> = {
+  date: { icon: 'clock', label: 'Updated' },
+  profile: { icon: 'account', label: 'Profile' },
+  project: { icon: 'root-folder', label: 'Project' },
+  status: { icon: 'pulse', label: 'Status' }
+}
+
+const GROUPINGS: Option<SidebarGrouping>[] = SIDEBAR_GROUPING_ORDER.map(id => ({ id, ...GROUPING_OPTIONS[id] }))
 
 const ORDERINGS: Option<SidebarOrdering>[] = [
   { icon: 'clock', id: 'updated', label: 'Updated' },

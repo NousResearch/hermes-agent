@@ -218,38 +218,29 @@ class GatewayProfileReconcileMixin:
 
 
 def _mcp_config_reconciler(runner=None):
-    """Housekeeping chore keeping live MCP servers in step with ``mcp_servers`` on disk: an entry
-    the user removed (or disabled) after boot must stop — a parked one otherwise self-probes every
-    ``_PARKED_RETRY_INTERVAL`` for the life of the process. One ``stat`` per profile per tick; the
-    reconcile runs when ``config.yaml``'s signature changed, and again on the next tick while a
-    dropped server was still mid-connect (``pending``) and could not be torn down yet. Interactive
-    OAuth is suppressed — this runs on a housekeeping thread nobody is watching."""
-    from hermes_cli.config import get_config_path
-    seen: dict = {}
-    retry: set = set()
-
-    def _sig(path) -> tuple:
-        try:
-            st = os.stat(path)
-            return file_signature(st)
-        except OSError:
-            return (None, None, None, None)
+    """Housekeeping chore keeping live MCP servers in step with ``mcp_servers`` on disk, every tick
+    after the first (startup discovery owns that one). Reconciling on DRIFT rather than only on a
+    config EDIT is what brings back a server whose FIRST connect failed (#112445): it never reached
+    ``_servers``, so the parked self-probe — a property of a task that connected once — cannot revive
+    it, and its config never changes. The reconcile is a cached config read plus set compares when
+    nothing moved; a server dropped from config is torn down (a parked one otherwise self-probes
+    every ``_PARKED_RETRY_INTERVAL`` for the life of the process) and a missing one is reconnected
+    only once its per-server connect cooldown (30s→600s backoff) has lapsed, so a chronically failing
+    server is retried on that schedule, not every tick. Interactive OAuth is suppressed — this runs
+    on a housekeeping thread nobody is watching."""
+    primed: set = set()
 
     def _reconcile_current(label: str) -> None:
         from tools.mcp_oauth import suppress_interactive_oauth
         from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
-        sig = _sig(get_config_path())
-        prev = seen.get(label)
-        seen[label] = sig
-        if label not in retry and (prev is None or prev == sig):
-            return  # first tick just records the baseline; startup discovery already ran
+        if label not in primed:
+            primed.add(label)
+            return  # first tick: startup discovery already reflects this config (or is still running)
         with suppress_interactive_oauth():
             result = reconcile_mcp_servers_with_config()
-        retry.discard(label)
-        if result["pending"]:
-            retry.add(label)
         if result["removed"] or result["added"]:
-            logger.info("MCP config changed (%s): removed=%s added=%s", label, result["removed"], result["added"])
+            logger.info("MCP servers reconciled with config (%s): removed=%s added=%s",
+                        label, result["removed"], result["added"])
 
     def _tick() -> None:
         from gateway.run import _multiplex_profile_homes, _profile_runtime_scope

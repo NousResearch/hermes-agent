@@ -857,16 +857,70 @@ def _configured_provider_matches(
     if isinstance(user_providers, dict):
         candidates += [(slug, cfg) for slug, cfg in user_providers.items()
                        if isinstance(slug, str) and isinstance(cfg, dict)]
-    candidates += [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-                   if isinstance(e.get("name"), str) and e["name"].strip()]
+    # Callers (gateway, TUI, CLI) pass both ``providers:`` and the compat ``custom_providers`` view,
+    # which re-lists every ``providers.<slug>`` row as ``custom:<name>``; a hand-migrated config may
+    # also keep the same endpoint in both sections. Either is one provider, not two (#112788) — but
+    # the duplicate is folded at the MATCH level, not dropped as a candidate: a model only the legacy
+    # row declares still routes to the shared endpoint instead of falling through to the current
+    # provider.
+    rows = {slug: _configured_provider_identity(slug, cfg) for slug, cfg in candidates}
+    entries = [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
+               if isinstance(e.get("name"), str) and e["name"].strip()]
 
     matches: dict[str, str] = {}
-    for slug, cfg in candidates:
+    for slug, cfg in candidates + entries:
         hit = next((mid for key in ("models", "model", "default_model")
                     for mid in _declared_model_ids(cfg.get(key)) if mid.lower() == target), None)
         if hit:
-            matches.setdefault(slug, hit)  # first declaration wins
+            owner = _duplicates_configured_row(slug, cfg, rows) if slug not in rows else None
+            matches.setdefault(owner or slug, hit)  # first declaration wins
     return matches
+
+
+def _configured_provider_identity(slug: str, cfg: dict) -> tuple[str, str, str, str]:
+    """``(name, endpoint, credential, api_mode)`` of one configured provider, read through the same
+    normalizer that builds the compat view, so a ``providers.<slug>`` row, its ``custom:<name>``
+    projection and a legacy duplicate of the same endpoint reduce to one tuple. Any difference in
+    endpoint, credential identity or wire protocol keeps two rows distinct."""
+    from hermes_cli.config_providers import _canonical_api_mode, _normalize_custom_provider_entry
+    # ``provider_key`` is the compat view's stamp, not a config key: drop it so the normalizer does
+    # not warn about it as unknown.
+    entry = _normalize_custom_provider_entry({k: v for k, v in cfg.items() if k != "provider_key"},
+                                             provider_key="" if slug.startswith("custom:") else slug) or cfg
+    name = (_clean(entry.get("name")).lower() or slug.removeprefix("custom:").lower()).replace(" ", "-")
+    base_url = _clean(entry.get("base_url") or entry.get("url") or entry.get("api")).rstrip("/").lower()
+    api_key, key_env = _clean(entry.get("api_key")), _clean(entry.get("key_env") or entry.get("api_key_env"))
+    if api_key.startswith("${") and api_key.endswith("}"):
+        api_key, key_env = "", api_key[2:-1].strip()
+    credential = (f"key:{api_key}" if api_key else f"env:{key_env}" if key_env
+                  else f"cmd:{_clean(entry.get('key_cmd'))}" if _clean(entry.get("key_cmd")) else "")
+    api_mode = _clean(entry.get("api_mode") or entry.get("transport"))
+    return name, base_url, credential, _canonical_api_mode(api_mode).lower() if api_mode else ""
+
+
+def _duplicates_configured_row(
+        slug: str, entry: dict, rows: dict[str, tuple[str, str, str, str]]) -> Optional[str]:
+    """Slug of the ``providers.<slug>`` row a ``custom_providers`` entry is a second view of, else
+    None: the row's compat projection (``provider_key`` names the slug AND it points at the same
+    endpoint with the same credential — on the raw-list fallback a hand-written provider_key aimed
+    at another endpoint or another key stays a candidate) or a legacy duplicate with the same
+    provider identity."""
+    identity = _configured_provider_identity(slug, entry)
+    provider_key = _clean(entry.get("provider_key")).lower()
+    return next((row_slug for row_slug, row in rows.items()
+                 if identity == row or (provider_key == row_slug.lower() and identity[1:3] == row[1:3])), None)
+
+
+def _current_provider_match(st: "_Switch", cfg_matches: dict[str, str]) -> Optional[str]:
+    """The slug in *cfg_matches* the session already runs on: an exact hit, or — for a session on
+    the compat projection slug (``custom:relay``) of ``providers.relay`` — that row's slug, so a
+    same-provider switch keeps the caller's slug instead of flipping it (#112788)."""
+    if st.current_provider in cfg_matches:
+        return st.current_provider
+    current = _clean(st.current_provider).lower()
+    providers = st.user_providers if isinstance(st.user_providers, dict) else {}
+    return next((slug for slug in cfg_matches if isinstance(providers.get(slug), dict)
+                 and current in custom_provider_aliases(str(providers[slug].get("name") or ""), slug)), None)
 
 
 def _resolve_named_custom_model_id(model_name: str, target_provider: str, custom_providers: Optional[list]) -> str:
@@ -1188,8 +1242,9 @@ def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | boo
     cfg_matches = _configured_provider_matches(st.new_model, st.user_providers, st.custom_providers)
     if not cfg_matches:
         return False
-    if st.current_provider in cfg_matches:
-        st.new_model = cfg_matches[st.current_provider]
+    current_slug = _current_provider_match(st, cfg_matches)
+    if current_slug is not None:
+        st.new_model = cfg_matches[current_slug]
         return True
     match_slugs = sorted(cfg_matches)
     if len(match_slugs) > 1:

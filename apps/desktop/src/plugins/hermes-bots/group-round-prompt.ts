@@ -1,4 +1,4 @@
-import { botHandle } from './data'
+import { botMentionTag } from './data'
 import { groupSpeakerLabel } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
@@ -24,7 +24,7 @@ export type GroupChatLineViewer =
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
-export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineViewer) {
+export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineViewer, group?: null | string) {
   // Attachments are staged into each member's session as real payloads; the
   // transcript line names them so the delta text and the bytes line up.
   const attached =
@@ -47,7 +47,7 @@ export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineVi
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${relabelMemberControlFrames(entry.text)}${attached}`
+  return `${groupSpeakerLabel(entry.from.name, group)}${suffix}${source}: ${relabelMemberControlFrames(entry.text)}${attached}`
 }
 
 function viewerNameOf(viewer: GroupChatLineViewer): string {
@@ -96,14 +96,14 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
 
   const peerNames = peers
     .map(m => {
-      const handle = m.title ? `${m.title} (@${botHandle(m.name, m)})` : `@${botHandle(m.name, m)}`
+      const handle = m.title ? `${m.title} (@${botMentionTag(m)})` : `@${botMentionTag(m)}`
 
       return m.remoteSource ? `${handle} [on ${m.connectionLabel || m.connectionId}]` : handle
     })
     .join(', ')
 
   return [
-    `[Group chat: "${groupName}"] You are @${botHandle(viewer.name, viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
+    `[Group chat: "${groupName}"] You are @${botMentionTag(viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
     '',
     'New messages in the room since your last turn (oldest first):',
     ...deltaLines.map(line => `  ${line}`),

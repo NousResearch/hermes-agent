@@ -209,6 +209,10 @@ Any real message you send while a goal is active takes priority over the continu
 
 While an agent is already running, `/goal status`, `/goal pause`, `/goal clear`, `/goal wait`, and `/goal unwait` are safe to run — they only touch control-plane state and don't interrupt the current turn. Setting a **new** goal mid-run (`/goal <new text>`) is rejected with a message telling you to `/stop` first, so the old continuation can't race the new one.
 
+### Continuation replies do not quote the goal message (gateway)
+
+A continuation prompt is not a reply to the message that set the goal, so on platforms that quote a reply target (Telegram) its progress bubbles and final reply are posted to the chat/topic without quoting that original message. Only your own messages are answered as replies.
+
 ### Persistence
 
 Goal state lives in `SessionDB.state_meta` keyed by `goal:<session_id>`. That means `/resume` picks up right where you left off — set a goal, close your laptop, come back tomorrow, `/resume`, and the goal is still standing exactly as you left it (active, paused, or done).

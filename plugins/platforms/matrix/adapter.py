@@ -1413,6 +1413,23 @@ class MatrixAdapter(BasePlatformAdapter):
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
         return str(event_id)
 
+    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+        """Post a seed message and return its ``event_id`` as the handoff ``thread_id``. Matrix has
+        no create-thread API: a thread is the events whose ``m.relates_to``/``rel_type: m.thread``
+        point at a root event (Slack-style), and ``_apply_relation_metadata`` already threads later
+        sends off a supplied ``thread_id``. ``None`` when disconnected or the seed send failed.
+
+        In-thread replies keep the ROOM's chat_type (``dm``/``group``) in the session key — the
+        handoff watcher and the cron seeder mirror that shape rather than the shared ``thread`` slot."""
+        if self._client is None:
+            return None
+        result = await self.send(parent_chat_id, (name or "").strip() or "Hermes session")
+        root = result.message_id if result.success else None
+        if not root:
+            return None
+        self._threads.mark(str(root))  # replies in this thread bypass require_mention, like inbound roots
+        return str(root)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         identity = await self._resolve_room_identity(chat_id)
         return {"name": identity.display_name, "type": "dm" if identity.chat_type == "dm" else "group"}
@@ -1479,7 +1496,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: failed to download image %s: %s", _redact_url_for_log(image_url), exc)
             fallback = ("I couldn't download and upload the image to Matrix. "
                         "The source URL was not shown because it may contain private tokens.")
-            return await self.send(chat_id, f"{caption}\n{fallback}" if caption else fallback, reply_to)
+            return await self.emit_media_warning(chat_id, fallback, caption=caption, reply_to=reply_to, metadata=metadata)
         return await self._upload_and_send(chat_id, data, fname, ct, "m.image", caption, reply_to, metadata)
 
     async def _download_external_media_with_cap(self, url: str) -> tuple[bytes, str, str]:
@@ -1792,7 +1809,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
             text = "⚠️ Couldn't deliver the attachment."
-            return await self.send(room_id, f"{caption}\n{text}" if caption else text, reply_to)
+            return await self.emit_media_warning(room_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
         try:
             file_size = p.stat().st_size
         except OSError:

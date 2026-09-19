@@ -1834,11 +1834,12 @@ class TestStaleFallbackCandidateSkip:
             )
 
         assert result.choices[0].message.content == "openrouter-serves"
+        # The chain was walked a second time after the stale candidate was quarantined.
         assert mock_fb.call_count == 2
-        assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
-        mock_mark.assert_called_once_with(
-            "anthropic", base_url="https://api.anthropic.com",
-        )
+        assert mock_mark.call_count == 1
+        assert mock_mark.call_args.args[0] == "anthropic"
+        assert mock_mark.call_args.kwargs["base_url"] == "https://api.anthropic.com"
+        assert mock_mark.call_args.kwargs["reason"] == "stale fallback credential"
         assert stale_fb.chat.completions.create.call_count == 1
         assert healthy_fb.chat.completions.create.call_count == 1
 
@@ -2862,7 +2863,8 @@ class TestAuxiliaryAuthRefreshRetry:
 
     def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
         stale_client = MagicMock()
-        cache_key = ("anthropic", False, None, None, None)
+        from agent.auxiliary_client import _client_cache_key
+        cache_key = _client_cache_key("anthropic", async_mode=False)
 
         monkeypatch.setenv("ANTHROPIC_TOKEN", "")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
@@ -2888,10 +2890,12 @@ class TestAuxiliaryAuthRefreshRetry:
             from agent.auxiliary_client import _refresh_provider_credentials
 
             assert _refresh_provider_credentials("anthropic", failed_api_key="expired-token") is True
+            import agent.auxiliary_client as aux
+            assert cache_key not in aux._client_cache  # evicted, not closed (in-flight users)
 
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
-        stale_client.close.assert_called_once()
+        stale_client.close.assert_not_called()
 
     def test_refresh_provider_credentials_remints_vertex_token_and_evicts_cache(self):
         """Vertex tokens live ~1h; on a long-running gateway the cached
@@ -2903,7 +2907,8 @@ class TestAuxiliaryAuthRefreshRetry:
         through to the final `return False` and the stale client (and its
         dead token) stayed cached until process restart."""
         stale_client = MagicMock()
-        cache_key = ("vertex", False, None, None, None)
+        from agent.auxiliary_client import _client_cache_key
+        cache_key = _client_cache_key("vertex", async_mode=False)
 
         with (
             patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "google/gemini-3-flash-preview", None)}),
@@ -2915,9 +2920,11 @@ class TestAuxiliaryAuthRefreshRetry:
             from agent.auxiliary_client import _refresh_provider_credentials
 
             assert _refresh_provider_credentials("vertex") is True
+            import agent.auxiliary_client as aux
+            assert cache_key not in aux._client_cache  # evicted, not closed (in-flight users)
 
         mock_get_config.assert_called_once()
-        stale_client.close.assert_called_once()
+        stale_client.close.assert_not_called()
 
     def test_refresh_provider_credentials_vertex_returns_false_when_unminted(self):
         """No usable token/base_url (e.g. ADC and the service-account file

@@ -694,6 +694,16 @@ Each provider's data is isolated per [profile](/user-guide/profiles):
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 
+## Providers Moving to the Plugin Catalog
+
+Memory providers are moving out of the Hermes tree into their maintainers' own repositories,
+published through the [plugin catalog](/user-guide/plugins). Nothing changes for you: the
+provider name, your `memory.<name>` settings, its data directory and its tools stay the same.
+When a provider you have configured stops shipping with Hermes, `hermes update` installs its
+catalog plugin for every profile that names it; if you update through the Desktop app, the
+agent does the same the first time it starts (unless `security.allow_lazy_installs` is
+`false`, in which case it prints the `hermes plugins install <name>` one-liner instead).
+
 ## Building a Memory Provider
 
 See the [Developer Guide: Memory Provider Plugins](/developer-guide/memory-provider-plugin) for how to create your own.

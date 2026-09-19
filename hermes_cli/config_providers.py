@@ -117,7 +117,8 @@ _KNOWN_PROVIDER_KEYS = {
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
-    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify"}
+    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
+    "catalog_provider"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -238,6 +239,8 @@ def _normalize_custom_provider_entry(
     api_mode = _stripped("api_mode", "transport")
     _put("api_mode", _canonical_api_mode(api_mode) if api_mode else "")
     _put("model", _stripped("model", "default_model"))
+    # Catalogued vendor whose models this endpoint resells (metadata lookups only, never routing).
+    _put("catalog_provider", _stripped("catalog_provider"))
 
     # ``models_discovered`` marks a mapping auto-discovered by Hermes, not hand-curated.
     models_dict, discovered = _normalize_provider_models(entry.get("models"))
@@ -285,7 +288,7 @@ def _custom_provider_entry_to_provider_config(
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify"):
+        "ssl_ca_cert", "ssl_verify", "catalog_provider"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:

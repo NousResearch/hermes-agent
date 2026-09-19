@@ -224,11 +224,22 @@ def _resolve_hermes_bin_for_desktop_entry(
     # gnome-shell 50.x crashes when hermes.desktop changes while its ShellApp is STARTING (#110885).
     # ``primary is None`` implies ``rerouted is None`` (the rerun only hides argv[0]), so only the
     # probe can still find anything.
-    if primary and rerouted is not None:
-        return rerouted or primary
+    if primary and rerouted is not None and not _inside_checkout(
+        rerouted, checkout_root, original_argv0
+    ):
+        return rerouted
+    # A PATH hit inside this checkout is the same launch-context artifact as argv[0]: the
+    # desktop-update hand-off hands the updater <checkout>/venv/bin at the front of PATH, so
+    # persisting a reroute to the venv console script pins the entry to WHO wrote it. The next
+    # DE-launched context re-resolves to the durable wrapper and flips the bytes back — and
+    # every flip rewrites hermes.desktop, which arms the gnome-shell 50.x crash this function's
+    # callers guard against when the write lands inside a launch's STARTING window. Fall
+    # through to the durable probe below, exactly as a PATH miss does.
 
-    # argv[0] was checkout-internal AND PATH had no `hermes` — common in stripped systemd user
-    # sessions and autostart relaunches. Probe the installer's known wrapper locations; each
+    # argv[0] was checkout-internal AND PATH yielded no DURABLE launcher (miss, or a hit inside
+    # this checkout) — common in stripped systemd user sessions, autostart relaunches, and the
+    # update hand-off with <checkout>/venv/bin on PATH. Probe the installer's known wrapper
+    # locations; each
     # candidate must be DE-safe and target THIS checkout (a foreign wrapper would make the entry
     # stable-but-wrong). No durable wrapper → None, so resolve_exec_command emits its runnable
     # module fallback instead of the self-regenerating checkout-internal form.

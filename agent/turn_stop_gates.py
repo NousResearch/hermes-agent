@@ -162,7 +162,7 @@ def apply_stop_gates(
             agent._kanban_stop_nudges,
             os.environ.get("HERMES_KANBAN_TASK", ""),
         )
-        agent._emit_status(
+        agent._emit_diagnostic_status(
             "⚠️ Kanban worker tried to exit without "
             "kanban_complete/kanban_block — nudging to finish"
         )

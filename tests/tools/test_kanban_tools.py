@@ -173,6 +173,7 @@ def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, w
     from tools import kanban_tools as kt
 
     (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n")  # identity marker
     with kbc.connect() as conn:
         before = kb.get_task(conn, worker_env)
         before_events = kb.list_events(conn, worker_env)
@@ -193,6 +194,7 @@ def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_p
     from tools import kanban_tools as kt
 
     (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n")  # identity marker
     with kbc.connect() as conn:
         monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, worker_env).current_run_id))
 

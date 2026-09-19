@@ -1378,6 +1378,12 @@ export interface PingResult {
 export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
 }
+export interface ClientCapabilitiesParams {
+  server_requests?: boolean
+}
+export interface ClientCapabilitiesResult {
+  server_requests: string[]
+}
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {
   profile?: string | null
@@ -2523,6 +2529,8 @@ export interface InflightTurn {
   assistant?: string
   streaming?: boolean
   user?: string
+  display_kind?: string | null
+  display_metadata?: Record<string, unknown> | null
   corrections?: string[] | null
   correction_offsets?: number[] | null
   error?: string | null
@@ -4214,6 +4222,8 @@ export interface RpcMethods {
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Run ``hermes <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal. */
   'cli.exec': { params: CliExecParams; result: CliExecResult }
+  /** What the calling client handles, sent once per connection (after gateway.ready); returns the server→client request methods this backend may send. */
+  'client.capabilities': { params: ClientCapabilitiesParams; result: ClientCapabilitiesResult }
   /** Save the host clipboard image into the session and queue it for the next turn. */
   'clipboard.paste': { params: ClipboardPasteParams; result: AttachedImageResult }
   /** Run a quick/plugin/bundle/skill/built-in slash command and answer a structured directive. */
@@ -4631,6 +4641,7 @@ export const RPC_METHODS = [
   'browser.manage',
   'clarify.lock',
   'cli.exec',
+  'client.capabilities',
   'clipboard.paste',
   'command.dispatch',
   'command.resolve',

@@ -88,6 +88,11 @@ recycled PID gets killed on reclaim.
   Dispatched workers get `HERMES_KANBAN_BOARD` and the assignee's `HERMES_HOME` pinned in a
   scrubbed child env (`build_subprocess_env` + `strip_launch_profile_env`); they never inherit the
   default profile's `.env`.
+- **Prompt injection sites gate on ownership, not tool access.** Tool access (`kanban_show` visible
+  via a profile's toolset) and an inherited `HERMES_KANBAN_TASK` (delegate children, cron runs beside
+  a worker) are not ownership. The kanban guidance (`agent_init`, `system_prompt` fallback) and the
+  stop nudge resolve the task via `agent/delegation_context.py::owned_kanban_task()`; other readers
+  pair their env read with `is_dispatcher_owned_worker_context()`.
 - **Descendant fence is a path, not a flag.** A delegated child's Kanban marker
   (`agent/delegation_context.py::DELEGATED_CHILD_ENV_MARKER`) carries the fenced board ROOT;
   `kanban_path_is_fenced(path)` denies mutations only on the dispatcher-pinned `HERMES_KANBAN_DB`

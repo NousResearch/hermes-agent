@@ -1958,3 +1958,46 @@ def test_empty_dict_default_sections_are_open_containers():
     known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")
     assert known is False
     assert suggestion == "compression.model_thresholds"
+
+
+class TestSaveConfigExplicitPathAuthority:
+    """#113301: the explicit-path evidence that keeps user-set defaults through the strip pass
+    must come from the fail-closed read, not from a second cached read that can yield ``{}``."""
+
+    def test_save_config_on_intact_file_preserves_explicit_defaults(self, tmp_path):
+        # The intact case: an explicit user-set key survives even when its value equals the
+        # schema default, because the raw read supplies the preserve set (#113301's 32→32 row).
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model:\n  provider: test/p\nskills:\n  write_approval: true\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["model"] = "test/other"
+            save_config(config)
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["model"] == "test/other"
+        assert saved["skills"]["write_approval"] is True
+
+    def test_save_survives_cached_raw_read_returning_empty(self, tmp_path):
+        # Real schema sections, each pinned to its (scalar) default value, so the file survives
+        # only if save_config still sees them as explicitly set. ``agent`` is skipped because
+        # canonicalisation rewrites its max_turns shape and would mask the collapse signal.
+        # Only sections whose first value is a scalar: a nested dict/list default would be
+        # stripped element-wise and blur the per-section survival check.
+        sections = {k: v for k, v in DEFAULT_CONFIG.items() if isinstance(v, dict) and v and k != "agent"}
+        chosen = {}
+        for k, v in sections.items():
+            ik, iv = next(iter(v.items()))
+            if not isinstance(iv, (dict, list)):
+                chosen[k] = {ik: iv}
+        assert len(chosen) >= 10, sorted(chosen)  # modest floor: a schema reorder must not fail this
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(chosen), encoding="utf-8")
+
+        with (patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}),
+              patch("hermes_cli.config.read_raw_config", return_value={})):
+            save_config(load_config())
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert set(chosen) <= set(saved), sorted(set(chosen) - set(saved))

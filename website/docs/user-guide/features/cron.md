@@ -84,7 +84,15 @@ validates that the job's configuration can actually produce a successful run:
 - attached skills are ready (no missing required environment variables,
   commands, or credential files),
 - delivery platform targets are known and have gateway credentials configured
-  (`local`/`origin` targets are never checked).
+  (`local`/`origin` targets are never checked),
+- every MCP server the job names in its own `enabled_toolsets` resolved to at
+  least one tool for this profile. A server that connected earlier in this
+  gateway and is only reconnecting after a network blip (router reboot, DNS
+  failure) does **not** block: the job runs with the tools that did resolve and
+  the gateway log notes which servers were skipped (once per outage). A server
+  that never connected for this profile (wrong URL or credentials, or a server
+  another profile owns under a multiplexer), or one parked on a permanent error
+  such as revoked credentials, blocks the run.
 
 When validation fails, the job's `last_status` becomes `blocked_config`, ONE
 alert is delivered (it is not repeated every tick), and **no LLM call is
@@ -365,6 +373,8 @@ cron:
 ```
 
 The lasting fix is a user session for the gateway user: `sudo loginctl enable-linger <gateway-user>` (and `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS` in the unit for system-level installs), then restart the gateway. Kanban workers always require a scope and fail closed regardless of this key.
+
+The worker is the gateway's own interpreter running `python -m cron.scheduler`, with the gateway's checkout pinned on its `PYTHONPATH` (plus any entries the gateway itself was started with), so it imports the same Hermes tree the gateway runs — regardless of the venv's editable-install mapping, the unit's `WorkingDirectory`, or `PYTHONSAFEPATH` on the host. A worker that dies before acknowledging the handoff records its own stderr tail in the job's last error and in the execution ledger, so the failing import (or whatever killed it) is named instead of a bare exit code.
 
 ### Execution history
 
@@ -649,7 +659,7 @@ cron:
 
 Behaviour is **thread-preferred**, scoped to the job's own conversation:
 
-- **Thread-capable platforms** (Telegram topics, Discord/Slack threads): each
+- **Thread-capable platforms** (Telegram topics, Discord/Slack/Matrix threads): each
   delivery opens its own dedicated thread and the brief is seeded into that
   thread's session, so a reply in-thread continues with full context. A
   recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
@@ -748,6 +758,24 @@ Otherwise, report the issue.
 ```
 
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
+
+### Declaring a failed run
+
+Only runtime failures (exceptions, timeouts, an unreachable model) mark a run as failed. When the agent itself
+finishes its turn but the work did not get done — for example a delegated subagent or a script it ran failed —
+it can declare the run failed by putting `[CRON_FAILURE]` alone on the **first line** of its response, followed
+by the explanation:
+
+```text
+[CRON_FAILURE]
+The nightly export subagent exited with "disk full"; no report was produced.
+```
+
+The run is then recorded as failed (`last_status`, failure streak, `hermes cron runs` and `hermes cron incidents`
+all reflect it) and the failure notice is delivered like any other failed run. The full response is still saved
+under `~/.hermes/cron/output/` for triage. The marker is strict: mentioning or quoting `[CRON_FAILURE]` anywhere
+else in a report leaves the run successful. Script-only (`no_agent`) jobs ignore it — a script signals failure
+with a non-zero exit code.
 
 ## Script timeout
 

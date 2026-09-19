@@ -85,18 +85,58 @@ def test_a2_blank_args_with_length_finish_reason_refused():
 
 
 def test_a2_validation_blank_args_length_never_executes():
-    """The validation seam: blank args with a truncation finish_reason must be
-    routed to invalid_json_args (refusal), not silently normalized to '{}'."""
-    import inspect
+    """BEHAVIOUR test (CodeRabbit PR #3, Minor): call validate_tool_calls with
+    blank args + finish_reason='length' and assert the verdict refuses
+    execution (action 'return' or 'continue' — never 'ok'), instead of
+    grepping module source."""
+    from types import SimpleNamespace
     from agent import turn_tool_validation as ttv
-    src = inspect.getsource(ttv)
-    assert '("length", "max_tokens")' in src
-    assert "arguments empty while finish_reason indicates truncation" in src
+
+    agent = SimpleNamespace(
+        valid_tool_names={"delegate_task"},
+        _uniquify_tool_call_ids=lambda tcs: None,
+        _repair_tool_call=lambda name: None,
+        _buffer_vprint=lambda *a, **k: None,
+        _vprint=lambda *a, **k: None,
+        log_prefix="[test] ",
+        _invalid_tool_retries=0,
+        _invalid_json_args_strikes=0,
+        _invalid_json_retries=0,
+        _cleanup_task_resources=lambda task_id: None,
+        _persist_session=lambda msgs, hist: None,
+    )
+    msg = SimpleNamespace(tool_calls=[SimpleNamespace(
+        id="call_0", type="function",
+        function=SimpleNamespace(name="delegate_task", arguments=""))])
+
+    verdict = ttv.validate_tool_calls(
+        agent, msg, "length",
+        messages=[{"role": "assistant", "tool_calls": []}],
+        conversation_history=[], api_call_count=1, effective_task_id=None,
+    )
+    assert verdict.action in ("return", "continue"), (
+        f"blank-args+length must not dispatch, got action={verdict.action!r}"
+    )
+    assert verdict.action != "ok"
 
 
 def test_repair_unchanged_for_clean_json():
     good = json.dumps({"a": 1})
     assert json.loads(_repair_tool_call_arguments(good, "memory")) == {"a": 1}
+
+
+def test_pass0_strict_mode_gates_control_char_repair(monkeypatch):
+    """CodeRabbit PR #3 (Major): a write-class arg with literal control chars
+    is pass-0-repaired (strict=False + reserialise) BEFORE the strict guards
+    used to run — strict mode must refuse it there too."""
+    raw = '{"text": "line1\nline2"}'  # literal \n inside string
+    monkeypatch.setenv("HERMES_STRICT_REPAIRED_ARGS", "1")
+    out = _repair_tool_call_arguments(raw, "memory")
+    parsed = json.loads(out)
+    assert parsed.get("__hermes_malformed_tool_arguments__") is True
+    monkeypatch.setenv("HERMES_STRICT_REPAIRED_ARGS", "0")
+    out_off = _repair_tool_call_arguments(raw, "memory")
+    assert json.loads(out_off) == {"text": "line1\nline2"}
 
 
 def test_unrepairable_still_sentinel_at_assemble():

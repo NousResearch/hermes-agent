@@ -152,13 +152,18 @@ async def _lifespan(app: "FastAPI"):
     # Bring state.db schema current BEFORE the first session-list poll
     # (#79531/#80037): a store left behind by `hermes update` otherwise 500s
     # every poll while the read-probe heal loses to sibling lock contention.
-    # Daemon thread so a locked store never delays the socket (Desktop
-    # ready-probe times out at 10s, GH-73083).
-    threading.Thread(
+    # Off-thread so a locked store never delays the socket (Desktop
+    # ready-probe times out at 10s, GH-73083). NOT a daemon, and joined at
+    # shutdown: its sqlite connection must be closed by the thread that is
+    # stepping it. A daemon copy that outlived the lifespan had its
+    # connection closed from the main thread mid-probe (pytest's leaked-DB
+    # sweep) and segfaulted the interpreter. The worker is time-bounded by
+    # SessionDB's lock patience, so the join cannot hang shutdown.
+    eager_reconcile_thread = threading.Thread(
         target=_eager_reconcile_own_session_db,
-        daemon=True,
         name="statedb-eager-reconcile",
-    ).start()
+    )
+    eager_reconcile_thread.start()
 
     # Import hermes_cli.gateway *before* the yield: on Windows + 3.11 the
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and
@@ -274,6 +279,7 @@ async def _lifespan(app: "FastAPI"):
             pass
         if os.getenv("HERMES_DESKTOP") == "1":
             _terminate_desktop_managed_gateway()
+        eager_reconcile_thread.join()
 
 
 def _app_state_default(app: "FastAPI", name: str, factory):

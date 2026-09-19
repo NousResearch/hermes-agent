@@ -80,6 +80,14 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
 )
 
 
+def turn_failure_text(stdout: str | None, stderr: str | None) -> str:
+    """The error text of a failed ``hermes … -Q`` delivery turn: both streams, in the order the CLI
+    writes them. The provider prose is the turn's final_response and lands on STDOUT; stderr carries
+    session bookkeeping (``session_id: …``) on every run, so ``stderr or stdout`` only ever saw the
+    banner and every transient failure classified as ``unknown``."""
+    return "\n".join(text.strip() for text in (stdout, stderr) if text and text.strip())
+
+
 def classify_agent_error(text: str) -> str:
     """Map raw agent/provider error text to a closed reason code (``unknown`` when unmatched/empty)."""
     raw = str(text or "")

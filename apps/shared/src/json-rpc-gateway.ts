@@ -4,6 +4,7 @@ import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
   JsonRpcRequestChannel,
+  type JsonRpcRequestChannelOptions,
   type JsonRpcTransport,
   type ServerRequestHandler,
   wireFrameText
@@ -21,6 +22,10 @@ export interface GatewayClientOptions {
   createRequestId?: (nextId: number) => GatewayRequestId
   heartbeatDeadlineMs?: number
   heartbeatIntervalMs?: number
+  /** A server→client request handler threw; the channel already answered `-32603`. */
+  onRequestHandlerError?: JsonRpcRequestChannelOptions['onRequestHandlerError']
+  /** No handler accepted a server→client request; the channel already answered `-32601`. */
+  onUnhandledRequest?: JsonRpcRequestChannelOptions['onUnhandledRequest']
   /** Return true to intercept the default closed-state transition. */
   onSocketClose?: (event: { code: number }) => boolean | void
   /** Fetch `session.events.since` after a reconnect (default). Off for notification-only feeds whose peer never answers RPCs. */
@@ -126,8 +131,10 @@ export class JsonRpcGatewayClient {
    */
   private replayEpoch: string | null = null
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
-  private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
-    Pick<GatewayClientOptions, 'socketFactory'>
+  private readonly options: Required<
+    Omit<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
+  > &
+    Pick<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
 
   constructor(options: GatewayClientOptions = {}) {
     this.options = {
@@ -141,6 +148,8 @@ export class JsonRpcGatewayClient {
       onSocketClose: options.onSocketClose ?? (() => false),
       replay: options.replay ?? true,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
+      onRequestHandlerError: options.onRequestHandlerError,
+      onUnhandledRequest: options.onUnhandledRequest,
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       socketFactory: options.socketFactory
     }
@@ -153,6 +162,8 @@ export class JsonRpcGatewayClient {
       heartbeatLiveness: 'any-inbound',
       onEvent: event => this.handleEvent(event),
       onHeartbeatFailure: error => this.invalidate(error.message),
+      onRequestHandlerError: this.options.onRequestHandlerError,
+      onUnhandledRequest: this.options.onUnhandledRequest,
       requestTimeoutMs: this.options.requestTimeoutMs
     })
   }

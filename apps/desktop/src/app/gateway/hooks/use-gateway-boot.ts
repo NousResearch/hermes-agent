@@ -10,7 +10,7 @@ import {
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
-import type { DesktopBootProgress, HermesConnection } from '@/global'
+import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
@@ -39,6 +39,7 @@ import {
   gatewayActivationEpoch,
   isActivePrimary,
   liveSecondaryConnectionIds,
+  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
@@ -199,7 +200,20 @@ export function useGatewayBoot({
     let cancelled = false
     const desktop = window.hermesDesktop
 
+    // Window-state IPC (fullscreen / traffic-light position) that lands while
+    // no connection is published — mid-boot, or between a dropped primary and
+    // its fallback resolving — has nowhere to merge into. Main snapshots the
+    // chrome state into each descriptor at mint time, so a toggle that happens
+    // AFTER the mint but BEFORE the renderer publishes it is newer than the
+    // snapshot and would otherwise be lost until the next toggle (#108641).
+    let pendingWindowState: HermesWindowState | null = null
+
     const publish = (next: HermesConnection | null) => {
+      if (next && pendingWindowState) {
+        next = { ...next, ...pendingWindowState }
+        pendingWindowState = null
+      }
+
       callbacksRef.current.onConnectionReady(next)
       setConnection(next)
       desktop?.setActiveConnectionRoute?.(
@@ -238,6 +252,14 @@ export function useGatewayBoot({
     // signals that fire around wake (power resume, network online, the window
     // becoming visible).
     let bootCompleted = false
+    // The other way a cold boot concludes. Main keeps startHermes() available
+    // after the renderer gave up, and every later getConnection() caller
+    // re-enters it, replaying `backend.resolve` (running:true) then
+    // `backend.remote` (error:null) onto a renderer whose boot is over. Without
+    // this latch each replay hid BootFailureOverlay for the whole readiness
+    // wait (#112899). Cleared wherever a FRESH boot lifecycle starts: a soft
+    // switch and the renderer's own bounded retry (#82679).
+    let bootFailed = false
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
@@ -677,6 +699,7 @@ export function useGatewayBoot({
         escalated = false
         reauthNotified = false
         primaryReauthError = null
+        bootFailed = false
 
         gateway.close()
         // The primary mode is changing, but registered v2 sources remain
@@ -764,6 +787,7 @@ export function useGatewayBoot({
 
         if (mayPublishFailure) {
           const message = err instanceof Error ? err.message : String(err)
+          bootFailed = true
           failDesktopBoot(message)
 
           // Only the current owner may lower loading. A failed begin returns no
@@ -789,11 +813,13 @@ export function useGatewayBoot({
       }
 
       // Soft switch / post-boot startHermes re-emits progress — ignore so the
-      // cold-boot CONNECTING overlay stays down. Post-boot errors are gated:
+      // cold-boot CONNECTING overlay stays down. A boot that ended in failure
+      // is concluded too: replaying its steps would take the recovery overlay
+      // back down. Post-boot errors are gated:
       // only confirmed reauth takes the full-screen recovery surface. Transient
       // ticket-mint / host-unreachable failures must stay in the reconnect loop
       // (otherwise a 1–3 min blip bricks reading/drafting behind "couldn't start").
-      if ($gatewaySwitching.get() || bootCompleted) {
+      if ($gatewaySwitching.get() || bootCompleted || bootFailed) {
         if (payload.error && shouldApplyPostBootProgressError(payload.error)) {
           primaryReauthError = payload.error
 
@@ -1033,6 +1059,17 @@ export function useGatewayBoot({
       }
     })
 
+    // Cooperative pool retirement: main is stopping a pooled backend so a
+    // foreground open elsewhere gets its slot. Park the scopes riding it now,
+    // before the socket drops, so neither the 'closed' state nor the next
+    // focus/wake nudge redials into the slot it vacated. The tile keeps its
+    // card; the next click on it re-arms the scope.
+    const offPoolRetiring = desktop.onPoolBackendRetiring?.(payload => {
+      if (payload && typeof payload.poolKey === 'string') {
+        parkSecondariesForRetiredBackend(payload.poolKey)
+      }
+    })
+
     const onOnline = () => void forceReconnectNow()
 
     const onVisible = () => {
@@ -1108,6 +1145,8 @@ export function useGatewayBoot({
 
       if (current) {
         publish({ ...current, ...payload })
+      } else {
+        pendingWindowState = payload
       }
     })
 
@@ -1121,6 +1160,9 @@ export function useGatewayBoot({
       // — a toast whose button does nothing would only mislead. Fail the
       // overlay and stop there.
       if ($desktopBoot.get().running || $desktopBoot.get().visible) {
+        // Concludes the in-flight boot on its behalf, so it latches like the
+        // catch blocks that conclude one.
+        bootFailed = true
         failDesktopBoot(translateNow('boot.errors.backgroundExitedDuringStartup'))
 
         return
@@ -1275,6 +1317,7 @@ export function useGatewayBoot({
           if (retryable && !cancelled) {
             const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
             bootRetryAttempt += 1
+            bootFailed = false
             resumeDesktopBootForRetry(translateNow('boot.steps.retryingRemoteBackend'))
             clearBootRetryTimer()
             bootRetryTimer = setTimeout(() => {
@@ -1285,6 +1328,7 @@ export function useGatewayBoot({
             return
           }
 
+          bootFailed = true
           failDesktopBoot(message)
           notifyError(err, translateNow('boot.errors.desktopBootFailed'))
           setSessionsLoading(false)
@@ -1358,6 +1402,7 @@ export function useGatewayBoot({
       offPowerResume?.()
       offConnectionApplied?.()
       offConnectionsChanged?.()
+      offPoolRetiring?.()
       offGatewayReconnect()
       offActiveGatewayReauth()
       offActiveStateReauth()

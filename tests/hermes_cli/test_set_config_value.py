@@ -6,6 +6,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from hermes_cli.config import (
     config_command,
@@ -218,6 +219,60 @@ class TestConfigGetUnset:
         assert reloaded["platforms"]["teams"]["extra"]["tenant_id"] == "tenant"
         assert "Unset platforms.teams.extra.access_token" in capsys.readouterr().out
 
+
+class TestConfigGetPhantomKeyNotice:
+    """``config get`` must not echo a schema-unknown nested key as if it were live: the value comes
+    from the file, but nothing reads it. The notice goes to stderr so stdout stays parseable, and
+    custom top-level keys / open-subkey sections stay unflagged (both are supported).
+    """
+
+    def test_unknown_nested_key_flags_on_stderr_and_keeps_stdout_parseable(
+        self, _isolated_hermes_home, capsys
+    ):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "compression:\n  compressor:\n    enabled: true\n"
+        )
+
+        args = argparse.Namespace(config_command="get", key="compression.compressor.enabled", json=True)
+        config_command(args)
+
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) is True  # stdout stays parseable: notice is stderr-only
+        assert "not a recognized config key" in captured.err
+
+    def test_unseeded_live_key_notice_hedges_instead_of_asserting_unread(
+        self, _isolated_hermes_home, capsys
+    ):
+        # The check is a DEFAULT_CONFIG walk; ``browser.cloud_provider`` is deliberately unseeded
+        # yet read by tools/browser_tool_cloud.py, so the notice must not claim it is never read.
+        (_isolated_hermes_home / "config.yaml").write_text("browser:\n  cloud_provider: local\n")
+
+        config_command(argparse.Namespace(config_command="get", key="browser.cloud_provider", json=False))
+
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "local"
+        assert "may not read it" in captured.err
+        assert "does not read it" not in captured.err
+
+    @pytest.mark.parametrize(
+        "key, body",
+        [
+            ("terminal.timeout", "terminal:\n  timeout: 120\n"),
+            ("my_custom_setting", "my_custom_setting: hello\n"),
+            ("mcp_servers.local.url", "mcp_servers:\n  local:\n    url: http://127.0.0.1:1\n"),
+        ],
+    )
+    def test_recognized_and_custom_keys_are_not_flagged(
+        self, _isolated_hermes_home, capsys, key, body
+    ):
+        (_isolated_hermes_home / "config.yaml").write_text(body)
+
+        args = argparse.Namespace(config_command="get", key=key, json=False)
+        config_command(args)
+
+        captured = capsys.readouterr()
+        assert captured.out.strip()
+        assert "not a recognized config key" not in captured.err
 
 # ---------------------------------------------------------------------------
 # List navigation — regression tests for #17876
@@ -450,23 +505,62 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
-    """#34067 / #112003: an unknown path UNDER a known section is a typo and is refused before
-    anything is written (headline case ``gateway.discord.gateway_restart_notification``, correct
-    path ``discord.gateway_restart_notification``). Unknown TOP-LEVEL keys stay writable — their
-    scalars bridge into os.environ for skills/external apps — with a post-write notice.
+    """#34067 / #112003 / #114107: only a WRONG-PREFIX path under a known section is provably a typo
+    and refused before anything is written (headline case
+    ``gateway.discord.gateway_restart_notification``, correct path
+    ``discord.gateway_restart_notification``). Every other unknown path — unseeded runtime-read keys
+    and same-section misspellings alike — is written with a post-write notice, because
+    DEFAULT_CONFIG is not a complete registry of what the runtime reads.
     """
 
-    def test_unknown_subkey_under_known_section_refused_before_write(self, _isolated_hermes_home, capsys):
+    @pytest.mark.parametrize("key,suggestion", [
+        ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
+        # The stray middle segment ``gateway`` fuzzy-matches the sibling ``agent.gateway_timeout``;
+        # the structural wrong-prefix match must win so the path is refused, not written with
+        # a misleading did-you-mean.
+        ("agent.gateway.strict", "gateway.strict"),
+    ])
+    def test_unknown_subkey_under_known_section_refused_before_write(
+        self, key, suggestion, _isolated_hermes_home, capsys
+    ):
         config_path = _isolated_hermes_home / "config.yaml"
         config_path.write_text("model: gpt-4o\n", encoding="utf-8")
 
         with pytest.raises(SystemExit):
-            set_config_value("gateway.discord.gateway_restart_notification", "true")
+            set_config_value(key, "true")
 
         assert config_path.read_text(encoding="utf-8") == "model: gpt-4o\n"
         err = capsys.readouterr().err
         assert "nothing was written" in err
-        assert "discord.gateway_restart_notification" in err
+        assert f"Did you mean: {suggestion}" in err
+
+    @pytest.mark.parametrize("key,value,expected,suggestion", [
+        # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded
+        # default: a stored value is an explicit user pick, so the schema walk must not refuse it.
+        ("stt.provider", "whisper", "whisper", None),
+        # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
+        # from an unseeded key, so it is written too — the user gets the sibling suggestion
+        # (``agent.max_turns``) instead of a refusal.
+        ("agent.max_turnz", "50", 50, "agent.max_turns"),
+    ])
+    def test_unknown_leaf_under_known_section_is_written_with_notice(
+        self, key, value, expected, suggestion, _isolated_hermes_home, capsys
+    ):
+        """Unseeded runtime settings are not proven typos merely by a schema walk."""
+        set_config_value(key, value)
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        section, name = key.split(".")
+        assert saved[section][name] == expected
+        out = capsys.readouterr().out
+        assert "not a recognized config key" in out
+        # Nested paths are written but never env-bridged: the top-level-only footer must not print.
+        assert "bridged to the environment" not in out
+        assert "Use --force" in out
+        if suggestion is None:
+            assert "Did you mean" not in out
+        else:
+            assert f"Did you mean: {suggestion}" in out
 
     def test_unknown_top_level_key_still_written_with_notice(self, _isolated_hermes_home, capsys):
         set_config_value("brand_new_future_key", "value")

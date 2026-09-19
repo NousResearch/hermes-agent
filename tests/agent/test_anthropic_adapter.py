@@ -1203,8 +1203,9 @@ class TestRoleAlternation:
         _, result = convert_messages_to_anthropic(messages)
         assert len(result) == 1
         assert result[0]["role"] == "user"
-        assert "Hello" in result[0]["content"]
-        assert "World" in result[0]["content"]
+        # Each turn stays its own text block (never joined into one string), so the first turn's
+        # bytes match what a later request replays standalone and the cache prefix survives.
+        assert result[0]["content"] == [{"type": "text", "text": "Hello"}, {"type": "text", "text": "World"}]
 
     def test_preserves_proper_alternation(self):
         messages = [

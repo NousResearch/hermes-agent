@@ -88,6 +88,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "description": attr("description", "") or "",
         "description_auto": bool(attr("description_auto", False)),
         "display_name": attr("display_name", "") or "",
+        "bot_title": attr("bot_title", "") or "",
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),

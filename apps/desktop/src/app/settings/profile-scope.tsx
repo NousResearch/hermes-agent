@@ -3,13 +3,24 @@ import { useEffect } from 'react'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $profiles, normalizeProfileKey, refreshProfiles } from '@/store/profile'
+import { $profiles, normalizeProfileKey, profileLabel, refreshProfiles } from '@/store/profile'
 import {
   $settingsScopeEditsNonDefault,
   $settingsScopeOverride,
   $settingsScopeProfile,
   setSettingsScope
 } from '@/store/settings-scope'
+import type { ProfileInfo } from '@/types/hermes'
+
+// Settings-chip label: the Bot Mode title the Bots roster shows when set
+// (ui_meta['hermes-bots'].title), else the app-wide profileLabel
+// (display_name → slug). Scoped to this selector on purpose — the profile
+// rail and Profiles page keep naming profiles by display_name.
+export function settingsScopeLabel(
+  profile: Pick<ProfileInfo, 'bot_title' | 'display_name' | 'name'>
+): string {
+  return (profile.bot_title ?? '').trim() || profileLabel(profile)
+}
 
 // The same chip affordance the Gateway page uses for its per-profile
 // connection overrides (gateway-settings ScopeChip). That one stays local to
@@ -45,6 +56,11 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   const selected = useStore($settingsScopeProfile)
   const editingNonDefault = useStore($settingsScopeEditsNonDefault)
   const profiles = useStore($profiles)
+  // The note names the edit target with the same presentation label as its
+  // chip (Bot title → display_name → slug); the slug alone can name a bot the
+  // user has never seen called that.
+  const selectedLabel = profiles.find(profile => normalizeProfileKey(profile.name) === selected)
+  const selectedName = selectedLabel ? settingsScopeLabel(selectedLabel) : selected
 
   // Refresh lazily so a profile created elsewhere shows up; the cached list
   // paints immediately. Best-effort — a failure keeps the cached roster.
@@ -66,7 +82,7 @@ export function SettingsProfileScope({ className }: { className?: string }) {
           <ScopeChip
             active={normalizeProfileKey(profile.name) === selected}
             key={profile.name}
-            label={profile.name}
+            label={settingsScopeLabel(profile)}
             onSelect={() => setSettingsScope(profile.name)}
           />
         ))}
@@ -85,7 +101,7 @@ export function SettingsProfileScope({ className }: { className?: string }) {
           data-scope-loud={editingNonDefault ? 'true' : undefined}
           role="status"
         >
-          {scope.editsProfile(selected)}
+          {scope.editsProfile(selectedName)}
         </p>
       ) : null}
     </div>

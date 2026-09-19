@@ -106,14 +106,15 @@ def removed_annotation(name: str, dir_path) -> Optional[str]:
 # ── Catalog-aware install / update ───────────────────────────────────────────
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
-                          allow_removed: bool = False, scan_decision_cb=None) -> tuple:
+                          allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance sidecar.
     Returns the core's ``(target, manifest, installed_name)``."""
     from hermes_cli.plugins_cmd import _install_plugin_core
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
     target, manifest, installed_name = _install_plugin_core(
-        entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb)
+        entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
+        reviewed_pin=entry.sha, python_deps=python_deps)
     write_catalog_sidecar(target, entry)
     return target, manifest, installed_name
 
@@ -146,6 +147,9 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console) -> None:
         raise SystemExit(1)
     verb = "updated to" if changed else "is already at catalog pin"
     console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] {verb} {sha[:8]}.")
+    if changed:
+        from hermes_cli.plugins_cmd import _install_python_dependencies
+        _install_python_dependencies(target, console)
 
 
 # ── search / browse / info / validate ────────────────────────────────────────
@@ -229,10 +233,16 @@ def cmd_info(name: str) -> None:
     console.print()
 
 
-def cmd_validate(path: str, as_json: bool = False) -> None:
-    """Catalog-admission validation of a plugin directory (the CI gate); exits 0/1."""
+def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -> None:
+    """Catalog-admission validation of a plugin directory (the CI gate); exits 0/1. *install_deps*
+    installs the declared Python deps first so the capability probe imports what an install would."""
     from hermes_cli.plugin_validate import validate_plugin_dir
     from hermes_cli.plugins_cmd import _console
+    if install_deps:
+        from hermes_cli.plugin_python_deps import install_for_plugin_dir
+        outcome = install_for_plugin_dir(Path(path))
+        if outcome.status in ("failed", "invalid"):
+            print(outcome.message, file=sys.stderr)
     report = validate_plugin_dir(Path(path))
     if as_json:
         print(json.dumps(report.to_dict(), indent=2))

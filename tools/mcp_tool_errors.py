@@ -240,7 +240,12 @@ def _make_redirect_header_stripper(original_url, *, strict: bool = False,
 # stream and its keepalives have no cumulative limit. Violations raise the SDK httpx's ReadError and
 # flow through the ordinary transport teardown/reconnect path (#66092).
 _MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
-_SSE_EVENT_BOUNDARIES = (b"\n\n", b"\r\n\r\n")
+# An SSE event ends at a blank line: two consecutive line terminators. The spec allows CR,
+# LF, or CRLF terminators and permits mixing them, so the boundary is any of \n\n, \r\r,
+# \n\r, \r\n\r\n, \r\n\n, \r\n\r, \n\r\n, \r\r\n. "\r\n" alone is ONE terminator, not two:
+# the lookahead keeps a plain CRLF line ending from backtracking into a \r + \n boundary.
+_SSE_BOUNDARY_RE = re.compile(rb"(?:\r\n|\r(?!\n)|\n){2}")
+_SSE_BOUNDARY_CARRY = 3  # longest boundary ("\r\n\r\n") minus one byte
 
 
 def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_HTTP_MAX_BODY_BYTES):
@@ -256,18 +261,24 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
 
         async def __aiter__(self):
             counted = 0
+            tail = b""  # last _SSE_BOUNDARY_CARRY stream bytes; a boundary can straddle chunks
             async for chunk in self._inner:
                 if self._is_sse:
-                    # Bytes up to the last completed event boundary belong to finished events (they must
-                    # still fit the per-event cap together with the carried prefix); the remainder starts
-                    # the next event's budget.
-                    boundary_end = max(chunk.rfind(sep) + len(sep) if sep in chunk else -1 for sep in _SSE_EVENT_BOUNDARIES)
-                    if boundary_end != -1:
-                        if counted + boundary_end > limit:
+                    # Charge each completed event once: the carried prefix plus bytes up to its
+                    # boundary must fit the cap, then the next event starts after it. Scan the
+                    # carried suffix plus this chunk so a boundary split across chunks is still
+                    # seen; bytes before len(tail) were already counted into `counted`.
+                    window = tail + chunk
+                    pos = 0
+                    for match in _SSE_BOUNDARY_RE.finditer(window):
+                        end = match.end()
+                        if end <= len(tail):
+                            continue  # boundary completed inside the carried suffix: already counted
+                        if counted + end - max(pos, len(tail)) > limit:
                             raise self._reject("SSE event")
-                        counted = len(chunk) - boundary_end
-                    else:
-                        counted += len(chunk)
+                        counted, pos = 0, end
+                    counted += len(window) - max(pos, len(tail))
+                    tail = window[-_SSE_BOUNDARY_CARRY:]
                 else:
                     counted += len(chunk)
                 if counted > limit:

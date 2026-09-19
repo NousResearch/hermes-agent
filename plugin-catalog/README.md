@@ -39,6 +39,11 @@ meaningful:
    (tools, hooks, middleware, env vars) must match what the plugin actually
    registers at the pinned commit. Validation fails the entry otherwise —
    undeclared capability creep is treated as a security issue.
+7. **The install scanner runs at admission.** `hermes plugins validate` includes
+   the `security scan` check: `dangerous` fails the entry; `caution` findings
+   appear as warnings in the CI log and the reviewer reads them before merging.
+   In exchange, installs at the pinned SHA accept `caution` without a prompt
+   (`dangerous` still blocks). Review the warnings; do not merge past them.
 
 ## Entry schema
 
@@ -79,3 +84,16 @@ is recorded in `removed.yaml` with a reason and date. The installer refuses
 to install anything matching a removed entry's name or repo URL, so a
 malicious plugin cannot be re-installed from a stale identifier after
 removal. Removals, like additions, land via reviewed PRs.
+
+Delisting is different from removal: an entry that is merely unmaintained, superseded, or
+squatting a name it is not affiliated with is deleted from the catalog (plain file removal,
+users who already installed it are unaffected) and is welcome back under a distinct name.
+
+## Names
+
+The catalog key and the manifest `name:` are what users search, install, and — for memory
+providers — put in `memory.provider`. A `memory` / `exclusive` entry must not reuse the name of
+another provider or of a well-known upstream project it is not affiliated with: two providers
+registering the same `register_memory_provider` name make `memory.provider` ambiguous
+(whichever loads last wins). Reviewers check the registered provider name, not just the file
+name, and the affiliated project gets the bare key.

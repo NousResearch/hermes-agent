@@ -1,6 +1,5 @@
-"""Fresh-process recovery after the update's in-process restart phase aborts (the fleet restart
-runs in the interpreter that started before ``git pull``). Separate owner from ``update_cmd``: its
-own vocabulary (``verified`` / ``relaunch_attempted`` / ``failed``, serve units, survivors) and
+"""Fresh-process recovery after the update's in-process restart phase aborts. Separate owner
+from ``update_cmd``: its own vocabulary (``verified`` / ``relaunch_attempted`` / ``failed``, serve units, survivors) and
 its own fail-closed contract."""
 
 from __future__ import annotations
@@ -149,8 +148,8 @@ def _parse_serve_units(raw_serve, *, recover_serve: bool) -> dict[str, list]:
 def _recover_gateway_restart_after_abort(
     plan, *, gateway_mode: bool, skip_profiles: set[str] | None = None,
     skip_units: set[str] | None = None) -> dict[str, list]:
-    """Retry supervised gateway restarts from a clean Python process (the in-process restart ran
-    in the pre-``git pull`` interpreter). Only inventory-classified supervisor-owned profiles.
+    """Retry supervised gateway restarts from a clean Python process. Only inventory-classified
+    supervisor-owned profiles.
 
     ``skip_units`` names the units the aborted phase already settled, as ``<scope>/<unit>``. The scope is
     part of the identity, not decoration: ``hermes-serve.service`` can exist in both the user and the system

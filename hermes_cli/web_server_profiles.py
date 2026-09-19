@@ -109,6 +109,7 @@ def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: 
         "skill_count": _safe(lambda: profiles_mod._count_skills(home), 0),
         "gateway_running": _safe(gateway_running, False),
         "description": meta("description", ""), "description_auto": meta("description_auto", False),
+        "bot_title": meta("bot_title", ""),
         "distribution_name": None, "distribution_version": None, "distribution_source": None,
         "has_alias": False}
 

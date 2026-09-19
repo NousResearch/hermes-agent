@@ -130,6 +130,6 @@ def blocked_config_notice(job_name: str, reason: str) -> str:
         reason += "."
     return (
         f"⛔ Cron '{job_name}' did not run: {reason} Nothing was charged. Hermes will try again at "
-        "the next scheduled time once this is fixed and will not repeat this alert; check with "
+        "the next scheduled time and will not repeat this alert; check with "
         "`hermes cron doctor`."
     )

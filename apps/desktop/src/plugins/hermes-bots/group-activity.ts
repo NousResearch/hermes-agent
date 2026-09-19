@@ -70,8 +70,9 @@ export function currentGroupActivity(group: string) {
 }
 
 /** Human label for one activity event, used by the collapsed summary and
- *  the expanded rows. */
-export function groupActivityLabel(event: GroupActivityEntry) {
+ *  the expanded rows. `group` scopes the same-name disambiguation to the
+ *  room's seats. */
+export function groupActivityLabel(event: GroupActivityEntry, group?: null | string) {
   const kind = event?.kind
   const base = GROUP_ACTIVITY_LABELS[kind] || kind || 'did something'
 
@@ -79,7 +80,7 @@ export function groupActivityLabel(event: GroupActivityEntry) {
     return base
   }
 
-  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot')
+  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot', group)
 
   return `${who} ${base}`
 }

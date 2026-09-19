@@ -46,9 +46,13 @@ export interface CanonicalSession {
 }
 
 export interface SessionPreview {
+  /** Stored session id — what `host.openSession` takes. */
+  id?: string
   /** Unix seconds, not milliseconds. */
   last_active?: number
+  message_count?: number
   preview?: string
+  title?: string
 }
 
 /** Per-bot presentation state, persisted in the profile's `ui_meta`. */
@@ -178,8 +182,15 @@ export interface GroupChat {
   tombstone?: boolean
   /** Local display order, deliberately excluded from the gateway mirror. */
   rosterOrder?: number
-  /** Read when ordering rooms; no write site in the plugin today. */
+  /** "Pin to top" on the room row (`group-pin.ts`); the outer band of the room order. */
   pinned?: boolean
+  /** Which user-made sidebar section this group chat is filed under
+   *  (`user-sections.ts`). Like a bot's `sectionId` it is membership on the
+   *  item, but a group's only durable identity is its room record, so the
+   *  field rides the room's plugin-storage persistence — local, like the
+   *  section list itself, and deliberately absent from the bounded gateway
+   *  sync projection, which carries conversations, not sidebar layout. */
+  sectionId?: null | string
   /** How far each `<thread>::<member>` has read into `log`. Required: unlike
    *  the gateway-sourced shapes above, a room record is plugin-owned — every
    *  writer (hydrate, server-sync merge, updateGroupChat, room reset) seeds

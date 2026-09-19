@@ -2279,24 +2279,36 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     return "chat_completions"
 
 
+# Relay path per OpenCode family on opencode.ai hosts. The free tier is served by the Zen relay.
+_OPENCODE_FAMILY_PATHS = {"opencode-zen": "/zen", "opencode-free": "/zen", "opencode-go": "/zen/go"}
+
+
 def normalize_opencode_base_url(
     provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]) -> str:
     """Normalize an OpenCode Zen / Go base URL for the API mode. Must be SYMMETRIC: the anthropic-
     stripped URL gets persisted to ``model.base_url`` after switching into an anthropic-routed model,
     and chat/codex modes heal it by re-adding ``/v1`` — but only on opencode.ai hosts, so custom
-    ``OPENCODE_*_BASE_URL`` proxies are left alone."""
+    ``OPENCODE_*_BASE_URL`` proxies are left alone. On those hosts the relay path segment follows
+    the resolved family too (``/zen`` vs ``/zen/go``): the two relays serve different model sets,
+    so a ``model.base_url`` carried over from the other family 401s ("Model ... is not supported").
+    The family heal applies to the BUILT-IN providers only: a custom provider merely named after a
+    family (``opencode-go-bridge``) declared its relay path explicitly in ``providers:`` and keeps it.
+    Only the path is edited, so a port, userinfo, query or fragment round-trips untouched."""
     url = str(base_url or "").strip().rstrip("/")
-    if not url or opencode_provider_family(provider_id) is None:
+    family = opencode_provider_family(provider_id)
+    if not url or family is None:
         return url
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    official = host == "opencode.ai" or host.endswith(".opencode.ai")
+    path = parsed.path.rstrip("/")
+    if official and normalize_provider(provider_id) in _OPENCODE_FAMILIES and re.fullmatch(r"/zen(/go)?(/v1)?", path):
+        path = _OPENCODE_FAMILY_PATHS[family] + ("/v1" if path.endswith("/v1") else "")
     if api_mode == "anthropic_messages":
-        return re.sub(r"/v1$", "", url)
-    if url.endswith("/v1"):
-        return url
-    try:
-        host = urllib.parse.urlparse(url).netloc.lower()
-    except Exception:
-        host = ""
-    return url + "/v1" if host == "opencode.ai" or host.endswith(".opencode.ai") else url
+        path = re.sub(r"/v1$", "", path)
+    elif official and not path.endswith("/v1"):
+        path += "/v1"
+    return urllib.parse.urlunparse(parsed._replace(path=path))
 
 
 def github_model_reasoning_efforts(
@@ -2641,13 +2653,17 @@ def cached_fetch_api_models(
     cache = _load_provider_models_cache()
     entry = cache.get(cache_key)
     now = time.time()
-    valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True)
+    native_row = isinstance(entry, dict) and entry.get("native_catalog") is True
+    valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=native_row)
 
     if valid:
         age = now - entry["at"]
         if age < ttl_seconds:
             return _catalog(entry)
-        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        # An empty native catalog is authoritative only inside the TTL (as in
+        # cached_provider_model_ids): never stale-serve it, or an Ollama that was model-less at
+        # first open keeps an empty row for the whole stale window after models are pulled.
+        if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
             # Stale-while-revalidate: serve now, refresh off-thread for the next open. cache_only
             # opens (GUI pickers that must not block on a stopped local server) take the same
             # non-blocking refresh: without it a locally loaded model stayed invisible for the
@@ -2667,8 +2683,9 @@ def cached_fetch_api_models(
         stored = _entry(live, now)
         _store_cache_entry(cache_key, stored, cache)
         return _catalog(stored)
-    # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it.
-    if _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True):
+    # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it
+    # (non-empty only: an empty native row is not worth resurrecting over the generic fallback).
+    if _cache_entry_valid(entry, fp):
         return _catalog(entry)
     return live
 

@@ -183,9 +183,13 @@ class CLIAgentSetupMixin:
         _primary_exc = None
         runtime = None
         try:
+            # target_model: the ladder's model-keyed rungs (OpenCode free tier, Zen/Go api_mode,
+            # Copilot/Nous api_mode) must see the model this CLI will actually send, not
+            # config's `default` -- otherwise `hermes -m mimo-v2.5 --provider opencode-go` with a
+            # *-free default is routed to the keyless Zen relay (#112600).
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                explicit_base_url=self._explicit_base_url)
+                explicit_base_url=self._explicit_base_url, target_model=self.model or None)
         except Exception as exc:
             _primary_exc = exc
         if _primary_exc is not None:
@@ -304,7 +308,9 @@ class CLIAgentSetupMixin:
                 continue
             try:
                 from hermes_cli.fallback_config import resolve_entry_api_key
-                _fb_kwargs = {"requested": _fb_provider}
+                # target_model: the fallback entry names the model that will be sent; without it the
+                # ladder keys off config `default` (see _ensure_runtime_credentials, #112600).
+                _fb_kwargs = {"requested": _fb_provider, "target_model": _fb_model}
                 if _fb.get("base_url"):
                     _fb_kwargs["explicit_base_url"] = _fb["base_url"]
                 _fb_api_key = resolve_entry_api_key(_fb)
@@ -314,7 +320,10 @@ class CLIAgentSetupMixin:
                 logger.warning(
                     "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                     primary_exc, _fb_provider, _fb_model)
-                _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                from gateway.warning_notifications import render_notification
+                render_notification(
+                    lambda: _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}"),
+                    platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
                 return runtime

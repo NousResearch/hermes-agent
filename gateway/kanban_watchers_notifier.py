@@ -35,6 +35,15 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+
+
+def diagnostic_event(ev) -> bool:
+    """Infrastructure attention is distinct from an explicit owner decision."""
+    if ev.kind in {"crashed", "timed_out", "gave_up"}:
+        return True
+    if ev.kind in {"blocked", "block_loop_detected"}:
+        return (ev.payload or {}).get("kind") != "needs_input"
+    return ev.kind == "status" and (ev.payload or {}).get("status") in {"blocked", "triage"}
 # Consecutive send failures (adapter raised OR reported SendResult(success=False))
 # before a sub is dropped as a dead chat. 12 ≈ 60s at the 5s cadence: a transient
 # API outage must not permanently unsubscribe a live review-gate channel.
@@ -515,6 +524,7 @@ class _KanbanNotification:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
         self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
             return
         if self.is_push_adapter:
@@ -559,7 +569,8 @@ class _KanbanNotification:
         from gateway.wake import deliver_wake
         sub = self.sub
         if not self.is_push_adapter:
-            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key)
+            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
+                               notification_category="diagnostic" if self.wake_diagnostic else "result")
             self._log_woke()
             return
         from gateway.session import SessionSource
@@ -587,17 +598,24 @@ class _KanbanNotification:
             if not profile_exists(self.sub_profile):
                 raise RuntimeError(f"Kanban wake profile {self.sub_profile!r} no longer exists")
         async with _async_profile_runtime_scope(self.runner._resolve_profile_home_for_source(_source)):
-            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source)
+            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source,
+                               notification_category="diagnostic" if self.wake_diagnostic else "result")
         self._log_woke()
 
-    async def _send_event(self, ev: Any, msg: str) -> None:
+    async def _send_event(self, ev: Any, msg: str) -> bool:
         """Send one text ping; raises on adapter exception or SendResult(success=False)."""
+        from gateway.warning_notifications import present_notification
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
-        _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
+        _send_res = None
+        async def send_ping():
+            nonlocal _send_res
+            _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
+        if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
+            return False
         # SendResult(success=False) without an exception is a FAILED delivery
         # (else the event is lost); None / non-SendResult keeps the
         # "no exception == delivered" contract.
@@ -618,6 +636,7 @@ class _KanbanNotification:
                 )
             except Exception as art_exc:
                 logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)
+        return True
 
     async def _send_pings(self) -> bool:
         """Send every text ping; False when a send failed (claim already rewound/dropped)."""
@@ -641,7 +660,8 @@ class _KanbanNotification:
             if ev.id <= self.sub.get("last_ping_event_id", 0):
                 continue
             try:
-                await self._send_event(ev, msg)
+                if await self._send_event(ev, msg) is False:
+                    continue
                 await _to_thread_process_service(partial(
                     self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
                     event_id=ev.id,
@@ -678,14 +698,33 @@ class _KanbanNotification:
             if not await self._send_pings():
                 return
             # All text pings delivered (or skipped for non-push / wake-only).
-            self.build_wake_text()
+            original_events = self.d["events"]
+            from gateway.warning_notifications import warning_notifications_enabled
+            split = not warning_notifications_enabled(self.platform_str)
+            wake_groups = ([original_events] if not split else [
+                [ev for ev in original_events if diagnostic_event(ev)],
+                [ev for ev in original_events if not diagnostic_event(ev)],
+            ])
+            wake_payloads = []
+            for events in wake_groups:
+                if not events:
+                    continue
+                self.d = {**self.d, "events": events}
+                self.wake_handoff = self.wake_review_detail = ""
+                for ev in events:
+                    self.format_event(ev)
+                self.build_wake_text()
+                if self.wake_kinds:
+                    wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))
+            self.d = {**self.d, "events": original_events}
         wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
         from gateway.wake import WakeNotAccepted
 
         # A requested wake is required even when its passive ping already landed.
-        if wake_kinds:
+        if wake_payloads:
             try:
-                await self.wake()
+                for self.synth, self.wake_diagnostic, self.wake_kinds in wake_payloads:
+                    await self.wake()
                 self.clear_failures()
             except WakeNotAccepted:
                 # Startup / full queue is not a dead destination. Keep the durable

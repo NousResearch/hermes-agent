@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.update_cmd_common import _best_effort
+from hermes_constants import project_venv_dir
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -21,7 +22,7 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 _ZIP_STAGING_ARTIFACT_SUFFIXES = ".hermes-update-staging", ".hermes-update-old"
 
 # Single source of truth for entries the ZIP swap preserves — used by the dirty-tree filter and the swap loop.
-_ZIP_PRESERVED_TOP_LEVEL = {"venv", "node_modules", ".git", ".env"}
+_ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
 
 _STASH_HINT = "  Stash or commit your changes, then rerun `hermes update`."
 
@@ -333,7 +334,7 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
         # from unrelated software must not steer which interpreter uv resolves here.
         from hermes_cli.managed_uv import managed_python_env
         uv_env = managed_python_env()
-        uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
+        uv_env["VIRTUAL_ENV"] = str(project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv")
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -353,19 +354,18 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     _m()._restore_active_tool_dependencies(active_tool_dependencies, install_prefix, env=install_env)
     # Parity with git-pull path: heal the active memory provider's bridge packages after the reinstall.
     _m()._refresh_active_memory_provider_dependencies()
+    _m()._reapply_plugin_python_dependencies()
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windows_gateway_resume=None) -> bool:
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
-    drivers causing 'Invalid argument'). Returns ``False`` when a Desktop rebuild ran and failed."""
-    from hermes_cli.update_cmd import (
-        _finish_dashboard_update_cleanup, _m, _print_bundled_skills_sync_report, _print_curator_first_run_notice,
-        _print_curator_recent_run_notice, _print_update_summary, _read_project_version, _rebuild_desktop_after_update,
-        _sweep_bytecode_after_update, _update_node_dependencies, _validate_critical_modules_import,
-        _verify_and_restore_state_dbs_post_update,
-    )
-    active_tool_dependencies = _m()._capture_active_tool_dependencies()
-    pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
+    drivers causing 'Invalid argument'). Swaps the tree, then hands the rest of the run to an
+    interpreter born on the new code (never returns; the child owns the receipt and exit code)."""
+    from hermes_cli.update_cmd import _hand_off_post_swap, _m, _read_project_version, _resolve_update_options, _sweep_bytecode_after_update
+    gateway_mode = bool(getattr(args, "gateway", False))
+    opts = _resolve_update_options(args, gateway_mode)
+    # Snapshot before files are replaced, for the completion line.
+    pre_update_version = _read_project_version()
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
@@ -381,12 +381,31 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     _abort_zip_update_if_dirty_tree()
     _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")
     _sweep_bytecode_after_update(branch)
+    from dataclasses import replace as _replace
+    _hand_off_post_swap(
+        args, swap="zip", branch=branch, opts=_replace(opts, pre_update_version=pre_update_version),
+        gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update,
+        _windows_gateway_resume=_windows_gateway_resume)
+    return True  # unreachable: _hand_off_post_swap exits with the child's code
+
+
+def _finish_zip_update(
+    *, active_tool_dependencies, pre_update_version, had_desktop_app_before_update: bool,
+    _windows_gateway_resume=None) -> bool:
+    """Post-swap tail of the ZIP path (runs in the interpreter born on the new tree). Returns
+    ``False`` when a Desktop rebuild ran and failed."""
+    from hermes_cli.update_cmd import (
+        _finish_dashboard_update_cleanup, _m, _print_bundled_skills_sync_report, _print_curator_first_run_notice,
+        _print_curator_recent_run_notice, _print_update_summary, _rebuild_desktop_after_update,
+        _update_node_dependencies, _validate_critical_modules_import,
+        _verify_and_restore_state_dbs_post_update,
+    )
     # Self-lock deferral: the code swap is committed; defer only the dependency sync when this process
     # holds a native extension the sync must rewrite.
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra breaks on this machine, keep
     # base deps and reinstall the remaining extras individually so update does not silently strip working
     # capabilities. See #86735.
-    _m()._abort_dependency_sync_if_self_locked()
+    _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
     print("→ Updating Python dependencies...")
     _reinstall_python_deps_after_zip(active_tool_dependencies)
     # Verify the tree imports (catches the parse-OK-but-skewed tree an interrupted copy leaves). Runs

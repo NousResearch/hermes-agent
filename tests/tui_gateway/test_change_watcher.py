@@ -116,6 +116,7 @@ def test_pairing_signal_follows_a_profile_store(watcher_home):
     home, events = watcher_home
     store = home / "profiles" / "work" / "platforms" / "pairing"
     store.mkdir(parents=True)
+    (home / "profiles" / "work" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
     server._broadcast_watched_changes(now=0.0)
 
     (store / "telegram-approved.json").write_text('{"u1": {"user_id": "u1"}}')

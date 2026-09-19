@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 def _cleared_status_copy(entry: PooledCredential) -> PooledCredential:
     from agent.credential_pool import _CLEAR_STATUS
 
-    return replace(entry, **_CLEAR_STATUS,
+    return replace(entry, **_CLEAR_STATUS, model_cooldowns=None,
                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"})
 
 
@@ -39,7 +39,7 @@ class CredentialPoolAdminMixin:
         with self._lock:
             stale = [
                 e for e in self._entries
-                if e.last_status or e.last_status_at or e.last_error_code or e.failure_reason
+                if e.last_status or e.last_status_at or e.last_error_code or e.failure_reason or e.model_cooldowns
             ]
             if stale:
                 stale_ids = {e.id for e in stale}

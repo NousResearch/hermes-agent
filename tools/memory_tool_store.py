@@ -1,5 +1,7 @@
 """MemoryStore — bounded, file-backed curated memory (MEMORY.md / USER.md).
 Entries are joined by ``ENTRY_DELIMITER``; budgets are in chars (model-independent).
+Topic memory files (#109543): user-authored markdown under ``memories/topics`` (dir +
+glob configurable) injected as their own named sections, sorted by file name.
 Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) stays
 in ``tools.memory_tool`` and is read lazily."""
 
@@ -22,11 +24,41 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+TOPIC_BLOCK_HEADER = "TOPIC MEMORY"
+
+
+def _as_int(value: Any, default: int) -> int:
+    """Tolerant int (config.yaml may hand us a string, None, or a float)."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Error string if *content* matches injection/exfil patterns. Strict scope:
     memory enters the system prompt, so a poisoned entry persists across sessions."""
     return _first_threat_message(content, scope="strict")
+
+
+def _sanitize_for_prompt(text: str, label: str, remediation: str) -> str:
+    """Load-time prompt view of *text*: a ``[BLOCKED: …]`` placeholder on a threat hit.
+    Only the SNAPSHOT is sanitized — live state keeps the raw text so the user can see
+    and remove the poisoned content (dropping it silently would hide the attack)."""
+    from tools.threat_patterns import scan_for_threats
+
+    if not text or text.startswith("[BLOCKED:"):
+        return text
+    findings = scan_for_threats(text, scope="strict")
+    if not findings:
+        return text
+    logger.warning("Memory content from %s blocked at load time: %s", label, ", ".join(findings))
+    return (f"[BLOCKED: {label} entry contained threat pattern(s): {', '.join(findings)}. "
+            f"Removed from system prompt; {remediation}")
+
+
+_REMOVE_ENTRY_HINT = "use memory(action=remove) to delete the original."
+_REMOVE_TOPIC_HINT = "edit the file to remove the flagged content."
 
 
 def _error(message: str, **extra) -> Dict[str, Any]:
@@ -76,12 +108,22 @@ class MemoryStore:
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
-                 memory_enabled: bool = True, user_profile_enabled: bool = True):
+                 memory_enabled: bool = True, user_profile_enabled: bool = True,
+                 topics_enabled: bool = True, topics_dir: str = "", topics_glob: str = "*.md",
+                 topic_char_limit: int = 2200, topic_total_budget: int = 0):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
-        self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Topic memory files (#109543): read-only, user-authored, injected as named sections.
+        # ``topics_dir`` is relative to the profile's memories dir (absolute paths honored);
+        # per-file cap truncates, ``topic_total_budget`` caps the combined content (0 = uncapped).
+        self.topics_enabled = bool(topics_enabled)
+        self.topics_dir = str(topics_dir or "").strip()
+        self.topics_glob = str(topics_glob or "*.md").strip() or "*.md"
+        self.topic_char_limit = _as_int(topic_char_limit, 2200)
+        self.topic_total_budget = _as_int(topic_total_budget, 0)
+        self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": "", "topics": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
     # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
@@ -110,21 +152,10 @@ class MemoryStore:
             "The fact can be saved in a later turn.")}
 
     def load_from_disk(self):
-        """Load MEMORY.md / USER.md and capture the frozen system-prompt snapshot.
-        Threat hits are replaced by a ``[BLOCKED: …]`` placeholder in the SNAPSHOT only;
-        live lists keep the raw text so the user can see and remove poisoned entries
-        (dropping them silently would hide the attack)."""
-        from tools.threat_patterns import scan_for_threats
-
-        def _sanitize(entry, filename):
-            # Strict scope, same as writes; empty / already-blocked entries pass through.
-            findings = scan_for_threats(entry, scope="strict") if entry and not entry.startswith("[BLOCKED:") else None
-            if not findings:
-                return entry
-            logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
-            return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
-                    f"Removed from system prompt; use memory(action=remove) to delete the original.]")
-
+        """Load MEMORY.md / USER.md (+ topic files) and capture the frozen system-prompt
+        snapshot. Threat hits are replaced by a ``[BLOCKED: …]`` placeholder in the
+        SNAPSHOT only; live lists keep the raw text so the user can see and remove
+        poisoned entries (dropping them silently would hide the attack)."""
         for target in ("memory", "user"):
             path = self._path_for(target)
             from hermes_constants import mkdir_under_hermes_home
@@ -140,7 +171,9 @@ class MemoryStore:
                 logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
                                "further additions are blocked until it is back under the limit.",
                                path.name, count, limit)
-            self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
+            self._system_prompt_snapshot[target] = self._render_block(
+                target, [_sanitize_for_prompt(e, path.name, _REMOVE_ENTRY_HINT) for e in entries])
+        self._system_prompt_snapshot["topics"] = self._load_topics_block()
 
     @staticmethod
     @contextmanager
@@ -390,6 +423,76 @@ class MemoryStore:
         content, sep = ENTRY_DELIMITER.join(entries), "═" * 46
         title = MEMORY_BLOCK_HEADERS["user" if target == "user" else "memory"]
         return f"{sep}\n{title} [{self._usage_pct(target, len(content))}]\n{sep}\n{content}"
+
+    # ---- Topic memory files (#109543) -------------------------------------------------
+
+    def _topics_root(self) -> Path:
+        """Absolute ``topics_dir``, else ``<profile memories>/<topics_dir>``."""
+        from tools import memory_tool  # get_memory_dir is monkeypatched there
+        root = Path(self.topics_dir).expanduser() if self.topics_dir else Path("topics")
+        return root if root.is_absolute() else memory_tool.get_memory_dir() / root
+
+    def _topic_files(self) -> List[Tuple[str, Path]]:
+        """``[(relative posix name, path)]`` sorted by name — deterministic injection order.
+        A missing dir or a bad glob yields ``[]`` (no topics dir = no topics, today's behavior)."""
+        root = self._topics_root()
+        try:
+            found = [p for p in root.glob(self.topics_glob) if p.is_file()]
+            return sorted(((p.relative_to(root).as_posix(), p) for p in found), key=lambda item: item[0])
+        except (OSError, ValueError) as e:
+            logger.warning("Ignoring topic memory glob %r under %s: %s", self.topics_glob, root, e)
+            return []
+
+    def _load_topics_block(self) -> str:
+        """Rendered block for every topic file, or "" (disabled / no files). Deterministic:
+        files are sorted by name; the per-file cap truncates a file with a visible marker and
+        ``topic_total_budget`` (0 = uncapped) truncates the last file that fits and lists the
+        files that didn't — never a silent drop."""
+        if not self.topics_enabled:
+            return ""
+        blocks: List[str] = []
+        omitted: List[str] = []
+        remaining = self.topic_total_budget if self.topic_total_budget > 0 else None
+        for name, path in self._topic_files():
+            if remaining is not None and remaining <= 0:
+                omitted.append(name)
+                continue
+            raw, read_ok = self._read_raw_checked(path)
+            if not read_ok:
+                logger.warning("Topic memory file %s exists but could not be read; skipped", path)
+                omitted.append(name)
+                continue
+            content = raw.strip()
+            if not content:
+                continue
+            total = len(content)
+            per_file = self.topic_char_limit if self.topic_char_limit > 0 else total
+            allowed = per_file if remaining is None else min(per_file, remaining)
+            clipped = total > allowed
+            body = _sanitize_for_prompt(content[:allowed].rstrip() if clipped else content,
+                                        name, _REMOVE_TOPIC_HINT)
+            if clipped:
+                logger.warning("Topic memory %s truncated for the system prompt: %d/%d chars kept "
+                               "(topic_char_limit=%d, remaining budget=%s)",
+                               name, allowed, total, self.topic_char_limit, remaining)
+                body += f"\n[TRUNCATED: {name} is {total:,} chars; {total - allowed:,} omitted to keep the prompt bounded.]"
+            if remaining is not None:
+                remaining -= allowed if clipped else total  # marker/scaffolding rides outside the budget
+            blocks.append(self._render_topic_block(name, body, allowed if clipped else total, total))
+        if not blocks:
+            return ""
+        if omitted:
+            logger.warning("Topic memory files skipped by topic_total_budget (%d chars): %s",
+                           self.topic_total_budget, ", ".join(omitted))
+            blocks.append(f"[TOPIC MEMORY BUDGET: {self.topic_total_budget:,} chars reached — "
+                          f"not loaded: {', '.join(omitted)}]")
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def _render_topic_block(name: str, body: str, kept: int, total: int) -> str:
+        """One section per topic file, named so the model can tell them apart."""
+        sep = "═" * 46
+        return f"{sep}\n{TOPIC_BLOCK_HEADER} — {name} [{kept:,}/{total:,} chars]\n{sep}\n{body}"
 
     @staticmethod
     def _read_raw_checked(path: Path) -> Tuple[str, bool]:

@@ -512,7 +512,7 @@ def _timestamp_line(agent: Any) -> str:
 
 
 def _memory_parts(agent: Any) -> List[str]:
-    """Built-in memory/USER.md blocks plus the external provider block (gated on
+    """Built-in memory/USER.md/topic blocks plus the external provider block (gated on
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
     tools the toolset config gated off)."""
     parts: List[str] = []
@@ -521,6 +521,11 @@ def _memory_parts(agent: Any) -> List[str]:
             block = agent._memory_store.format_for_system_prompt(kind) if enabled else None
             if block:
                 parts.append(block)
+        # User-authored topic files (#109543) — one named section each, sorted by file name.
+        # Gated by ``memory.topics_enabled`` inside the store; no files = no block.
+        _topics_block = agent._memory_store.format_for_system_prompt("topics")
+        if _topics_block:
+            parts.append(_topics_block)
     # External memory provider system prompt block (additive to built-in). Gated on the same check
     # ``inject_memory_provider_tools`` uses so we never advertise provider tools that the agent's toolset
     # configuration has already gated off (#81014).

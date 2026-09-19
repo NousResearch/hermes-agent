@@ -1247,6 +1247,15 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Topic memory files: your own markdown files injected into the system prompt as their
+        # own named sections (MEMORY.md/USER.md stay as they are). Sorted by file name, frozen
+        # at session start like the other stores. Relative dirs resolve under the profile's
+        # memories/ dir; an empty or missing dir = no change to today's behavior.
+        "topics_enabled": True,
+        "topics_dir": "topics",      # e.g. ~/.hermes/memories/topics/; absolute paths honored
+        "topics_glob": "*.md",       # use "**/*.md" to pick up subdirectories too
+        "topic_char_limit": 2200,    # per file; longer files are truncated in the prompt (marked)
+        "topic_total_budget": 0,     # combined cap for all topic files; 0 = uncapped
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
         # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",

@@ -10,7 +10,7 @@ Hermes Agent has bounded, curated memory that persists across sessions. This let
 
 ## How It Works
 
-Two files make up the agent's memory:
+Two files make up the agent's core memory — plus any [topic memory files](#topic-memory-files) you add yourself:
 
 | File | Purpose | Char Limit |
 |------|---------|------------|
@@ -108,6 +108,51 @@ For information about the user's identity, preferences, and communication style:
 - Pet peeves and things to avoid
 - Workflow habits
 - Technical skill level
+
+## Topic Memory Files
+
+Two files is a hard cap when you have several projects, domains, or lives to keep straight. Topic memory files are your own markdown files that ride alongside `MEMORY.md` and `USER.md` — one file per subject, each injected as its own named section at session start.
+
+```
+~/.hermes/memories/            # per profile
+  USER.md                      # existing — user profile
+  MEMORY.md                    # existing — agent notes
+  topics/
+    profile.md                 # biographical detail, background
+    cognition.md               # cognitive style, learning approach
+    communication.md           # register, interaction style
+    business.md                # company structure, product portfolio
+    working-style.md           # named workflows, session conventions
+```
+
+Unlike `MEMORY.md`/`USER.md`, topic files are **yours**: nothing writes them but you — edit them in any editor, and the agent sees the new content at the next session start (like the other stores, the prompt copy is a frozen snapshot).
+
+```yaml
+memory:
+  topics_enabled: true       # false = ignore the dir entirely
+  topics_dir: topics         # relative to memories/; absolute paths honored
+  topics_glob: "*.md"        # "**/*.md" also picks up subdirectories
+  topic_char_limit: 2200     # per file; longer files are truncated in the prompt (marked)
+  topic_total_budget: 0      # combined cap for all topic files; 0 = uncapped
+```
+
+What the model sees — one section per file, sorted by file name (subdirectory files sort by their relative path), after the `MEMORY.md`/`USER.md` blocks:
+
+```
+══════════════════════════════════════════════
+TOPIC MEMORY — business/acme.md [1,204/2,200 chars]
+══════════════════════════════════════════════
+Acme GmbH — 3 product lines (hardware, SaaS, consulting) …
+```
+
+Behavior notes:
+
+- **Backward compatible.** No `topics/` directory (or an empty one) means nothing changes — the system prompt is byte-identical to a session without the feature.
+- **Limits never drop content silently.** A file over `topic_char_limit` is cut at the limit and marked `[TRUNCATED: …]` in the prompt; when the combined content hits `topic_total_budget`, the file straddling the limit is truncated and the rest are listed in a `[TOPIC MEMORY BUDGET: …]` line instead of vanishing.
+- **Order is deterministic.** Files are loaded by sorted name, so the prompt prefix is stable across sessions and the prefix cache keeps working.
+- **Same strict scan as memory entries.** A file whose content matches injection/exfiltration patterns is replaced in the prompt by a `[BLOCKED: …]` placeholder; the file on disk is untouched.
+- **Read-only for the agent.** The `memory` tool still writes `MEMORY.md`/`USER.md`. Topic files require at least one of those built-in stores to be enabled (`memory_enabled`/`user_profile_enabled`), since they load with the same store.
+- **Profile-scoped.** Files live under the active profile's `memories/` dir, exactly like the other stores.
 
 ## What to Save vs Skip
 
@@ -248,6 +293,12 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  # Your own topic files, injected as named sections (see Topic Memory Files)
+  topics_enabled: true
+  topics_dir: topics        # relative to memories/; absolute paths honored
+  topics_glob: "*.md"       # "**/*.md" also picks up subdirectories
+  topic_char_limit: 2200    # per file; longer files are truncated in the prompt (marked)
+  topic_total_budget: 0     # combined cap for all topic files; 0 = uncapped
 ```
 
 Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the

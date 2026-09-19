@@ -821,9 +821,17 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write
+  # Your own topic memory files (memories/topics/*.md), injected as named sections
+  topics_enabled: true
+  topics_dir: topics        # relative to memories/; absolute paths honored
+  topics_glob: "*.md"       # "**/*.md" also picks up subdirectories
+  topic_char_limit: 2200    # per file; longer files are truncated in the prompt (marked)
+  topic_total_budget: 0     # combined cap for all topic files; 0 = uncapped
 ```
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
+
+Topic memory files let you keep memory for several domains without inflating `memory_char_limit`: drop markdown files in `memories/topics/` and each loads as its own `TOPIC MEMORY — <file>` section at session start, sorted by file name. No files = no change. The agent doesn't write them (the `memory` tool still targets `MEMORY.md`/`USER.md`), so they're yours to curate by hand. Full walkthrough: [Topic Memory Files](/user-guide/features/memory#topic-memory-files).
 
 ## Context File Truncation
 

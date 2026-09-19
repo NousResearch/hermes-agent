@@ -41,7 +41,7 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
-    ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _as_int, _scan_memory_content)
 
 
 def load_on_disk_store() -> "MemoryStore":
@@ -54,7 +54,8 @@ def load_on_disk_store() -> "MemoryStore":
         mem_cfg = get_builtin_memory_config(config)
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
         store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
-                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
+                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled,
+                            **get_builtin_memory_topic_config(config))
     except Exception:
         store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
     store.load_from_disk()
@@ -223,6 +224,20 @@ def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> T
     """Return ``(memory_enabled, user_profile_enabled)`` from resolved config."""
     section = get_builtin_memory_config(config)
     return tuple(is_truthy_value(section.get(k), default=True) for k in ("memory_enabled", "user_profile_enabled"))
+
+
+def get_builtin_memory_topic_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """``MemoryStore`` kwargs for topic memory files (#109543) from the ``memory`` section:
+    switch, dir/glob, per-file cap, combined budget. Shared by ``agent_init`` and
+    ``load_on_disk_store`` so the session prompt and every on-disk view agree."""
+    section = get_builtin_memory_config(config)
+    return {
+        "topics_enabled": is_truthy_value(section.get("topics_enabled"), default=True),
+        "topics_dir": str(section.get("topics_dir") or ""),
+        "topics_glob": str(section.get("topics_glob") or "*.md"),
+        "topic_char_limit": _as_int(section.get("topic_char_limit"), 2200),
+        "topic_total_budget": _as_int(section.get("topic_total_budget"), 0),
+    }
 
 
 @no_cache_check_fn

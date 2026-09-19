@@ -737,7 +737,16 @@ def _natural_every_to_cron(rest: str) -> Optional[str]:
             if mapped not in days:
                 days.append(mapped)
         if not days:
-            return None
+            time_tokens = tokens
+            if time_tokens and time_tokens[0] == "at":
+                time_tokens = time_tokens[1:]
+            if not time_tokens:
+                return None
+            parsed = _parse_clock_time(" ".join(time_tokens))
+            if parsed is None:
+                return None
+            hour, minute = parsed
+            return f"{minute} {hour} * * *"
         dow = ",".join(days)
     time_tokens = tokens[idx:]
     if time_tokens and time_tokens[0] == "at":  # optional separator: "every day at 9am"

@@ -179,13 +179,25 @@ def _resolve_explicit_xai_api_key() -> str:
         try:
             from hermes_cli.auth import is_source_suppressed
             if is_source_suppressed("xai", "env:XAI_API_KEY"):
-                masked = os.environ.pop("XAI_API_KEY", None)
-                try:
-                    return resolve_provider_secret("XAI_API_KEY", "xai")
-                finally:
-                    if masked is not None:
-                        os.environ["XAI_API_KEY"] = masked
-                return ""
+                # Suppressed re-resolution via the masked ``env_getter`` parameter:
+                # os.environ is never mutated, so concurrent readers on other threads
+                # can't observe a missing var. The getter reads the .env file only
+                # (get_env_value still consults the scope-checked process env when no
+                # profile scope is active, so it can't mask). Non-env sources —
+                # config, and pool entries whose key differs from the stale env
+                # value — survive; a result identical to the env value is the very
+                # key this gate removes and is dropped.
+                from hermes_cli.config import load_env
+                dotenv = load_env()
+
+                def _dotenv_only(var: str) -> str:
+                    return str(dotenv.get(var) or "")
+
+                masked = resolve_provider_secret(
+                    "XAI_API_KEY", "xai", env_getter=_dotenv_only)
+                if masked and masked != os.environ.get("XAI_API_KEY"):
+                    return masked
+                return _dotenv_only("XAI_API_KEY")
         except Exception:  # pragma: no cover - auth store unreadable: keep prior behavior
             pass
     return key

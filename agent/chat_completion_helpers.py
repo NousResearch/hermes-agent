@@ -2023,6 +2023,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             from agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            # Republish the live main-runtime snapshot so auxiliary lanes resolving through
+            # the contextvar for the rest of this turn bind the activated fallback route,
+            # not the turn-start primary endpoint (t_929b7e1d: goal_judge POSTed to a
+            # stale codex host after the primary fell back to a custom provider). Scoped to
+            # contexts that already carry a turn-start snapshot (a real agent turn publishes
+            # one in turn_context); one-off/CLI paths and test doubles that never published
+            # must not get a surprise global binding — hence the runtime_main_active() guard.
+            from agent.auxiliary_client import runtime_main_active
+            if runtime_main_active():
+                from agent.turn_context import _publish_runtime_main
+                _publish_runtime_main(agent)
             return True
         except Exception as e:
             if fb_provider == "nous":

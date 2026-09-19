@@ -2697,6 +2697,15 @@ def clear_runtime_main() -> None:
     _publish_runtime_main_mirrors(("", "", "", "", "", ""))
 
 
+def runtime_main_active() -> bool:
+    """True when THIS context has a live main-runtime snapshot published.
+
+    Used to scope mid-turn republishes (e.g. after a provider fallback) to contexts
+    that already carry a turn-start snapshot, so one-off/CLI paths and test suites
+    that never published one don't get a surprise global binding."""
+    return _RUNTIME_MAIN_CONTEXT.get() is not None
+
+
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint like the main CLI (env OPENAI_BASE_URL or config-saved)."""
     try:
@@ -4900,6 +4909,16 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+def _runtime_snapshot_is_custom(main_runtime: Dict[str, Any]) -> bool:
+    """True only when the live main runtime is itself a custom endpoint (bare ``custom``
+    or ``custom:<name>``). An unidentified or non-custom snapshot (e.g. an openai-codex
+    primary captured at turn start, before a mid-turn fallback swapped the route) must
+    not lend its host to a custom aux lane: inheriting it pairs the lane's model/key
+    with a foreign endpoint (Cloudflare-challenged codex host in t_929b7e1d)."""
+    provider = str(main_runtime.get("provider") or "").strip().lower()
+    return provider == "custom" or provider.startswith("custom:")
+
+
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -4930,11 +4949,14 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
-    elif main_runtime:
+    elif main_runtime and _runtime_snapshot_is_custom(main_runtime):
         # Reuse main_runtime's concrete base_url + api_key for a named custom provider;
         # re-resolving from bare "custom" loses the name and lands on the wrong provider.
         # Re-resolution loses the provider name and falls back to OpenRouter or a wrong API-key provider —
         # the main agent already solved this, we just need to reuse its answer. (#45472)
+        # Custom-identity guard: only a runtime that IS a custom endpoint may be inherited;
+        # a stale non-custom snapshot (turn-start primary, pre-fallback) falls through to the
+        # configured-endpoint resolution instead of contacting a foreign host.
         _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
         _main_key = _normalize_api_key(main_runtime.get("api_key"))
         if _main_base and _main_key:

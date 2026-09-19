@@ -119,6 +119,42 @@ describe("api.getModelOptions", () => {
   });
 });
 
+describe("api memory provider config", () => {
+  afterEach(() => {
+    setManagementProfile("");
+  });
+
+  it("scopes reads to the dashboard's selected profile", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("caishenye");
+
+    const fetchMock = jsonFetchMock({ name: "hindsight", fields: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getMemoryProviderConfig("hindsight");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/memory/providers/hindsight/config?profile=caishenye",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("scopes saves to the dashboard's selected profile", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("caishenye");
+
+    const fetchMock = jsonFetchMock({ ok: true, active: "hindsight" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.updateMemoryProviderConfig("hindsight", { bank_id: "god-of-fortune" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/memory/providers/hindsight/config?profile=caishenye",
+      expect.objectContaining({ credentials: "include", method: "PUT" }),
+    );
+  });
+});
+
 describe("api OAuth helpers", () => {
   it("starts OAuth login in gated mode without requiring an injected session token", async () => {
     vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });

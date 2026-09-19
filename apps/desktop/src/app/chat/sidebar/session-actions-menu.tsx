@@ -45,11 +45,13 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { $sessionTiles, closeAllOpenSessionTiles, openSessionTile } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+
+import { SplitSubmenu } from './split-submenu'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -463,6 +465,20 @@ function useSessionActions({
   const renderItems = (kit: MenuKit) => (
     <>
       {openItems.map(item => renderActionItem(kit, item))}
+      {/* Split parity for stored rows: the New-session nav row offers "Open in
+          split ▸", a stored row only had the drag gesture. Same primitive the
+          drag uses, so an already-tiled session re-docks (moves) instead of
+          duplicating. Hidden for the session loaded in main — a tile would
+          mirror the transcript the user is looking at (openSessionTile no-ops
+          there anyway). */}
+      {surface === 'row' && sessionId !== selectedStoredSessionId && (
+        <SplitSubmenu
+          disabled={!sessionId}
+          kit={kit}
+          label={r.openInSplit}
+          onSplit={dir => openSessionTile(sessionId, dir)}
+        />
+      )}
       {openItems.length > 0 && <kit.Separator />}
       {identityItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>

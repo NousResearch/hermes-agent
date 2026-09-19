@@ -26,7 +26,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry
 
@@ -118,6 +118,8 @@ class RemoteKernel:
     # kernels: killing one mid-cell tears the runner out from under a live
     # poll loop (same guard as tools.code_kernel, hermes-agent#101861).
     attached: int = 0
+    # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
+    pinned: bool = False
 
     def sh(self, cmd: str, timeout: int = 15) -> str:
         return _sh(self.env, cmd, timeout)
@@ -168,6 +170,11 @@ def shutdown_remote_kernels_for_owner(owner: str) -> None:
         _REGISTRY.shutdown(owner)
 
 
+def shutdown_remote_kernels_where(owner_matches: Callable[[str], bool]) -> None:
+    """Dispose every remote kernel whose owner satisfies the predicate (a finished child's kernels)."""
+    _REGISTRY.shutdown(owner_matches=owner_matches)
+
+
 def _reap_unlocked(idle_timeout: int) -> List["RemoteKernel"]:
     """Pop idle-expired, unattached remote kernels; caller tears them down outside the lock. The
     runner self-exits after the same idle window, so this clears the HOST-side entry — without it
@@ -183,11 +190,12 @@ def _evict_over_cap_unlocked(keep: Tuple) -> List["RemoteKernel"]:
     ``max_session_kernels`` bound as local kernels, applied independently to this map)."""
     from tools.code_kernel import _lifecycle_limits
     cap, _ = _lifecycle_limits()
-    if len(_REMOTE_KERNELS) <= cap:
+    unpinned = [key for key in _REMOTE_KERNELS if not _REMOTE_KERNELS[key].pinned]
+    if len(unpinned) <= cap:
         return []
-    by_age = sorted((key for key in _REMOTE_KERNELS if key != keep and _REMOTE_KERNELS[key].attached == 0),
+    by_age = sorted((key for key in unpinned if key != keep and _REMOTE_KERNELS[key].attached == 0),
                     key=lambda key: _REMOTE_KERNELS[key].last_used)
-    return [_REMOTE_KERNELS.pop(key) for key in by_age[: len(_REMOTE_KERNELS) - cap]]
+    return [_REMOTE_KERNELS.pop(key) for key in by_age[: len(unpinned) - cap]]
 
 
 atexit.register(shutdown_all_remote_kernels)
@@ -265,6 +273,8 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     if kernel is None:
         kernel = _spawn_remote_kernel(env, env_type, owner, task_env_id, sandbox_tools, idle_exit=idle_exit)
         if kernel is not None:
+            from agent.delegation_context import is_delegated_child_context
+            kernel.pinned = is_delegated_child_context()
             with _REGISTRY.lock:
                 _REMOTE_KERNELS[key] = kernel
     return kernel, reused, state_reset, state_lost

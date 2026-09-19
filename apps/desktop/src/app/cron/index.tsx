@@ -78,11 +78,12 @@ import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } 
 import {
   cronEditorUpdates,
   jobIsScriptOnly,
+  lastErrorSummary,
   parseCronDeliveryTargets,
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
-import { jobState, jobTitle, STATE_DOT } from './job-state'
+import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -701,6 +702,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               busy={busyJobTokens.has(selectedJob.id) || triggeringJobKeys.has(`${profile}:${selectedJob.id}`)}
               c={c}
               job={selectedJob}
+              onEdit={() => setEditor({ mode: 'edit', job: selectedJob })}
               onOpenSession={onOpenSession}
               onPauseResume={() => void handlePauseResume(selectedJob)}
               onTrigger={() => void handleTrigger(selectedJob)}
@@ -777,21 +779,17 @@ function CronJobListRow({
   )
 }
 
-function CronJobDetail({
-  busy,
-  c,
-  job,
-  onOpenSession,
-  onPauseResume,
-  onTrigger
-}: {
+interface CronJobDetailProps {
   busy: boolean
   c: Translations['cron']
   job: CronJob
+  onEdit: () => void
   onOpenSession?: (sessionId: string) => void
   onPauseResume: () => void
   onTrigger: () => void
-}) {
+}
+
+function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onTrigger }: CronJobDetailProps) {
   const state = jobState(job)
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
@@ -820,16 +818,31 @@ function CronJobDetail({
           rows={[
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
-            { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
+            {
+              label: (nextRunOverdueMs(job) === null ? c.next : c.overdueSince).replace(/:$/, ''),
+              value: formatTime(job.next_run_at)
+            },
             { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
             ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
           ]}
         />
 
         {job.last_error ? (
-          <div className="flex items-start gap-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
-            <AlertTriangle className="mt-px size-3 shrink-0" />
-            <span className="min-w-0 break-words">{job.last_error}</span>
+          <div className="space-y-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
+            <div className="flex items-start gap-1.5">
+              <AlertTriangle className="mt-px size-3 shrink-0" />
+              <span className="min-w-0 break-words" title={job.last_error}>
+                {c.lastRunFailed} {lastErrorSummary(job.last_error)}
+              </span>
+            </div>
+            <div className="flex items-center gap-0.5 pl-4">
+              <PanelAction disabled={busy} icon="edit" onClick={onEdit}>
+                {c.editJob}
+              </PanelAction>
+              <PanelAction disabled={busy} icon="zap" onClick={onTrigger}>
+                {c.runAgain}
+              </PanelAction>
+            </div>
           </div>
         ) : null}
       </header>

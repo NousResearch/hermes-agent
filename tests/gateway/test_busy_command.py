@@ -75,7 +75,7 @@ class TestBusyCommandPersistence:
         # emulate the write that the mocked save_config_value skipped.
         monkeypatch.setattr(
             gateway_run,
-            "_load_gateway_runtime_config",
+            "_load_gateway_config",
             lambda: {"display": {"busy_input_mode": new_mode}},
         )
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)

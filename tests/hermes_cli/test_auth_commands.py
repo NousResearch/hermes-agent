@@ -609,6 +609,56 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     assert payload["active_provider"] == "openai-codex"
 
 
+def _codex_jwt(email: str, account_id: str, subject: str) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+    claims = {"email": email, "sub": subject, "https://api.openai.com/auth": {"chatgpt_account_id": account_id}}
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"{header}.{payload}.signature"
+
+
+def _add_codex_twice(tmp_path, monkeypatch, capsys, second_token: str) -> str:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    codex_login = {"base_url": "https://chatgpt.com/backend-api/codex", "last_refresh": "2026-09-01T00:00:00Z"}
+    logins = iter([
+        {"tokens": {"access_token": _codex_jwt("me@example.com", "acct-A", "user-1"), "refresh_token": "rt-1"}, **codex_login},
+        {"tokens": {"access_token": second_token, "refresh_token": "rt-2"}, **codex_login},
+    ])
+    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", lambda: next(logins))
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+    capsys.readouterr()
+    auth_add_command(_Args())
+    return capsys.readouterr().err
+
+
+def test_auth_add_codex_warns_when_login_is_same_account_as_pooled_entry(tmp_path, monkeypatch, capsys):
+    """A second ``hermes auth add openai-codex`` for the SAME OpenAI account must tell the user
+    which existing credential it duplicates (#47096): the two logins share one token family and
+    the provider revokes the older one, so the extra entry buys no quota. Different accounts
+    get no warning — they rotate independently.
+    """
+    from agent.credential_pool import load_pool
+
+    err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("me@example.com", "acct-A", "user-1"))
+    assert "same OpenAI account as openai-codex credential #1" in err
+    assert '"me@example.com"' in err and "hermes auth remove openai-codex 1" in err
+    # The warning informs; it never blocks the add.
+    assert len(load_pool("openai-codex").entries()) == 2
+
+
+def test_auth_add_codex_stays_quiet_for_a_different_account(tmp_path, monkeypatch, capsys):
+    err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("other@example.com", "acct-B", "user-2"))
+    assert "same OpenAI account" not in err
+
+
 def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, _codex_pool_only_store())
@@ -1166,3 +1216,84 @@ def test_qwen_oauth_login_marks_active_through_moved_owner(monkeypatch):
 
     assert auth_commands._qwen_oauth_login(None) is creds
     assert marked == [creds]
+
+
+def test_auth_add_openrouter_oauth_persists_pkce_key_without_touching_api_key_default(tmp_path, monkeypatch):
+    """`hermes auth add openrouter --type oauth` stores the PKCE-minted key as an ``api_key`` pool row
+    (OpenRouter returns a plain key, no refresh pair) that ``resolve_provider("auto")`` picks up with no
+    env var — same as a pasted key; the bare `--api-key` path keeps its API-key default."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("hermes_cli.auth._openrouter_pkce_login", lambda **kw: {"api_key": "sk-or-v1-from-pkce"})
+
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Oauth:
+        provider = "openrouter"
+        auth_type = "oauth"
+        api_key = None
+        label = "browser-login"
+        timeout = None
+        no_browser = True
+
+    class _Plain:
+        provider = "openrouter"
+        auth_type = None  # no --type: must NOT fall into the OAuth flow
+        api_key = "sk-or-v1-pasted"
+        label = "pasted"
+
+    auth_add_command(_Oauth())
+    # No env var, no config.yaml provider: the pooled PKCE key alone must make openrouter resolvable.
+    assert resolve_provider("auto") == "openrouter"
+    auth_add_command(_Plain())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    by_source = {e["source"]: e for e in payload["credential_pool"]["openrouter"]}
+    assert by_source["manual:openrouter_pkce"]["auth_type"] == "api_key"
+    assert by_source["manual:openrouter_pkce"]["access_token"] == "sk-or-v1-from-pkce"
+    assert by_source["manual:openrouter_pkce"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert by_source["manual"]["access_token"] == "sk-or-v1-pasted"
+
+
+def test_openrouter_loopback_callback_binds_nonce_path_and_rejects_forged_redirect(monkeypatch):
+    """The CSRF nonce lives in the callback PATH (OpenRouter echoes no ``state``): a redirect that
+    knows the port but not the nonce is a 404 and never yields a code; the genuine path does."""
+    import threading
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    import hermes_cli.auth_openrouter as orm
+
+    seen: dict = {}
+
+    def _browser(url):
+        callback = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["callback_url"][0]
+        seen["callback"] = callback
+        forged = callback.rsplit("/", 1)[0] + "/forged-nonce?code=evil"
+
+        def _redirects():
+            try:
+                urllib.request.urlopen(forged, timeout=5)
+            except urllib.error.HTTPError as exc:
+                seen["forged_status"] = exc.code
+            with urllib.request.urlopen(f"{callback}?code=good-code", timeout=5) as resp:
+                seen["genuine_status"] = resp.status
+
+        threading.Thread(target=_redirects, daemon=True).start()
+        return True
+
+    monkeypatch.setattr(orm, "_can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr(orm.webbrowser, "open", _browser)
+
+    code = orm._openrouter_loopback_code(
+        {"code_challenge": "c", "code_challenge_method": "S256"}, open_browser=True, timeout_seconds=10)
+
+    parsed = urllib.parse.urlparse(seen["callback"])
+    assert parsed.hostname == "127.0.0.1" and parsed.path.startswith("/callback/") and len(parsed.path) > 20
+    assert seen["forged_status"] == 404
+    assert seen["genuine_status"] == 200
+    assert code == "good-code"

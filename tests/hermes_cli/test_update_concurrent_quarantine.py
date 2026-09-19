@@ -18,6 +18,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import main as cli_main
+from hermes_constants import project_venv_dir
+
+
+def _project_venv_root() -> Path:
+    """Mirror the guards' lookup: the checkout's real venv/.venv, else venv/.
+
+    The guards resolve ``project_venv_dir(PROJECT_ROOT)`` at call time, so a
+    hard-coded ``venv`` diverges on hosts (CI included) whose checkout uses
+    ``.venv``.
+    """
+    venv_dir = project_venv_dir(cli_main.PROJECT_ROOT) or cli_main.PROJECT_ROOT / "venv"
+    return venv_dir.resolve()  # the guards prefix-match on the resolved path
 from hermes_cli import dashboard_procs
 from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
@@ -366,8 +378,8 @@ def test_pause_windows_gateway_service_failure_restores_every_attempted_service(
     import hermes_cli.update_cmd_windows as update_cmd_windows
 
     services = [
-        SimpleNamespace(name="HermesGateway", service_pid=11, service_create_time=11.0, gateway_pid=101, gateway_create_time=101.0, descendant_identities=()),
-        SimpleNamespace(name="HermesGatewayPicasso", service_pid=22, service_create_time=22.0, gateway_pid=202, gateway_create_time=202.0, descendant_identities=()),
+        SimpleNamespace(name="HermesGateway", profile="default", service_pid=11, service_create_time=11.0, gateway_pid=101, gateway_create_time=101.0, descendant_identities=()),
+        SimpleNamespace(name="HermesGatewayPicasso", profile="picasso", service_pid=22, service_create_time=22.0, gateway_pid=202, gateway_create_time=202.0, descendant_identities=()),
     ]
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
     monkeypatch.setattr(
@@ -410,8 +422,8 @@ def test_pause_windows_gateway_service_surfaces_rollback_start_failure(
     import hermes_cli.update_cmd_windows as update_cmd_windows
 
     services = [
-        SimpleNamespace(name="HermesGateway", service_pid=11, service_create_time=11.0, gateway_pid=101, gateway_create_time=101.0, descendant_identities=()),
-        SimpleNamespace(name="HermesGatewayPicasso", service_pid=22, service_create_time=22.0, gateway_pid=202, gateway_create_time=202.0, descendant_identities=()),
+        SimpleNamespace(name="HermesGateway", profile="default", service_pid=11, service_create_time=11.0, gateway_pid=101, gateway_create_time=101.0, descendant_identities=()),
+        SimpleNamespace(name="HermesGatewayPicasso", profile="picasso", service_pid=22, service_create_time=22.0, gateway_pid=202, gateway_create_time=202.0, descendant_identities=()),
     ]
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
     monkeypatch.setattr(
@@ -646,7 +658,7 @@ def _fake_psutil_tree(tree, venv_exe, worker_exe, dead=None):
 @patch.object(cli_main, "_is_windows", return_value=True)
 def test_venv_launcher_ancestors_returns_venv_side_parent(_winp, monkeypatch):
     """The worker's venv-side parent is reported so the guard set is covered."""
-    venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
+    venv_exe = str(_project_venv_root() / "Scripts" / "python.exe")
     worker_exe = r"C:\Users\x\AppData\Roaming\uv\python\cpython-3.11\python.exe"
 
     # worker 200 -> launcher 100 (even == venv-side)
@@ -659,7 +671,7 @@ def test_venv_launcher_ancestors_returns_venv_side_parent(_winp, monkeypatch):
 @patch.object(cli_main, "_is_windows", return_value=True)
 def test_venv_launcher_ancestors_ignores_non_venv_parents(_winp, monkeypatch):
     """A Scheduled Task's cmd.exe / an operator shell is not a venv holder."""
-    venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
+    venv_exe = str(_project_venv_root() / "Scripts" / "python.exe")
     worker_exe = r"C:\Windows\System32\cmd.exe"
 
     # worker 200 -> parent 101 (odd == NOT venv-side)
@@ -691,7 +703,7 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
     import hermes_cli.gateway as gateway_mod
     import gateway.status as status_mod
 
-    venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
+    venv_exe = str(_project_venv_root() / "Scripts" / "python.exe")
     worker_exe = r"C:\Users\x\AppData\Roaming\uv\python\cpython-3.11\python.exe"
 
     profile_home = tmp_path / "profiles" / "default"

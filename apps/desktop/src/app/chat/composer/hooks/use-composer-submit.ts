@@ -1,13 +1,13 @@
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
-import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
+import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -234,10 +234,9 @@ export function useComposerSubmit({
       void skipClarifyRequest(sessionId)
     }
 
-    // Same deal for a pending MCP setup card: the agent is blocked on
-    // mcp.setup.respond, so a typed message declines the card and rides on.
-    if (payloadPresent && !queueEdit && hasMcpSetupRequest(sessionId)) {
-      void skipMcpSetupRequest(sessionId)
+    // Same for a pending connection card: typing declines every target.
+    if (payloadPresent && !queueEdit && hasConnectionRequest(sessionId)) {
+      void skipConnectionRequest(sessionId)
     }
 
     // Approval / sudo / secret prompts also park the turn inside a tool batch,

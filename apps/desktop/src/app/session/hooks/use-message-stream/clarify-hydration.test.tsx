@@ -8,7 +8,7 @@ import { onScrollToBottomRequest } from '@/store/thread-scroll'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
-// A `clarify.request` must leave an answerable inline row even when the
+// A `clarify` server request must leave an answerable inline row even when the
 // `tool.start` that normally mounts it was missed (stream reconnect /
 // hydration race). Without it the sidebar says "needs input" but the
 // transcript has nowhere to render the choices, so the agent blocks forever.
@@ -24,8 +24,8 @@ function mountStream() {
   stream = renderMessageStream(SID)
 }
 
-const clarifyRequest = (payload: Record<string, unknown>) =>
-  act(() => stream.handleEvent({ payload, session_id: SID, type: 'clarify.request' }))
+const clarifyRequest = ({ request_id, ...params }: Record<string, unknown>) =>
+  act(() => void stream.handleRequest('clarify', { ...params, session_id: SID }, request_id as string))
 
 const toolStart = (payload: Record<string, unknown>) =>
   act(() => stream.handleEvent({ payload, session_id: SID, type: 'tool.start' }))
@@ -34,7 +34,13 @@ const toolComplete = (payload: Record<string, unknown>) =>
   act(() => stream.handleEvent({ payload, session_id: SID, type: 'tool.complete' }))
 
 const clarifyExpire = (requestId: string) =>
-  act(() => stream.handleEvent({ payload: { request_id: requestId }, session_id: SID, type: 'clarify.expire' }))
+  act(() =>
+    stream.handleEvent({
+      payload: { id: requestId, method: 'clarify', reason: 'timeout' },
+      session_id: SID,
+      type: 'request.cancel'
+    })
+  )
 
 function clarifyParts() {
   const messages = stream.state().messages ?? []
@@ -49,7 +55,7 @@ function seedHydratedMessages(messages: ChatMessage[]) {
   stream.states.set(SID, state)
 }
 
-describe('clarify.request stream hydration', () => {
+describe('clarify request stream hydration', () => {
   beforeEach(() => {
     clearClarifyRequest()
     scrollToBottom.mockClear()
@@ -89,12 +95,13 @@ describe('clarify.request stream hydration', () => {
   it('does not move the active thread for a background session clarify', () => {
     mountStream()
 
-    act(() =>
-      stream.handleEvent({
-        payload: { choices: ['yes', 'no'], question: 'Ship it?', request_id: 'req-background' },
-        session_id: 'session-background',
-        type: 'clarify.request'
-      })
+    act(
+      () =>
+        void stream.handleRequest(
+          'clarify',
+          { choices: ['yes', 'no'], question: 'Ship it?', session_id: 'session-background' },
+          'req-background'
+        )
     )
 
     expect(scrollToBottom).not.toHaveBeenCalled()
@@ -129,7 +136,7 @@ describe('clarify.request stream hydration', () => {
   it('merges with the real tool.start row even though its id differs from the request id', () => {
     mountStream()
 
-    // Reality: tool.start carries the model's tool_call_id, clarify.request a
+    // Reality: tool.start carries the model's tool_call_id, the clarify request a
     // separately-generated request_id. They must still collapse to ONE card
     // (correlated by question), not two.
     toolStart({ args: { choices: ['a'], question: 'Pick' }, name: 'clarify', tool_id: 'call-abc' })

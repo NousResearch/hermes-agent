@@ -1,0 +1,22 @@
+name: debug-desk
+repo: https://github.com/aydnOktay/hermes-debug-desk
+sha: f9d2b5b4feea2aa110859280a724e93af8682919
+description: Today's git digest in the current repo, plus the last failed terminal
+  command the Hermes agent ran. Desktop pane, status chip, optional local LLM
+  summary. Does not watch OS or editor terminals.
+maintainer: aydnOktay
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/aydnOktay/hermes-debug-desk
+version: "1.0.0"
+image: https://raw.githubusercontent.com/aydnOktay/hermes-debug-desk/f9d2b5b4feea2aa110859280a724e93af8682919/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools:
+  - debug_daily_report
+  - debug_last_failure
+  provides_hooks:
+  - post_tool_call
+  provides_middleware: []
+  requires_env: []

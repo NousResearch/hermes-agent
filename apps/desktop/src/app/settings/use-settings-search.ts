@@ -21,7 +21,7 @@ import {
   type SettingsSearchEntry
 } from './settings-search'
 
-/** An installed plugin row, deep-linkable as `/skills?tab=plugins&plugin=<id>`. */
+/** An installed plugin row, deep-linkable as `/capabilities?tab=plugins&plugin=<id>`. */
 export interface PluginSearchEntry {
   context: string
   description?: string

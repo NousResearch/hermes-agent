@@ -9,11 +9,17 @@ use, so it adds none of the transcript chatter the buffer exists to avoid."""
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.turn_recovery import compute_error_backoff
 
 
+@pytest.mark.real_retry_backoff
 def test_retry_backoff_names_the_wait_on_the_live_status_line():
     agent = MagicMock()
+    from agent.status_output import StatusOutputMixin
+    for name in ("_emit_diagnostic_wait", "_buffer_diagnostic_status"):
+        setattr(agent, name, getattr(StatusOutputMixin, name).__get__(agent))
     agent._client_log_context.return_value = ""
 
     wait = compute_error_backoff(

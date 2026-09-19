@@ -47,30 +47,10 @@ _ALLOW_BOTS_ENV = {
 }
 
 
-def _platform_gate_env(name: str, default: str = "") -> str:
-    """Read an allow/deny gate env var with per-profile isolation.
-
-    With a profile secret scope installed AND multiplexing active, a scoped miss returns ``default``
-    instead of falling through to ``os.environ``, which may hold ANOTHER profile's first-writer
-    bridged value (allowlist leak). Single-profile deployments behave exactly like ``os.getenv``.
-
-    Under multiplex the process env may hold ANOTHER profile's first-writer-bridged value (the YAML→env
-    bridges in the Discord/Telegram adapters' ``_apply_yaml_config`` are first-writer-wins), so falling
-    through would leak profile A's allowlist into profile B (issue #72348).
-    """
-    if not name:
-        return default
-    with contextlib.suppress(Exception):
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-
-        scope = current_secret_scope()
-        if scope is not None and is_multiplex_active():
-            val = scope.get(name)
-            return default if val is None else str(val).strip()
-    return (os.getenv(name) or default).strip()
-
-
-_auth_env = _platform_gate_env
+# Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
+from gateway.platforms._shared import decode_json_list_literal as _decode_json_list_literal  # noqa: E402
+from gateway.platforms._shared import extra_or_secret as _extra_or_secret  # noqa: E402
+from gateway.platforms._shared import platform_gate_env as _auth_env  # noqa: E402
 
 
 def _env_truthy(name: str) -> bool:
@@ -89,9 +69,10 @@ def _registry_entry(platform):
 
 
 def _coerce_allow_set(raw) -> set[str]:
-    """Parse an allowlist (YAML list or comma-separated scalar) into a set of strings."""
+    """Parse an allowlist (YAML list, JSON list literal string, or comma-separated scalar) into a set of strings."""
     if raw is None:
         return set()
+    raw = _decode_json_list_literal(raw)
     if isinstance(raw, list):
         return {str(part).strip() for part in raw if str(part).strip()}
     return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -272,18 +253,64 @@ class GatewayAuthorizationMixin:
         except Exception:
             return False
 
-    def _adapter_for_source(self, source: Optional[SessionSource]):
-        """Resolve the live adapter for an inbound ``SessionSource``."""
+    def _intake_adapter_for(self, source: Optional[SessionSource]):
+        """The adapter that RECEIVED *source*'s event — the only one whose intake policy (ignored
+        channels, relay fronting, re-dispatch of a still-live event) may act on it.
+
+        Live provenance only: the registered transport that built the source, the process-level
+        RelayAdapter for relay-delivered events, or the receiving bot named by a pinned
+        ``RoutingIdentity`` (``transport_profile``) when its adapter reconnected. A source with none
+        of these (restored row, hand-built) fails closed under multiplexing — nothing can say which
+        bot admitted it, and guessing the runtime profile's bot is exactly the shared-bot /
+        route-override confusion the identity exists to end. A standalone gateway owns one adapter
+        per platform, so that adapter is the receiver by construction.
+        """
         if source is None:
             return None
         owner = self._transport_owner(source)
         if owner is not None:
             return owner[0]
-        # Relay ingress keeps the underlying platform on the source, but delivery must use the one
-        # process-level RelayAdapter owning the connector socket; a profile-aware lookup would
-        # silently disable streaming/typing/tool progress.
+        # Relay ingress keeps the underlying platform on the source, but the one process-level
+        # RelayAdapter owns the connector socket; a profile-aware lookup would silently disable
+        # streaming/typing/tool progress.
         if getattr(source, "delivered_via_upstream_relay", False) is True:
             return self._primary_adapters().get(Platform.RELAY)
+        platform = getattr(source, "platform", None)
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None and identity.multiplexed:
+            return self._adapters_for_profile(identity.transport_profile).get(platform) if platform else None
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return self._primary_adapters().get(platform) if platform else None
+        return None
+
+    def _delivery_adapter_for(self, source: Optional[SessionSource]):
+        """The adapter that ANSWERS *source*: sends, edits, typing, progress, pickers, pending slots.
+
+        The receiving bot whenever it is known (:meth:`_intake_adapter_for` — a routed event replies
+        through the bot that received it, whether the runtime is a shared-bot satellite or a profile
+        with a bot of its own). With no live provenance the unique owner of ``(platform,
+        runtime_profile)`` delivers — ``_adapters_for_profile`` holds one adapter per platform per
+        profile, a shared-bot satellite drains through the primary, and a disconnected secondary
+        fails closed to ``{}`` rather than borrowing the default bot. Restored sessions, cron,
+        kanban and completion notices all rely on this row. Matrix: gateway/AGENTS.md § Profile scope.
+        """
+        if source is None:
+            return None
+        adapter = self._intake_adapter_for(source)
+        if adapter is not None:
+            return adapter
+        # A pinned identity NAMES the receiving bot (live or restored from ``transport_profile``).
+        # If that bot has no adapter right now it is offline: fail closed rather than fall through to
+        # the runtime profile's bot — that fallthrough is the "restored lane answers from the wrong
+        # bot" row the identity exists to close. Only an identity-less source (legacy row, bare
+        # fixture) uses the unique-owner heuristic below.
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None and identity.multiplexed and not identity.transport_inferred:
+            return None
+        # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
+        # the unique owner of ``(platform, runtime_profile)`` delivers.
         # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
         return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
 
@@ -312,19 +339,26 @@ class GatewayAuthorizationMixin:
         return (adapter, profile) if registered else None
 
     def _authorization_home_for_source(self, source: SessionSource):
-        """HERMES_HOME whose allowlist admits *source*: the ingress-stamped transport home, else the home of
-        the profile owning the adapter that delivers it. ``None`` = authorize in the ambient scope
-        (multiplex off, or no live adapter — the check then fails closed on its own).
+        """HERMES_HOME whose allowlist admits *source*: the identity's transport home (or the
+        ingress-stamped one), else the home of the profile owning the adapter that delivers it.
+        ``None`` = authorize in the ambient scope (multiplex off, or no live adapter — the check then
+        fails closed on its own).
 
         Inside a routed satellite's turn the ambient scope is the satellite's, whose ``.env`` has no
         token/allowlist; every authorization decision made mid-turn (``/topic``, sibling ``/stop``, plugin
         injection, voice, auto-resume) must read the admitting bot's allowlist instead."""
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.authorization_home if identity.multiplexed else None
         stamped = getattr(source, "_authorization_profile_home", None)
         if stamped is not None:
             return Path(stamped)
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return None
-        adapter = self._adapter_for_source(source)
+        # A restored/hand-built source is admitted by the bot that will answer it (auto-resume,
+        # plugin injection) — the same unique-owner row delivery uses.
+        adapter = self._delivery_adapter_for(source)
         if adapter is None:
             return None
         _registered, profile = self._owning_profile(adapter, getattr(source, "platform", None))
@@ -337,7 +371,26 @@ class GatewayAuthorizationMixin:
     def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the transport-owning profile for adapter policy lookups."""
         owner = self._transport_owner(source)
-        return owner[1] if owner is not None else getattr(source, "profile", None)
+        if owner is not None:
+            return owner[1]
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None and identity.multiplexed:
+            return None if identity.transport_profile == "default" else identity.transport_profile
+        return getattr(source, "profile", None)
+
+    def _restored_source(self, entry) -> Optional[SessionSource]:
+        """``entry.origin`` with its identity re-pinned from the routing entry's persisted
+        ``transport_profile`` (no live adapter: the restored row of the transport matrix). Every path
+        that revives a session from durable state — auto-resume, heartbeat restore, plugin injection,
+        background-process events — reads the origin through here, so the receiving bot decides
+        delivery and authorization after a restart, not the runtime profile's heuristics."""
+        source = getattr(entry, "origin", None)
+        if source is None:
+            return None
+        from gateway.session_identity import restore_identity
+        restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
+        return source
 
     def _adapter_flag(self, platform, name: str, profile) -> bool:
         """Adapter-declared boolean, False when unknown. ``authorization_is_upstream`` (relay: a trusted
@@ -404,7 +457,7 @@ class GatewayAuthorizationMixin:
         return per_profile[profile] if profile and profile in per_profile else getattr(self, "pairing_store", None)
 
     def _adapter_extra_for_source(self, source) -> dict:
-        return _adapter_config_extra(self._adapter_for_source(source))
+        return _adapter_config_extra(self._delivery_adapter_for(source))
 
     def _own_policy_authorizes(self, source, user_id, is_group, adapter_profile) -> Optional[bool]:
         """Own-policy adapter verdict when no env allowlist exists; None = no verdict.
@@ -431,7 +484,7 @@ class GatewayAuthorizationMixin:
     def _adapter_extra_allowlist_authorizes(self, source, user_id, is_group) -> bool:
         """Adapters (e.g. Telegram) that gate via config.extra.allow_from / group_allow_from
         without setting enforces_own_access_policy."""
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if adapter is None:
             return False
         extra = _adapter_config_extra(adapter)
@@ -466,7 +519,7 @@ class GatewayAuthorizationMixin:
         """
         adapter = resolved_ids = None
         with contextlib.suppress(Exception):
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
         resolver = getattr(adapter, "resolved_allowlist_user_ids", None)
         if callable(resolver):
             with contextlib.suppress(Exception):
@@ -492,7 +545,7 @@ class GatewayAuthorizationMixin:
         # sender_chat posts, channel broadcasts).
         if is_group and source.chat_id:
             chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
-            if chat_allowlist_env and _allows(_coerce_allow_set(_platform_gate_env(chat_allowlist_env)), source.chat_id):
+            if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True
             # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
             # strips user_id, so the env-only check above misses it.
@@ -500,12 +553,18 @@ class GatewayAuthorizationMixin:
                 adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
                 if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
                     return True
-        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (Slack Workflow Builder
-        # posts arrive with user=None).
+        # Bots admitted by {PLATFORM}_ALLOW_BOTS (scoped env → the routed adapter's YAML ``allow_bots`` →
+        # none) bypass the human allowlist (Slack Workflow Builder posts arrive with user=None). The YAML
+        # rung is what a secondary profile has: its config is never bridged into the process env.
         if getattr(source, "is_bot", False):
             allow_bots_var = _ALLOW_BOTS_ENV.get(source.platform)
-            if allow_bots_var and _platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
-                return True
+            if allow_bots_var:
+                extra = {}
+                with contextlib.suppress(Exception):
+                    extra = self._adapter_extra_for_source(source)
+                mode = str(_extra_or_secret(extra, "allow_bots", allow_bots_var, "none")).lower().strip()
+                if mode in {"mentions", "all"}:
+                    return True
         return False
 
     def _legacy_telegram_chat_grant(self, source, group_user_allowlist: str) -> bool:
@@ -638,7 +697,7 @@ class GatewayAuthorizationMixin:
         return "*" in allowed_ids or _principal_matches_allowlist(source, user_id, allowed_ids)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform], *, profile: Optional[str] = None) -> str:
-        """How unauthorized DMs are handled ("pair" / "ignore") for a platform.
+        """How unauthorized DMs are handled ("pair" / "ignore" / "decline") for a platform.
 
         Order: explicit per-platform config; Email → "ignore" (inboxes hold arbitrary mail); explicit
         non-default global; adapter dm_policy (pairing → "pair", allowlist/disabled → "ignore"); any
@@ -675,6 +734,6 @@ class GatewayAuthorizationMixin:
             # Historical: Yuanbao is absent from this allowlist-aware default.
             env_key = "" if platform == Platform.YUANBAO else _ALLOWED_USERS_ENV.get(platform, "")
             allowlist_keys = [env_key, _GROUP_USER_ENV.get(platform), _GROUP_CHAT_ENV.get(platform), *allowlist_keys]
-        if any(key and _platform_gate_env(key).strip() for key in allowlist_keys):
+        if any(key and _auth_env(key).strip() for key in allowlist_keys):
             return "ignore"
         return "pair"

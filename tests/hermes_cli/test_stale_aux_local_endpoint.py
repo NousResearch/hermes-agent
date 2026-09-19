@@ -12,6 +12,8 @@ def test_local_endpoint_pins_are_excluded_from_stale_aux_report():
         "vision": {"provider": "openai", "model": "llama3.2-vision:11b", "base_url": "http://192.168.1.10:11434/v1"},
         "compression": {"provider": "openai", "model": "gpt-4o-mini", "base_url": "https://api.example.com/v1"},
         "curator": {"provider": "openai", "model": "gpt-4o-mini"},
+        # "main" follows the main provider by definition (#97310); Moonshot's Hermes guide ships it.
+        "review": {"provider": "main", "model": "kimi-k3"},
     }}
     stale = _stale_aux_pins(cfg, "ollama-cloud")
     # Only the pins that can still bill a provider survive: public custom URL, no base_url.

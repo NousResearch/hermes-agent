@@ -4,7 +4,7 @@ EXPERIMENTAL gateway side of the "Gateway Gateway" relay design: a generic
 ``RelayAdapter`` plus the wire-serializable ``CapabilityDescriptor`` the connector
 hands it at handshake, and the production ``WebSocketRelayTransport``. The public
 API MAY CHANGE without a deprecation cycle until >=2 real Class-1 platforms have
-shaken out the schema (``docs/relay-connector-contract.md``). Activation is
+shaken out the schema (``website/docs/developer-guide/relay-connector-contract.md``). Activation is
 config-driven: the relay platform is registered when a connector relay URL is set
 (``GATEWAY_RELAY_URL`` env or ``gateway.relay_url``), like ``gateway.proxy_url``,
 unless the effective relay platform configuration explicitly disables it.

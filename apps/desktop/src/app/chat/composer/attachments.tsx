@@ -8,7 +8,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { readDesktopFileDataUrlLocalFirst } from '@/lib/desktop-fs'
-import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, MessageCode, Terminal } from '@/lib/icons'
+import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, Terminal } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
@@ -43,7 +43,6 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
     file: FileText,
     folder: FolderOpen,
     image: ImageIcon,
-    review: MessageCode,
     terminal: Terminal,
     url: Link
   }[attachment.kind]
@@ -54,15 +53,10 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
   const isUploading = attachment.uploadState === 'uploading'
   const hasUploadError = attachment.uploadState === 'error'
 
-  // A review card's detail is its resolved-comment JSON, not a previewable
-  // path — clicking it should do nothing rather than toast a bogus failure.
-  const canPreview =
-    attachment.kind !== 'folder' && attachment.kind !== 'terminal' && attachment.kind !== 'review' && !isUploading
+  const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal' && !isUploading
 
   const detail =
-    attachment.kind !== 'review' && attachment.detail && attachment.detail !== attachment.label
-      ? attachment.detail
-      : undefined
+    attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined
 
   // Keep full image bytes out of composer state. New chips read their path only
   // when clicked; previewUrl remains a compatibility fallback for older drafts.

@@ -672,6 +672,21 @@ def build_session_key(
     # in-thread follow-ups byte-match. A real thread_id always wins. DMs use thread_id only.
     thread_id = source.thread_id or (None if is_dm else source.prospective_thread_id)
     chat_type_slot = "thread" if thread_id and not source.thread_id else source.chat_type
+    # Slack inbound stamps chat_type="group" even inside a channel thread; kanban wakes (and
+    # some subscriptions) stamp chat_type="thread" for the same (team, channel, thread_ts).
+    # Copying the label into the key forks two live sessions (#t_30987c2a, 2026-09-16). Keep
+    # the inbound ``group`` slot so existing slack:group:...:<thread> routes stay the writer.
+    # Do not rewrite ``channel`` — that slot is a distinct historical key shape.
+    if (
+        source.platform == Platform.SLACK
+        and thread_id
+        and not is_dm
+        and source.chat_type == "thread"
+        # Slack DMs are keyed as chat_type="dm" (cron seed / inbound); a
+        # thread-stamped DM must not collapse onto the group slot.
+        and not str(chat_id or "").startswith("D")
+    ):
+        chat_type_slot = "group"
     if is_dm:
         # No chat_id: fall back to the sender id before the bare per-platform sink, or every
         # chat_id-less DM shares one agent.
@@ -905,6 +920,7 @@ class SessionStore(
         now = _now()
         if not force_new:
             self._adopt_legacy_slack_entry(source, session_key)
+            self._adopt_slack_thread_alias_entry(source, session_key)
 
         # Phase 1 (lock): snapshot the entry for stale/reset checks.
         with self._lock:

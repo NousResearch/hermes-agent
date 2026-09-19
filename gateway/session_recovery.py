@@ -373,6 +373,62 @@ class SessionRecoveryMixin:
             self._record_gateway_session_peer(
                 migrated.session_id, session_key, source, display_name=migrated.display_name)
 
+    def _slack_thread_alias_keys(self, source: SessionSource, session_key: str) -> list[str]:
+        """Routing keys that name the same Slack thread under a different chat_type slot.
+
+        ``build_session_key`` now canonicalizes Slack ``chat_type="thread"`` to ``group``,
+        but a pre-fix ``slack:thread:`` entry may still be live.
+        """
+        if source.platform != Platform.SLACK or not source.thread_id:
+            return []
+        if source.chat_type == "dm" or str(source.chat_id or "").startswith("D"):
+            return []
+        aliases: list[str] = []
+        for old, new in (
+            (":slack:group:", ":slack:thread:"),
+            (":slack:thread:", ":slack:group:"),
+        ):
+            if old in session_key:
+                alias = session_key.replace(old, new, 1)
+                if alias != session_key:
+                    aliases.append(alias)
+        return aliases
+
+    def _adopt_slack_thread_alias_entry(self, source: SessionSource, session_key: str) -> None:
+        """MOVE a pre-canonical Slack thread sibling onto ``session_key`` so a second
+        claim cannot publish a second session_id for the same thread."""
+        aliases = self._slack_thread_alias_keys(source, session_key)
+        if not aliases:
+            return
+        migrated: Optional[SessionEntry] = None
+        dropped_sibling = False
+        with self._lock:
+            self._ensure_loaded_locked()
+            canonical = self._entries.get(session_key)
+            for alias_key in aliases:
+                alias_entry = self._entries.get(alias_key)
+                if alias_entry is None:
+                    continue
+                if canonical is not None:
+                    # Canonical already owns the thread: drop the sibling so it
+                    # cannot keep acting as a second writer.
+                    self._entries.pop(alias_key, None)
+                    dropped_sibling = True
+                    continue
+                migrated = self._entries.pop(alias_key)
+                migrated.session_key = session_key
+                migrated.origin = source
+                migrated.platform = source.platform
+                migrated.chat_type = source.chat_type
+                self._entries[session_key] = migrated
+                canonical = migrated
+                break
+        if migrated is not None or dropped_sibling:
+            self._save_entries()
+        if migrated is not None:
+            self._record_gateway_session_peer(
+                migrated.session_id, session_key, source, display_name=migrated.display_name)
+
     def _finish_route_transition(
         self, session_key: str, *, end_session_id: Optional[str], end_reason: str,
         create_kwargs: Optional[Dict[str, Any]], origin: Optional[SessionSource],

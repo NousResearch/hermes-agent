@@ -3,6 +3,23 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zh = defineLocale({
+  quickCapture: {
+    save: '保存想法',
+    saved: '已保存到本机',
+    saving: '正在保存…',
+    browse: '已存想法',
+    back: '返回',
+    empty: '暂无已存想法。',
+    open: '放入输入框',
+    placeholder: '记下一个想法…',
+    send: 'Enter 发送到',
+    current: '当前对话',
+    newSession: '新会话',
+    offline: '离线时仍可保存到本机。',
+    loadFailed: '无法加载想法。请在 Hermes 中打开连接和配置，再重新打开快速输入。',
+    saveFailed: '保存失败。文字仍在，请重试保存。',
+    local: '存储在本机'
+  },
   connectors: {
     title: '连接你的应用',
     connect: '连接',

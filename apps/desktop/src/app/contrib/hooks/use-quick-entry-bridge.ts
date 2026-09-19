@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 
+import { activeGatewayConnectionId, activeGatewayProfileKey } from '@/store/gateway'
 import {
   initQuickEntryBridge,
   QUICK_TARGET_CURRENT,
@@ -61,7 +62,16 @@ export function useQuickEntryBridge({ startFreshSessionDraft, submitText }: Quic
       return
     }
 
-    setQuickEntrySubmitHandler(({ target, text }) => {
+    setQuickEntrySubmitHandler(({ target, text, thoughtOwner }) => {
+      const stillOwned = () =>
+        !thoughtOwner ||
+        (activeGatewayConnectionId() === thoughtOwner.connectionId &&
+          (activeGatewayProfileKey() || 'default') === thoughtOwner.profile)
+
+      if (!stillOwned()) {
+        return
+      }
+
       if (target === QUICK_TARGET_NEW) {
         // Same as the user clicking New Chat and typing: fresh draft, then the
         // normal submit creates the backend session.
@@ -79,9 +89,17 @@ export function useQuickEntryBridge({ startFreshSessionDraft, submitText }: Quic
         if (delegate) {
           void delegate
             .resumeTile(target)
-            .then(runtimeId => delegate.submitToSession(runtimeId, text))
+            .then(runtimeId => {
+              if (stillOwned()) {
+                return delegate.submitToSession(runtimeId, text)
+              }
+            })
             // A dead/undeliverable target must not swallow the prompt.
-            .catch(() => void submitTextRef.current(text))
+            .catch(() => {
+              if (stillOwned()) {
+                void submitTextRef.current(text)
+              }
+            })
 
           return
         }

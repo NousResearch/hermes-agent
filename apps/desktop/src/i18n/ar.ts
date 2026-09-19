@@ -1,6 +1,23 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+  quickCapture: {
+    save: 'حفظ الفكرة',
+    saved: 'تم الحفظ على الجهاز',
+    saving: 'جارٍ الحفظ…',
+    browse: 'الأفكار المحفوظة',
+    back: 'رجوع',
+    empty: 'لا توجد أفكار محفوظة بعد.',
+    open: 'إعادة إلى حقل الإدخال',
+    placeholder: 'دوّن فكرة…',
+    send: 'Enter للإرسال إلى',
+    current: 'المحادثة الحالية',
+    newSession: 'جلسة جديدة',
+    offline: 'غير متصل — لا يزال بإمكانك الحفظ على الجهاز.',
+    loadFailed: 'تعذر تحميل الأفكار. افتح اتصالاً وملفاً شخصياً في Hermes ثم أعد فتح الإدخال السريع.',
+    saveFailed: 'تعذر الحفظ. النص ما زال هنا؛ حاول الحفظ مجدداً.',
+    local: 'محفوظ على هذا الجهاز'
+  },
   sessionImport: {
     title: 'المتابعة من تطبيق آخر',
     subtitle: 'انقل محادثة إلى Hermes وتابع من حيث توقفت.',

@@ -407,6 +407,7 @@ import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
+import { deleteWithThoughtRetirement, registerThoughtCapture, ThoughtCaptureStore } from './thought-capture'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
   backgroundMaterialFor,
@@ -14945,6 +14946,56 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
 const windowConnectionRouteOwners = new Set<number>()
 
+const thoughtStore = new ThoughtCaptureStore(path.join(app.getPath('userData'), 'thoughts'))
+
+const thoughtCapture = registerThoughtCapture(
+  ipcMain,
+  thoughtStore,
+  () => {
+    const route = mainWindow && !mainWindow.isDestroyed() ? windowConnectionRoutes.get(mainWindow.webContents.id) : null
+
+    // A legacy route without a registry identity is ambiguous in remote mode.
+    if (!route?.connectionId || profileDeletionGate.blocks(route.profile || 'default')) {
+      return null
+    }
+
+    return { connectionId: route.connectionId, profile: route.profile || 'default' }
+  },
+  id => !!quickEntryWindow && !quickEntryWindow.isDestroyed() && quickEntryWindow.webContents.id === id
+)
+
+function invalidateThoughtOwner(retiredOwner?: { connectionId: string; profile: string }) {
+  thoughtCapture.invalidate()
+
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.webContents.send('hermes:thoughts:owner-changed', retiredOwner)
+  }
+}
+
+function renameThoughtProfile(connectionId, request, response) {
+  const rename = profileRenameFromRequest(request)
+
+  if (!connectionId || !rename || response?.ok === false || response?.success === false || response?.error) {
+    return
+  }
+
+  try {
+    thoughtStore.renameProfile(connectionId, rename.oldName, rename.newName)
+  } catch (error) {
+    // The backend rename succeeded. Preserve that result and surface local recovery separately.
+    response.thoughtCaptureWarning = error instanceof Error ? error.message : 'Local thoughts could not move.'
+  }
+
+  invalidateThoughtOwner()
+}
+
+ipcMain.on('hermes:thoughts:expanded', (event, expanded) => {
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed() && event.sender.id === quickEntryWindow.webContents.id) {
+    const display = screen.getDisplayMatching(quickEntryWindow.getBounds())
+    quickEntryWindow.setBounds(quickEntryWindowBounds(display.workArea, expanded === true))
+  }
+})
+
 function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknown) {
   const id = sender.id
   const previous = windowConnectionRoutes.get(id)
@@ -14956,6 +15007,10 @@ function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknow
     previous?.registryScoped !== next?.registryScoped
   ) {
     void resetPreviewReach(id)
+
+    if (mainWindow && sender.id === mainWindow.webContents.id) {
+      invalidateThoughtOwner()
+    }
   }
 
   if (!windowConnectionRouteOwners.has(id)) {
@@ -16668,6 +16723,7 @@ async function dispatchRegistryApiRequest(
     timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   })
 
+  renameThoughtProfile(registryConnectionId, request, response)
   desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)
 
   return (request?.method || 'GET').toUpperCase() === 'GET'
@@ -16791,12 +16847,17 @@ ipcMain.handle('hermes:api', async (_event, request) => {
       acquire: profile => profileDeletionGate.acquire(profile),
       connectionKind: connectionId => registryConnectionKind(connectionId),
       dispatch: routeProfile =>
-        dispatchRegistryApiRequest(request, registryConnectionId, routeProfile, deletingProfile),
+        deleteWithThoughtRetirement(
+          thoughtStore,
+          { connectionId: registryConnectionId, profile: deletingProfile },
+          invalidateThoughtOwner,
+          () => dispatchRegistryApiRequest(request, registryConnectionId, routeProfile, deletingProfile)
+        ),
       isDefaultProfile: profile => profile === 'default',
       isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
       prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
       teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
-    })
+    }).finally(() => invalidateThoughtOwner())
   }
 
   if (!mutatingProfile) {
@@ -17331,7 +17392,19 @@ ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
 // owns the one prompt-submit path, and forwarding keeps it that way. The
 // payload is `{ target, text }` — target routing (current chat / a picked
 // session / new) is the renderer's job too.
-ipcMain.on('hermes:quick-entry:submit', (_event, payload) => {
+ipcMain.on('hermes:quick-entry:submit', (event, payload) => {
+  let thoughtOwner
+
+  if (payload?.thoughtOwnerToken !== undefined) {
+    try {
+      thoughtOwner = thoughtCapture.authorize(event.sender.id, payload.thoughtOwnerToken)
+    } catch {
+      invalidateThoughtOwner()
+
+      return
+    }
+  }
+
   hideQuickEntryWindow()
 
   const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
@@ -17350,6 +17423,7 @@ ipcMain.on('hermes:quick-entry:submit', (_event, payload) => {
   // a prompt from wherever they were, not to be yanked into the app.
   mainWindow.webContents.send('hermes:quick-entry:submit', {
     target: typeof payload?.target === 'string' && payload.target ? payload.target : 'current',
+    ...(thoughtOwner ? { thoughtOwner } : {}),
     text
   })
 })

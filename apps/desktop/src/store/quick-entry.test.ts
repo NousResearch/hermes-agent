@@ -141,7 +141,7 @@ describe('quickComposerReducer', () => {
     expect(state.target).toBe('s1')
   })
 
-  it('Escape dismisses without sending, discards the draft, and resets the target', () => {
+  it('Escape hides without sending, preserves the draft, and resets the target', () => {
     const { sent, state } = run([
       connect,
       { target: 's1', type: 'target' },
@@ -150,7 +150,7 @@ describe('quickComposerReducer', () => {
     ])
 
     expect(sent).toEqual([])
-    expect(state.draft).toBe('')
+    expect(state.draft).toBe('never mind')
     expect(state.target).toBe(QUICK_TARGET_CURRENT)
     expect(state.visible).toBe(false)
   })
@@ -160,7 +160,7 @@ describe('quickComposerReducer', () => {
 
     expect(sent).toEqual([])
     expect(state.visible).toBe(false)
-    expect(state.draft).toBe('')
+    expect(state.draft).toBe('clicked away')
   })
 
   it('the blur that follows a submit does not re-send or resurrect the draft', () => {
@@ -185,11 +185,11 @@ describe('quickComposerReducer', () => {
     expect(state.sessions).toHaveLength(2)
   })
 
-  it('re-summoning after a dismiss never carries the old draft back', () => {
+  it('re-summoning after a dismiss restores the unfinished draft', () => {
     const dismissed = run([connect, { draft: 'stale text', type: 'edit' }, { type: 'dismiss' }]).state
     const reopened = quickComposerReducer(dismissed, { type: 'shown' }).state
 
-    expect(reopened.draft).toBe('')
+    expect(reopened.draft).toBe('stale text')
     expect(reopened.visible).toBe(true)
   })
 

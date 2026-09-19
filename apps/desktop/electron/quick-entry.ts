@@ -22,7 +22,7 @@ const DEFAULT_QUICK_ENTRY_SHORTCUT = 'CommandOrControl+Shift+Space'
 // a HUD rather than a second app window. Height covers the composer row plus
 // the session-target picker row; the renderer never grows the OS window in v1.
 const QUICK_ENTRY_WINDOW_WIDTH = 640
-const QUICK_ENTRY_WINDOW_HEIGHT = 168
+const QUICK_ENTRY_WINDOW_HEIGHT = 220
 
 // Spotlight-ish placement: horizontally centered on the active display, a
 // comfortable fraction down from the top rather than dead center.
@@ -398,14 +398,18 @@ export function createQuickEntryShortcut(
  * horizontally, a fraction down from the top, and clamped so it stays fully
  * inside the work area on small/odd displays.
  */
-export function quickEntryWindowBounds(workArea?: { height: number; width: number; x: number; y: number }): {
+export function quickEntryWindowBounds(
+  workArea?: { height: number; width: number; x: number; y: number },
+  expanded = false
+): {
   height: number
   width: number
   x: number
   y: number
 } {
   const width = Math.min(QUICK_ENTRY_WINDOW_WIDTH, workArea?.width ?? QUICK_ENTRY_WINDOW_WIDTH)
-  const height = Math.min(QUICK_ENTRY_WINDOW_HEIGHT, workArea?.height ?? QUICK_ENTRY_WINDOW_HEIGHT)
+  const desiredHeight = expanded ? 480 : QUICK_ENTRY_WINDOW_HEIGHT
+  const height = Math.min(desiredHeight, workArea?.height ?? desiredHeight)
 
   if (!workArea) {
     return { height, width, x: 0, y: 0 }

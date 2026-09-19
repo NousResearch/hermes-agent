@@ -59,6 +59,23 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  quickCapture: {
+    save: string
+    saved: string
+    saving: string
+    browse: string
+    back: string
+    empty: string
+    open: string
+    placeholder: string
+    send: string
+    current: string
+    newSession: string
+    offline: string
+    loadFailed: string
+    saveFailed: string
+    local: string
+  }
   connectors: {
     title: string
     connect: string

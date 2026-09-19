@@ -3,6 +3,23 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
+  quickCapture: {
+    save: '儲存想法',
+    saved: '已儲存到本機',
+    saving: '正在儲存…',
+    browse: '已存想法',
+    back: '返回',
+    empty: '尚無已存想法。',
+    open: '放入輸入框',
+    placeholder: '記下一個想法…',
+    send: 'Enter 傳送至',
+    current: '目前對話',
+    newSession: '新工作階段',
+    offline: '離線時仍可儲存到本機。',
+    loadFailed: '無法載入想法。請在 Hermes 中開啟連線和設定檔，再重新開啟快速輸入。',
+    saveFailed: '儲存失敗。文字仍在，請重試儲存。',
+    local: '儲存在本機'
+  },
   sessionImport: {
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',

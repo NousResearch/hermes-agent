@@ -296,6 +296,25 @@ def test_concurrent_old_selection_cannot_publish_over_new_input(selection):
     assert t.runner._last_resolved_model[t.key] == 'newest-model'
 
 
+def test_same_operation_repreparation_retires_previous_positive(selection):
+    from gateway import session_selected_route as sr
+    t = selection; t.boundary.fail = True
+    scope = scoped(t); old = sr.prepare_selected_route(scope)
+    assert sr.peek_selected_route(scope, old).supports_prepared_files
+    t.boundary.fail = False
+    native = sr.prepare_selected_route(scope)
+    assert not sr.peek_selected_route(scope, native).supports_prepared_files
+    assert not sr.peek_selected_route(scope, old).supports_prepared_files
+    with pytest.raises(sr.SelectedRouteUnavailable):
+        with sr.hold_selected_route(scope, old): pass
+    t.boundary.fail = True
+    positive = sr.prepare_selected_route(scope)
+    with pytest.raises(sr.SelectedRouteUnavailable, match='selection_cancelled'):
+        sr.prepare_selected_route(scope, cancelled=lambda: True)
+    assert not sr.peek_selected_route(scope, positive).supports_prepared_files
+    old.close(); native.close(); positive.close()
+
+
 def test_preparing_cancellation_retires_without_cache_publication(selection):
     from gateway import session_selected_route as sr
     t = selection

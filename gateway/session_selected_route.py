@@ -134,6 +134,7 @@ class SelectionScope:
         self.source_value = source.to_dict()
         self.session_key, self.session_id = session_key, session_id
         self.request_identity, self.purpose = request_identity, purpose
+        self._generation = 0
         self.revision = self._revision()
 
     def _revision(self, connection=None):
@@ -253,6 +254,7 @@ def _prepare_scoped(scope, *, user_config, api_settings, cancelled):
     with lock:
         generation = scope.authority.__dict__.get('_selected_route_generation', 0) + 1
         scope.authority._selected_route_generation = generation
+        scope._generation = generation
     b = PreparedSelectedRoute(scope, generation, time.monotonic() + MAX_ROUTE_AGE)
     try:
         b._user_config, b._settings = _copy(user_config), _copy(api_settings or {})
@@ -268,7 +270,7 @@ def _prepare_scoped(scope, *, user_config, api_settings, cancelled):
             current={'adapter': scope.adapter, 'settings': b._settings},
             pending_models=b._adapter_models)
         finish_selected_route(scope.runner, material, scope.source, scope.session_key, b._settings)
-        if (not scope.current() or not material.current()
+        if (scope._generation != b.generation or not scope.current() or not material.current()
                 or _inputs(scope, user_config, b._settings) != b._inputs
                 or b._adapter_recovery and scope.adapter._last_resolved_model != b._adapter_before):
             raise SelectedRouteUnavailable('selection_changed')
@@ -291,6 +293,8 @@ def peek_selected_route(scope, binding=None, connection=None):
         return RouteReadiness('UNPREPARED')
     if not binding._scope.matches(scope) or not scope.current(connection):
         return RouteReadiness('UNAVAILABLE', reason='owner_unavailable')
+    if scope._generation != binding.generation:
+        return RouteReadiness('RETIRED', reason='selection_superseded')
     if time.monotonic() >= binding.deadline:
         return RouteReadiness('STALE', reason='selection_expired')
     if binding._state not in {'READY', 'HELD'} or binding._material is None:
@@ -311,6 +315,7 @@ def hold_selected_route(scope, binding):
     inputs = _inputs(scope, binding._user_config, binding._settings)
     with binding._lock:
         if (not binding._scope.matches(scope) or not scope.current()
+                or scope._generation != binding.generation
                 or binding._state != 'READY' or time.monotonic() >= binding.deadline):
             raise SelectedRouteUnavailable('not_ready')
         if (not binding._material.current() or inputs != binding._inputs
@@ -329,6 +334,7 @@ def hold_selected_route(scope, binding):
 def consume_selected_route(scope, binding):
     """Execution-only single consume. Yield private material, clear on every exit."""
     if (scope.purpose != 'execute' or not binding._scope.matches(scope)
+            or scope._generation != binding.generation
             or binding._state != 'HELD' or binding._held_thread != threading.get_ident()
             or not scope.current() or time.monotonic() >= binding.deadline):
         raise SelectedRouteUnavailable('not_ready')

@@ -17,7 +17,8 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
-import { $sessionTiles } from '@/store/session-states'
+import { $activeSessionId } from '@/store/session'
+import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -67,9 +68,12 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  */
 const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
 
-/** This window hosts the session: it is the primary view or an open session tile. */
+/** This window hosts the primary chat, focused tree tab, or an open session tile. */
 export function windowHostsSession(sessionId: string, activeSessionId: null | string): boolean {
-  return sessionId === activeSessionId || $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+  return sessionId === activeSessionId ||
+    sessionId === $activeSessionId.get() ||
+    sessionId === $focusedRuntimeId.get() ||
+    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
 }
 
 /**
@@ -323,15 +327,13 @@ const previewRead: Handler = ({ request }) => {
   )
 }
 
-const previewAct: Handler = ({ isActiveSession, request }) => {
-  // drive_preview tool: click/type/scroll/press inside the guest page. Active
-  // session only: a background turn (including one in a tile this window hosts)
-  // must never reach into the page the user is working in (desktop AGENTS.md:
-  // offer, don't hijack). Window ownership is settled by WINDOW_OWNED_REQUESTS
-  // before this runs, so a refusal here reaches the tool instead of stalling it.
+const previewAct: Handler = ({ isActiveSession, request, sessionId }) => {
+  // drive_preview can target any session visible in this window. Ownership is
+  // settled before this handler, so another window remains silent for a scoped
+  // request and cannot race the pane that actually hosts it.
   const p = request.params
 
-  if (!isActiveSession) {
+  if (!sessionId || (!isActiveSession && !windowHostsSession(sessionId, null))) {
     answerValue(request, {
       error: 'The in-app browser only takes actions in the session the user is looking at.',
       success: false

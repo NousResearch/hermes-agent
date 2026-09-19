@@ -2337,6 +2337,7 @@ def _retry_status_for_run(
 # Run outcome -> lifecycle status a goal loop should report for a handed-off run.
 _RUN_OUTCOME_TERMINAL_STATUS = {
     "completed": "done",
+    "review_rejected": "done",
     "review_requested": "review",
     "changes_requested": "changes_requested",
     "blocked": "blocked",
@@ -3420,6 +3421,75 @@ def request_changes(
             run_id=run_id,
         )
     return True, implementer
+
+
+def reject_review(
+    conn: sqlite3.Connection, task_id: str, *, reason: str, reviewer: Optional[str],
+) -> tuple[bool, Optional[str]]:
+    """Close an assigned reviewer's still-unclaimed ``review`` task.
+
+    This is deliberately narrower than :func:`complete_task`: an out-of-band
+    reviewer has no run to prove ownership of, so the assigned reviewer and
+    the ``review``/no-run state form the authorization and CAS fence.
+    """
+    reason = str(redact_review_value(reason or "")).strip()
+    reviewer = _canonical_assignee(_nonblank_str(reviewer))
+    if not reason:
+        return False, "reason is required"
+    if reviewer is None:
+        return False, "an assigned reviewer identity is required"
+
+    now = int(time.time())
+    with write_txn(conn):
+        if not _parents_satisfied(conn, task_id):
+            return False, "parent dependencies are not satisfied"
+        task_row = conn.execute(
+            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if task_row is None:
+            return False, "task not found"
+        if task_row["assignee"] != reviewer:
+            return False, "caller is not the assigned reviewer"
+        if task_row["status"] != "review" or task_row["current_run_id"] is not None:
+            return False, "task is not an unclaimed review"
+
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = 'done',
+                   result = ?,
+                   completed_at = ?,
+                   claim_lock = NULL,
+                   claim_expires = NULL,
+                   worker_pid = NULL,
+                   worker_started_at = NULL,
+                   block_kind = NULL,
+                   block_recurrences = 0
+             WHERE id = ? AND assignee = ? AND status = 'review'
+               AND current_run_id IS NULL
+            """,
+            (reason, now, task_id, reviewer),
+        )
+        if cur.rowcount != 1:
+            return False, "review state changed before rejection"
+        run_id = _synthesize_ended_run(
+            conn, task_id, outcome="review_rejected", summary=reason, profile=reviewer,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "review_rejected",
+            {"reason": reason, "reviewer": reviewer, "status": "done"},
+            run_id=run_id,
+        )
+
+    _clear_failure_counter(conn, task_id)
+    recompute_ready(conn)
+    _cleanup_workspace(conn, task_id)
+    _fire_task_hook(
+        "kanban_task_completed", get_task(conn, task_id), task_id, run_id, summary=reason,
+    )
+    return True, None
 
 
 def promote_task(

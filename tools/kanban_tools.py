@@ -23,7 +23,8 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
-    KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
+    KANBAN_LIST_SCHEMA, KANBAN_REJECT_REVIEW_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA,
+    KANBAN_REQUEST_REVIEW_SCHEMA,
     KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
@@ -204,6 +205,17 @@ def _worker_guard(tool_name: str, args: dict) -> str:
     _reject_delegated_child_mutation(tool_name)
     tid = _require_task_id(args)
     _enforce_worker_task_ownership(tid)
+    return tid
+
+
+def _reviewer_guard(tool_name: str, args: dict) -> str:
+    """Authorize an out-of-band review verdict by the runtime profile."""
+    _reject_delegated_child_mutation(tool_name)
+    tid = _require_task_id(args)
+    _check(
+        bool((os.environ.get("HERMES_PROFILE") or "").strip()),
+        f"{tool_name} requires HERMES_PROFILE for assigned-reviewer authorization",
+    )
     return tid
 
 
@@ -771,6 +783,19 @@ def _handle_request_changes(args: dict, **kw) -> str:
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 
 
+@_kanban_handler("kanban_reject_review")
+def _handle_reject_review(args: dict, **kw) -> str:
+    """Record an assigned reviewer's terminal verdict without a review claim."""
+    tid = _reviewer_guard("kanban_reject_review", args)
+    reason = _redact(_require_text(
+        args, "reason", "reason is required — explain why this review is closed"))
+    reviewer = os.environ.get("HERMES_PROFILE")
+    with _board(args.get("board")) as (kb, conn):
+        ok, detail = kb.reject_review(conn, tid, reason=reason, reviewer=reviewer)
+        _check(ok, f"could not reject review for {tid}: {detail or 'invalid review state'}")
+        return _ok_landed(kb, conn, tid, "done", reviewer=reviewer)
+
+
 @_kanban_handler("kanban_heartbeat")
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal liveness: extend the claim TTL AND record a heartbeat event.
@@ -1109,6 +1134,7 @@ _TOOLS = (
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),
+    ("kanban_reject_review", KANBAN_REJECT_REVIEW_SCHEMA, _handle_reject_review, "⛔"),
     ("kanban_heartbeat", KANBAN_HEARTBEAT_SCHEMA, _handle_heartbeat, "💓"),
     ("kanban_comment", KANBAN_COMMENT_SCHEMA, _handle_comment, "💬"),
     ("kanban_attach", KANBAN_ATTACH_SCHEMA, _handle_attach, "📎"),

@@ -271,6 +271,24 @@ KANBAN_REQUEST_CHANGES_SCHEMA = _schema(
     ["reason"],
 )
 
+KANBAN_REJECT_REVIEW_SCHEMA = _schema(
+    "kanban_reject_review",
+    (
+        "Close an unclaimed review task when you are its assigned reviewer and "
+        "the review should not return to the implementer. Records a terminal "
+        "review-rejected verdict with your reason. Only use this while the card "
+        "has no active reviewer run."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "reason": _prop("string", (
+            "Why this review is rejected and closed. Be specific enough for "
+            "the task event log and any replacement work."
+        )),
+    },
+    ["reason"],
+)
+
 KANBAN_HEARTBEAT_SCHEMA = _schema(
     "kanban_heartbeat",
     (

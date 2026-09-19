@@ -29,7 +29,7 @@ _HERMES_CORE_TOOLS = [
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_request_review",
-    "kanban_request_changes",
+    "kanban_request_changes", "kanban_reject_review",
     "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",

@@ -181,6 +181,23 @@ export interface TextInsertResult {
   value: string
 }
 
+/**
+ * Gate for the composer's insert fallthrough. `input-event.ts` maps
+ * ctrl-modified keys to the bare letter name (`input = keypress.ctrl ?
+ * keypress.name : sequence`) so the chord handlers can match on letters —
+ * which means an unbound ctrl+letter chord (e.g. the Ctrl+L redraw, or the
+ * 0x0c the dashboard injects on PTY reattach) arrives here as a "printable"
+ * single char. Ctrl-modified single chars are never literal typing — only
+ * a paste carries text alongside modifier bits. See #87069.
+ */
+export function shouldInsertText(
+  key: { ctrl?: boolean },
+  isPasted: boolean,
+  input: string
+): boolean {
+  return isPasted || (!key.ctrl && input.length > 0)
+}
+
 export function applyPrintableInsert(
   value: string,
   cursor: number,
@@ -1613,7 +1630,7 @@ export function TextInput({
         } else {
           ;({ cursor: c, value: v } = killToLineEnd(v, c))
         }
-      } else if (event.keypress.isPasted || inp.length > 0) {
+      } else if (shouldInsertText(k, event.keypress.isPasted, inp)) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 

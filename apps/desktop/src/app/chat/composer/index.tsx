@@ -1486,8 +1486,14 @@ export function ChatBar({
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
                     <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
-                      <ContribSlot area={COMPOSER_AREAS.actions} />
-                      {controls}
+                      {/* Contributed actions travel with the send cluster in one
+                        right-aligned sub-group: the group owns the ml-auto, so a
+                        contributed action never orphans at the row start when the
+                        row stacks. */}
+                      <div className="ml-auto flex min-w-0 items-center gap-(--composer-control-gap)">
+                        <ContribSlot area={COMPOSER_AREAS.actions} />
+                        {controls}
+                      </div>
                     </div>
                   </div>
                   <ContribSlot area={COMPOSER_AREAS.bottom} />

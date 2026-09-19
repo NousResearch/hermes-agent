@@ -230,3 +230,62 @@ def test_cancelled_preparation_drains_requests_without_reusing_once(tmp_path, mo
                 retry_worker.join(5)
             cleanup_vm(key)
             clear_session_vars(tokens)
+
+
+def test_failure_revokes_later_prepared_approvals_and_requires_fresh_consent(tmp_path, monkeypatch):
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tools.terminal_tool_lifecycle import cleanup_vm
+
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.setattr("tools.approval._tirith_scan", lambda command: {"action": "allow"})
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
+    key = "failed-terminal-batch"
+    agent = _agent()
+    agent._flush_messages_to_session_db = lambda *a, **kw: True
+    published = queue.Queue()
+    messages, errors = [], []
+    commands = ["rm -rf absent; false", "rm -rf absent; printf second > second.txt"]
+    calls = [_call(f"call-{index}", command) for index, command in enumerate(commands)]
+
+    def run():
+        try:
+            agent._execute_tool_calls(SimpleNamespace(tool_calls=calls), messages, key)
+        except BaseException as exc:
+            errors.append(exc)
+
+    approval.register_gateway_notify(key, published.put)
+    from tui_gateway import server
+    monkeypatch.setattr(server, "_sessions", {key: {
+        "session_key": key, "source": "desktop", "agent": agent, "cwd": str(tmp_path),
+    }})
+    tokens = server._set_session_context(key)
+    worker = None
+    try:
+        with ExitStack() as scope:
+            scope.callback(reset_terminal_scope, set_terminal_scope({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(tmp_path)}))
+            worker = threading.Thread(target=propagate_context_to_thread(run), daemon=True)
+            worker.start()
+            initial = [published.get(timeout=10) for _ in calls]
+            assert approval.resolve_gateway_approval(key, "once", request_id=initial[1]["request_id"]) == 1
+            assert approval.resolve_gateway_approval(key, "once", request_id=initial[0]["request_id"]) == 1
+
+            retried = published.get(timeout=10)
+            assert retried["command"] == commands[1]
+            assert retried["request_id"] != initial[1]["request_id"]
+            assert approval.resolve_gateway_approval(key, "once", request_id=retried["request_id"]) == 1
+            worker.join(timeout=10)
+            assert not worker.is_alive()
+            assert errors == []
+            assert json.loads(messages[0]["content"])["exit_code"] != 0
+            assert (tmp_path / "second.txt").read_text() == "second"
+            assert approval.list_gateway_approvals(key) == []
+    finally:
+        agent.interrupt("test cleanup")
+        approval.unregister_gateway_notify(key)
+        if worker is not None:
+            worker.join(timeout=5)
+        cleanup_vm(key)
+        clear_session_vars(tokens)

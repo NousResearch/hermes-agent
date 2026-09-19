@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import json
 import threading
 import time
 from contextlib import contextmanager
@@ -95,6 +96,7 @@ class _TerminalBatch:
         self.agent, self.messages, self.task_id = agent, messages, task_id
         self.cancelled = threading.Event()
         self.pending_approvals = []  # guarded by tools.approval._lock
+        self.failed_slot_index: int | None = None
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.executor = DaemonThreadPoolExecutor(max_workers=len(parsed))
         self.slots = [_TerminalSlot(self, pc, i) for i, pc in enumerate(parsed)]
@@ -122,7 +124,7 @@ class _TerminalBatch:
         # notify_cb. Thread interrupts alone leave those requests actionable.
         with approval._lock:
             self.cancelled.set()
-            for session_key, entry in self.pending_approvals:
+            for _slot, session_key, entry in self.pending_approvals:
                 queue = approval._gateway_queues.get(session_key, [])
                 if entry in queue:
                     queue.remove(entry)
@@ -137,6 +139,34 @@ class _TerminalBatch:
                 _interrupt_worker_tids(self.agent, slot.tids)
                 slot.future.cancel()
         self.executor.shutdown(wait=False, cancel_futures=True)
+
+    def regate_after_failure(self, call_id):
+        """Discard consent prepared ahead of a failed terminal call."""
+        failed_slot = next((slot for slot in self.slots
+                            if slot.parsed.ref(self.task_id).call_id == call_id), None)
+        if failed_slot is None:
+            return
+        from tools import approval
+        with approval._lock:
+            if self.failed_slot_index is not None:
+                return
+            self.failed_slot_index = failed_slot.index
+            retained = []
+            for slot, session_key, entry in self.pending_approvals:
+                if slot.index <= failed_slot.index:
+                    retained.append((slot, session_key, entry))
+                    continue
+                queue = approval._gateway_queues.get(session_key, [])
+                if entry in queue:
+                    queue.remove(entry)
+                    entry.result = "deny"
+                    entry.event.set()
+                if not queue:
+                    approval._gateway_queues.pop(session_key, None)
+            self.pending_approvals = retained
+            for slot in self.slots[failed_slot.index + 1:]:
+                slot.decision = None
+                slot.guard_key = None
 
 
 def prepare_current_terminal(ref):
@@ -203,7 +233,22 @@ def register_prepared_approval(session_key, entry):
     slot = _slot.get()
     if slot is not None:
         slot.check_cancelled()
-        slot.batch.pending_approvals.append((session_key, entry))
+        slot.batch.pending_approvals.append((slot, session_key, entry))
+
+
+def regate_after_terminal_failure(call_id, function_result):
+    """Require fresh consent for later prepared calls after a terminal failure."""
+    batch = _batch.get()
+    if batch is None or not isinstance(function_result, str):
+        return
+    try:
+        result = json.loads(function_result)
+    except (TypeError, ValueError):
+        return
+    if not isinstance(result, dict):
+        return
+    if result.get("exit_code", 0) != 0 or result.get("status") in {"error", "blocked"}:
+        batch.regate_after_failure(call_id)
 
 
 def consume_prepared_guard(command, env_type, has_host_access):

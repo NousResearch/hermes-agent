@@ -1764,6 +1764,9 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
         )
         if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i, budget=_tool_budget):
             return
+        if ref.name == "terminal":
+            from agent.terminal_approval_batch import regate_after_terminal_failure
+            regate_after_terminal_failure(ref.call_id, managed.result)
 
         if agent._interrupt_requested and i < len(tool_calls):
             if not _skip_remaining_sequential(

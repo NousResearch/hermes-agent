@@ -118,12 +118,13 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
+from gateway.platforms import api_server_bot_delivery as _bot_delivery
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
-from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore, run_status_for
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -3121,6 +3122,392 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "user_message": user_message, "runtime_request": runtime_request,
             "lock_active": lock_active, "run_kwargs": run_kwargs}, None
 
+    # ------------------------------------------------------------------
+    # Peer delivery ("bot send"): admission (§4.6), the acceptance receipt
+    # (§3.2) and the in-call turn probe (§2.5, §2.7 curve 1). Additive: a chat
+    # request without the two delivery headers keeps its exact former shape.
+    # ------------------------------------------------------------------
+    BOT_SEND_KEY_HEADER = "Idempotency-Key"
+    BOT_SEND_SENDER_HEADER = "X-Hermes-Sender-Profile"
+    BOT_SEND_WAIT_HEADER = "X-Hermes-Wait-Seconds"
+    #: Delivery statuses (ENUM B) that are terminal: never run another turn.
+    _BOT_SEND_TERMINAL_STATUSES = frozenset(
+        {"delivered", "failed", "expired", "cancelled", "ambiguous"})
+
+    def _bot_send_request(self, request: "web.Request") -> Optional[Dict[str, Any]]:
+        """Parse a peer-delivery request, or ``None`` for an ordinary chat turn.
+
+        A request is a delivery only when it carries BOTH ``Idempotency-Key`` and
+        ``X-Hermes-Sender-Profile``; every other caller keeps the pre-existing
+        semantics -- no queue record, no idempotency row, no receipt.
+        """
+        key = (request.headers.get(self.BOT_SEND_KEY_HEADER) or "").strip()
+        sender = (request.headers.get(self.BOT_SEND_SENDER_HEADER) or "").strip()
+        if not key or not sender:
+            return None
+        return {
+            "idempotency_key": key,
+            "sender_profile": re.sub(r"[^A-Za-z0-9_.@-]", "_", sender)[:64] or "unknown",
+            "wait_seconds": self._bot_send_wait_seconds(request),
+        }
+
+    def _bot_send_wait_seconds(self, request: "web.Request") -> float:
+        """The caller's budget (``X-Hermes-Wait-Seconds``) in seconds (§2.9)."""
+        raw = (request.headers.get(self.BOT_SEND_WAIT_HEADER) or "").strip()
+        try:
+            return max(0.0, float(raw)) if raw else 0.0
+        except ValueError:
+            return 0.0
+
+    def _bot_send_home(self) -> Path:
+        """The home whose ``runtime/bot_delivery`` queue serves this request.
+
+        A request routed to a named profile queues in THAT profile's home, so the
+        request scope wins over the ambient ``HERMES_HOME``.
+        """
+        from hermes_cli.profiles import get_profile_dir
+        from tools.bot_mode_probe import _default_home
+
+        profile = _api_request_profile.get()
+        if profile and profile != "default":
+            try:
+                return Path(get_profile_dir(profile))
+            except Exception:  # pragma: no cover -- unknown profile name
+                logger.debug("[api_server] unknown delivery profile %r", profile, exc_info=True)
+        return Path(_default_home())
+
+    @staticmethod
+    def _bot_send_target_profile(home: Path) -> str:
+        from tools.bot_mode_probe import _profile_name
+
+        return _profile_name(home)
+
+    @staticmethod
+    def _bot_send_stored_status(stored: Optional[Dict[str, Any]]) -> str:
+        """The delivery status recorded on the idempotency row (§4.5), if any."""
+        projection = (stored or {}).get("status") or {}
+        return str(projection.get("delivery_status") or "")
+
+    def _bot_send_projection(self, request: "web.Request", delivery_id: str,
+                             stored: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """The freshest delivery projection for this id: live row, else the reserve."""
+        return (self._durable_run_status(request, delivery_id)
+                or (stored or {}).get("status") or {})
+
+    @staticmethod
+    def _bot_send_status_record(
+        projection: Dict[str, Any], *, delivery_id: str, idempotency_key: str,
+        target_profile: str, sender_profile: str, session_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """A queue-record-shaped view of a registry row whose queue file is gone.
+
+        The row carries the sender-visible projection (§4.5), so a terminal delivery
+        whose settled file was swept replays honestly instead of looking like a
+        failure -- and never re-runs a turn that already happened.
+        """
+        created = float(projection.get("created_at") or time.time())
+        return {
+            "delivery_id": delivery_id,
+            "idempotency_key": idempotency_key,
+            "fingerprint": None,
+            "sender_profile": sender_profile,
+            "target_profile": target_profile,
+            "target_session_id": projection.get("session_id") or session_id,
+            "message": None,
+            "status": str(projection.get("delivery_status") or "queued"),
+            "status_detail": projection.get("status_detail"),
+            "attempts": int(projection.get("attempts") or 0),
+            "reoffer_count": 0,
+            "queue_position": None,
+            "created_at": int(created * 1e9),
+            "updated_at": int(time.time() * 1e9),
+            "claimed_at": None,
+            "attempts_log": [],
+            "reply": projection.get("reply") or None,
+            "error": projection.get("error") or None,
+            "reason": projection.get("reason") or None,
+            # Which cap refused the send, for the envelope's queue_full detail
+            # (VERIFICATION D6). Absent, the detail defaults to the per-profile cap.
+            "limit_kind": projection.get("limit_kind"),
+            "limit": projection.get("limit"),
+            "sequence": 0,
+        }
+
+    def _bot_send_record_status(
+        self, delivery_id: str, record: Dict[str, Any], *, result: str,
+        reply: Optional[str] = None, error: Optional[str] = None,
+    ) -> None:
+        """Keep the registry row's delivery projection in step with the record (§4.5)."""
+        from tools import bot_delivery_queue as delivery_queue
+
+        status = str(record.get("status") or delivery_queue.STATUS_QUEUED)
+        self._set_run_status(
+            delivery_id, run_status_for(status),
+            kind="bot_send", delivery_status=status,
+            status_detail=record.get("status_detail"), result=result,
+            attempts=int(record.get("attempts", 0)),
+            queued_seconds=round(delivery_queue.queued_seconds(record), 3),
+            reply=reply if reply is not None else (record.get("reply") or ""),
+            error=error if error is not None else (record.get("error") or ""),
+            reason=record.get("reason") or "",
+            session_id=record.get("target_session_id"),
+            retention_until=self._bot_send_retention_until())
+
+    @staticmethod
+    def _bot_send_json(envelope: Dict[str, Any]) -> "web.Response":
+        return web.json_response(envelope)
+
+    @staticmethod
+    def _bot_send_conflict() -> "web.Response":
+        return _error_response(
+            "Idempotency-Key is already used for a different message on this peer.",
+            409, code="idempotency_key_conflict")
+
+    def _bot_send_retention_until(self) -> float:
+        """Registry retention for a delivery row (VERIFICATION D4).
+
+        Every other run row carries the requesting room's retention; delivery rows
+        were reserved with ``retention_until=0``, which does not pin them to that
+        window: the store reaps them on the default age window (``updated_at < now
+        - RETENTION_SECONDS``) and a zero value is never extended by a later write,
+        so a sender still polling ``hermes peer status <delivery_id>`` could get 404
+        "Run not found" for a delivery the receiver had accepted. Pinning the row to
+        the registry's own window -- extended on every status write -- makes the
+        delivery handle live exactly as long as any other run handle.
+        """
+        return time.time() + RunIdempotencyStore.RETENTION_SECONDS
+
+    def _bot_send_receipt(self, delivery_id: str, record: Dict[str, Any], *,
+                          waited: float, home: Any) -> "web.Response":
+        """Hand back the acceptance receipt for a still-queued delivery (§3.2)."""
+        from tools import bot_delivery_queue as delivery_queue
+
+        observed = delivery_queue.STATUS_DETAIL_TARGET_BUSY
+        if record.get("status") == delivery_queue.STATUS_QUEUED:
+            # Report the slot state OBSERVED here, not the one assumed on admission
+            # (VERIFICATION D2). With the slot free the honest cause is "queued
+            # behind earlier deliveries"; claiming "target busy" would be a claim
+            # the sender can disprove from the same second, and it is the claim
+            # that made a 53-deep backlog look like one busy turn.
+            target_profile = str(
+                record.get("target_profile") or self._bot_send_target_profile(home))
+            observed = delivery_queue.observed_detail(home, target_profile)
+            record = delivery_queue.mark_contended(
+                home, delivery_id, status_detail=observed) or record
+        envelope = delivery_queue.build_receipt(
+            record,
+            busy=observed == delivery_queue.STATUS_DETAIL_TARGET_BUSY,
+            waited_seconds=waited)
+        self._bot_send_record_status(delivery_id, record,
+                                     result=delivery_queue.RESULT_RECEIPT)
+        return self._bot_send_json(envelope)
+
+    async def _handle_bot_send(
+        self, request: "web.Request", ctx: Dict[str, Any], bot_send: Dict[str, Any]
+    ) -> "web.Response":
+        """Admission (§4.6) + the in-call turn probe (§2.5, §2.7 curve 1)."""
+        from hermes_cli import delivery_keys
+        from tools import bot_delivery_queue as delivery_queue
+
+        store = getattr(self, "_run_idempotency_store", None)
+        if store is None:  # pragma: no cover -- every real gateway installs one
+            return _error_response("This gateway has no delivery registry.", 503,
+                                   code="delivery_unavailable")
+        home = self._bot_send_home()
+        target_profile = self._bot_send_target_profile(home)
+        sender_profile = bot_send["sender_profile"]
+        session_id = str(ctx["session_id"])
+        message = ctx["user_message"]
+        if not isinstance(message, str):
+            # A queued record must be replayable verbatim by the drainer; multimodal
+            # payloads cannot be fingerprinted yet, so refuse them visibly.
+            return _error_response("A peer delivery requires a text message.", 400,
+                                   code="invalid_payload")
+        try:
+            idempotency_key = delivery_queue.validate_idempotency_key(
+                bot_send["idempotency_key"])
+        except ValueError:
+            return _error_response(
+                "Idempotency-Key must be 1-255 characters without control newlines.",
+                400, code="invalid_idempotency_key")
+
+        scope = self._run_idempotency_scope(request)
+        fingerprint = delivery_keys.delivery_fingerprint(
+            sender_profile, target_profile, session_id, message)
+        delivery_id = delivery_keys.delivery_id_from(scope, idempotency_key)
+
+        # --- step 2: lookup. A duplicate learns the original id; a key whose work
+        # already started is never re-run (§4.6, §4.9).
+        outcome, stored = store.lookup(scope, idempotency_key, fingerprint)
+        if outcome == "conflict":
+            return self._bot_send_conflict()
+        replayed = outcome == "reused" and stored is not None
+        if replayed:
+            record = delivery_queue.read_record(home, delivery_id)
+            if record is not None and record.get("status") != delivery_queue.STATUS_AMBIGUOUS:
+                return self._bot_send_json(
+                    delivery_queue.build_envelope(record, replayed=True))
+            if record is None and self._bot_send_stored_status(stored) in (
+                    self._BOT_SEND_TERMINAL_STATUSES):
+                # Finished (or died) and its settled file has since been swept: replay
+                # the registry's own projection -- never a second turn.
+                return self._bot_send_json(delivery_queue.build_envelope(
+                    self._bot_send_status_record(
+                        self._bot_send_projection(request, delivery_id, stored),
+                        delivery_id=delivery_id, idempotency_key=idempotency_key,
+                        target_profile=target_profile, sender_profile=sender_profile,
+                        session_id=session_id),
+                    replayed=True))
+            # `ambiguous`, or a reservation whose queue record never landed (a crash
+            # between admission steps 4 and 5): exactly ONE recovery replay is
+            # permitted, and only under this same key (§4.9 rules 1-2).
+            if record is not None:
+                recovered = delivery_queue.reoffer_ambiguous(home, delivery_id)
+                if recovered is None:
+                    return self._bot_send_json(delivery_queue.build_envelope(
+                        delivery_queue.read_record(home, delivery_id) or record,
+                        replayed=True))
+
+        # --- step 3: capacity. An overflow takes NO reservation, which is what makes
+        # the sender's next action unambiguous (§2.4, §5.3).
+        try:
+            delivery_queue.check_capacity(
+                home, target_profile=target_profile, sender_profile=sender_profile)
+        except delivery_queue.QueueFullError as exc:
+            return self._bot_send_json(delivery_queue.build_envelope(
+                self._bot_send_status_record(
+                    {"delivery_status": delivery_queue.STATUS_FAILED,
+                     "reason": "queue_full", "created_at": time.time(),
+                     # VERIFICATION D6: name the cap that actually fired (per-sender
+                     # vs per-profile), not the historical per-profile default.
+                     "limit_kind": getattr(exc, "limit_kind", None),
+                     "limit": getattr(exc, "limit", None)},
+                    delivery_id=delivery_id, idempotency_key=idempotency_key,
+                    target_profile=target_profile, sender_profile=sender_profile,
+                    session_id=session_id)))
+
+        # --- step 4: reserve the delivery id as its own registry row (it is also its
+        # run_id, §4.5), then step 5 enqueues: a receipt is never handed out for work
+        # that was not durably recorded (§4.6).
+        reservation = self._set_run_status(
+            delivery_id, run_status_for(delivery_queue.STATUS_QUEUED),
+            kind="bot_send", created_at=time.time(),
+            delivery_status=delivery_queue.STATUS_QUEUED,
+            # The slot state OBSERVED at admission (VERIFICATION D2): the receipt the
+            # sender gets carries this value, so it is measured, never assumed -- a
+            # default of "target busy" is what dressed a queue backlog up as one
+            # busy turn.
+            status_detail=delivery_queue.observed_detail(home, target_profile),
+            result=delivery_queue.RESULT_RECEIPT, attempts=0, queued_seconds=0.0,
+            reply="", error="", reason="", session_id=session_id,
+            model=self._model_name, ttl_seconds=delivery_queue.queue_ttl_seconds(),
+            retention_until=self._bot_send_retention_until())
+        outcome, stored = store.reserve(
+            scope, idempotency_key, fingerprint, delivery_id, reservation,
+            owner_pid=getattr(self, "_run_owner_pid", 0),
+            owner_started=getattr(self, "_run_owner_started", 0),
+            retention_until=self._bot_send_retention_until())
+        if outcome == "conflict":
+            return self._bot_send_conflict()
+        if outcome == "reused":
+            # Lost the 2 -> 4 race against a concurrent first sender.
+            existing = delivery_queue.read_record(home, delivery_id)
+            if existing is not None:
+                return self._bot_send_json(
+                    delivery_queue.build_envelope(existing, replayed=True))
+            return self._bot_send_json(delivery_queue.build_envelope(
+                self._bot_send_status_record(
+                    self._bot_send_projection(request, delivery_id, stored),
+                    delivery_id=delivery_id, idempotency_key=idempotency_key,
+                    target_profile=target_profile, sender_profile=sender_profile,
+                    session_id=session_id),
+                replayed=True))
+        self._run_idempotency_ids.add(delivery_id)
+        try:
+            delivery_queue.admit(
+                home, sender_profile=sender_profile, target_profile=target_profile,
+                target_session_id=session_id, idempotency_key=idempotency_key,
+                fingerprint=fingerprint, delivery_id=delivery_id, message=message)
+        except delivery_queue.QueueFullError as exc:
+            # Lost the 3 -> 5 race: the row stays `receipt`-shaped and a same-key retry
+            # re-admits it under the same delivery_id (rule 1), so nothing is stranded.
+            return self._bot_send_json(delivery_queue.build_envelope(
+                self._bot_send_status_record(
+                    {"delivery_status": delivery_queue.STATUS_FAILED,
+                     "reason": "queue_full", "created_at": time.time(),
+                     # VERIFICATION D6: name the cap that actually fired (per-sender
+                     # vs per-profile), not the historical per-profile default.
+                     "limit_kind": getattr(exc, "limit_kind", None),
+                     "limit": getattr(exc, "limit", None)},
+                    delivery_id=delivery_id, idempotency_key=idempotency_key,
+                    target_profile=target_profile, sender_profile=sender_profile,
+                    session_id=session_id)))
+
+        # --- steps 6-7: probe the turn lock inside the bounded synchronous window,
+        # then run the turn in-call or hand back a receipt (§2.7 curve 1).
+        return await self._bot_send_probe_and_run(
+            request, ctx, bot_send, home=home, delivery_id=delivery_id,
+            target_profile=target_profile)
+
+    async def _bot_send_probe_and_run(
+        self, request: "web.Request", ctx: Dict[str, Any], bot_send: Dict[str, Any],
+        *, home: Path, delivery_id: str, target_profile: str,
+    ) -> "web.Response":
+        """Curve 1: non-blocking turn-lock probes inside ``receipt_after_seconds``."""
+        from tools import bot_delivery_queue as delivery_queue
+        from tools.bot_mode_probe import _hermes_root
+        from tools.bot_relay import TurnBusyError, acquire_turn_lock
+
+        budget = delivery_queue.receipt_after_seconds()
+        if bot_send["wait_seconds"] > 0:
+            # §2.9: never hold the caller (or start a turn) past its own budget.
+            budget = min(budget, bot_send["wait_seconds"])
+        root = _hermes_root(home)
+        started = time.monotonic()
+        deadline = started + budget
+        n = 0
+        while True:
+            try:
+                with acquire_turn_lock(root, target_profile, timeout_seconds=0):
+                    # Under the lock we hold, drain the queue HEAD-FIRST
+                    # (VERIFICATION D1): a foreign head is RUN, never handed back.
+                    # Handing it back is what left the live backlog ownerless -- the
+                    # request that admitted a record is long gone by the time the
+                    # slot frees, so only a queue drainer can finish it.
+                    return await _bot_delivery.drain_under_lock(
+                        self, home=home, target_profile=target_profile,
+                        delivery_id=delivery_id, ctx=ctx,
+                        waited=time.monotonic() - started)
+            except TurnBusyError:
+                pass
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(delivery_queue.probe_delay(n), remaining))
+            n += 1
+        current = delivery_queue.read_record(home, delivery_id)
+        if current is None:  # pragma: no cover -- the drainer took it
+            current = delivery_queue.claim_next(
+                home, target_profile=target_profile, lease_ok=True) or {}
+        return self._bot_send_receipt(
+            delivery_id, current, waited=time.monotonic() - started, home=home)
+
+    async def _bot_send_turn(
+        self, request: "web.Request", ctx: Dict[str, Any], *, home: Path,
+        delivery_id: str, target_profile: str, session_id: str, waited: float,
+    ) -> "web.Response":
+        """Run this delivery's turn under the turn lock, or receipt it honestly.
+
+        Kept as the in-call entry point, but the work is the shared drainer
+        (VERIFICATION D1). One code path runs a delivery whether it was admitted a
+        second ago or has been waiting in the queue since yesterday, so an accepted
+        record can never be left without a runner.
+        """
+        del request, session_id
+        return await _bot_delivery.drain_under_lock(
+            self, home=home, target_profile=target_profile,
+            delivery_id=delivery_id, ctx=ctx, waited=waited)
+
     @staticmethod
     def _session_headers(session_id: str, gateway_session_key: Optional[str]) -> Dict[str, str]:
         """``X-Hermes-Session-Id`` (+ ``X-Hermes-Session-Key`` when declared) response headers."""
@@ -3171,6 +3558,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
+        # A peer delivery rides the same endpoint: the two delivery headers turn this
+        # into a queued, idempotent delivery with an acceptance receipt (§3.2).
+        bot_send = self._bot_send_request(request)
+        if bot_send is not None:
+            return await self._handle_bot_send(request, ctx, bot_send)
         gateway_session_key = ctx["gateway_session_key"]
         session_id = ctx["session_id"]
         history = await self._conversation_history_for_session(session_id)
@@ -3738,7 +4130,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result") -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
+        lease_wait_seconds: Optional[float] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3776,6 +4169,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
                     if agent_ref is not None:
                         agent_ref[0] = agent
+                    if lease_wait_seconds is not None:
+                        # Bounded lease probe for delivery turns: turn_facade_lease caps its
+                        # acquire_session_turn_lease wait to this budget so a busy session
+                        # yields a receipt quickly instead of a 1800s block.
+                        agent._session_turn_lease_wait_seconds = lease_wait_seconds
                     if active_run_id:
                         self._active_run_agents[active_run_id] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
@@ -3999,6 +4397,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
             self._track_background_task(asyncio.create_task(self._sweep_orphaned_runs()))
+            # Trigger 3 for peer deliveries (VERIFICATION D1): every 30s, recover
+            # orphaned claims / expire over-age records and drain any slot that is
+            # free. A slot held by anyone else is never fought for -- that holder
+            # drains when it releases.
+            self._track_background_task(
+                asyncio.create_task(_bot_delivery.sweep_loop(self)))
             # Network-accessible + unsandboxed local terminal backend = host-user RCE surface;
             # warn, don't refuse (the operator may have a firewall / strong key).
             if is_network_accessible(self._host):

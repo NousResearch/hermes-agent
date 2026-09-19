@@ -639,6 +639,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("nvidia", "qwen/qwen3.5-122b-a10b"),
         ("moa", "anthropic/claude-sonnet-4.6"),
         ("commandcode", "deepseek/deepseek-v4-flash"),
+        ("gmi", "zai-org/GLM-5.1-FP8"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -679,7 +680,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"ai-gateway", "opencode-zen", "kilocode", "nvidia", "commandcode"}:
+    if provider in {"ai-gateway", "opencode-zen", "kilocode", "nvidia", "commandcode", "gmi"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out

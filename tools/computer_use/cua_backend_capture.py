@@ -8,6 +8,7 @@ import base64
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -16,7 +17,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from tools.computer_use.backend import ActionResult, CaptureResult, UIElement
 from tools.computer_use.cua_backend_input import _BTF_UNSUPPORTED_MSG
 from tools.computer_use.cua_backend_parse import (
-    _apps_from_windows, _image_dimensions_from_bytes, _image_from_tool_result, _ingest_windows, _is_placeholder_id,
+    _apps_from_windows, _image_dimensions_from_bytes, _image_from_tool_result, _is_placeholder_id,
     _is_real_app_window, _parse_elements_from_structured, _parse_elements_from_tree, _parse_xprop_net_active_window,
     _positive_int, _split_tree_text, _windows_from_tool_result, _z_index_uninformative,
 )
@@ -55,6 +56,168 @@ def _linux_x11_active_window_id() -> Optional[int]:
         return None
     return _parse_xprop_net_active_window(proc.stdout or "") if proc.returncode == 0 else None
 
+
+def _resolve_linux_x11_pid_from_window_id(window_id: int) -> Optional[int]:
+    """Best-effort Linux/X11 fallback: derive a PID from ``window_id``.
+
+    In some headless X11 sessions (observed on Xvfb + AT-SPI), ``list_windows``
+    surfaces real windows with a valid ``window_id`` but ``pid=None``. If the
+    driver can't supply the PID directly, try the standard EWMH/X11
+    ``_NET_WM_PID`` property before discarding the window.
+    """
+    if sys.platform != "linux" or not window_id or not os.environ.get("DISPLAY"):
+        return None
+
+    display = os.environ.get("DISPLAY") or ""
+    xprop = shutil.which("xprop")
+    if xprop:
+        try:
+            proc = subprocess.run(
+                [xprop, "-display", display, "-id", str(window_id), "_NET_WM_PID"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except Exception as exc:
+            logger.debug("xprop _NET_WM_PID lookup failed for window_id=%s: %s", window_id, exc)
+        else:
+            match = re.search(r"_NET_WM_PID\s*\(CARDINAL\)\s*=\s*(\d+)", (proc.stdout or "") + "\n" + (proc.stderr or ""))
+            if match:
+                return int(match.group(1))
+
+    try:
+        import ctypes
+        import ctypes.util
+
+        lib_name = ctypes.util.find_library("X11")
+        if not lib_name:
+            return None
+        lib_x11 = ctypes.cdll.LoadLibrary(lib_name)
+        display_p = ctypes.c_void_p
+        atom_t = ctypes.c_ulong
+        window_t = ctypes.c_ulong
+
+        lib_x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        lib_x11.XOpenDisplay.restype = display_p
+        lib_x11.XInternAtom.argtypes = [display_p, ctypes.c_char_p, ctypes.c_bool]
+        lib_x11.XInternAtom.restype = atom_t
+        lib_x11.XGetWindowProperty.argtypes = [
+            display_p,
+            window_t,
+            atom_t,
+            ctypes.c_long,
+            ctypes.c_long,
+            ctypes.c_bool,
+            atom_t,
+            ctypes.POINTER(atom_t),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+        ]
+        lib_x11.XGetWindowProperty.restype = ctypes.c_int
+        lib_x11.XFree.argtypes = [ctypes.c_void_p]
+        lib_x11.XFree.restype = ctypes.c_int
+        lib_x11.XCloseDisplay.argtypes = [display_p]
+        lib_x11.XCloseDisplay.restype = ctypes.c_int
+
+        xdisplay = lib_x11.XOpenDisplay(display.encode())
+        if not xdisplay:
+            return None
+        try:
+            pid_atom = lib_x11.XInternAtom(xdisplay, b"_NET_WM_PID", False)
+            cardinal_atom = lib_x11.XInternAtom(xdisplay, b"CARDINAL", False)
+            actual_type = atom_t()
+            actual_format = ctypes.c_int()
+            nitems = ctypes.c_ulong()
+            bytes_after = ctypes.c_ulong()
+            prop = ctypes.POINTER(ctypes.c_ubyte)()
+            status = lib_x11.XGetWindowProperty(
+                xdisplay,
+                window_t(window_id),
+                pid_atom,
+                0,
+                1,
+                False,
+                cardinal_atom,
+                ctypes.byref(actual_type),
+                ctypes.byref(actual_format),
+                ctypes.byref(nitems),
+                ctypes.byref(bytes_after),
+                ctypes.byref(prop),
+            )
+            try:
+                if status != 0 or not prop or nitems.value < 1 or actual_format.value != 32:
+                    return None
+                return int(ctypes.cast(prop, ctypes.POINTER(ctypes.c_ulong))[0])
+            finally:
+                if prop:
+                    lib_x11.XFree(prop)
+        finally:
+            lib_x11.XCloseDisplay(xdisplay)
+    except Exception as exc:
+        logger.debug("ctypes/X11 _NET_WM_PID lookup failed for window_id=%s: %s", window_id, exc)
+        return None
+
+
+def _normalize_window_candidates(raw_windows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Normalise cua-driver windows and collect diagnostics for unusable rows.
+
+    Returns ``(usable_windows, pidless_windows)`` where ``pidless_windows`` are
+    on-screen windows that had a valid ``window_id`` but no usable ``pid`` even
+    after the Linux/X11 fallback.
+    """
+    usable: List[Dict[str, Any]] = []
+    pidless: List[Dict[str, Any]] = []
+    for raw in raw_windows:
+        if not isinstance(raw, dict):
+            continue
+        window_id = _positive_int(raw.get("window_id"))
+        if window_id is None:
+            continue
+        pid = _positive_int(raw.get("pid"))
+        resolved_via = "driver"
+        if pid is None:
+            pid = _resolve_linux_x11_pid_from_window_id(window_id)
+            if pid is not None:
+                resolved_via = "x11:_NET_WM_PID"
+        z_raw, app_name, title = raw.get("z_index"), raw.get("app_name", ""), raw.get("title", "")
+        normalized = {
+            "app_name": app_name if isinstance(app_name, str) else "",
+            "pid": pid,
+            "window_id": window_id,
+            "off_screen": raw.get("is_on_screen") is False,
+            "title": title if isinstance(title, str) else "",
+            "z_index": z_raw if isinstance(z_raw, (int, float)) and not isinstance(z_raw, bool) else 0,
+            "pid_resolved_via": resolved_via,
+        }
+        if pid is None:
+            pidless.append(normalized)
+        else:
+            usable.append(normalized)
+    return usable, pidless
+
+
+def _pidless_windows_message(pidless_windows: List[Dict[str, Any]], *, app: Optional[str] = None) -> str:
+    """Human-readable diagnostic when windows exist but cua-driver omitted PID."""
+    count = len(pidless_windows)
+    sample = ", ".join(repr(w.get("title") or w.get("app_name") or f"xid={w.get('window_id')}")
+                       for w in pidless_windows[:3]) or "<no sample>"
+    app_part = f" for app={app!r}" if app else ""
+    fallback_part = (
+        " Linux/X11 fallback via _NET_WM_PID did not recover a usable PID."
+        if sys.platform == "linux" else ""
+    )
+    return (
+        f"<cua-driver listed {count} on-screen window(s){app_part} with window_id but no pid; "
+        f"Hermes cannot capture them because get_window_state requires pid. "
+        f"Sample: {sample}.{fallback_part}>"
+    )
+
 def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool,
                            exact_target: bool = False) -> Dict[str, Any]:
     """Best window from z-sorted (frontmost-first) list_windows output. Unqualified default captures on
@@ -75,8 +238,9 @@ def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool
     return pool[0] if pool else windows[0]
 
 def _sorted_windows(out: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Normalised list_windows rows, ``z_index`` DESCENDING (frontmost first = default capture/focus target)."""
-    return sorted(_ingest_windows(_windows_from_tool_result(out)), key=lambda w: w["z_index"], reverse=True)
+    """Normalised usable list_windows rows, ``z_index`` DESCENDING (frontmost first = default capture/focus target)."""
+    windows, _pidless = _normalize_window_candidates(_windows_from_tool_result(out))
+    return sorted(windows, key=lambda w: w["z_index"], reverse=True)
 
 def _tree_and_title(out: Dict[str, Any]) -> Tuple[str, str]:
     """``(tree_markdown, window_title)`` from a get_window_state result."""
@@ -155,12 +319,19 @@ class _CaptureMixin:
         cli_out = self._cli_refetch(name, args, timeout, what, warning, *warning_args) if empty(out) else None
         return cli_out if cli_out is not None and not empty(cli_out) else out
 
-    def list_windows(self) -> List[Dict[str, Any]]:
-        """Visible windows frontmost-first, re-fetching over the CLI transport when MCP returns nothing."""
-        return _sorted_windows(self._fetch_or_refetch(
+    def _discover_windows(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Return ``(usable_windows, pidless_windows)`` from list_windows, CLI-refetching only when the driver
+        returned no raw windows at all."""
+        out = self._fetch_or_refetch(
             "list_windows", {"on_screen_only": True, "session": self._session_id}, 20.0, "list_windows",
-            lambda out: not _sorted_windows(out),
-            "cua-driver list_windows returned no windows over MCP; re-fetching via CLI transport"))
+            lambda out: not _windows_from_tool_result(out),
+            "cua-driver list_windows returned no windows over MCP; re-fetching via CLI transport")
+        windows, pidless = _normalize_window_candidates(_windows_from_tool_result(out))
+        return sorted(windows, key=lambda w: w["z_index"], reverse=True), sorted(pidless, key=lambda w: w["z_index"], reverse=True)
+
+    def list_windows(self) -> List[Dict[str, Any]]:
+        """Visible usable windows frontmost-first, re-fetching over the CLI transport when MCP returns nothing."""
+        return self._discover_windows()[0]
 
     def _match_windows_for_app(self, windows: List[Dict[str, Any]], app: str) -> List[Dict[str, Any]]:
         """Resolve ``app=``: exact window names, then exact list_apps aliases (Linux ``list_windows`` can
@@ -209,8 +380,10 @@ class _CaptureMixin:
             return [{"app_name": app or "", "pid": target_pid, "window_id": target_window_id, "off_screen": False,
                      "title": "", "z_index": 0}]
         with self._disarming():
-            windows = self.list_windows()
+            windows, pidless_windows = self._discover_windows()
         if not windows:
+            if pidless_windows:
+                return self._failed_capture(mode, _pidless_windows_message(pidless_windows))
             # Diagnose instead of a bare 0x0: the dominant real-world cause on Linux is a locked desktop session.
             from tools.computer_use import cua_backend as _cb
             return self._failed_capture(mode, _cb._empty_discovery_reason())
@@ -225,7 +398,13 @@ class _CaptureMixin:
             return desktop or self._failed_capture(mode, _NO_DESKTOP_WINDOW_MSG.format(app=app))
         # When the filter matches nothing, say so instead of silently capturing the frontmost window — on
         # macOS list_windows returns the localized app name (e.g. "計算機"), so `app="Calculator"` legitimately misses.
-        return self._match_windows_for_app(windows, app) or self._failed_capture(mode, _NO_APP_MATCH_MSG.format(app=app))
+        matched = self._match_windows_for_app(windows, app)
+        if matched:
+            return matched
+        pidless_matched = [w for w in pidless_windows if app.strip().lower() in (w.get("app_name") or "").lower()]
+        if pidless_matched:
+            return self._failed_capture(mode, _pidless_windows_message(pidless_matched, app=app))
+        return self._failed_capture(mode, _NO_APP_MATCH_MSG.format(app=app))
 
     def _gws_args(self) -> Dict[str, Any]:
         return {"pid": self._active_pid, "window_id": self._active_window_id, "session": self._session_id}
@@ -359,21 +538,38 @@ class _CaptureMixin:
         automation never needs to raise a window. ``raise_window=True`` is explicit, separately approved,
         and uses the standalone ``bring_to_front`` tool."""
         with self._disarming():
-            matched = self._match_windows_for_app(self.list_windows(), app)
+            windows, pidless_windows = self._discover_windows()
+            matched = self._match_windows_for_app(windows, app)
         # No silent fallback to the frontmost window: that hides the real failure (often a localized macOS
         # app-name mismatch).
         if not matched:
+            pidless_matched = [w for w in pidless_windows if app.strip().lower() in (w.get("app_name") or "").lower()]
             self._clear_active_target()
+            if pidless_matched:
+                return ActionResult(
+                    ok=False,
+                    action="focus_app",
+                    message=(
+                        f"matched on-screen window(s) for app={app!r}, but cua-driver provided no usable pid; "
+                        f"{_pidless_windows_message(pidless_matched, app=app).strip('<>')}"
+                    ),
+                    meta={"app": app, "pidless_windows": pidless_matched, "raise_window_requested": bool(raise_window)},
+                )
             return ActionResult(ok=False, action="focus_app", message=f"No on-screen window found for app '{app}'.")
         self._set_active_target(target := matched[0])
         self._last_app = target["app_name"] or app  # retained for back-compat diagnostics
         if not raise_window:
-            return ActionResult(ok=True, action="focus_app", message=f"Targeted {target['app_name']} (pid "
-                                f"{self._active_pid}, window {self._active_window_id}) without raising window.")
+            return ActionResult(
+                ok=True,
+                action="focus_app",
+                message=f"Targeted {target['app_name']} (pid {self._active_pid}, window {self._active_window_id}) without raising window.",
+                meta={"pid_resolved_via": target.get("pid_resolved_via", "driver")},
+            )
         if not self._session._has_tool("bring_to_front"):
             return ActionResult(ok=False, action="focus_app", code="bring_to_front_unsupported", message=_BTF_UNSUPPORTED_MSG)
         focused = self.bring_to_front(pid=self._active_pid, window_id=self._active_window_id)
         if focused.ok:
             focused.action = "focus_app"
             focused.meta["target_selected"] = True
+            focused.meta.setdefault("pid_resolved_via", target.get("pid_resolved_via", "driver"))
         return focused

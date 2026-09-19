@@ -379,9 +379,9 @@ class GatewayGoalsMixin:
     ) -> None:
         """Inject one due /loop wakeup into its session, applying every deferral rule. ``profile`` is
         the store being scanned (None = default); a ``profile`` persisted in the route wins."""
-        from hermes_cli.loops import LoopManager, goal_blocks_loop_tick
+        from hermes_cli.loops import LoopManager, goal_blocks_loop_tick, state_is_due
 
-        if state.awaiting_response or now < state.next_due_at:
+        if not state_is_due(state, now):
             return
         route = state.route or {}
         platform_name = route.get("platform", "")

@@ -44,12 +44,16 @@ class TestNoninteractiveGitEnv:
 
     def test_defaults_to_process_environ_copy(self, monkeypatch):
         monkeypatch.setenv("HERMES_TEST_SENTINEL", "xyz")
+        # Snapshot the live values before the call so we can prove the helper
+        # copies them instead of mutating the process environment in place.
+        live_git_prompt = os.environ.get("GIT_TERMINAL_PROMPT")
+        live_gcm_interactive = os.environ.get("GCM_INTERACTIVE")
         env = noninteractive_git_env()
         assert env["HERMES_TEST_SENTINEL"] == "xyz"
         assert env["GIT_TERMINAL_PROMPT"] == "0"
         # Never mutates the live process environment.
-        assert os.environ.get("GIT_TERMINAL_PROMPT") != "0" or True
-        assert "GCM_INTERACTIVE" not in os.environ or os.environ["GCM_INTERACTIVE"] == env["GCM_INTERACTIVE"]
+        assert os.environ.get("GIT_TERMINAL_PROMPT") == live_git_prompt
+        assert os.environ.get("GCM_INTERACTIVE") == live_gcm_interactive
 
 
     def test_overrides_explicit_prompt_enable(self):

@@ -312,6 +312,23 @@ def test_windows_delivery_decodes_child_output_as_utf8_not_the_parent_locale(tmp
     assert result.stdout == accented + "\n"
 
 
+def test_windows_delivery_pins_utf8_popen_kwargs_regardless_of_host_codec(tmp_path):
+    """Host-independent regression net for #115894, per review on #115910: on a Windows
+    Python already running in UTF-8 mode (``PYTHONUTF8=1``), ``locale.setlocale(LC_ALL, "C")``
+    does not change ``getpreferredencoding()``, so the real-subprocess test above can pass on
+    such a host even without the fix. Assert directly on the ``Popen`` call instead, which does
+    not depend on what codec this host's ``sys.flags.utf8_mode`` happens to pick."""
+    mock_proc = mock.Mock(pid=4242, returncode=0)
+    mock_proc.communicate.return_value = ("reply", "")
+
+    with mock.patch.object(sched_delivery.sys, "platform", "win32"), \
+         mock.patch.object(sched_delivery.subprocess, "Popen", return_value=mock_proc) as popen:
+        sched_delivery._run_bot_chat_turn(["hermes"], {}, str(tmp_path / "turn.json"), timeout=10)
+
+    assert popen.call_args.kwargs["encoding"] == "utf-8"
+    assert popen.call_args.kwargs["errors"] == "replace"
+
+
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────
 
 def test_delivery_targets_include_local_profiles():

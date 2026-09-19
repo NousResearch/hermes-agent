@@ -3808,6 +3808,9 @@ export interface Translations {
     restartToSaveImages: string
     imageDownloadFailed: string
     openImage: string
+    zoomIn: string
+    zoomOut: string
+    resetZoom: string
     downloadImage: string
     savingImage: string
     imagePreviewFailed: string

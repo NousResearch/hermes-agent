@@ -20,6 +20,7 @@ import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-w
 import { LazyShiki as ShikiHighlighter } from '@/components/chat/shiki-highlighter'
 import { PageLoader } from '@/components/page-loader'
 import { Tip } from '@/components/ui/tooltip'
+import { useImageZoom } from '@/hooks/use-image-zoom'
 import { translateNow, useI18n } from '@/i18n'
 import {
   desktopFileDiff,
@@ -29,7 +30,8 @@ import {
   readDesktopFileText,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
-import { Check, Pencil, X } from '@/lib/icons'
+import { Check, Maximize, Pencil, X, ZoomIn, ZoomOut } from '@/lib/icons'
+import { isVectorSource } from '@/lib/image-zoom'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
@@ -379,9 +381,90 @@ function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
   )
 }
 
+function PreviewImage({ alt, src }: { alt: string; src: string }) {
+  const { t } = useI18n()
+  const copy = t.desktop
+  const zoom = useImageZoom(true, isVectorSource(src))
+
+  return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- wheel zoom needs the whole surface; keyboard zoom is bound in the hook
+    <div
+      className="relative flex h-full w-full items-center justify-center overflow-hidden bg-transparent p-4"
+      onWheel={zoom.onWheel}
+      {...zoom.containerProps}
+    >
+      <img
+        alt={alt}
+        className={cn(
+          'max-h-full max-w-full rounded-lg object-contain shadow-sm',
+          zoom.isZoomed && 'cursor-grab active:cursor-grabbing'
+        )}
+        draggable={false}
+        onDoubleClick={zoom.onDoubleClick}
+        onPointerCancel={zoom.endDrag}
+        onPointerDown={zoom.onPointerDown}
+        onPointerMove={zoom.onPointerMove}
+        onPointerUp={zoom.endDrag}
+        ref={zoom.imageRef}
+        src={src}
+        style={{ transformOrigin: 'center center', willChange: 'transform' }}
+      />
+      {/* Unlike the chat lightbox there is no hover affordance here: the rail is
+          a working surface, so the controls stay visible. */}
+      <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border/70 bg-background/85 p-1 shadow-sm backdrop-blur">
+        <PreviewZoomButton
+          disabled={!zoom.canZoomOut}
+          icon={<ZoomOut className="size-4" />}
+          label={copy.zoomOut}
+          onClick={zoom.zoomOut}
+        />
+        <span className="min-w-12 text-center text-xs tabular-nums text-muted-foreground">
+          {Math.round(zoom.scale * 100)}%
+        </span>
+        <PreviewZoomButton
+          disabled={!zoom.canZoomIn}
+          icon={<ZoomIn className="size-4" />}
+          label={copy.zoomIn}
+          onClick={zoom.zoomIn}
+        />
+        <PreviewZoomButton
+          disabled={!zoom.isZoomed}
+          icon={<Maximize className="size-4" />}
+          label={copy.resetZoom}
+          onClick={zoom.reset}
+        />
+      </div>
+    </div>
+  )
+}
+
+function PreviewZoomButton({
+  disabled,
+  icon,
+  label,
+  onClick
+}: {
+  disabled: boolean
+  icon: ReactNode
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      aria-label={label}
+      className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent"
+      disabled={disabled}
+      onClick={onClick}
+      title={label}
+      type="button"
+    >
+      {icon}
+    </button>
+  )
+}
+
 function MarkdownLink({ children, className, href, ...rest }: ComponentProps<'a'>) {
   const isExternal = /^https?:\/\//i.test(href || '')
-
   return (
     <a
       className={cn('text-foreground underline underline-offset-2 hover:text-primary', className)}
@@ -1046,16 +1129,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }
 
   if (isImage && state.dataUrl) {
-    return (
-      <div className="flex h-full w-full items-center justify-center overflow-auto bg-transparent p-4">
-        <img
-          alt={target.label}
-          className="max-h-full max-w-full rounded-lg object-contain shadow-sm"
-          draggable={false}
-          src={state.dataUrl}
-        />
-      </div>
-    )
+    return <PreviewImage alt={target.label} src={state.dataUrl} />
   }
 
   if (isPdf && state.dataUrl && pdfUrl) {

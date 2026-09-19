@@ -651,6 +651,8 @@ class CLIStreamMixin:
             self._flush_stream()
             self._stream_box_opened = False
         self._close_reasoning_box()
+        if self.tool_progress_mode == "off":
+            return
         announced = self.__dict__.setdefault("_tool_gen_announced", set())
         if tool_name in announced:
             return

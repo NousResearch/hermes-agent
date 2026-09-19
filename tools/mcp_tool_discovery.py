@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish
+from tools.mcp_tool_common import _core, _parse_boolish, _sanitize_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -428,8 +428,31 @@ def _connected_summary(names, *, lazy_tools: int = 0, lazy_servers: int = 0) -> 
     return tool_count + lazy_tools, len(connected) + lazy_servers, failed
 
 
+_NO_RECORDED_REASON = "not connected and no failure reason was recorded"
+
+
+def _failed_server_reasons(names) -> List[Tuple[str, str]]:
+    """``(name, reason)`` for every candidate that is not a live, error-free connection — the same
+    predicate ``_connected_summary`` counts as failed. Reasons come from the recorded connect error
+    when there is one, and are credential-scrubbed before they reach the log."""
+    failed: List[Tuple[str, str]] = []
+    with _core._lock:
+        for name in names:
+            key = _server_key(name)
+            if key in _core._servers and key not in _core._server_connect_errors:
+                continue
+            reason = _core._server_connect_errors.get(key) or _NO_RECORDED_REASON
+            failed.append((name, _sanitize_error(str(reason))))
+    return failed
+
+
 def _log_summary(prefix: str, names, **lazy) -> None:
-    """Log ``<prefix> N tool(s) from M server(s) (K failed)`` when anything happened."""
+    """Log ``<prefix> N tool(s) from M server(s) (K failed)`` when anything happened.
+
+    The count alone is not diagnosable: it is derived from cached state, so it also counts servers
+    this pass never attempted (a failure still inside its retry cooldown) and any connect warning
+    from an earlier pass is long gone. Every failed server therefore also gets its own WARNING
+    naming it and carrying the recorded reason (#114746)."""
     new_tool_count, connected_count, failed = _connected_summary(names, **lazy)
     if new_tool_count or failed or lazy.get("lazy_servers"):
         summary = f"{prefix} {new_tool_count} tool(s) from {connected_count} server(s)"
@@ -438,6 +461,8 @@ def _log_summary(prefix: str, names, **lazy) -> None:
         if lazy.get("lazy_servers"):
             summary += f" ({lazy['lazy_servers']} lazy, not spawned yet)"
         logger.info(summary)
+        for name, reason in _failed_server_reasons(names):
+            logger.warning("MCP server '%s' failed to register: %s", name, reason)
 
 
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:

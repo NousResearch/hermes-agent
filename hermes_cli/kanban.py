@@ -22,11 +22,7 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
-from hermes_cli.kanban_completion_evidence import (
-    EVIDENCE_REQUIRED_CONTRACT,
-    CompletionEvidenceError,
-    normalize_completion_evidence,
-)
+from hermes_cli.kanban_completion_evidence import CompletionEvidenceError
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
@@ -936,27 +932,6 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return rc
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
-        # Validate the handoff before the bulk loop.  `_bulk_apply` deliberately has
-        # best-effort semantics for ordinary per-item failures, but an invalid
-        # invocation must not close an earlier card and then die on a later
-        # evidence-required card.
-        try:
-            normalize_completion_evidence(evidence, required=False)
-        except CompletionEvidenceError as exc:
-            return _err(f"kanban: invalid completion evidence: {exc}", 2)
-        evidence_required = [
-            tid for tid in ids
-            if (task := kb.get_task(conn, tid)) is not None
-            and task.completion_contract == EVIDENCE_REQUIRED_CONTRACT
-        ]
-        if evidence_required and not evidence:
-            listed = ", ".join(evidence_required)
-            return _err(
-                "kanban: completion requires concrete evidence for "
-                f"{listed}; pass --evidence '[{{\"kind\": \"test\", \"detail\": \"…\"}}]'",
-                2,
-            )
-
         def op(tid):
             gate_err = _goal_gate_error(
                 conn, tid, (summary or args.result or "").strip(), "completion",
@@ -981,10 +956,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                  f"describing what was done (an empty completion is not evidence).")
                 return False
             except CompletionEvidenceError as exc:
-                # A contract can change between the preflight and the mutation.
-                # Keep this per-card failure readable while allowing the bulk
-                # operation to continue with later IDs.
-                fail_msg[tid] = f"cannot complete {tid}: invalid completion evidence: {exc}"
+                # Completion evidence is a task-specific gate. Keep the established
+                # `_bulk_apply` contract: report this id, continue with later ids,
+                # and return 1 if any card failed. The gate runs before the write
+                # transaction, so this card remains unchanged and retryable.
+                fail_msg[tid] = (f"cannot complete {tid}: {exc}. "
+                                 "Provide --evidence with a JSON list of concrete receipts and retry.")
                 return False
             if not done:
                 # complete_task returns bare False for a dependency refusal too;

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
+from agent.skill_utils import is_excluded_skill_path, is_external_skill_path, read_skill_head
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -241,11 +241,11 @@ def list_archived_skill_names() -> List[str]:
 
 
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
-    """The frontmatter ``name:`` field of a SKILL.md (first 4000 chars), else *fallback*."""
-    try:
-        lines = [line.strip() for line in skill_md.read_text(encoding="utf-8", errors="replace")[:4000].split("\n")]
-    except OSError:
+    """The frontmatter ``name:`` field of a SKILL.md (head-only read), else *fallback*."""
+    head = read_skill_head(skill_md)
+    if not head:
         return fallback
+    lines = [line.strip() for line in head.split("\n")]
     if "---" not in lines:
         return fallback
     block = lines[lines.index("---") + 1:]  # frontmatter runs to the closing --- or (truncated) end of text

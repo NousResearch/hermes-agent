@@ -11,6 +11,7 @@ asserts zero contamination from shell noise via _assert_clean().
 import pytest
 
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -198,6 +199,75 @@ class TestPatchReplace:
         result = ops.patch_replace(path, "line2", "REPLACED")
         assert result.error is None
         assert Path(path).read_text() == "line1\nREPLACED\nline3\n"
+
+
+class TestPatchV4AHunkErrors:
+    @pytest.mark.parametrize(
+        "hint, reason",
+        [("absent-marker", "not found"), ("anchor", "ambiguous (2 occurrences)")],
+    )
+    def test_validation_error_identifies_addition_only_hunk(
+        self, ops, tmp_path, monkeypatch, hint, reason
+    ):
+        """A bad hunk names its position in its file and prevents all writes."""
+        import tools.file_tools as file_tools
+        from tools.registry import registry
+
+        monkeypatch.setattr(file_tools, "_get_file_ops", lambda task_id: ops)
+        first = tmp_path / "first.txt"
+        target = tmp_path / "target.txt"
+        original = "old\nanchor\nbody\nanchor\n"
+        first.write_text("before\n")
+        target.write_text(original)
+        patch = (
+            "*** Begin Patch\n"
+            f"*** Update File: {first}\n@@\n-before\n+after\n"
+            f"*** Update File: {target}\n@@\n-old\n+new\n"
+            f"@@ {hint} @@\n+inserted\n"
+            "*** End Patch\n"
+        )
+
+        result = json.loads(registry.dispatch("patch", {"mode": "patch", "patch": patch}))
+
+        assert result["success"] is False
+        assert "Patch validation failed" in result["error"]
+        assert first.read_text() == "before\n"
+        assert target.read_text() == original
+        assert str(target) in result["error"]
+        assert hint in result["error"]
+        assert reason in result["error"]
+        assert "addition-only hunk 2" in result["error"]
+
+    @pytest.mark.parametrize(
+        "second_hunk",
+        ["@@ anchor @@\n+inserted\n", "@@\n-anchor\n+replacement\n"],
+        ids=["addition-only", "replacement"],
+    )
+    def test_apply_error_identifies_hunk(self, ops, tmp_path, monkeypatch, second_hunk):
+        """If earlier additions make a later hunk ambiguous, identify that hunk."""
+        import tools.file_tools as file_tools
+        from tools.registry import registry
+
+        monkeypatch.setattr(file_tools, "_get_file_ops", lambda task_id: ops)
+        target = tmp_path / "target.txt"
+        original = "start\nanchor\nend\n"
+        target.write_text(original)
+        # Validation currently does not simulate addition-only hunks, so this
+        # exercises apply-phase errors. The diagnostic contract also holds if
+        # validation starts detecting the duplicate earlier.
+        patch = (
+            "*** Begin Patch\n"
+            f"*** Update File: {target}\n@@ start @@\n+anchor\n"
+            f"{second_hunk}"
+            "*** End Patch\n"
+        )
+
+        result = json.loads(registry.dispatch("patch", {"mode": "patch", "patch": patch}))
+
+        assert result["success"] is False
+        assert str(target) in result["error"]
+        assert target.read_text() == original
+        assert "hunk 2" in result["error"]
 
 
 # ── search ───────────────────────────────────────────────────────────────

@@ -130,21 +130,18 @@ export function resolvePosixScriptHandoff(
  * Wrap a PowerShell hand-off invocation so it survives a detached, hidden
  * spawn from Electron.
  *
- * Verified empirically (2026-08-09, Windows 11): `spawn('powershell', [...,
- * '-File', script], { detached: true, stdio: 'ignore', windowsHide: true })`
- * exits 0 WITHOUT executing a single line of the script. powershell.exe is a
- * console-subsystem binary; detached+windowsHide gives it no console to
- * attach to, and Windows PowerShell 5.1 dies during console init before
- * -File processing (the same class of failure as #54220's conhost work, on
- * the launch side). The same spawn with a visible console, or non-detached,
- * runs fine — so unit tests and foreground use hide the bug.
+ * A direct detached PowerShell 5.1 spawn with ignored stdio can exit without
+ * executing the script, even with windowsHide:false (native regression probe).
  *
  * `cmd /c start "" /min powershell ...` was the variant that survived the
  * full detached+hidden production shape in testing: `start` allocates the
  * child its own (minimized) console and fully detaches it from cmd.exe,
  * which exits immediately. The spawned pid is therefore the WRAPPER's —
  * callers must not use it as a marker owner (the script claims the marker
- * itself with its own $PID).
+ * itself with its own $PID). Keep this visible/interactive console contract,
+ * but never pass paths or branch names as cmd syntax. Only fixed switches and
+ * Base64 reach cmd; the dispatcher decodes JSON data and uses named-parameter
+ * splatting, not Invoke-Expression or another command-string evaluation.
  */
 export function wrapHandoffForDetachedConsole(
   handoff: UpdateScriptHandoff,
@@ -153,9 +150,50 @@ export function wrapHandoffForDetachedConsole(
   command: string
   args: string[]
 } {
+  const parameters: Record<string, string> = {}
+  const allowed = new Set(['InstallRoot', 'Branch', 'DesktopPid', 'RelaunchExe'])
+
+  for (let index = 0; index < extraArgs.length; index += 2) {
+    const name = extraArgs[index].slice(1)
+
+    if (!extraArgs[index].startsWith('-') || !allowed.has(name) || index + 1 >= extraArgs.length) {
+      throw new Error('Unsupported Windows updater handoff parameter')
+    }
+
+    parameters[name] = extraArgs[index + 1]
+  }
+
+  const payload = Buffer.from(
+    JSON.stringify({ ScriptPath: handoff.scriptPath, Parameters: parameters }),
+    'utf8'
+  ).toString('base64')
+
+  const dispatcher = `
+$ErrorActionPreference = 'Stop'
+$data = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
+$parameters = @{}
+foreach ($property in $data.Parameters.PSObject.Properties) { $parameters[$property.Name] = [string]$property.Value }
+& $data.ScriptPath @parameters
+exit $LASTEXITCODE
+`
+
   return {
     command: 'cmd.exe',
-    args: ['/d', '/s', '/c', 'start', '', '/min', handoff.command, ...handoff.args, ...extraArgs]
+    args: [
+      '/d',
+      '/v:off',
+      '/s',
+      '/c',
+      'start',
+      '',
+      '/min',
+      'powershell',
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      Buffer.from(dispatcher, 'utf16le').toString('base64')
+    ]
   }
 }
 

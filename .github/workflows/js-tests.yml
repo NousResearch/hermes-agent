@@ -114,6 +114,8 @@ jobs:
             'electron/ssh-config.test.ts',
             'electron/ssh-connection.test.ts',
             'electron/update-handoff-marker.test.ts',
+            'electron/updater-process.test.ts',
+            'electron/updater-process.windows-live.test.ts',
             'electron/windows-hermes-path.test.ts',
             'electron/wsl-path-bridge.test.ts',
             'electron/wsl-path-bridge-gate.test.ts',

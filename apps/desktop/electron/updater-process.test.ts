@@ -219,7 +219,7 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
   assert.equal(handoff, null)
 })
 
-test('wrapHandoffForDetachedConsole routes through cmd start with own console', () => {
+test('wrapHandoffForDetachedConsole keeps data out of cmd syntax and rejects unsupported parameters', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
   const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
@@ -232,8 +232,9 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
   const wrapped = wrapHandoffForDetachedConsole(handoff, ['-InstallRoot', root, '-Branch', 'main'])
 
   assert.equal(wrapped.command, 'cmd.exe')
-  assert.deepEqual(wrapped.args, [
+  assert.deepEqual(wrapped.args.slice(0, -1), [
     '/d',
+    '/v:off',
     '/s',
     '/c',
     'start',
@@ -243,13 +244,11 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
     '-NoProfile',
     '-ExecutionPolicy',
     'Bypass',
-    '-File',
-    expected,
-    '-InstallRoot',
-    root,
-    '-Branch',
-    'main'
+    '-EncodedCommand'
   ])
+  assert.match(wrapped.args.at(-1)!, /^[A-Za-z0-9+/]+=*$/)
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-Command', 'unexpected']))
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-Branch']))
 })
 
 test('resolvePosixScriptHandoff returns the bash recipe when the script exists', () => {

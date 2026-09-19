@@ -1047,7 +1047,7 @@ class AIAgent(
                 self._todo_store.restore(last_todo_response, revision=history_revision)
                 if not self.quiet_mode:
                     self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
-        _set_interrupt(False)
+        _set_interrupt(False, self._execution_thread_id)
 
     def _latest_todo_response(self, history: List[Dict[str, Any]]) -> Optional[tuple]:
         """Walk history backwards for the newest paired, size-bounded todo result → ``(todos, revision)``."""

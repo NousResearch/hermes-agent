@@ -164,9 +164,12 @@ def _sessions_quiescent(exclude: str | None = None) -> bool:
     """No session but ``exclude`` is mid-turn, building, awaiting input, holding live delegations, or on a live
     transport. A non-forced memory trim holds the GIL (gc.collect) and every glibc arena lock (malloc_trim) for
     its whole duration — 20-50 s on multi-GB heaps — which stalls the event loop, drops WS clients past the
-    write deadline and interrupts their turns (#58576); this is the only moment it costs nobody."""
+    write deadline and interrupts their turns (#58576); this is the moment it costs no other session. The
+    predicate is advisory (a turn can start right after), so the per-session checks — one may read state.db —
+    run outside ``_sessions_lock``."""
     with _sessions_lock:
-        return all(_session_is_lru_evictable(sid, s) for sid, s in _sessions.items() if sid != exclude)
+        others = [(sid, s) for sid, s in _sessions.items() if sid != exclude]
+    return all(_session_is_lru_evictable(sid, s) for sid, s in others)
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:

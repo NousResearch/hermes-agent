@@ -25,6 +25,12 @@ _PRESSURE_TIERS = (  # order-sensitive: worst first
     ("elevated", _ELEVATED_AVAILABLE_KIB, _ELEVATED_AVAILABLE_FRACTION),
 )
 
+# Swap occupancy that escalates the MemAvailable verdict (never downgrades
+# it): a host deep into swap OOM-kills while MemAvailable still reads fine.
+_ELEVATED_SWAP_FRACTION = 0.5  # >= 50% of swap in use
+_CRITICAL_SWAP_FRACTION = 0.8  # >= 80% of swap in use
+_SEVERITY = {"unknown": 0, "ok": 1, "elevated": 2, "critical": 3}
+
 # Writer cadence is 30s; 150s tolerates a briefly stalled loop without letting
 # a long-dead gateway's last sample pose as current.
 _HEARTBEAT_FRESH_TTL_S = 150.0
@@ -47,17 +53,40 @@ def _parse_iso(value: Any) -> Optional[datetime]:
     return parsed.replace(tzinfo=timezone.utc) if parsed is not None and parsed.tzinfo is None else parsed
 
 
-def classify_pressure(available_kib: Any, total_kib: Any) -> str:
-    """``ok``/``elevated``/``critical`` from MemAvailable/MemTotal; ``unknown`` when the
-    sample is missing/malformed — "could not read it" must never read as "fine"."""
+def _swap_tier(swap_used_kib: Any, swap_total_kib: Any) -> Optional[str]:
+    """Elevated/critical from swap occupancy, else None (skip the tier)."""
+    used, total = _nonneg_int(swap_used_kib), _nonneg_int(swap_total_kib)
+    if used is None or total is None or total == 0 or used > total:
+        return None
+    occupancy = used / total
+    if occupancy >= _CRITICAL_SWAP_FRACTION:
+        return "critical"
+    if occupancy >= _ELEVATED_SWAP_FRACTION:
+        return "elevated"
+    return None
+
+
+def classify_pressure(
+    available_kib: Any,
+    total_kib: Any,
+    swap_used_kib: Any = None,
+    swap_total_kib: Any = None,
+) -> str:
+    """Ok/elevated/critical from MemAvailable/MemTotal, escalated only by swap."""
     available, total = _nonneg_int(available_kib), _nonneg_int(total_kib)
     if available is None:
-        return "unknown"
-    fraction = available / total if total else None
-    for level, kib_floor, frac_floor in _PRESSURE_TIERS:
-        if available < kib_floor or (fraction is not None and fraction < frac_floor):
-            return level
-    return "ok"
+        level = "unknown"
+    else:
+        level = "ok"
+        fraction = available / total if total else None
+        for tier, kib_floor, frac_floor in _PRESSURE_TIERS:
+            if available < kib_floor or (fraction is not None and fraction < frac_floor):
+                level = tier
+                break
+    swap_tier = _swap_tier(swap_used_kib, swap_total_kib)
+    if swap_tier is not None and _SEVERITY[swap_tier] > _SEVERITY[level]:
+        level = swap_tier
+    return level
 
 
 def _read_state_files(home: Optional[Path]) -> tuple:
@@ -101,7 +130,10 @@ def collect_memory_status(
                 # pressure stays "unknown" so a dead gateway's final gasp cannot
                 # render a live "critical" banner forever.
                 if 0 <= (moment - sampled_at).total_seconds() <= _HEARTBEAT_FRESH_TTL_S:
-                    status["pressure"] = classify_pressure(mem.get("mem_available_kib"), mem.get("mem_total_kib"))
+                    status["pressure"] = classify_pressure(
+                        mem.get("mem_available_kib"), mem.get("mem_total_kib"),
+                        mem.get("swap_used_kib"), mem.get("swap_total_kib"),
+                    )
 
     if sentinel:
         status["last_boot_unclean"] = bool(sentinel.get("prior_unclean_exit"))

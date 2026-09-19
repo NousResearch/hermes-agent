@@ -5369,6 +5369,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
 
+    # Warm /model picker caches in the idle window before adapters accept traffic (#92244).
+    try:
+        from hermes_cli.model_switch_providers import prewarm_picker_cache_async
+        prewarm_picker_cache_async()
+    except Exception:
+        logger.debug("picker cache prewarm (gateway) failed to start", exc_info=True)
+
     try:
         success = await runner.start()
     except BaseException:

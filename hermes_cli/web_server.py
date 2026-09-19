@@ -177,6 +177,12 @@ async def _lifespan(app: "FastAPI"):
 
     record_boot_fingerprint()
 
+    try:
+        from hermes_cli.model_switch_providers import prewarm_picker_cache_async
+        prewarm_picker_cache_async()
+    except Exception:
+        _log.debug("picker cache prewarm (web) failed to start", exc_info=True)
+
     # Hosted Bot rooms belong to the backend process. Recovery may need a
     # contended state.db migration, so keep it off the pre-yield path: Group
     # Chat must degrade on its own rather than block every Desktop feature.

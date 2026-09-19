@@ -21,9 +21,19 @@ def _flatten_choice(c) -> str:
     """Coerce one choice to display text. LLMs sometimes emit dict-shaped choices and ``str(c)``
     would leak the repr onto every surface and back as the answer; unwrap order ``label`` >
     ``description`` > ``text`` > ``title`` (``name``/``value`` excluded: raw component enums,
-    not labels). No match -> "" and dropped: no choice beats a garbage label."""
+    not labels). String choices that arrive as serialized JSON objects (e.g.
+    ``'{"description": "x"}'``) are parsed and unwrapped so JSON never leaks onto UI labels.
+    No match -> "" and dropped: no choice beats a garbage label."""
     if isinstance(c, str):
-        return c.strip()
+        text = c.strip()
+        # Some model/tool bridges serialize object-shaped choices before they
+        # reach the tool, e.g. '{"value": "Use OAuth"}'. Parse that
+        # representation so JSON does not leak onto UI labels.
+        if text.startswith("{") and text.endswith("}"):
+            parsed = _json_as(text, dict)
+            if parsed is not None:
+                return _flatten_choice(parsed)
+        return text
     if isinstance(c, dict):
         return next((v.strip() for k in ("label", "description", "text", "title")
                      if isinstance(v := c.get(k), str) and v.strip()), "")

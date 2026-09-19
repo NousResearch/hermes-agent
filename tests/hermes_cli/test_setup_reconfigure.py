@@ -213,6 +213,56 @@ class TestFreshInstall:
         assert section_indexes == [0]
 
 
+class TestConfigProviderIsExisting:
+    """A provider configured the documented BYO-key way (config.yaml ``model.provider`` plus a
+    ``<PROVIDER>_API_KEY`` in .env) must be treated as an existing install — not first-time setup.
+
+    Regression for #116196: ``is_existing`` only checked OPENROUTER_API_KEY / OPENAI_BASE_URL /
+    ``auth.json active_provider``, so a working DeepSeek (or any non-OpenRouter) install fell into
+    the first-time branch and ``hermes setup --quick`` would switch the provider to Nous Portal.
+    """
+
+    def test_quick_with_config_model_provider_runs_quick_setup(self, existing_install):
+        """config.yaml model.provider set (no env key, no active_provider) → existing install."""
+        args = _make_setup_args(quick=True)
+
+        with ExitStack() as stack:
+            m = _enter_fresh_install_patches(
+                stack,
+                quick="hermes_cli.setup._run_quick_setup",
+                model="hermes_cli.setup.setup_model_provider",
+            )
+            # Override the fresh-install load_config mock: a configured provider is present.
+            stack.enter_context(patch(
+                "hermes_cli.setup.load_config",
+                return_value={"model": {"provider": "deepseek", "default": "deepseek-v4-flash"}},
+            ))
+            from hermes_cli.setup import run_setup_wizard
+
+            run_setup_wizard(args)
+
+        # Existing-install path: quick setup runs, first-time picker does NOT.
+        m["quick"].assert_called_once()
+        m["model"].assert_not_called()
+
+    def test_quick_without_any_provider_falls_through_to_first_time(self, fresh_install):
+        """No env key, no active_provider, no config model.provider → first-time setup."""
+        args = _make_setup_args(quick=True)
+
+        with ExitStack() as stack:
+            m = _enter_fresh_install_patches(
+                stack,
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
+                first="hermes_cli.setup_quick._run_first_time_quick_setup",
+            )
+            from hermes_cli.setup import run_setup_wizard
+
+            run_setup_wizard(args)
+
+        m["prompt"].assert_called_once()
+        m["first"].assert_called_once()
+
+
 class TestArgparse:
     """The flags are plumbed through argparse to cmd_setup."""
 

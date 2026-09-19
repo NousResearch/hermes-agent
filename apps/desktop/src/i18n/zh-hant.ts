@@ -3003,6 +3003,7 @@ export const zhHant = defineLocale({
       gatewayOffline: '離線',
       gatewayRestarting: '重新啟動中…',
       gatewayTitle: '閘道',
+      toggleDateTime: '日期與時間',
       agents: '代理',
       closeAgents: '關閉代理',
       openAgents: '開啟代理',

@@ -9,6 +9,7 @@ import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { StatusbarDateTime } from '@/app/shell/statusbar-date-time'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -682,7 +683,15 @@ export function useStatusbarItems({
         variant: 'action'
       },
       clientVersionItem,
-      ...(backendVersionItem ? [backendVersionItem] : [])
+      ...(backendVersionItem ? [backendVersionItem] : []),
+      {
+        className:
+          'mx-0.5 my-0.5 h-4! shrink-0 rounded-[6px] border border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated)/75 px-2! shadow-xs',
+        id: 'date-time',
+        label: <StatusbarDateTime />,
+        toggleLabel: copy.toggleDateTime,
+        variant: 'text'
+      }
     ],
     [
       approvalModeItem,

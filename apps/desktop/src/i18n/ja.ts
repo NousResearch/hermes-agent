@@ -3042,6 +3042,7 @@ export const ja = defineLocale({
       gatewayOffline: 'オフライン',
       gatewayRestarting: '再起動中…',
       gatewayTitle: 'ゲートウェイ',
+      toggleDateTime: '日付と時刻',
       agents: 'エージェント',
       closeAgents: 'エージェントを閉じる',
       openAgents: 'エージェントを開く',

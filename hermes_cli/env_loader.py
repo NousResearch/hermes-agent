@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
@@ -51,6 +52,28 @@ _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 _DOTENV_PUBLISHED: dict[str, tuple[str | None, str, int]] = {}
 _DOTENV_PASSES = itertools.count()
 _DOTENV_LOCK = threading.RLock()
+
+_DASHBOARD_SESSION_TOKEN = "HERMES_DASHBOARD_SESSION_TOKEN"
+_DASHBOARD_PUBLIC_URL = "HERMES_DASHBOARD_PUBLIC_URL"
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _capture_injected_loopback_dashboard_capability() -> tuple[str, str] | None:
+    """Capture a launcher's private loopback capability before dotenv can replace half of it."""
+    token = os.environ.get(_DASHBOARD_SESSION_TOKEN, "")
+    public_url = os.environ.get(_DASHBOARD_PUBLIC_URL, "")
+    if not token or not public_url or public_url != public_url.strip():
+        return None
+    try:
+        parsed = urlsplit(public_url)
+    except ValueError:
+        return None
+    if parsed.scheme != "http" or parsed.hostname not in _LOOPBACK_HOSTS:
+        return None
+    return token, public_url
+
+
+_INJECTED_LOOPBACK_DASHBOARD_CAPABILITY = _capture_injected_loopback_dashboard_capability()
 
 # Behavioral routing keys a parent Hermes process injects into child env that silently redirect a profile
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
@@ -458,8 +481,23 @@ def load_hermes_dotenv(
     # cron standalone runs) call load_hermes_dotenv() repeatedly and used to flip the effective backend back
     # to the stale .env value mid-session (#29186, #67323).
     _reapply_terminal_config_bridge(home_path)
+    _reapply_injected_loopback_dashboard_capability(home_path)
 
     return loaded
+
+
+def _reapply_injected_loopback_dashboard_capability(home_path: Path) -> None:
+    """Keep the launch-time token and URL paired, without changing standalone dotenv precedence."""
+    if _INJECTED_LOOPBACK_DASHBOARD_CAPABILITY is None:
+        return
+    try:
+        if Path(home_path).resolve() != _process_hermes_home().resolve():
+            return
+    except Exception:
+        return
+    token, public_url = _INJECTED_LOOPBACK_DASHBOARD_CAPABILITY
+    os.environ[_DASHBOARD_SESSION_TOKEN] = token
+    os.environ[_DASHBOARD_PUBLIC_URL] = public_url
 
 
 def _reapply_terminal_config_bridge(home_path: Path) -> None:

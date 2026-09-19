@@ -17,6 +17,12 @@ _TUI_VERBOSE_TEXT_MAX_LINES = 16
 
 _TODO_TOOL_NAMES = ("todo_list", "todo")  # legacy alias: pre-rename replays
 
+# Tools that can mutate persisted goal state mid-turn: the goal_criteria plugin adds acceptance
+# criteria, gates or a plan contract to the ACTIVE goal. ``session.control.update`` is otherwise
+# published only on slash dispatch and after a turn completes, so a client painting the goal card from
+# that event keeps the pre-tool criteria count for the whole rest of the turn.
+_GOAL_STATE_TOOL_NAMES = ("goal_criteria",)
+
 
 def _cap_tui_verbose_text(text: str) -> str:
     if len(text) <= _TUI_VERBOSE_TEXT_MAX_CHARS and text.count("\n") < _TUI_VERBOSE_TEXT_MAX_LINES:
@@ -288,6 +294,11 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     # every client reconcile without parsing tool args.
     if todo_state is not None:
         _emit("todo.updated", sid, todo_state)
+    # Goal criteria/gates are persisted state too, not tool-progress chrome: republish rather than
+    # leave every client painting the pre-tool criteria count until the turn ends.
+    if name in _GOAL_STATE_TOOL_NAMES and session is not None:
+        with contextlib.suppress(Exception):
+            _publish_session_control_snapshot(sid, session, only_if_present=True)
 
 
 # ── _on_tool_progress dispatch: each handler takes (sid, name, preview, kw) ─────────────────────

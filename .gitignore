@@ -36,6 +36,7 @@ data/
 # `data/` pattern above would otherwise swallow it.
 !hermes_cli/data/
 .pytest_cache/
+.deepeval/
 test_durations.json
 .pytest-cache/
 tmp/

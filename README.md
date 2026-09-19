@@ -121,6 +121,14 @@ hermes doctor       # Diagnose any issues
 
 ---
 
+## Trustworthy research traces
+
+For teams that need reviewable research decisions, Hermes offers an **explicitly opt-in, per-run** audit trace. It records bounded, redacted metadata rather than browsing content, so operators can support trust and compliance reviews without persisting tokens, passwords, headers, raw bodies, raw exceptions, URL query strings/fragments/userinfo, or free-form results. Traces are isolated by run/profile and are off for existing clients unless `research_trace: true` is sent to `/v1/runs`.
+
+This is an audit aid—not a browser recording, export feature, retention policy, or compliance certification. See the [research trace boundary and verified tests](website/docs/developer-guide/research-trace.md).
+
+---
+
 ## Skip the API-key collection — Nous Portal
 
 Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:

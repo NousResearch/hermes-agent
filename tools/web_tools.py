@@ -302,7 +302,10 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             response_data = {"success": False, "error": _no_provider_error("search", fallback)}
         else:
             logger.info("Web search via %s: '%s' (limit: %d)", provider.name, query, limit)
+            from tools import research_trace
+            research_trace.emit_query(query, provider.name, limit)
             response_data = _memoized_search(provider, query, limit)
+            research_trace.emit_sources(response_data.get("data", {}).get("web", []))
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -388,6 +391,9 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
             results = _merge_in_order(len(urls), fixed, safe_indices, safe_urls, results)
 
         logger.info("Extracted content from %d pages", len(results))
+        from tools import research_trace
+        research_trace.emit_extraction(
+            locals().get("provider", None).name if locals().get("provider") is not None else None, results)
         debug_call_data["pages_extracted"] = len(results)
         debug_call_data["original_response_size"] = len(json.dumps({"results": results}))
         debug_call_data["processing_applied"].append("truncate_and_store")

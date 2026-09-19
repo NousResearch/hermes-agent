@@ -158,6 +158,23 @@ Level 2: skill_view(name, path)  → Specific reference file       (varies)
 
 The agent only loads the full skill content when it actually needs it.
 
+On a skill-heavy install the Level 0 index still ships every skill's one-line
+description on every request. Focus/coding posture already demotes non-coding
+categories to a names-only line (names stay visible; `skill_view` / `skills_list`
+still load everything). Operators can apply the same demotion from config:
+
+```yaml
+skills:
+  compact_categories: "*"          # or a list of category names
+  keep_full_categories:            # exempted from "*" only
+    - hermes
+    - software-development
+```
+
+`keep_full_categories` never overrides an explicitly named pin. Entries match
+the full category path or its top-level segment. Default is unset: the index
+is unchanged.
+
 ## SKILL.md Format
 
 ```markdown

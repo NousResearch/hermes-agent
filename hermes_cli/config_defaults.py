@@ -1383,6 +1383,16 @@ DEFAULT_CONFIG = {
         # Resolved once when the agent's prompt is first built; missing/disabled names warn and
         # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
         "auto_load": [],
+        # Slim the per-call skill index: a demoted category renders as one
+        # names-only line, dropping its descriptions.  Nothing is hidden —
+        # skill_view / skills_list still load everything.  Accepts a category
+        # name, a list of names, or "*" for every category; names and "*"
+        # combine.  Empty = index unchanged.
+        "compact_categories": [],
+        # Categories exempted from a "*" in compact_categories; an explicitly
+        # named category always demotes.  Entries match the full category path
+        # or its top-level segment.
+        "keep_full_categories": [],
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:

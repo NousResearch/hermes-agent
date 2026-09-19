@@ -188,6 +188,8 @@ def _is_connect_timeout(exc: BaseException) -> bool:
 # Disk L2 for local-endpoint probes so back-to-back CLI cold starts skip the waterfall.
 # Only SUCCESSFUL probes persist (a down server must not pin a negative verdict).
 _LOCAL_PROBE_DISK_TTL_SECONDS = 300.0
+_MODEL_METADATA_DISK_CACHE_VERSION = 1
+_MODEL_METADATA_DISK_CACHE_VERSION_KEY = "__cache_version"
 
 
 def _cache_file(name: str) -> Path:
@@ -205,9 +207,20 @@ def _load_json_dict(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def _ttl_memo_get(path: Path, key: str, ttl: float, *, ts_key: str, value_key: str) -> Optional[Any]:
+def _ttl_memo_get(
+    path: Path,
+    key: str,
+    ttl: float,
+    *,
+    ts_key: str,
+    value_key: str,
+    cache_version: Optional[int] = None,
+) -> Optional[Any]:
     """Fresh (< ``ttl`` seconds) ``value_key`` of the ``key`` entry in a TTL memo file, else None."""
-    entry = _load_json_dict(path).get(key)
+    data = _load_json_dict(path)
+    if cache_version is not None and data.pop(_MODEL_METADATA_DISK_CACHE_VERSION_KEY, None) != cache_version:
+        return None
+    entry = data.get(key)
     if not isinstance(entry, dict):
         return None
     try:
@@ -218,11 +231,27 @@ def _ttl_memo_get(path: Path, key: str, ttl: float, *, ts_key: str, value_key: s
         return None
 
 
-def _ttl_memo_put(path: Path, key: str, value: Any, ttl: float, *, ts_key: str, value_key: str, what: str, ts_first: bool = False) -> None:
+def _ttl_memo_put(
+    path: Path,
+    key: str,
+    value: Any,
+    ttl: float,
+    *,
+    ts_key: str,
+    value_key: str,
+    what: str,
+    ts_first: bool = False,
+    cache_version: Optional[int] = None,
+) -> None:
     """Write ``key`` into a TTL memo file, dropping expired siblings. Best-effort."""
     try:
         now = time.time()
-        data = {k: v for k, v in _load_json_dict(path).items() if isinstance(v, dict) and (now - float(v.get(ts_key, 0))) < ttl}
+        data = {
+            k: v for k, v in _load_json_dict(path).items()
+            if isinstance(v, dict) and (now - float(v.get(ts_key, 0))) < ttl
+        }
+        if cache_version is not None:
+            data[_MODEL_METADATA_DISK_CACHE_VERSION_KEY] = cache_version
         data[key] = {ts_key: now, value_key: value} if ts_first else {value_key: value, ts_key: now}
         atomic_json_write(path, data, indent=0, separators=(",", ":"))
     except Exception as e:
@@ -257,12 +286,20 @@ def _model_metadata_disk_cache_age_seconds() -> Optional[float]:
         return None
 
 
-def _load_model_metadata_disk_cache() -> Dict[str, Dict[str, Any]]:
-    """Processed OpenRouter metadata cache from disk ({} on any failure)."""
+def _load_model_metadata_disk_cache(*, allow_stale: bool = False) -> Dict[str, Dict[str, Any]]:
+    """Processed OpenRouter metadata cache, accepting old versions only as fallback."""
     try:
         with _get_model_metadata_cache_path().open("r", encoding="utf-8") as f:
             data = json.load(f)
-        return {str(key): value for key, value in data.items() if isinstance(value, dict)} if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        if (
+            data.pop(_MODEL_METADATA_DISK_CACHE_VERSION_KEY, None)
+            != _MODEL_METADATA_DISK_CACHE_VERSION
+            and not allow_stale
+        ):
+            return {}
+        return {str(key): value for key, value in data.items() if isinstance(value, dict)}
     except Exception as e:
         logger.debug("Failed to load OpenRouter model metadata disk cache: %s", e)
         return {}
@@ -270,7 +307,12 @@ def _load_model_metadata_disk_cache() -> Dict[str, Dict[str, Any]]:
 
 def _save_model_metadata_disk_cache(data: Dict[str, Dict[str, Any]]) -> None:
     try:
-        atomic_json_write(_get_model_metadata_cache_path(), data, indent=0, separators=(",", ":"))
+        atomic_json_write(
+            _get_model_metadata_cache_path(),
+            {**data, _MODEL_METADATA_DISK_CACHE_VERSION_KEY: _MODEL_METADATA_DISK_CACHE_VERSION},
+            indent=0,
+            separators=(",", ":"),
+        )
     except Exception as e:
         logger.debug("Failed to save OpenRouter model metadata disk cache: %s", e)
 
@@ -284,7 +326,10 @@ def _endpoint_disk_cache_get(normalized: str) -> Optional[Dict[str, Dict[str, An
     """Fresh cross-process memo of a remote ``/models`` probe (same TTL as in-memory): one-shot
     runs (``hermes -q``, cron) start cold and Nous bypasses the persistent context cache, so
     without this every launch paid the live probe. Local endpoints are never memoized."""
-    models = _ttl_memo_get(_get_endpoint_metadata_cache_path(), normalized, _ENDPOINT_MODEL_CACHE_TTL, ts_key="at", value_key="models")
+    models = _ttl_memo_get(
+        _get_endpoint_metadata_cache_path(), normalized, _ENDPOINT_MODEL_CACHE_TTL,
+        ts_key="at", value_key="models", cache_version=_MODEL_METADATA_DISK_CACHE_VERSION,
+    )
     return models if isinstance(models, dict) else None
 
 
@@ -292,7 +337,8 @@ def _endpoint_disk_cache_put(normalized: str, cache: Dict[str, Dict[str, Any]]) 
     """Memoize a successful remote ``/models`` probe; expired siblings are dropped."""
     _ttl_memo_put(
         _get_endpoint_metadata_cache_path(), normalized, cache, _ENDPOINT_MODEL_CACHE_TTL,
-        ts_key="at", value_key="models", what="endpoint model metadata disk cache", ts_first=True)
+        ts_key="at", value_key="models", what="endpoint model metadata disk cache", ts_first=True,
+        cache_version=_MODEL_METADATA_DISK_CACHE_VERSION)
 
 
 # Descending probe tiers for unknown models; tier[0] is also the default fallback.
@@ -920,7 +966,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         logger.warning("Failed to fetch model metadata from OpenRouter: %s", e)
         if _model_metadata_cache:
             return _model_metadata_cache
-        disk_cache = _load_model_metadata_disk_cache()
+        disk_cache = _load_model_metadata_disk_cache(allow_stale=True)
         if disk_cache:
             _model_metadata_cache = disk_cache
             disk_age = _model_metadata_disk_cache_age_seconds()

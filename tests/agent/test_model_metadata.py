@@ -1454,6 +1454,51 @@ class TestFetchModelMetadata:
         assert cache_path.exists()
         assert "live/model" in cache_path.read_text(encoding="utf-8")
 
+    def test_disk_cache_stamps_current_version_and_loads_current_entries(self, tmp_path, monkeypatch):
+        import json
+        import agent.model_metadata as mm
+
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        entries = {"live/model": {"context_length": 67890}}
+
+        mm._save_model_metadata_disk_cache(entries)
+
+        assert json.loads(cache_path.read_text(encoding="utf-8"))["__cache_version"] == mm._MODEL_METADATA_DISK_CACHE_VERSION
+        assert mm._load_model_metadata_disk_cache() == entries
+
+    def test_disk_cache_rejects_legacy_and_unknown_versions_for_fresh_load(self, tmp_path, monkeypatch):
+        import json
+        import agent.model_metadata as mm
+
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        entries = {"old/model": {"context_length": 50000}}
+
+        cache_path.write_text(json.dumps(entries), encoding="utf-8")
+        assert mm._load_model_metadata_disk_cache() == {}
+
+        cache_path.write_text(json.dumps({"__cache_version": 999, **entries}), encoding="utf-8")
+        assert mm._load_model_metadata_disk_cache() == {}
+
+    def test_endpoint_disk_cache_rejects_unversioned_and_unknown_formats(self, tmp_path, monkeypatch):
+        import json
+        import agent.model_metadata as mm
+
+        cache_path = tmp_path / "endpoint_model_metadata.json"
+        monkeypatch.setattr(mm, "_get_endpoint_metadata_cache_path", lambda: cache_path)
+        normalized = "https://models.example/v1"
+        entries = {"endpoint/model": {"context_length": 32768}}
+
+        mm._endpoint_disk_cache_put(normalized, entries)
+
+        assert json.loads(cache_path.read_text(encoding="utf-8"))["__cache_version"] == mm._MODEL_METADATA_DISK_CACHE_VERSION
+        assert mm._endpoint_disk_cache_get(normalized) == entries
+
+        cache_path.write_text(json.dumps({normalized: {"at": time.time(), "models": entries}}), encoding="utf-8")
+        assert mm._endpoint_disk_cache_get(normalized) is None
+
+        cache_path.write_text(json.dumps({"__cache_version": 999, normalized: {"at": time.time(), "models": entries}}), encoding="utf-8")
+        assert mm._endpoint_disk_cache_get(normalized) is None
+
     def test_network_failure_falls_back_to_stale_disk_cache(self, tmp_path, monkeypatch):
         self._reset_cache()
         cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)

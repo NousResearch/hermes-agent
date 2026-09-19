@@ -108,15 +108,14 @@ class TestWebExtractSecretExfil:
         assert "Blocked" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_allows_credential_named_query_param(self):
-        """``?access_token=`` is how magic links and signed URLs look; the extract backend may fetch them.
-        Only Hermes-secret-shaped VALUES are blocked (see test_blocks_api_key_in_url)."""
+    async def test_blocks_credential_named_query_param(self):
+        """Opaque credential values must not reach a third-party extract backend."""
         from tools.web_tools import web_extract_tool
 
         result = await web_extract_tool(urls=["https://example.com/callback?access_token=opaque-oauth-value"])
         parsed = json.loads(result)
-        assert "credential-like query parameter" not in parsed.get("error", "")
-        assert "Blocked" not in parsed.get("error", "")
+        assert parsed["success"] is False
+        assert "Blocked" in parsed["error"]
 
     @pytest.mark.asyncio
     async def test_allows_ambiguous_english_word_query_param(self):

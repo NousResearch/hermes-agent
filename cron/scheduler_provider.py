@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import logging
+import os
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -93,6 +94,39 @@ def _existing_profile_homes(profile_homes: list) -> list:
 
 
 @contextlib.contextmanager
+def _profile_env_isolation(home):
+    """Keep a tick for ANOTHER profile from permanently rewriting this process's environment.
+
+    ``_start_multiplex`` ticks every local profile's store, and a job belonging to another profile
+    reloads THAT profile's ``.env`` into the shared ``os.environ`` with ``override=True``
+    (``cron.scheduler._reload_dotenv_and_publish_delivery_target`` for agent jobs,
+    ``_run_no_agent_job`` for script jobs). The foreign values then stick for the life of the
+    process: later credential reads — including this process's OWN profile's turns, which resolve
+    through ``os.environ`` whenever no per-turn secret scope is installed — return the other
+    profile's value. Observed failure: a profile's model key replaced by the root ``.env``'s stale
+    key, so every model call in that backend answered HTTP 401 until it was restarted (the CLI was
+    unaffected, so it presented as "only the desktop is broken"). Snapshot before the tick and
+    restore after so nothing outlives it; a tick for the process's own home is left untouched —
+    that load IS this process's environment.
+    """
+    from hermes_constants import get_process_hermes_home
+
+    if Path(home).resolve() == Path(get_process_hermes_home()).resolve():
+        yield
+        return
+    before = dict(os.environ)
+    try:
+        yield
+    finally:
+        # Drop keys the foreign `.env` introduced, then put back every value it overwrote.
+        for key in [k for k in os.environ if k not in before]:
+            del os.environ[key]
+        for key, value in before.items():
+            if os.environ.get(key) != value:
+                os.environ[key] = value
+
+
+@contextlib.contextmanager
 def _profile_cron_scope(home):
     """Scope the calling thread to one profile's home + cron store for the block."""
     from cron.jobs import use_cron_store
@@ -104,7 +138,7 @@ def _profile_cron_scope(home):
     # unsuccessful (#32612).
     home_token = set_hermes_home_override(str(home))
     try:
-        with use_cron_store(home):
+        with _profile_env_isolation(home), use_cron_store(home):
             yield
     finally:
         reset_hermes_home_override(home_token)

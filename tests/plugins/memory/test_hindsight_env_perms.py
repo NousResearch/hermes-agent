@@ -143,3 +143,22 @@ def test_api_prefixed_vault_name_resolves(monkeypatch):
         assert hs_embedded._embedded_llm_api_key(_CONFIG) == "sk-test-live-key"
     finally:
         secret_scope.reset_secret_scope(token)
+
+
+def test_default_headers_use_profile_scope_instead_of_process_env(monkeypatch):
+    """A served profile must not inherit the launch profile's relay session."""
+    from agent import secret_scope
+
+    token = secret_scope.set_secret_scope({
+        "HINDSIGHT_LLM_DEFAULT_HEADERS": '{"x-session":"served-profile"}',
+    })
+    monkeypatch.setenv(
+        "HINDSIGHT_LLM_DEFAULT_HEADERS", '{"x-session":"launch-profile"}'
+    )
+    try:
+        env = _build_embedded_profile_env(_CONFIG)
+        assert env["HINDSIGHT_API_LLM_DEFAULT_HEADERS"] == (
+            '{"x-session":"served-profile"}'
+        )
+    finally:
+        secret_scope.reset_secret_scope(token)

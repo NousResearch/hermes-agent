@@ -371,6 +371,17 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
 
+    def test_embedded_profile_env_serializes_default_headers_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai_compatible",
+            "llm_model": "test-model",
+            "llm_default_headers": {"x-opencode-session": "session-123"},
+        })
+
+        assert env["HINDSIGHT_API_LLM_DEFAULT_HEADERS"] == (
+            '{"x-opencode-session":"session-123"}'
+        )
+
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}

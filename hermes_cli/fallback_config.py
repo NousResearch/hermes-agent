@@ -15,8 +15,8 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     Mirrors the custom-provider convention (``api_key_env`` accepted as alias); None when neither
     yields a value so ``resolve_runtime_provider`` falls through to standard credential resolution.
     ``key_env`` goes through ``agent.secret_scope.get_secret``, not raw ``os.getenv``: in a
-    multiplexed gateway a bare env read ignores the active profile's scope and can return another
-    profile's credential.
+    multiplexed gateway a bare env read ignores the active profile'"'"s scope and can return another
+    profile'"'"s credential.
     """
     if not isinstance(entry, dict):
         return None
@@ -34,14 +34,14 @@ def effective_runtime_provider(
     """Provider identity to persist/display for a resolved fallback entry.
 
     ``resolve_runtime_provider`` returns the bare billing class ``"custom"``
-    for every named ``providers:`` / ``custom_providers:`` entry; the entry's
+    for every named ``providers:`` / ``custom_providers:`` entry; the entry'"'"s
     configured id only survives in ``requested_provider``. Fallback resolvers
     that persist ``runtime["provider"]`` as the agent identity therefore label
     sessions/billing rows ``custom`` instead of the configured provider name —
     while the manual ``/model`` switch path correctly persists the named id
     (#98739). Same class as the delegation fix in ``tools/delegate_tool.py``.
 
-    Returns the entry's requested identity when the resolved provider is the
+    Returns the entry'"'"s requested identity when the resolved provider is the
     bare ``custom`` class; a genuinely ad-hoc endpoint (requested provider IS
     ``custom``) keeps the bare class unchanged.
     """
@@ -59,8 +59,20 @@ def effective_runtime_provider(
     return resolved
 
 
-
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+    # Hermes serializes list-valued config keys as JSON strings in YAML
+    # (``hermes config set fallback_providers '[{...}]'``).  The YAML
+    # parser gives us back a string.  Parse it so the fallback chain
+    # actually populates instead of silently returning empty.
+    if isinstance(raw, str) and raw.strip().startswith(("[", "{")):
+        import json
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+        else:
+            return _iter_fallback_entries(parsed)
+
     candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
     entries: list[dict[str, Any]] = []
     for entry in candidates:
@@ -104,3 +116,4 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
                 seen.add(identity)
                 chain.append(entry)
     return chain
+

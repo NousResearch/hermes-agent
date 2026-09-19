@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import httpx
 
@@ -131,7 +131,10 @@ def normalize_gemini_base_url(base_url: Optional[str], api_key: str = "") -> str
     ``…/v1beta1/publishers/google``) is completed to the ``publishers/google`` form. With ``api_key``
     given, an express key (``AQ.``) that would land on the Studio host is routed to
     ``VERTEX_EXPRESS_BASE_URL`` instead — it can only ever 403 there — while an explicit proxy or
-    Vertex base is left alone."""
+    Vertex base is left alone. The routing is a guess about the key, so it is not the last word:
+    ``GeminiNativeClient`` retries the Studio host once when the express surface answers
+    ``SERVICE_DISABLED`` (see ``is_vertex_api_disabled_error``), because the same ``AQ.`` key can be
+    enabled on either surface. An explicitly configured Vertex base gets no such fallback."""
     trimmed = str(base_url or "").strip().rstrip("/")
     trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
     if not trimmed:
@@ -189,6 +192,17 @@ def probe_gemini_tier(
     if resp.status_code == 429:
         return "free" if "free_tier" in _response_text(resp).lower() else "paid"
     return "paid" if 200 <= resp.status_code < 300 else "unknown"
+
+
+def is_vertex_api_disabled_error(error: BaseException) -> bool:
+    """True for the ``403`` Google returns when the Vertex/Agent Platform API is not enabled on the
+    key's project (``SERVICE_DISABLED``: "…API has not been used in project N before or it is
+    disabled"). It says nothing about the API key: ``AQ.`` keys are issued for both surfaces, and one
+    enabled on AI Studio answers 200 there, so an express routing guess must not be the last word.
+    """
+    if getattr(error, "status_code", None) != 403:
+        return False
+    return "has not been used in project" in str(error)
 
 
 def _response_text(response: Any) -> str:
@@ -756,6 +770,12 @@ class GeminiNativeClient:
             raise RuntimeError(_MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
         self.base_url = normalize_gemini_base_url(base_url, api_key)
+        # On the express surface a ``SERVICE_DISABLED`` 403 means "this project never enabled the
+        # Vertex/Agent Platform API", not "this key is bad": the same ``AQ.`` key can be enabled on
+        # AI Studio instead. Retry there once, and only for a request that already failed.
+        self._studio_fallback_url = (
+            DEFAULT_GEMINI_BASE_URL if is_vertex_express_base_url(self.base_url) else None
+        )
         self._default_headers = dict(default_headers or {})
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0))
@@ -781,24 +801,54 @@ class GeminiNativeClient:
         chunk = next(iterator, _END)
         return (True, None) if chunk is _END else (False, chunk)
 
+    def _switch_off_disabled_express_surface(self, error: GeminiAPIError) -> bool:
+        """Move this client from the (inferred) express surface to the Studio host, once.
+
+        The express surface answering ``SERVICE_DISABLED`` means the key's project never enabled the
+        Vertex/Agent Platform API — not that the key is bad. Retry the same request there instead of
+        failing a working key, and stay on the host that answered.
+        """
+        if not (self._studio_fallback_url and is_vertex_api_disabled_error(error)):
+            return False
+        logger.info(
+            "Gemini: %s has the Vertex/Agent Platform API disabled for this key's project; "
+            "retrying on the AI Studio host instead", self.base_url,
+        )
+        self.base_url, self._studio_fallback_url = self._studio_fallback_url, None
+        return True
+
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
-        request = build_gemini_request(
-            messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
-            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
-            tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
-        )
+
+        def _build() -> Dict[str, Any]:
+            # Rebuilt after a surface switch: the two hosts take different tool-schema dialects
+            # (``/v1beta`` wants JSON Schema, the express surface does not).
+            return build_gemini_request(
+                messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
+                top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
+                tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
+            )
+
+        request = _build()
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:
-            return self._stream_completion(model, url + "streamGenerateContent?alt=sse", request, timeout)
+            return self._stream_with_surface_fallback(model, url + "streamGenerateContent?alt=sse", _build, timeout)
         response = self._http.post(url + "generateContent", json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
-            raise gemini_http_error(response, api_key=self.api_key)
+            error = gemini_http_error(response, api_key=self.api_key)
+            if not self._switch_off_disabled_express_surface(error):
+                raise error
+            url = f"{self.base_url}/models/{model}:"
+            response = self._http.post(
+                url + "generateContent", json=_build(), headers=self._headers(), timeout=timeout,
+            )
+            if response.status_code != 200:
+                raise gemini_http_error(response, api_key=self.api_key)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -806,6 +856,26 @@ class GeminiNativeClient:
                 f"Invalid JSON from Gemini native API: {exc}", code="gemini_invalid_json", status_code=response.status_code, response=response,
             ) from exc
         return translate_gemini_response(payload, model=model)
+
+    def _stream_with_surface_fallback(
+        self, model: str, url: str, build_request: Callable[[], Dict[str, Any]], timeout: Any,
+    ) -> Iterator[_GeminiStreamChunk]:
+        """Streaming mirror of the surface fallback: the host is switched before the first event
+        reaches the caller, so a restarted request can never look like a partial answer."""
+        iterator = self._stream_completion(model, url, build_request(), timeout)
+        try:
+            exhausted, first = self._advance_stream_iterator(iterator)
+        except GeminiAPIError as exc:
+            if not self._switch_off_disabled_express_surface(exc):
+                raise
+            iterator = self._stream_completion(
+                model, f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse", build_request(), timeout,
+            )
+            yield from iterator
+            return
+        if not exhausted and first is not None:
+            yield first
+        yield from iterator
 
     def _stream_completion(self, model: str, url: str, request: Dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
         try:
@@ -828,8 +898,19 @@ class AsyncGeminiNativeClient:
     def __init__(self, sync_client: GeminiNativeClient):
         # ``_real_client``: the auxiliary cache evicts entries by leaf client; GeminiNativeClient is itself the leaf.
         self._sync = self._real_client = sync_client
-        self.api_key, self.base_url = sync_client.api_key, sync_client.base_url
+        self.api_key = sync_client.api_key
+        self.base_url = sync_client.base_url
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
+
+    # A disabled express surface moves the leaf client mid-session; a copy taken at construction would
+    # keep reporting the host that answered 403.
+    @property
+    def base_url(self) -> str:
+        return self._sync.base_url
+
+    @base_url.setter
+    def base_url(self, value: str) -> None:
+        self._sync.base_url = value
 
     # Expose the underlying sync client as _real_client so the auxiliary cache's eviction-by-leaf-client
     # helper (#23482) can find and drop this async entry when the sync GeminiNativeClient is poisoned.

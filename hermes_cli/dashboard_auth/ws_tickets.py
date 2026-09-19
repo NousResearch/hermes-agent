@@ -22,7 +22,8 @@ TTL_SECONDS = 30
 
 _lock = threading.Lock()
 _tickets: Dict[str, Tuple[int, Dict[str, Any]]] = {}  # ticket -> (expires_at, info)
-_internal_credential: Optional[str] = None  # lazily minted; guarded by ``_lock``
+_internal_credential: Optional[str] = None  # legacy server-internal credential; guarded by ``_lock``
+_internal_credentials: Dict[str, Dict[str, str]] = {}
 
 #: Identity recorded for internal-credential connections (audit logs distinguish them from tickets).
 INTERNAL_USER_ID = "server-internal"
@@ -73,20 +74,42 @@ def internal_ws_credential() -> str:
     with _lock:
         if _internal_credential is None:
             _internal_credential = secrets.token_urlsafe(32)
+            _internal_credentials[_internal_credential] = {
+                "user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER}
         return _internal_credential
 
 
-def consume_internal_credential(value: str) -> Dict[str, Any]:
-    """Validate an internal credential (NOT single-use); returns the fixed server-internal
-    ``{user_id, provider}`` info dict, mirroring ``consume_ticket``. Constant-time compare; any
-    value is rejected until a credential has been minted."""
+def mint_internal_credential(*, user_id: str, provider: str) -> str:
+    """Mint a process-lifetime, multi-use credential for one spawned PTY.
+
+    The browser identity was already verified by the ticket consumed on
+    ``/api/pty``.  This opaque credential only carries that identity across the
+    server-to-child ``/api/ws`` and ``/api/pub`` reconnect boundary; it is never
+    returned to the SPA.
+    """
+    if not user_id or not provider:
+        raise ValueError("internal credential identity requires user_id and provider")
+    credential = secrets.token_urlsafe(32)
     with _lock:
-        expected = _internal_credential
-    if not value or expected is None:
+        _internal_credentials[credential] = {"user_id": user_id, "provider": provider}
+    return credential
+
+
+def consume_internal_credential(value: str) -> Dict[str, Any]:
+    """Validate a multi-use server-to-child credential and return its identity.
+
+    The no-argument legacy credential still maps to ``server-internal``; PTY
+    credentials map to the authenticated browser user that spawned that PTY.
+    """
+    with _lock:
+        credentials = tuple(_internal_credentials.items())
+    if not value or not credentials:
         raise TicketInvalid("no internal credential")
-    if not secrets.compare_digest(value.encode(), expected.encode()):
-        raise TicketInvalid("internal credential mismatch")
-    return {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER}
+    encoded = value.encode()
+    for expected, info in credentials:
+        if secrets.compare_digest(encoded, expected.encode()):
+            return dict(info)
+    raise TicketInvalid("internal credential mismatch")
 
 
 def _reset_for_tests() -> None:
@@ -94,4 +117,5 @@ def _reset_for_tests() -> None:
     global _internal_credential
     with _lock:
         _tickets.clear()
+        _internal_credentials.clear()
         _internal_credential = None

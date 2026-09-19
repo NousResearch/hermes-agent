@@ -26,6 +26,7 @@ from hermes_cli.dashboard_auth.ws_tickets import (
     _reset_for_tests,
     consume_internal_credential,
     internal_ws_credential,
+    mint_internal_credential,
     mint_ticket,
 )
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
@@ -474,3 +475,18 @@ class TestGatewayWsUrl:
         sc_cred = sc.split("internal=")[1].split("&")[0]
         assert gw_cred == sc_cred
 
+    def test_gated_pty_urls_carry_their_callers_identity_without_cross_talk(self, gated_app):
+        alice = mint_internal_credential(user_id="alice", provider="stub")
+        bob = mint_internal_credential(user_id="bob", provider="oidc")
+
+        alice_gateway = _web_server_chat._build_gateway_ws_url(internal_credential=alice)
+        alice_sidecar = _web_server_chat._build_sidecar_url(
+            "alice-channel", internal_credential=alice)
+        bob_gateway = _web_server_chat._build_gateway_ws_url(internal_credential=bob)
+
+        assert alice_gateway is not None and alice_sidecar is not None and bob_gateway is not None
+        assert f"internal={alice}" in alice_gateway
+        assert f"internal={alice}" in alice_sidecar
+        assert f"internal={bob}" in bob_gateway
+        assert consume_internal_credential(alice) == {"user_id": "alice", "provider": "stub"}
+        assert consume_internal_credential(bob) == {"user_id": "bob", "provider": "oidc"}

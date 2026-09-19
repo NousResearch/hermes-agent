@@ -808,3 +808,55 @@ class TestMkdtempOSErrorNoSpace:
             _install_tirith(log_failures=False)
         after = set(glob.glob("/tmp/tirith-install-*"))
         assert after - before == set()
+
+
+# ---------------------------------------------------------------------------
+# Unscoped GITHUB_TOKEN during the background install
+# ---------------------------------------------------------------------------
+
+class TestDownloadWithoutSecretScope:
+    """The install runs on a daemon thread started from a boot probe, which carries
+    no profile secret scope. Reading the OPTIONAL GITHUB_TOKEN must not abort the
+    anonymous download — the release assets are public.
+    """
+
+    def _fake_urlopen(self, captured):
+        class _Resp(io.BytesIO):
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+        def _open(req, timeout=None):
+            captured.append(dict(getattr(req, "headers", {})))
+            return _Resp(b"payload")
+
+        return _open
+
+    def test_download_proceeds_when_token_unreadable(self, tmp_path):
+        from agent.secret_scope import UnscopedSecretError
+        from tools.tirith_security import _download_file
+
+        captured = []
+        dest = tmp_path / "checksums.txt"
+        with patch("agent.secret_scope.get_secret",
+                   side_effect=UnscopedSecretError("no scope on a multiplexed call")), \
+             patch("tools.tirith_security.urllib.request.urlopen",
+                   side_effect=self._fake_urlopen(captured)):
+            _download_file("https://example.invalid/checksums.txt", str(dest))
+
+        assert dest.read_bytes() == b"payload"
+        assert captured and not any(k.lower() == "authorization" for k in captured[0])
+
+    def test_token_still_used_when_readable(self, tmp_path):
+        from tools.tirith_security import _download_file
+
+        captured = []
+        dest = tmp_path / "checksums.txt"
+        with patch("agent.secret_scope.get_secret", return_value="ghp_example"), \
+             patch("tools.tirith_security.urllib.request.urlopen",
+                   side_effect=self._fake_urlopen(captured)):
+            _download_file("https://example.invalid/checksums.txt", str(dest))
+
+        assert captured and any(k.lower() == "authorization" for k in captured[0])

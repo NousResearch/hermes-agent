@@ -3187,6 +3187,26 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
              "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage)},
             headers=headers)
 
+    def _make_session_approval_notify(self, run_id: str, events: "_SessionEventQueue"):
+        """Approval bridge for the session chat stream, mirroring the /v1/runs bridge
+        (api_server_runs._make_approval_notify): redact the flagged command, stamp the
+        choice set, park the run as waiting_for_approval, and emit ``approval.request``
+        on the stream so ``POST /v1/runs/{run_id}/approval`` can resolve it. See #58853."""
+        def _approval_notify(approval_data: Dict[str, Any]) -> None:
+            event = dict(approval_data or {})
+            if "command" in event:
+                with suppress(Exception):
+                    from gateway.run import _redact_approval_command
+                    event["command"] = _redact_approval_command(event.get("command"))
+            event["choices"] = _approval_event_choices(
+                smart_denied=bool(event.get("smart_denied")),
+                allow_session=event.get("allow_session") is not False,
+                allow_permanent=event.get("allow_permanent") is not False)
+            self._set_run_status(run_id, "waiting_for_approval",
+                                 last_event="approval.request", approval=dict(event))
+            events.enqueue("approval.request", event)
+        return _approval_notify
+
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
@@ -3231,9 +3251,25 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 self._set_run_status(run_id, "running", last_event="run.started")
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = await self._conversation_history_for_session(session_id)
-                result, usage = await self._run_agent(
-                    conversation_history=history, stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
+                # Approval bridge (#58853): _run_agent never registered a gateway approval
+                # notifier, so a guarded tool call blocked invisibly until approvals.timeout
+                # denied it — the stream showed nothing and nothing could resolve it. The
+                # agent's wait keys off the session context bound in _run_agent
+                # (gateway_session_key or session_id), so the notifier registers under the
+                # same key; the run registers in _run_approval_sessions so the existing
+                # /v1/runs/{run_id}/approval route resolves it.
+                from tools.approval import register_gateway_notify, unregister_gateway_notify
+                approval_key = gateway_session_key or session_id or run_id
+                register_gateway_notify(
+                    approval_key, self._make_session_approval_notify(run_id, events))
+                self._run_approval_sessions[run_id] = approval_key
+                try:
+                    result, usage = await self._run_agent(
+                        conversation_history=history, stream_delta_callback=_delta,
+                        tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
+                finally:
+                    self._run_approval_sessions.pop(run_id, None)
+                    unregister_gateway_notify(approval_key)
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id

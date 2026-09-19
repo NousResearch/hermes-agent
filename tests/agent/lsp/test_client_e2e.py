@@ -110,6 +110,42 @@ async def test_cancelled_start_terminates_spawned_server(tmp_path: Path):
     assert client._proc is None
 
 
+@pytest.mark.linux_only
+@pytest.mark.asyncio
+async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: Path):
+    """A launcher exiting on SIGTERM must not let an ignoring server child escape cleanup."""
+    import psutil
+
+    child_pid_file = tmp_path / "child.pid"
+    client = _client(tmp_path, "slow_tree")
+    assert client._env is not None
+    client._env["MOCK_LSP_CHILD_PID"] = str(child_pid_file)
+    start = asyncio.create_task(client.start())
+    child = None
+    try:
+        ready_deadline = asyncio.get_running_loop().time() + 3.0
+        while not child_pid_file.exists():
+            assert asyncio.get_running_loop().time() < ready_deadline
+            await asyncio.sleep(0.01)
+        child = psutil.Process(int(child_pid_file.read_text(encoding="utf-8")))
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(start, timeout=0.05)
+
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+        assert client.state == "error"
+        assert client._proc is None
+    finally:
+        if not start.done():
+            start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        if child is not None and child.is_running():
+            child.kill()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("script", ["clean_eof", "malformed_frame"])
 async def test_reader_failure_retires_client_and_rejects_later_work(

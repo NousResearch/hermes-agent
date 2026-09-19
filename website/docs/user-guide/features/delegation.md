@@ -357,24 +357,26 @@ By default there is **no wall-clock timeout** on subagents. Children fail only f
 
 Genuinely stuck children are still detected on every runtime, with or without a configured cap: the heartbeat staleness monitor watches each child's progress signals (API calls, tool starts, activity-timestamp ticks). A child whose progress is completely frozen past the stale threshold — 450s idle between turns, 1200s while inside a tool — is interrupted and its wait is **abandoned**: the parent gets a `status: "timeout"` entry whose error reads `Subagent stopped making progress after N API call(s) — no activity for 450s (heartbeat stale threshold); the pending worker was abandoned.` The wait ends even in one-shot runs (`hermes chat -Q`, Bot Chat one-shot, cron) that have no gateway inactivity watchdog behind them, so a wedged child can no longer hold the turn or its session lease forever. An in-flight model wait still counts as progress — subagents refresh the activity clock while waiting on the provider, so a slow local / long-prefill completion is not treated as stalled.
 
-If you want a hard cap anyway (e.g. cost control on unattended cron-driven delegation), opt in per-install:
+If you want a cap anyway (e.g. cost control on unattended cron-driven delegation), opt in per-install:
 
 ```yaml
 delegation:
   child_timeout_seconds: 0     # default: 0 = no timeout
-  # child_timeout_seconds: 1800  # opt-in hard cap (floor 30s)
+  # child_timeout_seconds: 1800  # opt-in inactivity cap (floor 30s)
 ```
 
-A positive value enforces a hard wall-clock limit on each child; `0` or a negative value disables it.
+A positive value bounds **inactivity, not total runtime**: it is the longest a child may go with *no* progress (no completed API call, no tool change, no activity-clock tick) before it is abandoned. Every sign of progress restarts the window, so a child waiting on a multi-minute completion — the case that used to lose finished work — is never killed for taking long, while a child that has genuinely stopped moving is still caught (and an in-flight request is bounded independently by the per-call stale watchdog). `0` or a negative value disables the cap; the heartbeat staleness monitor below stays active either way.
 
 When a configured cap or the stale threshold fires, the child's result carries
 structured timeout metadata alongside the error message so parents and hooks
 can distinguish a stopwatch kill from other failures without parsing text:
 `timeout_seconds` (whichever limit actually ended the wait — the stale
 threshold when it pre-empts a longer configured cap, otherwise the cap),
-`timed_out_after_seconds` (actual wall clock), and `timeout_phase`
+`timed_out_after_seconds` (actual wall clock), `last_event_age` (how long
+the child had been silent when the wait ended — the fast way to tell a slow
+provider from a runaway), and `timeout_phase`
 (`before_first_llm_call` when the child never reached its first request,
-`after_llm_calls` otherwise). All three are `null` on non-timeout errors.
+`after_llm_calls` otherwise). All four are `null` on non-timeout errors.
 
 ## Failure Visibility
 

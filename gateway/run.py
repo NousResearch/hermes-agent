@@ -2069,6 +2069,7 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
 
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
+from gateway.open_policy import OWN_POLICY_OPEN_ENV as _OWN_POLICY_OPEN_ENV
 from gateway.session import (
     AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
     profile_from_session_key_namespace)
@@ -2127,14 +2128,6 @@ def _best_effort(fn: Callable[[], Any], debug_msg: Optional[str] = None) -> Any:
 # Shutdown quiesce ceiling for the gateway-owned thread pool. Drain already waited for the agents; what
 # remains is short blocking work; anything slower is a stuck worker not worth waiting on (leash-clamped).
 _EXECUTOR_QUIESCE_TIMEOUT = 2.0
-
-
-_OWN_POLICY_OPEN_ENV = {
-    Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
-    Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
-    Platform.YUANBAO: ("YUANBAO_DM_POLICY", "YUANBAO_GROUP_POLICY", "YUANBAO_ALLOW_ALL_USERS"),
-    Platform.QQBOT: (None, None, "QQ_ALLOW_ALL_USERS"),
-    Platform.WHATSAPP: ("WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOW_ALL_USERS")}
 
 
 def _own_policy_open_startup_violation(config) -> Optional[str]:

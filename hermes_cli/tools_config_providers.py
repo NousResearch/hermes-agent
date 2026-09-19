@@ -164,9 +164,8 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     """Honest readiness state for a provider picker row.
     ``features`` avoids re-fetching portal state per row. ``is_active`` is the completed-setup fallback
     for post_setup hooks with no registered installed-check (selecting a row runs its hook)."""
-    from hermes_cli.tools_config import (
-        _POST_SETUP_READY, _provider_env_ready, _xai_credentials_present, get_nous_subscription_features,
-    )
+    from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready, get_nous_subscription_features
+    from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY
 
     if provider.get("env_vars", []):
         return "ready" if _provider_env_ready(provider) else "needs_keys"
@@ -189,8 +188,9 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
 
     post_setup = provider.get("post_setup")
     if post_setup:
-        if post_setup == "xai_grok":
-            return "ready" if _xai_credentials_present() else "needs_auth"
+        auth_predicate = _POST_SETUP_AUTH_READY.get(post_setup)
+        if auth_predicate is not None:
+            return "ready" if auth_predicate() else "needs_auth"
         predicate = _POST_SETUP_READY.get(post_setup)
         if predicate is not None:
             try:
@@ -478,16 +478,32 @@ def _detect_active_provider_index(providers: list, config: dict, *, force_fresh:
     return 0
 
 
-def _fal_model_catalog():
+def _fal_model_catalog(config: dict):
     """Lazy-load the FAL model catalog."""
     from tools.image_generation_catalog import FAL_MODELS, DEFAULT_MODEL
     return FAL_MODELS, DEFAULT_MODEL
 
 
-# Per-backend model catalog (config_key = top-level config.yaml section, catalog_fn -> ({model_id: metadata},
-# default_model)); a TOOL_CATEGORIES row tagged `imagegen_backend: "<name>"` selects the catalog at picker time.
+def _managed_image_catalog(config: dict):
+    """The managed row's union catalog (FAL + Krea + Portal), minus the gateways this account cannot use.
+
+    A free-pool account is funded for FAL only, so its picker never offers a Krea or Portal model it
+    would be denied at generation time; a logged-out or paid account sees everything."""
+    from hermes_cli.tools_config import get_nous_subscription_features
+    from tools.image_generation_managed import managed_image_catalog
+
+    acct = get_nous_subscription_features(config).account_info
+    pool_only = bool(acct and acct.logged_in and acct.paid_service_access is not True)
+    return managed_image_catalog(
+        include_krea=not pool_only or acct.tool_gateway_entitled_for("krea"), include_portal=not pool_only)
+
+
+# Per-backend model catalog (config_key = top-level config.yaml section, catalog_fn(config) -> ({model_id:
+# metadata}, default_model)); a TOOL_CATEGORIES row tagged `imagegen_backend: "<name>"` selects the catalog at
+# picker time. "nous" is the single managed row: one catalog spanning the FAL, Krea and Portal gateways.
 IMAGEGEN_BACKENDS = {
-    "fal": {"display": "FAL.ai", "config_key": "image_gen", "catalog_fn": _fal_model_catalog}}
+    "fal": {"display": "FAL.ai", "config_key": "image_gen", "catalog_fn": _fal_model_catalog},
+    "nous": {"display": "Nous Subscription", "config_key": "image_gen", "catalog_fn": _managed_image_catalog}}
 
 
 def _plugin_model_catalog(registry_module: str, plugin_name: str):
@@ -556,7 +572,7 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     backend = IMAGEGEN_BACKENDS.get(backend_name)
     if not backend:
         return
-    catalog, default_model = backend["catalog_fn"]()
+    catalog, default_model = backend["catalog_fn"](config)
     _pick_model_from_catalog(catalog, default_model, backend["config_key"], backend["display"], config)
 
 
@@ -781,8 +797,8 @@ def _finish_provider_selection(provider: dict, config: dict, managed_feature) ->
     backend = provider.get("imagegen_backend")
     if backend:
         _configure_imagegen_model(backend, config)
-        # In-tree FAL is the only non-plugin backend: "nous" for a managed row, "fal" for BYOK, drop legacy
-        # use_gateway — never clobber a managed pick back onto direct keys.
+        # "nous" for the managed row (the picked model id chooses the FAL / Krea / Portal gateway at run time),
+        # "fal" for BYOK, drop legacy use_gateway — never clobber a managed pick back onto direct keys.
         _select_into(config, "image_gen", "provider", "fal", managed_feature)
     # STT rows prompt for a model after the pick (skipped for managed rows — the gateway pins it).
     if provider.get("stt_provider") and not managed_feature:

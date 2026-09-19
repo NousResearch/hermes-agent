@@ -29,31 +29,29 @@ def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | No
     return backoff_seconds
 
 
-# Codex ChatGPT-account entitlement 400 — the account can never use the named slug, so with
-# nothing to rotate it is a config error, not a transient failure (#106475).
-_CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER = "model is not supported when using codex with a chatgpt account"
-
-
 def _mark_entitlement_rejected_model(agent, api_error) -> bool:
     """Record a Codex ChatGPT-account 400 that rejects the current model for this account.
 
-    With a single credential there is no pool to rotate (#71970 covers that case), so the
-    (provider, model) pair is treated as dead for the session: the fallback walk skips it and
-    restore_primary_runtime stops switching back — otherwise every turn re-fails on the primary,
-    announces an unverified "Primary model restored", and oscillates forever (#106475).
+    Pool rotation runs first (recover_with_credential_pool benches (credential, model) and
+    moves to the next entitled entry, #71970); this runs only once no pool entry is left for
+    the model, so the (provider, model) pair is treated as dead for the session: the fallback
+    walk skips it and restore_primary_runtime stops switching back — otherwise every turn
+    re-fails on the primary, announces an unverified "Primary model restored", and oscillates
+    forever (#106475).
     """
     if getattr(api_error, "status_code", None) != 400:
         return False
-    pool = getattr(agent, "_credential_pool", None)
-    if pool is not None and len(pool.entries()) > 1:
-        return False  # another account in the pool may be entitled; leave rotation to it
+    from agent.error_classifier import CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER
     haystack = str(getattr(api_error, "message", "") or api_error).lower()
-    if _CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER not in haystack:
+    if CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER not in haystack:
         return False
     provider = str(getattr(agent, "provider", "") or "").strip().lower()
     model = str(getattr(agent, "model", "") or "").strip()
     if not provider or not model:
         return False
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is not None and pool.has_available(model=model):
+        return False  # another pool entry is still eligible for this model; rotation owns it
     rejected = getattr(agent, "_entitlement_rejected_models", None)
     if rejected is None:
         rejected = agent._entitlement_rejected_models = set()
@@ -65,7 +63,7 @@ def _mark_entitlement_rejected_model(agent, api_error) -> bool:
         "treating it as unavailable for this session",
         model, provider,
     )
-    agent._buffer_status(
+    agent._buffer_diagnostic_status(
         f"🚫 This account is not entitled to {model} via {provider}; it will be skipped "
         "until restart. Switch to an entitled model via /model or `hermes model`."
     )

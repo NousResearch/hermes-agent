@@ -173,6 +173,7 @@ def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, w
     from tools import kanban_tools as kt
 
     (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n")  # identity marker
     with kbc.connect() as conn:
         before = kb.get_task(conn, worker_env)
         before_events = kb.list_events(conn, worker_env)
@@ -193,6 +194,7 @@ def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_p
     from tools import kanban_tools as kt
 
     (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n")  # identity marker
     with kbc.connect() as conn:
         monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, worker_env).current_run_id))
 
@@ -344,6 +346,17 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
         conn.close()
 
 
+def test_block_dependency_without_open_parent_is_rekinded(worker_env):
+    """kind=dependency with no incomplete parent must not park in todo; the
+    tool reports the landed kind and tells the worker why."""
+    from tools import kanban_tools as kt
+
+    d = json.loads(kt._handle_block({"reason": "upstream input is missing", "kind": "dependency"}))
+    assert (d["ok"], d["status"], d["block_kind"]) == (True, "blocked", "needs_input")
+    assert d["requested_kind"] == "dependency"
+    assert "no parent is open" in d["note"]
+
+
 def test_heartbeat_extends_claim_expires(worker_env):
     """The kanban_heartbeat tool MUST extend claim_expires, not just
     update last_heartbeat_at — otherwise long-running workers loop the
@@ -458,6 +471,7 @@ def test_create_happy_path(worker_env):
     assert d["ok"] is True
     assert d["task_id"]
     assert d["status"] == "todo"  # parent isn't done yet
+    assert d["gated"] is True and d["gated_by"] == worker_env
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
@@ -511,6 +525,31 @@ def test_link_happy_path(worker_env):
     out = kt._handle_link({"parent_id": a, "child_id": b})
     d = json.loads(out)
     assert d["ok"] is True
+
+
+def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        own_parent = kb.create_task(conn, title="own review")
+        own_run_id = kb.get_task(conn, worker_env).current_run_id
+        foreign_parent = kb.create_task(conn, title="foreign review")
+        foreign_child = kb.create_task(conn, title="foreign worker")
+        assert kb.claim_task(conn, foreign_child, claimer="other") is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(own_run_id))
+    own = json.loads(kt._handle_link({"parent_id": own_parent, "child_id": worker_env}))
+    foreign = json.loads(kt._handle_link(
+        {"parent_id": foreign_parent, "child_id": foreign_child},
+    ))
+
+    assert own["ok"] is True
+    assert "child is already running" in foreign["error"]
+    with kbc.connect() as conn:
+        assert kb.parent_ids(conn, worker_env) == [own_parent]
+        assert kb.parent_ids(conn, foreign_child) == []
 
 
 def test_unblock_happy_path(monkeypatch, worker_env):

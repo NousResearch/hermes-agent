@@ -5,7 +5,7 @@ to-bot detection, broadcast filtering, WhatsApp markdown conversion, chunk budge
 
 Mixin contract — the host adapter sets these on ``self`` before calling any mixin
 method: ``config`` (PlatformConfig), ``name``, ``_dm_policy`` / ``_group_policy``
-("open" | "allowlist" | "disabled"), ``_allow_from`` / ``_group_allow_from`` (set[str]),
+("open" | "allowlist" | "disabled" | "pairing"), ``_allow_from`` / ``_group_allow_from`` (set[str]),
 ``_mention_patterns`` (list[re.Pattern]), ``_reply_prefix`` (Optional[str]).
 """
 
@@ -105,20 +105,24 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         parts = raw if isinstance(raw, list) else str(raw).split(",")
         return {str(part).strip() for part in parts if str(part).strip()}
 
-    def _select_dm_allowlist(self, extra: Dict[str, Any], env_keys, read_env) -> Any:
-        """Pick the raw DM allowlist by key *presence*: ``allow_from``/``allowFrom`` in config (an
-        explicit empty list stays authoritative), then the first truthy env carrier. Records the
-        winning source in ``_dm_allowlist_source`` so live DM checks keep the same precedence."""
-        for key in ("allow_from", "allowFrom"):
+    @staticmethod
+    def _select_allowlist(extra: Dict[str, Any], config_keys, env_keys, read_env) -> tuple[Optional[str], Any]:
+        """``(source, raw)`` by key *presence*: a config key wins (an explicit empty list stays authoritative),
+        then the first truthy env carrier; ``(None, None)`` when neither is set."""
+        for key in config_keys:
             if key in extra:
-                self._dm_allowlist_source = "config"
-                return extra.get(key)
+                return "config", extra.get(key)
         for env in env_keys:
-            if read_env(env):
-                self._dm_allowlist_source = env
-                return read_env(env)
-        self._dm_allowlist_source = None
-        return None
+            raw = read_env(env)
+            if raw:
+                return env, raw
+        return None, None
+
+    def _select_dm_allowlist(self, extra: Dict[str, Any], env_keys, read_env) -> Any:
+        """Raw DM allowlist; records the winning source in ``_dm_allowlist_source`` so live DM checks keep
+        the same precedence."""
+        self._dm_allowlist_source, raw = self._select_allowlist(extra, ("allow_from", "allowFrom"), env_keys, read_env)
+        return raw
 
     def _live_dm_allow_from(self) -> set[str]:
         """Allowlist currently enforced for DM intake / strict DM auth. Env-seeded adapters re-read
@@ -138,10 +142,8 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     def _normalize_whatsapp_id(value: Optional[str]) -> str:
         if not value:
             return ""
-        normalized = str(value).strip()
-        if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
-        return normalized
+        # Device-qualified ids (`<user>:<device>@lid`) must equal their bare form.
+        return re.sub(r":\d+(?=@)", "", str(value).strip())
 
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:

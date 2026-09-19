@@ -668,6 +668,10 @@ class TestPrunePreCheckpointItems:
         assert [i.get("role") for i in items] == ["user", "assistant", "user"]
 
 
+# The ChatGPT Codex backend route sends text as typed parts (#51512); the checks below only care that history survives.
+_CODEX_ON_IT = [{"type": "output_text", "text": "on it"}]
+
+
 class TestCheckpointGatedOnCurrentEligibility:
     """A captured checkpoint must not outlive the native gate.
 
@@ -712,11 +716,12 @@ class TestCheckpointGatedOnCurrentEligibility:
                 {k: v for k, v in msg.items() if k != "codex_reasoning_items"}
                 for msg in history
             ],
+            current_issuer_kind="codex_backend",
         )
         assert items == pre_feature
         # Specifically: no checkpoint on the wire, no deleted history.
         assert all(i.get("type") != "compaction" for i in items)
-        assert {"role": "assistant", "content": "on it"} in items
+        assert {"role": "assistant", "content": _CODEX_ON_IT} in items
 
     def test_eligible_request_still_restructures(self):
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
@@ -769,7 +774,7 @@ class TestCheckpointGatedOnCurrentEligibility:
             self._history(), is_codex_backend=True
         )
         assert all(i.get("type") != "compaction" for i in items)
-        assert {"role": "assistant", "content": "on it"} in items
+        assert {"role": "assistant", "content": _CODEX_ON_IT} in items
 
     def test_auxiliary_responses_adapter_never_prunes(self, monkeypatch):
         """Auxiliary calls (compression, flush_memories, MoA) replay real
@@ -807,4 +812,4 @@ class TestCheckpointGatedOnCurrentEligibility:
 
         assert seen.get("native_compaction_eligible") is False
         assert all(i.get("type") != "compaction" for i in seen["input"])
-        assert {"role": "assistant", "content": "on it"} in seen["input"]
+        assert {"role": "assistant", "content": _CODEX_ON_IT} in seen["input"]

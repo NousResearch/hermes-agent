@@ -167,16 +167,22 @@ account), everything above is invisible: local search behaves exactly as
 described in the rest of this page, with no errors shown to the model.
 
 A connector call that needs an account you haven't linked returns a
-`CONNECTION_REQUIRED` error carrying a connect link. The `manage_connections`
-tool (available on the same condition as the connector bridge) lists
-connectors and their connection state, starts an authorization, and can wait
-for the user to finish it; disconnecting an account is done by the user in
-the Portal.
+`CONNECTION_REQUIRED` error. The `manage_connections` tool lists connectors and
+their connection state and starts an authorization: in the desktop app the call
+shows a card, blocks until each app is connected or skipped, and reports the
+outcomes; elsewhere it returns a connect link per app for the user to open.
+Disconnecting an account is done by the user in the Portal. The same tool also installs, enables and authorizes
+local MCP servers from the catalog (targets with `mcp: true`), so it is
+present whether or not you are signed in; only the managed-connector actions
+need the sign-in.
 
 `tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
 entries (a single call is an array of one). Each connector entry in a batch
 is dispatched as its own gateway request, one after another; local deferred
-tools stay one entry per `tool_call`. Approvals settle per entry before
+tools stay one entry per `tool_call`. A multi-entry batch that names a local
+tool is rejected with a correction that restates the valid shape using the
+caller's own first entry, and a `calls` value emitted as a JSON string is
+parsed like the array form. Approvals settle per entry before
 dispatch, and a `/stop` between entries leaves the unstarted ones unsent
 (their slots report `INTERRUPTED`).
 
@@ -236,6 +242,14 @@ to any progressive-disclosure design, not specific to this implementation:
   token appears in no tool returns an empty group with the connected
   sources and a retry hint, instead of `limit` tools that share one
   common word.
+- **Relevance floor:** a tool must match at least half of a query's
+  *answerable* terms (terms present anywhere in the catalog) before it
+  is offered — sharing one incidental word with a long query is not a
+  match. A hunt for a capability that doesn't exist returns no results
+  instead of a plausible-looking list the model rephrases against
+  forever. The floor only engages from four answerable terms up, so
+  short queries like "list issues" keep full recall, and an exact
+  tool-name query always matches.
 - **Parallel execution unwraps the bridge.** The batch planner decides
   concurrency on the *underlying* tool of a `tool_call`, not on the
   literal bridge name — so an MCP server opted in via

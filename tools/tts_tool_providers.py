@@ -568,8 +568,10 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
     from hermes_cli.config import get_env_value
-    base_url = str(gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL")
-                   or DEFAULT_GEMINI_TTS_BASE_URL).strip().rstrip("/")
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+    base_url = normalize_gemini_base_url(
+        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL, api_key,
+    )
     persona_prompt = _read_gemini_persona_prompt(gemini_config)
     tts_script = text
     if _gemini_audio_tags_enabled(gemini_config, model):

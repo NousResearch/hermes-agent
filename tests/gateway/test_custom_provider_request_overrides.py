@@ -87,7 +87,7 @@ def _make_source() -> SessionSource:
 def test_resolve_runtime_agent_kwargs_preserves_request_overrides(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda: {
+        lambda **_kw: {
             "api_key": "***",
             "base_url": "https://example.test/v1",
             "provider": "custom",

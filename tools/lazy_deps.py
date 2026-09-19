@@ -150,6 +150,17 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "platform.wecom_callback": ("defusedxml==0.7.1",),
     # Teams pulls a heavy tree (msal, dependency-injector); also the `teams` extra.
     "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),
+    # Google Chat — Pub/Sub + Chat API. Not in [all]; Docker bakes `--extra google-chat`
+    # so hosted/immutable images do not have to write the sealed venv.
+    "platform.google_chat": (
+        "google-cloud-pubsub==2.39.0",
+        "google-api-python-client==2.194.0",
+        "google-auth==2.55.1",
+        "google-auth-oauthlib==1.3.1",
+        "google-auth-httplib2==0.3.1",
+        "httplib2==0.32.0",
+        "pyasn1==0.6.4",
+    ),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -479,28 +490,49 @@ def _uv_binary() -> Optional[str]:
         return shutil.which("uv")
 
 
-def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
+def _write_constraints_file(lines: tuple[str, ...]) -> Path:
+    import tempfile
+    fd, path = tempfile.mkstemp(prefix="hermes-plugin-constraints-", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return Path(path)
+
+
+def _after_successful_install(specs: tuple[str, ...], target: Optional[Path], dry_run: bool) -> None:
+    """Post-install bookkeeping; a dry run installed nothing, so there is nothing to activate/warm."""
+    if dry_run:
+        return
+    if target is not None:
+        _activate_target_on_syspath(target)
+    _warm_installed_bytecode(specs, target)
+
+
+def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_lines: tuple[str, ...] = (),
+                      dry_run: bool = False) -> _InstallResult:
     """Install ``specs`` via the uv -> pip -> ensurepip ladder, venv-scoped or into the durable
     ``--target`` (constrained to core versions) when :data:`_LAZY_TARGET_ENV` is set. Independent of
-    ``hermes_cli.tools_config._pip_install`` (no CLI dependency)."""
+    ``hermes_cli.tools_config._pip_install`` (no CLI dependency).
+
+    *constraint_lines* pins the resolver (plugin installs pass Hermes' own declared ranges so a plugin
+    can never move a core package out of range); *dry_run* resolves without installing."""
     if not specs:
         return _InstallResult(True, "", "")
     target = _lazy_install_target()
     constraints: Optional[Path] = None
-    extra_args: list[str] = []
+    extra_args: list[str] = ["--dry-run"] if dry_run else []
     if target is not None:
         if err := _ensure_target_ready(target):
             return _InstallResult(False, "", err)
         constraints = _core_constraints_file()
         extra_args += ["--target", str(target)]
-        if constraints is not None:
-            extra_args += ["--constraint", str(constraints)]
+    elif constraint_lines:
+        constraints = _write_constraints_file(constraint_lines)
+    if constraints is not None:
+        extra_args += ["--constraint", str(constraints)]
 
     def _finish(r: subprocess.CompletedProcess) -> _InstallResult:
         if r.returncode == 0:
-            if target is not None:
-                _activate_target_on_syspath(target)
-            _warm_installed_bytecode(specs, target)
+            _after_successful_install(specs, target, dry_run)
         return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
 
     try:
@@ -639,10 +671,12 @@ class InstallSpecsResult:
     stderr: str = ""
 
 
-def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> InstallSpecsResult:
+def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
+                  constraints: list[str] | tuple[str, ...] = (), dry_run: bool = False) -> InstallSpecsResult:
     """Install data-driven pip specs (plugin manifest ``pip_dependencies``) with the same routing and
     gating as :func:`ensure`, but unknown packages are allowed — the caller owns manifest trust, this
-    owns spec hygiene. Never raises; inspect the :class:`InstallSpecsResult`."""
+    owns spec hygiene. *constraints* are requirement lines the resolver must honour; *dry_run* only
+    resolves. Never raises; inspect the :class:`InstallSpecsResult`."""
     cleaned = tuple(str(s).strip() for s in specs if str(s).strip())
     if not cleaned:
         return InstallSpecsResult(ok=True, command="")
@@ -657,9 +691,9 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> 
                   ) if sealed else "runtime installs disabled (security.allow_lazy_installs=false)"
         return InstallSpecsResult(ok=False, blocked=True, reason=reason)
     display = "uv pip install " + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
-    logger.info("Installing pip specs %s (target=%s)", " ".join(cleaned), target or "venv")
+    logger.info("%s pip specs %s (target=%s)", "Resolving" if dry_run else "Installing", " ".join(cleaned), target or "venv")
     try:
-        result = _venv_pip_install(cleaned, timeout=timeout)
+        result = _venv_pip_install(cleaned, timeout=timeout, constraint_lines=tuple(constraints), dry_run=dry_run)
     except Exception as exc:
         logger.warning("install_specs failed unexpectedly: %s", exc)
         return InstallSpecsResult(ok=False, command=display, stderr=f"install failed: {exc}")

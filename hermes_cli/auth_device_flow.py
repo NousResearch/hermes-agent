@@ -358,9 +358,11 @@ def _poll_for_token(
             raise ValueError("Token response did not include access_token")
 
     def _error(_response, error_payload) -> Exception:
-        error_code = error_payload.get("error", "")
-        description = error_payload.get("error_description") or "Unknown authentication error"
-        return RuntimeError(f"{error_code}: {description}")
+        # Plain copy per OAuth error code; the raw ``code: description`` stays on a Details line.
+        from hermes_cli.auth_error_copy import device_flow_error
+        return device_flow_error(
+            str(error_payload.get("error", "") or ""),
+            str(error_payload.get("error_description") or "Unknown authentication error"))
 
     return _poll_device_token_generic(
         lambda: client.post(

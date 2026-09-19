@@ -211,6 +211,34 @@ class TestRecoveryEndToEndClassification:
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
         assert result.retryable is True
 
+    def test_nvidia_nim_serde_tool_content_classifies(self):
+        """Regression test for #111231 (bug 2): NVIDIA NIM's Rust gateway rejects
+        list-type tool content without naming the field — the serde text names the
+        *enum* instead. Verbatim provider wording from the report."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "HTTP 400: Failed to deserialize the JSON body into the target type: "
+                "data did not match any variant of untagged enum "
+                "ChatCompletionRequestToolMessageContent at line 1 column 1974809"
+            ),
+        )
+        result = classify_api_error(err, provider="nvidia", model="moonshotai/kimi-k3")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    def test_nvidia_nim_serde_other_enum_not_misclassified(self):
+        """A NIM serde rejection naming a different enum must stay a format error —
+        only the tool-message-content enum means list-type tool content."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "HTTP 400: Failed to deserialize the JSON body into the target type: "
+                "data did not match any variant of untagged enum ChatCompletionRequestMessage"
+            ),
+        )
+        result = classify_api_error(err, provider="nvidia", model="moonshotai/kimi-k3")
+        assert result.reason != FailoverReason.multimodal_tool_content_unsupported
 
 class TestOpenCodeGoProactiveToolResultDowngrade:
     def _multimodal_result(self, png_b64: str = "iVBORw0KGgoAAAA"):

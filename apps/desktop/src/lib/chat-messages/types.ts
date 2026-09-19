@@ -2,14 +2,19 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 import { type BillingBlock } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface TimelinePartMetadata {
+  toolResultMetadata?: ToolResultMetadata
   /** Unix seconds when this visible activity segment began. Fractional values
    * preserve the millisecond precision available on live gateway events. */
   timestamp?: number
   /** Unix seconds when this segment stopped or handed off to the next one. */
   completedAt?: number
+  /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
+   * so the next delta re-renders from the source instead of the render. */
+  mediaSource?: string
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
@@ -20,6 +25,7 @@ export type ChatMessage = {
   parts: ChatMessagePart[]
   /** Result body only; the system text remains the compact completion label. */
   asyncResult?: string
+  asyncResultKind?: 'process'
   timestamp?: number
   completedAt?: number
   pending?: boolean
@@ -77,6 +83,7 @@ export type GatewayEventPayload = {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   approval_mode?: string
@@ -104,11 +111,13 @@ export type GatewayEventPayload = {
   // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
-  // mcp.setup.request (setup_mcp tool — inline MCP consent card)
-  server?: string
+  // connection request (manage_connections MCP targets — inline approval card)
+  op_id?: string
+  deadline_at?: number
+  targets?: unknown
   action?: string
   reason?: string
-  // approval.request (dangerous command / execute_code) — session-keyed
+  // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
   // False when a tirith content-security warning forbids a permanent allow.

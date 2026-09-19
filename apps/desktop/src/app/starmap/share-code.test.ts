@@ -29,7 +29,7 @@ function sampleGraph(): StarmapGraph {
       },
       {
         category: 'devops',
-        createdBy: null,
+        createdBy: 'learn',
         id: 'skill-b',
         kind: 'skill',
         label: 'skill-b',

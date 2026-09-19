@@ -290,6 +290,64 @@ class TestRetrieval:
         assert len(hits) <= 1
 
 
+class TestRelevanceFloor:
+    """Coverage floor layered on the rarest-token gate.
+
+    The gate stops a query whose intent word no tool carries. It does not stop a long
+    hunt whose every word exists SOMEWHERE in the catalog while no single tool carries
+    more than one of them; those must return nothing rather than a plausible-looking
+    list the model rephrases against forever.
+    """
+
+    def _catalog(self):
+        from tools.tool_search import build_catalog
+        defs = [
+            _td("github_rerun_failed_workflow_run_jobs",
+                "Re-run failed jobs in a workflow run",
+                {"run_id": {"type": "string"}}),
+            _td("github_create_issue", "Open a new issue in a GitHub repository",
+                {"title": {"type": "string"}, "body": {"type": "string"}}),
+            _td("github_list_issues", "List issues in a repository",
+                {"repo": {"type": "string"}}),
+            _td("slack_send_message", "Post a message into a Slack channel",
+                {"channel": {"type": "string"}, "text": {"type": "string"}}),
+            # Every hunt word below is answerable by SOME document, none by one
+            # document — the production catalog shape behind the 216-search trace.
+            _td("gist_save_snippet", "Save a shell command snippet as a gist",
+                {"content": {"type": "string"}}),
+            _td("codeql_scan", "Scan code for vulnerabilities and execute analysis",
+                {"repo": {"type": "string"}}),
+        ]
+        return build_catalog(defs)
+
+    def test_incidental_single_term_match_is_filtered(self):
+        # Every term answerable (each in exactly one document), so the rarest-token
+        # gate admits the tool sharing that one word; the floor must not.
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(), "run shell command execute code", limit=5)
+        assert hits == []
+
+    def test_short_queries_are_untouched(self):
+        # Below 4 answerable terms wording legitimately differs by a word.
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(), "list issues", limit=5)
+        assert any(h.name == "github_list_issues" for h in hits)
+        hits = search_catalog(self._catalog(), "send message", limit=5)
+        assert any(h.name == "slack_send_message" for h in hits)
+
+    def test_long_query_with_real_coverage_still_matches(self):
+        from tools.tool_search import search_catalog
+        hits = search_catalog(
+            self._catalog(), "create issue github repository title", limit=5)
+        assert hits and hits[0].name == "github_create_issue"
+        assert all(h.name != "github_rerun_failed_workflow_run_jobs" for h in hits)
+
+    def test_exact_name_match_bypasses_coverage(self):
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._catalog(), "github_create_issue", limit=5)
+        assert hits and hits[0].name == "github_create_issue"
+
+
 # ---------------------------------------------------------------------------
 # Assembly — the full passthrough/activate decision.
 # ---------------------------------------------------------------------------
@@ -413,6 +471,17 @@ class TestBridgeDispatch:
         assert err is not None
         assert "bridge tool" in err.lower()
 
+    @pytest.mark.parametrize("raw_args", ["", "  \n", None])
+    def test_resolve_underlying_call_treats_blank_arguments_as_no_arguments(self, raw_args):
+        """An OpenAI-compatible gateway emitting ``arguments: ""`` for a parameterless deferred tool
+        must execute with {} instead of looping on a JSON parse error (#83937); malformed
+        non-blank arguments still fail closed."""
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call({"calls": [{"name": "todo_list", "arguments": raw_args}]})
+        assert (name, args, err) == ("todo_list", {}, None)
+        _, _, err = resolve_underlying_call({"calls": [{"name": "todo_list", "arguments": '{"todos": ['}]})
+        assert err and "not valid JSON" in err
+
 
 # ---------------------------------------------------------------------------
 # End-to-end via the real handle_function_call (smoke test).
@@ -523,7 +592,7 @@ class TestRegression_OpenClawCron84141:
             "arguments": {"command": "echo hi"},
         })
         assert err is not None
-        assert "not a deferrable" in err
+        assert "directly-listed tool" in err and "call it directly" in err.lower()
 
 
 class TestRegression_ToolsetScoping:

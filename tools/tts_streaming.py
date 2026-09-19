@@ -73,6 +73,16 @@ class SentenceChunker:
         self.min_len = min_len
         self.buf = ""
 
+    @classmethod
+    def from_config(cls, tts_config: Dict) -> "SentenceChunker":
+        """Chunker honouring ``tts.streaming.min_len``. 20 suits English; a CJK opener of 5–7
+        characters is a whole clause, so voice setups lower it to speak the first sentence
+        alone instead of buffering it behind the second. Floor 1: 0 would emit every boundary."""
+        try:
+            return cls(min_len=max(1, int((tts_config.get("streaming") or {}).get("min_len", 20))))
+        except (AttributeError, TypeError, ValueError):  # non-mapping / non-numeric → default
+            return cls()
+
     def feed(self, delta: str) -> List[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
         self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
@@ -97,7 +107,13 @@ class SentenceChunker:
 
 
 class StreamingTTSProvider(ABC):
-    """Yields raw int16, little-endian, mono PCM chunks at ``sample_rate`` (built-ins: 24 kHz)."""
+    """Yields raw int16, little-endian, mono PCM chunks at ``sample_rate`` (built-ins: 24 kHz).
+
+    ``sample_rate`` is provisional until ``stream()`` has yielded its first chunk: a provider may
+    update the instance attribute once the endpoint's real format is known (OpenAI-compatible
+    servers advertise it in the response headers), so consumers open their output device or WAV
+    header after pulling the first chunk, never at construction.
+    """
 
     sample_rate: int = 24000
     channels: int = 1
@@ -201,9 +217,39 @@ def _openai_config_api_key() -> str:
         return ""
 
 
+def _sample_rate_from_headers(headers) -> Optional[int]:
+    """Rate an OpenAI-compatible TTS endpoint advertises: ``X-Audio-Sample-Rate`` (the convention
+    local servers use) or ``rate=`` in ``Content-Type`` (``audio/pcm; rate=44100``); None if absent."""
+    if not headers:
+        return None
+    raw = headers.get("x-audio-sample-rate")
+    if raw is None:
+        m = re.search(r"(?:^|[;\s])rate\s*=\s*(\d+)", str(headers.get("content-type") or ""), re.IGNORECASE)
+        raw = m.group(1) if m else None
+    try:
+        rate = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return rate if rate > 0 else None
+
+
 @register("openai")
 class OpenAIStreamer(StreamingTTSProvider):
-    """OpenAI speech with ``response_format=pcm`` (24 kHz mono int16)."""
+    """OpenAI speech with ``response_format=pcm`` (OpenAI itself: 24 kHz mono int16).
+
+    Compatible servers may emit another rate: ``tts.openai.pcm_sample_rate`` sets the expected
+    rate up front and a rate reported by the response (``X-Audio-Sample-Rate`` / Content-Type
+    ``rate=``) overrides it before the first chunk is yielded (#76466).
+    """
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        configured = section.get("pcm_sample_rate", self.sample_rate)
+        if isinstance(configured, bool) or not isinstance(configured, (int, float, str)) \
+                or not str(configured).strip().isdigit() or int(str(configured).strip()) <= 0:
+            logger.warning("Invalid tts.openai.pcm_sample_rate %r; using %d Hz", configured, self.sample_rate)
+        else:
+            self.sample_rate = int(str(configured).strip())
 
     @staticmethod
     def available() -> bool:
@@ -215,10 +261,18 @@ class OpenAIStreamer(StreamingTTSProvider):
         client = OpenAI(
             api_key=(self.section.get("api_key") or resolve_openai_audio_api_key()),
             base_url=(self.section.get("base_url") or get_env_value("OPENAI_BASE_URL") or None))
+        from tools.tts_tool_openai import _openai_extra_body
+        extra = {"extra_body": body} if (body := _openai_extra_body(self.section)) else {}
         with client.audio.speech.with_streaming_response.create(
             model=self.section.get("model", "gpt-4o-mini-tts"), voice=self.section.get("voice", "alloy"),
-            input=text, response_format="pcm",
+            input=text, response_format="pcm", **extra,
         ) as response:
+            # Runs on the first next(), before any audio is yielded, so consumers reading
+            # ``sample_rate`` after the first chunk open their device at the endpoint's rate.
+            rate = _sample_rate_from_headers(getattr(response, "headers", None))
+            if rate is not None and rate != self.sample_rate:
+                logger.info("TTS endpoint reports %d Hz PCM (expected %d Hz); honoring it", rate, self.sample_rate)
+                self.sample_rate = rate
             yield from _capped(response.iter_bytes(), "OpenAI streaming TTS")
 
 
@@ -244,9 +298,10 @@ class GeminiStreamer(StreamingTTSProvider):
         api_key = _gemini_key()
         model = str(self.section.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
         voice = str(self.section.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
-        base_url = str(
-            self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL
-        ).strip().rstrip("/")
+        from agent.gemini_native_adapter import normalize_gemini_base_url
+        base_url = normalize_gemini_base_url(
+            self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL, api_key,
+        )
         payload = {
             "contents": [{"parts": [{"text": text}]}],
             "generationConfig": {
@@ -292,7 +347,9 @@ class XAIStreamer(StreamingTTSProvider):
     def available() -> bool:
         try:
             from tools.xai_http import resolve_xai_http_credentials
-            return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
+            # Same ordering as the sync path: the subscription OAuth bearer
+            # authorizes but 403s on metered TTS, so an explicit key wins (#87045).
+            return bool(str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip())
         except Exception:
             return False
 
@@ -311,7 +368,7 @@ class XAIStreamer(StreamingTTSProvider):
         import websockets
         from tools.tts_tool_providers import DEFAULT_XAI_VOICE_ID
         from tools.xai_http import resolve_xai_http_credentials
-        api_key = str(resolve_xai_http_credentials().get("api_key") or "").strip()
+        api_key = str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip()
         if not api_key:
             raise RuntimeError("No xAI credentials for streaming TTS")
         voice = str(self.section.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID

@@ -45,11 +45,12 @@ def setup_runner(tmp_path, monkeypatch):
     return runner
 
 
-def completion(*, profile="yuki", metadata=None, chat="post", thread="post", mode="notify+wake"):
+def completion(*, profile="yuki", metadata=None, chat="post", thread="post",
+               user="creator", mode="notify+wake"):
     with kbc.connect() as conn:
         task = kb.create_task(conn, title="route completion", assignee="worker")
         kbn.add_notify_sub(conn, task_id=task, platform="discord", chat_id=chat,
-                           thread_id=thread, chat_type="thread", user_id="creator",
+                           thread_id=thread, chat_type="thread", user_id=user,
                            notifier_profile=profile, delivery_mode=mode,
                            delivery_metadata=metadata if metadata is not None else
                            {"guild_id": "guild", "scope_id": "guild", "parent_chat_id": "parent"})
@@ -83,7 +84,7 @@ def test_exact_routed_profile_delivers_once_on_its_authorized_transport(tmp_path
     source = primary.handled[0].source
     assert (source.profile, source.guild_id, source.scope_id, source.parent_chat_id) == (
         "yuki", "guild", "guild", "parent")
-    assert runner._adapter_for_source(source) is primary
+    assert runner._delivery_adapter_for(source) is primary
     assert not collect(runner)
 
     # A connected secondary owns its credential even where the primary route matches.
@@ -95,8 +96,29 @@ def test_exact_routed_profile_delivers_once_on_its_authorized_transport(tmp_path
     assert len(primary.sent) == 1
     assert len(secondary.sent) == len(secondary.handled) == 1
     assert secondary.handled[0].source.scope_id == "guild"
-    assert runner._adapter_for_source(secondary.handled[0].source) is secondary
+    assert runner._delivery_adapter_for(secondary.handled[0].source) is secondary
     assert not unseen(task)
+
+
+def test_user_routed_subscription_uses_only_its_authorized_profile(tmp_path, monkeypatch):
+    runner = setup_runner(tmp_path, monkeypatch)
+    primary = runner.adapters[Platform.DISCORD]
+    runner.config.profile_routes = parse_profile_routes([
+        dict(platform="discord", user_id="creator", profile="yuki"),
+    ])
+
+    routed = completion(profile="yuki", chat="shared", thread="")
+    rows = collect(runner)
+    assert [row["task"].id for row in rows] == [routed]
+    asyncio.run(deliver(runner, rows))
+    assert len(primary.sent) == len(primary.handled) == 1
+    assert primary.handled[0].source.user_id == "creator"
+
+    # Same sender can't fall back to the primary profile, and a legacy row with no sender
+    # identity must not skip a user route that could have won.
+    completion(profile="default", chat="shared", thread="")
+    completion(profile="default", chat="shared", thread="", user=None)
+    assert not collect(runner)
 
 
 def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkeypatch):
@@ -192,4 +214,23 @@ def test_removed_profile_never_wakes_under_the_primary_runtime(tmp_path, monkeyp
     shutil.rmtree(tmp_path / ".hermes" / "profiles" / "yuki")
     asyncio.run(deliver(runner, rows))
     assert secondary.handled == []
+    assert unseen(task)
+
+
+def test_anchorless_thread_subscription_warns_once_instead_of_silent_skip(tmp_path, monkeypatch, caplog):
+    """A CLI-created Discord thread sub with no ``parent_chat_id`` cannot match a channel-level
+    route and is skipped fail-closed — that skip must be visible ONCE at WARNING, not buried at
+    DEBUG on every tick forever (#110919)."""
+    import logging
+    from gateway import kanban_watchers_notifier as notifier
+
+    runner = setup_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(notifier, "_ANCHORLESS_WARNED", set())
+    task = completion(metadata={"chat_type": "thread"})
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        assert not collect(runner)
+        assert not collect(runner)
+    warnings = [r for r in caplog.records if "parent_chat_id" in r.getMessage() and task in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
+    assert "--parent-chat-id" in warnings[0].getMessage()
     assert unseen(task)

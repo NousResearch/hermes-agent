@@ -681,3 +681,20 @@ class TestFallbackSpeakArmsBargeMonitor:
         assert not cli._monitor_armed.wait(0.05)
         assert cli._monitor_calls == []
 
+
+class TestWakeWordRecorderHandoff:
+    """The wake listener must never share CoreAudio with an idle recorder."""
+
+    @patch("tools.wake_word.resume_listening", return_value=True)
+    def test_recorder_is_released_before_wake_listener_resumes(self, resume):
+        events = []
+        recorder = MagicMock()
+        recorder.shutdown.side_effect = lambda: events.append("recorder-closed")
+        resume.side_effect = lambda **_kwargs: events.append("wake-resumed") or True
+        cli = _make_voice_cli(_voice_recorder=recorder)
+
+        assert cli._resume_wake_word_listener() is True
+
+        assert events == ["recorder-closed", "wake-resumed"]
+        assert cli._voice_recorder is None
+

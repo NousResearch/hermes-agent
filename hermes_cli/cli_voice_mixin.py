@@ -726,6 +726,15 @@ class CLIVoiceMixin:
         except Exception as e:
             _cprint(f"{_DIM}Wake capture failed: {e}{_RST}")
 
+    def _resume_wake_word_listener(self) -> bool:
+        """Release voice capture before handing CoreAudio back to wake detection."""
+        recorder = self._voice_recorder
+        if recorder is not None:
+            recorder.shutdown()
+            self._voice_recorder = None
+        from tools.wake_word import resume_listening
+        return resume_listening(owner=self)
+
     def _start_wake_watchdog(self):
         """Resume the paused detector when the CLI returns to a stable idle."""
         from cli import logger
@@ -755,8 +764,7 @@ class CLIVoiceMixin:
                     if idle_polls >= 3:
                         idle_polls = 0
                         try:
-                            from tools.wake_word import resume_listening
-                            if resume_listening(owner=self):
+                            if self._resume_wake_word_listener():
                                 self._wake_suspended = False
                             else:
                                 self._wake_word_active = False

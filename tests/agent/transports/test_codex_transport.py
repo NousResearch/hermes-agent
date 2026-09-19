@@ -1812,3 +1812,23 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+def test_text_verbosity_reaches_responses_body_only_when_configured(transport):
+    """``agent.text_verbosity`` maps to top-level ``text.verbosity`` on Responses routes (#20203).
+
+    Unset/empty sends nothing (never flips the provider default), xAI never gets it
+    (its /responses rejects unknown top-level fields), and the chat_completions
+    transport has no such field at all.
+    """
+    from agent.transports import chat_completions  # noqa: F401  (registers the sibling)
+
+    msgs = [{"role": "user", "content": "hi"}]
+    assert transport.build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")["text"] == {"verbosity": "low"}
+    for unset in (None, ""):
+        assert "text" not in transport.build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity=unset)
+    assert "text" not in transport.build_kwargs(
+        model="grok-4", messages=msgs, text_verbosity="low", is_xai_responses=True, base_url="https://api.x.ai/v1",
+    )
+    chat = get_transport("chat_completions").build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")
+    assert "text" not in chat and "text" not in (chat.get("extra_body") or {})

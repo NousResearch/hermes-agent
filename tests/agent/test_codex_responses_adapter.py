@@ -803,3 +803,18 @@ def _xai_reasoning_only_response(reasoning_text):
             )
         ],
     )
+
+def test_codex_preflight_passes_text_verbosity_through():
+    """The preflight whitelist must let the Responses ``text`` block reach the wire (#20203).
+
+    Before it was allowed, ``text.verbosity`` died inside Hermes with
+    "unsupported field(s): text" before the request ever left the process.
+    """
+    kwargs = {
+        "model": "gpt-5.1", "instructions": "system", "store": False,
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "text": {"verbosity": "low"},
+    }
+    assert _preflight_codex_api_kwargs(dict(kwargs))["text"] == {"verbosity": "low"}
+    # An empty block is dropped, like the other optional fields, instead of rejected.
+    assert "text" not in _preflight_codex_api_kwargs({**kwargs, "text": {}})

@@ -656,6 +656,11 @@ class ResponsesApiTransport(ProviderTransport):
             replay_encrypted_reasoning=replay_encrypted_reasoning,
             is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
         ))
+        # agent.text_verbosity -> top-level ``text.verbosity`` (#20203). Unset sends nothing;
+        # xAI's /responses rejects unknown top-level fields, same as service_tier below.
+        text_verbosity = params.get("text_verbosity")
+        if text_verbosity and not is_xai_responses:
+            kwargs["text"] = {"verbosity": text_verbosity}
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model

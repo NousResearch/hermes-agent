@@ -19,11 +19,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
+from agent.context_compressor import take_pinned_summary_route
 from agent.conversation_compression import (
     STALL_INTERRUPTED_FAILURE_CLASS,
     CompressionCommitFence,
     compress_context,
     compression_attempt_stalled,
+    run_compress_context_with_progress_timeout,
 )
 from hermes_state import SessionDB
 
@@ -357,3 +359,131 @@ def test_session_db_cooldown_write_does_not_shorten_longer_deadline(
     assert row is not None
     assert float(row["cooldown_until"]) >= later - 1.0
     assert row["error"] == STALL_INTERRUPTED_FAILURE_CLASS
+
+
+FALLBACK_CHAIN_ENTRY = {
+    "provider": "custom",
+    "model": "backup-summarizer",
+    "base_url": "https://fallback.invalid/v1",
+    "api_key": "sk-fallback",
+    "timeout": 0.5,
+}
+
+
+def _patch_fallback_chain(chain):
+    return patch(
+        "agent.auxiliary_client._get_auxiliary_task_config",
+        return_value={"fallback_chain": chain},
+    )
+
+
+class TestSameTurnFallbackIgnoresPrimaryStallBackoff:
+    """#112387: the primary unwind must not suppress the same-turn fallback retry.
+
+    The host retries fallback_chain[0] before on_timeout, but the cancelled
+    primary worker can persist stall_interrupted cooldown while that retry is
+    in flight. The retry must still reach compress_context; the cooldown must
+    exist for the *next* automatic turn.
+    """
+
+    def test_stalled_primary_fallback_recovers_then_next_automatic_is_blocked(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "agent.conversation_compression.resolve_context_compression_timeouts",
+            lambda compression_cfg=None: (0.05, 2.0),
+        )
+        db, agent = _build_agent(tmp_path, "STALL_FALLBACK_SAME_TURN")
+        original = _messages()
+        recovered = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] fallback summary"},
+            {"role": "assistant", "content": "tail"},
+        ]
+        compress_calls = {"n": 0, "pinned": []}
+
+        def _compress(messages, **_kwargs):
+            compress_calls["n"] += 1
+            pinned = take_pinned_summary_route()
+            compress_calls["pinned"].append(pinned)
+            if pinned is None:
+                fence = _compress.fence
+                while not fence.is_cancelled:
+                    time.sleep(0.005)
+                _age_fence(fence, 2.0)
+                raise AuxiliaryExplicitCancellation()
+            return recovered
+
+        agent.context_compressor.compress = _compress
+
+        def _worker(fence: CompressionCommitFence):
+            _compress.fence = fence
+            snapshot = copy.deepcopy(original)
+            result_msgs, result_prompt = compress_context(
+                agent,
+                snapshot,
+                "sys",
+                approx_tokens=50_000,
+                commit_fence=fence,
+            )
+            return (original if result_msgs is snapshot else result_msgs), result_prompt
+
+        timeouts = []
+        with _patch_fallback_chain([FALLBACK_CHAIN_ENTRY]):
+            msgs, prompt = run_compress_context_with_progress_timeout(
+                worker=_worker,
+                messages=original,
+                system_prompt_fallback="degraded-prompt",
+                idle_timeout_seconds=0.05,
+                total_ceiling_seconds=2.0,
+                on_timeout=lambda *args: timeouts.append(args),
+                telemetry_agent=agent,
+            )
+
+        assert compress_calls["n"] >= 2
+        assert compress_calls["pinned"][0] is None
+        assert compress_calls["pinned"][1] is not None
+        assert compress_calls["pinned"][1]["model"] == "backup-summarizer"
+        assert msgs == recovered
+        assert msgs is not original
+        assert not timeouts
+
+        state = db.get_compression_failure_cooldown("STALL_FALLBACK_SAME_TURN")
+        assert state is not None
+        assert STALL_INTERRUPTED_FAILURE_CLASS in str(state["error"])
+
+        blocked_calls = {"n": 0}
+
+        def _must_not_run(messages, **_kwargs):
+            blocked_calls["n"] += 1
+            return recovered
+
+        agent.context_compressor.compress = _must_not_run
+        again, _ = compress_context(
+            agent,
+            copy.deepcopy(original),
+            "sys",
+            approx_tokens=50_000,
+            commit_fence=CompressionCommitFence(),
+        )
+        assert again == original
+        assert blocked_calls["n"] == 0
+
+        forced_calls = {"n": 0}
+
+        def _forced(messages, **kwargs):
+            forced_calls["n"] += 1
+            assert kwargs.get("force") is True
+            return recovered
+
+        agent.context_compressor.compress = _forced
+        forced, _ = compress_context(
+            agent,
+            copy.deepcopy(original),
+            "sys",
+            approx_tokens=50_000,
+            force=True,
+            commit_fence=CompressionCommitFence(),
+        )
+        assert forced_calls["n"] == 1
+        assert forced == recovered
+        db.append_message("STALL_FALLBACK_SAME_TURN", "assistant", "still writable")

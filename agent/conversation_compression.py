@@ -792,6 +792,10 @@ def _record_stall_interrupted_backoff(
     when the backoff was recorded."""
     if not compression_attempt_stalled(commit_fence=commit_fence, started_at=started_at):
         return False
+    # Same-turn fallback retry is in flight on a sibling fence. Persisting now would
+    # arm the automatic gate against that retry (#112387). The host records after it returns.
+    if commit_fence is not None and getattr(commit_fence, "_hold_stall_interrupted_backoff", False):
+        return False
     compressor = getattr(agent, "context_compressor", None)
     # Same timeout cooldown ladder as summary-LLM timeouts (#62452): avoid re-burning the full idle budget
     # every turn.
@@ -1204,7 +1208,13 @@ def run_compress_context_with_progress_timeout(
         if on_timeout_cause is not None:
             with _swallow('compress_context timeout-cause callback failed', exc_info=True):
                 on_timeout_cause(total_exhausted, fence.progress_observed)
+        # Hold the primary stall backoff across cancel/unwind so the same-turn
+        # fallback retry is not gated by the cooldown the cancelled worker would persist.
+        if stall_fallback:
+            fence._hold_stall_interrupted_backoff = True
         if not _cancel_or_join_worker(fence):
+            if stall_fallback:
+                fence._hold_stall_interrupted_backoff = False
             result = _await_in_flight_commit(
                 future, ceiling=ceiling, wait_started=wait_started, on_commit_overrun=on_commit_overrun
             )
@@ -1222,6 +1232,8 @@ def run_compress_context_with_progress_timeout(
         since_progress = fence.seconds_since_progress()
         # Lease is free, so run the fallback BEFORE on_timeout: that callback records
         # the summary-failure cooldown, which would no-op the retry's summary call.
+        # The cancelled primary worker can persist stall_interrupted during this
+        # retry; hold that write until the retry returns (#95433/#112387).
         if stall_fallback:
             recovered = _retry_compression_on_fallback_chain(
                 worker=fallback_worker or worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
@@ -1230,6 +1242,14 @@ def run_compress_context_with_progress_timeout(
                 escalate_deterministic=escalate_deterministic,
             )
             if recovered is not None:
+                # Recovered path never reaches on_timeout; persist the primary stall
+                # now so the next automatic turn still cools down (#96784).
+                fence._hold_stall_interrupted_backoff = False
+                if telemetry_agent is not None:
+                    _record_stall_interrupted_backoff(
+                        telemetry_agent, commit_fence=fence, started_at=wait_started, messages=messages,
+                        approx_tokens=None,
+                    )
                 return recovered
         if on_timeout is not None:
             with _swallow('compress_context timeout callback failed', exc_info=True):
@@ -1241,6 +1261,8 @@ def run_compress_context_with_progress_timeout(
             )
         # Leave the future on the shared pool: fence cancel won, so a late
         # commit cannot land (same detachment model as gateway hygiene).
+        if stall_fallback:
+            fence._hold_stall_interrupted_backoff = False
         return messages, _resolve_fallback_prompt()
     finally:
         if not handled_exit:

@@ -1460,13 +1460,34 @@ def _creds_for_current_provider(st: _Switch) -> None:
 def _fell_back_to_openrouter_default(st: _Switch) -> bool:
     """The bare-``custom`` resolver ended on an OpenRouter endpoint that is not a custom endpoint
     the user configured: the built-in default host, or the ``OPENROUTER_BASE_URL`` mirror — the
-    credential ladder's last rung (#10622), which ``provider: custom`` reaches whenever no
-    trusted ``model.base_url`` / ``CUSTOM_BASE_URL`` exists."""
+    credential ladder's last rung (#10622), which ``provider: custom`` reaches only when no
+    ``CUSTOM_BASE_URL`` / trusted ``model.base_url`` exists."""
     mirror = _openrouter_mirror_base_url()
-    if mirror and st.base_url.rstrip("/") == mirror:
+    if mirror and st.base_url.rstrip("/") == mirror and not _custom_endpoint_source():
         return True
     return (base_url_host_matches(st.base_url, "openrouter.ai")
             and not base_url_host_matches(st.current_base_url, "openrouter.ai"))
+
+
+def _custom_endpoint_source() -> str:
+    """The endpoint the credential ladder prefers over its OpenRouter rung for bare ``custom``:
+    ``CUSTOM_BASE_URL``, else the config's ``model.base_url`` when that config backs bare custom.
+    Non-empty means a resolved URL matching the mirror came from a configured custom endpoint (two
+    env vars pointed at one proxy), so the mirror guard must not call it a fallback."""
+    from agent.secret_scope import get_secret_str
+    try:
+        env_url = (get_secret_str("CUSTOM_BASE_URL", "") or "").strip()
+        if env_url:
+            return env_url
+        from hermes_cli.runtime_provider import (
+            _config_base_url_trustworthy_for_bare_custom, _get_model_config)
+        model_cfg = _get_model_config() or {}
+        base = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
+        provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
+        base = (base or "").strip()
+        return base if base and _config_base_url_trustworthy_for_bare_custom(base, provider) else ""
+    except Exception:
+        return ""
 
 
 def _openrouter_mirror_base_url() -> str:

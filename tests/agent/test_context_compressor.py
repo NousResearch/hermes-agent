@@ -1248,7 +1248,7 @@ class TestStreamingClosedFallback:
     have ``openai`` installed (the real function does ``from openai import ...``
     inside its body).  We test the *wiring* — that `_generate_summary` calls
     ``_is_connection_error`` and acts on its result — not the classifier itself
-    (that's covered in ``test_auxiliary_client.py::TestIsConnectionError``).
+    (that's covered in ``test_auxiliary_client_error_classifiers.py::TestIsConnectionError``).
     """
 
     def _msgs(self):

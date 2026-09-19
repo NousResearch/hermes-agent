@@ -13,6 +13,7 @@ import pytest
 import plugins.memory.openviking as openviking_plugin
 from hermes_cli import __version__ as _HERMES_VERSION
 from plugins.memory.openviking import OpenVikingMemoryProvider
+from plugins.memory.openviking._tool_surface import REMEMBER_SCHEMA
 
 
 def _write_skill(skills_dir, name, body="Do the thing."):
@@ -1020,7 +1021,7 @@ class TestEnsureClientReloadsEnv:
         assert message["role"] == "user"
         assert message["parts"] == [{"type": "text", "text": "stable fact"}]
         assert "peer_id" not in message
-        assert "category" not in openviking_plugin.REMEMBER_SCHEMA["parameters"]["properties"]
+        assert "category" not in REMEMBER_SCHEMA["parameters"]["properties"]
         assert posts[1] == (
             f"/api/v1/sessions/{session_id}/commit",
             {"keep_recent_count": 0},

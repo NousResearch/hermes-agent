@@ -344,11 +344,32 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             check_info(f"WAL file is {size // (1024*1024)} MB (normal for active sessions)")
 
 
+def _retired_wal_holders(f: Finding, state_db_path: Path, _DHH: str) -> bool:
+    """Name the processes holding a retired -wal/-shm generation (#110054). Every SessionDB open is
+    refused while they live, and the current inode has no holders, so the plain holder count says
+    "0 holding the DB open" beside a green state.db line — the opposite of the truth."""
+    from hermes_constants import profile_cli_selector
+    from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+    pids = list(dict.fromkeys(pid for pid, _ in iter_deleted_sqlite_sidecar_holders(state_db_path)))
+    if not pids:
+        return False
+    rendered = ", ".join(f"pid {pid}" for pid in pids)
+    check_warn(f"{_DHH}/state.db: {len(pids)} process(es) still hold a retired WAL generation ({rendered})",
+               "(every new session refuses to open until they exit; health/stats probes skipped)")
+    f.issues.append(f"state.db retired WAL generation held by {rendered} — stop them: "
+                    f"'hermes {profile_cli_selector()}gateway stop', quit the Desktop app / dashboard, "
+                    "then rerun 'hermes doctor'")
+    return True
+
+
 @doctor_check()
 def _check_state_db(should_fix: bool, f: Finding) -> None:
     """state.db session count, FTS write health, schema repair, stats snapshot, WAL size."""
     from hermes_cli.doctor import HERMES_HOME, _DHH
     state_db_path = HERMES_HOME / "state.db"
+    # A read-only connect on the new generation is itself another opener, so nothing below may run.
+    if _retired_wal_holders(f, state_db_path, _DHH):
+        return
     if state_db_path.exists():
         _state_db_health(f, should_fix, state_db_path, _DHH)
         _state_db_stats(f.issues, state_db_path)

@@ -59,6 +59,23 @@ class TestDashboardStatus:
         assert "PID 12346" in out
         assert "PID 12347" in out and "[serve]" in out
 
+    def test_status_with_windows_backslash_main_py_cmdlines(self, capsys):
+        """wmic/psutil on Windows often emit hermes_cli\\main.py — status must still parse."""
+        processes = [
+            (11864, r"C:\Users\me\hermes-agent\hermes_cli\main.py serve --host 100.78.226.13 --port 9119 --skip-build"),
+            (2032, r"C:\Users\me\hermes-agent\hermes_cli\main.py dashboard --host 100.78.226.13 --port 9120 --no-open"),
+        ]
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
+             patch("gateway.status._pid_exists", return_value=True), \
+             patch("hermes_cli.main_dashboard._dashboard_listening", return_value=True), \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(status=True))
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "2 hermes dashboard/serve process(es) running" in out
+        assert "PID 11864" in out and "[serve]" in out
+        assert "PID 2032" in out and "[dashboard]" in out
+
 
     def test_status_does_not_try_to_import_fastapi(self):
         """`--status` must not require dashboard runtime deps — it's a

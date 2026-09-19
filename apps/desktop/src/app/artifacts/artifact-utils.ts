@@ -51,6 +51,25 @@ const PRODUCER_TOOL_ARTIFACT_KEY_RE =
 
 const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
 
+// Noise gate: bare paths scraped from prose (PATH_RE / WINDOWS_PATH_RE) only
+// count as artifacts when they end in a file extension a human would open.
+// Extension-less bare paths are working files — caches, ingestion captures,
+// placeholder notes — and they drowned the gallery. Explicit deliveries
+// (MEDIA:, markdown links, URLs, producer-tool keys) bypass this gate.
+const BARE_PATH_NOISE_EXTS =
+  /\.(?:html?|xhtml|pdf|png|jpe?g|gif|webp|svg|bmp|mp4|mov|webm|mp3|wav|ogg|opus|m4a|flac|mkv|avi|csv|xlsx?|docx?|pptx?|zip|tar|gz|json|md|txt)$/i
+
+function isExplicitArtifactCandidate(
+  value: string,
+  source: 'media' | 'markdown-image' | 'markdown-link' | 'url' | 'bare-path' | 'tool-key'
+): boolean {
+  if (source !== 'bare-path') {
+    return true
+  }
+
+  return BARE_PATH_NOISE_EXTS.test(value)
+}
+
 function artifactSessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
@@ -287,11 +306,19 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
   }
 
   for (const match of text.matchAll(PATH_RE)) {
-    pushValue(match[2] || '')
+    const value = match[2] || ''
+
+    if (isExplicitArtifactCandidate(value, 'bare-path')) {
+      pushValue(value)
+    }
   }
 
   for (const match of text.matchAll(WINDOWS_PATH_RE)) {
-    pushValue(match[2] || '')
+    const value = match[2] || ''
+
+    if (isExplicitArtifactCandidate(value, 'bare-path')) {
+      pushValue(value)
+    }
   }
 }
 
@@ -373,7 +400,10 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
 
       const normalized = normalizeValue(value)
 
-      if (normalized && looksLikeArtifact(normalized)) {
+      // A producer-tool key holding a bare, extension-less path is still
+      // plumbing, not an artifact — e.g. write_file reporting a directory or
+      // a state file it touched. Require an openable extension.
+      if (normalized && looksLikeArtifact(normalized) && isExplicitArtifactCandidate(normalized, 'bare-path')) {
         pushValue(normalized)
       }
     })

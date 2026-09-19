@@ -115,6 +115,22 @@ def _trim_tool_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return items
 
 
+def _transcript_starts_with(transcript: List[Any], prefix: List[Any]) -> bool:
+    """True when ``transcript`` starts with ``prefix``, comparing ``(role, content)`` only.
+
+    The agent stamps transport metadata onto its returned rows (``timestamp``, ``_row_id``,
+    ``reasoning``, ...), so exact-dict comparison against the plain input history never matches.
+    """
+    if len(transcript) < len(prefix):
+        return False
+    for actual, expected in zip(transcript, prefix):
+        if not isinstance(actual, dict) or not isinstance(expected, dict):
+            return False
+        if actual.get("role") != expected.get("role") or actual.get("content") != expected.get("content"):
+            return False
+    return True
+
+
 class _ResponsesStream:
     """Per-request state and event emitters for the POST /v1/responses SSE writer.
 
@@ -998,9 +1014,9 @@ class OpenAICompatRoutesMixin:
             return 0
         prior = list(conversation_history)
         expected_prefix = prior + [{"role": "user", "content": user_message}]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
+        if _transcript_starts_with(agent_messages, expected_prefix):
             return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
+        if prior and _transcript_starts_with(agent_messages, prior):
             return len(prior)
         return 0
 

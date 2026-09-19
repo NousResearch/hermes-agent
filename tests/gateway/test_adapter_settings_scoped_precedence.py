@@ -189,3 +189,37 @@ def test_whatsapp_bridge_env_carries_the_secondary_effective_policy(homes, monke
         env = a._bridge_env()
     assert a._dm_policy == "pairing" == env["WHATSAPP_DM_POLICY"]
     assert "WHATSAPP_ALLOWED_USERS" not in env
+
+
+@pytest.mark.parametrize("secondary_prefix", ["Secondary Bot: ", ""])
+def test_whatsapp_reply_prefix_isolated_across_profile_scopes(
+    homes, monkeypatch, secondary_prefix
+):
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    launch, secondary = homes
+    monkeypatch.setenv("WHATSAPP_REPLY_PREFIX", "Launch Bot: ")
+    (launch / "config.yaml").write_text(
+        'whatsapp:\n  enabled: true\n  reply_prefix: "Launch YAML: "\n'
+    )
+    launch_before = WhatsAppAdapter(
+        load_gateway_config().platforms[Platform.WHATSAPP]
+    )
+    assert launch_before._bridge_env()["WHATSAPP_REPLY_PREFIX"] == "Launch Bot: "
+
+    (secondary / "config.yaml").write_text(
+        f'whatsapp:\n  enabled: true\n  reply_prefix: "{secondary_prefix}"\n'
+    )
+    with _secondary_scope(secondary):
+        secondary_adapter = WhatsAppAdapter(
+            load_gateway_config().platforms[Platform.WHATSAPP]
+        )
+        assert (
+            secondary_adapter._bridge_env()["WHATSAPP_REPLY_PREFIX"]
+            == secondary_prefix
+        )
+
+    launch_after = WhatsAppAdapter(
+        load_gateway_config().platforms[Platform.WHATSAPP]
+    )
+    assert launch_after._bridge_env()["WHATSAPP_REPLY_PREFIX"] == "Launch Bot: "

@@ -622,6 +622,14 @@ export interface Translations {
       reasoningCollapsedDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
+      interfaceStyleTitle: string
+      interfaceStyleDesc: string
+      interfaceStyleTypographyTitle: string
+      interfaceStyleTypographyDesc: string
+      interfaceStyleControlsTitle: string
+      interfaceStyleControlsDesc: string
+      interfaceStyleSurfacesTitle: string
+      interfaceStyleSurfacesDesc: string
       sessionDensityTitle: string
       sessionDensityDesc: string
       sessionDensityCompact: string

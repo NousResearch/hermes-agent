@@ -189,6 +189,7 @@ export function SidebarRowShell({
         'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md',
         className
       )}
+      data-hermes-sidebar-row=""
       {...props}
     >
       {children}

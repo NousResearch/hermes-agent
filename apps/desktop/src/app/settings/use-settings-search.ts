@@ -147,6 +147,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       label: appearance.uiScaleTitle,
       target: { setting: APPEARANCE_SETTING_IDS.uiScale, view: 'config:appearance' }
     },
+    {
+      context: appearanceContext,
+      description: appearance.interfaceStyleDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.interfaceStyle}`,
+      keywords: ['GNOME', 'Adwaita', 'typography', 'controls', 'menus', 'popovers'],
+      label: appearance.interfaceStyleTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.interfaceStyle, view: 'config:appearance' }
+    },
     // Linux has no translucency row to land on, and a palette hit that scrolls
     // to nothing is worse than no hit.
     ...(TRANSLUCENCY_SUPPORTED

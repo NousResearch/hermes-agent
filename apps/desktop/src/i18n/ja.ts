@@ -493,6 +493,15 @@ export const ja = defineLocale({
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
+      interfaceStyleTitle: 'GNOME インターフェーススタイル',
+      interfaceStyleDesc: 'Hermes の機能やレイアウトを変えずに、控えめな Adwaita 風の外観を使用します。',
+      interfaceStyleTypographyTitle: 'Adwaita タイポグラフィ',
+      interfaceStyleTypographyDesc:
+        'インストール済みなら Adwaita Sans を優先し、それ以外はシステムフォントを使います。',
+      interfaceStyleControlsTitle: '柔らかなコントロール',
+      interfaceStyleControlsDesc: 'ボタン、タイトルバー、サイドバーの選択項目を穏やかに丸めます。',
+      interfaceStyleSurfacesTitle: 'フローティングサーフェス',
+      interfaceStyleSurfacesDesc: 'メニューとポップオーバーに GNOME 風の余白、丸み、影を適用します。',
       sessionDensityTitle: 'セッションリストの密度',
       sessionDensityDesc: 'サイドバーのセッションタイトルの下に表示する情報量を選びます。',
       sessionDensityCompact: 'コンパクト',

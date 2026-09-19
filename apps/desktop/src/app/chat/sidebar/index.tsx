@@ -1545,6 +1545,8 @@ export function ChatSidebar({
                     )}
                     // A tip anchored to the label points at the end of the
                     // word; the row is what it's actually about.
+                    data-active={active || undefined}
+                    data-hermes-sidebar-nav=""
                     data-tip-region=""
                     onClick={() => {
                       // A plain new session lands in whatever profile the live

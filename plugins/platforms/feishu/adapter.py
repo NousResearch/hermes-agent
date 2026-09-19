@@ -1158,6 +1158,105 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
+
+    # ── Patch: fix lark-oapi websocket CARD message handling ─────────────
+    # lark-oapi <= 1.7.0 silently drops CARD-type websocket messages in
+    # _handle_data_frame: `elif message_type == MessageType.CARD: return`
+    # skips the event handler entirely and sends no response back to Feishu.
+    # We monkey-patch _handle_data_frame to route CARD through the same
+    # _do_without_validation path as EVENT.
+    import lark_oapi.ws.client as _ws_mod
+    _ws_client_cls = getattr(_ws_mod, "Client", None)
+
+    async def _patched_handle_data_frame(self, frame):
+        from lark_oapi.ws.pb.pbbp2_pb2 import Frame
+        from lark_oapi.ws.enum import FrameType
+        from lark_oapi.ws.const import (
+            HEADER_MESSAGE_ID, HEADER_TRACE_ID, HEADER_SUM,
+            HEADER_SEQ, HEADER_TYPE, HEADER_BIZ_RT,
+        )
+        from lark_oapi.ws.client import (
+            _get_by_key, MessageType, Response, JSON, UTF_8, logger as _ws_logger,
+        )
+        import http, base64, time as _time
+
+        hs = frame.headers
+        msg_id = _get_by_key(hs, HEADER_MESSAGE_ID)
+        trace_id = _get_by_key(hs, HEADER_TRACE_ID)
+        sum_ = _get_by_key(hs, HEADER_SUM)
+        seq = _get_by_key(hs, HEADER_SEQ)
+        type_ = _get_by_key(hs, HEADER_TYPE)
+
+        pl = frame.payload
+        if int(sum_) > 1:
+            pl = self._combine(msg_id, int(sum_), int(seq), pl)
+            if pl is None:
+                return
+
+        message_type = MessageType(type_)
+        _ws_logger.debug(self._fmt_log(
+            "receive message, message_type: {}, message_id: {}, trace_id: {}",
+            message_type.value, msg_id, trace_id))
+
+        resp = Response(code=http.HTTPStatus.OK)
+        try:
+            start = int(round(_time.time() * 1000))
+            if message_type == MessageType.EVENT:
+                result = self._event_handler._do_without_validation(pl)
+            elif message_type == MessageType.CARD:
+                # ── the fix: handle CARD same as EVENT ──
+                result = self._event_handler._do_without_validation(pl)
+            else:
+                return
+            end = int(round(_time.time() * 1000))
+            header = hs.add()
+            header.key = HEADER_BIZ_RT
+            header.value = str(end - start)
+            if result is not None:
+                resp.data = base64.b64encode(JSON.marshal(result).encode(UTF_8))
+        except Exception as e:
+            # "processor not found" is a known lark-oapi issue: websocket events
+            # use short event types (e.g. "message") that don't match the
+            # registered long-form keys (e.g. "im.message.receive_v1").
+            # Returning 500 makes Feishu show an error popup to the user.
+            # Return 200 instead — the adapter handles messages via its own
+            # _on_message_event callback, not through the SDK processor map.
+            err_msg = str(e)
+            if "processor not found" in err_msg:
+                logger.debug(
+                    self._fmt_log(
+                        "suppressing processor-not-found (returning 200): "
+                        "message_type={}, message_id={}, trace_id={}",
+                        message_type.value, msg_id, trace_id))
+            else:
+                logger.error(
+                    self._fmt_log(
+                        "handle message failed, message_type: {}, "
+                        "message_id: {}, trace_id: {}, err: {}",
+                        message_type.value, msg_id, trace_id, e))
+                resp = Response(code=http.HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        frame.payload = JSON.marshal(resp).encode(UTF_8)
+        await self._write_message(frame.SerializeToString())
+
+    # Class-level patch: survives reconnects that might create new
+    # references to the bound method, unlike instance-level patch.
+    # Guarded because some tests inject a fake ``lark_oapi.ws.client``
+    # module that has no ``Client`` class.  The original handler is kept
+    # aside and restored when the WS run tears down (see the finally
+    # below), so the SDK class is never left patched after shutdown.
+    original_handle_data_frame = None
+    if _ws_client_cls is not None and hasattr(_ws_client_cls, "_handle_data_frame"):
+        if _ws_client_cls._handle_data_frame is not _patched_handle_data_frame:
+            original_handle_data_frame = _ws_client_cls._handle_data_frame
+            _ws_client_cls._handle_data_frame = _patched_handle_data_frame
+            logger.info("[Feishu] Patched _handle_data_frame (class-level) for CARD callback support")
+        else:
+            logger.debug("[Feishu] _handle_data_frame already patched — leaving in place")
+    else:
+        logger.debug("[Feishu] lark_oapi.ws.client.Client unavailable — skipping CARD patch")
+    # ── End patch ─────────────────────────────────────────────────────────
+
     try:
         ws_client.start()
     except Exception:
@@ -1169,6 +1268,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _ws_isolation_state.adapter = None
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
+        if _ws_client_cls is not None and original_handle_data_frame is not None:
+            _ws_client_cls._handle_data_frame = original_handle_data_frame
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
         for task in pending:
             task.cancel()

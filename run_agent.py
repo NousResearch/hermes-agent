@@ -562,7 +562,8 @@ class AIAgent(
         ``HERMES_API_CALL_STALE_TIMEOUT`` > reasoning floor > 90s.
 
         Returns ``(seconds, uses_implicit_default)``; the implicit flag lets callers auto-disable the detector
-        for local endpoints only when the user configured nothing.
+        for local endpoints only when the user configured nothing. The reasoning floor is remote-only: on a
+        local endpoint it falls through to the implicit default, so the local disarm still applies.
         """
         cfg = get_provider_stale_timeout(self.provider, self.model)
         if cfg is not None:
@@ -570,20 +571,28 @@ class AIAgent(
         env_timeout = os.getenv("HERMES_API_CALL_STALE_TIMEOUT")
         if env_timeout is not None:
             return float(env_timeout), False
-        # Reasoning-model floor (cloud gateways idle-kill mid-think); not "implicit" so the local-endpoint
-        # short-circuit does not disable stale detection here.
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-        reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
-        if reasoning_floor is not None:
-            return reasoning_floor, False
+        # Reasoning-model floor (cloud gateways idle-kill a request mid-think) — remote endpoints only.
+        # A local endpoint has no intermediate cloud gateway to idle-kill, so arming the floor's ceiling
+        # there only kills a cold self-hosted prefill mid-flight; skip it and let the implicit default
+        # disarm instead (the 180s-cloud-deadline report).
+        if not self._stale_timeout_endpoint_is_local():
+            from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+            reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
+            if reasoning_floor is not None:
+                return reasoning_floor, False
         return 90.0, True
+
+    def _stale_timeout_endpoint_is_local(self) -> bool:
+        """True when the request targets a local endpoint (loopback, RFC-1918, container DNS). Shared by
+        the reasoning-floor gate and the implicit-default disarm so both agree on which URLs count."""
+        base_url = getattr(self, "_base_url", None) or self.base_url or ""
+        return bool(base_url) and is_local_endpoint(base_url)
 
     def _compute_non_stream_stale_timeout(self, api_payload: Any) -> float:
         """Effective non-stream stale timeout for ``api_payload`` (an ``api_kwargs`` dict or legacy ``messages``
         list), scaled by estimated context size and capped by the run budget."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
-        base_url = getattr(self, "_base_url", None) or self.base_url or ""
-        if uses_implicit_default and base_url and is_local_endpoint(base_url):
+        if uses_implicit_default and self._stale_timeout_endpoint_is_local():
             return float("inf")
 
         from agent.chat_completion_helpers import _high_effort_silence_floor, estimate_request_context_tokens

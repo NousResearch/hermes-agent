@@ -19,11 +19,14 @@ These tests pin the floor's behavior:
 2. The non-stream resolver at
    ``run_agent.py:AIAgent._resolved_api_call_stale_timeout_base``
    consults the floor at priority 4 (after explicit user config,
-   provider config, and env var; before the 90s default), and
-   returns ``uses_implicit_default=False`` so the local-endpoint
-   short-circuit in ``_compute_non_stream_stale_timeout`` does not
-   disable stale detection for a reasoning model running on a local
-   NIM endpoint.
+   provider config, and env var; before the 90s default) for REMOTE
+   endpoints only.  The floor mitigates a cloud gateway idle-killing a
+   long thinking phase, and a local endpoint has no such gateway to
+   idle-kill: there the resolver falls through to the implicit 90s
+   default instead, so the local-endpoint short-circuit in
+   ``_compute_non_stream_stale_timeout`` disarms the detector rather
+   than arming a 180s cloud-shaped deadline against a cold self-hosted
+   prefill.
 3. The stream stale-timeout resolution (mirrored here as in
    ``test_stream_read_timeout_floor.py`` because the real builder
    lives inside a worker thread) consults the floor after the
@@ -163,7 +166,96 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     assert implicit is True
 
 
-# ── stream-side mirror (the real builder lives in a worker thread) ────────
+# ── local endpoints must not inherit the cloud-shaped reasoning deadline ───
+
+
+def _isolate(monkeypatch, tmp_path) -> None:
+    """Temp HERMES_HOME + blank .env/config and no env override (the ambient
+    machine config must never decide these assertions)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+
+@pytest.mark.parametrize("base_url", [
+    "http://127.0.0.1:8080/v1",        # loopback
+    "http://192.168.68.68:8080/v1",    # RFC-1918 self-hosted box (the report's case)
+    "http://gpu-box.local:8080/v1",    # mDNS
+])
+def test_local_endpoint_reasoning_model_gets_the_local_budget(monkeypatch, tmp_path, base_url):
+    """A self-hosted reasoning model on a local endpoint is NOT given the cloud floor.
+
+    The floor exists because a cloud gateway idle-kills a request mid-think; a
+    local endpoint has no such gateway, and arming its 180s ceiling killed a cold
+    prefill mid-flight (repeatedly, on every scheduled run).  Local endpoints get
+    the disarmed (infinite) budget instead.
+    """
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    _isolate(monkeypatch, tmp_path)
+
+    agent = _make_agent(
+        tmp_path,
+        provider="openai",
+        base_url=base_url,
+        model="qwen/qwen3-32b",   # 180s floor, the report's model class
+    )
+    base, implicit = agent._resolved_api_call_stale_timeout_base()
+    assert (base, implicit) == (90.0, True), (
+        f"local endpoint {base_url} inherited the reasoning floor: got {base!r}"
+    )
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == float("inf"), (
+        "a local endpoint must keep the disarmed budget, not a 180s cloud deadline"
+    )
+
+
+def test_remote_endpoint_reasoning_floor_still_applies(monkeypatch, tmp_path):
+    """The floor keeps protecting the case it was written for (cloud gateway)."""
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    _isolate(monkeypatch, tmp_path)
+
+    agent = _make_agent(
+        tmp_path,
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        model="qwen/qwen3-32b",
+    )
+    base, implicit = agent._resolved_api_call_stale_timeout_base()
+    assert (base, implicit) == (180.0, False)
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 180.0
+
+
+def test_local_endpoint_non_reasoning_model_keeps_the_disarm(monkeypatch, tmp_path):
+    """The pre-existing local disarm is untouched for models with no floor."""
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    _isolate(monkeypatch, tmp_path)
+
+    agent = _make_agent(
+        tmp_path,
+        provider="openai",
+        base_url="http://127.0.0.1:8080/v1",
+        model="gpt-5.5",
+    )
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == float("inf")
+
+
+def test_explicit_env_still_wins_on_a_local_endpoint(monkeypatch, tmp_path):
+    """An operator-set HERMES_API_CALL_STALE_TIMEOUT is explicit: it arms even locally."""
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "300")
+
+    agent = _make_agent(
+        tmp_path,
+        provider="openai",
+        base_url="http://192.168.68.68:8080/v1",
+        model="qwen/qwen3-32b",
+    )
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 300.0
 
 
 def _resolve_stream_stale_timeout(

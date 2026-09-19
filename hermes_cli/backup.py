@@ -1159,8 +1159,7 @@ def _copy_quick_snapshot_files(
     """Copy every quick-snapshot candidate into *staging_dir*.
 
     Returns ``(manifest {rel: size}, failed_dbs, oversized_skipped)``. The last two are snapshot
-    incompleteness (#68805): the caller must suppress pruning so the older snapshot that may hold
-    the only recoverable DB survives.
+    incompleteness (#68805): pruning still runs but must keep the newest recovery copy of each omitted DB.
     """
     manifest: Dict[str, int] = {}
     failed_dbs: list[str] = []
@@ -1258,23 +1257,47 @@ def _create_quick_snapshot_locked(
         "total_size": sum(manifest.values()), "files": manifest,
         "failed_dbs": failed_dbs, "oversized_skipped": oversized_skipped,
     }
+    namespace = _quick_snapshot_namespace(label)
+    previous = {d: _snapshot_metadata(d) for d in _snapshot_dirs(root)}
+    previous = {d: m for d, m in previous.items()
+                if _snapshot_retention_namespace(d, m) == namespace}
+    # Serialized publication makes this order independent of same-second labels,
+    # collision suffixes, and wall-clock movement. Legacy manifests precede it.
+    meta["recovery_sequence"] = max((_snapshot_recovery_sequence(m) for m in previous.values()), default=0) + 1
+    recovery_metadata = {staging_dir: meta, **previous}
+    required, _ = _snapshot_recovery_state(
+        _snapshot_recovery_order(list(recovery_metadata), recovery_metadata), recovery_metadata,
+    )
+    # A cumulative checkpoint, not a claim that these DBs failed this copy attempt.
+    # An empty checkpoint also supersedes resolved omissions in older manifests.
+    meta["recovery_required_dbs"] = sorted(required)
     with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
     _secure_quick_snapshot_tree(root, staging_dir)
     os.replace(staging_dir, root / snap_id)
     # Auto-prune (pre-update callers pass a smaller keep so state.db copies don't accumulate).
-    # Skip when a DB failed to capture OR was skipped for size (#68805): the snapshot is
-    # incomplete and the older one may hold the only recoverable database.
-    if not (failed_dbs or oversized_skipped):
-        _prune_oldest(_snapshot_dirs(root), _QUICK_DEFAULT_KEEP if keep is None else keep, shutil.rmtree, "snapshot")
-    else:
+    # Preserve the newest recovery copy of each unresolved omitted DB, including
+    # inherited omissions, in addition to the retention window. Still prune stale
+    # partial snapshots that add no recovery coverage: they contain config/auth copies and must
+    # stay bounded.
+    incomplete = failed_dbs or oversized_skipped
+    retention = _QUICK_DEFAULT_KEEP if keep is None else keep
+    if incomplete:
         if oversized_skipped:
-            print("  ⚠ Skipping snapshot prune: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
+            print("  ⚠ Preserving latest recovery copy: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
             logger.warning("Quick snapshot skipped oversized DB file(s): %s", ", ".join(oversized_skipped))
         logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture and/or %d were oversized "
-            "— preserving older snapshots as recovery source",
+            "Snapshot incomplete because %d DB(s) failed to capture and/or %d were oversized "
+            "— preserving latest recovery copy of each omitted DB",
             len(failed_dbs), len(oversized_skipped))
+    _prune_quick_snapshots(
+        root,
+        keep=retention,
+        namespace=namespace,
+    )
+    # Damaged manifests cannot identify their original retention policy. Bound
+    # recognizable snapshot artifacts separately using the normal (not updater) window.
+    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP, namespace="unknown")
     logger.info("quick snapshot phase=copy status=complete id=%s files=%d bytes=%d",
                 snap_id, len(manifest), sum(manifest.values()))
     return snap_id
@@ -1291,6 +1314,159 @@ def _snapshot_dirs(root: Path) -> List[Path]:
     """Published snapshot directories under *root*, newest first."""
     return _newest_first(root, lambda d: d.is_dir() and not d.name.startswith(".")
                          and not d.name.endswith(".partial"))
+
+
+def _quick_snapshot_namespace(label: Optional[str]) -> str:
+    """Keep updater safety-net snapshots separate from user-created snapshots."""
+    return "pre-update" if label == "pre-update" else "manual"
+
+
+def _snapshot_retention_namespace(directory: Path, meta: Optional[Dict[str, Any]]) -> Optional[str]:
+    if meta is not None:
+        return _quick_snapshot_namespace(meta.get("label"))
+    # Only published timestamped snapshot names are managed artifacts. Do not
+    # remove arbitrary directories placed beside them when a manifest is absent.
+    name = directory.name
+    try:
+        datetime.strptime(name[:15], "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+    return "unknown" if len(name) == 15 or name[15:16] == "-" else None
+
+
+def _snapshot_metadata(directory: Path) -> Optional[Dict[str, Any]]:
+    try:
+        with open(directory / "manifest.json", encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        logger.warning("Could not inspect snapshot %s for retention: %s", directory.name, exc)
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def _verified_snapshot_db(directory: Path, rel: str, expected_size: int) -> bool:
+    """Require valid SQLite matching the manifest's byte count, not content identity.
+
+    Existing manifests have no digest, so same-size valid replacements are indistinguishable.
+    """
+    if not isinstance(rel, str) or type(expected_size) is not int or expected_size < 0:
+        return False
+    payload = directory / rel
+    try:
+        if not rel.endswith(".db") or not _is_within(payload, directory.resolve()):
+            return False
+    except OSError:
+        return False
+    integrity = verify_sqlite_integrity(payload)
+    return bool(integrity.get("valid") and integrity.get("size") == expected_size)
+
+
+def _is_complete_quick_snapshot(directory: Path, meta: Dict[str, Any]) -> bool:
+    """A complete generation has no recorded omissions and every payload survives inspection."""
+    if meta.get("failed_dbs") or meta.get("oversized_skipped"):
+        return False
+    files = meta.get("files")
+    if not isinstance(files, dict) or not files:
+        return False
+    root = directory.resolve()
+    for rel, expected_size in files.items():
+        if not isinstance(rel, str):
+            return False
+        payload = directory / rel
+        try:
+            if not _is_within(payload, root) or not payload.is_file() or payload.stat().st_size != expected_size:
+                return False
+        except OSError:
+            return False
+        if rel.endswith(".db") and not _verified_snapshot_db(directory, rel, expected_size):
+            return False
+    return True
+
+
+def _snapshot_recovery_paths(directory: Path, meta: Dict[str, Any], key: str) -> Optional[set[str]]:
+    """A malformed checkpoint must never masquerade as an authoritative empty one."""
+    if key not in meta:
+        return None
+    values = meta[key]
+    try:
+        if isinstance(values, list) and all(
+            isinstance(rel, str) and rel.endswith(".db") and not Path(rel).is_absolute()
+            and ".." not in Path(rel).parts and _is_within(directory / rel, directory.resolve())
+            for rel in values
+        ):
+            return set(values)
+    except OSError:
+        pass
+    logger.warning("Ignoring malformed %s in snapshot %s", key, directory.name)
+    return None
+
+
+
+def _snapshot_recovery_state(
+    dirs: List[Path], metadata: Dict[Path, Optional[Dict[str, Any]]],
+) -> tuple[set[str], set[Path]]:
+    """Resolve omissions newest-checkpoint-first, returning obligations and their witnesses.
+
+    Keep one cumulative carrier, even empty, so old retained failures cannot resurrect.
+    Newer legacy records need their latest omission/verified-clear witness per affected DB
+    until the next published snapshot consolidates them into its single checkpoint.
+    """
+    required: set[str] = set()
+    retained: set[Path] = set()
+    newer = []
+    for directory in dirs:
+        meta = metadata[directory] or {}
+        checkpoint = _snapshot_recovery_paths(directory, meta, "recovery_required_dbs")
+        if checkpoint is not None:
+            required = checkpoint
+            # A checkpoint only discharged omissions while its captured DBs were
+            # usable. Reconstruct damaged listed payloads before trusting that
+            # discharge to prune an older recovery copy. Non-DB damage does not
+            # resurrect database obligations, nor does absence from the live home.
+            files = meta.get("files")
+            if isinstance(files, dict):
+                for rel, size in files.items():
+                    if not isinstance(rel, str) or not rel.endswith(".db"):
+                        continue
+                    candidate = {"recovery_required_dbs": [rel]}
+                    if (_snapshot_recovery_paths(directory, candidate, "recovery_required_dbs")
+                            and not _verified_snapshot_db(directory, rel, size)):
+                        required.add(rel)
+            retained.add(directory)
+            break
+        newer.append(directory)
+    witnesses: Dict[str, Path] = {}
+    for directory in reversed(newer):
+        meta = metadata[directory] or {}
+        for key in ("failed_dbs", "oversized_skipped"):
+            for rel in _snapshot_recovery_paths(directory, meta, key) or ():
+                required.add(rel)
+                witnesses[rel] = directory
+        files = meta.get("files")
+        if not isinstance(files, dict):
+            continue
+        # Only a newly verified, listed SQLite payload clears an obligation.
+        for rel in required | witnesses.keys():
+            if rel in files and _verified_snapshot_db(directory, rel, files[rel]):
+                required.discard(rel)
+                witnesses[rel] = directory
+    retained.update(witnesses.values())
+    return required, retained
+
+
+
+def _snapshot_recovery_sequence(meta: Optional[Dict[str, Any]]) -> int:
+    sequence = (meta or {}).get("recovery_sequence")
+    return sequence if type(sequence) is int and sequence > 0 else 0
+
+
+
+def _snapshot_recovery_order(
+    dirs: List[Path], metadata: Dict[Path, Optional[Dict[str, Any]]],
+) -> List[Path]:
+    """Order this namespace's numbered publications; legacy order remains best-effort."""
+    return sorted(dirs, key=lambda d: (_snapshot_recovery_sequence(metadata[d]), d.name), reverse=True)
+
 
 
 def list_quick_snapshots(limit: int = 20, hermes_home: Optional[Path] = None) -> List[Dict[str, Any]]:
@@ -1586,9 +1762,57 @@ def _prune_oldest(newest_first: List[Path], keep: int, remove, what: str) -> int
     return deleted
 
 
+def _prune_quick_snapshots(
+    root: Path,
+    keep: int = _QUICK_DEFAULT_KEEP,
+    *,
+    preserve_recovery_for: Optional[set[str]] = None,
+    namespace: Optional[str] = "manual",
+) -> int:
+    """Bound one snapshot namespace without discarding recovery generations.
+
+    Retain the configured recent window, newest verified complete generation,
+    and the newest readable SQLite copy for each unresolved omission. One cumulative
+    carrier (or bounded legacy witnesses) also survives keep=0 to preserve that obligation.
+    """
+    if namespace is None:
+        namespaces = {_snapshot_retention_namespace(d, _snapshot_metadata(d))
+                      for d in _snapshot_dirs(root)}
+        return sum(_prune_quick_snapshots(root, keep=keep, namespace=current)
+                   for current in namespaces if current is not None)
+    metadata = {d: _snapshot_metadata(d) for d in _snapshot_dirs(root)}
+    dirs = [d for d, meta in metadata.items()
+            if _snapshot_retention_namespace(d, meta) == namespace]
+    dirs = _snapshot_recovery_order(dirs, metadata)
+    missing, retained = _snapshot_recovery_state(dirs, metadata)
+    retained.update(dirs[:keep])
+    missing.update(preserve_recovery_for or ())
+    for d in dirs:
+        meta = _snapshot_metadata(d)
+        if meta is None:
+            continue
+        if _is_complete_quick_snapshot(d, meta):
+            retained.add(d)
+            break
+    for d in dirs:
+        if not missing:
+            break
+        files = (metadata[d] or {}).get("files")
+        if not isinstance(files, dict):
+            continue
+        # Restore consumes manifest entries: an unlisted file is not recovery coverage.
+        covered = {rel for rel in missing if rel in files and _verified_snapshot_db(d, rel, files[rel])}
+        if covered:
+            retained.add(d)
+            missing.difference_update(covered)
+    return _prune_oldest([d for d in dirs if d not in retained], 0, shutil.rmtree, "snapshot")
+
+
 def prune_quick_snapshots(keep: int = _QUICK_DEFAULT_KEEP, hermes_home: Optional[Path] = None) -> int:
-    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
-    return _prune_oldest(_snapshot_dirs(_quick_snapshot_root(hermes_home)), keep, shutil.rmtree, "snapshot")
+    """Prune beyond the recent window, retaining recovery copies and their checkpoint evidence."""
+    home = hermes_home or get_hermes_home()
+    with _backup_operation_lock(home):
+        return _prune_quick_snapshots(_quick_snapshot_root(home), keep=keep, namespace=None)
 
 
 def run_quick_backup(args) -> None:

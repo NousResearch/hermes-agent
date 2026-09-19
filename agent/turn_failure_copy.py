@@ -9,6 +9,7 @@ trailing "Provider said:" / "Details:" line.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
@@ -308,6 +309,19 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str) -> s
         f"{lead} — it looks temporarily unavailable. {_NEXT_STEPS_RETRY} To avoid this in future, "
         f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
     )
+
+
+def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
+    """One chat/CLI line naming when the provider says the limit lifts (#98852): the Retry-After
+    / ``resets_at`` the loop already honours for backoff, shown to the user instead of a bare
+    "wait a minute". Local wall-clock time plus the remaining wait; empty once it has passed."""
+    now = time.time() if now is None else now
+    remaining = int(resets_at - now)
+    if remaining <= 0:
+        return ""
+    hours, minutes = divmod((remaining + 59) // 60, 60)
+    wait = f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+    return f"Limit resets at {time.strftime('%H:%M', time.localtime(resets_at))} (in {wait})."
 
 
 def oauth_relogin_command(provider: Any) -> str:

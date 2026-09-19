@@ -28,8 +28,8 @@ from agent.message_sanitization import (
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.turn_failure_copy import (
-    CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, nonretryable_copy, provider_label_for,
-    site_copy, stamp_failure,
+    CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
+    provider_label_for, site_copy, stamp_failure,
 )
 from agent.turn_retry_state import TurnRetryState
 from hermes_constants import display_hermes_home
@@ -664,6 +664,28 @@ def _failed_turn_result(final_response: str, messages: Any, api_call_count: int,
     }
 
 
+def limit_reset_epoch(agent: Any, api_error: Exception) -> Optional[float]:
+    """Epoch seconds when the provider says its limit lifts (Retry-After header, ``resets_at`` /
+    ``retry_after`` body fields, "try again in N" text) — the same datum the backoff honours."""
+    from agent.credential_pool import _parse_absolute_timestamp
+
+    try:
+        return _parse_absolute_timestamp(agent._extract_api_error_context(api_error).get("reset_at"))
+    except Exception:  # advisory only — never break the error path
+        return None
+
+
+def _stamp_limit_reset(result: Dict[str, Any], agent: Any, api_error: Exception) -> None:
+    """``failure_resets_at`` for structured clients (Desktop card: "Limit resets at HH:mm") and the
+    same sentence appended to the chat text every plain surface (CLI/TUI/gateway) renders (#98852)."""
+    resets_at = limit_reset_epoch(agent, api_error)
+    if resets_at is None:
+        return
+    result["failure_resets_at"] = resets_at
+    if line := limit_reset_copy(resets_at):
+        result["final_response"] = f"{result['final_response']}\n\n{line}"
+
+
 def _print_nonretryable_auth_guidance(
     agent: Any, classified: Any, *, status_code: Optional[int], provider: Any, base_url: Any, model: Any,
 ) -> None:
@@ -909,6 +931,7 @@ def nonretryable_client_error_result(
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
     })
+    _stamp_limit_reset(result, agent, api_error)
     if _welcome_hint and (_kind := _welcome_surface_kind(classified)):
         # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
         _stamp_free_tier(result, _kind,
@@ -1042,6 +1065,7 @@ def max_retries_exhausted_result(
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
     })
+    _stamp_limit_reset(result, agent, api_error)
     if _free_tier_kind:
         _stamp_free_tier(result, _free_tier_kind, (
             _welcome_tier_guidance(classified, model=model, in_chat=True, door=False)

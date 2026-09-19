@@ -173,7 +173,13 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         retryable = result.get("failure_retryable")
         if not isinstance(retryable, bool):
             retryable = reason not in _NON_RETRYABLE_REASONS
-        return _surface(_result_layer(reason, error_text, provider), reason, retryable, provider, model)
+        surface = _surface(_result_layer(reason, error_text, provider), reason, retryable, provider, model)
+        # When the provider named the moment its limit lifts (Retry-After / ``resets_at``,
+        # ``agent/turn_recovery.py::_stamp_limit_reset``) the card can say "Limit resets at HH:mm"
+        # next to Retry instead of leaving the user to guess (#98852). Epoch seconds.
+        if isinstance(resets_at := result.get("failure_resets_at"), (int, float)) and not isinstance(resets_at, bool):
+            surface["resets_at"] = float(resets_at)
+        return surface
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: result classification failed", exc_info=True)
         return None
@@ -199,6 +205,11 @@ def build_error_surface_from_exception(
 
         classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key)
         synthetic = {"error": classified.message or message, "failure_reason": classified.reason.value}
+        from agent.agent_runtime_helpers import extract_api_error_context
+        from agent.credential_pool import _parse_absolute_timestamp
+
+        if (resets_at := _parse_absolute_timestamp(extract_api_error_context(exc).get("reset_at"))) is not None:
+            synthetic["failure_resets_at"] = resets_at
         surface = build_error_surface_from_result(synthetic, provider=provider, model=model)
         if surface is not None:
             surface["retryable"] = bool(classified.retryable)

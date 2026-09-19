@@ -34,7 +34,13 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
-import { errorRecoveryPlan, type ErrorSurface, formatErrorDiagnostics, isOAuthReauthSurface } from '@/lib/error-surface'
+import {
+  errorRecoveryPlan,
+  type ErrorSurface,
+  formatErrorDiagnostics,
+  formatLimitReset,
+  isOAuthReauthSurface
+} from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
 import { triggerHaptic } from '@/lib/haptics'
 import {
@@ -741,6 +747,9 @@ const ErrorRecoveryActions: FC = () => {
   }, [])
 
   const localFolders = Boolean(window.hermesDesktop?.logsRoot)
+  // The provider's own reset moment (429 Retry-After / resets_at), so the user knows WHEN
+  // Retry will work instead of guessing (#98852). Informational only: no automatic retry.
+  const limitReset = formatLimitReset(surface?.resetsAt)
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -787,6 +796,11 @@ const ErrorRecoveryActions: FC = () => {
             {copy.errorRetry}
           </button>
         </ActionBarPrimitive.Reload>
+      )}
+      {plan.retry && limitReset && (
+        <span className="px-1 text-xs text-muted-foreground" data-testid="error-limit-reset">
+          {copy.errorLimitResets(limitReset)}
+        </span>
       )}
       {plan.switchProvider && inRouter && (
         <SettingsLinkAction label={copy.errorSwitchProvider} to={`${SETTINGS_ROUTE}?tab=config:model`} />

@@ -318,7 +318,7 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
 # Outcomes mirror decideRelaunchOutcome: relaunch | skew | manual.
 GATE="" GATE_MSG=""
 linux_gate() {
-  local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg
+  local unpacked="" sb arg cand
   # Canonicalise both sides before the prefix compare. On some distros
   # (e.g. Fedora/ostree) /home is a symlink to /var/home; the relaunch
   # target is read from /proc/<pid>/exe, which the kernel canonicalises
@@ -327,7 +327,21 @@ linux_gate() {
   # to reinstall an app that is fine. readlink -m canonicalises existing
   # leading components without requiring the full path to exist (unlike
   # -f); a no-op when both sides are already spelled the same.
-  unpacked="$(readlink -m -- "$unpacked")"
+  # electron-builder names the output dir `linux-unpacked` on x86_64 but
+  # `linux-<arch>-unpacked` on every other architecture (linux-arm64-unpacked
+  # on aarch64, which is what we ship for ARM). Assuming the x86_64 name made a
+  # healthy ARM install false-gate as "skew" on EVERY update, telling the user
+  # to reinstall an app that was already correct. Resolve the dir the running
+  # binary actually lives in; fall back to any linux*-unpacked dir present.
+  for cand in "$INSTALL_ROOT"/apps/desktop/release/linux*-unpacked; do
+    [ -d "$cand" ] || continue
+    cand="$(readlink -m -- "$cand")"
+    case "$RELAUNCH_TARGET" in
+      "$cand"/*) unpacked="$cand"; break ;;
+    esac
+    [ -n "$unpacked" ] || unpacked="$cand"
+  done
+  [ -n "$unpacked" ] || unpacked="$(readlink -m -- "$INSTALL_ROOT/apps/desktop/release/linux-unpacked")"
   [ -n "$RELAUNCH_TARGET" ] && RELAUNCH_TARGET="$(readlink -m -- "$RELAUNCH_TARGET")"
   case "$RELAUNCH_TARGET" in
     "$unpacked"/*) ;;

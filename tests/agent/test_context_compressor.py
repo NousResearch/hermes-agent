@@ -3513,6 +3513,127 @@ class TestTailTokenBudgetCeiling:
 
 
 
+class TestTailTokenBudgetCeiling:
+    """the recent-message floor must not turn into an unbounded tail."""
+
+    def _make_compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            compressor = ContextCompressor(
+                model="test/model",
+                protect_first_n=3,
+                protect_last_n=20,
+                quiet_mode=True,
+                tail_mode="lean",
+            )
+        compressor.tail_token_budget = 10_000
+        return compressor
+
+    def test_large_completed_turn_does_not_pull_the_floor_past_the_ceiling(self):
+        compressor = self._make_compressor()
+        messages = []
+        for i in range(40):
+            messages.extend([
+                {"role": "user", "content": f"request {i}"},
+                {"role": "assistant", "content": "x" * 28_000},
+            ])
+        messages.extend({"role": "assistant", "content": "x" * 28_000} for _ in range(8))
+
+        cut = compressor._find_tail_cut_by_tokens(messages, head_end=3)
+        tail = messages[cut:]
+
+        from agent.context_compressor import _estimate_msg_budget_tokens
+
+        assert cut > 78
+        assert sum(_estimate_msg_budget_tokens(message) for message in tail) <= 15_000
+        assert tail[-1]["role"] == "assistant"
+
+    def test_medium_floor_messages_are_bounded_as_a_group(self):
+        """Several medium rows must not bypass the cumulative tail ceiling."""
+        compressor = self._make_compressor()
+        messages = [{"role": "system", "content": "head"} for _ in range(3)]
+        messages.extend({"role": "assistant", "content": "x" * 14_000} for _ in range(11))
+
+        from agent.context_compressor import _estimate_msg_budget_tokens
+
+        floor = messages[-8:]
+        assert max(_estimate_msg_budget_tokens(message) for message in floor) < 3_750
+        assert sum(_estimate_msg_budget_tokens(message) for message in floor) > 15_000
+
+        cut = compressor._find_tail_cut_by_tokens(messages, head_end=3)
+        tail = messages[cut:]
+
+        assert len(tail) < 8
+        assert sum(_estimate_msg_budget_tokens(message) for message in tail) <= 15_000
+
+    def test_completed_tool_group_can_move_into_summary_before_final_reply(self):
+        """A completed oversized tool group must not make the protected tail unbounded."""
+        compressor = self._make_compressor()
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "assistant", "content": "previous reply"},
+            {"role": "user", "content": "completed request"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": f"call-{i}", "function": {"name": "read_file", "arguments": "{}"}}
+                    for i in range(4)
+                ],
+            },
+            *[
+                {"role": "tool", "tool_call_id": f"call-{i}", "content": "x" * 16_000}
+                for i in range(4)
+            ],
+            {"role": "assistant", "content": "final reply"},
+        ]
+
+        cut = compressor._find_tail_cut_by_tokens(messages, head_end=1)
+        tail = messages[cut:]
+
+        from agent.context_compressor import _estimate_msg_budget_tokens
+
+        assert tail == [{"role": "assistant", "content": "final reply"}]
+        assert sum(_estimate_msg_budget_tokens(message) for message in tail) <= 15_000
+
+    def test_inflight_user_stays_protected_while_tool_tail_is_pruned(self):
+        compressor = self._make_compressor()
+        messages = [{"role": "system", "content": "system"}]
+        for i in range(12):
+            messages.extend([
+                {"role": "user", "content": f"finished request {i}"},
+                {"role": "assistant", "content": "finished"},
+            ])
+        messages.append({"role": "user", "content": "active request"})
+        for i in range(8):
+            call_id = f"call-{i}"
+            messages.extend([
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }],
+                },
+                {"role": "tool", "tool_call_id": call_id, "content": chr(97 + i) * 28_000},
+            ])
+
+        cut = compressor._find_tail_cut_by_tokens(messages, head_end=1)
+        tail = messages[cut:]
+        from agent.context_compressor import _estimate_msg_budget_tokens
+
+        assert any(message.get("content") == "active request" for message in tail)
+
+        pruned, pruned_count = compressor._prune_old_tool_results(
+            messages, compressor.protect_last_n, compressor.tail_token_budget,
+        )
+        pruned_cut = compressor._find_tail_cut_by_tokens(pruned, head_end=1)
+        pruned_tail = pruned[pruned_cut:]
+        assert pruned_count > 0
+        assert any(message.get("content") == "active request" for message in pruned_tail)
+        assert sum(_estimate_msg_budget_tokens(message) for message in pruned_tail) <= 15_000
+
+
 class TestContextLengthSetterCoherence:
     """The context_length setter must (a) not wipe runtime corrections on
     no-op re-assignment of the same window (codex app-server usage callback

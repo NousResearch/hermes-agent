@@ -2787,6 +2787,17 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             cut = i
         return cut, accumulated
 
+    def _tail_budget_tokens(self, messages: List[Dict[str, Any]], cut_idx: int) -> int:
+        """Count a suffix with the same thinking policy used by the tail walk."""
+        newest_asst_idx = _last_assistant_index(messages)
+        charge_all_thinking = self._stale_thinking_on_wire()
+        return sum(
+            _estimate_msg_budget_tokens(
+                messages[i], charge_all_thinking or i == newest_asst_idx,
+            )
+            for i in range(max(0, cut_idx), len(messages))
+        )
+
     def _prune_boundary(
         self, result: List[Dict[str, Any]], protect_tail_count: int, protect_tail_tokens: int | None,
     ) -> int:
@@ -4118,8 +4129,17 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Pull a compress-end boundary back so a tool group is not split (orphaned tail results would be dropped)."""
         if idx <= 0 or idx >= len(messages):
             return idx
-        check = next((i for i in range(idx - 1, -1, -1) if messages[i].get("role") != "tool"), -1)
-        # Landed on the parent assistant: move before it so the group is summarised together.
+        previous = messages[idx - 1]
+        # A cut immediately after the parent would leave its results in the tail, so keep the group together.
+        if previous.get("role") == "assistant" and previous.get("tool_calls"):
+            return idx - 1
+        # A cut before a tool result is inside its group. Walk over only the consecutive results; a cut after
+        # the final result is already clean and must not pull an extra completed group into the tail.
+        if messages[idx].get("role") != "tool":
+            return idx
+        check = idx - 1
+        while check >= 0 and messages[check].get("role") == "tool":
+            check -= 1
         if check >= 0 and messages[check].get("role") == "assistant" and messages[check].get("tool_calls"):
             return check
         return idx
@@ -4442,16 +4462,44 @@ Write only the summary body. Do not include any preamble or prefix."""
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)
         cut_idx = self._align_boundary_backward(messages, cut_idx)
-        # Latest user message must stay in the tail (active task). Latest assistant reply must stay too;
-        # anchors only walk backward, so chaining is monotonic.
-        # Ensure the most recent user message is always in the tail so the active task is never lost to
-        # compression (fixes #10896).
+        # Keep the latest assistant reply in the tail. The latest user normally stays too, but a very large
+        # anchored tail can move that user into the summary; the compaction handoff restores it if unfinished.
+        base_cut = cut_idx
         cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+        user_anchored_cut = cut_idx
         cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+
+        # When the user anchor is the only thing making a completed tail unbounded, keep the assistant anchor
+        # and let the summary carry the finished turn. Active asks keep the old anchor behavior.
+        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
+        _single_user_anchor = not (
+            isinstance(_min_tail_users, int)
+            and not isinstance(_min_tail_users, bool)
+            and _min_tail_users > 1
+        )
+        if (
+            _single_user_anchor
+            and user_anchored_cut != base_cut
+            and self._find_inflight_user_task(messages) is None
+        ):
+            # ``base_cut`` is before the user anchor, so this candidate keeps the latest assistant without
+            # pulling a completed user turn and its old tool history back into the protected suffix.
+            assistant_only_cut = self._ensure_last_assistant_message_in_tail(messages, base_cut, head_end)
+            # If the backward-aligned cut landed before a completed tool group, the helper above cannot
+            # advance past that group. A clean boundary at the latest completed assistant reply can keep
+            # the visible answer while leaving the oversized tool group in the summary.
+            latest_assistant_idx = self._find_last_assistant_message_idx(messages, head_end)
+            if latest_assistant_idx > assistant_only_cut:
+                assistant_only_cut = self._align_boundary_backward(messages, latest_assistant_idx)
+            if (
+                self._tail_budget_tokens(messages, cut_idx) > soft_ceiling
+                and assistant_only_cut > head_end
+                and self._tail_budget_tokens(messages, assistant_only_cut) <= soft_ceiling
+            ):
+                cut_idx = assistant_only_cut
 
         # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
         # the assistant anchor could re-trigger its forward turn-pair push. getattr: __new__ doubles skip __init__.
-        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
         if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
             cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
 

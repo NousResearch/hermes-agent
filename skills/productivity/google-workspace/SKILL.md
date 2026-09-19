@@ -145,10 +145,17 @@ later, even on headless systems:
 $GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
 ```
 
-If `--auth-code` fails because the code expired, was already used, or came from
-an older browser tab, it now returns a fresh `fresh_auth_url`. In that case,
-immediately send the new URL to the user and have them retry with the newest
-browser redirect only.
+Each `--auth-code` attempt consumes its pending OAuth session. If it fails
+because the code expired, was already used, or came from an older browser tab,
+run `--auth-url` again and retry with the newest browser redirect only.
+
+Hermes preserves an existing token when a new grant would reduce its effective
+capabilities. To intentionally replace it with a narrower grant, start a fresh
+authorization session, then complete it explicitly:
+
+```bash
+$GSETUP --auth-code "THE_NEW_URL_OR_CODE" --allow-scope-downgrade
+```
 
 ### Step 5: Verify
 

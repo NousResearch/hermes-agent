@@ -4064,7 +4064,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
+                buttons = [InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")
+                           for idx in range(len(choices))]
+                # Clients render at most 8 buttons per row and silently drop the rest
+                # (tginfo/Telegram-Limits #228), so lists up to the cap share one row
+                # and stop stretching the message vertically; longer lists go per-row.
+                rows = ([buttons] if len(buttons) <= self._CLARIFY_MAX_PER_ROW
+                        else [[b] for b in buttons])
                 rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
@@ -4100,6 +4106,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_mode=self._reply_to_mode)
 
     _PROVIDER_PAGE_SIZE = 10
+    _CLARIFY_MAX_PER_ROW = 8  # documented inline-keyboard per-row cap (tginfo/Telegram-Limits #228)
 
     async def send_choice_picker(
         self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,

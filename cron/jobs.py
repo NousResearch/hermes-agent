@@ -1687,6 +1687,17 @@ def _compute_provider_model_snapshots(
                 runtime_kwargs["explicit_base_url"] = normalized_base_url
             snap = resolve_runtime_provider(**runtime_kwargs)
             provider_snapshot = str(snap.get("provider") or "").strip().lower() or None
+            if provider_snapshot == "custom":
+                # Bare "custom" is the billing class shared by every named entry — replaying it
+                # resolves to the OpenRouter fallback instead of this endpoint (#109765). Pin the
+                # durable identity, the same lookup session persistence heals with.
+                with contextlib.suppress(Exception):
+                    from hermes_cli.runtime_provider import canonical_custom_identity
+
+                    provider_snapshot = canonical_custom_identity(
+                        base_url=str(snap.get("base_url") or ""),
+                        config_provider=str(snap.get("requested_provider") or ""),
+                    ) or provider_snapshot
     if normalized_model is None:
         with contextlib.suppress(Exception):
             model_snapshot = _resolve_default_model_snapshot() or None

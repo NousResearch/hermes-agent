@@ -326,6 +326,7 @@ def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
     stale_serve_pids: "set | None" = None,
+    live_gateway_pids: "dict[str, set[int]] | None" = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
@@ -343,6 +344,29 @@ def match_runtime_outcomes(
     incarnation. The probe itself fails closed (unreadable ledger -> every planned serve is listed as
     surviving), so ``deferred`` means "not shown to be gone", not "observed alive". See #111494.
 
+    ``live_gateway_pids`` (profile -> gateway PIDs alive for that profile AFTER the restart phase:
+    control-socket identity, or a runtime-status record whose PID is still live) carries the same
+    incarnation evidence for gateways: the plan identifies a gateway by the
+    profile it SERVES, while the restart bookkeeping names the SERVICE it runs under, and those two
+    disagree whenever a service serves a profile its name does not encode — a root-home launchd
+    label running the sticky active profile, a hash-suffixed systemd unit for a custom
+    ``HERMES_HOME``. No name rule can bridge that, so a planned PID that is gone while a gateway
+    answers for the same profile counts as ``restarted``. A missing successor, or the planned PID
+    still answering, stays ``unaccounted`` — the tripwire keeps its teeth.
+
+    That credit needs an unambiguous baseline: a profile with SEVERAL planned gateway runtimes cannot
+    be attributed to one successor (the fleet probe publishes at most one row per profile), so one
+    replacement cannot have replaced two planned processes. Such a profile keeps the name-path
+    verdict instead of letting an untouched sibling vanish behind a successor that can only have
+    replaced one of them. That resolves conservatively on purpose: pairing a successor to the planned
+    process it replaced would need a start-time identity that neither the plan record nor the fleet
+    row carries, and a tripwire firing on an anomalous plan is the intended direction.
+
+    Credit is deliberately NOT gated on restart bookkeeping either: the failure this fallback exists
+    for already had bookkeeping (``restarted_services`` named the service label — only the
+    profile↔label name match failed), and a gateway launchd respawned by itself has no restart-phase
+    record at all while the fleet row still proves its successor runs the new code.
+
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
     different process that shares the profile, nothing more. See #100479.
@@ -354,6 +378,29 @@ def match_runtime_outcomes(
         relaunched = set(relaunched_profiles or []) | set(externally_supervised_profiles or [])
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
+        successors = (
+            {str(profile): {p for p in pids if isinstance(p, int)} for profile, pids in live_gateway_pids.items()}
+            if live_gateway_pids is not None
+            else None
+        )
+        def _bookkeeping_resolves(r: RuntimeRecord) -> bool:
+            """Terminal verdict already available from the restart phase's bookkeeping."""
+            if r.pid is not None and r.pid in killed:
+                return True
+            if r.profile in relaunched:
+                return True
+            return _gateway_named_in(r, failed_set) or _gateway_named_in(r, restarted_set)
+
+        # Baseline identity: the fleet probe publishes at most one row per profile, so successor
+        # evidence is only attributable when ONE planned gateway for that profile still needs a
+        # verdict. Serve/dashboard rows are different processes, and rows bookkeeping already resolved
+        # (killed / relaunched / name-matched) are not candidates either — a stopped orphan must not
+        # make its surviving sibling's successor look ambiguous.
+        pending_gateways: dict[str, int] = {}
+        for _planned in plan.runtimes:
+            if (isinstance(_planned, RuntimeRecord) and _planned.kind == "gateway"
+                    and not _bookkeeping_resolves(_planned)):
+                pending_gateways[_planned.profile] = pending_gateways.get(_planned.profile, 0) + 1
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
@@ -381,7 +428,33 @@ def match_runtime_outcomes(
                 return "stopped"
             if _gateway_named_in(r, failed_set):
                 return "failed"
-            return "restarted" if _gateway_named_in(r, restarted_set) else "unaccounted"
+            if _gateway_named_in(r, restarted_set):
+                return "restarted"
+            if successors is not None and r.pid is not None:
+                # Incarnation-verified last resort: the planned process is gone and a gateway answers
+                # for the same profile now. Name-independent on purpose — the supervising service's
+                # label/unit may encode the install root (or a hashed home) instead of the served
+                # profile, which the profile-scoped name matcher above can never credit.
+                live = successors.get(r.profile)
+                ambiguous = pending_gateways.get(r.profile, 0) > 1
+                if live and r.pid not in live and not ambiguous:
+                    return "restarted"
+                if ambiguous:
+                    logger.debug(
+                        "%s planned gateway runtimes for profile %r still need a verdict — successor "
+                        "evidence cannot attribute the restart, leaving pid %s on the name path",
+                        pending_gateways[r.profile], r.profile, r.pid,
+                    )
+                elif not live:
+                    # No row for this profile: the fallback has nothing to work with and reconciliation
+                    # stays on the service-name path. Logged because the tripwire below reads identically
+                    # whether the evidence was missing or the restart was actually missed.
+                    logger.debug(
+                        "No post-restart gateway evidence for profile %r (planned pid %s via %s) — "
+                        "reconciling on restart bookkeeping alone",
+                        r.profile, r.pid, r.restart_via,
+                    )
+            return "unaccounted"
 
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):

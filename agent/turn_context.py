@@ -1270,12 +1270,42 @@ def build_api_messages(
     # Final system message = cached prompt + ephemeral additions (API-time only).
     # Plugin/recall context goes into the user message, never the system prompt: the
     # prompt is built ONCE per session and replayed verbatim (stable cache prefix).
-    effective_system = active_system_prompt or ""
-    if agent.ephemeral_system_prompt:
-        effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+    effective_system = compose_effective_system_tail(agent, active_system_prompt or "")
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
     return api_messages, effective_system
+
+
+def compose_effective_system_tail(agent: Any, base_prompt: str) -> str:
+    """Append the per-turn wall-clock stamp and the persistent ephemeral prompt.
+
+    The ONE shared composer for every request-only system-message assembly.
+    ``base_prompt`` (the byte-stable cached prefix) is preserved unchanged;
+    the per-turn ``agent._current_turn_timestamp`` (stamped once per turn in
+    ``_run_conversation_turn``) and the persistent ``agent.ephemeral_system_prompt``
+    ride after it, in that order, at API-call time. Mutating the ephemeral
+    prompt in place would stack stamps on a cached gateway agent
+    (``ts2\\nts1\\nbase``); the dedicated attribute avoids that.
+
+    Sites: ``build_api_messages`` here, ``_sync_failover_system_message`` in
+    ``agent.conversation_loop``, and the max-iterations summary in
+    ``agent.chat_completion_helpers``. A missing stamp (older agent stubs) or
+    missing ephemeral prompt both degrade to the pre-feature behaviour.
+
+    Cache note: the volatile tail the cache planner marks begins at the
+    ``_cached_system_prompt_static`` boundary, NOT here; the stamp lands inside
+    the tail block that already re-prefills within a session, so the large
+    stable tier stays a warm prefix-cache hit.
+    """
+    parts = []
+    _ts = getattr(agent, "_current_turn_timestamp", "") or ""
+    if _ts:
+        parts.append(_ts)
+    if getattr(agent, "ephemeral_system_prompt", None):
+        parts.append(agent.ephemeral_system_prompt)
+    if not parts:
+        return base_prompt
+    return (base_prompt + "\n\n" + "\n\n".join(parts)).strip()
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -33,7 +33,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
 )
-from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from agent.turn_context import PreflightCompressionTimedOut, build_turn_context, compose_effective_system_tail
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
@@ -1086,7 +1086,7 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     if not isinstance(sp, str) or not sp:
         return active_system_prompt
     if api_messages and api_messages[0].get("role") == "system":
-        effective = (sp + "\n\n" + agent.ephemeral_system_prompt).strip() if agent.ephemeral_system_prompt else sp
+        effective = compose_effective_system_tail(agent, sp)
         if not _rewrite_system_content_blocks(api_messages[0], effective):
             api_messages[0]["content"] = effective
     return sp
@@ -1510,6 +1510,23 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+
+    # ── Per-turn wall-clock stamp ──
+    # Stamp the current time ONCE per turn as a transient attribute (never
+    # persisted, never part of the cached prefix). The system prompt itself
+    # must stay byte-stable for the provider prefix cache, so the stamp rides
+    # on the request-only ephemeral tail appended AFTER the cached prefix by
+    # ``compose_effective_system_tail`` at API-call time. Dedicated attribute —
+    # do NOT mutate ``agent.ephemeral_system_prompt``: on a cached gateway
+    # agent that would stack stamps across turns (``ts2\nts1\nbase``).
+    try:
+        from hermes_time import now as _hermes_now
+        _ts = _hermes_now()
+        agent._current_turn_timestamp = (
+            f"Current time: {_ts.strftime('%A %Y-%m-%d %H:%M %Z')}"
+        )
+    except Exception:
+        agent._current_turn_timestamp = ""
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

@@ -298,6 +298,15 @@ def _session_title_method(client: Any):
     return client.assistant_threads_setTitle
 
 
+@dataclass(frozen=True)
+class _SlackUnmentionedWakeDecision:
+    """Reason-coded result for an unmentioned Slack thread reply."""
+
+    wake: bool
+    reason: str
+    root_owner: str = "unchecked"
+
+
 def slack_deps_present() -> bool:
     """PASSIVE probe: are slack-bolt/slack-sdk importable right now?
     Registry ``check_fn`` (status displays, config loading) — must never install. The active
@@ -2197,7 +2206,7 @@ class SlackAdapter(BasePlatformAdapter):
         chat_id = await self._dm_target(chat_id, metadata)
         thread_ts = None
         try:
-            team_id = self._metadata_team_id(metadata)
+            team_id = self._metadata_team_id(metadata) or self._channel_team.get(chat_id, "")
             slash_ctx = self._pop_slash_context(chat_id, team_id)
             if slash_ctx:
                 return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
@@ -2913,7 +2922,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Treat successful file uploads as bot participation in a thread."""
         if not thread_ts:
             return
-        team_id = self._metadata_team_id(metadata)
+        team_id = self._metadata_team_id(metadata) or self._channel_team.get(chat_id, "")
         self._bot_message_ts.add(self._workspace_message_marker(team_id, thread_ts))
         self._trim_bot_message_timestamps()
 
@@ -3914,80 +3923,222 @@ class SlackAdapter(BasePlatformAdapter):
         self._trim_mentioned_threads()
 
     async def _bot_authored_thread_root(
-        self, channel_id: str, thread_ts: str, team_id: str = "") -> bool:
-        """True when this bot authored the thread root — catches roots posted via direct
-        chat.postMessage (not in _bot_message_ts) and survives restarts. Cache first, then a
-        TTL-bounded fetch on a miss.
+        self, channel_id: str, thread_ts: str, team_id: str = ""
+    ) -> bool:
+        """Return True when the thread root was authored by this bot.
 
-        Used by the wake-decision to detect threads where the bot posted the root via direct
-        chat.postMessage (outside the gateway's send() path) — see #63530. Without this, human replies in
-        bot-initiated threads were silently dropped when there was no active session and no @mention.
-        Root-authorship is derived from the Slack API, so unlike the in-memory _bot_message_ts set it also
-        survives gateway restarts.
+        Used by the wake-decision to detect threads where the bot posted
+        the root via direct chat.postMessage (outside the gateway's
+        send() path) — see #63530. Without this, human replies in
+        bot-initiated threads were silently dropped when there was no
+        active session and no @mention. Root-authorship is derived from
+        the Slack API, so unlike the in-memory _bot_message_ts set it
+        also survives gateway restarts.
+
+        Implementation delegates to the reason-coded, exact-workspace root
+        classifier. On a cache miss it fetches thread context; that fetch is
+        bounded by the TTL cache in _fetch_thread_context.
         """
         if not thread_ts:
             return False
+
+        return (
+            await self._slack_thread_root_owner(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                team_id=team_id,
+            )
+            == "self_bot"
+        )
+
+    async def _slack_thread_root_owner(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        team_id: str = "",
+        current_ts: str = "",
+    ) -> str:
+        """Classify a Slack thread root as self, peer bot, human, or unknown.
+
+        The cache lookup is exact-workspace scoped.  A prefix lookup can mix a
+        cold event with another workspace's cached root and turn contradictory
+        ownership into a wake signal.
+        """
+        if not thread_ts:
+            return "unknown"
+
+        team_id = team_id or self._channel_team.get(channel_id, "")
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id) or ""
         if not bot_uid:
-            return False
+            return "unknown"
 
-        # team_id may be empty here, so match on the channel+thread key prefix; on a miss the
-        # (TTL-cached) fetch populates parent_user_id, then re-check.
-        for attempt in range(2):
-            for cached_key, cached_entry in self._thread_context_cache.items():
-                if cached_key.startswith(f"{channel_id}:{thread_ts}:"):
-                    return bool(
-                        cached_entry.parent_user_id and cached_entry.parent_user_id == bot_uid)
-            if attempt == 0:
-                await self._fetch_thread_context(
-                    channel_id=channel_id, thread_ts=thread_ts, current_ts="", team_id=team_id)
-        return False
+        cache_key = self._thread_cache_key(channel_id, thread_ts, team_id)
+        cached = self._thread_context_cache.get(cache_key)
+        if cached is None:
+            await self._fetch_thread_context(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                current_ts=current_ts,
+                team_id=team_id,
+            )
+            cached = self._thread_context_cache.get(cache_key)
+        if cached is None:
+            return "unknown"
+
+        parent_user_id = cached.parent_user_id or ""
+        if parent_user_id == bot_uid:
+            return "self_bot"
+
+        root = self._thread_root_message(cached.messages, thread_ts)
+        if root:
+            profile = root.get("user_profile")
+            unambiguous_bot = bool(
+                root.get("bot_id")
+                or root.get("bot_profile")
+                or root.get("subtype") == "bot_message"
+                or (isinstance(profile, dict) and profile.get("is_bot"))
+                # Classic app/bot posts may omit a user id. When a user id is
+                # present, let users.info resolve it so API-posted humans are
+                # not promoted to thread-wide foreign-bot ownership.
+                or (
+                    not root.get("user")
+                    and root.get("app_id")
+                    and not root.get("client_msg_id")
+                )
+            )
+            if unambiguous_bot:
+                return "foreign_bot"
+        if parent_user_id:
+            if await self._resolve_user_is_bot(
+                parent_user_id,
+                chat_id=channel_id,
+                team_id=team_id,
+            ):
+                return "foreign_bot"
+            return "human"
+        return "unknown"
+
+    async def _decide_unmentioned_message_wake(
+        self,
+        event_thread_ts,
+        channel_id: str,
+        user_id: str,
+        is_thread_reply: bool,
+        team_id: str = "",
+        chat_type: str = "group",
+        event_ts: str = "",
+    ) -> _SlackUnmentionedWakeDecision:
+        """Return a reason-coded ownership decision for an unmentioned reply."""
+        if not event_thread_ts or not is_thread_reply:
+            return _SlackUnmentionedWakeDecision(False, "not_thread_reply")
+
+        thread_marker = self._workspace_message_marker(team_id, event_thread_ts)
+        # Once Slack supplies a workspace id, only workspace-scoped markers are
+        # ownership evidence. A legacy bare timestamp can belong to another
+        # workspace and must not summon this bot across that boundary.
+        was_mentioned = thread_marker in self._mentioned_threads
+        if not team_id:
+            was_mentioned = was_mentioned or event_thread_ts in self._mentioned_threads
+        if was_mentioned:
+            return _SlackUnmentionedWakeDecision(True, "prior_bot_specific_mention")
+
+        if self._has_active_session_for_thread(
+            channel_id=channel_id,
+            thread_ts=event_thread_ts,
+            user_id=user_id,
+            team_id=team_id,
+            chat_type=chat_type,
+        ):
+            return _SlackUnmentionedWakeDecision(True, "owned_active_session")
+
+        root_owner = await self._slack_thread_root_owner(
+            channel_id=channel_id,
+            thread_ts=event_thread_ts,
+            team_id=team_id,
+            current_ts=event_ts,
+        )
+
+        sent_by_self = thread_marker in self._bot_message_ts
+        if not team_id:
+            sent_by_self = sent_by_self or event_thread_ts in self._bot_message_ts
+
+        # A foreign root must be checked for an explicit handoff before its
+        # contradictory local marker can be rejected. For roots Slack identifies
+        # as ours, or threads this process demonstrably posted into, avoid a
+        # second parent lookup and preserve the existing follow-up contract.
+        if root_owner != "foreign_bot":
+            if sent_by_self:
+                return _SlackUnmentionedWakeDecision(
+                    True, "local_self_send_marker", root_owner
+                )
+            if root_owner == "self_bot":
+                return _SlackUnmentionedWakeDecision(
+                    True, "self_bot_thread_root", root_owner
+                )
+
+        # A root mention is a bot-specific summons that survives a cold process
+        # start. Check it before foreign-root rejection so an explicit
+        # cross-agent handoff remains valid. Root ownership resolution populated
+        # the shared thread cache, so this normally costs no second API call.
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        parent_mentions_bot = False
+        if bot_uid:
+            parent_text = await self._fetch_thread_parent_text(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                team_id=team_id,
+                strip_bot_mention=False,
+            )
+            parent_mentions_bot = bool(
+                parent_text and f"<@{bot_uid}>" in parent_text
+            )
+        if parent_mentions_bot:
+            if not self._slack_strict_mention():
+                self._register_mentioned_thread(event_thread_ts, team_id=team_id)
+            return _SlackUnmentionedWakeDecision(
+                True, "root_bot_specific_mention", root_owner
+            )
+
+        if root_owner == "foreign_bot":
+            return _SlackUnmentionedWakeDecision(
+                False, "foreign_bot_root_without_ownership", root_owner
+            )
+
+        return _SlackUnmentionedWakeDecision(
+            False, "no_bot_specific_ownership", root_owner
+        )
 
     async def _should_wake_on_unmentioned_message(
-        self, event_thread_ts, channel_id: str, user_id: str, is_thread_reply: bool,
-        team_id: str = "", chat_type: str = "group") -> bool:
-        """Return True if the bot should wake on an un-mentioned message. Checks, in order: root
-        sent via send() (_bot_message_ts); thread previously @-mentioned; active session;
-        bot-authored root via raw chat.postMessage; thread parent @-mentioned the bot.
-
-        1. 2. _mentioned_threads        (someone @-mentioned us earlier) 3. _has_active_session... (there's
-        already an agent session) 4. _bot_authored_thread_root (#63530: the bot posted the thread root via
-        direct chat.postMessage, outside the gateway send() path — derived from the Slack API, so it also
-        survives restarts).
-        """
-        if not event_thread_ts:
-            return False
-        thread_marker = self._workspace_message_marker(team_id, event_thread_ts)
-        # Check scoped marker AND bare ts: entries recorded before team_id was
-        # known are bare, and a scoped-vs-bare mismatch must not silence the bot.
-        if is_thread_reply and (
-            thread_marker in self._bot_message_ts or event_thread_ts in self._bot_message_ts):
-            return True
-        if thread_marker in self._mentioned_threads or event_thread_ts in self._mentioned_threads:
-            return True
-        if is_thread_reply and self._has_active_session_for_thread(
-            channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
-            chat_type=chat_type):
-            return True
-        if is_thread_reply and await self._bot_authored_thread_root(
-            channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id):
-            return True
-        # Thread PARENT @-mentioned the bot before this process (restart): a bare "run" is for us.
-        # 5th check (#24848): the thread PARENT @-mentioned the bot, but the mention event predates this
-        # process (restart) or the parent asked the bot to wait for a follow-up (e.g. A plain reply like
-        # "run" in that thread is addressed to the bot even though the reply itself carries no mention.
-        if is_thread_reply:
-            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            if bot_uid:
-                parent_text = await self._fetch_thread_parent_text(
-                    channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id,
-                    strip_bot_mention=False)
-                if parent_text and f"<@{bot_uid}>" in parent_text:
-                    # Remember so later replies skip the fetch.
-                    if not self._slack_strict_mention():
-                        self._register_mentioned_thread(event_thread_ts)
-                    return True
-        return False
+        self,
+        event_thread_ts,
+        channel_id: str,
+        user_id: str,
+        is_thread_reply: bool,
+        team_id: str = "",
+        chat_type: str = "group",
+        event_ts: str = "",
+    ) -> bool:
+        """Return and safely log whether an actual unmentioned thread reply may wake."""
+        decision = await self._decide_unmentioned_message_wake(
+            event_thread_ts=event_thread_ts,
+            channel_id=channel_id,
+            user_id=user_id,
+            is_thread_reply=is_thread_reply,
+            team_id=team_id,
+            chat_type=chat_type,
+            event_ts=event_ts,
+        )
+        logger.debug(
+            "[Slack] unmentioned_thread_admission wake=%s reason=%s "
+            "root_owner=%s team=%s channel=%s thread_ts=%s",
+            decision.wake,
+            decision.reason,
+            decision.root_owner,
+            team_id,
+            channel_id,
+            event_thread_ts or "",
+        )
+        return decision.wake
 
     @staticmethod
     def _append_block_text(text: str, blocks: list, bot_uid: str) -> str:
@@ -4033,7 +4184,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def _channel_gate_allows(
         self, *, channel_id: str, routing_text: str, bot_uid: str, is_mentioned: bool,
         is_thread_reply: bool, event_thread_ts, user_id: str, team_id: str, is_dm: bool,
-        force_process: bool) -> bool:
+        force_process: bool, event_ts: str = "") -> bool:
         """Channel/MPIM gate: respond in a free-response channel (still gated by
         ``thread_require_mention``), when @mentioned, or when a wake check passes. Always silent
         outside ``allowed_channels`` or when addressed to another user; ``force_process`` skips only
@@ -4069,7 +4220,7 @@ class SlackAdapter(BasePlatformAdapter):
             return await self._should_wake_on_unmentioned_message(
                 event_thread_ts=event_thread_ts, channel_id=channel_id, user_id=user_id,
                 team_id=team_id, is_thread_reply=is_thread_reply,
-                chat_type="dm" if is_dm else "group")
+                chat_type="dm" if is_dm else "group", event_ts=event_ts)
         return True
 
     def _normalize_changed_message(self, event: dict) -> Optional[dict]:
@@ -4485,7 +4636,7 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id=channel_id, routing_text=routing_text, bot_uid=bot_uid,
             is_mentioned=is_mentioned, is_thread_reply=is_thread_reply,
             event_thread_ts=event_thread_ts, user_id=user_id, team_id=team_id, is_dm=is_dm,
-            force_process=force_process)):
+            force_process=force_process, event_ts=ts)):
             return
         # Claim the message ts HERE: a link unfurl emits `message_changed` with a different event
         # ts, so only the `_processed_message_ts` guard stops a duplicate turn, and it must be set
@@ -5633,9 +5784,11 @@ class SlackAdapter(BasePlatformAdapter):
             self._format_thread_context, thread_ts=thread_ts, current_ts=current_ts,
             team_id=team_id, channel_id=channel_id)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
-            if not after_ts:
-                return cached.content
             if cached.messages:
+                # The same raw thread snapshot can serve several inbound events,
+                # but each event must exclude its own current_ts. Re-formatting
+                # avoids either duplicating or dropping a trigger merely because
+                # an ownership lookup populated the shared cache first.
                 return (await _fmt(cached.messages, after_ts=after_ts))[0]
             return cached.content
         try:

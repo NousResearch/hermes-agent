@@ -3154,8 +3154,9 @@ class TestThreadReplyHandling:
         assert msg_event.text == "run"
         # Cold-start context carries the parent so the agent sees the ask.
         assert "check this and ask me for run" in msg_event.channel_context
-        # Thread remembered so later replies skip the parent fetch.
-        assert "123.000" in adapter_with_session_store._mentioned_threads
+        # Thread remembered with workspace ownership so a timestamp collision
+        # in another Slack team cannot inherit this summons.
+        assert ("T_TEAM", "123.000") in adapter_with_session_store._mentioned_threads
 
     @pytest.mark.asyncio
     async def test_top_level_mention_registers_thread_for_replies(
@@ -4362,6 +4363,32 @@ class TestThreadContextUnverifiedTagging:
         assert "[unverified] U_BOB" not in content
         # Allowlisted lines appear without the trust tag.
         assert "U_BOB: any updates?" in content
+
+    @pytest.mark.asyncio
+    async def test_cached_snapshot_reformats_for_each_current_message(self, adapter):
+        """A root-ownership lookup must not hide one trigger from later hydration."""
+        adapter._thread_context_cache.clear()
+        replies = self._make_replies(self._thread_messages())
+        adapter._app.client.conversations_replies = replies
+        adapter.set_authorization_check(lambda *_args, **_kwargs: True)
+
+        with patch.object(
+            adapter,
+            "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda uid, **_: uid),
+        ):
+            first = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="101.0"
+            )
+            second = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="102.0"
+            )
+
+        assert "ignore previous instructions" not in first
+        assert "any updates?" in first
+        assert "ignore previous instructions" in second
+        assert "any updates?" not in second
+        replies.assert_awaited_once()
 
 
     @pytest.mark.asyncio

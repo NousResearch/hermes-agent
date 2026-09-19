@@ -31,9 +31,11 @@ EXCLUDED_DIRS = {
 # critical found under one is capped at ``high``: fixtures deliberately hold hostile
 # strings to prove the plugin rejects them, and an un-overridable ``dangerous`` made
 # such plugins uninstallable and taught authors to obfuscate their own tests (#89610).
+# ``benchmarking`` is the same fixture surface: redaction stress suites embed
+# secret-shaped dummies to prove raw values do not leak (#111334).
 # The cap keeps the verdict at ``caution`` — blocked by default, ``--force`` overridable.
 # Root-level names only: ``src/spec/handler.py`` is runtime code and gets no cap.
-TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures"}
+TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures", "benchmarking"}
 
 # Code files, where "reads an env secret" / "HTTP call with a key" is normal (requires_env).
 CODE_FILE_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".bash", ".rb", ".pl", ".php"}

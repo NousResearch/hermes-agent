@@ -8,12 +8,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 from typing import Mapping, Sequence
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "IS_WINDOWS",
@@ -29,6 +33,7 @@ __all__ = [
     "noninteractive_git_env",
     "NO_DRIVER_DIFF_FLAGS",
     "pid_is_hermes",
+    "spawn_bash_with_kill_on_exit",
 ]
 
 # Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering git command. A
@@ -587,3 +592,199 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()
+
+
+# -----------------------------------------------------------------------------
+# Kill-on-parent-exit Job Object (terminal shell orphan cleanup, Windows)
+# -----------------------------------------------------------------------------
+# Terminal shells otherwise survive an ungraceful Hermes exit on Windows
+# (#69033). Spawn them suspended, assign them to one process-lifetime Job
+# Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, then resume them. Suspension
+# closes the race where a child could create an unassigned grandchild before
+# the parent assigns it.
+#
+# This is intentionally the opposite of windows_detach_flags(): detached
+# gateway/watchdog processes use CREATE_BREAKAWAY_FROM_JOB because they must
+# outlive their parent. Terminal shells use windows_hide_flags() and must not.
+win32api = None  # type: ignore
+win32con = None  # type: ignore
+win32job = None  # type: ignore
+win32process = None  # type: ignore
+try:
+    if IS_WINDOWS:
+        import win32api  # type: ignore
+        import win32con  # type: ignore
+        import win32job  # type: ignore
+        import win32process  # type: ignore
+
+        _WIN32_JOB_AVAILABLE = True
+    else:
+        _WIN32_JOB_AVAILABLE = False
+except ImportError:  # pragma: no cover - environment without pywin32
+    _WIN32_JOB_AVAILABLE = False
+
+# The handle remains reachable for the lifetime of the Hermes process.
+_kill_on_exit_job = None
+_job_singleton_lock = threading.Lock()
+_warned_job_assignment_unavailable = False
+
+
+def _warn_job_assignment_once(message: str) -> None:
+    """Log the first job-assignment failure without spamming every spawn."""
+    global _warned_job_assignment_unavailable
+    if _warned_job_assignment_unavailable:
+        return
+    _warned_job_assignment_unavailable = True
+    logger.warning(
+        "Windows kill-on-exit job assignment unavailable/failed (%s); "
+        "terminal-tool child processes will not be swept up if Hermes exits "
+        "ungracefully. This warning is logged once per process.",
+        message,
+    )
+
+
+def _get_kill_on_exit_job():
+    """Return the lazily-created process-wide kill-on-close Job Object."""
+    global _kill_on_exit_job
+    if not _WIN32_JOB_AVAILABLE:
+        _warn_job_assignment_once("pywin32 unavailable")
+        return None
+    if _kill_on_exit_job is not None:
+        return _kill_on_exit_job
+    with _job_singleton_lock:
+        if _kill_on_exit_job is not None:
+            return _kill_on_exit_job
+        try:
+            job = win32job.CreateJobObject(None, "")
+            info = win32job.QueryInformationJobObject(
+                job, win32job.JobObjectExtendedLimitInformation
+            )
+            info["BasicLimitInformation"]["LimitFlags"] |= (
+                win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            )
+            win32job.SetInformationJobObject(
+                job, win32job.JobObjectExtendedLimitInformation, info
+            )
+        except Exception:
+            # Fail open: terminal spawning must continue even when job setup
+            # is unavailable.
+            _warn_job_assignment_once("job creation failed")
+            return None
+        _kill_on_exit_job = job
+        return job
+
+
+_CREATE_SUSPENDED = 0x00000004
+
+# CPython's _winapi.CreateProcess positional signature:
+# application_name, command_line, proc_attrs, thread_attrs, inherit_handles,
+# creation_flags, env_mapping, current_directory, startup_info.
+_CREATION_FLAGS_ARG_INDEX = 5
+_EXPECTED_CREATE_PROCESS_ARGC = 9
+
+# The replacement is installed permanently but is inert unless the calling
+# thread opts in through _spawn_owner.job. This avoids a process-wide
+# capture/restore race and prevents unrelated concurrent Popen calls from
+# being assigned to the terminal-shell job.
+_original_create_process = None  # type: ignore[assignment]
+_create_process_patch_install_lock = threading.Lock()
+_spawn_owner = threading.local()
+
+
+def _job_owned_create_process(*args, **kwargs):
+    """Thread-gated replacement for subprocess._winapi.CreateProcess."""
+    job = getattr(_spawn_owner, "job", None)
+    if job is None:
+        return _original_create_process(*args, **kwargs)
+
+    if len(args) != _EXPECTED_CREATE_PROCESS_ARGC or kwargs:
+        # A future CPython signature change must fail open rather than mutate
+        # an argument whose position is no longer known.
+        _warn_job_assignment_once(
+            "unexpected CreateProcess signature; suspend/assign/resume skipped"
+        )
+        return _original_create_process(*args, **kwargs)
+
+    patched_args = list(args)
+    patched_args[_CREATION_FLAGS_ARG_INDEX] = (
+        patched_args[_CREATION_FLAGS_ARG_INDEX] | _CREATE_SUSPENDED
+    )
+    hp, ht, pid, tid = _original_create_process(*patched_args)
+    try:
+        win32job.AssignProcessToJobObject(job, int(hp))
+    except Exception:
+        # Assignment may fail when nesting is unavailable or access is denied.
+        # Resume regardless so the caller never receives a stuck child.
+        _warn_job_assignment_once("AssignProcessToJobObject failed")
+
+    try:
+        win32process.ResumeThread(int(ht))
+    except Exception:
+        # Returning a permanently suspended process would hang every caller
+        # waiting on its output. Terminate it and propagate the resume error.
+        _warn_job_assignment_once("ResumeThread failed after suspend; terminating child")
+        try:
+            win32process.TerminateProcess(int(hp), 1)
+        except Exception:
+            logger.warning(
+                "Windows kill-on-exit: TerminateProcess also failed after "
+                "ResumeThread failed; a suspended child process may be "
+                "left behind.",
+                exc_info=True,
+            )
+        # _winapi.CreateProcess returns raw integer handles, not PyHANDLE
+        # objects, so CloseHandle is required rather than handle.Close().
+        for handle in (hp, ht):
+            try:
+                subprocess._winapi.CloseHandle(int(handle))  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        raise
+    return hp, ht, pid, tid
+
+
+def _install_job_owned_create_process_once() -> None:
+    """Install the thread-gated CreateProcess replacement once per process."""
+    global _original_create_process
+    if _original_create_process is not None:
+        return
+    with _create_process_patch_install_lock:
+        if _original_create_process is not None:
+            return
+        current = subprocess._winapi.CreateProcess  # type: ignore[attr-defined]
+        if getattr(current, "_hermes_job_owned", False):
+            # importlib.reload re-executes this module in place but leaves the
+            # prior wrapper installed on subprocess._winapi. Recover its saved
+            # original rather than wrapping it again and recursing.
+            logger.debug(
+                "Windows kill-on-exit: CreateProcess already wraps our own "
+                "hermes job-owned patch (module reload detected); reusing "
+                "the existing wrapper instead of re-patching."
+            )
+            _original_create_process = current._hermes_true_original
+            return
+        real_create_process = current
+        _original_create_process = real_create_process
+        _job_owned_create_process._hermes_true_original = real_create_process
+        _job_owned_create_process._hermes_job_owned = True
+        subprocess._winapi.CreateProcess = _job_owned_create_process  # type: ignore[attr-defined]
+
+
+def spawn_bash_with_kill_on_exit(popen_fn) -> "subprocess.Popen":
+    """Run a zero-argument Popen factory under the Windows job-owner gate.
+
+    On non-Windows systems, or when the Job Object cannot be created, this is
+    a plain pass-through. Only the calling thread's factory invocation opts in.
+    """
+    if not IS_WINDOWS:
+        return popen_fn()
+    job = _get_kill_on_exit_job()
+    if job is None:
+        return popen_fn()
+
+    _install_job_owned_create_process_once()
+    _spawn_owner.job = job
+    try:
+        return popen_fn()
+    finally:
+        _spawn_owner.job = None

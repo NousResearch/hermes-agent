@@ -416,6 +416,15 @@ class AIAgent(
         # Session boundary: the usage anchor describes the OLD transcript; fall back to full estimation.
         self._usage_anchor = None
         self._turn_base_usage_anchor = None
+        # A long-lived agent can retain the same task id across /new or /reset. Its
+        # skill_view cache is only safe while the original tool result remains in
+        # the active transcript, so drop this task's entries at the session boundary.
+        if task_id := getattr(self, "_current_task_id", None):
+            try:
+                from tools.skills_tool import reset_skill_view_dedup
+                reset_skill_view_dedup(task_id)
+            except Exception as exc:
+                logger.debug("skill_view dedup reset during session reset: %s", exc)
         # The workspace snapshot is pinned per session (agent/system_prompt.py::_coding_parts); a
         # /new, /resume or /branch on the same agent must re-snapshot at its own session start.
         self._frozen_workspace_snapshot = None

@@ -85,6 +85,20 @@ class TestSkillViewDedup:
         r2 = _view("demo-dedup-skill")
         assert "Step one" in r2.get("content", "")
 
+    def test_session_reset_returns_full_content_for_current_task(self, skills_home):
+        """A reused task id must not retain the prior session's skill_view stub."""
+        from run_agent import AIAgent
+
+        _view("demo-dedup-skill")
+        agent = object.__new__(AIAgent)
+        agent.context_compressor = None
+        agent._current_task_id = "t-svd"
+        agent.reset_session_state()
+
+        r2 = _view("demo-dedup-skill")
+        assert "Step one" in r2.get("content", "")
+        assert r2.get("dedup") is None
+
     def test_no_task_id_never_dedups(self, skills_home):
         args = {"name": "demo-dedup-skill"}
         r1 = json.loads(_skill_view_with_bump(args, task_id=None))

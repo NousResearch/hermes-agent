@@ -49,12 +49,20 @@ class ResolvedImage:
 # Explicit URL scheme ("ftp://", "s3://"). Bare Windows drive paths lack the "//".
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
+# Some local models (notably gpt-oss) hand back a filesystem path they were
+# given as `image_url: /abs/path` but prefix a bare "path:" / "local:" pseudo-
+# scheme onto it ("path:/home/.../img.jpg"). That is not a real URI (no "//"),
+# so it falls through to the path branch and fails as "media file not found".
+# Strip the pseudo-scheme when it is immediately followed by a path character.
+_PSEUDO_SCHEME_RE = re.compile(r"^(?:path|local)\s*[:=]\s*(?=[/~.])", re.IGNORECASE)
+
 
 async def resolve_image_source(
     src: str, ctx: ResolveContext, *, permitted: tuple = ("image",)) -> ResolvedImage:
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
     s = src.strip()
+    s = _PSEUDO_SCHEME_RE.sub("", s, count=1)
     if s.startswith("data:"):
         data, mime = _resolve_data_url(s)
         return _finalize(data, mime, "data", s, permitted)

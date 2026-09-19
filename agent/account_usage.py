@@ -601,9 +601,205 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+_XAI_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+# Static client marker the Grok CLI sends alongside the user's OAuth bearer token
+# (xai-grok-login/src/config.rs::GrokComConfig::default().token_header).
+_XAI_TOKEN_AUTH_HEADER = "xai-grok-cli"
+
+
+def _fetch_xai_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """SuperGrok consumer subscription quota via the Grok CLI billing proxy.
+
+    The api.x.ai surface exposes NO usage/quota endpoint (``/v1/usage``,
+    ``/v1/quota``, ``/v1/credits`` … all 404; ``/v1/me`` is identity-only), but the
+    open-source Grok CLI (xai-org/grok-build,
+    ``crates/codegen/xai-grok-shell/src/extensions/billing.rs``) reads the
+    weekly/monthly consumer credit allowance from
+    ``GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`` — and it
+    accepts the SAME OAuth grant Hermes already stores for ``xai-oauth``. A bare
+    ``xai`` API key is an api.x.ai credential and never valid on the consumer
+    proxy, so this fetcher always authenticates from the xai-oauth store
+    (refreshing an expiring access token), ignoring *api_key*. Fail-open → None.
+    """
+    del base_url, api_key
+    from hermes_cli.auth_xai import resolve_xai_oauth_runtime_credentials
+
+    def _headers(token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}", "X-XAI-Token-Auth": _XAI_TOKEN_AUTH_HEADER,
+                "Accept": "application/json"}
+
+    try:
+        runtime = resolve_xai_oauth_runtime_credentials()
+        token = str(runtime.get("api_key", "") or "").strip()
+        if not token:
+            return None
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            response = client.get(_XAI_BILLING_URL, headers=_headers(token))
+            if response.status_code == 401:
+                # Access token expired between resolution and the call: force one refresh + retry.
+                runtime = resolve_xai_oauth_runtime_credentials(force_refresh=True)
+                token = str(runtime.get("api_key", "") or "").strip()
+                if not token:
+                    return None
+                response = client.get(_XAI_BILLING_URL, headers=_headers(token))
+            response.raise_for_status()
+            payload = response.json() or {}
+    except Exception:
+        logger.debug("xai ▸ /usage billing-proxy fetch failed (fail-open)", exc_info=True)
+        return None
+
+    config = payload.get("config") or {}
+    if not isinstance(config, dict) or not config:
+        return _snapshot("xai-oauth", "grok-billing-proxy", [], [],
+                         unavailable_reason="No Grok subscription billing config returned for this account.")
+
+    windows: list[AccountUsageWindow] = []
+    used = config.get("creditUsagePercent")
+    period = config.get("currentPeriod") or {}
+    if _is_num(used):
+        period_type = str(period.get("type") or "").strip()
+        label = (_title_case_slug(period_type.removeprefix("USAGE_PERIOD_TYPE_"))
+                 or "Subscription") + " limit"
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=float(used), reset_at=_parse_dt(period.get("end")),
+        ))
+    details: list[str] = []
+    prepaid = (config.get("prepaidBalance") or {}).get("val")
+    if _is_num(prepaid):
+        details.append(f"Prepaid credits: ${float(prepaid) / 100:,.2f}")
+    on_demand_used = (config.get("onDemandUsed") or {}).get("val")
+    on_demand_cap = (config.get("onDemandCap") or {}).get("val")
+    if _is_num(on_demand_cap) and float(on_demand_cap) > 0 and _is_num(on_demand_used):
+        details.append(f"On-demand: ${float(on_demand_used) / 100:,.2f} of ${float(on_demand_cap) / 100:,.2f}")
+    return _snapshot("xai-oauth", "grok-billing-proxy", windows, details,
+                     plan=payload.get("subscriptionTier"))
+
+
+_NANO_GPT_BASE = "https://nano-gpt.com/api"
+
+
+def _fetch_nano_gpt_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """NanoGPT subscription quota + prepaid balance. Documented API endpoints:
+    ``GET {base}/v1/subscription/usage`` (weekly token allowance, daily images,
+    period end) and ``POST {base}/check-balance`` (USD balance). Auth is the
+    plain ``NANOGPT_API_KEY`` bearer. Fail-open → None."""
+    token = str(api_key or "").strip()
+    if not token:
+        return None
+    base = (base_url or _NANO_GPT_BASE).strip().rstrip("/")
+    # base_url carries the inference host (…/api/v1); the billing API lives above it.
+    if base.endswith("/v1"):
+        base = base[:-3]
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            sub = (client.get(f"{base}/v1/subscription/usage", headers=headers).json() or {})
+            balance = (client.post(f"{base}/check-balance", headers=headers, json={}).json() or {})
+    except Exception:
+        logger.debug("nano-gpt ▸ /usage subscription/balance fetch failed (fail-open)", exc_info=True)
+        return None
+
+    if not sub.get("active"):
+        return _snapshot("nano-gpt", "subscription_usage_api", [], [],
+                         unavailable_reason="No active NanoGPT subscription on this key.")
+
+    windows: list[AccountUsageWindow] = []
+    weekly = sub.get("weeklyInputTokens")
+    if isinstance(weekly, dict):
+        used_pct = weekly.get("percentUsed")
+        reset_at = _parse_dt(weekly.get("resetAt") / 1000.0 if _is_num(weekly.get("resetAt")) else weekly.get("resetAt"))
+        if _is_num(used_pct):
+            # percentUsed is a 0–1 fraction (56.1M/60M tokens → 0.934), not a percent.
+            used = float(used_pct) * 100.0 if float(used_pct) <= 1.0 else float(used_pct)
+            windows.append(AccountUsageWindow(
+                label="Weekly token limit", used_percent=used, reset_at=reset_at,
+            ))
+        elif _is_num(weekly.get("used")) and _is_num(weekly.get("remaining")) and float(weekly["used"]) + float(weekly["remaining"]) > 0:
+            total = float(weekly["used"]) + float(weekly["remaining"])
+            reset_at = _parse_dt(weekly.get("resetAt") / 1000.0 if _is_num(weekly.get("resetAt")) else weekly.get("resetAt"))
+            windows.append(AccountUsageWindow(
+                label="Weekly token limit", used_percent=float(weekly["used"]) / total * 100.0, reset_at=reset_at,
+            ))
+    daily_images = sub.get("dailyImages")
+    if isinstance(daily_images, dict) and _is_num(daily_images.get("percentUsed")):
+        used, remaining = daily_images.get("used"), daily_images.get("remaining")
+        label = "Daily images"
+        if _is_num(used) and _is_num(remaining):
+            # The allowance (used + remaining) is the natural unit; plans may vary it.
+            label += f" ({int(float(used))}/{int(float(used) + float(remaining))})"
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=float(daily_images["percentUsed"]),
+            reset_at=_parse_dt(daily_images.get("resetAt") / 1000.0 if _is_num(daily_images.get("resetAt")) else daily_images.get("resetAt")),
+        ))
+
+    details: list[str] = []
+    usd = balance.get("usd_balance")
+    if isinstance(usd, str) or _is_num(usd):
+        try:
+            details.append(f"Balance: ${float(usd):,.2f}")
+        except (TypeError, ValueError):
+            pass
+    if sub.get("allowOverage"):
+        details.append("Overage billed to balance when the weekly allowance runs out")
+    return _snapshot("nano-gpt", "subscription_usage_api", windows, details)
+
+
+def _fetch_ollama_cloud_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Ollama Cloud utilization: ``GET https://ollama.com/api/usage`` returns rolling
+    session/weekly ``usage`` fractions (0.0–1.0) plus 4-week spend. Auth is the plain
+    ``OLLAMA_API_KEY`` bearer. Fail-open → None."""
+    token = str(api_key or "").strip()
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            payload = client.get("https://ollama.com/api/usage", headers=headers).json() or {}
+    except Exception:
+        logger.debug("ollama-cloud ▸ /usage api/usage fetch failed (fail-open)", exc_info=True)
+        return None
+
+    limits = payload.get("limits") or {}
+    activity = payload.get("activity") or {}
+    windows: list[AccountUsageWindow] = []
+    for key, label in (("session", "Session usage"), ("weekly", "Weekly usage")):
+        window = limits.get(key) or {}
+        fraction = window.get("usage")
+        if _is_finite_num(fraction) and 0.0 <= float(fraction) <= 1.0:
+            windows.append(AccountUsageWindow(label=label, used_percent=float(fraction) * 100.0))
+    details: list[str] = []
+    cost = activity.get("cost")
+    if isinstance(cost, str) or _is_num(cost):
+        try:
+            details.append(f"Spend, last 4 weeks: ${float(cost):,.2f}")
+        except (TypeError, ValueError):
+            pass
+    models = activity.get("models") or []
+    if models:
+        def _model_cost(m: Any) -> float:
+            try:
+                return abs(float(m.get("cost"))) if m.get("cost") is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+        top = max(models, key=_model_cost)
+        if _model_cost(top) > 0:
+            details.append(f"Top model: {top.get('name', '?')} at ${_model_cost(top):,.2f}")
+    return _snapshot("ollama-cloud", "usage_api", windows, details)
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
+    # xai-oauth: SuperGrok OAuth. Plain "xai" (API key) shares the fetcher because the
+    # consumer quota lives on the grok.com grant, not the API key.
+    "xai-oauth": _fetch_xai_account_usage, "xai": _fetch_xai_account_usage,
+    "nano-gpt": _fetch_nano_gpt_account_usage, "ollama-cloud": _fetch_ollama_cloud_account_usage,
 }
 
 

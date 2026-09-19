@@ -95,6 +95,183 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_xai_oauth_reads_credits_config(monkeypatch):
+    """SuperGrok consumer quota: weekly % + reset from the Grok CLI billing proxy, keyed by x-userid-free
+    bearer auth against the xai-oauth grant — not the api.x.ai API key."""
+    captured_headers = {}
+
+    class _HeaderClient:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            captured_headers.update(headers or {})
+            assert "billing?format=credits" in url
+            return _Response({
+                "config": {
+                    "creditUsagePercent": 4.0,
+                    "currentPeriod": {
+                        "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                        "start": "2026-09-17T10:13:12+00:00",
+                        "end": "2026-09-24T10:13:12+00:00",
+                    },
+                    "onDemandCap": {"val": 0},
+                    "onDemandUsed": {"val": 0},
+                    "prepaidBalance": {"val": 8666},
+                },
+                "subscriptionTier": "SuperGrok",
+            })
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _HeaderClient(None),
+    )
+    import agent.account_usage as au
+
+    def _fake_resolve(**kwargs):
+        return {"provider": "xai-oauth", "api_key": "oauth-access-token"}
+
+    monkeypatch.setattr("hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials", _fake_resolve)
+
+    snapshot = fetch_account_usage("xai-oauth", api_key="sk-plain-api-key")
+
+    assert snapshot is not None
+    assert snapshot.provider == "xai-oauth"
+    assert snapshot.source == "grok-billing-proxy"
+    assert snapshot.plan == "SuperGrok"
+    assert len(snapshot.windows) == 1
+    assert snapshot.windows[0].label == "Weekly limit"
+    assert snapshot.windows[0].used_percent == 4.0
+    assert snapshot.windows[0].reset_at == datetime(2026, 9, 24, 10, 13, 12, tzinfo=timezone.utc)
+    assert "Prepaid credits: $86.66" in snapshot.details
+    assert captured_headers.get("X-XAI-Token-Auth") == "xai-grok-cli"
+    assert captured_headers.get("Authorization") == "Bearer oauth-access-token"
+
+
+def test_fetch_account_usage_xai_oauth_fails_open(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("no store")),
+    )
+    assert fetch_account_usage("xai-oauth") is None
+
+
+def test_fetch_account_usage_xai_oauth_reports_missing_config(monkeypatch):
+    class _EmptyClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            return _Response({})
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _EmptyClient(),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials",
+        lambda **kw: {"api_key": "tok"},
+    )
+    snapshot = fetch_account_usage("xai")
+
+    assert snapshot is not None
+    assert snapshot.windows == ()
+    assert snapshot.unavailable_reason is not None
+
+
+def test_fetch_account_usage_nano_gpt_scales_fraction_and_reads_balance(monkeypatch):
+    """NanoGPT: percentUsed is a 0–1 fraction; balance comes from POST check-balance."""
+    class _RoutingClient:
+        def __init__(self, sub, balance):
+            self._sub, self._balance = sub, balance
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            assert "subscription/usage" in url
+            return _Response(self._sub)
+
+        def post(self, url, headers=None, json=None):
+            assert "check-balance" in url
+            return _Response(self._balance)
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _RoutingClient(
+            {
+                "active": True,
+                "allowOverage": True,
+                "weeklyInputTokens": {"used": 56_058_595, "remaining": 3_941_405,
+                                      "percentUsed": 0.9343099166666666, "resetAt": 1_789_948_800_000},
+                "dailyImages": {"used": 0, "remaining": 100, "percentUsed": 0, "resetAt": 1_789_776_000_000},
+            },
+            {"usd_balance": "27.29969381"},
+        ),
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    assert snapshot.provider == "nano-gpt"
+    assert len(snapshot.windows) == 2
+    assert snapshot.windows[0].label == "Weekly token limit"
+    assert snapshot.windows[0].used_percent > 90  # fraction scaled, NOT 0.93%
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_789_948_800, tz=timezone.utc)
+    assert "Balance: $27.30" in snapshot.details
+
+
+def test_fetch_account_usage_ollama_cloud_scales_fractions(monkeypatch):
+    """Ollama Cloud: limits.*.usage is a 0–1 fraction; spend + top model from activity."""
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            assert url == "https://ollama.com/api/usage"
+            return _Response({
+                "activity": {"cost": "2.01533", "models": [
+                    {"name": "glm-5.3", "request_count": 52, "cost": "1.74216"},
+                    {"name": "glm-5.3-flash", "request_count": 15, "cost": "0.27317"},
+                ]},
+                "limits": {
+                    "session": {"usage": 0.208, "models": []},
+                    "weekly": {"usage": 0.631, "models": []},
+                },
+            })
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _Client(),
+    )
+
+    snapshot = fetch_account_usage("ollama-cloud", api_key="key")
+
+    assert snapshot is not None
+    assert snapshot.provider == "ollama-cloud"
+    assert [w.label for w in snapshot.windows] == ["Session usage", "Weekly usage"]
+    assert snapshot.windows[0].used_percent == 20.8
+    assert snapshot.windows[1].used_percent == 63.1
+    assert "Spend, last 4 weeks: $2.02" in snapshot.details
+    assert "Top model: glm-5.3 at $1.74" in snapshot.details
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

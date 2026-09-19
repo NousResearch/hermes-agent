@@ -388,7 +388,7 @@ class TestSwitchModelDirectAliasOverride:
 
         monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
-        monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
+        monkeypatch.setattr("hermes_cli.models_opencode.opencode_model_api_mode",
             lambda *a, **kw: "openai_compat")
 
         result = ms.switch_model("qwen", "openrouter", "old-model")
@@ -413,7 +413,7 @@ class TestSwitchModelDirectAliasOverride:
         )
         monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
-        monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
+        monkeypatch.setattr("hermes_cli.models_opencode.opencode_model_api_mode",
             lambda *a, **kw: "openai_compat")
 
         result = ms.switch_model("local", "openrouter", "old-model")

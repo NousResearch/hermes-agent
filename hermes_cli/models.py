@@ -4,6 +4,8 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 ``hermes_cli.models.<name>`` stays the stable import/monkeypatch surface:
 ``models_catalog_static`` (curated tables, provider registry, aliases), ``models_reasoning_caps``,
 ``models_local`` (Ollama / LM Studio), ``models_pricing``, ``models_validate``.
+Sibling ``models_opencode`` owns OpenCode Zen / Go family routing — import those names from
+there, they are deliberately not re-exported here.
 """
 
 from __future__ import annotations
@@ -2119,95 +2121,6 @@ def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
     return "codex_responses" if raw and raw.startswith(tuple(_AZURE_FOUNDRY_RESPONSES_PREFIXES)) else None
 
 
-_OPENCODE_FAMILIES = ("opencode-go", "opencode-zen")
-
-
-def opencode_provider_family(provider_id: Optional[str]) -> Optional[str]:
-    """Resolve a provider id (canonical or prefixed) to its OpenCode family, or None.
-
-    Returns ``"opencode-zen"`` or ``"opencode-go"`` for the built-in providers AND for custom providers
-    whose name extends a family slug (e.g. ``opencode-go-bridge`` pointing at
-    ``https://opencode.ai/zen/go/v1``, issue #85589). Matching is case-insensitive. Custom family providers
-    need the same per-model api_mode routing and /v1 base-url normalization as the built-ins — this
-    predicate is the single owner of that family-membership question; do not re-implement it inline.
-    """
-    raw = str(provider_id or "").strip().lower()
-    if not raw:
-        return None
-    canonical = normalize_provider(provider_id)
-    if canonical in _OPENCODE_FAMILIES:
-        return canonical
-    return next((f for f in _OPENCODE_FAMILIES if raw.startswith(f)), None)
-
-
-def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[str]) -> str:
-    """Normalize OpenCode config IDs to the bare model slug used in API requests."""
-    family = opencode_provider_family(provider_id)
-    current = str(model_id or "").strip()
-    if not current or family is None:
-        return current
-    for prefix in (f"{provider_id or family}/", f"{family}/"):
-        if current.lower().startswith(prefix.lower()):
-            return current[len(prefix):]
-    return current
-
-
-# Per-family (model-id prefix → api_mode) routing from OpenCode's published Zen/Go endpoint
-# tables, checked in order. GPT/Codex/Grok and Muse Spark use /v1/responses (Muse Spark 503s on
-# chat/completions); Claude (Zen), MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
-# everything else falls through to /v1/chat/completions.
-_OPENCODE_API_MODE_PREFIXES: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
-    "opencode-go": (
-        (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("minimax-", "qwen", "union-alpha"), "anthropic_messages")),
-    "opencode-zen": (
-        (("claude-", "union-alpha"), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("qwen",), "anthropic_messages"))}
-
-
-def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str]) -> str:
-    """Determine the API mode for an OpenCode Zen / Go model (see ``_OPENCODE_API_MODE_PREFIXES``)."""
-    family = opencode_provider_family(provider_id)
-    normalized = normalize_opencode_model_id(provider_id, model_id).lower()
-    if normalized:
-        for prefixes, mode in _OPENCODE_API_MODE_PREFIXES.get(family or "", ()):
-            if normalized.startswith(prefixes):
-                return mode
-    return "chat_completions"
-
-
-# Relay path per OpenCode family on opencode.ai hosts.
-_OPENCODE_FAMILY_PATHS = {"opencode-zen": "/zen", "opencode-go": "/zen/go"}
-
-
-def normalize_opencode_base_url(
-    provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]) -> str:
-    """Normalize an OpenCode Zen / Go base URL for the API mode. Must be SYMMETRIC: the anthropic-
-    stripped URL gets persisted to ``model.base_url`` after switching into an anthropic-routed model,
-    and chat/codex modes heal it by re-adding ``/v1`` — but only on opencode.ai hosts, so custom
-    ``OPENCODE_*_BASE_URL`` proxies are left alone. On those hosts the relay path segment follows
-    the resolved family too (``/zen`` vs ``/zen/go``): the two relays serve different model sets,
-    so a ``model.base_url`` carried over from the other family 401s ("Model ... is not supported").
-    The family heal applies to the BUILT-IN providers only: a custom provider merely named after a
-    family (``opencode-go-bridge``) declared its relay path explicitly in ``providers:`` and keeps it.
-    Only the path is edited, so a port, userinfo, query or fragment round-trips untouched."""
-    url = str(base_url or "").strip().rstrip("/")
-    family = opencode_provider_family(provider_id)
-    if not url or family is None:
-        return url
-    parsed = urllib.parse.urlparse(url)
-    host = (parsed.hostname or "").lower()
-    official = host == "opencode.ai" or host.endswith(".opencode.ai")
-    path = parsed.path.rstrip("/")
-    if official and normalize_provider(provider_id) in _OPENCODE_FAMILIES and re.fullmatch(r"/zen(/go)?(/v1)?", path):
-        path = _OPENCODE_FAMILY_PATHS[family] + ("/v1" if path.endswith("/v1") else "")
-    if api_mode == "anthropic_messages":
-        path = re.sub(r"/v1$", "", path)
-    elif official and not path.endswith("/v1"):
-        path += "/v1"
-    return urllib.parse.urlunparse(parsed._replace(path=path))
-
-
 def github_model_reasoning_efforts(
     model_id: Optional[str], *, catalog: Optional[list[dict[str, Any]]] = None,
     api_key: Optional[str] = None) -> list[str]:
@@ -2638,10 +2551,14 @@ _PLUGIN_COMPAT_LAZY = {
     'get_pricing_for_provider': ('hermes_cli.models_pricing', 'get_pricing_for_provider'),
     'group_providers': ('hermes_cli.models_catalog_static', 'group_providers'),
     'lmstudio_model_reasoning_options': ('hermes_cli.models_local', 'lmstudio_model_reasoning_options'),
+    'normalize_opencode_base_url': ('hermes_cli.models_opencode', 'normalize_opencode_base_url'),
+    'normalize_opencode_model_id': ('hermes_cli.models_opencode', 'normalize_opencode_model_id'),
     'nous_catalog_url': ('hermes_cli.models_reasoning_caps', 'nous_catalog_url'),
     'nous_model_reasoning_capabilities': ('hermes_cli.models_reasoning_caps', 'nous_model_reasoning_capabilities'),
     'nous_policy_allowed_ids': ('hermes_cli.models_pricing', 'nous_policy_allowed_ids'),
     'ollama_model_supports_thinking': ('hermes_cli.models_local', 'ollama_model_supports_thinking'),
+    'opencode_model_api_mode': ('hermes_cli.models_opencode', 'opencode_model_api_mode'),
+    'opencode_provider_family': ('hermes_cli.models_opencode', 'opencode_provider_family'),
     'openrouter_model_reasoning_capabilities': ('hermes_cli.models_reasoning_caps', 'openrouter_model_reasoning_capabilities'),
     'parse_openrouter_reasoning_capabilities': ('hermes_cli.models_reasoning_caps', 'parse_openrouter_reasoning_capabilities'),
     'peek_cached_pricing': ('hermes_cli.models_pricing', 'peek_cached_pricing'),

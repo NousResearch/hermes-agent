@@ -29,7 +29,7 @@ def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool
     ``opencode-<family>-*`` providers, and any base_url hosted on opencode.ai.
     """
     try:
-        from hermes_cli.models import opencode_provider_family
+        from hermes_cli.models_opencode import opencode_provider_family
 
         if opencode_provider_family(provider) is not None:
             return True

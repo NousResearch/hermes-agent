@@ -1549,7 +1549,7 @@ def _opencode_api_mode(provider: str, model: str, api_key: str) -> str:
     # chat_completions (e.g. deepseek-v4-flash) and switching models via /model would otherwise carry the
     # previous mode forward, stripping /v1 from base_url for chat_completions models and 404'ing. Refs
     # #16878.
-    from hermes_cli.models import opencode_model_api_mode
+    from hermes_cli.models_opencode import opencode_model_api_mode
     return opencode_model_api_mode(provider, model)
 
 
@@ -1580,7 +1580,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     # OpenCode base URLs end with /v1 for OpenAI-compatible models but the Anthropic SDK prepends
     # its own /v1/messages: strip for anthropic_messages, re-append for
     # chat_completions/codex_responses (mirrors resolve_runtime_provider).
-    from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+    from hermes_cli.models_opencode import normalize_opencode_base_url, opencode_provider_family
     if opencode_provider_family(st.target_provider) is not None and isinstance(st.base_url, str):
         st.base_url = normalize_opencode_base_url(st.target_provider, st.api_mode, st.base_url)
 

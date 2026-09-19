@@ -1899,7 +1899,7 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     """Resolve ``(api_mode, base_url, destination_capabilities)`` for the switch target."""
     from hermes_cli.providers import determine_api_mode, is_actual_route
     from agent.native_compaction import resolve_native_compaction_capabilities
-    from hermes_cli.models import opencode_provider_family
+    from hermes_cli.models_opencode import opencode_provider_family
     # Pass model so dual-wire providers (Nous Portal anthropic/* -> Messages) resolve correctly.
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)

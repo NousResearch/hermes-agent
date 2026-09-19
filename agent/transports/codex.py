@@ -95,7 +95,7 @@ _LEGACY_ALIAS_FALLBACK[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
 def _is_opencode_responses_backend(params: dict[str, Any]) -> bool:
     """True for opencode-zen/go providers, ``opencode-*`` families, or opencode.ai hosts."""
     try:
-        from hermes_cli.models import opencode_provider_family
+        from hermes_cli.models_opencode import opencode_provider_family
 
         if opencode_provider_family(params.get("provider")) is not None:
             return True

@@ -37,7 +37,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | kind | count | meaning |
 |---|---|---|
 | moved | 0 | name now defined in `new location`; re-exported from the old module |
-| moved-lazy | 1148 | same, resolved lazily via `__getattr__` to avoid an import cycle |
+| moved-lazy | 1152 | same, resolved lazily via `__getattr__` to avoid an import cycle |
 | import | 592 | a third-party/stdlib name the old module used to expose; original import restored |
 | restored-def | 290 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
 | restored-helper | 41 | private helper restored only because a restored-def above depends on it |
@@ -1490,10 +1490,14 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `http` | import | `http.client` |
 | `is_nous_free_tier` | restored-def | `(deleted; BASE body restored)` |
 | `lmstudio_model_reasoning_options` | moved-lazy | `hermes_cli.models_local` |
+| `normalize_opencode_base_url` | moved-lazy | `hermes_cli.models_opencode` |
+| `normalize_opencode_model_id` | moved-lazy | `hermes_cli.models_opencode` |
 | `nous_catalog_url` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `nous_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `nous_policy_allowed_ids` | moved-lazy | `hermes_cli.models_pricing` |
 | `ollama_model_supports_thinking` | moved-lazy | `hermes_cli.models_local` |
+| `opencode_model_api_mode` | moved-lazy | `hermes_cli.models_opencode` |
+| `opencode_provider_family` | moved-lazy | `hermes_cli.models_opencode` |
 | `openrouter_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `parse_openrouter_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `peek_cached_pricing` | moved-lazy | `hermes_cli.models_pricing` |

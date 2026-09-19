@@ -4072,6 +4072,18 @@
   },
   {
    "facade": "hermes_cli.models",
+   "name": "normalize_opencode_base_url",
+   "kind": "moved-lazy",
+   "target": "hermes_cli.models_opencode"
+  },
+  {
+   "facade": "hermes_cli.models",
+   "name": "normalize_opencode_model_id",
+   "kind": "moved-lazy",
+   "target": "hermes_cli.models_opencode"
+  },
+  {
+   "facade": "hermes_cli.models",
    "name": "nous_catalog_url",
    "kind": "moved-lazy",
    "target": "hermes_cli.models_reasoning_caps"
@@ -4093,6 +4105,18 @@
    "name": "ollama_model_supports_thinking",
    "kind": "moved-lazy",
    "target": "hermes_cli.models_local"
+  },
+  {
+   "facade": "hermes_cli.models",
+   "name": "opencode_model_api_mode",
+   "kind": "moved-lazy",
+   "target": "hermes_cli.models_opencode"
+  },
+  {
+   "facade": "hermes_cli.models",
+   "name": "opencode_provider_family",
+   "kind": "moved-lazy",
+   "target": "hermes_cli.models_opencode"
   },
   {
    "facade": "hermes_cli.models",

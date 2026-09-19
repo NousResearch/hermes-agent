@@ -438,7 +438,7 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     # opencode.ai) serve models behind different API surfaces per model — a static api_mode 503s for
     # /v1/responses-only models like grok-4.5 (#85589). Re-derive api_mode from the effective model and
     # normalize the /v1 suffix, exactly like the built-in opencode-zen/go paths do.
-    from hermes_cli.models import opencode_provider_family
+    from hermes_cli.models_opencode import opencode_provider_family
     family = opencode_provider_family(requested_provider)
     if family is not None:
         return family
@@ -510,7 +510,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # api_mode from the model and normalize /v1 like the built-in paths.
     family = _opencode_family_for_custom(requested_provider, base_url)
     if family is not None and not custom_provider.get("api_mode"):
-        from hermes_cli.models import normalize_opencode_base_url, opencode_model_api_mode
+        from hermes_cli.models_opencode import normalize_opencode_base_url, opencode_model_api_mode
         effective_model = str(target_model or custom_provider.get("model") or rp._get_model_config().get("default") or "").strip()
         if effective_model:
             result["api_mode"] = opencode_model_api_mode(family, effective_model)

@@ -1,6 +1,7 @@
 """A2A client tools (``a2a`` toolset): a2a_discover/call/list/history/orchestrate talk to *other*
-agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token}, timeout,
-capabilities}}``. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 replies still parse)."""
+agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token|token_env},
+timeout, capabilities}}`` — ``token_env`` names an environment variable, to keep the secret out
+of config.yaml. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 replies still parse)."""
 
 from __future__ import annotations
 
@@ -46,8 +47,21 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     return _peer_from_entry(entry, capabilities=entry.get("capabilities", []) or [], tenant=entry.get("tenant", "")) if entry else None
 
 
+def _peer_token(auth: dict) -> str:
+    """Peer bearer token: inline ``token``, else ``token_env`` read from the environment.
+
+    ``token_env`` mirrors what the inbound side already does with
+    ``A2A_PEER_TOKENS``. Without it, a per-peer token had to sit as a literal in
+    ``config.yaml`` — which the agent rewrites and deployments back up — so
+    installs that cannot put a secret there got no per-peer identity at all, and
+    every caller fell back to ``ip:<addr>``.
+    """
+    return str(auth.get("token") or os.getenv(str(auth.get("token_env") or ""), "") or "")
+
+
 def _auth_header(auth: dict) -> dict:
-    return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
+    token = _peer_token(auth) if auth and auth.get("type") == "bearer" else ""
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:

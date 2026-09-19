@@ -173,6 +173,62 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     assert entry.output_cost_per_million == Decimal("2")
 
 
+def test_per_1m_tokens_unit_skips_million_multiply(monkeypatch):
+    """Custom OpenAI-compatible endpoints that advertise per-million pricing
+    via ``unit`` must not be scaled by 1e6 (#107989)."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "custom-model": {
+                "pricing": {"prompt": "2.90", "completion": "10.00", "unit": "per_1m_tokens"}
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "custom-model",
+        provider="custom",
+        base_url="https://llm.example/v1",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("2.90")
+    assert entry.output_cost_per_million == Decimal("10.00")
+
+    result = estimate_usage_cost(
+        "custom-model",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=0),
+        provider="custom",
+        base_url="https://llm.example/v1",
+    )
+    assert result.amount_usd == Decimal("2.90")
+
+
+def test_unknown_unit_widgets_still_multiplied(monkeypatch):
+    """Unrecognized ``unit`` values fail open: keep treating prompt/completion
+    as per-token and multiply by 1e6."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "custom-model": {
+                "pricing": {
+                    "prompt": "0.000001",
+                    "completion": "0.000002",
+                    "unit": "widgets",
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "custom-model",
+        provider="custom",
+        base_url="https://llm.example/v1",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("1")
+    assert entry.output_cost_per_million == Decimal("2")
 
 
 def test_deepseek_deprecated_aliases_price_as_flash():

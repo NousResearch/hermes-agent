@@ -20,6 +20,7 @@ from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     DEFAULT_FALLBACK_CONTEXT,
+    _extract_pricing,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -2135,3 +2136,14 @@ def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
     assert float(entry.input_cost_per_million) == pytest.approx(0.6)
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
     assert float(entry.request_cost) == pytest.approx(0.005)
+
+
+def test_extract_pricing_normalizes_per_1m_tokens_unit():
+    """Generic /models pricing with ``unit=per_1m_tokens`` is rescaled to per-token (#107989 / #112018)."""
+    pricing = _extract_pricing({
+        "id": "x",
+        "pricing": {"prompt": "2.90", "completion": "10.00", "unit": "per_1m_tokens"},
+    })
+    assert "unit" not in pricing
+    assert float(pricing["prompt"]) == pytest.approx(2.90 / 1_000_000)
+    assert float(pricing["completion"]) == pytest.approx(10.00 / 1_000_000)

@@ -411,19 +411,40 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
 
 
+# Custom OpenAI-compatible /models payloads may advertise these as USD already
+# per million tokens. Matching is after strip+lower and space/hyphen → `_`.
+_PER_MILLION_PRICING_UNITS = frozenset((
+    "per_1m_tokens",
+    "per_million_tokens",
+    "per_1m",
+    "per_million",
+    "usd_per_1m_tokens",
+    "usd_per_million_tokens",
+))
+
+
+def _pricing_unit_is_per_million(raw: Any) -> bool:
+    if not isinstance(raw, str):
+        return False
+    return raw.strip().lower().replace(" ", "_").replace("-", "_") in _PER_MILLION_PRICING_UNITS
+
+
 def _pricing_entry_from_metadata(
     metadata: Dict[str, Dict[str, Any]], model_id: str, *, source_url: str, pricing_version: str
 ) -> Optional[PricingEntry]:
     if model_id not in metadata:
         return None
     pricing = metadata[model_id].get("pricing") or {}
+    already_per_million = _pricing_unit_is_per_million(pricing.get("unit"))
 
     def per_million(key: str, *aliases: str) -> Optional[Decimal]:
         raw = pricing.get(key)
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
             raw = raw or pricing.get(alias)
         value = _to_decimal(raw)
-        return None if value is None else value * _ONE_MILLION
+        if value is None:
+            return None
+        return value if already_per_million else value * _ONE_MILLION
 
     prompt = per_million("prompt")
     completion = per_million("completion")

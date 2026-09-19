@@ -737,6 +737,14 @@ def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) 
         if report is None and time.monotonic() >= deadline:
             proc.kill()
             drain.join(timeout=5.0)
+            # A killed child cannot run further, but the turn may have ENDED (and delivered)
+            # in the window between the last report check and the kill landing. Re-read once:
+            # a report that appeared means the turn completed — book it as delivered instead
+            # of misreporting a delivered turn as a timeout (and never re-notifying).
+            late = read_turn_report(report_path, proc.pid)
+            if late is not None:
+                return subprocess.CompletedProcess(
+                    argv, int(late["exit_code"]), "", late.get("error") or "")
             raise subprocess.TimeoutExpired(argv, timeout)
 
 
@@ -930,11 +938,42 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None
     except subprocess.TimeoutExpired:
+        # The turn was killed mid-flight: the killed child cannot complete, but its turn may
+        # have persisted the query into the session before the kill landed. Replaying the
+        # full payload risks a duplicate; staying silent loses the alert entirely (the
+        # 2026-09-19 docgen-deadman case: findings existed in the job output and nobody
+        # knew to look). Fail-safe middle: queue a SHORT degraded-delivery marker through
+        # the deferred lane — it references the saved output instead of repeating it, so a
+        # late-completing original turn cannot duplicate content. One marker per execution
+        # (stable key); a marker that itself times out is never re-marked (recursion guard).
+        marker_queued = False
+        if "DELIVERY DEGRADED" not in content:
+            marker = (
+                f"[Cronjob \"{job.get('name', job_id)}\" — DELIVERY DEGRADED, scheduled job, "
+                f"not the user. This alert's bot-chat turn timed out after "
+                f"{_get_bot_chat_delivery_timeout()}s, so the full output could NOT be posted "
+                f"here. Read the complete saved output with `hermes cron runs` "
+                f"(job '{job_id}'). Excerpt: {content.strip()[:280]}]"
+            )
+            try:
+                from cron.bot_chat_delivery import defer as _defer_marker
+                _defer_marker(f"{key}-degraded", dict(job), marker, profile, home,
+                              for_failure=for_failure)
+                marker_queued = True
+            except Exception as defer_exc:
+                logger.warning(
+                    "Job '%s': degraded-delivery marker could not be queued: %s",
+                    job_id, defer_exc)
+        tail = (
+            "a short degraded-delivery notice was queued to Bot Chat — posted once the "
+            f"session frees; full output stays saved, run `hermes cron runs` for job '{job_id}'"
+            if marker_queued else
+            "the result is saved; run `hermes cron runs` to see it, or `hermes doctor` "
+            "if this keeps happening")
         return _fail(
             f"bot-chat delivery to profile '{profile_label}' timed out "
-            f"after {_get_bot_chat_delivery_timeout()}s (the bot's turn may "
-            "still complete; raise cron.bot_chat_delivery_timeout_seconds if "
-            "this recurs)")
+            f"after {_get_bot_chat_delivery_timeout()}s ({tail}; raise "
+            "cron.bot_chat_delivery_timeout_seconds if this recurs)")
     except Exception as e:
         logger.warning(
             "Job '%s': bot-chat delivery to profile '%s' failed: %s", job_id, profile_label,

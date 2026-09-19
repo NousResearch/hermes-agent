@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import subprocess
+from urllib.parse import urlparse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -322,10 +323,33 @@ def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], lab
 
 
 async def _fetch_url_content(url: str, *, url_fetcher: UrlFetcher = None) -> str:
+    if _is_login_walled_url(url):
+        # Keyless web extractors return a fabricated nearest-match document for
+        # auth-walled pages, stamped with the requested URL and no error signal —
+        # that fabricated text then poisons context and LLM session titles.
+        return f"🔗 {url}: login-walled link — remote extraction skipped (extractors fabricate nearest-match content for pages behind login). Open it in a browser to read the actual content."
     content = (url_fetcher or _default_url_fetcher)(url)
     if inspect.isawaitable(content):
         content = await content
     return str(content or "").strip()
+
+
+# Hosts behind interactive login walls. Extraction of these is skipped entirely:
+# a fetcher that cannot see the page must never guess at its content.
+_LOGIN_WALLED_HOST_SUFFIXES = (
+    "mail.google.com", "accounts.google.com", "chat.google.com",
+    "drive.google.com", "docs.google.com", "sheets.google.com",
+    "calendar.google.com", "outlook.office.com", "outlook.live.com",
+    "mail.proton.me", "app.slack.com", "teams.microsoft.com",
+)
+
+
+def _is_login_walled_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(host == suffix or host.endswith("." + suffix) for suffix in _LOGIN_WALLED_HOST_SUFFIXES)
 
 
 async def _default_url_fetcher(url: str) -> str:

@@ -150,6 +150,14 @@ def validate_tool_calls(
         if args is not None and not isinstance(args, str):
             tc.function.arguments = args = str(args)
         if not args or not args.strip():
+            if (finish_reason or "").lower() in ("length", "max_tokens"):
+                # A2 (RCA 2026-09-17): blank args with a truncation finish_reason means
+                # the stream was cut before any arg bytes — refuse the silent "{}"
+                # execution; flows into the truncated-args refusal below.
+                invalid_json_args.append(
+                    (tc.function.name, "arguments empty while finish_reason indicates truncation")
+                )
+                continue
             tc.function.arguments = "{}"
             continue
         try:

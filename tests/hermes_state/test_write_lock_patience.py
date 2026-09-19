@@ -109,6 +109,33 @@ class TestTranscriptWritePatience:
         db.append_message(session_id="s2", role="user", content="fast")
         assert time.monotonic() - t0 < 5.0  # loose: no patience-length stall
 
+    def test_exhausted_patience_logs_who_holds_the_lock(self, db, monkeypatch, caplog):
+        """On patience exhaustion the error is logged WITH the blocking holder identity,
+        so an operator can find the culprit instead of a bare 'database is locked'."""
+        monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 0.2)
+        foreign = [(424242, "/proc/424242/fd/3")]  # synthetic open-file scan result
+        monkeypatch.setattr(
+            db, "_foreign_state_db_holders", lambda: foreign
+        )
+
+        started = threading.Event()
+        holder = threading.Thread(
+            target=_hold_write_lock, args=(db.db_path, 2.0, started)
+        )
+        holder.start()
+        try:
+            assert started.wait(5.0)
+            with pytest.raises(sqlite3.OperationalError):
+                db.set_meta("k", "v")
+        finally:
+            holder.join(timeout=10.0)
+
+        assert any("state.db write lock contended" in r.message for r in caplog.records)
+        assert any(
+            "424242" in r.message
+            and "foreign holders" in r.message for r in caplog.records
+        )
+
 
 class TestOpenLockPatience:
     def test_open_survives_multi_second_lock_hold(self, tmp_path):
@@ -148,3 +175,49 @@ class TestOpenLockPatience:
             SessionDB(db_path=bad_path)
         # Must fail well before a full patience window (loose bound).
         assert time.monotonic() - t0 < 15.0
+
+
+class TestSlowTxnHoldWarn:
+    def test_long_write_txn_is_named_in_warning(self, db, monkeypatch, caplog):
+        """A write txn holding the lock > _SLOW_TXN_HOLD_WARN_S must log the culprit
+        function name, so the next contention storm has a named cause."""
+        import time as _time
+        monkeypatch.setattr(SessionDB, "_SLOW_TXN_HOLD_WARN_S", 0.05)
+
+        def _slow_set_meta(conn):
+            _time.sleep(0.15)
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES ('k','v') "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            )
+
+        try:
+            db.meta_table_name
+        except Exception:
+            pass
+        with caplog.at_level("WARNING"):
+            db._execute_write(_slow_set_meta)
+        assert any(
+            "held the lock" in r.message and "_slow_set_meta" in r.message
+            for r in caplog.records
+        )
+
+
+class TestRollbackHoldWarn:
+    def test_long_rollback_path_is_named_in_warning(self, db, monkeypatch, caplog):
+        """d1: a rollback after a long fn must be measured too, not only the commit path."""
+        import time as _time
+
+        monkeypatch.setattr(SessionDB, "_SLOW_TXN_HOLD_WARN_S", 0.05)
+
+        def _slow_then_fail(conn):
+            _time.sleep(0.15)
+            raise sqlite3.OperationalError("simulated mid-txn failure")
+
+        import logging as _logging
+        with caplog.at_level(_logging.WARNING, logger="hermes_state"):
+            with pytest.raises(sqlite3.OperationalError, match="simulated"):
+                db._execute_write(_slow_then_fail)
+        assert any(
+            "before ROLLBACK" in r.message for r in caplog.records
+        ), "rollback-path holds must be measured and named"

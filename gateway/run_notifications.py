@@ -1092,8 +1092,87 @@ class GatewayNotificationsMixin:
                 await deliver()
             return True
         except Exception as e:
+            if self._is_active_turn_lease_rejection(e):
+                # The session's turn lease legitimately fenced the delivery row (a live turn
+                # owns the transcript). Re-raise as WakeNotAccepted so the durable settlement
+                # takes the "defer" branch (attempt REFUNDED, row stays pending) instead of
+                # "release" — release burned attempts against a lease that outlived the whole
+                # budget and terminally dropped the delivery (2026-09-14, deleg_b1078862:
+                # 8 attempts, 0 delivered). The watcher requeues and retries after the turn.
+                logger.info(
+                    "Delegation delivery for session %s fenced by the active turn lease; "
+                    "deferring (no attempt spent)",
+                    raw_sid,
+                )
+                from gateway.wake import WakeNotAccepted
+
+                raise WakeNotAccepted(
+                    f"session turn lease holds {raw_sid!r}; delivery deferred"
+                ) from e
             logger.warning(fail, raw_sid, e)
             return False
+
+    @staticmethod
+    def _is_active_turn_lease_rejection(exc: BaseException) -> bool:
+        """True when the persist was refused because the session has a live turn lease.
+
+        Distinct from a transient lock error: the fence is correct and will lift when the
+        owning turn ends, so the caller should WAIT (defer, refund) rather than spend the
+        capped delivery-attempt budget spinning against it.
+        """
+        from hermes_state_errors import SessionTurnLeaseLostError
+
+        return isinstance(exc, SessionTurnLeaseLostError) or (
+            "active turn lease" in str(exc)
+        )
+
+    def _delegation_defer_streak(self, delegation_id: str) -> int:
+        """Consecutive claim→defer settlements for *delegation_id* this gateway lifecycle.
+
+        Skeptic c1 (deleg_01d53160): fail-open probes make claim+defer writes possible every
+        watcher tick under a long turn, with the attempt cap refunded so nothing bounds it.
+        The streak lets the defer settlement in _deliver_completion_notification_scoped skip
+        the claim entirely once the streak exceeds _DELEGATION_DEFER_CLAIM_FREE_STREAK —
+        identical to the probe-active fast path (requeue without spending ledger writes).
+        """
+        entry = self._delegation_defer_streaks.get(delegation_id)
+        if entry is None:
+            return 0
+        streak, _last_defer_at = entry
+        return streak
+
+    def _delegation_defer_suppresses_claim(self, delegation_id: str) -> bool:
+        """True when recent defers say claiming again NOW would just be another fenced spin.
+
+        Time-decayed: after _DELEGATION_DEFER_DECAY_S without a new defer the suppression
+        lifts, so a cleared lease resumes delivery within one watcher tick — the streak can
+        never wedge the row claim-free forever (the streak itself only clears on a real
+        settlement, which a suppressed claim can never reach).
+        """
+        entry = self._delegation_defer_streaks.get(delegation_id)
+        if entry is None:
+            return False
+        streak, last_defer_at = entry
+        return (
+            streak >= self._DELEGATION_DEFER_CLAIM_FREE_STREAK
+            and (time.monotonic() - last_defer_at) < self._DELEGATION_DEFER_DECAY_S
+        )
+
+    def _record_delegation_defer(self, delegation_id: str) -> None:
+        _streak, last_defer_at = self._delegation_defer_streaks.get(delegation_id, (0, 0.0))
+        self._delegation_defer_streaks[delegation_id] = (
+            _streak + 1, time.monotonic()
+        )
+
+    def _clear_delegation_defer_streak(self, delegation_id: str) -> None:
+        self._delegation_defer_streaks.pop(delegation_id, None)
+
+    # After this many consecutive claim→defer cycles for one delegation, stop claiming while
+    # defers keep arriving. 8 ≈ the old hard cap; reached only when BOTH the read-only probe
+    # fails open AND the persist fence fires. Suppression decays so a cleared lease resumes
+    # delivery on the very next watcher tick instead of wedging the row claim-free forever.
+    _DELEGATION_DEFER_CLAIM_FREE_STREAK = 8
+    _DELEGATION_DEFER_DECAY_S = 60.0
 
     def _served_api_server_wake_profile(self, evt: dict, raw_sid: str) -> Optional[str]:
         """The served (non-primary) profile whose own session store holds *raw_sid*, else ``None``
@@ -1339,7 +1418,49 @@ class GatewayNotificationsMixin:
             except Exception:
                 logger.debug("Async-completion delivery DB unavailable", exc_info=True)
                 return False
+            if str(evt.get("type") or "") == "async_delegation":
+                # A live turn lease on the target session fences the delivery-row persist
+                # (reject_active_turn_lease). Wait it out HERE, read-only, before the durable
+                # claim — otherwise every watcher tick spends claim+defer writes against a
+                # lease that may run for the whole turn (2026-09-14: the 2s spin burned 8
+                # attempts, terminally dropping deleg_b1078862). Fail-open on probe errors:
+                # the persist-side fence + defer refund still protect the row.
+                lease_session = parent_session_id or _raw_process_event_session_id(evt) or ""
+                if lease_session and await asyncio.to_thread(
+                    self._session_turn_lease_active, lease_session
+                ):
+                    logger.debug(
+                        "Deferring async delegation pre-flight: session %s holds an active turn lease",
+                        lease_session,
+                    )
+                    return False
         return True
+
+    def _session_turn_lease_active(self, session_id: str) -> bool:
+        """Read-only probe: does the session's conversation hold a live (unexpired) turn lease?
+
+        Never takes the write lock (WAL read). Probe failure fails OPEN — the persist-side
+        fence (SessionTurnLeaseLostError → defer refund) remains the correctness boundary.
+        """
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None or not session_id:
+            return False
+        # The gateway's ``_session_db`` is an ``AsyncSessionDB`` door (every method → coroutine via
+        # to_thread). This probe already runs INSIDE to_thread, so call the raw store: the door
+        # would hand back an un-awaited coroutine and ``_holder, expires_at = owner`` raised
+        # "cannot unpack non-iterable coroutine object" every 2 s watcher tick, forever (13k+
+        # errors 2026-09-15; the poisoned event never delivered and never dropped).
+        raw_db = getattr(session_db, "_db", session_db)
+        try:
+            owner = raw_db.get_session_turn_lease_owner(session_id)
+        except Exception:
+            return False
+        if owner is None:
+            return False
+        if not isinstance(owner, tuple) or len(owner) != 2:
+            return False  # fail OPEN on any unexpected shape — never poison the watcher loop
+        _holder, expires_at = owner
+        return float(expires_at) > time.time()
 
     async def _preflight_completion_delivery(self, evt: dict) -> "_CompletionClaim":
         """Claim the durable row (async delegations) and verify the target before adapter acceptance.
@@ -1358,6 +1479,14 @@ class GatewayNotificationsMixin:
         if evt_type == "async_delegation" and not evt.get("task_failure_notice"):
             claim.delegation_id = str(evt.get("delegation_id") or "")
             if claim.delegation_id:
+                # c1 (deleg_01d53160): a long recent defer streak means the delivery keeps
+                # landing behind a live/fenced lease. Skip the claim — same claim-free
+                # requeue as the probe-active fast path — so a fail-open probe cannot turn
+                # every watcher tick into claim+defer ledger writes. Decays after
+                # _DELEGATION_DEFER_DECAY_S so a cleared lease resumes on the next tick.
+                if self._delegation_defer_suppresses_claim(claim.delegation_id):
+                    claim.proceed, claim.early_result = False, False
+                    return claim
                 try:
                     from tools.async_delegation import claim_completion_delivery
                     claim.claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
@@ -1471,6 +1600,18 @@ class GatewayNotificationsMixin:
             for sibling, claim_id in sibling_claims:
                 if claim_id:
                     self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
+            # c1 streak bookkeeping: defer counts up (fail-open spin guard), any real
+            # settlement (complete/release) clears it — the delivery made progress.
+            if claim.delegation_id:
+                if operation == "defer":
+                    self._record_delegation_defer(claim.delegation_id)
+                else:
+                    self._clear_delegation_defer_streak(claim.delegation_id)
+            for sibling, _claim_id in sibling_claims:
+                if operation == "defer":
+                    self._record_delegation_defer(sibling["delegation_id"])
+                else:
+                    self._clear_delegation_defer_streak(sibling["delegation_id"])
             if accepted and sibling_claims:
                 self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
 
@@ -1752,7 +1893,9 @@ class GatewayNotificationsMixin:
                     except Exception as e:
                         for evt in group:
                             _pr.completion_queue.put(evt)
-                        logger.error("Async delegation injection error: %s", e)
+                        # exc_info: a persisted poisoned event re-fails every 2 s tick forever (13k+
+                        # rows 2026-09-15); without the traceback the failing frame is invisible.
+                        logger.error("Async delegation injection error: %s", e, exc_info=True)
             await asyncio.sleep(interval)
 
     @staticmethod

@@ -205,6 +205,12 @@ class PluginDispatchMixin:
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             try:
+                # Matcher gate BEFORE the single-flight window (upstream #105223): a shell-hook
+                # callback that doesn't match this tool must never acquire (nor be skipped for)
+                # the flight token of another session's in-flight run of the same callback.
+                matcher = getattr(cb, "_hermes_matches_tool", None)
+                if matcher is not None and not matcher(kwargs.get("tool_name")):
+                    continue
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
@@ -250,9 +256,14 @@ class PluginDispatchMixin:
         suppressed, still running, timed out (worker abandoned, never joined), or the worker
         could not be started. Exceptions propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
-        # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
-        # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
-        suppression_key = (hook_name, id(cb))
+        # Combined fix: single-flight is scoped per (callback, session) — NOT per callback
+        # process-wide (upstream #105223): parallel sessions sharing this process each get
+        # their own flight token, so one session's in-flight hook can never skip (fail-close)
+        # another's. Suppression (back-off after timeout) stays a fact about the callback+session
+        # so a hung callback keeps its back-off, while the gate tells CONCURRENT CALLS apart via
+        # call identity (same composition as the shell-hook payload in agent/shell_hooks.py).
+        session_key = kwargs.get("session_id") or kwargs.get("parent_session_id") or ""
+        suppression_key = (hook_name, id(cb), session_key)
         gate_key = (*suppression_key, _hook_call_identity(kwargs))
         token = object()
         with self._hook_timeout_lock:

@@ -1362,23 +1362,35 @@ _COMPRESSION_MARKER_TEMPLATE = (
 
 
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
+
+    Only leaves where the replacement is a net reduction are changed (``head_chars`` plus the
+    marker, ~420 chars); the input string is returned unchanged when nothing was replaced.
+    """
     try:
         parsed = json.loads(args)
     except (ValueError, TypeError):
         return args
 
+    changed = False
+
     def _shrink(obj: Any) -> Any:
+        nonlocal changed
         if isinstance(obj, str):
-            if len(obj) <= head_chars or _COMPRESSION_MARKER_PREFIX in obj:
+            # Already marked: the compressor always writes the marker at ``head_chars``, so test
+            # that exact shape — a leaf that merely mentions the marker must still shrink. Never
+            # re-apply it (the counts are the marker's anti-imitation value, see header).
+            if len(obj) <= head_chars or obj.startswith(_COMPRESSION_MARKER_PREFIX, head_chars):
                 return obj
             marker = _COMPRESSION_MARKER_TEMPLATE.format(
                 omitted=len(obj) - head_chars, total=len(obj)
             )
-            # Only replace when it actually reclaims bytes: for a leaf just over the cap the marker
-            # is longer than what it replaces, and re-shrinking an already-marked leaf would rewrite
-            # its counts (which the marker's anti-imitation value depends on) on every compaction.
-            return obj[:head_chars] + marker if head_chars + len(marker) < len(obj) else obj
+            # Only replace when it reclaims bytes: for a leaf just over the cap the marker is
+            # longer than what it replaces.
+            if head_chars + len(marker) >= len(obj):
+                return obj
+            changed = True
+            return obj[:head_chars] + marker
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -1386,6 +1398,10 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
         return obj
 
     shrunken = _shrink(parsed)
+    # Re-serialising alone would rewrite the caller's bytes (compact wire JSON gains spaces),
+    # which the callers read as "this message changed" and count as reclaimed pressure.
+    if not changed:
+        return args
     # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
     return json.dumps(shrunken, ensure_ascii=False)
 

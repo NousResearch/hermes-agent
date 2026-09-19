@@ -12,6 +12,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _COMPRESSION_MARKER_PREFIX,
     _COMPRESSION_MARKER_TEMPLATE,
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
@@ -2364,17 +2365,18 @@ class TestTruncateToolCallArgsJson:
     def test_shrunken_args_remain_valid_json(self):
         import json as _json
         shrink = self._helper()
+        content = "# Shopping Browser Setup Notes\n\n" + "abc " * 400
         original = _json.dumps({
             "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
-            "content": "# Shopping Browser Setup Notes\n\n" + "abc " * 400,
+            "content": content,
         })
         assert len(original) > 500
         shrunk = shrink(original)
         parsed = _json.loads(shrunk)  # must not raise
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        # Head preserved, marker appended (not substituted for the leaf's own text).
-        assert parsed["content"].startswith("# Shopping Browser Setup Notes\n\n"[:200])
-        assert parsed["content"].endswith("⟫")
+        # Head preserved, marker appended at the cut (not substituted for the leaf's own text).
+        assert parsed["content"].startswith(content[:200])
+        assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
         assert len(shrunk) < len(original)
 
 
@@ -2396,7 +2398,7 @@ class TestTruncateToolCallArgsJson:
         assert parsed["timeout"] is None
         assert parsed["items"] == [1, 2, 3]
         assert parsed["note"].startswith("z" * 200)
-        assert parsed["note"].endswith("⟫")
+        assert parsed["note"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
 
 
 
@@ -2435,7 +2437,7 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].startswith(huge_content[:200])
-        assert parsed["content"].endswith("⟫")
+        assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
 
 
 class TestTruncationMarkerNotImitable:
@@ -2449,23 +2451,31 @@ class TestTruncationMarkerNotImitable:
     """
 
     def test_old_bare_marker_no_longer_produced(self):
-        """The exact literal that caused #83714 must never come out of the shrink helper again."""
+        """The literal that caused #83714 must never come out of the shrink helper again."""
         payload = json.dumps({"path": "/f.py", "new_string": "y" * 600})
         shrunk = json.loads(_truncate_tool_call_args_json(payload))["new_string"]
         assert "...[truncated]" not in shrunk
+        # ...and the leaf really was shrunk, so a no-op helper cannot pass this.
+        assert shrunk == "y" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(omitted=400, total=600)
 
-    def test_shrink_only_replaces_when_it_reclaims_and_never_re_shrinks(self):
-        """Shrinking is a one-way, size-reducing rewrite of a leaf.
+    def test_args_without_a_net_gain_leaf_are_left_byte_identical(self):
+        """A leaf the marker would not shrink, and a leaf that merely mentions the marker.
 
-        Every replayed leaf must lose bytes (a leaf just over the cap used to
-        *grow*, because the marker is longer than the text it replaces), keep a
-        200-char head plus the marker with true counts, and be a fixed point: a
-        second pass over already-shrunk args must not rewrite the counts.
+        Below the break-even (``head_chars`` + marker) replacing a leaf would grow the payload, and
+        re-serialising alone would rewrite compact wire JSON — both read as "this changed" upstream
+        and are counted as reclaimed pressure.
         """
-        # Just over the cap: replacing here would be a net gain of characters.
         tiny = json.dumps({"new_string": "y" * 201, "pad": "z" * 320})
         assert _truncate_tool_call_args_json(tiny) == tiny
+        compact = json.dumps({"new_string": "y" * 201, "pad": "z" * 320}, separators=(",", ":"))
+        assert _truncate_tool_call_args_json(compact) == compact
 
+        # The guard keys on the marker's POSITION, so an imitated marker mid-leaf still shrinks.
+        imitated = json.dumps({"new_string": "x" * 1000 + _COMPRESSION_MARKER_PREFIX + " 5 of 9⟫" + "y" * 500})
+        assert len(_truncate_tool_call_args_json(imitated)) < len(imitated)
+
+    def test_shrunken_leaf_is_head_plus_marker_and_a_fixed_point(self):
+        """Re-shrinking must be a no-op: the marker's counts are its anti-imitation value."""
         payload = json.dumps({"content": "x" * 2000})
         once = _truncate_tool_call_args_json(payload)
         assert len(once) < len(payload)

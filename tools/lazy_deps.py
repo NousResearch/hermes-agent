@@ -49,6 +49,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "search.exa": ("exa-py==2.10.2",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
     "search.parallel": ("parallel-web==0.4.2",),
+    "search.trafilatura": ("trafilatura==2.2.0",),
 
     # ─── Monitoring ─────────────────────────────────────────────────────────
     # OTLP export; tracks the `otlp` extra.

@@ -910,14 +910,65 @@ SKILL_MANAGE_SCHEMA = {
 }
 
 
+# --- Compact schema profile (agent.compact_tool_schemas) ---
+# Preserves the long text's hard rules: patch over edit, confirm with the user
+# before create/delete, the absorbed_into contract (target must already exist),
+# the 57-char description window, and pinned skills refusing delete only.
+SKILL_MANAGE_COMPACT_DESCRIPTION = (
+    "Create/update/delete skills — your procedural memory. New ones go to "
+    "~/.hermes/skills/. Actions: create, patch (preferred for fixes), edit "
+    "(full rewrite only), delete, write_file, remove_file. Create after a hard "
+    "task succeeds or a workflow is discovered; patch a skill the moment it "
+    "proves stale. Confirm before create/delete; skip one-offs. Pinned skills "
+    "refuse delete but accept patches."
+)
+
+SKILL_MANAGE_COMPACT_PARAMS = {
+    "name": (
+        "Skill name (lowercase, hyphens/underscores, max 64 chars). Must match "
+        "an existing skill for everything but 'create'."
+    ),
+    "content": (
+        "Full SKILL.md (frontmatter + body). Required for 'create'/'edit'; for "
+        "'edit' read it with skill_view() first and supply the complete text. "
+        "Only the description's first 57 chars show in the skill index, so "
+        "keep the trigger there: 'Use when <trigger>. <one-line behavior>.'"
+    ),
+    "old_string": (
+        "Text to find (required for 'patch'). Unique unless replace_all=true — "
+        "include surrounding context."
+    ),
+    "new_string": (
+        "Replacement for 'patch'; must differ from old_string. May be empty to "
+        "delete the match."
+    ),
+    "replace_all": "For 'patch': replace every occurrence (default false).",
+    "category": "Optional grouping subdirectory (e.g. 'devops'). 'create' only.",
+    "file_path": (
+        "Supporting file in the skill directory. Required for "
+        "'write_file'/'remove_file', under references/, templates/, scripts/ "
+        "or assets/. Optional for 'patch' (defaults to SKILL.md)."
+    ),
+    "file_content": "File contents. Required for 'write_file'.",
+    "absorbed_into": (
+        "For 'delete' only — tells the curator consolidation from pruning. "
+        "Pass the umbrella skill name when merging this skill into it (that "
+        "target must already exist — create or patch it first); pass an empty "
+        "string when pruning with no forwarding target."
+    ),
+}
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(
-    name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
+name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
     handler=lambda args, **kw: _skill_manage_from(
         args, task_id=kw.get("task_id"), session_id=kw.get("session_id")),
-    dynamic_schema_overrides=_skill_manage_schema_overrides)
+    dynamic_schema_overrides=_skill_manage_schema_overrides,
+    compact_description=SKILL_MANAGE_COMPACT_DESCRIPTION,
+    compact_parameter_descriptions=SKILL_MANAGE_COMPACT_PARAMS)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

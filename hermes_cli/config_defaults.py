@@ -47,6 +47,13 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
+        # Opt-in "compact" tool-schema profile. When true, tools that ship a compact variant
+        # advertise a terse description (and terser parameter docs) instead of their full prose.
+        # JSON structure is untouched — same parameter names, types, enums and required lists — so
+        # tool calling behaves identically; only the prose the model reads shrinks. Resolved once
+        # per request when tool definitions are built (frozen for the session), so flipping it
+        # never rewrites an in-flight conversation's schemas and takes effect next session.
+        "compact_tool_schemas": False,
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,

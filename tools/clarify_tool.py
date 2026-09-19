@@ -300,6 +300,45 @@ CLARIFY_SCHEMA = {
     },
 }
 
+# --- Compact schema profile (agent.compact_tool_schemas) ---
+# Terse restatement of CLARIFY_SCHEMA's prose. Every behavioural constraint the
+# long text encodes is preserved: options live ONLY in `choices`, recommended
+# option first, batch over chained calls, and not for dangerous-command
+# confirmation.
+CLARIFY_COMPACT_DESCRIPTION = (
+    "Ask the user before proceeding. Single-select (<=4 choices), "
+    "multi_select=true, or open-ended (omit choices). Options go ONLY in "
+    "`choices`, never in the question text; recommended one first. Batch "
+    "independent questions via `questions`. Use for ambiguity, trade-offs, "
+    "feedback. NOT for confirming dangerous commands (terminal does that); "
+    "decide low-stakes ones yourself."
+)
+
+CLARIFY_COMPACT_PARAMS = {
+    "question": (
+        "The question only (e.g. 'Which deployment target?'). Never embed "
+        "options here — they go in `choices`."
+    ),
+    "choices": (
+        "Options, one per element, max 4. REQUIRED when presenting selectable "
+        "options. Put the recommended one FIRST: the UI labels it "
+        "'(Recommended)' and pre-selects it — don't write that yourself. Omit "
+        "only for a free-text question."
+    ),
+    "multi_select": (
+        "True = checkboxes, user_response is a list. False (default) = radio. "
+        "No effect without choices."
+    ),
+    "questions": (
+        "Batch 2-5 INDEPENDENT questions on one form. Each takes "
+        "question/choices/multi_select (same rules) plus an optional `id` "
+        "echoed back. Top-level question becomes the title; top-level choices "
+        "are ignored. Returns {responses: [...]}, with timed_out: true if the "
+        "user stopped part-way. Ask separately when one answer changes another."
+    ),
+}
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 
@@ -315,4 +354,6 @@ registry.register(
         callback=kw.get("callback")),
     check_fn=check_clarify_requirements,
     emoji="❓",
+    compact_description=CLARIFY_COMPACT_DESCRIPTION,
+    compact_parameter_descriptions=CLARIFY_COMPACT_PARAMS,
 )

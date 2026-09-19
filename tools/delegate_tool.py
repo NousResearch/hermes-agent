@@ -569,18 +569,141 @@ _DESCRIPTION_TAIL = (
     "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
 )
 
+
+def _compact_schemas_active() -> bool:
+    """Whether the compact tool-schema profile is on. Never raises.
+
+    'tasks' and 'role' carry config-derived limits, so they cannot use the
+    registry's static compact_parameter_descriptions map — they consult the
+    profile directly and shorten only their fixed prose.
+    """
+    try:
+        from tools.registry import compact_schemas_enabled
+
+        return compact_schemas_enabled()
+    except Exception:
+        return False
+
+
+
 def _build_tasks_param_description() -> str:
     """Compose the 'tasks' parameter description with current concurrency limit."""
     try:
         max_children = _get_max_concurrent_children()
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
+    if _compact_schemas_active():
+        # Same live limit, less prose. See DELEGATE_TASK_COMPACT_DESCRIPTION.
+        return (
+            f"Batch mode: tasks run in parallel, up to {max_children} "
+            "(delegation.max_concurrent_children). Each gets its own isolated "
+            "subagent. Top-level goal/context/role are then ignored."
+        )
     return (
         f"The task(s), up to {max_children} in parallel for this user (set "
         "via delegation.max_concurrent_children). Each entry spawns one "
         "subagent with isolated context and terminal session; a single task "
         "is a one-entry array. Required when spawning."
     )
+
+def _build_role_param_description() -> str:
+    """Compose the 'role' parameter description with current spawn-depth limit."""
+    try:
+        max_depth = _get_max_spawn_depth()
+    except Exception:
+        max_depth = MAX_DEPTH
+    try:
+        orchestrator_on = _get_orchestrator_enabled()
+    except Exception:
+        orchestrator_on = True
+
+    if max_depth >= 2 and orchestrator_on:
+        nesting_note = (
+            f"Nesting IS enabled for this user (max_spawn_depth={max_depth}): "
+            f"orchestrator children can themselves delegate up to {max_depth - 1} "
+            "more level(s) deep."
+        )
+    elif max_depth >= 2 and not orchestrator_on:
+        nesting_note = (
+            "Nesting is currently disabled "
+            "(delegation.orchestrator_enabled=false); 'orchestrator' is "
+            "silently forced to 'leaf'."
+        )
+    else:
+        nesting_note = (
+            f"Nesting is OFF for this user (max_spawn_depth={max_depth}); "
+            "'orchestrator' is silently forced to 'leaf'. Raise "
+            "delegation.max_spawn_depth in config.yaml to enable."
+        )
+
+    if _compact_schemas_active():
+        # Same live nesting verdict, less prose.
+        return (
+            "Child role. 'leaf' (default) = worker that cannot delegate "
+            f"further; 'orchestrator' = may spawn its own workers. "
+            f"{nesting_note}"
+        )
+    return (
+        "Role of the child agent. 'leaf' (default) = focused "
+        "worker, cannot delegate further. 'orchestrator' = can "
+        f"use delegate_task to spawn its own workers. {nesting_note}"
+    )
+
+
+# --- Compact schema profile (agent.compact_tool_schemas) ---
+# Terse restatement of _build_top_level_description(). Every hard rule
+# survives: background dispatch (never poll), children know nothing of this
+# conversation, child summaries are self-reports that must be verified for
+# external side effects, leaf-child tool restrictions, and that running
+# subagents do not survive the session.
+#
+# NOTE: `tasks` and `role` are deliberately absent from this static map. Their
+# text is generated per get_definitions() call by
+# _build_tasks_param_description() / _build_role_param_description() to carry
+# the user's ACTUAL delegation.max_concurrent_children and max_spawn_depth, so
+# a static compact string would freeze stale limits. Those two builders check
+# _compact_schemas_active() themselves and shorten only their fixed prose.
+DELEGATE_TASK_COMPACT_DESCRIPTION = (
+    "Spawn isolated subagents ('goal' for one, 'tasks' for a batch); only "
+    "their summary returns. Backgrounded — never poll. "
+    "action='list'/'steer'/'stop' manage live children. For reasoning-heavy or "
+    "context-flooding subtasks; NOT mechanical steps (execute_code), single "
+    "calls, work needing user input, or work outliving the session. Children "
+    "know nothing here — pass all context. Summaries are SELF-REPORTS: verify "
+    "side effects via a returned URL/ID/path. Leaf children can't delegate, "
+    "clarify or use memory."
+)
+
+DELEGATE_TASK_COMPACT_PARAMS = {
+    "goal": (
+        "What the subagent should accomplish — specific and self-contained; it "
+        "knows nothing of your conversation."
+    ),
+    "context": (
+        "Background it needs: file paths, errors, structure, constraints."
+    ),
+    "output_schema": (
+        "Optional JSON Schema the subagent's final answer must validate "
+        "against (as tasks[].output_schema)."
+    ),
+    "action": (
+        "Default 'spawn'. 'list' shows live children (ids, goals, status, "
+        "transcripts); 'steer' queues a correction into one child "
+        "(subagent_id + message) without stopping it; 'stop' ends one early, "
+        "its partial result still returning. goal/tasks are ignored unless "
+        "action is 'spawn'."
+    ),
+    "subagent_id": (
+        "Target for action='steer'/'stop'. Ids come from the spawn response or "
+        "action='list'."
+    ),
+    "background": "DEPRECATED / IGNORED — delegations always background.",
+    "message": (
+        "For action='steer': the course correction — directive and specific. "
+        "The child sees it on its next tool result mid-run."
+    ),
+}
+
 
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
@@ -724,6 +847,8 @@ registry.register(
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
+    compact_description=DELEGATE_TASK_COMPACT_DESCRIPTION,
+    compact_parameter_descriptions=DELEGATE_TASK_COMPACT_PARAMS,
 )
 
 

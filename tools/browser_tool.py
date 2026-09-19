@@ -1158,11 +1158,7 @@ def _maybe_stop_recording(task_id: str):
             _recording_sessions.discard(task_id)
 
 
-_GET_IMAGES_JS = """JSON.stringify(
-        [...document.images].map(img => ({
-            src: img.src, alt: img.alt || '', width: img.naturalWidth, height: img.naturalHeight
-        })).filter(img => img.src && !img.src.startsWith('data:'))
-    )"""
+_GET_IMAGES_JS = "JSON.stringify([...document.images].map(img => ({src: img.src, alt: img.alt || '', width: img.naturalWidth, height: img.naturalHeight})).filter(img => img.src && !img.src.startsWith('data:')))"
 
 
 def browser_get_images(task_id: Optional[str] = None) -> str:

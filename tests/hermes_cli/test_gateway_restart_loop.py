@@ -24,15 +24,61 @@ class TestGatewayLifecyclePattern:
     """Verify the regex catches gateway lifecycle commands."""
 
     @pytest.mark.parametrize("text", [
-        "hermes gateway restart",
-        "hermes gateway stop",
-        "hermes gateway uninstall",
-        "hermes  gateway  restart",         # double spaces
-        "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
-        "HERMES GATEWAY RESTART",           # uppercase
+        # Branch E (#113667): the supervised gateway IS the interpreter image, so a killer aimed at
+        # `python*` carries no hermes/gateway token yet takes it down — on every platform.
+        "taskkill /F /IM python.exe",
+        "taskkill /F /IM python.exe 2>/dev/null | head -2; echo done",
+        'taskkill /F /FI "IMAGENAME eq python.exe"',
+        "taskkill.exe /T /IM pythonw.exe",
+        'task"kill" /I"M" "python.exe" /F',
+        'subprocess.run(["taskkill", "/IM", "python.exe", "/F"])',
+        "Stop-Process -Name python -Force",
+        "Stop-Process -ProcessName python3.12",
+        "Get-Process python | Stop-Process -Force",
+        "pkill python",
+        "pkill -9 python3",
+        "pkill -f python",
+        'pkill -f "python -m hermes_cli.main"',
+        "pkill -f hermes_cli",
+        "killall -9 python3.12",
+        "sudo pkill -9 python3",
+        "pgrep python | xargs kill -9",
+        "kill $(pidof python3)",
+        # Windows spellings of the hermes-gateway forms (salvaged from #94379).
+        "hermes.exe gateway restart",
+        "hermes.cmd gateway stop",
+        r'"C:\Program Files\hermes.exe" gateway restart',
+        "taskkill /F /IM hermes-gateway.exe",
+        "Stop-Process -Name hermes-gateway -Force",
     ])
-    def test_hermes_gateway_commands(self, text):
+    def test_interpreter_and_windows_kill_forms_are_blocked(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # Other images stay killable (evals/browser_use/orchestrate.py uses the first one).
+        "taskkill /F /IM agent-browser.exe /T",
+        "taskkill /F /IM notepad.exe",
+        "Stop-Process -Name chrome",
+        "killall node",
+        # The ownership-scoped route the rejection points to: explicit PID / proc id.
+        "taskkill /F /PID 46544",
+        "kill -9 46544",
+        "Stop-Process -Id 46544",
+        # Option VALUES are not targets; a `-f` pattern naming a specific script is not the gateway.
+        "pkill -u alice chrome",
+        "pkill -t pts/1 vim",
+        "pkill -f 'python mt_add_paused.py --go'",
+        # Unrelated scripts that merely contain "hermes" cannot match the gateway cmdline.
+        "pkill -f 'hermes-polis/run.sh'",
+        "pkill -f my_hermes_bot.py",
+        "pgrep python",
+        "hermes.exe gateway start",
+        "my-hermes.exe gateway restart",
+        "python -m pytest tests/ -k kill",
+        "skill python",
+    ])
+    def test_kill_forms_that_do_not_reach_the_gateway_are_allowed(self, text):
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
     @pytest.mark.parametrize("text", [
         # #62891: a blocked direct restart/kill laundered through a NEW
@@ -898,7 +944,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
             is True
@@ -928,7 +974,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"source {script}")
             is True
@@ -941,7 +987,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "activate.sh"
-        script.write_text("#!/bin/bash\nexport PATH=/usr/bin:$PATH\n")
+        script.write_text("#!/bin/bash\nexport PATH=/usr/bin:$PATH\n", encoding="utf-8")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
             is False

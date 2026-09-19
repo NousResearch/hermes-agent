@@ -1104,6 +1104,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 async with websockets.connect(
                     self._websocket_url(), open_timeout=_WS_AUTH_TIMEOUT, close_timeout=5,
                     ping_interval=20, ping_timeout=20, max_size=_WS_MAX_MESSAGE_BYTES,
+                    happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
                 ) as websocket:
                     await self._authenticate_websocket(websocket)
                     subscriptions = await self._subscribe_websocket(websocket)

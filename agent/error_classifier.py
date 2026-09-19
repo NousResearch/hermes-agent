@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
@@ -49,6 +50,7 @@ class FailoverReason(enum.Enum):
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    role_alternation = "role_alternation"  # Strict chat template rejected adjacent same-role messages — merge them for this destination and retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
@@ -276,6 +278,19 @@ _INVALID_MESSAGE_BODY_PATTERNS = (
     "messages: at least one message is required", _NO_USER_QUERY_SIGNAL,
 )
 
+# Strict-alternation chat templates (llama.cpp / vLLM Jinja templates, Mistral, some
+# OpenRouter routes) 400 when two adjacent messages share a role. Deterministic for the
+# request shape, and the only bad thing is the adjacency, so the caller that produced it
+# (the MoA aggregator appends ``user(guidance)`` after ``user(task)`` on iteration 1 —
+# #112358) merges the pair for THAT destination and retries once. Checked before the
+# request-validation table: the body usually also carries ``invalid_request_error``.
+_ROLE_ALTERNATION_PATTERNS = (
+    "roles must alternate", "role must alternate", "must alternate between",
+    "consecutive user messages", "consecutive messages with the same role",
+    "consecutive messages of the same role", "same role in a row", "multiple user messages in a row",
+    "adjacent messages with the same role",
+)
+
 # Proxy-side rejection of the model's own tool-call JSON (Ollama "invalid tool call arguments",
 # OpenRouter-wrapped "function_call arguments"). Checked before the generic 400 validation and
 # overflow heuristics: on a large session the bare message would otherwise read as overflow.
@@ -427,12 +442,57 @@ _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded,
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
+# Same recovery hints as format_error: consumers without a merge-and-retry step (the main loop
+# already merges adjacent users before the call) keep aborting to the fallback chain.
+_V_ROLE_ALTERNATION = _v(_R.role_alternation, **_ABORT_FALLBACK)
 # The MODEL emitted unparseable tool-call JSON and the proxy (Ollama, OpenRouter) rejected it: no
 # other provider can fix that output, so falling back only replays the same broken turn 4-5 times
 # (20-60s per occurrence, #12770). Abort this call; the loop's argument repair handles the retry.
 _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=False)
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
+
+# Generic markers a provider 400 puts next to the offending parameter name. Bedrock Converse
+# rejects sampling params for reasoning-first models with the contraction ("This model doesn't
+# support the temperature field", xAI Grok) and inference-profile Claude with "`temperature` is
+# deprecated for this model" (#111043); strict pydantic gateways (Fireworks) name the unknown
+# field as "extra inputs are not permitted" (#109774). Shared with the auxiliary retry ladder
+# (``agent.auxiliary_client._is_unsupported_parameter_error``).
+UNSUPPORTED_PARAM_MARKERS = (
+    "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
+    "doesn't support", "is deprecated for this model",
+    "unknown parameter", "unrecognized request argument", "unrecognized parameter",
+    "invalid parameter", "extra inputs are not permitted",
+)
+
+# Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.
+# Standalone only: never a model-id segment ("The model kimi-k2-thinking is not supported when
+# using this account" is route gating for the provider-fallback rung) nor the adjective in
+# "... not supported with reasoning models".
+_REASONING_FIELD_TOKEN = re.compile(
+    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
+    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+)
+
+
+def is_reasoning_field_rejection(error_msg: str) -> bool:
+    """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
+    ``thinking``/``think``): the field token plus either a generic unsupported marker ("Unrecognized
+    request argument supplied: reasoning_effort", #112781) or a standalone "unsupported" next to the
+    field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none' unsupported;
+    use minimal|low|medium|high|xhigh", #114460). The route default is the right answer for such a
+    model, so both the main loop and the auxiliary ladder retry once without the disable.
+
+    Known trade-off: a 400 about a thinking *state* ("Function calling is not supported when
+    thinking is enabled") also matches — the marker sits right next to the token, so no proximity
+    rule separates it from the forward wordings. Cost is one dropped-disable retry before the
+    spent path takes the fallback chain; the auxiliary ladder already treated it this way."""
+    msg = (error_msg or "").lower()
+    token = _REASONING_FIELD_TOKEN.search(msg)
+    if token is None:
+        return False
+    near = msg[max(0, token.start() - 32):token.end() + 32]
+    return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
 
 
 def _billing_hints(error_msg: str) -> Verdict:
@@ -481,7 +541,8 @@ _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
 
 # Status-less message path, head (before usage-limit disambiguation).
 _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
-                       (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE)) + _IMAGE_TOOL_RULES
+                       (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE),
+                       (_ROLE_ALTERNATION_PATTERNS, _V_ROLE_ALTERNATION)) + _IMAGE_TOOL_RULES
 
 # Status-less tail. Overload before rate_limit/billing so "overloaded" backs off
 # instead of rotating; policy block before model_not_found; timeout/connection
@@ -764,8 +825,26 @@ def classify_api_error(
         anonymous=is_anonymous_request(provider, api_key),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
-    base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}
+    message = _extract_message(error, body)
+    if verdict["reason"] in (_R.auth, _R.auth_permanent):
+        # An auth refusal from a non-stock route names the host, so a credential posted to the
+        # wrong endpoint (a stale ``model.base_url`` after a provider switch, #113719) reads as
+        # such — not as a bad key.
+        host = _off_route_host(c)
+        if host:
+            message = f"{message} (endpoint: {host})"
+    base = {"status_code": status_code, "provider": provider, "model": model, "message": message}
     return ClassifiedError(**{**base, **verdict})
+
+
+def _off_route_host(c: _Ctx) -> str:
+    """The contacted host when ``base_url`` is set and is not the provider's own endpoint; ``""`` otherwise."""
+    from hermes_cli.route_identity import provider_owns_route
+    from utils import base_url_hostname
+    host = base_url_hostname(c.base_url)
+    if not host or provider_owns_route(c.provider_slug, c.base_url) is True:
+        return ""
+    return host
 
 
 # ── Status code handlers ────────────────────────────────────────────────
@@ -893,10 +972,11 @@ def _classify_400(c: _Ctx) -> Verdict:
         "conflicting authenticated continuation identities" in msg
     ):
         return _V_INVALID_ENCRYPTED
-    # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
-    # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops
-    # the disable and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg:
+    # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /
+    # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
+    # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
+    # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
+    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.
@@ -904,6 +984,8 @@ def _classify_400(c: _Ctx) -> Verdict:
         return _V_SERVER_ERROR
     if any(p in msg for p in _MALFORMED_TOOL_ARGS_PATTERNS):
         return _V_MALFORMED_TOOL_ARGS
+    if any(p in msg for p in _ROLE_ALTERNATION_PATTERNS):
+        return _V_ROLE_ALTERNATION
     # Before overflow: GPT-5's "Unsupported parameter: 'max_tokens'" contains it.
     if any(p in msg for p in _400_VALIDATION_PATTERNS) or code in _400_VALIDATION_CODES:
         return _V_FORMAT_ERROR

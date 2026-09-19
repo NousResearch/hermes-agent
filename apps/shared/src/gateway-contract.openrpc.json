@@ -1469,9 +1469,32 @@
           "name": "text",
           "required": false,
           "schema": {
-            "default": "",
-            "title": "Text",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          }
+        },
+        {
+          "name": "session_id",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         }
       ],
@@ -8387,6 +8410,22 @@
           }
         },
         {
+          "name": "title_preview",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
+          }
+        },
+        {
           "name": "truncate_before_user_ordinal",
           "required": false,
           "schema": {
@@ -10621,6 +10660,22 @@
             ],
             "default": null,
             "title": "Profile"
+          }
+        },
+        {
+          "name": "session_id",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         }
       ],
@@ -15978,6 +16033,7 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -15992,9 +16048,28 @@
             "title": "Profile"
           },
           "text": {
-            "default": "",
-            "title": "Text",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         },
         "type": "object"
@@ -30990,6 +31065,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Path"
           },
           "color": {
@@ -31001,6 +31077,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Color"
           },
           "icon": {
@@ -31012,29 +31089,36 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Icon"
           },
           "isAuto": {
+            "default": false,
             "title": "Isauto",
             "type": "boolean"
           },
           "isNoProject": {
+            "default": false,
             "title": "Isnoproject",
             "type": "boolean"
           },
           "sessionCount": {
+            "default": 0,
             "title": "Sessioncount",
             "type": "integer"
           },
           "lastActive": {
+            "default": 0.0,
             "title": "Lastactive",
             "type": "number"
           },
           "totalTokens": {
+            "default": 0,
             "title": "Totaltokens",
             "type": "integer"
           },
           "totalCostUsd": {
+            "default": 0.0,
             "title": "Totalcostusd",
             "type": "number"
           },
@@ -31051,22 +31135,18 @@
             },
             "title": "Previewsessions",
             "type": "array"
+          },
+          "sessionIds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sessionids",
+            "type": "array"
           }
         },
         "required": [
           "id",
-          "label",
-          "path",
-          "color",
-          "icon",
-          "isAuto",
-          "isNoProject",
-          "sessionCount",
-          "lastActive",
-          "totalTokens",
-          "totalCostUsd",
-          "repos",
-          "previewSessions"
+          "label"
         ],
         "title": "ProjectTreeNode",
         "type": "object"
@@ -32111,6 +32191,18 @@
             ],
             "default": null,
             "title": "Voice Context"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
           },
           "truncate_before_user_ordinal": {
             "anyOf": [
@@ -38009,6 +38101,7 @@
       },
       "SkillsReloadParams": {
         "additionalProperties": false,
+        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -38021,6 +38114,18 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         },
         "type": "object"

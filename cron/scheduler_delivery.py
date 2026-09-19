@@ -17,6 +17,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -694,6 +696,48 @@ _BOT_CHAT_STDERR_TAIL = 500
 # stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
 _BOT_CHAT_STDOUT_TAIL = 200
 _BOT_CHAT_BANNER_PREFIXES = ("Resumed session", "session_id:")
+# After the child reports its turn, a child with nothing to linger for exits at once; give it
+# that long so its real exit code and stream tails are booked instead of the report's summary.
+_BOT_CHAT_EXIT_GRACE_SECONDS = 2.0
+
+
+def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) -> subprocess.CompletedProcess:
+    """Run one ``hermes chat -Q`` delivery child; the cap bounds the TURN, not the process.
+
+    The child records its turn outcome at *report_path* (``hermes_cli.quiet_single_query``)
+    the moment the turn ends, then runs the one-shot exit linger for nested
+    ``notify_on_complete`` replies — bounded by ``terminal.oneshot_completion_wait_seconds``,
+    whose default equals this lane's cap, so waiting for process exit booked every delivered
+    turn that left a reply pending as a timeout and killed the linger (#113608). Once the
+    report exists the delivery is booked from it and the still-lingering child is left
+    running (a daemon thread drains and reaps it); only a turn that never ends is killed.
+    """
+    from hermes_cli.quiet_single_query import read_turn_report
+
+    proc = subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=env, creationflags=windows_hide_flags())
+    streams: dict = {}
+
+    def _drain() -> None:
+        streams["out"], streams["err"] = proc.communicate()
+
+    drain = threading.Thread(target=_drain, name=f"bot-chat-delivery-{proc.pid}", daemon=True)
+    drain.start()
+    deadline = time.monotonic() + timeout
+    report = None
+    while True:
+        drain.join(timeout=0.25 if report is None else _BOT_CHAT_EXIT_GRACE_SECONDS)
+        if not drain.is_alive():
+            return subprocess.CompletedProcess(argv, proc.returncode, streams.get("out", ""), streams.get("err", ""))
+        if report is not None:
+            # Turn over, child still lingering for a nested reply: not this lane's wait.
+            return subprocess.CompletedProcess(argv, int(report["exit_code"]), "", report.get("error") or "")
+        report = read_turn_report(report_path, proc.pid)
+        if report is None and time.monotonic() >= deadline:
+            proc.kill()
+            drain.join(timeout=5.0)
+            raise subprocess.TimeoutExpired(argv, timeout)
 
 
 def _format_failure_streams(result) -> str:
@@ -870,9 +914,10 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
             "-Q", "--query-file", query_file,
         ]
-        result = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
-            creationflags=windows_hide_flags())
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV
+        report_file = f"{query_file}.turn.json"
+        env[TURN_REPORT_FILE_ENV] = report_file
+        result = _run_bot_chat_turn(argv, env, report_file, _get_bot_chat_delivery_timeout())
         if result.returncode != 0:
             tail = _format_failure_streams(result)
             logger.warning(
@@ -899,8 +944,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
     finally:
         if query_file:
-            with contextlib.suppress(OSError):
-                os.unlink(query_file)
+            for path in (query_file, f"{query_file}.turn.json"):
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
 
 
 def _normalize_deliver_value(deliver) -> str:

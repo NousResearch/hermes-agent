@@ -81,7 +81,10 @@ def test_dashboard_flow_accepts_only_one_concurrent_callback():
     assert sorted(outcomes) == ["accepted", "rejected"]
 
 
+@pytest.mark.usefixtures("require_mcp_2_sdk")
 def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
+    # _build_client_metadata validates through the SDK's OAuthClientMetadata model.
+    pytest.importorskip("mcp.shared.auth", reason="MCP SDK not installed")
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
     from tools.mcp_oauth import (
         HermesTokenStorage,

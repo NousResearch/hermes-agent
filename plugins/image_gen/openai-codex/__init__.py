@@ -117,9 +117,12 @@ def _data_url_to_input_image_url(value: str) -> str:
 
 def _remote_image_to_data_url(value: str) -> str:
     """The edit endpoint takes inline data URLs only (as the official client sends), so fetch."""
-    import httpx
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
 
-    response = httpx.get(value, timeout=60.0, follow_redirects=True)
+    if not is_safe_url(value):
+        raise ValueError(f"Image URL failed the SSRF safety check: {value}")
+    with create_ssrf_safe_client(timeout=60.0, follow_redirects=True) as client:
+        response = client.get(value)
     response.raise_for_status()
     return _encode_input_image(
         response.content,

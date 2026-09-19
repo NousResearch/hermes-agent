@@ -61,7 +61,7 @@ Plugin engines are **never auto-activated** — the user must explicitly set `co
 
 Configure via `hermes plugins` → Provider Plugins → Context Engine, or edit `config.yaml` directly.
 
-For building a context engine plugin, see [Context Engine Plugins](/developer-guide/context-engine-plugin).
+For building a context engine plugin, see [Context Engine Plugins](./context-engine-plugin.md).
 
 ## Dual Compression System
 

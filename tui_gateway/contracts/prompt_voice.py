@@ -37,6 +37,8 @@ class PromptSubmitParams(SessionParams):
     queued: bool | None = None  # methods_prompt.py:618 reads an omitted queue-drain flag as None
     surface: str | None = None  # a ClientSurface value; unknown values clear the surface
     voice_context: str | None = None  # recent spoken transcript, model input only (voice-live)
+    # Desktop-generated large-paste preview (first ~1000 chars); TITLE input only, never the model turn.
+    title_preview: str | None = None
     # Strict: lax int turns True into 1 and would silently truncate at row/ordinal 1 (the #82756 class).
     truncate_before_user_ordinal: StrictInt | None = None
     truncate_before_row_id: StrictInt | None = None

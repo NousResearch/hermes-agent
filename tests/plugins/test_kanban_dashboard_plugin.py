@@ -907,6 +907,22 @@ def test_dashboard_dependency_selects_use_value_change_handler():
     assert child_select in bundle
 
 
+def test_dashboard_board_project_binding_is_exposed_in_ui():
+    """The board switcher's unbind action clears the binding through the
+    same REST contract the API tests pin (PATCH ``project_id: ""``); the
+    create/settings payload shapes themselves are covered behaviourally in
+    ``test_kanban_board_project_api.py``. The bundle has no build step, so
+    only the UI-side seam is pinned here.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert "hermes-kanban-board-project-unbind" in bundle
+    assert 'updateBoard(board, { project_id: "" })' in bundle
+
+
 def test_bulk_archive(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]

@@ -19,6 +19,7 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
+import { $sessionTiles } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -50,6 +51,46 @@ export interface ServerRequestContext<M extends keyof ServerRequestMap = keyof S
 }
 
 type Handler<M extends keyof ServerRequestMap> = (ctx: ServerRequestContext<M>) => void
+
+type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
+
+/**
+ * Bridges answered from THIS window's panes (preview tab, xterm buffer, the
+ * native window below, the tour overlay). Every attached window sees the
+ * request; one not hosting the session has no pane for it and its empty answer
+ * would win the race, so the tool reports "no preview tab / no terminal" while
+ * the owner's pane is open (#113348).
+ */
+const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
+
+/** This window hosts the session: it is the primary view or an open session tile. */
+export function windowHostsSession(sessionId: string, activeSessionId: null | string): boolean {
+  return sessionId === activeSessionId || $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+}
+
+/**
+ * Panes are local to one desktop window, while gateway requests fan out
+ * to every connected window. A scoped request may only be answered by the
+ * window hosting its session (primary view or a tile). During reconnect,
+ * however, an open request can replay one event-loop turn before the resumed
+ * session becomes active; retry that one narrow race and otherwise leave the
+ * request for its owner.
+ */
+export function previewSessionRoute({
+  activeSessionId,
+  replayed,
+  sessionId
+}: {
+  activeSessionId: null | string
+  replayed: boolean | undefined
+  sessionId: string
+}): PreviewSessionRoute {
+  if (!sessionId || windowHostsSession(sessionId, activeSessionId)) {
+    return 'run'
+  }
+
+  return replayed && !activeSessionId ? 'retry' : 'ignore'
+}
 
 const markNeedsInput = (ctx: ServerRequestContext) => {
   if (ctx.sessionId) {
@@ -301,15 +342,12 @@ const previewAction = (p: PreviewActParams): Omit<PreviewActAction, 'kind'> & { 
   to: p.to ?? undefined
 })
 
-const previewAct: Handler<'preview.act'> = ({ isActiveSession, request, sessionId }) => {
+const previewAct: Handler<'preview.act'> = ({ isActiveSession, request }) => {
   // drive_preview tool: click/type/scroll/press inside the guest page. Active
-  // session only: a background turn must never reach into the page the user is
-  // working in (desktop AGENTS.md: offer, don't hijack). Every mounted window can
-  // observe the same request; a scoped mismatch belongs to another window, so
-  // answering here would race the owner — stay silent.
-  if (sessionId && !isActiveSession) {
-    return
-  }
+  // session only: a background turn (including one in a tile this window hosts)
+  // must never reach into the page the user is working in (desktop AGENTS.md:
+  // offer, don't hijack). Window ownership is settled by WINDOW_OWNED_REQUESTS
+  // before this runs, so a refusal here reaches the tool instead of stalling it.
 
   if (!isActiveSession) {
     answerValue(request, refused('The in-app browser only takes actions in the session the user is looking at.'))
@@ -351,12 +389,10 @@ const tourAction = (p: TourParams): TourAction => ({
   steps: p.steps?.map(tourStep)
 })
 
-const tour: Handler<'tour'> = ({ isActiveSession, request, sessionId }) => {
+const tour: Handler<'tour'> = ({ isActiveSession, request }) => {
   // tour tool: one guided-tour action via driver.js, app DOM or preview guest
-  // page. Active session only, same window-ownership rule as preview.act.
-  if (sessionId && !isActiveSession) {
-    return
-  }
+  // page. Active session only, same window-ownership rule as preview.act
+  // (WINDOW_OWNED_REQUESTS).
 
   if (!$toursEnabled.get()) {
     // Refused in words, not silently dropped: a no-op would leave the agent
@@ -404,10 +440,28 @@ export function handleServerRequest<M extends keyof ServerRequestMap>(
 ): void {
   const sessionId = request.params.session_id
 
-  HANDLERS[request.method]({
-    deps,
-    request,
-    sessionId,
-    isActiveSession: Boolean(sessionId) && sessionId === activeSessionId
-  })
+  const handler = HANDLERS[request.method]
+
+  if (WINDOW_OWNED_REQUESTS.has(request.method)) {
+    const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
+
+    if (route === 'ignore') {
+      return
+    }
+
+    if (route === 'retry') {
+      // Re-read the ref instead of capturing activeSessionId: session resume
+      // publishes its binding synchronously between this replay and the next
+      // turn. A second miss deliberately stays silent for another window.
+      setTimeout(() => {
+        if (previewSessionRoute({ activeSessionId: deps.activeSessionIdRef.current, replayed: false, sessionId }) === 'run') {
+          handler({ deps, request, sessionId, isActiveSession: true })
+        }
+      }, 0)
+
+      return
+    }
+  }
+
+  handler({ deps, request, sessionId, isActiveSession: Boolean(sessionId) && sessionId === activeSessionId })
 }

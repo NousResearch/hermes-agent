@@ -116,7 +116,9 @@ _SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
     "out of credit", "out of extra usage",
 )
 
-_SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = ("no api key was found", "no api key found")
+_SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "no api key was found", "no api key found", "no credentials were found",
+)
 
 _HYGIENE_PREAGENT_ONLY_COOLDOWN_MARKERS: tuple[str, ...] = (
     "session hygiene compression timed out", "hygiene compression deferred: turn-hold budget expired",
@@ -1014,7 +1016,12 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 # MEDIA delivery directives must not reach the summarizer — if one leaks into the summary, the downstream
 # model may re-emit it as an active directive on the next turn, triggering bogus attachment sends (#14665).
 _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
-_HISTORICAL_TASK_SECTION_RE = re.compile(rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n.*?(?=^## |\Z)")
+# Pre-#44454 alias. A summarizer that still emits it must be replaced, not prepended.
+_LEGACY_ACTIVE_TASK_HEADING = "## Active Task"
+_TASK_SNAPSHOT_HEADINGS = (HISTORICAL_TASK_HEADING, _LEGACY_ACTIVE_TASK_HEADING)
+_HISTORICAL_TASK_SECTION_RE = re.compile(
+    rf"(?ms)^(?:{'|'.join(re.escape(heading) for heading in _TASK_SNAPSHOT_HEADINGS)})\s*\n.*?(?=^## |\Z)"
+)
 
 
 def _redact_compaction_text(text: Any) -> str:
@@ -3384,6 +3391,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _aux_call_start = time.monotonic()
         _latency_info: Dict[str, int] = {"prompt_build_ms": max(0, int((_aux_call_start - prompt_started_at) * 1000))}
         call_kwargs["latency_info"] = _latency_info
+        # Per-attempt observable (#114594): with this line a stalled attempt is distinguishable from a slow
+        # one — silence before it is prompt build, silence after it is the summary provider.
+        logger.info(
+            "Compression summary call dispatched: model=%s prompt_chars=%s prompt_build_ms=%s",
+            self.summary_model or self.model, f"{len(prompt):,}", _latency_info["prompt_build_ms"],
+        )
         try:
             # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
             with aux_interrupt_protection():
@@ -3523,7 +3536,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}{_memory_section}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:
@@ -3776,8 +3789,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Reject user attribution when the source transcript has no user."""
         if has_user_turn:
             return
-        match = re.search(rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n(.*?)(?=\n##\s|\Z)", summary)
-        task_snapshot = match.group(1).strip() if match else ""
+        match = _HISTORICAL_TASK_SECTION_RE.search(summary)
+        task_snapshot = match.group(0).split("\n", 1)[-1].strip() if match else ""
         # The "User asked:" scan can false-positive on quoted tool output; acceptable, since
         # the RuntimeError only costs one retry on the existing fallback path.
         if task_snapshot != _NO_USER_TASK_SENTINEL or re.search(r"\bUser\s+asked\s*:", summary, re.IGNORECASE):
@@ -3898,7 +3911,18 @@ Write only the summary body. Do not include any preamble or prefix."""
         # this regex on the next compaction (deleting every following section).
         replacement = f"{HISTORICAL_TASK_HEADING}\n{snapshot}\n\n"
         if _HISTORICAL_TASK_SECTION_RE.search(body):
-            return _HISTORICAL_TASK_SECTION_RE.sub(lambda _m: replacement, body, count=1).strip()
+            # Replace the first task section and drop every later one: a summarizer that emits both the
+            # canonical heading and the legacy alias would otherwise leave a second, undisclaimed task section.
+            seen = False
+
+            def _collapse(_m: re.Match) -> str:
+                nonlocal seen
+                if seen:
+                    return ""
+                seen = True
+                return replacement
+
+            return _HISTORICAL_TASK_SECTION_RE.sub(_collapse, body).strip()
         return f"{replacement}{body}".strip()
 
     @classmethod

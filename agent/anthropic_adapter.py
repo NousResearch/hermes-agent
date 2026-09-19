@@ -468,9 +468,14 @@ def _oauth_wire_namer(anthropic_tools: List[Dict[str, Any]]):
 
 
 _OAUTH_SYSTEM_REPLACEMENTS = (
-    ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"),
-    ("hermes-agent", "claude-code"), ("Nous Research", "Anthropic"),
+    ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"), ("Nous Research", "Anthropic"),
 )
+# The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
+# or quoted as an identifier (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
+# ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``) it is an address the model
+# dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
+# identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
+_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
@@ -487,6 +492,7 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
             text = block.get("text", "")
             for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
                 text = text.replace(old, new)
+            text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
             block["text"] = _apply_oauth_prose_aliases(text)
     for tool in anthropic_tools or []:
         if "name" in tool:

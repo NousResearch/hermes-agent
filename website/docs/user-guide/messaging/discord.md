@@ -746,7 +746,7 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Click a numbered button to answer, or click **Other** to type a free-form response (the next message you send in that channel becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
 
 ### Prompt layout
 
@@ -780,8 +780,8 @@ Hermes Agent supports Discord voice messages:
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
 
 For the full setup and operational guide, see:
-- [Voice Mode](/user-guide/features/voice-mode)
-- [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)
+- [Voice Mode](../features/voice-mode.md)
+- [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md)
 
 ### Voice Channel Audio Effects (ambient + verbal acks)
 

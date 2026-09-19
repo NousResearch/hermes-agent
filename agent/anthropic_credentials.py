@@ -229,8 +229,8 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
 def claude_code_credentials_path() -> Path:
     """Claude Code's shared OAuth file; every profile reads/writes this same path. Honours ``CLAUDE_CONFIG_DIR``
-    like the Claude CLI itself (blank = unset, as in ``hermes_cli.foreign_sessions``), so pointing it at an
-    empty directory opts a Hermes process out of borrowing the login."""
+    like the Claude CLI itself (blank = unset, as in ``hermes_cli.foreign_sessions``). The supported opt-out of
+    borrowing the login is ``auth.adopt_external_logins: false`` in config.yaml."""
     override = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
     root = Path(override).expanduser() if override else Path.home() / ".claude"
     return root / ".credentials.json"
@@ -244,7 +244,13 @@ def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials (Keychain and/or file). When both exist: prefer the only
     non-expired one (Claude Code 2.1.x refreshes one source but not the other), else the later ``expiresAt`` so a
-    refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded."""
+    refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded.
+
+    This is the only reader of the borrowed login, so ``auth.adopt_external_logins: false`` is enforced here:
+    every resolver, pool seed/sync and 401 refresher then sees "no Claude Code login" and never touches the file."""
+    from agent.credential_sources import adopt_external_logins_enabled
+    if not adopt_external_logins_enabled():
+        return None
     kc_creds = _read_claude_code_credentials_from_keychain()
     file_creds = _read_claude_code_credentials_from_file()
     if not (kc_creds and file_creds):

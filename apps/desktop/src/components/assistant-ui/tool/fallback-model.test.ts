@@ -27,12 +27,9 @@ afterEach(() => {
 })
 
 describe('buildToolView image handling', () => {
-  // vision_analyze reports the input image as a local path; an <img> pointed at
-  // a bare path resolves against the renderer origin and 404s, so we render the
-  // tool codicon instead of a broken image.
-  it('drops bare filesystem paths', () => {
-    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('')
-    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('')
+  it('keeps local image paths for the activity renderer to resolve', () => {
+    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('/Users/me/shot.png')
+    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('/tmp/out.jpg')
   })
 
   it('keeps fetchable data URLs', () => {

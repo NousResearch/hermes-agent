@@ -444,7 +444,10 @@ def format_auth_error(error: Exception) -> str:
         # Rate-limit / quota errors are not credential problems: never append "re-authenticate".
         return str(error)
     if error.relogin_required:
-        return f"{error} Run `hermes model` to re-authenticate."
+        # Profile-aware: a bare `hermes model` from a named profile re-signs the ROOT store (#114012).
+        from hermes_constants import profile_cli_selector
+
+        return f"{error} Run `hermes {profile_cli_selector()}model` to re-authenticate."
     if error.code in _ENTITLEMENT_ERROR_CODES:
         if error.provider == "nous":
             return _format_nous_entitlement_auth_error(error)
@@ -1544,7 +1547,7 @@ def resolve_nous_access_token(
 
     with _provider_state_transaction("nous") as (auth_store, state, state_source_path):
         if not state:
-            raise _nous_err("Hermes is not logged into Nous Portal.", relogin=True)
+            raise _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing", relogin=True)
         portal_base_url = _nous_portal_base_url(state)
         client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
         verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
@@ -1572,7 +1575,8 @@ def resolve_nous_access_token(
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
             if not isinstance(access_token, str) or not access_token:
-                raise _nous_err("No access token found for Nous Portal login.", relogin=True)
+                raise _nous_err(
+                    "No access token found for Nous Portal login.", "nous_auth_missing_access_token", relogin=True)
 
             if not _is_expiring(state.get("expires_at"), refresh_skew_seconds):
                 if merged_shared:
@@ -1583,7 +1587,9 @@ def resolve_nous_access_token(
                 return _memo(access_token)
 
             if not isinstance(refresh_token, str) or not refresh_token:
-                raise _nous_err("Session expired and no refresh token is available.", relogin=True)
+                raise _nous_err(
+                    "Session expired and no refresh token is available.", "nous_auth_missing_refresh_token",
+                    relogin=True)
 
             with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
                               headers={"Accept": "application/json"}, verify=verify) as client:
@@ -1670,10 +1676,15 @@ class OAuthProviderFlow:
 
 _OAUTH_GRANT_DEAD_CODES = frozenset({"invalid_grant", "invalid_token", "refresh_token_reused"})
 
+# Nous state-shape failures raised BEFORE any refresh POST (no login, no token pair): retrying
+# cannot succeed either, so the pool must not bench them as a transient outage (#113718).
+_NOUS_AUTH_MISSING_CODES = frozenset({
+    "nous_auth_missing", "nous_auth_missing_access_token", "nous_auth_missing_refresh_token"})
+
 OAUTH_PROVIDER_FLOWS: Dict[str, OAuthProviderFlow] = {
     "nous": OAuthProviderFlow(
         "nous", "resolve_nous_runtime_credentials", "get_nous_auth_status",
-        terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES, logout_from_config=True),
+        terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES | _NOUS_AUTH_MISSING_CODES, logout_from_config=True),
     "openai-codex": OAuthProviderFlow(
         "openai-codex", "resolve_codex_runtime_credentials", "get_codex_auth_status",
         terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES | {"codex_refresh_failed", "codex_auth_missing_refresh_token"},

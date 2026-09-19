@@ -2327,6 +2327,8 @@ export interface CronJob {
   workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  /** Seconds since the job's profile ticker last iterated; null when it cannot be dated. */
+  scheduler_heartbeat_age_s?: number | null;
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;

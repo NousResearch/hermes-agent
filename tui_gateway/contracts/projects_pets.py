@@ -262,17 +262,18 @@ class ProjectTreeNode(Result):
 
     id: str
     label: str
-    path: str | None
-    color: str | None
-    icon: str | None
-    isAuto: bool
-    isNoProject: bool
-    sessionCount: int
-    lastActive: float
-    totalTokens: int
-    totalCostUsd: float
-    repos: list[ProjectTreeRepo]
-    previewSessions: list[ProjectTreeSession]
+    path: str | None = None
+    color: str | None = None
+    icon: str | None = None
+    isAuto: bool = False
+    isNoProject: bool = False
+    sessionCount: int = 0
+    lastActive: float = 0.0
+    totalTokens: int = 0
+    totalCostUsd: float = 0.0
+    repos: list[ProjectTreeRepo] = Field(default_factory=list)
+    previewSessions: list[ProjectTreeSession] = Field(default_factory=list)
+    sessionIds: list[str] = Field(default_factory=list)
 
 
 class ProjectsTreeParams(MethodParams):

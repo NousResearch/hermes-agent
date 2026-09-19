@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -649,7 +650,26 @@ def _ensure_default_soul_md(home: Path) -> None:
             return
         if not is_legacy_template_soul(existing):
             return
-    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    try:
+        soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    except OSError:
+        if not soul_path.is_symlink():
+            raise
+        # A symlink the seed cannot write through — cyclic (``SOUL.md -> SOUL.md``, ELOOP) or
+        # dangling into a missing directory (ENOENT) — can never hold an identity file, and the
+        # OSError became HomeInitializationError on EVERY boot (launchd exit-75 relaunch storm,
+        # #114592). Seed the default IN PLACE OF the link, never through it; mkstemp + replace
+        # keeps concurrent gateway boots off one shared path. A working link is never reached
+        # here: the write above succeeds through it.
+        fd, tmp_name = tempfile.mkstemp(prefix=".SOUL.md.", suffix=".seed", dir=str(home))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(DEFAULT_SOUL_MD)
+            os.replace(tmp_name, soul_path)
+        except OSError:
+            with suppress(OSError):
+                os.unlink(tmp_name)
+            raise
     _secure_file(soul_path)
 
 
@@ -1197,13 +1217,14 @@ def _validate_entry_list(
             _require_fields(issues, entry, f"{label}[{i}]", fields)
 
 
+_CP_LIST_HINT = "Change to:\n  custom_providers:\n    - name: my-provider\n      base_url: https://...\n      api_key: ..."
+
+
 def _validate_custom_providers(cp: Any, issues: List[ConfigIssue]) -> None:
-    """custom_providers must be a list of dicts, not a dict."""
+    """custom_providers must be a list of dicts — a dict or a scalar is silently dropped by the runtime."""
     if isinstance(cp, dict):
         _issue(issues, "error",
-               "custom_providers is a dict — it must be a YAML list (items prefixed with '-')",
-               "Change to:\n  custom_providers:\n    - name: my-provider\n      base_url: https://...\n"
-               "      api_key: ...")
+               "custom_providers is a dict — it must be a YAML list (items prefixed with '-')", _CP_LIST_HINT)
         suspicious = set(cp.keys()) & _CUSTOM_PROVIDER_LIKE_FIELDS
         if suspicious:
             _issue(issues, "warning",
@@ -1213,6 +1234,12 @@ def _validate_custom_providers(cp: Any, issues: List[ConfigIssue]) -> None:
         _validate_entry_list(cp, "custom_providers", issues, _CP_REQUIRED_FIELDS, non_dict=(
             "warning", "custom_providers[{i}] is not a dict (got {type})",
             "Each entry should have at minimum: name, base_url"))
+    else:
+        # get_compatible_custom_providers() returns [] for any non-list: the legacy entries vanish
+        # ("0 endpoints") with nothing naming the cause.
+        _issue(issues, "error",
+               f"custom_providers is a {type(cp).__name__} — it must be a YAML list (items prefixed with '-'); "
+               "legacy custom_providers entries are ignored until it is", _CP_LIST_HINT)
 
 
 def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:
@@ -3258,8 +3285,13 @@ _OPEN_SUBKEY_TOP_LEVEL_KEYS = _OPEN_DICT_TOP_LEVEL_KEYS | _DYNAMIC_TOP_LEVEL_KEY
 
 
 def _known_top_level_keys() -> set[str]:
-    """Return the union of known top-level config keys for validation."""
-    return set(DEFAULT_CONFIG) | _OPEN_SUBKEY_TOP_LEVEL_KEYS
+    """Return the union of known top-level config keys for validation.
+
+    ``_EXTRA_KNOWN_ROOT_KEYS`` are roots the runtime reads but DEFAULT_CONFIG deliberately
+    omits (``platform_toolsets``, ``smart_model_routing``, ...); without them every path under
+    such a root was flagged "not a recognized config key" with a difflib near-miss suggestion.
+    """
+    return set(DEFAULT_CONFIG) | _EXTRA_KNOWN_ROOT_KEYS | _OPEN_SUBKEY_TOP_LEVEL_KEYS
 
 
 def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) -> Optional[str]:
@@ -3313,8 +3345,15 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
             # Checked BEFORE the fuzzy sibling: a structural match is proof, a fuzzy match is a
             # guess, and ``agent.gateway.strict`` must be refused as ``gateway.strict`` rather
             # than written with a misleading ``agent.gateway_timeout`` did-you-mean.
+            # Only DEFAULT_CONFIG / open-subkey roots qualify as the stripped prefix:
+            # ``_EXTRA_KNOWN_ROOT_KEYS`` also holds the top-level FORMS of nested gateway
+            # settings (``filter_silence_narration``, ``reset_triggers``, ...), and
+            # ``gateway.filter_silence_narration`` is a runtime-read path, not a wrong prefix.
             rest = ".".join(segments[len(consumed):])
-            if _split_key_path(rest)[0] in _known_top_level_keys() and _validate_config_key(rest)[0]:
+            if (
+                _split_key_path(rest)[0] in set(DEFAULT_CONFIG) | _OPEN_SUBKEY_TOP_LEVEL_KEYS
+                and _validate_config_key(rest)[0]
+            ):
                 return False, rest
             sibling = _suggest_closest_key(seg, set(node.keys()))
             if sibling is not None:
@@ -3662,10 +3701,31 @@ def set_config_value(key: str, value: str, force: bool = False):
         user_config["model"] = {"default": _model_val}
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
+    _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
     try:
         _set_nested(user_config, key, value)
     except ValueError as e:
         _exit_invalid(f"✗ {e}")
+    # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
+    # state of the OLD provider, and the runtime honours them for whatever provider the block now
+    # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync
+    # them the way a persisted ``/model`` switch does: the previous route goes unless it is the
+    # new provider's own endpoint.
+    _route_notice = ""
+    _old_provider = str(_old_provider or "").strip() or "the previous provider"
+    if key == "model.provider" and _old_provider.lower() != str(value).strip().lower():
+        from hermes_cli.route_identity import drop_stale_model_route
+        _popped, _unverified = drop_stale_model_route(user_config.get("model"), value, user_config)
+        if _popped:
+            _route_notice = (
+                "  Cleared " + ", ".join(f"model.{k} ({v})" for k, v in _popped.items())
+                + f" — that route belonged to {_old_provider}, not {value}. {value}'s endpoint resolves "
+                "automatically; set model.base_url again if you meant a custom endpoint.")
+        elif _unverified:
+            _route_notice = color(
+                f"⚠ model.base_url ({user_config['model'].get('base_url')}) was set under {_old_provider} and "
+                f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
+                "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
@@ -3690,6 +3750,8 @@ def set_config_value(key: str, value: str, force: bool = False):
         from agent.redact import mask_secret
         _display_value = mask_secret(value)
     print(f"✓ Set {key} = {_display_value} in {config_path}")
+    if _route_notice:
+        print(_route_notice)
     warn_unpinned_cron_jobs_after_model_config_change(key, value, user_config)
 
     # Post-write unknown-key notice (#34067): value IS saved, but tell the user the runtime may never read

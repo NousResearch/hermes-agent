@@ -393,6 +393,51 @@ describe('per-member delta', () => {
     expect(room.gateway.calls.at(-1)?.prompt).toContain('unseen-99')
   })
 
+  // #114341: the turn renders only the last GROUP_CHAT_HISTORY_LIMIT entries
+  // of the delta while the watermark advances past the whole tail, so the
+  // head is never delivered later either. The cut must be visible to the
+  // member (naming how many entries it did not see); a delta that fits
+  // carries no marker.
+  it('names the omitted head of an over-long delta in the turn prompt', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Head', members, 'seen-0')!
+    await settle(room, 'Head')
+    const limit = room.chat.GROUP_CHAT_HISTORY_LIMIT
+
+    for (let i = 1; i <= limit + 5; i++) {
+      room.chat.appendGroupChatEntry('Head', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
+    }
+
+    const seen = room.chat.$groupChats.get().Head.watermarks[`${thread}::research`] || 0
+    const omitted = log(room, 'Head').slice(seen).length - limit
+    expect(omitted).toBeGreaterThan(0)
+
+    await room.rounds.runGroupChatRounds('Head', members, thread)
+    const prompt = room.gateway.calls.at(-1)?.prompt || ''
+
+    expect(prompt).toMatch(new RegExp(`${omitted} earlier room messages omitted`))
+    expect(prompt).toContain(`unseen-${limit + 5}`)
+    expect(prompt).not.toContain(`unseen-${omitted}\n`)
+  })
+
+  it('adds no omission marker when the delta fits the window', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Fits', members, 'seen-0')!
+    await settle(room, 'Fits')
+
+    for (let i = 1; i < room.chat.GROUP_CHAT_HISTORY_LIMIT; i++) {
+      room.chat.appendGroupChatEntry('Fits', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
+    }
+
+    await room.rounds.runGroupChatRounds('Fits', members, thread)
+    const prompt = room.gateway.calls.at(-1)?.prompt || ''
+
+    expect(prompt).toContain('unseen-1')
+    expect(prompt).not.toMatch(/omitted/)
+  })
+
   it('feeds a second send only the NEW messages', async () => {
     const room = await loadRoom()
     const member: GroupMember[] = [{ name: 'research', title: '' }]

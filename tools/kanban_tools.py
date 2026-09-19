@@ -447,16 +447,21 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
 # for the explicit tool which carries a model-supplied note.
 _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 _auto_heartbeat_last_attempt: float = 0.0
+_auto_heartbeat_fence_warned = False
 
 
 def heartbeat_current_worker_from_env() -> bool:
-    """Claim extension + board heartbeat for the current worker; True iff a write was
-    attempted. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
+    """Claim extension + board heartbeat for the current worker; True iff both writes
+    succeed. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
     heartbeated; ``HERMES_KANBAN_CLAIM_LOCK`` absent -> default claimer (local workers)."""
-    global _auto_heartbeat_last_attempt
+    global _auto_heartbeat_last_attempt, _auto_heartbeat_fence_warned
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
     if not tid or (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
+        return False
+    if _is_delegated_child_context():
+        # An in-process delegate child's activity is not the worker's liveness; checked before
+        # stamping the window so a chatty child cannot starve the worker's own heartbeat.
         return False
     _auto_heartbeat_last_attempt = now
     try:
@@ -464,13 +469,29 @@ def heartbeat_current_worker_from_env() -> bool:
         with _board(None, quiet_close=True) as (kb, conn):
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
                    (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
+            succeeded = True
             for fn, kwargs in ops:
                 op = fn.__name__
                 try:
-                    fn(conn, tid, **kwargs)
+                    succeeded = bool(fn(conn, tid, **kwargs)) and succeeded
+                except PermissionError as exc:
+                    # The board fence rejected the worker's own liveness write: this process
+                    # inherited HERMES_DELEGATED_CHILD_CONTEXT next to HERMES_KANBAN_TASK, so it is
+                    # a delegate descendant, not the dispatcher's worker (kanban_complete refuses
+                    # too). Loud once: at DEBUG the board just showed a worker that never beats.
+                    succeeded = False
+                    if not _auto_heartbeat_fence_warned:
+                        _auto_heartbeat_fence_warned = True
+                        logger.warning(
+                            "kanban auto-heartbeat for task %s refused (%s): this process carries "
+                            "HERMES_DELEGATED_CHILD_CONTEXT together with HERMES_KANBAN_TASK, so the board "
+                            "treats it as a delegate_task descendant and its claim will not be extended by "
+                            "activity. Only the dispatcher's own spawn grants worker scope; do not copy a "
+                            "worker's environment into a hand-launched process.", tid, exc)
                 except Exception:
                     logger.debug("auto-heartbeat: %s failed", op, exc_info=True)
-        return True
+                    succeeded = False
+        return succeeded
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
         return False

@@ -1993,14 +1993,12 @@ def _run_plugin_git(
     git_exe: str, target: Path, *args: str, timeout: int = 60, auth_url: str = "",
 ) -> subprocess.CompletedProcess:
     """Run one git command inside a plugin checkout (non-interactive). *auth_url* names the remote
-    a network verb talks to so a stored user credential for its host is attached (private repos)."""
-    env = noninteractive_git_env()
-    if auth_url:
-        from hermes_cli.git_credentials import with_git_auth
-        env = with_git_auth(env, auth_url)
-    return subprocess.run(
-        [git_exe, *args], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
-        cwd=str(target), stdin=subprocess.DEVNULL, env=env)
+    a network verb talks to; it runs anonymously first and a stored user credential for that host
+    is attached only when the remote refuses anonymous access (private repos)."""
+    from hermes_cli.git_credentials import run_git_with_credential_fallback
+    return run_git_with_credential_fallback(
+        [git_exe, *args], auth_url, env=noninteractive_git_env(), capture_output=True, text=True,
+        encoding='utf-8', errors='replace', timeout=timeout, cwd=str(target))
 
 
 def _stash_ref(git_exe: str, target: Path) -> str:

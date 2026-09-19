@@ -247,7 +247,8 @@ async def run_codex_hygiene_compaction(
     count_before = getattr(compressor, "compression_count", 0)
     # copy_context carries profile secret scope / HERMES_HOME override (executors don't propagate ContextVars).
     worker_future = asyncio.get_running_loop().run_in_executor(
-        None, copy_context().run, lambda: agent._compress_context(history, "", approx_tokens=approx_tokens))
+        None, copy_context().run,
+        lambda: agent._compress_context(history, "", approx_tokens=approx_tokens, task_id=session_id or "default"))
     track_worker = getattr(gateway, "_track_deferred_agent_worker", None)
     if callable(track_worker):
         # ``wait_for`` only cancels the asyncio wrapper; keep the running executor thread visible to shutdown.
@@ -2188,6 +2189,8 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
     # See #72016.
     "_session_stall_notified",
+    # Transcript-lag streak counter (#114266); a fresh conversation starts with no lag history.
+    "_transcript_lag_streaks",
     # Sidecar notes staged but never consumed (turn aborted before run_sync) must not leak into a
     # future conversation's first user message — session keys are source-derived and REUSED.
     "_pending_turn_sidecar_notes")
@@ -3507,6 +3510,9 @@ class GatewayRunner(
         # paths, busy-ack debounce timestamps and the monotonic run-generation counter (#28686, NEVER reset)
         # live on SessionState too. See gateway.session_stall.
         self._session_stall_notified: Dict[str, bool] = {}
+        # Consecutive "persisted transcript lagged live cached history" turns per session key; see
+        # run_turn_runner._load_turn_history (#114266). Cleared on /new.
+        self._transcript_lag_streaks: Dict[str, int] = {}
         # Startup restore gate: while restart-interrupted sessions auto-resume, real inbound messages
         # queue instead of competing with the synthetic resume turns; drained after all resume tasks end.
         self._startup_restore_in_progress = False

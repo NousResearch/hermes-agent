@@ -3,6 +3,7 @@ import { looksLikeSlashCommand } from '@hermes/shared/slash'
 import { useEffect, useRef, useState } from 'react'
 
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
+import { getUiState } from '../app/uiStore.js'
 import { inlineSlashTrigger } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { listWidgetApps } from '../sdk/registry.js'
@@ -29,7 +30,7 @@ const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))
 
 export type CompletionRequest =
   | { method: 'complete.path'; params: { word: string }; replaceFrom: number }
-  | { method: 'complete.slash'; params: { text: string }; replaceFrom: number; skillsOnly?: boolean }
+  | { method: 'complete.slash'; params: { session_id?: string; text: string }; replaceFrom: number; skillsOnly?: boolean }
 
 export function completionRequestForInput(input: string): CompletionRequest | null {
   const isSlashCommand = looksLikeSlashCommand(input)
@@ -142,7 +143,16 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
         return
       }
 
-      fetchCompletions(gw, request, input)
+      // Skill completions are per session: project-local skills follow the
+      // session's repo, so the gateway must know which session is asking.
+      const sid = getUiState().sid
+
+      const bound: CompletionRequest =
+        request.method === 'complete.slash' && sid
+          ? { ...request, params: { ...request.params, session_id: sid } }
+          : request
+
+      fetchCompletions(gw, bound, input)
         .then(({ items, replaceFrom }) => {
           if (ref.current !== input) {
             return

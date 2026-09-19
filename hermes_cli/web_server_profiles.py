@@ -106,7 +106,7 @@ def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: 
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
-        "skill_count": _safe(lambda: profiles_mod._count_skills(home), 0),
+        "skill_count": _safe(lambda: profiles_mod._cached_skill_count(home), 0),
         "gateway_running": _safe(gateway_running, False),
         "description": meta("description", ""), "description_auto": meta("description_auto", False),
         "bot_title": meta("bot_title", ""),

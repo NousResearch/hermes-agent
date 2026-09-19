@@ -778,8 +778,21 @@ def _run_pre_update_backup(args) -> Optional[str]:
         return None
 
     snapshot_id = None
-    with _best_effort('Pre-update snapshot failed: %s'):
+    try:
         snapshot_id = _run_quick_snapshots()
+    except Exception as exc:
+        logger.warning("Pre-update snapshot failed: %s", exc)
+        snapshot_detail = f" ({exc})"
+    else:
+        snapshot_detail = ""
+    if not snapshot_id:
+        # Best-effort by design (8ed599dc054: a broken backup never blocks the update), but a
+        # swallowed failure is how a user discovers post-hoc that the receipt says
+        # ``ok: false`` and nothing was there to restore (#114592). Say it on stdout, once,
+        # before any code moves.
+        print(f"  ⚠ Pre-update snapshot FAILED — no recovery point was saved{snapshot_detail}.")
+        print("  Continuing with update (set updates.pre_update_backup: off to silence this).")
+        print()
 
     if mode != "full":
         if snapshot_id:

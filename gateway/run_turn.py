@@ -17,6 +17,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
+from agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
@@ -1238,8 +1239,10 @@ class GatewayTurnMixin:
                 # fails closed (UnscopedSecretError) and every hygiene compaction silently degrades to a
                 # lossy truncation (#100849 bundle).
                 copy_context().run,
+                # task_id = the live turn's dedup bucket (session row id), never "" (= reset every task).
                 lambda: _hyg_agent._compress_context(
                     _hyg_msgs, "", approx_tokens=plan.approx_tokens, commit_fence=_hyg_commit_fence,
+                    task_id=session_entry.session_id or "default",
                 ),
             )
             attempt.wait_started = time.monotonic()
@@ -1606,13 +1609,8 @@ class GatewayTurnMixin:
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)
 
-    _FAILED_TURN_NOTICE = (
-        "Your request was not processed. Send it again if you still want me to carry it out."
-    )
-    _PARTIAL_FAILED_TURN_NOTICE = (
-        "This turn did not complete. Some actions may already have run; verify their effects "
-        "before resending."
-    )
+    # One owner for the boundary copy (agent/turn_failure_copy.py): the core closer in
+    # agent/conversation_loop.py writes the same row on the paths that never reach this layer.
 
     def _hmwa_add_failed_turn_notice(self, response, notice):
         """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
@@ -1632,8 +1630,8 @@ class GatewayTurnMixin:
             or (message.get("role") == "assistant" and message.get("tool_calls"))
             for message in turn_messages
         ):
-            return self._PARTIAL_FAILED_TURN_NOTICE
-        return self._FAILED_TURN_NOTICE
+            return PARTIAL_FAILED_TURN_NOTICE
+        return FAILED_TURN_NOTICE
 
     async def _hmwa_close_failed_turn(self, session_id, notice):
         """Append the gateway-owned assistant boundary iff the durable tail is an open user row.
@@ -1887,10 +1885,10 @@ class GatewayTurnMixin:
         return response
 
     # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
-    # sign-in, `hermes auth add <provider>` the host equivalent).
+    # sign-in, `{relogin}` the profile-aware host equivalent, filled from the turn's agent provider).
     _STATUS_HINTS = {
         401: (" Your sign-in to the AI model service has expired or the API key is wrong. "
-              "Use /login here, or run `hermes auth add <provider>` on the host."),
+              "Use /login here, or run `{relogin}` on the host."),
         402: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models.",
         529: " The AI model service is temporarily overloaded. Wait a moment, then use /retry.",
     }
@@ -1918,12 +1916,17 @@ class GatewayTurnMixin:
                         session_entry.session_id, self._hmwa_user_transcript_entry(event, prepared, time.time()),
                     )
                 # Tool effects are unknown after an exception.
-                await self._hmwa_close_failed_turn(session_entry.session_id, self._PARTIAL_FAILED_TURN_NOTICE)
+                await self._hmwa_close_failed_turn(session_entry.session_id, PARTIAL_FAILED_TURN_NOTICE)
         except Exception:
             logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
         # Never expose raw exception types/messages to end users (info-leakage risk).
         status_hint = self._STATUS_HINTS.get(status_code, "")
-        if status_code == 429:
+        if status_code == 401:
+            from agent.turn_failure_copy import relogin_command_hint
+
+            _turn_agent = getattr(self._session_state(session_key).turn, "agent", None)
+            status_hint = status_hint.format(relogin=relogin_command_hint(getattr(_turn_agent, "provider", None)))
+        elif status_code == 429:
             # Plan usage limit (resets on a schedule) vs a transient rate limit
             _err_json = {}
             with suppress(Exception):
@@ -1944,7 +1947,7 @@ class GatewayTurnMixin:
             f"⚠️ Something went wrong and I couldn't finish this reply.{status_hint}\n"
             "Use /retry to try again, or /new to start a fresh conversation. "
             "Technical details are in the gateway log (`hermes logs`).",
-            self._PARTIAL_FAILED_TURN_NOTICE,
+            PARTIAL_FAILED_TURN_NOTICE,
         )
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):

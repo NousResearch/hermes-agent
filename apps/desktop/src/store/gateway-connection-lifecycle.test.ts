@@ -17,6 +17,7 @@ const gatewayMocks = vi.hoisted(() => {
 
   return {
     connect: vi.fn(async (_wsUrl: string): Promise<void> => undefined),
+    eventHandlers: [] as ((event: unknown) => void)[],
     instances
   }
 })
@@ -37,7 +38,11 @@ vi.mock('@/hermes', () => ({
       await gatewayMocks.connect(wsUrl)
       this.connectionState = 'open'
     }
-    onEvent = vi.fn(() => () => {})
+    onEvent = vi.fn((handler: (event: unknown) => void) => {
+      gatewayMocks.eventHandlers.push(handler)
+
+      return () => {}
+    })
     onAnyServerRequest = vi.fn(() => () => {})
     onState = vi.fn(() => () => {})
     constructor() {
@@ -68,6 +73,7 @@ const {
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   retainGatewayForAgent,
+  retainGatewayForSessionTurn,
   retireLocalProfileGateways,
   setPrimaryGateway
 } = await import('./gateway')
@@ -95,9 +101,66 @@ beforeEach(() => {
 afterEach(() => {
   closeSecondaryGateways()
   gatewayMocks.instances.length = 0
+  gatewayMocks.eventHandlers.length = 0
   vi.clearAllMocks()
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+})
+
+describe('a redial of the active route', () => {
+  it('is not cancelled by a prune that runs while it is dialing', async () => {
+    // Editing the connection you are viewing defers the redial until its lease drops, then
+    // disposes the entry and re-activates the same scope asynchronously. While that is in flight
+    // the entry is gone from the map, so the pruner's safety net sees an active scope with no
+    // entry and calls setActive(primary) — which bumps the activation epoch and turns the redial's
+    // own applyActive(epoch) into a no-op. The window then sits on the primary backend and the
+    // redial is discarded silently.
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        descriptorFor(connectionId, profile)
+      )
+    })
+
+    await ensureGatewayForAgent('homelab', 'writer')
+    const release = await retainGatewayForAgent('homelab', 'writer')
+
+    disposeSecondariesForConnection('homelab', { redial: true })
+
+    let openDial = () => {}
+
+    const dialing = new Promise<void>(resolve => {
+      openDial = resolve
+    })
+
+    gatewayMocks.connect.mockImplementationOnce(async () => dialing)
+
+    release() // drains the pending redial: dispose, evict, re-activate
+    pruneSecondaryGateways(new Set()) // the steal, while the redial is still suspended
+    openDial()
+
+    await vi.waitFor(() => {
+      expect(activeGateway()).toBe(gatewayMocks.instances.at(-1))
+    })
+  })
+
+  it('survives a prune when the edit redials immediately (no lease to drain)', async () => {
+    // Same window, sibling entry point: an unleased active scope is disposed and re-activated
+    // straight from disposeSecondariesForConnection instead of the drain.
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        descriptorFor(connectionId, profile)
+      )
+    })
+
+    await ensureGatewayForAgent('homelab', 'writer')
+
+    disposeSecondariesForConnection('homelab', { redial: true }) // dispose, evict, re-activate
+    pruneSecondaryGateways(new Set()) // the steal, while the redial is still suspended
+
+    await vi.waitFor(() => {
+      expect(activeGateway()).toBe(gatewayMocks.instances.at(-1))
+    })
+  })
 })
 
 describe('disposeSecondariesForConnection', () => {
@@ -808,9 +871,11 @@ describe('cooperative pool retirement (supersedes #104871)', () => {
 describe('rejected secondary authentication', () => {
   it('parks only the rejected source across automatic nudges and recovers on explicit selection', async () => {
     vi.useFakeTimers()
+
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
       ...descriptorFor(connectionId, profile), authMode: 'oauth'
     }))
+
     const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
     installDesktop({ getConnectionFor, getGatewayWsUrlFor })
     await ensureGatewayForAgent('cloud', 'default')
@@ -863,9 +928,11 @@ describe('rejected secondary authentication', () => {
 
 it('keeps background auth rejection after socket disposal until recovery or connection removal', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
+
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
     ...descriptorFor(connectionId, profile), authMode: 'oauth'
   }))
+
   const getGatewayWsUrlFor = vi.fn(async () => ({ ok: false, needsOauthLogin: true, error: 'Sign in again' }))
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
   await expect(requestGatewayForAgent('cloud', 'default', 'session.list', {})).rejects.toThrow()
@@ -887,9 +954,11 @@ it('keeps background auth rejection after socket disposal until recovery or conn
 
 it('does not let a removed connection repopulate the auth rejection', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
+
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
     ...descriptorFor(connectionId, profile), authMode: 'oauth'
   }))
+
   let rejectTicket!: (error: Error) => void
   const ticket = new Promise<never>((_resolve, reject) => { rejectTicket = reject })
   const getGatewayWsUrlFor = vi.fn(() => ticket)
@@ -902,4 +971,68 @@ it('does not let a removed connection repopulate the auth rejection', async () =
   await rejected
   await expect(requestGatewayForAgent('cloud', 'default', 'session.list', {})).rejects.toThrow()
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
+})
+
+describe('retainGatewayForSessionTurn', () => {
+  it('lets the next turn take a real hold after a turn that rode the primary socket', async () => {
+    // A routed prompt holds one lease per (route, runtime session) until the turn settles, and for a
+    // streaming turn only a Secondary's terminal-event listener ends it. When the route is served by
+    // the primary socket there is no Secondary, so a lease registered then can never be released —
+    // and the map is keyed per session, so it silently suppresses every later hold on that session,
+    // including after the route is dialed as a real secondary. The socket is then free to be reaped
+    // mid-turn, which is the interruption this whole mechanism exists to prevent.
+    installDesktop({ getConnection: vi.fn() }) // no getConnectionFor: nothing to hold, no Secondary
+
+    // The streaming turn deliberately does NOT release: its release would arrive as a terminal event.
+    await retainGatewayForSessionTurn('homelab', 'writer', 'session-1')
+
+    installDesktop({
+      getConnection: vi.fn(),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        descriptorFor(connectionId, profile)
+      )
+    })
+    const dialedBefore = gatewayMocks.instances.length
+
+    await retainGatewayForSessionTurn('homelab', 'writer', 'session-1')
+
+    expect(gatewayMocks.instances.length).toBeGreaterThan(dialedBefore)
+  })
+
+  it('does not orphan a hold when two submits for one session race the dial', async () => {
+    // The duplicate-lease guard runs BEFORE the retain awaits, and the map is written after it, so
+    // two submits for the same (route, session) can both pass. Only the mapped release is ever
+    // invoked — releaseTerminalTurnLease does `g.turnLeases.get(key)?.()` — so the loser's hold is
+    // never released and the socket can never be reclaimed.
+    let openDial = () => {}
+
+    const dialed = new Promise<void>(resolve => {
+      openDial = resolve
+    })
+
+    gatewayMocks.connect.mockImplementationOnce(async () => dialed)
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        descriptorFor(connectionId, profile)
+      )
+    })
+
+    const both = Promise.all([
+      retainGatewayForSessionTurn('homelab', 'writer', 'session-2'),
+      retainGatewayForSessionTurn('homelab', 'writer', 'session-2')
+    ])
+
+    openDial()
+    await both
+
+    // The terminal event releases the one lease the map holds, exactly as the gateway's own
+    // listener does; a leaked second hold would keep activeRequests above zero.
+    for (const handler of gatewayMocks.eventHandlers) {
+      handler({ session_id: 'session-2', type: 'session.reclaimed' })
+    }
+
+    pruneSecondaryGateways(new Set())
+
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalled()
+  })
 })

@@ -7,6 +7,7 @@ import { $pluginRecords } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
+import { $connection } from '@/store/session'
 import { agentPluginRow } from '@/test/contract'
 
 import { PageSearchShell } from '../page-search-shell'
@@ -17,6 +18,16 @@ import { PluginActions, PluginsTab } from './plugins-tab'
 import { $catalogCardView } from './store'
 
 const requestGateway = vi.fn(async () => ({ plugins: $agentPlugins.get() }))
+
+const connectionFixture = {
+  baseUrl: 'http://localhost',
+  isFullscreen: false,
+  logs: [],
+  nativeOverlayWidth: 0,
+  token: '',
+  windowButtonPosition: null,
+  wsUrl: ''
+}
 
 // SkillsView owns navigation and search; exercise that controlled contract
 // with the same primitives instead of giving PluginsTab private controls.
@@ -66,6 +77,7 @@ async function selectCatalogEntry(name: string) {
 
 afterEach(() => {
   cleanup()
+  $connection.set(null)
   queryClient.clear()
   vi.unstubAllGlobals()
 })
@@ -121,6 +133,50 @@ describe('PluginsTab', () => {
     expect(screen.queryByText('fal')).toBeNull()
     expect(screen.queryByRole('row')).toBeNull()
     expect(screen.getByText('No matches')).toBeTruthy()
+  })
+
+  // A desktop half can only be copied out of a backend that runs on THIS
+  // machine; against a remote one the reconcile is a structural no-op, so the
+  // row must say so instead of pending forever (#114079).
+  it('marks a remote-backend desktop half unavailable instead of forever copying', () => {
+    $connection.set({ ...connectionFixture, mode: 'remote' })
+    $agentPlugins.set([
+      agentPluginRow({
+        description: '',
+        has_desktop_half: true,
+        key: 'nous-prices',
+        name: 'nous-prices',
+        source: 'catalog',
+        status: 'enabled',
+        version: '1'
+      })
+    ])
+
+    renderPlugins({ profile: null })
+
+    const detail = within(screen.getByRole('row', { name: /^nous-prices/ }))
+    expect(detail.getByText('unavailable (remote backend)')).toBeTruthy()
+    expect(detail.queryByText('copying…')).toBeNull()
+  })
+
+  it('keeps the pending desktop-half state on a local backend', () => {
+    $agentPlugins.set([
+      agentPluginRow({
+        description: '',
+        has_desktop_half: true,
+        key: 'nous-prices',
+        name: 'nous-prices',
+        source: 'catalog',
+        status: 'enabled',
+        version: '1'
+      })
+    ])
+
+    renderPlugins({ profile: null })
+
+    const detail = within(screen.getByRole('row', { name: /^nous-prices/ }))
+    expect(detail.getByText('copying…')).toBeTruthy()
+    expect(detail.queryByText('unavailable (remote backend)')).toBeNull()
   })
 
   it('renders a unified package as ONE row with a Desktop switch and an Agent switch', () => {
@@ -273,6 +329,7 @@ describe('PluginsTab', () => {
       repo: 'https://github.com/example/plugins-monorepo',
       subdir: 'packages/nested-plugin'
     }
+
     seedCatalog([entry])
     renderPlugins({ profile: null })
 
@@ -304,6 +361,7 @@ describe('PluginsTab catalog UX', () => {
       ok: true,
       json: async () => [weatherEntry, { ...weatherEntry, name: 'garden-plugin', category: 'garden', description: 'Garden planning' }]
     })
+
     vi.stubGlobal('fetch', fetchCatalog)
     await act(async () => { renderPlugins({ profile: null }) })
 
@@ -333,6 +391,7 @@ describe('PluginsTab catalog UX', () => {
     const fetchCatalog = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
       .mockResolvedValue({ ok: true, json: async () => [weatherEntry] })
+
     vi.stubGlobal('fetch', fetchCatalog)
     await act(async () => { renderPlugins({ profile: null }) })
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))

@@ -167,6 +167,17 @@ The same store fields drive every topology: a standalone `hermes -p X gateway
 run` and a profile served by the default multiplexer (`_start_multiplex` ticks
 each home under `_profile_cron_scope`) evaluate the identical record.
 
+**Fire-claim lease during a run.** A firing run holds `fire_claim = {at, by}` and
+a heartbeat thread refreshes `at` every 60 s (the lease is 300 s). A heartbeat
+sample that reads the claim as someone else's is re-sampled once before it
+counts: only a confirmed loss cancels the in-flight run. Even then the run's
+outcome is decided against the store at completion, not against that latch —
+a claim the store still validates records the run's real result (`ok`, or the
+real error), while a genuinely re-owned claim discards the stale result and
+never writes over the new owner. `Interrupted by shutdown before terminal
+completion.` is therefore recorded only when a real transport cancel (gateway
+drain) stops a run that still holds its claim.
+
 ### Gateway Integration
 
 In gateway mode, the cron **trigger** (the part that decides *when* a due job
@@ -380,6 +391,6 @@ hermes cron remove <job_id>         # Delete a job
 
 ## Related Docs
 
-- [Cron Feature Guide](/user-guide/features/cron)
+- [Cron Feature Guide](../user-guide/features/cron.md)
 - [Gateway Internals](./gateway-internals.md)
 - [Agent Loop Internals](./agent-loop.md)

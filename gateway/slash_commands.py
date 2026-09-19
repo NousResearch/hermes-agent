@@ -458,7 +458,13 @@ class GatewaySlashCommandsMixin(
                         reason, session_key, len(fallback_keys), ", ".join(fallback_keys))
             return EphemeralReply(t("gateway.stop.stopped"))
 
-        # No running agent anywhere for this scope. A platform status indicator can still be stuck —
+        # No running agent anywhere for this scope. Background delegations the session dispatched in an
+        # earlier turn still count as "active": stop them; each returns as an interrupted completion.
+        from tools.async_delegation import interrupt_for_session
+        if interrupt_for_session(session_key=session_key, reason="stop_command",
+                                 parent_session_id=str(getattr(session_entry, "session_id", "") or "")):
+            return EphemeralReply(t("gateway.stop.stopped"))
+        # A platform status indicator can still be stuck —
         # e.g. Slack's persistent assistant.threads.setStatus survives a gateway restart or a turn
         # that died without a final send.
         # Best-effort clear so /stop always dismisses a phantom "is thinking...". See #32295.
@@ -696,9 +702,15 @@ class GatewaySlashCommandsMixin(
         tokens = event.get_command_args().strip().split()
         restore_all = any(tok.lower() in ("--all", "--force") for tok in tokens)
         arg = " ".join(tok for tok in tokens if tok.lower() not in ("--all", "--force"))
+        # Container-backed session: host checkpoints belong to another tree, so a restore is
+        # refused; the bare listing stays visible, prefixed with the reason (same as the CLI).
+        reason = mgr.unsupported_backend_reason()
+        if reason and arg:
+            return reason
         checkpoints = mgr.list_checkpoints(cwd)
         if not arg:
-            return format_checkpoint_list(checkpoints, cwd)
+            listing = format_checkpoint_list(checkpoints, cwd)
+            return f"{reason}\n{listing}" if reason else listing
         if not checkpoints:
             return t("gateway.rollback.none_found", cwd=cwd)
 
@@ -736,6 +748,8 @@ class GatewaySlashCommandsMixin(
             mgr = self._checkpoint_manager()
             if mgr is None:
                 return t("gateway.diff.not_enabled")
+            if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
+                return reason
             result = await asyncio.to_thread(mgr.session_diff, cwd)
         else:
             from tools.working_diff import collect_working_diff

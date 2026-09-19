@@ -22,6 +22,7 @@ from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.message_content import flatten_message_text
+from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
 
@@ -957,6 +958,10 @@ class MoAChatCompletions:
         self._fanout_turn_sig: str | None = None
         self._fanout_last_state_sig: str | None = None
         self._privacy_mode: str = ""  # normalized moa.privacy_filter, refreshed per create()
+        # Destinations (route, model) that 400'd on adjacent same-role messages this session:
+        # their aggregator requests are pre-merged; every other destination keeps the split,
+        # cache-stable shape (agent/moa_alternation.py).
+        self._merge_same_role_destinations: set[tuple[str, str]] = set()
 
     def consume_reference_usage(self) -> tuple[Any, Any]:
         """Pop pending fan-out ``(CanonicalUsage, cost_usd_or_None)`` and reset both
@@ -1081,10 +1086,6 @@ class MoAChatCompletions:
         )
         trace = self._pending_trace
         if trace is not None:
-            # Trace the exact aggregator INPUT (persisted copy redacted; live input raw).
-            trace["aggregator_input_messages"] = (
-                _redact_trace_messages([dict(m) for m in agg_messages]) if getattr(self, "_privacy_mode", "") else agg_messages
-            )
             trace["aggregator_label"] = _slot_label(aggregator)
         # stream=True returns the RAW token stream (consumer reassembles + retries);
         # the non-streaming path forwards no stream/stream_options/timeout. The
@@ -1097,13 +1098,40 @@ class MoAChatCompletions:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
         # Pop the runtime's extra_body so the explicit kwarg never collides with **agg_runtime.
         agg_extra_body = _merge_slot_extra_body(agg_runtime.pop("extra_body", None), api_kwargs.get("extra_body"))
-        agg_response = call_llm(
-            task="moa_aggregator", messages=agg_messages, temperature=prepared["aggregator_temperature"],
+        destination = destination_key(agg_runtime)
+        # Facades built via __new__ (tests, swaps) have no __init__ state.
+        remembered = getattr(self, "_merge_same_role_destinations", None)
+        if remembered is None:
+            remembered = self._merge_same_role_destinations = set()
+        merged = destination in remembered
+        if merged:
+            agg_messages = merge_same_role_messages(agg_messages)
+        send = functools.partial(
+            call_llm, task="moa_aggregator", temperature=prepared["aggregator_temperature"],
             max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )
+        try:
+            agg_response = send(messages=agg_messages)
+        except Exception as exc:
+            # Strict-alternation template rejected ``user(task), user(guidance)``: merge the pair for
+            # THIS destination only and retry once; remember it so later iterations pre-merge.
+            retry_messages = None if merged else merge_same_role_messages(agg_messages)
+            if retry_messages is None or retry_messages is agg_messages or not is_role_alternation_rejection(exc, agg_runtime):
+                raise
+            remembered.add(destination)
+            logger.warning(
+                "MoA aggregator %s rejected adjacent same-role messages — merging them for this "
+                "destination for the rest of the session and retrying once: %.200s", _slot_label(aggregator), exc,
+            )
+            agg_messages = retry_messages
+            agg_response = send(messages=agg_messages)
         if trace is not None:
+            # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).
+            trace["aggregator_input_messages"] = (
+                _redact_trace_messages([dict(m) for m in agg_messages]) if getattr(self, "_privacy_mode", "") else agg_messages
+            )
             # Streaming output lands as the turn's assistant message; the trace marks it.
             trace["aggregator_streamed"] = stream
             output = None

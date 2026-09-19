@@ -46,6 +46,10 @@ RuntimeValidator = Callable[[], bool]
 
 # Text budget handed to the model (Claude Code / OpenClaw converged on 1000).
 MAX_TITLE_INPUT_CHARS = 1000
+_PASTE_PREVIEW_LABEL = "\n\nPasted content:\n"
+_ATTACHMENT_REF_RE = re.compile(r"@(?:file|folder):\S+")
+# Footers the @-reference expander appends below the typed text (agent/context_references.py).
+_CONTEXT_FOOTER_RE = re.compile(r"\n+--- (?:Context Warnings|Attached Context) ---\n.*", re.DOTALL)
 # Cap on the instant derived title; a raw fragment reads worse the longer it runs.
 MAX_DERIVED_TITLE_CHARS = 48
 # Answer-shaped guard: a tiny model sometimes answers instead of titling; longer is rejected, not truncated.
@@ -80,6 +84,14 @@ _PROMPT_VAGUE_EXAMPLE = "Code changes"
 _EXAMPLE_ECHO_REJECT = frozenset(
     t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly greeting"
 ) | {_PROMPT_VAGUE_EXAMPLE.lower()}
+
+# "Friendly greeting" is what the prompt asks for when the opener has no topic yet, so
+# it is the one model title that must NOT settle the session: it is persisted at
+# ``derived`` authority (a placeholder, like the instant title) and the next substantive
+# turn upgrades it. Kept as a prompt example on purpose — a predictable placeholder is
+# detectable, an improvised one ("Casual check-in chat") would lock the title as ``llm``.
+_PROVISIONAL_GREETING_TITLE = "friendly greeting"
+
 
 _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
@@ -202,15 +214,41 @@ def _summarize_user_message(user_message: str) -> str:
     return strip_control_wrappers(user_message if described is None else described)
 
 
+def build_title_input(user_message: str, title_preview: str | None = None) -> str:
+    """Combine the opening text with a bounded Desktop-generated paste preview.
+
+    ``title_preview`` is deliberately an explicit, auxiliary-only value: ordinary
+    attachments never populate it, and it is never returned to the main turn.
+    Keep enough of a separately typed request to preserve a useful instruction,
+    then spend the remaining title budget on the beginning of the pasted topic.
+    """
+    message = _summarize_user_message(user_message)
+    preview = title_preview.strip() if isinstance(title_preview, str) else ""
+    if not preview:
+        return message[:MAX_TITLE_INPUT_CHARS]
+    # The titler sees the message AFTER @-reference expansion, so the generated ref drags a
+    # warnings/attached-context footer along; the preview already carries the topic, so drop it.
+    message = _CONTEXT_FOOTER_RE.sub("", message).strip()
+    # A paste-only opener is just the generated `@file:` ref: the preview IS the topic, so it
+    # leads (derive_title takes the first line, and a file path is not a title).
+    if not _ATTACHMENT_REF_RE.sub("", message).strip():
+        return preview[:MAX_TITLE_INPUT_CHARS]
+    message_budget = min(len(message), MAX_TITLE_INPUT_CHARS // 2)
+    preview_budget = MAX_TITLE_INPUT_CHARS - message_budget - len(_PASTE_PREVIEW_LABEL)
+    if preview_budget <= 0:
+        return message[:MAX_TITLE_INPUT_CHARS]
+    return message[:message_budget] + _PASTE_PREVIEW_LABEL + preview[:preview_budget]
+
+
 def is_titleable_user_message(user_message: str) -> bool:
     """False for machine-authored openers and turns that reduce to nothing once scaffolding is stripped."""
     return (isinstance(user_message, str) and bool(user_message.strip()) and not user_message.lstrip().startswith(_MACHINE_PREFIXES)
             and bool(_summarize_user_message(user_message).strip()))
 
 
-def derive_title(user_message: str) -> Optional[str]:
+def derive_title(user_message: str, title_preview: str | None = None) -> Optional[str]:
     """Instant title: first meaningful line trimmed to a word boundary. No model, never fails."""
-    line = " ".join(_first_line(_summarize_user_message(user_message)).split())
+    line = " ".join(_first_line(build_title_input(user_message, title_preview)).split())
     if len(line) > MAX_DERIVED_TITLE_CHARS:
         cut = line[:MAX_DERIVED_TITLE_CHARS]
         space = cut.rfind(" ")
@@ -314,6 +352,12 @@ def _notify_title(title_callback: Optional[TitleCallback], title: str, source: s
     _safe_callback(title_callback, (title, source), "%s callback failed", label)
 
 
+def _is_provisional_greeting_title(title: str) -> bool:
+    """The prompt's greeting placeholder (also "Friendly greeting in chat" and quoted/bracketed variants)."""
+    normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
+    return normalized in (_PROVISIONAL_GREETING_TITLE, _PROVISIONAL_GREETING_TITLE + " in chat")
+
+
 def _is_prompt_example_echo(title: str) -> bool:
     """Return True when *title* is one of the prompt's own example titles.
 
@@ -332,6 +376,7 @@ def generate_title(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    title_preview: str | None = None,
 ) -> Optional[str]:
     """Title from the opening message alone (waiting for the assistant made this slow and bought
     nothing). ``runtime_validator`` runs right before the request; False skips silently.
@@ -349,7 +394,7 @@ def generate_title(
             return None
     except Exception:  # fail open: a broken validator must not disable titling
         logger.debug("Title runtime validator raised; proceeding", exc_info=True)
-    user_snippet = _summarize_user_message(user_message)[:MAX_TITLE_INPUT_CHARS]
+    user_snippet = build_title_input(user_message, title_preview)
     if not user_snippet.strip():
         return None
     language = _title_language()
@@ -387,7 +432,7 @@ def generate_title(
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
         # which is still an assistant blob — reject instead so the caller retries on the next exchange
-        # (maybe_auto_title fires for the first two exchanges). Port of can1357/oh-my-pi#7306.
+        # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
         if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
             logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
@@ -458,12 +503,18 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
         return _set(deduped)
 
 
-def apply_instant_title(session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None) -> Optional[str]:
-    """Write the derived title inline. Returns it, or None (no usable text, or a ``derived``+ title exists). Never raises."""
+def apply_instant_title(
+    session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None,
+    title_preview: str | None = None,
+) -> Optional[str]:
+    """Write the derived title inline. Returns it, or None (no usable text, or a ``derived``+ title exists). Never raises.
+
+    ``title_preview`` must reach this stage too: the model upgrade's own ``derive_title`` fallback writes
+    ``derived`` provenance, which never replaces the ``derived`` title written here."""
     if not session_db or not session_id:
         return None
     try:
-        title = derive_title(user_message) if is_titleable_user_message(user_message) else None
+        title = derive_title(user_message, title_preview) if is_titleable_user_message(user_message) else None
         persisted = _persist_session_title(session_db, session_id, title, source="derived", dedupe=False) if title else None
         if persisted:
             _notify_title(title_callback, persisted, "derived", "Instant-title")
@@ -481,6 +532,7 @@ def auto_title_session(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    title_preview: str | None = None,
 ) -> None:
     """Generate and store the model title (daemon-thread target); skips sessions already carrying an
     ``llm``/``user`` title (a ``derived`` one is expected — upgrading it is the point). Never lets an
@@ -501,10 +553,13 @@ def auto_title_session(
         # (task='title_generation', #23270).
         set_accounting_context(session_db, session_id)
         title, source = generate_title(
-            user_message, failure_callback=failure_callback, main_runtime=main_runtime, runtime_validator=runtime_validator,
+            user_message, failure_callback=failure_callback, main_runtime=main_runtime,
+            runtime_validator=runtime_validator, title_preview=title_preview,
         ), "llm"
+        if title and _is_provisional_greeting_title(title):
+            source = "derived"
         if not title:  # the inline attempt declined collisions; off the critical path the lineage scan is affordable
-            title, source = derive_title(user_message), "derived"
+            title, source = derive_title(user_message, title_preview), "derived"
         if not title:
             return
         try:
@@ -572,14 +627,21 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    title_preview: str | None = None,
 ) -> None:
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
     if not session_db or not session_id or not user_message:
         return
-    # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
-    # left a machinery-opened session nameless; title alone never titles on an old store.
+    # History may be pre- or post-message. Past the opening turn, skip once the session holds an
+    # ``llm``/``user`` name: count alone left a machinery-opened session nameless, and a ``derived``
+    # name is still a placeholder (instant slice, or the model's greeting title for a bare "hi") that
+    # the first substantive turn should replace. Untitled sessions always get another shot; a
+    # placeholder gets turns 2-3, so a failing title model costs at most three calls, not one per turn.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
-    if user_msg_count > 1 and not _session_is_untitled(session_db, session_id):
+    if user_msg_count > 1 and (
+        _has_upgraded_title(session_db, session_id)
+        or (user_msg_count > 3 and not _session_is_untitled(session_db, session_id))
+    ):
         return
     kanban_title = _kanban_task_title()
     if kanban_title:
@@ -596,7 +658,7 @@ def maybe_auto_title(
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
-    apply_instant_title(session_db, session_id, user_message, title_callback)
+    apply_instant_title(session_db, session_id, user_message, title_callback, title_preview=title_preview)
     if not _model_title_upgrade_enabled():
         logger.debug("Instant title persisted; model upgrade disabled by auxiliary.title_generation.model_upgrade_enabled=false")
         return
@@ -604,11 +666,14 @@ def maybe_auto_title(
     # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
     # profile under multiplex, titling X's session with the default profile's model and billing its key.
     from agent.memory_provider import spawn_context_thread
+    upgrade_kwargs = dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
+                          runtime_validator=runtime_validator)
+    if isinstance(title_preview, str) and title_preview.strip():
+        upgrade_kwargs["title_preview"] = title_preview
     upgrade = spawn_context_thread(
         auto_title_session, name="auto-title",
         args=(session_db, session_id, user_message),
-        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
-                    runtime_validator=runtime_validator),
+        kwargs=upgrade_kwargs,
     )
     _UPGRADE_THREADS.add(upgrade)
     upgrade.start()

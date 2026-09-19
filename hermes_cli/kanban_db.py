@@ -305,6 +305,11 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # breaker must never trip on a throttle). 75 == BSD EX_TEMPFAIL.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
 
+# Worker exit "provider rejected the configuration": credential revoked (401/403), model gone
+# (404), TLS chain broken — a retry cannot fix it, so the dispatcher parks the card blocked on
+# the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.
+KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78
+
 
 def _resolve_crash_grace_seconds() -> int:
     """``HERMES_KANBAN_CRASH_GRACE_SECONDS`` (0 = immediate, for tests) else default."""
@@ -1901,11 +1906,16 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         if att is None:
             return None
         conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
+        has_remaining_blob_reference = conn.execute(
+            "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1",
+            (att.stored_path,),
+        ).fetchone() is not None
         _append_event(conn, att.task_id, "attachment_removed", {"filename": att.filename})
-    with contextlib.suppress(OSError):
-        p = Path(att.stored_path)
-        if p.is_file():
-            p.unlink()
+    if not has_remaining_blob_reference:
+        with contextlib.suppress(OSError):
+            p = Path(att.stored_path)
+            if p.is_file():
+                p.unlink()
     return att
 
 
@@ -2057,22 +2067,31 @@ def _synthesize_ended_run(
 # --- Dependency resolution (todo -> ready) ---
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked`` event is ``blocked`` — an
-    explicit ``kanban_block`` that must wait for an operator. A breaker trip
-    emits ``gave_up`` (not ``blocked``) and so auto-recovers, as does a task
-    with no such event at all (direct DB edit).
-
-    See #28712.
-    Returns ``False`` when there is no such event at all (e.g. the task was set to ``status='blocked'`` by
-    the circuit breaker or by direct DB manipulation) — preserves the pre-#28712 auto-recover semantics for
-    that path.
+    """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
+    block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
+    breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
+    protocol-violation budget or a systemic same-error wave. Those trip on a
+    policy independent of ``consecutive_failures``, so ``recompute_ready``'s
+    counter check cannot see them — without this the trip is promoted back to
+    ``ready`` in the same tick and the card respawns forever. A plain
+    (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
+    so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
+    releases it; a task with no such event at all (direct DB edit) auto-recovers.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if row and row["kind"] == "blocked":
+        return True
+    trip = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("
+        "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
+        "ORDER BY id DESC LIMIT 1", (task_id, task_id),
+    ).fetchone()
+    return bool(trip) and bool(_json_dict(trip["payload"]).get("sticky"))
 
 
 def _latest_event(

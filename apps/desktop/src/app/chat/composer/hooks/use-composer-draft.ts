@@ -14,6 +14,8 @@ import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import {
+  adoptGoneSessionDraft,
+  adoptNewSessionDraft,
   type ComposerAttachment,
   type ComposerDraftSyncMode,
   onComposerDraftSyncRequest,
@@ -453,6 +455,26 @@ export function useComposerDraft({
     // fire later would just clobber with an older snapshot.
     window.clearTimeout(draftPersistTimerRef.current)
     pendingDraftPersistRef.current = null
+
+    // A new chat writes to the shared pre-session bucket until its stored id
+    // arrives; the assigning site announces that id (store/composer.ts). Move
+    // the bucket at this handoff — after the outgoing cleanup stashed the live
+    // editor text under it, before the incoming scope is restored — so the
+    // text the user kept typing follows the chat instead of vanishing.
+    // Keyed on the scope alone: the runtime id can land a resume later than
+    // the route flips the scope, so it is not a usable signal here.
+    if (!draftScopeRef.current && activeQueueSessionKey) {
+      adoptNewSessionDraft(activeQueueSessionKey)
+    } else if (!activeQueueSessionKey) {
+      // The reverse handoff: a session the user was typing into turned out
+      // to be gone and the window dropped to a fresh draft (#111868). The
+      // outgoing composer's cleanup has already stashed the live text under
+      // the dead key — whether that was this instance's previous scope or an
+      // unmounted one's — so move it into the fresh draft when the gone
+      // verdict announced it. No announcement, no-op.
+      adoptGoneSessionDraft()
+    }
+
     draftScopeRef.current = activeQueueSessionKey
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)

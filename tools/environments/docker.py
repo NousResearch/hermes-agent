@@ -702,6 +702,10 @@ class DockerEnvironment(BaseEnvironment):
             and not workspace_explicitly_mounted)
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
             logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+        # The host directory actually bound at /workspace, if any. Readers that
+        # only hold the env instance (cwd remapping on live envs) use it to
+        # recognize a session workspace registered as a raw host path.
+        self.host_cwd = host_cwd_abs if bind_host_cwd else None
         mount_workspace = not bind_host_cwd and not workspace_explicitly_mounted
 
         writable_args: list[str] = []

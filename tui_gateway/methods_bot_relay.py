@@ -5,6 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
+# Defined beside the sender-side waiter budget so the two Python sides cannot drift (#93911).
+from tools.bot_failure_reasons import delivery_failure_reason
 from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
 
 from .contracts.groups_bot_relay import (
@@ -55,8 +57,11 @@ def _(rid, params: BotRelayOutboxDrainParams, _root=_relay_root) -> BotRelayOutb
 
 
 @method("bot_relay.deliver")
-def _(rid, params: BotRelayDeliverParams, _root=_relay_root, _run=_run_delivery) -> BotRelayDeliverResult | dict:
-    """Deliver a relayed DM into a Bot Chat on this gateway and return its one-turn reply."""
+def _(rid, params: BotRelayDeliverParams, _root=_relay_root, _run=_run_delivery,
+      _failure_reason=delivery_failure_reason) -> BotRelayDeliverResult | dict:
+    """Deliver a relayed DM (``profile``, attribution-prefixed ``message``) into a Bot Chat ON THIS
+    GATEWAY via the one-turn ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use →
+    ``{reply}``. Blocking by design (Desktop relay worker; the RPC pool keeps it off the reader)."""
     import tempfile
 
     profile = params.profile.strip()
@@ -146,9 +151,14 @@ def _(rid, params: BotRelayDeliverParams, _root=_relay_root, _run=_run_delivery)
         reply = _bot_mode_delivery_text((proc.stdout or "").strip(), successful=True)
         return BotRelayDeliverResult(reply=reply)
     except subprocess.TimeoutExpired:
-        return srv._err(rid, 5093, "delivery turn timed out")
-    except Exception as exc:
-        return srv._err(rid, 5096 if getattr(exc, "reason", "") == "target_busy" else 5094, str(exc))
+        # Every classified refusal has to ride `data.reason`: the Desktop forwards only that field,
+        # and the sender re-classifies from free text, which cannot name these. This branch is also
+        # `delivery_timeout`'s only producer.
+        from tools.bot_failure_reasons import DELIVERY_TIMEOUT
+        return srv._err(rid, 5093, "delivery turn timed out", data={"reason": DELIVERY_TIMEOUT})
+    except Exception as e:
+        reason = _failure_reason(e)
+        return srv._err(rid, 5096 if reason == "target_busy" else 5094, str(e), data={"reason": reason})
 
 
 @method("bot_relay.reply")

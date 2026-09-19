@@ -306,7 +306,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
             # The health probe confirmed the gateway is alive, but the local runtime status
             # file may be stale (cross-container): override so the badge is correct.
             gateway_state = "running"
-        elif gateway_state in {"running", "starting"} and runtime_status_is_stale(runtime):
+        elif gateway_state in {"running", "degraded", "starting"} and runtime_status_is_stale(runtime):
             # Alive PID, but housekeeping stopped re-stamping the heartbeat: the loop or the
             # housekeeping thread wedged while the file still says 'running' (#113372). Same arm
             # as ``hermes gateway status`` so the sidebar strip and the CLI agree.

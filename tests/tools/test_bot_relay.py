@@ -348,15 +348,15 @@ def test_relay_route_queues_envelope_and_spawns_waiter(tmp_path, monkeypatch):
 
     spawned = {}
 
-    def _fake_spawn(command, label, *, task_id, agent):
+    def _fake_spawn(command, label, *, task_id, agent, **_):
         spawned["command"] = command
         spawned["label"] = label
-        return json.dumps({"status": "sent", "to": label})
+        return json.dumps({"status": "queued", "to": label})
 
     monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", _fake_spawn)
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))
-    assert out.get("status") == "sent"
+    assert out.get("status") == "queued"
     assert "Hermes Cloud" in spawned["label"]
     # envelope landed in the outbox with attribution prefixed
     pending = bot_relay.claim_pending_envelopes(home)
@@ -376,14 +376,14 @@ def test_relay_route_ambiguous_target_errors_with_forms(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(
         "tools.bot_mode_dm._spawn_delivery",
-        lambda *a, **k: json.dumps({"status": "sent"}),
+        lambda *a, **k: json.dumps({"status": "queued"}),
     )
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="scout", message="hi", agent=agent))
     assert "scout@cloud-1" in out.get("error", "") and "scout@ssh-vps" in out["error"]
     # connection-qualified form goes through
     out2 = json.loads(message_agent_tool(target="scout@ssh-vps", message="hi", agent=agent))
-    assert out2.get("status") == "sent"
+    assert out2.get("status") == "queued"
 
 
 def test_unknown_target_error_mentions_connected_machines(tmp_path):
@@ -620,7 +620,7 @@ def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(
         "tools.bot_mode_dm._spawn_delivery",
-        lambda *a, **k: json.dumps({"status": "sent"}),
+        lambda *a, **k: json.dumps({"status": "queued"}),
     )
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))

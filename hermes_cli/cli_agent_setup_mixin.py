@@ -51,6 +51,46 @@ def _route_signature(model, runtime: dict) -> tuple:
         runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
 
 
+def _cooldown_cause(entry) -> str:
+    """Why a benched (exhausted) row is cooling down, from what the pool recorded: a rate-limit or
+    quota response, a failed token refresh, or another HTTP failure."""
+    reason = (entry.last_error_reason or "").lower()
+    if entry.last_error_code in (402, 429) or any(k in reason for k in ("rate", "quota", "insufficient")):
+        return "after a rate-limit or quota response"
+    if entry.last_error_code is None or "refresh" in reason:
+        return "after a failed token refresh"
+    return f"after an HTTP {entry.last_error_code} response"
+
+
+def _credential_pool_notice(provider: str) -> tuple:
+    """``(cooling, lines)`` on why *provider*'s pool has nothing selectable right now, for the
+    startup notice. *cooling* is True when the first line is a live cooldown with its remaining
+    time; a dead (quarantined) sign-in adds a line naming the re-login."""
+    import time
+    from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
+    try:
+        pool = load_pool(provider)
+        if not pool.has_credentials() or pool.has_available():
+            return False, []
+        next_at = pool.next_available_at()
+        entries = pool.entries()
+    except Exception:
+        return False, []
+    lines = []
+    if next_at is not None:
+        minutes = max(1, int((next_at - time.time() + 59) // 60))
+        benched = [e for e in entries if e.last_status == STATUS_EXHAUSTED]
+        cause = _cooldown_cause(benched[0]) if benched else "after a failed request"
+        lines.append(f"The {provider} credential is cooling down {cause}; "
+                     f"it re-enters rotation in about {minutes}m.")
+    dead = [e for e in entries if e.last_status == STATUS_DEAD]
+    if dead:
+        reason = dead[0].last_error_message or dead[0].last_error_reason or "sign-in lost"
+        lines.append(f"The {provider} sign-in was lost ({reason}); run `hermes auth add {provider}` "
+                     "to sign in again.")
+    return next_at is not None, lines
+
+
 def _keyless_custom_base(base_url) -> bool:
     """Custom/local endpoints (llama.cpp, ollama, vLLM) often need no auth; only a
     non-OpenRouter base_url qualifies."""
@@ -351,20 +391,60 @@ class CLIAgentSetupMixin:
 
         See #62935.
         """
+        return self._probe_runtime_credentials()[0]
+
+    def _probe_runtime_credentials(self) -> tuple:
+        """``(ready, error)``: *error* is the exception that stopped resolution — raised, or
+        swallowed by the "auto" ladder and stamped on a keyless fallback — ``None`` when a provider
+        resolved (usable or merely keyless). Never prints or mutates CLI state."""
         from hermes_cli.runtime_provider import resolve_runtime_provider
         try:
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
                 explicit_base_url=self._explicit_base_url)
-        except Exception:
-            return False
+        except Exception as exc:
+            return False, exc
         if not isinstance(runtime, dict):
-            return False
+            return False, None
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         if callable(api_key) or (isinstance(api_key, str) and api_key):
-            return bool(base_url)
-        return _keyless_custom_base(base_url)
+            return bool(base_url), None
+        return _keyless_custom_base(base_url), runtime.get("auth_error")
+
+    def _maybe_offer_first_run_setup(self) -> None:
+        """Interactive startup gate: a blank install goes to the provider wizard; a configured
+        profile whose credential is benched or signed out gets the reason instead (#113720)."""
+        if not sys.stdin.isatty():
+            return
+        ready, error = self._probe_runtime_credentials()
+        if not ready and not self._explain_unusable_credentials(error):
+            self._offer_first_run_setup()
+
+    def _explain_unusable_credentials(self, error) -> bool:
+        """A configured profile whose credential is benched, quarantined or signed out is not a
+        blank install: print what is wrong (and the remaining cooldown) instead of the first-run
+        wizard, whose "nothing is configured" claim sends operators into a second login that can
+        rotate a single-use OAuth grant away from the session that was working (#113720).
+
+        True when the failure was explained; False when nothing is configured (the wizard's case).
+        """
+        from cli import _cprint
+        from hermes_cli.auth import format_auth_error
+        if error is None or getattr(error, "code", None) == "no_provider_configured":
+            return False
+        provider = getattr(error, "provider", None) or self.requested_provider
+        cooling, lines = _credential_pool_notice(provider) if provider and provider != "auto" else (False, [])
+        _cprint("")
+        if cooling:
+            # A live cooldown is a wait, not a lost login: lead with it and skip the re-auth hint.
+            _cprint(f"⚠️  {_escape(lines.pop(0))}")
+            _cprint(f"  {_escape(str(error))}")
+        else:
+            _cprint(f"⚠️  {_escape(format_auth_error(error))}")
+        for line in lines:
+            _cprint(f"  {_escape(line)}")
+        return True
 
     def _offer_first_run_setup(self) -> bool:
         """Offer the provider picker when no provider is configured at all (interactive

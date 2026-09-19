@@ -250,7 +250,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     if not job.get("no_agent"):
         notice = provider_failure_notice(
             job_name, job_id, classify_cron_failure_reason(text),
-            backup_provider_phrase=_fallback_chain_phrase())
+            backup_provider_phrase=_fallback_chain_phrase(), provider=job.get("provider"))
         if notice is not None:
             return notice
 
@@ -1148,6 +1148,8 @@ _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
+# Pause before re-sampling a fire-claim heartbeat miss; a genuinely re-owned claim misses twice.
+_FIRE_CLAIM_MISS_CONFIRM_SECONDS = 1.0
 
 
 def _cron_cleanup_timeout_seconds() -> float:
@@ -2454,6 +2456,12 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                     if self_removal_delivery_allowed(job_id):
                         # Record dropped by this run; nothing left to keep fresh.
                         continue
+                    # One miss is a sample, not a verdict (#113357): a latch cancels the live
+                    # agent run and ends the lease refresh, so confirm before acting on it.
+                    if stop.wait(_FIRE_CLAIM_MISS_CONFIRM_SECONDS) or heartbeat_fire_claim(
+                            job_id, expected_owner=owner):
+                        last_confirmed = time.monotonic()
+                        continue
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",
@@ -2680,20 +2688,25 @@ class _FireOwnership:
         return fire_claim_fence(self.job["id"], expected_owner=self.owner)
 
     def lost(self) -> bool:
-        if self.cancel_event is not None and self.cancel_event.is_set():
+        if self.transport_cancelled():
             return True
         if self.owner is None:
             return False
         if self_removal_delivery_allowed(self.job["id"]):
             # The run deleted its own record; there is no claim left to re-resolve.
             return False
+        # The heartbeat's latched miss is one sample, not the verdict (#113357): the store is
+        # re-checked here, and a claim that still validates keeps the run's real outcome. The
+        # owner-fenced mark_job_run / fire_claim_fence remain the authority for side effects.
+        latched = self.claim_lost is not None and self.claim_lost.is_set()
         try:
             if heartbeat_fire_claim(self.job["id"], expected_owner=self.owner):
                 return False
         except Exception:
             logger.debug(
                 "Job '%s': fire_claim ownership validation failed", self.job["id"], exc_info=True)
-            return False
+            # Unreachable store after a latched miss stays fail-closed; a first miss is best-effort.
+            return latched
         if self.claim_lost is not None:
             self.claim_lost.set()
         return True

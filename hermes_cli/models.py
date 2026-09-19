@@ -728,9 +728,12 @@ def list_available_providers() -> list[dict[str, str]]:
         for pid in [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]]
 
 
-def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
+def parse_model_input(
+        raw: str, current_provider: str, *, custom_ids: Optional[set[str]] = None) -> tuple[str, str]:
     """Parse ``/model`` input into ``(provider, model)``. The colon is a provider delimiter only when
-    the left side is a known provider/alias, so ``anthropic/claude-3.5-sonnet:beta`` stays a model."""
+    the left side is a known provider/alias, so ``anthropic/claude-3.5-sonnet:beta`` stays a model.
+    ``custom_ids`` is the caller's already-loaded set of configured ``custom:<name>`` ids (default:
+    read from config) so one decision never consults two config sources."""
     stripped = raw.strip()
     colon = stripped.find(":")
     if colon > 0:
@@ -738,9 +741,10 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         model_part = stripped[colon + 1:].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
             if provider_part == "custom":
+                configured = _configured_custom_provider_ids() if custom_ids is None else custom_ids
                 # Longest configured ``custom:<name>`` id that prefixes the input wins.
                 lowered = stripped.lower()
-                for custom_id in sorted(_configured_custom_provider_ids() - {"custom"}, key=len, reverse=True):
+                for custom_id in sorted(configured - {"custom"}, key=len, reverse=True):
                     if lowered.startswith(f"{custom_id.lower()}:"):
                         return custom_id, stripped[len(custom_id) + 1 :].strip()
                 # ``custom:local:qwen`` → ("custom:local", "qwen") for a configured named provider;
@@ -748,7 +752,7 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
                 if ":" in model_part:
                     custom_name, actual_model = (part.strip() for part in model_part.split(":", 1))
                     if custom_name and actual_model:
-                        if f"custom:{custom_name.lower()}" in _configured_custom_provider_ids():
+                        if f"custom:{custom_name.lower()}" in configured:
                             return (f"custom:{custom_name.lower()}", actual_model)
                         return ("custom", model_part)
             return (normalize_provider(provider_part), model_part)
@@ -1562,7 +1566,10 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
         try:
             entry = (refresh_fn or _default_refresh)()
             if entry:
-                _store_cache_entry(cache_key, entry)
+                # Under the write lock: the GUI read path spawns one of these per stale provider, so
+                # the plain load-modify-save would let concurrent warms drop each other's rows.
+                with _cache_write_lock:
+                    _store_cache_entry(cache_key, entry)
         except Exception:
             logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
         finally:
@@ -1704,9 +1711,14 @@ def _model_requires_account_discovery(provider: Optional[str], model: str) -> bo
 
 def cached_provider_model_ids(
     provider: Optional[str], *, force_refresh: bool = False,
-    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> list[str]:
+    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL, non_blocking: bool = False) -> list[str]:
     """Disk-cached :func:`provider_model_ids`: fresh cache hit, else live fetch persisting a non-empty
-    result. Always returns a list."""
+    result. Always returns a list.
+
+    ``non_blocking`` marks the GUI read path (``model.options``): it NEVER waits on a provider probe.
+    A same-credentials row of any age is served as-is and a daemon thread warms the next open; a
+    cold/mismatched row returns ``[]`` so the caller keeps its curated list. One degraded provider
+    (hanging or timing-out ``/v1/models``) therefore delays nothing but itself (#114215)."""
     normalized = _normalized_cache_slug(provider)
     if not normalized:
         return []
@@ -1729,6 +1741,16 @@ def cached_provider_model_ids(
         if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
             _spawn_swr_refresh(normalized)
             return list(entry["models"])
+
+    if non_blocking and not force_refresh:
+        # Read path: never touch the network in the caller's thread. A same-credentials row past the
+        # SWR window is still served (hour-old catalog beats an empty picker) while a daemon thread
+        # warms the next open; a cold row returns [] and the caller falls back to its curated list.
+        _spawn_swr_refresh(normalized)
+        if _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+            return [model for model in entry["models"]
+                    if not _model_requires_account_discovery(normalized, model)]
+        return []
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:

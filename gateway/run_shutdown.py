@@ -439,7 +439,7 @@ class GatewayShutdownMixin:
         """
         self._last_inbound_at = time.time()
         if getattr(self, "_scale_to_zero_cooldown_until", 0.0) > 0:
-            self._scale_to_zero_status("running", "scale-to-zero: status restore failed")
+            self._scale_to_zero_status(self._serving_state(), "scale-to-zero: status restore failed")
             self._scale_to_zero_cooldown_until = 0.0
 
     def _scale_to_zero_status(self, state: str, fail_msg: str) -> None:
@@ -626,7 +626,7 @@ class GatewayShutdownMixin:
         # Same guard as _exit_external_drain: a real shutdown drain must win, so never resurrect
         # a stopping gateway to `running`.
         if not getattr(self, "_draining", False) and self._running:
-            self._scale_to_zero_status("running", "scale-to-zero: status restore failed")
+            self._scale_to_zero_status(self._serving_state(), "scale-to-zero: status restore failed")
         # An abort before the cooldown is set would otherwise retry every tick.
         self._scale_to_zero_cooldown_until = max(
             self._scale_to_zero_cooldown_until, time.time() + 60.0
@@ -676,9 +676,9 @@ class GatewayShutdownMixin:
             return
         logger.info(
             "External drain RELEASED (.drain_request.json removed) — "
-            "re-accepting new turns; gateway_state -> running."
+            "re-accepting new turns; gateway_state -> %s.", self._serving_state(),
         )
-        self._update_runtime_status("running")
+        self._update_runtime_status(self._serving_state())
 
     async def _drain_control_watcher(self, interval: float = 1.0) -> None:
         """Poll ``.drain_request.json`` at 1s: present -> enter drain, absent -> exit; a stale epoch = absent."""

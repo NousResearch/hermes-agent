@@ -1865,7 +1865,7 @@ def _forward_command(name: str, module: str, attr: str, *, forward_return: bool 
 
     Imports at CALL time so fast paths never pay for it and
     ``patch("<module>.<attr>")`` keeps intercepting. ``forward_return``
-    surfaces the return code to ``main()`` (only kanban/project propagate).
+    surfaces the return code to ``main()`` (kanban/project/mcp propagate).
     """
 
     def _cmd(args):
@@ -1899,7 +1899,7 @@ cmd_gateway_enroll = _forward_command("cmd_gateway_enroll", "hermes_cli.gateway_
 cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", "cmd_prompt_size", doc='Show a byte/char breakdown of the system prompt + tool schemas.')
 cmd_pairing = _forward_command("cmd_pairing", "hermes_cli.pairing", "pairing_command")
 cmd_plugins = _forward_command("cmd_plugins", "hermes_cli.plugins_cmd", "plugins_command")
-cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command")
+cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command", forward_return=True)
 cmd_claw = _forward_command("cmd_claw", "hermes_cli.claw", "claw_command")
 cmd_import_agent = _forward_command("cmd_import_agent", "hermes_cli.agent_import", "import_agent_command")
 
@@ -2224,7 +2224,10 @@ def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     from hermes_cli import backup
 
-    (backup.run_quick_backup if getattr(args, "quick", False) else backup.run_backup)(args)
+    if getattr(args, "quick", False):
+        backup.run_quick_backup(args)
+    elif not backup.run_backup(args):
+        raise SystemExit(1)  # archive written but incomplete: never shell-success for a timer
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:

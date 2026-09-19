@@ -250,6 +250,8 @@ def _loaded_launchd_backend_jobs(
     if sys.platform != "darwin":
         return []
     import plistlib
+    from xml.parsers.expat import ExpatError
+
     from hermes_cli.gateway import _launchd_print_service_pid
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
     jobs: list[tuple[str, str, list[str], int | None]] = []
@@ -262,7 +264,11 @@ def _loaded_launchd_backend_jobs(
             try:
                 with open(plist_path, "rb") as f:
                     data = plistlib.load(f)
-            except (OSError, ValueError, plistlib.InvalidFileException):
+            # ExpatError is NOT a ValueError: plistlib propagates it unwrapped for
+            # XML that is not well-formed (e.g. a hand-edited plist with a raw
+            # `&` in `ProgramArguments`), and one such operator file must skip —
+            # not abort — the whole post-pull cleanup scan.
+            except (OSError, ValueError, plistlib.InvalidFileException, ExpatError):
                 continue
             if not isinstance(data, dict):
                 continue

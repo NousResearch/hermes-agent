@@ -1116,22 +1116,24 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _send_with_dm_topic_reply_anchor_retry(
         self, send_fn: Any, send_kwargs: Dict[str, Any], metadata: Optional[Dict[str, Any]],
         reply_to_message_id: Optional[int], media_label: str, reset_media: Optional[Any] = None) -> Any:
-        """Retry stale private-topic media replies once without the topic anchor."""
-        try:
-            return await send_fn(**send_kwargs)
-        except Exception as send_err:
-            if not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
-                raise
-            logger.warning(
-                "[%s] Reply target deleted for Telegram %s, retrying without reply/topic anchor: %s",
-                self.name, media_label, _redact_telegram_error_text(send_err))
-            if reset_media is not None:
-                reset_media()
-            retry_kwargs = dict(send_kwargs)
-            retry_kwargs["reply_to_message_id"] = None
-            retry_kwargs.pop("message_thread_id", None)
-            retry_kwargs.pop("direct_messages_topic_id", None)
-            return await send_fn(**retry_kwargs)
+        """Retry stale private-topic media replies once without the topic anchor. Serialized per chat with
+        ``send()`` so a file upload cannot land between two chunks of the text it accompanies."""
+        async with self._chat_send_lock(send_kwargs.get("chat_id")):
+            try:
+                return await send_fn(**send_kwargs)
+            except Exception as send_err:
+                if not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
+                    raise
+                logger.warning(
+                    "[%s] Reply target deleted for Telegram %s, retrying without reply/topic anchor: %s",
+                    self.name, media_label, _redact_telegram_error_text(send_err))
+                if reset_media is not None:
+                    reset_media()
+                retry_kwargs = dict(send_kwargs)
+                retry_kwargs["reply_to_message_id"] = None
+                retry_kwargs.pop("message_thread_id", None)
+                retry_kwargs.pop("direct_messages_topic_id", None)
+                return await send_fn(**retry_kwargs)
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -3401,7 +3403,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         logger.warning(
                             "[%s] Telegram flood control on send (retry_after=%.1fs > %.0fs); failing closed instead of sleeping: %s",
                             self.name, wait, _FLOOD_INLINE_WAIT_CAP_SECS, safe_send_error)
-                        return _flood_cap_result(wait)
+                        return self._record_send_flood_cooldown(chat_id, wait)
                     if _send_attempt < 2:
                         logger.warning(
                             "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s", self.name,
@@ -3416,7 +3418,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "[%s] Telegram flood control on send persisted across %d attempts; failing "
                         "closed so the delivery ledger owns the wait: %s",
                         self.name, _send_attempt + 1, safe_send_error)
-                    return _flood_cap_result(wait)
+                    return self._record_send_flood_cooldown(chat_id, wait)
                 raise
 
     async def _retrigger_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> None:
@@ -3478,7 +3480,24 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+        # One chat at a time (held only around the API calls, never across the reconnect wait above), so
+        # two concurrent split replies to one chat cannot interleave their chunks (#114396).
+        async with self._chat_send_lock(chat_id):
+            return await self._send_text_locked(chat_id, content, reply_to, metadata)
+
+    async def _send_text_locked(
+        self, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]]) -> SendResult:
+        """``send()`` body under the per-chat lock: rich fast-path, else MarkdownV2 chunks."""
+        # Re-checked under the lock: a burst queued behind a refused send must not each fire once.
+        cooldown = self._send_flood_cooldown_remaining(chat_id)
+        if cooldown is not None:
+            logger.warning(
+                "[%s] Telegram flood control still active for chat %s (%.0fs left); refusing locally without an API call",
+                self.name, chat_id, cooldown)
+            return _flood_cap_result(cooldown)
         error_types = self._telegram_error_types()
+        chunks: List[str] = []
+        delivered: List[str] = []
         try:
             # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
             # errors or DM-topic skips; returns directly on success or transient failure (no legacy resend).
@@ -3495,39 +3514,95 @@ class TelegramAdapter(BasePlatformAdapter):
                     _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
                     for chunk in chunks
                ]
-            message_ids = []
-            thread_id = self._metadata_thread_id(metadata)
-            requested_thread_id = self._message_thread_id_for_send(thread_id)
-            used_thread_fallback = False
-            for i, chunk in enumerate(chunks):
-                outcome = await self._send_chunk_with_retries(
-                    chat_id, chunk, i, reply_to, metadata, thread_id, used_thread_fallback, error_types)
-                if isinstance(outcome, SendResult):
-                    return outcome
-                msg, used_thread_fallback = outcome
-                message_ids.append(str(msg.message_id))
-            await self._retrigger_typing(chat_id, metadata)
-            return SendResult(
-                success=True, message_id=message_ids[0] if message_ids else None,
-                raw_response={
-                    "message_ids": message_ids, "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
+            return await self._send_chunks(chat_id, chunks, delivered, reply_to, metadata, error_types)
         except Exception as e:
-            safe_error = _redact_telegram_error_text(e)
-            logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
-            err_str = str(e).lower()
-            error_kind = classify_send_error(e)
-            # Content exceeded 4096 chars: fail so the stream consumer enters fallback mode.
-            if "message_too_long" in err_str or "too long" in err_str:
-                logger.debug("[%s] send() content too long, falling back to new-message continuation", self.name)
-                return SendResult(success=False, error="message_too_long", error_kind="too_long")
-            # TimedOut may have reached Telegram — non-retryable so _send_with_retry() doesn't re-send,
-            # except a wrapped ConnectTimeout or an httpx pool timeout (safe to re-send).
-            _to = error_types[2]
-            is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
-            return SendResult(
-                success=False, error=safe_error,
-                retryable=(self._looks_like_connect_timeout(e) or self._looks_like_pool_timeout(e) or not is_timeout),
-                error_kind=error_kind)
+            classified = self._classify_send_exception(e, error_types)
+            return self._with_partial_send(classified, chunks[len(delivered):], delivered, tail_certain=classified.retryable)
+
+    def _classify_send_exception(self, e: Exception, error_types: tuple) -> SendResult:
+        """The failed ``SendResult`` for an exception escaping the chunk loop. ``retryable`` doubles as
+        "non-delivery is certain": a plain ``TimedOut`` may have reached Telegram, so it is neither re-sent
+        by ``_send_with_retry`` nor resumed from; a wrapped ConnectTimeout / httpx pool timeout never left."""
+        safe_error = _redact_telegram_error_text(e)
+        logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
+        err_str = str(e).lower()
+        error_kind = classify_send_error(e)
+        # Content exceeded 4096 chars: fail so the stream consumer enters fallback mode.
+        if "message_too_long" in err_str or "too long" in err_str:
+            logger.debug("[%s] send() content too long, falling back to new-message continuation", self.name)
+            return SendResult(success=False, error="message_too_long", error_kind="too_long")
+        _to = error_types[2]
+        is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
+        return SendResult(
+            success=False, error=safe_error,
+            retryable=(self._looks_like_connect_timeout(e) or self._looks_like_pool_timeout(e) or not is_timeout),
+            error_kind=error_kind)
+
+    async def _send_chunks(
+        self, chat_id: str, chunks: List[str], delivered: List[str], reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]], error_types: tuple) -> SendResult:
+        """Deliver formatted ``chunks`` in order, appending each landed message id to ``delivered``
+        (pre-seeded with the ids of an earlier partial send when resuming — the chunk index used for
+        reply routing continues from there). A mid-loop refusal returns the ``partial_overflow`` result."""
+        thread_id = self._metadata_thread_id(metadata)
+        requested_thread_id = self._message_thread_id_for_send(thread_id)
+        used_thread_fallback = False
+        prior = len(delivered)
+        for chunk in chunks:
+            outcome = await self._send_chunk_with_retries(
+                chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)
+            if isinstance(outcome, SendResult):
+                # Every SendResult returned here is a DEFINITE non-delivery (flood cap, DM-topic refusal);
+                # ambiguous timeouts raise instead, so the remainder is safe to resume from.
+                return self._with_partial_send(outcome, chunks[len(delivered) - prior:], delivered)
+            msg, used_thread_fallback = outcome
+            delivered.append(str(msg.message_id))
+        await self._retrigger_typing(chat_id, metadata)
+        return SendResult(
+            success=True, message_id=delivered[0] if delivered else None,
+            raw_response={
+                "message_ids": list(delivered), "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
+
+    @staticmethod
+    def _with_partial_send(
+        result: SendResult, undelivered: List[str], delivered: List[str], *, tail_certain: bool = True) -> SendResult:
+        """Mark a split-send failure that happened after earlier chunks landed with the ``partial_overflow``
+        contract (the same key ``_edit_overflow_split`` sets and the stream consumer reads), so no caller
+        re-sends the already-visible head. ``undelivered`` (the formatted remainder, for
+        :meth:`_resume_partial_send`) is attached only when ``tail_certain``. No-op when nothing landed."""
+        if not delivered:
+            return result
+        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+        raw.update({
+            "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
+            "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
+        if tail_certain and undelivered:
+            raw["undelivered_chunks"] = tuple(undelivered)
+            raw["delivered_message_ids"] = tuple(delivered)
+        result.raw_response = raw
+        return result
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]]) -> Optional[SendResult]:
+        """Send only the chunks a partial ``send()`` could not deliver (``raw_response["undelivered_chunks"]``),
+        continuing the message-id sequence; ``None`` when the tail was not certain-undelivered."""
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = raw.get("undelivered_chunks")
+        if not undelivered or not self._bot:
+            return None
+        delivered = list(raw.get("delivered_message_ids") or ())
+        prior = len(delivered)
+        async with self._chat_send_lock(chat_id):
+            cooldown = self._send_flood_cooldown_remaining(chat_id)
+            if cooldown is not None:
+                return self._with_partial_send(_flood_cap_result(cooldown), list(undelivered), delivered)
+            error_types = self._telegram_error_types()
+            try:
+                return await self._send_chunks(chat_id, list(undelivered), delivered, reply_to, metadata, error_types)
+            except Exception as e:
+                classified = self._classify_send_exception(e, error_types)
+                return self._with_partial_send(
+                    classified, list(undelivered)[len(delivered) - prior:], delivered, tail_certain=classified.retryable)
 
     async def send_or_update_status(
         self, chat_id: str, status_key: str, content: str, *, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -3650,9 +3725,13 @@ class TelegramAdapter(BasePlatformAdapter):
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0
-                logger.warning("[%s] Telegram flood control, waiting %.1fs", self.name, wait)
                 if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
+                    # Log AFTER the cap check: "waiting 33.0s" followed by no wait misled an investigation.
+                    logger.warning(
+                        "[%s] Telegram flood control, refusing edit (retry_after %.1fs > %.0fs inline cap)",
+                        self.name, wait, _FLOOD_INLINE_WAIT_CAP_SECS)
                     return _flood_cap_result(wait)
+                logger.warning("[%s] Telegram flood control, waiting %.1fs", self.name, wait)
                 await asyncio.sleep(wait)
                 try:
                     await self._edit_text(chat_id, message_id, content)
@@ -5150,6 +5229,54 @@ class TelegramAdapter(BasePlatformAdapter):
         self._telegram_typing_cooldown_until.pop(str(chat_id), None)
         return False
 
+    # --- per-chat send ordering + flood cooldown (#114396) ---------------------------------------------
+    # Both keyed by the Bot-API-normalized chat id: the text path passes the raw chat_id while the media
+    # funnel's send_kwargs carry the normalized value. ``__dict__.setdefault``: tests build adapters via
+    # ``object.__new__()`` (no __init__).
+
+    @contextlib.asynccontextmanager
+    async def _chat_send_lock(self, chat_id: Any):
+        """FIFO per-chat gate around outgoing API calls, reentrant within one asyncio task (media paths
+        nest: send_voice → send_document, and ``super().send_*`` fallbacks reach ``send()``; a plain
+        ``asyncio.Lock`` re-acquired by its holder would wedge that chat's sends for good)."""
+        key = str(normalize_telegram_chat_id(chat_id))
+        locks: Dict[str, asyncio.Lock] = self.__dict__.setdefault("_telegram_chat_send_locks", {})
+        owners: Dict[str, asyncio.Task] = self.__dict__.setdefault("_telegram_chat_send_lock_owners", {})
+        task = asyncio.current_task()
+        if owners.get(key) is task:
+            yield
+            return
+        lock = locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            owners[key] = task
+            try:
+                yield
+            finally:
+                owners.pop(key, None)
+                if not getattr(lock, "_waiters", None):  # nobody queued: drop the entry (bounded dict)
+                    locks.pop(key, None)
+
+    def _record_send_flood_cooldown(self, chat_id: Any, wait: float) -> SendResult:
+        """A send refused with ``retry_after=wait`` arms a per-chat window during which ``send()`` fails
+        closed locally (same ``flood_control:<s>`` result, so ledger recognition and redelivery timing are
+        unchanged) instead of firing more requests into a penalty Telegram lengthens while it is hammered."""
+        until: Dict[str, float] = self.__dict__.setdefault("_telegram_send_cooldown_until", {})
+        until[str(normalize_telegram_chat_id(chat_id))] = asyncio.get_running_loop().time() + max(1.0, min(float(wait), 300.0))
+        return _flood_cap_result(wait)
+
+    def _send_flood_cooldown_remaining(self, chat_id: Any) -> Optional[float]:
+        """Seconds left in this chat's flood window, or ``None`` when sends may go out."""
+        until: Dict[str, float] = self.__dict__.setdefault("_telegram_send_cooldown_until", {})
+        key = str(normalize_telegram_chat_id(chat_id))
+        deadline = until.get(key)
+        if deadline is None:
+            return None
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining > 0:
+            return remaining
+        until.pop(key, None)
+        return None
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
         if not self._bot or self._typing_in_cooldown(chat_id):
@@ -6298,6 +6425,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await self._dispatch_with_text(event, f"Document '{display}' could not be cached.")
             event.media_urls = [cached.path]
             event.media_types = [cached.media_type]
+            event.media_text_inlined = [False]  # flipped below once the text is actually injected
             if cached.kind == "audio":
                 event.message_type = MessageType.AUDIO
             logger.info("[Telegram] Cached user %s at %s (%s)", cached.kind, cached.path, cached.media_type)
@@ -6311,6 +6439,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     display_name = re.sub(r'[^\w.\- ]', '_', original_filename or f"document{ext or '.txt'}")
                     injection = f"[Content of {display_name}]:\n{text_content}"
                     event.text = f"{injection}\n\n{event.text}" if event.text else injection
+                    event.media_text_inlined = [True]
                 except UnicodeDecodeError:
                     pass  # binary — agent has the cached path
         except Exception as e:

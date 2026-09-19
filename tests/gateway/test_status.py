@@ -1224,6 +1224,15 @@ class TestGatewayBusyDerivation:
             gateway_running=True, gateway_state="running", active_agents=0
         ) is False
 
+    def test_degraded_gateway_with_work_is_busy_and_drainable(self):
+        # Serving with a parked platform (#91547): in-flight turns must not look idle to NAS.
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="degraded", active_agents=2
+        ) is True
+        assert status.derive_gateway_drainable(
+            gateway_running=False, gateway_state="degraded"
+        ) is False
+
 
 class TestRespawnStormBreaker:
     def test_no_storm_under_threshold(self, tmp_path, monkeypatch):

@@ -48,6 +48,7 @@ _INVENTORY_TABLES = (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIA
 _GENERATED_META_KEYS = frozenset({
     "fts_storage_version", "fts_optimize_available", "fts_rebuild_high_water", "fts_rebuild_progress",
     "fts_cjk_stale", "fts_cjk_rebuild_high_water", "fts_cjk_rebuild_progress", "telegram_dm_topic_schema_version",
+    "fts_tool_full_content_high_water",  # retired marker; never copied into a recovered store
 })
 _SIDECAR_SUFFIXES = ("", "-wal", "-shm", "-journal")
 _MINIMUM_SPACE_HEADROOM = 256 * 1024 * 1024

@@ -21,7 +21,7 @@ def test_cli_owner_deferral_and_attempt_fence(tmp_path, monkeypatch, error):
     lease, refusal = try_acquire_active_session(session_id="chat", surface="cli", config={}, registry_home=tmp_path)
     assert refusal is None and lease is not None
     run = Mock(side_effect=error, return_value=subprocess.CompletedProcess([], 0, "", ""))
-    monkeypatch.setattr(delivery.subprocess, "run", run)
+    monkeypatch.setattr(delivery, "_run_bot_chat_turn", run)
     monkeypatch.setattr(delivery.shutil, "which", lambda _: "/bin/hermes")
     job = {"id": "job", "execution_id": "execution"}
     try:
@@ -69,12 +69,12 @@ def test_delivery_exception_retains_attempt_and_continues_siblings(tmp_path, mon
             raise PermissionError("target traversal denied after discovery")
         return original_is_dir(self)
 
-    def run(*args, **kwargs):
-        calls.append(kwargs["env"]["HERMES_HOME"])
+    def run(argv, env, report_path, timeout):
+        calls.append(env["HERMES_HOME"])
         return subprocess.CompletedProcess([], 0, "", "")
 
     monkeypatch.setattr(importlib.util, "find_spec", resolve_cli)
-    monkeypatch.setattr(delivery.subprocess, "run", run)
+    monkeypatch.setattr(delivery, "_run_bot_chat_turn", run)
     monkeypatch.setattr(Path, "is_dir", is_dir)
     queue.drain()
     assert queue.read_pending("b" * 64)["status"] == "ambiguous"
@@ -114,7 +114,7 @@ def test_policy_change_settles_diagnostic_without_waiting_for_cli_owner(tmp_path
     lease, refusal = try_acquire_active_session(session_id="chat", surface="cli", config={}, registry_home=tmp_path)
     assert refusal is None
     run = Mock()
-    monkeypatch.setattr(delivery.subprocess, "run", run)
+    monkeypatch.setattr(delivery, "_run_bot_chat_turn", run)
     job = {"id": "failure", "execution_id": "run"}
     try:
         assert "queued" in delivery._deliver_to_bot_chat(job, "diagnostic", "", for_failure=True)

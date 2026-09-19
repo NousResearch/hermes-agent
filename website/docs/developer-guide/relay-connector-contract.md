@@ -776,7 +776,7 @@ Typing/status frames always carry the triggering-ts anchor when one is known
 (liveliness is unconditional, both modes): Slack's status line is
 thread-scoped, and in flat mode the send-side anchor strip guarantees the
 status anchor can never leak into reply placement. Semantics of the native
-key: see [Slack](/user-guide/messaging/slack).
+key: see [Slack](../user-guide/messaging/slack.md).
 
 Thread-anchor resolution applies to EVERY send lane — text (`send`) and media
 (`send_media`) alike — through one choke point

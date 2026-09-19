@@ -719,6 +719,55 @@ def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
     assert not update_cmd._fleet_restart_pending_marker_path().exists()
 
 
+def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypatch, capsys):
+    """A current multiplexer discharges every profile named in its live record (#113350)."""
+    disk_sha = "e" * 40
+    # The marker owns its inventory (two gateways owed); a marker without one stays fail-closed.
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": p} for p in ("default", "coder")],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "partial",
+                "exit_code": 1,
+                "plan": {
+                    "runtimes": [
+                        {"kind": "gateway", "profile": profile, "pid": pid}
+                        for profile, pid in (("default", 42), ("coder", 43))
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {
+                "profile": "default",
+                "pid": 42,
+                "code_sha": disk_sha,
+                "code_version": "0.21.0",
+                "state": "current",
+                "served_profiles": ["default", "coder"],
+            }
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    # The same live multiplexer coverage also discharges the receipt fallback
+    # after an operator has already removed the marker.
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
 @pytest.mark.parametrize(
     "disk_sha, fleet",
     [
@@ -813,3 +862,39 @@ def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeyp
 
     assert capsys.readouterr().err == ""
     assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+
+def test_startup_warn_silent_when_completed_update_fleet_restarted_onto_moved_checkout(monkeypatch, capsys):
+    """The remedy the warning names must clear it: after a completed update, a manual ``git pull``
+    plus ``hermes gateway restart`` leaves every owed gateway on today's checkout — newer than the
+    update's ``post_update.sha`` — which is nothing that update still owes (#113350 steps 3–4)."""
+    pre, pulled, checkout = "a" * 40, "b" * 40, "c" * 40
+    _patch_marker_sha(monkeypatch, checkout)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "success", "exit_code": 0,
+                "pre_update": {"sha": pre}, "post_update": {"sha": pulled},
+                "gateway_restart": {
+                    "restarted_services": ["hermes-gateway"], "relaunched_profiles": [],
+                    "externally_supervised_profiles": [], "killed_pids": [], "failed_units": [],
+                    "incomplete": False, "phase_error": "",
+                },
+                "fleet": [{"profile": "default", "pid": 7, "code_sha": pulled, "state": "current"}],
+                "plan": {"runtimes": [{"kind": "gateway", "profile": "default", "code_sha": pre, "pid": 1}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": checkout, "code_version": "0.21.3", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""

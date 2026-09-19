@@ -420,11 +420,15 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     # upfront so the fast path doesn't always fail noisily before the full-clone fallback.
     is_sha_ref = bool(re.fullmatch(r"[0-9a-f]{7,40}", install.ref))
     # Never hang on a credential prompt: installs run from CLI/dashboard flows nobody can answer.
-    from hermes_cli.git_credentials import with_git_auth
-    _git_env = with_git_auth(noninteractive_git_env(), install.url)
+    from hermes_cli.git_credentials import run_git_with_credential_fallback
 
     def _git(*args: str) -> int:
-        return subprocess.run([git, *args], stdin=subprocess.DEVNULL, env=_git_env).returncode
+        result = run_git_with_credential_fallback(
+            [git, *args], install.url, env=noninteractive_git_env(),
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0 and (result.stderr or "").strip():
+            _say(result.stderr.strip(), Colors.DIM)
+        return result.returncode
 
     if not is_sha_ref and _git("clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)) != 0:
         # Branch/tag form failed (e.g. ref deleted upstream): fall through to full-clone path.

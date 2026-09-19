@@ -83,7 +83,10 @@ class TestReasoningExcludedFromSummarizer:
             out = comp._generate_summary([{"role": "user", "content": "hi"}])
         assert out is not None
         assert "OUTPUT_TRACE" not in out
-        assert "## Active Task" in out
+        # Snapshot grounding rewrites the legacy "## Active Task" alias into the canonical, grounded
+        # section instead of prepending a second task section next to it.
+        assert cc.HISTORICAL_TASK_HEADING in out
+        assert "## Active Task" not in out
         # The iterative-update seed must be clean too, or the trace compounds
         # across every subsequent compaction.
         assert "OUTPUT_TRACE" not in (comp._previous_summary or "")

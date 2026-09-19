@@ -132,11 +132,13 @@ def spool_dropped_transcript_message(session_id: str, message: Dict[str, Any]) -
         return None
 
 
-def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
+def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = False) -> tuple[int, int]:
     """Replay cap-dropped transcript messages spooled for *session_id*; return ``(replayed,
     remaining)``. ``replay(message_dict)`` runs per message in drop order; a spool file is deleted
     only after its replay succeeds. The first failure stops the drain (the DB is likely still
-    unhealthy) and keeps the rest for retry.
+    unhealthy) and keeps the rest for retry. With ``db_known_failing`` (the caller's last write
+    already failed and is being logged/escalated) a replay failure is expected and logs at DEBUG,
+    so a stalled session does not add one WARNING per append on top of its ERROR (#114266).
     """
     try:
         candidates = list(_get_flush_dir().glob("pending-*.json"))
@@ -166,8 +168,9 @@ def drain_transcript_spool(session_id: str, replay) -> tuple[int, int]:
         try:
             replay(message)
         except Exception as exc:
-            logger.warning("Replay of spooled transcript message %s for %s failed; "
-                           "keeping spool file for retry: %s", path, session_id, exc)
+            (logger.debug if db_known_failing else logger.warning)(
+                "Replay of spooled transcript message %s for %s failed; "
+                "keeping spool file for retry: %s", path, session_id, exc)
             remaining = len(ordered) - idx
             break
         path.unlink(missing_ok=True)

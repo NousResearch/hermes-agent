@@ -406,6 +406,16 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
 
+### Embedding external content
+
+Use the SDK's `<SandboxedFrame src title />` for any external web content
+(reader views, dashboards, docs). It renders a sandboxed iframe with the app's
+guest-content posture: opaque origin, `allow-scripts` by default, `no-referrer`,
+lazy loading. Realm-escaping tokens (`allow-same-origin`, top-navigation,
+popups, modals) are stripped even if passed — the opaque origin IS the
+containment. Never mount a raw Electron `<webview>`: it lands on the app's
+`persist:` preview partition, sharing the app's cookies and storage.
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.

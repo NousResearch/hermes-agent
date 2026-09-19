@@ -184,13 +184,9 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
     assert "TS2322" in lint.output
 
 
-if __name__ == "__main__":  # pragma: no cover
-    pytest.main([__file__, "-v"])
-
-
 def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_silently(tmp_path, monkeypatch):
     """``lsp.package_manager`` picks the Node installer (staging-dir semantics kept); a configured manager
-    that is missing skips the install instead of quietly using npm; unknown values fall back to npm."""
+    that is missing or unknown skips the install instead of quietly using npm (a typo must not bypass policy)."""
     from unittest.mock import MagicMock
 
     from agent.lsp import install as install_mod
@@ -201,17 +197,24 @@ def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
     runs = []
     monkeypatch.setattr(install_mod.subprocess, "run", lambda cmd, **kw: (runs.append(cmd), MagicMock(returncode=0, stderr=""))[1])
-    present = {"npm": "/usr/bin/npm", "pnpm": "/usr/bin/pnpm"}
+    present = {"npm": "/usr/bin/npm", "pnpm": "/usr/bin/pnpm", "yarn": "/usr/bin/yarn"}
     monkeypatch.setattr(install_mod, "find_node_executable", lambda name: present.get(name))
 
     cfg["lsp"] = {"package_manager": "pnpm"}
     install_mod._install_npm("pyright", "pyright-langserver")
     assert runs[-1] == ["/usr/bin/pnpm", "add", "--dir", staging, "pyright"]
 
-    cfg["lsp"] = {"package_manager": "bogus"}  # unknown → npm, unchanged historical argv
+    cfg["lsp"] = {"package_manager": "yarn"}  # global --cwd: valid on Yarn Classic and Berry
     install_mod._install_npm("pyright", "pyright-langserver")
-    assert runs[-1] == ["/usr/bin/npm", "install", "--prefix", staging, "--silent", "--no-fund", "--no-audit", "pyright"]
+    assert runs[-1] == ["/usr/bin/yarn", "--cwd", staging, "add", "pyright"]
 
+    cfg["lsp"] = {"package_manager": "pnmp"}  # unknown (typo) → fail closed, no npm run
+    assert install_mod._install_npm("pyright", "pyright-langserver") is None
+    del present["yarn"]
     cfg["lsp"] = {"package_manager": "yarn"}  # configured but absent → no install, no npm run
     assert install_mod._install_npm("pyright", "pyright-langserver") is None
     assert len(runs) == 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    pytest.main([__file__, "-v"])

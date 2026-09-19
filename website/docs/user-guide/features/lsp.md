@@ -195,9 +195,12 @@ lsp:
 
   # Node package manager for the npm-based servers: npm (default), pnpm
   # or yarn. Installs still land in <HERMES_HOME>/lsp/node_modules; a
-  # manager that is configured but not installed skips the install with
-  # a warning instead of silently using npm, so a pnpm/yarn supply-chain
-  # policy (minimumReleaseAge, allowBuilds, …) is never bypassed.
+  # manager that is configured but not installed — or a value outside
+  # npm|pnpm|yarn — skips the install with a warning instead of silently
+  # using npm, so a pnpm/yarn supply-chain policy (minimumReleaseAge,
+  # allowBuilds, …) is never bypassed. Yarn Berry (2+): its default PnP
+  # linker writes no node_modules/.bin, so set `nodeLinker: node-modules`
+  # in <HERMES_HOME>/lsp/.yarnrc.yml.
   package_manager: npm
 
   # How long an unused language-server client stays alive (seconds).

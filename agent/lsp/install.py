@@ -203,12 +203,14 @@ def _link_into_bin(target: Path) -> str:
 _NODE_PM_ARGV: Dict[str, Callable[[str], list]] = {
     "npm": lambda staging: ["install", "--prefix", staging, "--silent", "--no-fund", "--no-audit"],
     "pnpm": lambda staging: ["add", "--dir", staging],
-    "yarn": lambda staging: ["add", "--cwd", staging],
+    # Global ``--cwd`` (before the command) is accepted by both Yarn Classic and Yarn Berry; Berry's
+    # default PnP linker writes no ``node_modules/.bin``, so the staging dir needs ``nodeLinker: node-modules``.
+    "yarn": lambda staging: ["--cwd", staging, "add"],
 }
 
 
-def _node_package_manager() -> str:
-    """``lsp.package_manager`` from config (npm default); unknown values warn once and fall back to npm."""
+def _node_package_manager() -> Optional[str]:
+    """``lsp.package_manager`` from config (npm default); an unknown value fails closed (``None``)."""
     try:
         from hermes_cli.config import load_config_readonly
         lsp_cfg = load_config_readonly().get("lsp") or {}
@@ -216,8 +218,9 @@ def _node_package_manager() -> str:
         return "npm"
     pm = str(lsp_cfg.get("package_manager") or "npm").strip().lower() if isinstance(lsp_cfg, dict) else "npm"
     if pm not in _NODE_PM_ARGV:
-        logger.warning("[install] lsp.package_manager=%r is not one of %s; using npm", pm, sorted(_NODE_PM_ARGV))
-        return "npm"
+        # Fail closed: a typo must not silently bypass a pnpm/yarn supply-chain policy by running npm.
+        logger.warning("[install] lsp.package_manager=%r is not one of %s; skipping install", pm, sorted(_NODE_PM_ARGV))
+        return None
     return pm
 
 
@@ -225,6 +228,8 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     """Install with the configured Node package manager into ``<staging>`` and link
     ``node_modules/.bin/<bin_name>`` into ``lsp/bin/``."""
     pm = _node_package_manager()
+    if pm is None:
+        return None
     # Managed Node first: $HERMES_HOME/node isn't on an arbitrary process's
     # PATH, so a bare which() would miss the Node that Hermes installed.
     pm_bin = find_node_executable(pm)

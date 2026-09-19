@@ -252,7 +252,7 @@ losing unsaved tabs), then retries. If the profile is still locked after that
 to fully quit the browser — it won't loop or kill again on its own.
 :::
 
-- **Supported browsers:** Chrome, Edge, Brave, Brave Origin, Chromium (whichever is your OS
+- **Supported browsers:** Chrome, Edge, Brave, Brave Origin, Vivaldi, Chromium (whichever is your OS
   default). A non-Chromium default (e.g. Firefox) fails closed with a clear
   message rather than guessing.
 - **Works on any backend.** On a local backend it's automatic once the toggle
@@ -527,7 +527,7 @@ In the CLI, use:
 /browser disconnect              # Detach and return to cloud/local mode
 ```
 
-If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Brave Origin/Nightly, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths and binary names such as `brave-origin`, `brave-origin-nightly`, `/opt/brave.com/brave-origin/brave-origin`, `/opt/brave.com/brave-origin-nightly/brave-origin`, `/opt/brave-bin/brave`, and `/snap/bin/brave`.
+If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Brave Origin/Nightly, Google Chrome, Chromium, Microsoft Edge, and Vivaldi, with common Linux install paths and binary names such as `brave-origin`, `brave-origin-nightly`, `/opt/brave.com/brave-origin/brave-origin`, `/opt/brave.com/brave-origin-nightly/brave-origin`, `/opt/brave-bin/brave`, `/snap/bin/brave`, and `/usr/bin/vivaldi`.
 
 :::tip
 To start a Chromium-family browser manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if the browser is already running with your normal profile:

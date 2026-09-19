@@ -52,7 +52,7 @@ class _Browser:
     linux_exec: tuple[str, ...] | None = None
 
 
-# Launch-candidate order (chrome, chromium, brave, brave-origin, edge) is the tuple
+# Launch-candidate order (chrome, chromium, brave, brave-origin, edge, vivaldi) is the tuple
 # order. ``brave-origin`` is Brave's standalone paid build: same Chromium core but a
 # fully distinct install identity (Brave-Origin product path, ``BraveOHTML`` ProgId,
 # ``com.brave.Browser.origin`` bundle id) that installs side-by-side with Brave. Its
@@ -106,6 +106,19 @@ _BROWSERS = (
         ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
          "/opt/microsoft/msedge/microsoft-edge", "/opt/microsoft/msedge/msedge"),
         "microsoft-edge", linux_exec=("microsoft-edge", "microsoft-edge-stable")),
+    # Vivaldi has no ``User Data`` intermediate dir on macOS — the profile (``Default``)
+    # sits directly inside ~/Library/Application Support/Vivaldi — while Windows keeps the
+    # Chromium layout under LOCALAPPDATA. Vivaldi opens --remote-debugging-port on its real
+    # profile (verified 2026-09-16, Vivaldi ~7.7 / Chromium 152: the Chrome 136
+    # default-user-data-dir hardening did not carry over), so real-profile support is safe.
+    _Browser(
+        "vivaldi", "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
+        ("Vivaldi",), ("vivaldi.exe", "vivaldi"),
+        (("Vivaldi", "Application", "vivaldi.exe"),),
+        ("Vivaldi", "User Data"),
+        ("vivaldi", "vivaldi-stable"),
+        ("/usr/bin/vivaldi", "/usr/bin/vivaldi-stable"),
+        "vivaldi", linux_exec=("vivaldi", "vivaldi-stable")),
 )
 _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 
@@ -123,7 +136,8 @@ _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 _WINDOWS_PROGID_MAP = (
     ("chromehtml", "chrome"), ("msedgehtm", "edge"),
     ("braveohtml", "brave-origin"),  # Brave Origin stable (brave-core install_static)
-    ("bravehtml", "brave"), ("chromiumhtm", "chromium"))
+    ("bravehtml", "brave"), ("chromiumhtm", "chromium"),
+    ("vivaldihtm", "vivaldi"))  # VivaldiHTM; version suffixes match via the prefix rule
 
 # ``ChromeBHTML`` = Beta, ``ChromeDHTML`` = Dev, ``ChromeSSHTML`` = Canary (SxS);
 # ``MSEdge[BDC]HTML`` = Edge channels; Brave Origin Beta=BraveOBHTML, Dev=BraveODHTML,
@@ -141,14 +155,16 @@ _LINUX_DESKTOP_MAP = (
     # ORDER MATTERS: ``brave-origin.desktop`` contains the bare ``brave`` fragment,
     # so the substring scan must hit the Origin entry first (#95549).
     ("brave-origin", "brave-origin"), ("brave", "brave"),
-    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"))
+    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"),
+    ("vivaldi", "vivaldi"))  # channels are checked first, so vivaldi-snapshot never lands here
 
 _LINUX_CHANNEL_FRAGMENTS = (
     "google-chrome-beta", "google-chrome-unstable", "google-chrome-canary",
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
     "microsoft-edge-beta", "microsoft-edge-dev", "microsoft-edge-canary",
     "brave-browser-beta", "brave-browser-nightly", "brave-browser-dev",
-    "brave-origin-beta", "brave-origin-nightly", "brave-origin-dev")
+    "brave-origin-beta", "brave-origin-nightly", "brave-origin-dev",
+    "vivaldi-snapshot")  # Snapshot .desktop names carry the stable ``vivaldi`` fragment
 
 # Where sandboxed Linux packages keep the profile instead of $XDG_CONFIG_HOME.
 _LINUX_FLATPAK_IDS = {"chrome": "com.google.Chrome", "chromium": "org.chromium.Chromium",
@@ -163,7 +179,7 @@ _LINUX_SNAP_PROFILE_PARTS = {
 _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"), ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"), ("com.brave.browser.origin", "brave-origin"),
-    ("org.chromium.chromium", "chromium"))
+    ("org.chromium.chromium", "chromium"), ("com.vivaldi.vivaldi", "vivaldi"))
 
 _DARWIN_CHANNEL_BUNDLES = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
@@ -539,7 +555,8 @@ def _processes_holding_profile(src: str):
     norm = os.path.normcase(os.path.normpath(src))
     browser_bins = (
         "chrome", "chrome.exe", "chromium", "chromium.exe", "chrome_crashpad",
-        "brave", "brave.exe", "msedge", "msedge.exe", "google chrome")
+        "brave", "brave.exe", "msedge", "msedge.exe", "google chrome",
+        "vivaldi", "vivaldi.exe")
     for proc in psutil.process_iter(["name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()

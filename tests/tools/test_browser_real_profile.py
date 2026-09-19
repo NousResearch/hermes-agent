@@ -62,6 +62,7 @@ class TestRealProfileResolvers:
         assert m["msedgehtm"] == "edge"
         assert m["bravehtml"] == "brave"
         assert m["braveohtml"] == "brave-origin"
+        assert m["vivaldihtm"] == "vivaldi"
 
     def test_brave_origin_data_dirs(self):
         import hermes_cli.browser_connect as bc
@@ -75,6 +76,16 @@ class TestRealProfileResolvers:
             )
         mac = bc.real_profile_data_dir("brave-origin", "Darwin")
         assert mac and mac.endswith("Library/Application Support/BraveSoftware/Brave-Origin")
+
+    def test_vivaldi_data_dirs(self):
+        import hermes_cli.browser_connect as bc
+        with patch.dict(os.environ, {"LOCALAPPDATA": r"C:\Users\T\AppData\Local"}, clear=False):
+            win = bc.real_profile_data_dir("vivaldi", "Windows")
+        assert win and win.endswith(ntpath.join("Vivaldi", "User Data"))
+        # Vivaldi has no ``User Data`` intermediate dir on macOS: the profile sits
+        # directly inside Application Support/Vivaldi.
+        mac = bc.real_profile_data_dir("vivaldi", "Darwin")
+        assert mac and mac.endswith("Library/Application Support/Vivaldi")
 
     def test_brave_origin_channel_progids_fail_closed(self):
         import hermes_cli.browser_connect as bc

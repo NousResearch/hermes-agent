@@ -161,9 +161,34 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
     except Exception:
         return
 
+    builtin_aggregators = {
+        _slug(row) for row in rows
+        if not row.get("is_user_defined") and is_routing_aggregator(_slug(row))
+    }
+
+    def _duplicates_builtin_aggregator(row: dict) -> bool:
+        # A user row that IS the same upstream as a built-in aggregator (registered OpenRouter via
+        # Settings → Providers, or a ``custom:openrouter`` slug) is that aggregator's twin, not a
+        # rival: its catalog is a superset of the built-in row's, so counting it empties the
+        # built-in row (openrouter → total=0 beside a live custom:openrouter row).
+        row_slug = _slug(row)
+        slug_suffix = (
+            row_slug.split(":", 1)[1] if row_slug.startswith("custom:") else ""
+        )
+        if slug_suffix and slug_suffix in builtin_aggregators:
+            return True
+        try:
+            from agent.model_metadata import _infer_provider_from_url
+        except Exception:
+            return False
+        inferred = _infer_provider_from_url(str(row.get("api_url") or ""))
+        return inferred is not None and inferred in builtin_aggregators
+
     user_models: set[str] = set()
     for row in rows:
         if row.get("is_user_defined"):
+            if builtin_aggregators and _duplicates_builtin_aggregator(row):
+                continue  # the twin IS that aggregator; it must not retro-strip it
             user_models.update(m.lower() for m in (row.get("models") or []))
     if not user_models:
         return

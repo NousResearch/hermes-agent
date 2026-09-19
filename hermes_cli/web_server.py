@@ -177,6 +177,19 @@ async def _lifespan(app: "FastAPI"):
 
     record_boot_fingerprint()
 
+    # Shell-hook / outbound-webhook registration — parity with the CLI
+    # (hermes_cli.main._prepare_agent_startup) and the messaging gateway
+    # (gateway/run.py). Once-per-process via agent.hook_registration;
+    # consent and failure semantics live inside. Without this, hooks
+    # configured in config.yaml fired on --cli but never for dashboard /
+    # Desktop sessions driven through this backend.
+    try:
+        from agent.hook_registration import ensure_hooks_registered
+
+        ensure_hooks_registered()
+    except Exception:
+        _log.warning("hook registration failed at serve startup", exc_info=True)
+
     # Hosted Bot rooms belong to the backend process. Recovery may need a
     # contended state.db migration, so keep it off the pre-yield path: Group
     # Chat must degrade on its own rather than block every Desktop feature.

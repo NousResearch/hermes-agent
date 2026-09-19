@@ -272,6 +272,17 @@ def main():
             logger.warning("%s failed", what, exc_info=True)
 
     # Backgrounded so a dead MCP server can't freeze startup; _make_agent briefly joins it.
+
+    # Shell-hook / outbound-webhook registration — parity with the CLI
+    # (hermes_cli.main._prepare_agent_startup) and the messaging gateway
+    # (gateway/run.py). Idempotent + once-per-process; consent and failure
+    # semantics live inside. Without this, hooks configured in config.yaml
+    # fired on --cli but silently never fired from --tui sessions.
+    try:
+        server._register_hooks_from_config()
+    except Exception:
+        logger.warning("hook registration failed at TUI gateway startup", exc_info=True)
+
     ensure_mcp_discovery_started()
 
     # change_events: clients demote legacy polls; replay_epoch: WS restart detection.

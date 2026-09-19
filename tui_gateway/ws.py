@@ -318,6 +318,15 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 start()
             except Exception:
                 _log.warning("%s failed", what, exc_info=True)
+        # Shell-hook / outbound-webhook registration — parity with the CLI
+        # and messaging-gateway startup paths. Same once-per-process pass;
+        # a stdio TUI that already registered is a no-op here. Without
+        # this, hooks configured in config.yaml never fired for sessions
+        # driven through the dashboard / desktop WS sidecar.
+        try:
+            server._register_hooks_from_config()
+        except Exception:
+            _log.warning("hook registration failed at TUI WS startup", exc_info=True)
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1

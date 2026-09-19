@@ -4147,6 +4147,35 @@ class TestFTSExternalContentMigration:
         assert shadow, "sanity: v22 inline FTS must have a content shadow table"
         conn.close()
 
+    def test_optimize_drains_prior_trash_before_next_demote(self, tmp_path, monkeypatch):
+        """A later layout upgrade must not collide with trash left by an older completed backfill."""
+        db = SessionDB(db_path=tmp_path / "stale-trash.db")
+        try:
+            db._conn.execute(
+                "CREATE TABLE fts_v22_trash_messages_fts_trigram_data "
+                "(id INTEGER PRIMARY KEY, block BLOB)"
+            )
+            db._conn.execute(
+                "INSERT INTO fts_v22_trash_messages_fts_trigram_data(id, block) VALUES (1, X'00')"
+            )
+            db._conn.commit()
+
+            monkeypatch.setattr(db, "_db_needs_fts_storage_upgrade", lambda _conn: True)
+            demoted = []
+
+            def _demote_after_old_trash():
+                assert db._has_fts_trash(db._conn) is False
+                demoted.append(True)
+                return 0
+
+            monkeypatch.setattr(db, "_demote_legacy_fts_to_trash", _demote_after_old_trash)
+            result = db.optimize_fts_storage(vacuum=False)
+
+            assert result["ok"] is True
+            assert demoted == [True]
+        finally:
+            db.close()
+
     def test_v22_open_leaves_legacy_untouched_and_advertises(self, tmp_path):
         """Opening a legacy v22 DB must NOT auto-migrate the FTS layout, but
         the main schema_version DOES advance (decoupled) so future non-FTS

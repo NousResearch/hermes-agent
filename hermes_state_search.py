@@ -635,24 +635,6 @@ class SessionSearchMixin:
         if self.read_only:
             return {"ok": False, "reason": "read_only"}
 
-        # Heal bookkeeping BEFORE deciding whether to demote again.
-        self._repair_optimize_bookkeeping()
-        with self._lock:
-            needs_storage_upgrade = self._db_needs_fts_storage_upgrade(self._conn)
-        pending = self.get_meta("fts_rebuild_high_water") is not None
-        if needs_storage_upgrade and not pending:
-            self._demote_legacy_fts_to_trash()
-        elif pending and not needs_storage_upgrade:
-            # Resume mid-demote: the process may have died between the staged demote
-            # commit and schema ensure.
-            self._ensure_v23_fts_tables("failed to re-create v23 messages_fts on optimize-storage resume")
-
-        # A stale CJK index can only be recovered from scratch; then ensure table +
-        # markers exist (a v23 DB gaining the cjk index for the first time).
-        self._fts_cjk_reset_if_stale()
-        if self._fts_cjk_loaded:
-            self._ensure_cjk_schema_committed()
-
         def _emit(phase: str) -> None:
             if progress_cb is None:
                 return
@@ -670,6 +652,33 @@ class SessionSearchMixin:
                     break
                 _emit(phase)
                 time.sleep(max(self._FTS_REBUILD_MIN_PAUSE, (time.monotonic() - _t0) * self._FTS_REBUILD_DUTY_FACTOR))
+
+        # Heal bookkeeping BEFORE deciding whether to demote again.
+        self._repair_optimize_bookkeeping()
+        with self._lock:
+            needs_storage_upgrade = self._db_needs_fts_storage_upgrade(self._conn)
+        pending = self.get_meta("fts_rebuild_high_water") is not None
+        if needs_storage_upgrade and not pending:
+            # A prior layout upgrade may have finished its backfill but been interrupted while
+            # tearing down the old shadow family. If a later release then needs another demote,
+            # reusing the fixed trash names collides with that older family. Finish the durable
+            # teardown first; the live stale index remains available until the new demote begins.
+            with self._read_ctx() as conn:
+                has_old_trash = self._has_fts_trash(conn)
+            if has_old_trash:
+                _emit("teardown")
+                _drive("teardown", self._fts_teardown_trash_step)
+            self._demote_legacy_fts_to_trash()
+        elif pending and not needs_storage_upgrade:
+            # Resume mid-demote: the process may have died between the staged demote
+            # commit and schema ensure.
+            self._ensure_v23_fts_tables("failed to re-create v23 messages_fts on optimize-storage resume")
+
+        # A stale CJK index can only be recovered from scratch; then ensure table +
+        # markers exist (a v23 DB gaining the cjk index for the first time).
+        self._fts_cjk_reset_if_stale()
+        if self._fts_cjk_loaded:
+            self._ensure_cjk_schema_committed()
 
         # Phase 1: base backfill; 1b: CJK-bigram backfill (own marker pair).
         _emit("backfill")

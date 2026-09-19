@@ -13,8 +13,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 from hermes_cli.auth_constants import (
-    AuthError, DEFAULT_QWEN_BASE_URL, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_OAUTH_CLIENT_ID,
-    QWEN_OAUTH_TOKEN_URL, _FORM_JSON_HEADERS, _qwen_err, httpx,
+    AUTH_LOCK_TIMEOUT_SECONDS, AuthError, DEFAULT_QWEN_BASE_URL, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+    QWEN_OAUTH_CLIENT_ID, QWEN_OAUTH_TOKEN_URL, _FORM_JSON_HEADERS, _qwen_err, httpx,
 )
 
 logger = logging.getLogger("hermes_cli.auth")
@@ -58,47 +58,64 @@ def _qwen_access_token_is_expiring(expiry_date_ms: Any, skew_seconds: int = QWEN
 
 
 def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20.0) -> Dict[str, Any]:
-    refresh_token = str(tokens.get("refresh_token", "") or "").strip()
-    if not refresh_token:
-        raise _qwen_err(f"Qwen OAuth refresh token missing. {_RERUN}", "qwen_refresh_token_missing")
+    from hermes_cli.auth import _auth_store_lock, _qwen_cli_auth_path
+    lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), float(timeout_seconds) + 5.0)
+    # This token file is not profile-scoped and not exclusive to Hermes: every Hermes profile on the
+    # machine AND the external `qwen` CLI itself read and write it. Two callers refreshing at once
+    # would submit the same single-use refresh_token and one gets invalid_grant. The whole
+    # re-read -> endpoint POST -> write-back runs under a lock on this exact file, and a waiter
+    # re-reads first so it can adopt a peer's already-refreshed tokens instead of replaying the
+    # consumed one (mirrors auth_codex.py's `_refresh_codex_auth_tokens`).
+    with _auth_store_lock(lock_timeout, target_path=_qwen_cli_auth_path()):
+        try:
+            current = _read_qwen_cli_tokens()
+        except AuthError:
+            current = tokens
+        if str(current.get("access_token", "") or "").strip() and not _qwen_access_token_is_expiring(
+                current.get("expiry_date")):
+            return current
 
-    try:
-        response = httpx.post(
-            QWEN_OAUTH_TOKEN_URL, headers=_FORM_JSON_HEADERS,
-            data={"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": QWEN_OAUTH_CLIENT_ID},
-            timeout=timeout_seconds,
-        )
-    except Exception as exc:
-        raise _qwen_err(f"Qwen OAuth refresh failed: {exc}", "qwen_refresh_failed") from exc
+        refresh_token = str(current.get("refresh_token", "") or tokens.get("refresh_token", "") or "").strip()
+        if not refresh_token:
+            raise _qwen_err(f"Qwen OAuth refresh token missing. {_RERUN}", "qwen_refresh_token_missing")
 
-    if response.status_code >= 400:
-        body = response.text.strip()
-        raise _qwen_err(
-            f"Qwen OAuth refresh failed. {_RERUN}" + (f" Response: {body}" if body else ""), "qwen_refresh_failed",
-        )
+        try:
+            response = httpx.post(
+                QWEN_OAUTH_TOKEN_URL, headers=_FORM_JSON_HEADERS,
+                data={"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": QWEN_OAUTH_CLIENT_ID},
+                timeout=timeout_seconds,
+            )
+        except Exception as exc:
+            raise _qwen_err(f"Qwen OAuth refresh failed: {exc}", "qwen_refresh_failed") from exc
 
-    try:
-        payload = response.json()
-    except Exception as exc:
-        raise _qwen_err(f"Qwen OAuth refresh returned invalid JSON: {exc}", "qwen_refresh_invalid_json") from exc
+        if response.status_code >= 400:
+            body = response.text.strip()
+            raise _qwen_err(
+                f"Qwen OAuth refresh failed. {_RERUN}" + (f" Response: {body}" if body else ""), "qwen_refresh_failed",
+            )
 
-    if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
-        raise _qwen_err("Qwen OAuth refresh response missing access_token.", "qwen_refresh_invalid_response")
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise _qwen_err(f"Qwen OAuth refresh returned invalid JSON: {exc}", "qwen_refresh_invalid_json") from exc
 
-    try:
-        expires_in_seconds = int(payload.get("expires_in"))
-    except Exception:
-        expires_in_seconds = 6 * 60 * 60
+        if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
+            raise _qwen_err("Qwen OAuth refresh response missing access_token.", "qwen_refresh_invalid_response")
 
-    refreshed = {
-        "access_token": str(payload.get("access_token", "") or "").strip(),
-        "refresh_token": str(payload.get("refresh_token", refresh_token) or refresh_token).strip(),
-        "token_type": str(payload.get("token_type", tokens.get("token_type", "Bearer")) or "Bearer").strip() or "Bearer",
-        "resource_url": str(payload.get("resource_url", tokens.get("resource_url", "portal.qwen.ai")) or "portal.qwen.ai").strip(),
-        "expiry_date": int(time.time() * 1000) + max(1, expires_in_seconds) * 1000,
-    }
-    _save_qwen_cli_tokens(refreshed)
-    return refreshed
+        try:
+            expires_in_seconds = int(payload.get("expires_in"))
+        except Exception:
+            expires_in_seconds = 6 * 60 * 60
+
+        refreshed = {
+            "access_token": str(payload.get("access_token", "") or "").strip(),
+            "refresh_token": str(payload.get("refresh_token", refresh_token) or refresh_token).strip(),
+            "token_type": str(payload.get("token_type", current.get("token_type", "Bearer")) or "Bearer").strip() or "Bearer",
+            "resource_url": str(payload.get("resource_url", current.get("resource_url", "portal.qwen.ai")) or "portal.qwen.ai").strip(),
+            "expiry_date": int(time.time() * 1000) + max(1, expires_in_seconds) * 1000,
+        }
+        _save_qwen_cli_tokens(refreshed)
+        return refreshed
 
 
 def _mark_qwen_oauth_active(creds: Dict[str, Any]) -> None:

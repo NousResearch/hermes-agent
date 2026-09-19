@@ -424,6 +424,13 @@ def _provider_is_ready(provider) -> bool:
     return bool(ready or _probe(provider, "is_keyless_available", " during readiness check"))
 
 
+# Credential probes that back other tools but serve no registered web backend: ``xai`` is
+# probed via has_xai_credentials() for TTS/media only, so it must not light this gate. A
+# stored ``web.backend: xai`` still counts since _get_backend returns a configured
+# selection as-is and dispatch surfaces the honest "unknown provider" error.
+_WEB_CHECK_SKIP = frozenset({"xai"})
+
+
 def check_web_api_key() -> bool:
     """``check_fn`` gate for web_search / web_extract: is any web backend available?
 
@@ -433,7 +440,8 @@ def check_web_api_key() -> bool:
     See #28651, #31873.
     """
     # Boolean OR over configured + built-ins — probe order is irrelevant here.
-    candidates = [c for c in (_configured_backend(),) if c] + list(_LEGACY_WEB_BACKENDS)
+    candidates = ([c for c in (_configured_backend(),) if c]
+                  + [b for b in _LEGACY_WEB_BACKENDS if b not in _WEB_CHECK_SKIP])
     if any(_is_backend_available(backend) for backend in candidates):
         return True
     # Plugin path. Discovery must run first: check_fn fires at tool-registration time, before any dispatch.

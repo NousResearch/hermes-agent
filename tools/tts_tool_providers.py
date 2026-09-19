@@ -53,6 +53,10 @@ DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_GEMINI_AUDIO_TAGS = False
+# Gemini's limit on one ``:generateContent`` request, from the 32k-token context window. Deliberately
+# not ``tts.gemini.max_text_length``: that caps the *transcript* the splitter emits, while the request
+# also carries the persona direction, the preamble and the audio-tag rewrite's expansion.
+GEMINI_MAX_REQUEST_CHARS = 32000
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 TTS_RESPONSE_BODY_LIMIT_BYTES = 16 * 1024 * 1024
 TTS_RESPONSE_BODY_CHUNK_BYTES = 64 * 1024
@@ -578,13 +582,12 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
     prompt_text = _compose_gemini_tts_prompt(
         tts_script, gemini_config, persona_prompt=persona_prompt)
-    max_len = origin._resolve_max_text_length("gemini", tts_config)
-    if len(prompt_text) > max_len:
+    if len(prompt_text) > GEMINI_MAX_REQUEST_CHARS:
         raise ValueError(
             "Gemini TTS composed prompt exceeds the provider request limit "
-            f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
-            "prompt or lower tts.gemini.max_text_length so long-form text is "
-            "split with enough prompt headroom.")
+            f"({len(prompt_text)} > {GEMINI_MAX_REQUEST_CHARS} chars). Reduce the "
+            "persona/audio-tag prompt or lower tts.gemini.max_text_length so long-form "
+            "text is split into smaller transcripts.")
     payload: Dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {

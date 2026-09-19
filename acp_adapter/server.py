@@ -638,6 +638,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             try:
                 if state.agent:
                     request_hard_interrupt(state.agent)
+                    # Background delegations are detached from the turn's fan-out; they end with the cancel.
+                    from tools.async_delegation import interrupt_for_session
+                    interrupt_for_session(parent_session_id=str(getattr(state.agent, "session_id", "") or ""),
+                                          reason="acp_cancel")
             except Exception:
                 logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
         logger.info("Cancelled session %s", session_id)

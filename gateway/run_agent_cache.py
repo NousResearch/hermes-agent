@@ -481,6 +481,13 @@ class GatewayAgentCacheMixin:
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
         from gateway.run import _AGENT_PENDING_SENTINEL
+        # The turn's hard interrupt reaches only its in-turn children; background delegations were
+        # detached at dispatch and would otherwise run to completion and wake the session later.
+        # Each interrupted unit still returns as a completion (status=interrupted, partial output).
+        from tools.async_delegation import interrupt_for_session
+        interrupt_for_session(
+            session_key=session_key, reason=invalidation_reason,
+            parent_session_id=str(getattr(running_agent, "session_id", "") or ""))
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             # Plugins holding a per-turn external resource (an outbound RPC blocked on a tool result
             # the loop will never consume) learn the turn is gone. Fires for /stop and the /new

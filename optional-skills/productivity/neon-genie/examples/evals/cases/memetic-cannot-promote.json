@@ -1,0 +1,13 @@
+{
+  "input": {
+    "promotion_state": "CONCEPTUAL",
+    "evidence_gate": "FAIL",
+    "memetic_score": 0.95,
+    "name_candidate": "Quantum Leverage OS"
+  },
+  "expected": {
+    "promotion_state_max": "CONCEPTUAL",
+    "memetic_may_raise_promotion": false,
+    "gate": "D"
+  }
+}

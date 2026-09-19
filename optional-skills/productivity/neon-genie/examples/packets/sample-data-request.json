@@ -1,0 +1,10 @@
+{
+  "request_id": "dr-001",
+  "field": "buyer_budget_authority",
+  "why_decision_critical": "Commercial packet cannot separate buyer vs beneficiary without budget authority",
+  "sensitivity": "private",
+  "suggested_source": "Operator CRM or declared stakeholder interview notes",
+  "blocks_promotion": true,
+  "status": "open",
+  "attempted_queries": []
+}

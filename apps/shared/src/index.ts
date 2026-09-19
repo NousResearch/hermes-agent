@@ -63,6 +63,11 @@ export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export * from './gateway-events'
 export {
+  type ConnectionRequestPayload,
+  type ModelOptionProvider,
+  type ModelOptionsResult
+} from './gateway-contract.generated'
+export {
   applyDocumentLocale,
   type EndonymLocale,
   isRecord,
@@ -108,15 +113,6 @@ export {
 } from './reasoning-effort'
 export { reconnectBackoffDelayMs, type ReconnectBackoffOptions } from './reconnect-backoff'
 export { skillInvocationText } from './skill-scaffold'
-export {
-  type HermesSkin,
-  SKIN_BRANDING_TOKENS,
-  SKIN_COLOR_TOKENS,
-  type SkinBranding,
-  type SkinBrandingToken,
-  type SkinColors,
-  type SkinColorToken
-} from './skin'
 export {
   type AliasCommandDispatchResponse,
   type CommandDispatchResponse,
@@ -168,7 +164,6 @@ export {
   WINDOWS_GLASS_MIN_BUILD,
   type WindowsBackgroundMaterial
 } from './translucency'
-export { type ConnectionRequestPayload, type ModelOptionProvider, type ModelOptionsResult } from './gateway-contract.generated'
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,

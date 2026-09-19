@@ -109,12 +109,13 @@ def add_notify_sub(
         metadata_json = _encode_notify_delivery_metadata(merged_metadata) if merged_metadata else None
         conn.execute(
             """
-            INSERT OR IGNORE INTO kanban_notify_subs
+            INSERT INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
                  chat_type, notifier_profile, delivery_mode, delivery_metadata,
                  created_at, last_event_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
+            ON CONFLICT (task_id, platform, chat_id, thread_id) DO NOTHING
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
@@ -218,7 +219,9 @@ def count_notify_subs(
     unreadable — callers pick their own fallback.
     """
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
-    if not path.exists():
+    from hermes_cli import kanban_db_postgres as _pg
+    postgres = str(path) != ":memory:" and _pg.uses_postgres()
+    if not postgres and not path.exists():
         return 0
     owner_where, owner_params = _notify_profile_filter(
         notifier_profiles, include_unowned=include_unowned,
@@ -239,12 +242,14 @@ def count_notify_subs(
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    conn = _pg.connect(board=board, read_only=True) if postgres else sqlite3.connect(
+        path.resolve().as_uri() + "?mode=ro", uri=True,
+    )
     try:
         try:
             row = conn.execute(query, params).fetchone()
-        except sqlite3.OperationalError as exc:
-            if "no such table" in str(exc).lower():
+        except Exception as exc:
+            if not postgres and isinstance(exc, sqlite3.OperationalError) and "no such table" in str(exc).lower():
                 return 0
             raise
         return int(row[0]) if row else 0
@@ -412,9 +417,10 @@ def record_notify_ping(
     """Checkpoint a sent ping independently of the retryable wake cursor."""
     with _kb.write_txn(conn):
         conn.execute(
-            "UPDATE kanban_notify_subs SET last_ping_event_id = MAX(last_ping_event_id, ?) "
+            "UPDATE kanban_notify_subs SET last_ping_event_id = "
+            "CASE WHEN last_ping_event_id > ? THEN last_ping_event_id ELSE ? END "
             + _SUB_KEY_WHERE,
-            (int(event_id), *_sub_key(task_id, platform, chat_id, thread_id)),
+            (int(event_id), int(event_id), *_sub_key(task_id, platform, chat_id, thread_id)),
         )
 
 

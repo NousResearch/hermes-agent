@@ -111,6 +111,7 @@ test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () =
     pythonPathEntries: ['/repo/hermes-agent'],
     venvRoot: '/Users/test/.hermes/hermes-agent/venv',
     currentEnv: {
+      HERMES_DASHBOARD_PUBLIC_URL: 'https://remote.example.test/hermes',
       PATH: '/usr/bin:/bin',
       PYTHONPATH: '/existing/pythonpath'
     },
@@ -125,6 +126,7 @@ test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () =
     )
   )
   assert.ok(env.PATH.includes('/opt/homebrew/bin'))
+  assert.equal(env.HERMES_DASHBOARD_PUBLIC_URL, 'http://127.0.0.1')
 })
 
 test('buildDesktopBackendEnv forces PYTHONUTF8 unless the user set it explicitly', () => {

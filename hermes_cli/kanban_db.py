@@ -2834,17 +2834,32 @@ def _stage_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
     uploaded_by: str = "kanban_complete",
 ) -> list[Path]:
-    """Copy scratch artifacts to the attachments dir and record each as an
-    attachment row; returns the copies so the caller can discard them if its
-    transaction rolls back."""
+    """Register declared artifacts as attachment rows; returns the copies this
+    call made — and only those — so the caller can discard them if its
+    transaction rolls back. A file the worker had already placed in the
+    attachments dir is registered but never returned: it is not ours to delete."""
     _persist_scratch_completion_artifacts(conn, task_id, metadata)
-    staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
-    for path in staged:
+    stageable = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
+    copies = [Path(stored_path) for stored_path in metadata.pop("_copied_artifacts", [])]
+    for path in stageable:
+        # A review-approved completion re-runs this with the same metadata, and a
+        # declared file can vanish between classification and insert; neither may
+        # produce a duplicate row or a row whose blob is gone.
+        if not path.is_file() or _attachment_registered(conn, task_id, str(path)):
+            continue
         _insert_completion_attachment(
             conn, task_id, filename=path.name, stored_path=str(path),
             size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
         )
-    return staged
+    return copies
+
+
+def _attachment_registered(conn: sqlite3.Connection, task_id: str, stored_path: str) -> bool:
+    """Whether a row already names this blob for the task (idempotent staging)."""
+    return conn.execute(
+        "SELECT 1 FROM task_attachments WHERE task_id = ? AND stored_path = ? LIMIT 1",
+        (task_id, stored_path),
+    ).fetchone() is not None
 
 
 def _cleaned_artifact_paths(metadata: Any) -> list[str]:
@@ -2958,8 +2973,10 @@ def _persist_scratch_completion_artifacts(
         return
 
     attachment_dir = task_attachments_dir(task_id, board=board)
+    attachment_root = attachment_dir.resolve()
     persisted: list[str] = []
     used_destinations: set[Path] = set()
+    registration: list[str] = []
     changed = False
 
     def _discard_copies() -> None:
@@ -2978,6 +2995,11 @@ def _persist_scratch_completion_artifacts(
 
         if not resolved_src.is_relative_to(workspace_root):
             persisted.append(artifact)
+            # A declared deliverable that already lives in this task's attachments
+            # dir needs no copy — the worker put it where it belongs — but it is
+            # still an attachment, so it is registered below like a staged copy.
+            if src.is_file() and resolved_src.is_relative_to(attachment_root):
+                registration.append(str(resolved_src))
             continue
 
         problem = None
@@ -3009,13 +3031,20 @@ def _persist_scratch_completion_artifacts(
             ) from exc
         used_destinations.add(dest)
         persisted.append(str(dest.resolve()))
+        registration.append(str(dest.resolve()))
         changed = True
 
     if changed:
         metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
+    # Copies this call made vs. files the worker had already placed in the
+    # attachments dir: only the former are discardable if the caller's
+    # transaction rolls back, and BOTH are attachment rows. The row for an
+    # already-placed file used to be suppressed along with the copy — the
+    # zero-row defect, where a declared deliverable sat on disk unregistered.
+    if registration:
+        metadata["_staged_artifacts"] = list(dict.fromkeys(registration))
+    if used_destinations:
+        metadata["_copied_artifacts"] = [str(path.resolve()) for path in used_destinations]
 
 
 def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:

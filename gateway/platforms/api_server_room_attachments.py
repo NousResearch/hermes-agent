@@ -443,7 +443,7 @@ class RoomAttachmentSpool:
             ensure_ascii=True,
         )
         now = float(self.clock())
-        self.prune(now=now)
+        self.prune(now=now, authorize_write=authorize_write)
         retired: list[tuple[str, str]] = []
         with self._lock, ExitStack() as grant_locks, self._transaction(immediate=True) as conn:
             origin = (grant_locks.enter_context(authorize_write(conn))
@@ -613,7 +613,7 @@ class RoomAttachmentSpool:
                 "attachment bytes are outside the RoomLink limit"
             )
         now = float(self.clock())
-        self.prune(now=now)
+        self.prune(now=now, authorize_write=authorize_write)
         with self._lock, ExitStack() as grant_locks, self._transaction(immediate=True) as conn:
             origin = (grant_locks.enter_context(authorize_write(conn))
                       if authorize_write is not None else None)
@@ -922,7 +922,7 @@ class RoomAttachmentSpool:
             self._file_path(key, attachment_id).unlink(missing_ok=True)
         return len(keys)
 
-    def prune(self, *, now: float | None = None) -> int:
+    def prune(self, *, now: float | None = None, authorize_write=None) -> int:
         checked_now = float(self.clock()) if now is None else float(now)
         quarantined: list[Path] = []
         with self._lock:
@@ -944,7 +944,11 @@ class RoomAttachmentSpool:
                 except OSError:
                     continue
 
-            with self._transaction(immediate=True) as conn:
+            with ExitStack() as grant_locks, self._transaction(immediate=True) as conn:
+                # Request-triggered housekeeping is a writer too. Refuse a
+                # quarantined/replaced owner before deleting rows or spool bytes.
+                if authorize_write is not None:
+                    grant_locks.enter_context(authorize_write(conn))
                 changed = conn.execute(
                     "DELETE FROM roomlink_attachment_batches WHERE expires_at<=?",
                     (checked_now,),
@@ -1098,7 +1102,6 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
         from gateway.platforms.api_server_room_grants import _decode_request_grant
         from gateway.session_peer_target import require_current_grant
         from hermes_state_runtime import RuntimeStoreError
-        from hermes_cli.sqlite_util import write_txn
         paths = tuple(dict.fromkeys(Path(path).resolve() for path in grant_state_db_paths()))
         main_path = next(path for _, name, path in conn.execute('PRAGMA database_list') if name == 'main')
         if not conn.in_transaction or Path(main_path).resolve() != paths[0] or len(paths) != 2:
@@ -1111,10 +1114,7 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
                 owner, _ = root_target(adapter)
             except RuntimeStoreError as exc:
                 raise RoomGrantReauthorizationRequired(exc.reason) from exc
-            profile_conn = locks.enter_context(owner.db.live_read_connection())
-            if profile_conn is None:
-                raise RoomGrantReauthorizationRequired('owner_unavailable')
-            locks.enter_context(write_txn(profile_conn))
+            profile_conn = locks.enter_context(owner.db.live_write_connection())
             claims = _decode_request_grant(adapter, request, permission=permission)
             profile = _effective_room_profile(_api_request_profile)
             _validate_target_scope(claims, profile)

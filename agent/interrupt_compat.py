@@ -23,6 +23,7 @@ def request_hard_interrupt(
     agent: Any,
     message: str | None = None,
     *,
+    stop_kind: str | None = None,
     tool_reason: str | None = None,
 ) -> bool:
     """Request an explicit stop, falling back to the legacy interrupt ABI.
@@ -46,10 +47,21 @@ def request_hard_interrupt(
     if not callable(interrupt):
         return False
     kwargs = {}
+    if stop_kind is not None and _accepts_keyword(interrupt, "stop_kind"):
+        kwargs["stop_kind"] = stop_kind
     if tool_reason is not None and _accepts_keyword(interrupt, "tool_reason"):
         kwargs["tool_reason"] = tool_reason
     if message is None:
         interrupt(**kwargs)
     else:
         interrupt(message, **kwargs)
+
+    # Stamp structured provenance when the resolved callable couldn't carry it (#84207).
+    if stop_kind is not None and "stop_kind" not in kwargs:
+        try:
+            inspect.getattr_static(agent, "_interrupt_stop_kind")
+        except (AttributeError, TypeError):
+            pass
+        else:
+            agent._interrupt_stop_kind = stop_kind
     return True

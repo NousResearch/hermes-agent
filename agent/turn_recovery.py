@@ -959,7 +959,11 @@ def max_retries_exhausted_result(
         _billing_guidance = _billing_or_entitlement_message(**_billing_kw)
         _print_billing_or_entitlement_guidance(agent, **_billing_kw)
     elif is_rate_limited:
-        agent._emit_diagnostic_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+        _reset = reset_hint(api_error)
+        agent._emit_diagnostic_status(
+            f"❌ Rate limited after {max_retries} retries — {_final_summary}"
+            f"{f' (resets in {_reset})' if _reset else ''}"
+        )
     else:
         agent._emit_diagnostic_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
     _vlines(agent, f"   💀 Final error: {_final_summary}")
@@ -1159,6 +1163,21 @@ _ZAI_POLICY_NOTES = {
 }
 
 
+def reset_hint(api_error: Exception) -> str:
+    """``"~13m"`` until the ``reset_at`` parsed from *api_error* (epoch s/ms or ISO-8601), else ``""``.
+
+    A bare "Rate limited. Waiting 60s" hides the one fact that decides whether to wait or switch
+    models (#26889): a per-minute throttle and a 13-minute plan window look identical without it."""
+    from agent.agent_runtime_helpers import extract_api_error_context
+    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.usage_pricing import format_duration_compact
+    reset_at = extract_api_error_context(api_error).get("reset_at")
+    if reset_at is None:
+        return ""
+    remaining = (_parse_absolute_timestamp(reset_at) or 0.0) - time.time()
+    return f"~{format_duration_compact(remaining)}" if remaining >= 1 else ""
+
+
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
@@ -1204,10 +1223,14 @@ def compute_error_backoff(
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
+    _reset = reset_hint(api_error) if _adaptive else ""
+    _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
     if _adaptive:
         _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
-        _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
-        _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
+        _rate_limit_status = (
+            f"⏱️ {_wait_reason}.{f' Resets in {_reset}.' if _reset else ''} Waiting {wait_time:.1f}s "
+            f"(attempt {retry_count + 1}/{max_retries}){_policy_note}..."
+        )
         if _backoff_policy == "zai_coding_overload_long":
             agent._emit_diagnostic_status(_rate_limit_status)
         else:
@@ -1227,9 +1250,12 @@ def compute_error_backoff(
     # line is the one thing the user sees meanwhile. Name the wait there so a
     # 60s backoff after a 5xx is not an anonymous spinner — this is transient
     # (rewritten by the next frame, cleared on recovery), so it does not add
-    # the transcript chatter the buffer exists to avoid.
+    # the transcript chatter the buffer exists to avoid. The reset window
+    # belongs here too: during the wait this line is the only place the user
+    # can learn whether to sit it out or switch models.
+    _live_reason = f"{_wait_reason.lower()} — resets in {_reset}," if _reset else "waiting on provider —"
     agent._emit_diagnostic_wait(
-        f"⏳ waiting on provider — retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
+        f"⏳ {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
     )
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",

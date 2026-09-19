@@ -75,6 +75,70 @@ Both require an interactive terminal to the Hermes host. The rest of this skill
 is for when there is NO interactive TTY — Hermes running purely as a messaging
 gateway/bot where `/reload-mcp` triggers the flow with nobody at a prompt.
 
+## Paste-Back Runbook: Completing the Built-in Flow From Another Machine
+
+The paste-back fallback above works, but on a remote gateway it is easy to lose
+the round-trip: the flow window is ~300s, the browser is on a different machine,
+and an expired window kills the PKCE verifier with the process. This runbook
+(validated end to end on v0.21.0 — Linux VPS, browser on a separate machine)
+makes the paste-back path reliable:
+
+1. **Pin the callback port** so every retry binds the same, predictable port:
+
+   ```bash
+   hermes config set mcp_servers.<name>.oauth.redirect_port 55675
+   ```
+
+   A pinned port also forces standard RFC 7591 dynamic client registration
+   (CIMD is skipped) — widely accepted. Never set `redirect_uri`/`redirect_host`
+   manually; Hermes derives them.
+2. **Verify the port is free** (snippet below). In use → kill any half-dead
+   login process first.
+3. **Launch the login on an interactive TTY** (SSH, tmux, or agent-managed
+   PTY): `hermes mcp login <name>`. Note the `state=` in the printed URL.
+4. **Hand the authorization URL to the operator on the browser machine.** They
+   authorize; the browser then fails to load
+   `http://127.0.0.1:<port>/callback` (expected — the listener is on the
+   gateway); they copy the full address-bar URL. **The window is ~5 minutes** —
+   the round-trip must happen in one go.
+5. **Paste the callback URL at the prompt.** Sanity-check that the pasted
+   `state=` matches the URL from step 3. The flow completes with
+   `✓ Authenticated — N tool(s) available`.
+6. **Verify externally** — a clean login message is not proof. Run
+   `hermes mcp test <name>` and require `✓ Connected` plus the tool list.
+
+Check the port is free (Python, stdlib):
+
+```python
+import socket
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("127.0.0.1", 55675)); print("free")
+except OSError as e:
+    print("in use:", e)
+finally:
+    s.close()
+```
+
+Failure modes hit in practice (all in one session on v0.21.0):
+
+- **`invalid_redirect_uri` at client registration (400)** — the provider
+  rejects `http://` redirect URIs on non-loopback hostnames. Some authorization
+  servers accept loopback only (RFC 8252), so a dashboard callback on
+  `http://<internal-host>:<port>` can fail DCR even with a correct
+  `dashboard.public_url`. Probe the registration endpoint directly with a
+  loopback URI before choosing a path (HTTP 201 = the CLI paste-back flow will
+  work).
+- **`OAuth callback port ... already in use ([Errno 98])`** — the flow's
+  internal retry re-binds the pinned port while the first listener still holds
+  it (state-rotation + port self-collision; see #98118 and #87329). Kill the
+  half-dead process, re-check the port, relaunch.
+- **Expired window → the pasted code is dead.** The PKCE verifier died with
+  the process, so the code cannot be recovered. Relaunch and repeat the
+  round-trip — it is a one-command retry. If the operator can SSH, a
+  port-forward (`ssh -N -L <port>:127.0.0.1:<port> <user>@<host>`) before
+  authorizing removes the paste step entirely.
+
 ## Preferred Front Door: the Hermes Dashboard (try this BEFORE manual token surgery)
 
 A remote Hermes gateway often also runs the **dashboard** web UI as a SEPARATE
@@ -91,6 +155,20 @@ MCP server on a remote gateway" is:
 
 1. **Dashboard, in the user's browser** — the intended front door. Add servers, run OAuth, reload, all authenticated as the user. No copy-paste-callback dance, no hand-writing token files.
 2. **Manual token surgery (the rest of this skill)** — the FALLBACK for when there's no browser session to the dashboard (pure-chat/headless context).
+
+**When the dashboard front door does not work:** when `dashboard.public_url` is
+set, the callback `redirect_uri` is built from it and it wins over
+request-reconstruction (`web_server.py`) — but nothing validates that the
+declared origin is actually reachable. A well-formed-but-wrong value (e.g.
+`https://…` missing the non-default port the dashboard actually serves on HTTP)
+silently routes **every** MCP OAuth callback to a dead origin: the operator's
+browser shows `ERR_ADDRESS_UNREACHABLE` and the flow later expires with only a
+generic "OAuth flow expired" 404 server-side (tracked in #101594). Separately,
+some authorization servers reject `http://` redirect URIs on any non-loopback
+hostname at client-registration time (`400 invalid_redirect_uri`), which breaks
+the dashboard callback even when the URL itself is correct. In both cases,
+verify the dashboard origin actually answers (scheme + port + DNS) before
+starting a flow, and fall back to the paste-back runbook above.
 
 **Finding the dashboard's PUBLIC URL.** The dashboard binds internally to
 `0.0.0.0:<port>`, but the user needs the externally-reachable URL. Most deploy
@@ -369,3 +447,6 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 - `native-mcp` — general guide to configuring MCP in Hermes. Authoritative config reference lives there.
 - `mcporter` — the external CLI bridge, for ad-hoc MCP calls outside of Hermes' config.
+- Issues: #98118 (state rotation while the paste prompt is open), #87329/#80520
+  (callback port self-collision on headless hosts), #101594 (dashboard
+  `public_url` unreachable → silent callback failure).

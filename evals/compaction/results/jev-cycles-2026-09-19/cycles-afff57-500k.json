@@ -1,0 +1,18 @@
+{
+ "transcript": "afff57",
+ "threshold": 500000,
+ "raw_tokens_consumed": 500301,
+ "raw_total": 7357845,
+ "msgs_consumed": 1108,
+ "cycles": [
+  {
+   "cycle": 1,
+   "at_msg": 1108,
+   "before": 500301,
+   "fallback": "history too large for Jev (~25972 tokens after truncation, limit 25000)",
+   "floor": 22650,
+   "calls": 0
+  }
+ ],
+ "jev_usd_total": 0.0
+}

@@ -1,5 +1,28 @@
 # fast-jev-compaction vs Hermes compaction — 3-transcript scorecard (2026-09-19)
 
+## Verdict
+
+**Do not adopt Jev as Hermes' compaction. Do adopt the retention rule it demonstrates.**
+
+- The +32 pt recall win is entirely "keep user/assistant text verbatim, delete old tool
+  output". Jev itself dropped 100% of 851 candidates at its default threshold and, at a
+  matched token budget, ranked no better than plain recency (77.8 vs 77.8).
+- Jev-only compaction is a one-way ratchet: the text floor grows every cycle and is never
+  reduced, so freed-per-compaction decays (89% → 55%, 76% → 20%, 63% → 8% over 32–40
+  cycles) and a text-heavy session on a 200K-window host hit a hard stop after 0.4M tokens
+  of work (floor ≥ threshold, 0% freed). A summary path is still required; Jev could only be
+  a pre-pass.
+- The 32K request window forces the whole history into 25K tokens: in every measured cycle
+  the ceiling was binding and Jev decided on tool name + 60-char input + result size with
+  message texts replaced by `[… N chars omitted …]`. >~500 tool calls between compactions
+  cannot fit at all (1 of 4 transcripts never got a first compaction).
+- What it does buy: 1.4 s and < 1¢ per compaction vs 37 s and 6¢, and verbatim retention
+  of everything not a tool result.
+
+Recommended follow-up (not this PR): change the compressor's retention posture to prune
+tool results first and summarise only the remainder, keeping assistant text verbatim within
+the tail budget. Zero external dependency, captures most of the measured gain.
+
 Question asked: does https://github.com/tamaratran/fast-jev-compaction ("replace the
 compaction summary with Jev decisions: score every tool call/result, drop or truncate
 stale ones, keep everything else verbatim") beat our compressor on remaining tokens,
@@ -74,6 +97,45 @@ recall goes. A "prune-only until the tail budget is reached, summarise only the 
 posture would capture most of Jev's gain at zero extra cost. If a scoring model is wanted
 for the prune ranking, Jev is fast and cheap enough (1.5 s, < 1¢) but this data shows no
 signal over recency at equal budget; re-test before wiring it in.
+
+## Repeated compaction: how many cycles does Jev-only compaction survive?
+
+`scripts/jev_cycles.py` feeds a lineage chronologically and compacts with Jev (plugin
+defaults) every time the estimate crosses the threshold; 500K ≈ our 1M-window posture, 160K
+≈ a 200K-window host. Raw JSON per run in `results/jev-cycles-2026-09-19/`. Jev spend for all
+six runs: $0.60.
+
+| run | cycles | raw session consumed | freed per cycle | text floor | end state |
+|---|---|---|---|---|---|
+| prreview @500K | 32 | 11.4M (whole lineage) | 89% → 55% | 43K → 139K | still working |
+| sysprompt @500K | 40 | 8.6M of 23.3M | 76% → 20% | 91K → 240K | degrading |
+| sigsegv @500K | 40 | 5.2M of 8.6M | 63% → 8% | 175K → 359K | 40K freed/cycle; wall ≈ 8M |
+| prreview @160K | 60 | 3.9M of 11.4M | 87% → 22% | 12K → 87K | compacting every ~14 rows |
+| sigsegv @160K | 11 | 0.42M of 8.6M | 52% → 0% | 85K → 151K | **STUCK** (floor ≥ threshold) |
+| afff57 @500K | 0 | — | — | — | fallback on cycle 1 (541 calls) |
+
+Reading: every cycle has candidates (new tool calls arrive between compactions and Jev
+drops ~all of them; 200+ cycles, zero orphaned call/result pairs), so "nothing left to
+remove" never happens. What runs out is headroom: each cycle frees at most
+`threshold − floor`, and the floor (all user/assistant rows) only grows. Well before the
+hard stop the session runs permanently near the window: sigsegv @500K at cycle 40 compacts
+every ~40K tokens of new work with every turn billed at ~460K input.
+
+## The 32K window in practice
+
+- `state_tok` was 24,8xx–25,000 in every one of ~180 measured cycles: the ceiling always
+  binds. Fitting stages reached at 500K: "old messages collapsed" (texts → `[… N chars
+  omitted …]`), "old calls compacted" (one line per call, input cut to 60 chars), "old
+  messages left out" (text-only old rows removed from the state), "old calls merged". Jev
+  never sees tool result contents (by design) and, at these stages, barely sees message
+  text either — it decides on tool name, input stub, result size and the last 3 user prompts.
+- Hard limit: ~500+ unpinned tool calls between compactions cannot fit (afff57, 541 calls);
+  the plugin throws and the host falls back to its summary. The text floor does not affect
+  fit (old text rows are left out of the state); the call count does.
+- Requests: full state resent per batch of ~40–80 calls → 5–8 concurrent requests per
+  cycle at 500K, 1–2 s, $0.005–0.008.
+- Untouchable content: anything in assistant text (pasted logs, long analyses) is never
+  compacted, which is exactly what makes the floor grow.
 
 ## Method notes
 

@@ -141,6 +141,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.paneDistributionDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.paneDistribution}`,
+      keywords: ['pane', 'panel', 'split', 'equalize', 'layout'],
+      label: appearance.paneDistributionTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.paneDistribution, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.uiScale}`,
       keywords: ['zoom', 'size'],

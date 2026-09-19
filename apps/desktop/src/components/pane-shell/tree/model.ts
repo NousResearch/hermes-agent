@@ -574,6 +574,57 @@ export function mirrorTreeHorizontal(root: LayoutNode): LayoutNode {
     : { ...root, children }
 }
 
+/**
+ * Equalize a selected set of direct tracks without changing the total weight
+ * they currently own. Non-selected tracks (for example a fixed sidebar) keep
+ * their existing weight. The caller decides which tracks are eligible; this
+ * keeps fixed/flex and visibility policy out of the pure tree model.
+ */
+export function equalizeSplitWeights(root: SplitNode, eligibleChildIds: ReadonlySet<string>): SplitNode {
+  const eligibleIndexes = root.children.flatMap((child, index) => (eligibleChildIds.has(child.id) ? [index] : []))
+
+  if (eligibleIndexes.length < 2) {
+    return root
+  }
+
+  const total = eligibleIndexes.reduce((sum, index) => sum + root.weights[index], 0)
+  const share = (Number.isFinite(total) && total > 0 ? total : eligibleIndexes.length) / eligibleIndexes.length
+  const weights = [...root.weights]
+
+  for (const index of eligibleIndexes) {
+    weights[index] = share
+  }
+
+  return weights.every((weight, index) => weight === root.weights[index]) ? root : { ...root, weights }
+}
+
+/** Apply independent per-split equalization without flattening nested splits. */
+export function equalizeSplitWeightsInTree(
+  root: LayoutNode,
+  eligibleBySplitId: ReadonlyMap<string, ReadonlySet<string>>
+): LayoutNode {
+  if (root.type === 'group') {
+    return root
+  }
+
+  let childrenChanged = false
+
+  const children = root.children.map(child => {
+    const updated = equalizeSplitWeightsInTree(child, eligibleBySplitId)
+
+    if (updated !== child) {
+      childrenChanged = true
+    }
+
+    return updated
+  })
+
+  const updated = childrenChanged ? { ...root, children } : root
+  const eligible = eligibleBySplitId.get(root.id)
+
+  return eligible ? equalizeSplitWeights(updated, eligible) : updated
+}
+
 export function setSplitWeights(root: LayoutNode, splitId: string, weights: number[]): LayoutNode {
   if (root.type === 'split') {
     if (root.id === splitId) {

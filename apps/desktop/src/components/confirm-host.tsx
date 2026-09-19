@@ -35,6 +35,7 @@ export function ConfirmHost() {
       onClose={() => settleConfirm(shown.phase === 'done', shown)}
       onConfirm={() => runConfirm(shown)}
       open={request !== null}
+      secondaryAction={shown.secondaryAction}
       title={shown.title}
     >
       {shown.details && (

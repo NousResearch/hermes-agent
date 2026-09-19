@@ -12,12 +12,14 @@ import { $registryVersion, registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
 import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 import { notify } from '@/store/notifications'
-import { clearAllPaneSizeOverrides } from '@/store/panes'
+import { $paneDistributionMode, type PaneDistributionMode } from '@/store/pane-distribution'
+import { $paneStates, clearAllPaneSizeOverrides } from '@/store/panes'
 import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
   type DropPosition,
+  equalizeSplitWeightsInTree,
   findGroup,
   findGroupOfPane,
   findParentSplit,
@@ -43,6 +45,7 @@ import {
 } from './model'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
+import { fixedTrackSize, subtreeGone, type TrackContext } from './renderer/track-model'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
@@ -866,11 +869,9 @@ export function removeTreePane(paneId: string) {
 
 /** The layout's root ROW — the split that contains main + the side columns.
  *  Usually the root itself (Default, Focus); in a column-root layout (Terminal
- *  deck, Quad) it's the row child that holds sessions/workspace/files. Returns
- *  null when the tree has no row split with side-eligible panes. */
-function rootRow(): SplitNode | null {
-  const tree = $layoutTree.get()
-
+ *  deck, Quad) it's the row child that holds sessions/workspace/files.
+ *  Returns null when the tree has no row split with side-eligible panes. */
+function rootRowFor(tree: LayoutNode | null): SplitNode | null {
   if (!tree || tree.type !== 'split') {
     return null
   }
@@ -899,11 +900,15 @@ function rootRow(): SplitNode | null {
   )
 }
 
+function rootRow(): SplitNode | null {
+  return rootRowFor($layoutTree.get())
+}
+
 /** Which root-row side a pane currently lives in, or null when it's nested
  *  with main (dragged into the middle) — where a side collapse can't hide it.
  *  Lets side-bound closers (files/sessions) fall back to dismissal. */
-export function paneRootSide(paneId: string): null | TreeSide {
-  const row = rootRow()
+function paneRootSideInTree(tree: LayoutNode | null, paneId: string): null | TreeSide {
+  const row = rootRowFor(tree)
 
   if (!row) {
     return null
@@ -927,6 +932,10 @@ export function paneRootSide(paneId: string): null | TreeSide {
   }
 
   return index < mainIndices[0] ? 'left' : index > mainIndices[mainIndices.length - 1] ? 'right' : null
+}
+
+export function paneRootSide(paneId: string): null | TreeSide {
+  return paneRootSideInTree($layoutTree.get(), paneId)
 }
 
 /** The closer-less Close: dismiss the pane (removed + remembered; reveal
@@ -1206,7 +1215,180 @@ export const $narrowViewport = atom(Boolean(narrowQuery?.matches))
 
 narrowQuery?.addEventListener('change', event => $narrowViewport.set(event.matches))
 
-/** The titlebar flip toggle (⌘\): mirror the whole layout left↔right. */
+function allSplitIds(root: LayoutNode): Set<string> {
+  const ids = new Set<string>()
+
+  const visit = (node: LayoutNode) => {
+    if (node.type === 'group') {
+      return
+    }
+
+    ids.add(node.id)
+    node.children.forEach(visit)
+  }
+
+  visit(root)
+
+  return ids
+}
+
+function findNodeById(root: LayoutNode, id: string): LayoutNode | null {
+  if (root.id === id) {
+    return root
+  }
+
+  if (root.type === 'split') {
+    for (const child of root.children) {
+      const found = findNodeById(child, id)
+
+      if (found) {
+        return found
+      }
+    }
+  }
+
+  return null
+}
+
+/** Split ids whose direct track shape changed between two normalized trees. */
+function changedSplitIds(before: LayoutNode, after: LayoutNode): Set<string> {
+  const changed = new Set<string>()
+
+  const visit = (node: LayoutNode) => {
+    if (node.type === 'group') {
+      return
+    }
+
+    const previous = findNodeById(before, node.id)
+
+    if (!previous || previous.type !== 'split') {
+      changed.add(node.id)
+    } else {
+      const childrenChanged =
+        previous.children.length !== node.children.length ||
+        previous.children.some((child, index) => child.id !== node.children[index]?.id)
+
+      const weightsChanged =
+        previous.weights.length !== node.weights.length ||
+        previous.weights.some((weight, index) => weight !== node.weights[index])
+
+      if (childrenChanged || weightsChanged) {
+        changed.add(node.id)
+      }
+    }
+
+    node.children.forEach(visit)
+  }
+
+  visit(after)
+
+  return changed
+}
+
+function distributionContext(mode: PaneDistributionMode, tree: LayoutNode): TrackContext {
+  const panes = registry.getArea('panes')
+  const paneFor = (id: string) => panes.find(pane => pane.id === id)
+  const hidden = $hiddenTreePanes.get()
+  const dismissed = $dismissedPanes.get()
+  const narrow = $narrowViewport.get()
+  const collapsedSides = $collapsedTreeSides.get()
+
+  const paneGone = (id: string) => {
+    const contribution = paneFor(id)
+    const data = contribution?.data as { collapsible?: boolean } | undefined
+    const side = paneRootSideInTree(tree, id)
+
+    return (
+      !contribution ||
+      hidden.has(id) ||
+      dismissed.has(id) ||
+      (narrow && Boolean(data?.collapsible)) ||
+      (side !== null && collapsedSides.has(side))
+    )
+  }
+
+  return {
+    paneFor,
+    paneGone,
+    overrides: $paneStates.get(),
+    ignoreFixedSizing: mode === 'equal-all'
+  }
+}
+
+function subtreeMinimized(root: LayoutNode): boolean {
+  return root.type === 'group'
+    ? Boolean(root.minimized)
+    : root.children.length > 0 && root.children.every(subtreeMinimized)
+}
+
+function distributionCandidates(
+  root: LayoutNode,
+  splitIds: ReadonlySet<string>,
+  mode: PaneDistributionMode
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const candidates = new Map<string, ReadonlySet<string>>()
+
+  if (mode === 'preserve') {
+    return candidates
+  }
+
+  const ctx = distributionContext(mode, root)
+
+  const visit = (node: LayoutNode) => {
+    if (node.type === 'group') {
+      return
+    }
+
+    if (splitIds.has(node.id)) {
+      const eligible = new Set(
+        node.children
+          .filter(child => !subtreeMinimized(child))
+          .filter(child => !subtreeGone(child, ctx))
+          .filter(child => mode === 'equal-all' || fixedTrackSize(child, node.orientation, ctx) === null)
+          .map(child => child.id)
+      )
+
+      if (eligible.size > 1) {
+        candidates.set(node.id, eligible)
+      }
+    }
+
+    node.children.forEach(visit)
+  }
+
+  visit(root)
+
+  return candidates
+}
+
+function equalizeChangedSplits(root: LayoutNode, splitIds: ReadonlySet<string>): LayoutNode {
+  const mode = $paneDistributionMode.get()
+
+  if (mode === 'preserve' || splitIds.size === 0) {
+    return root
+  }
+
+  const candidates = distributionCandidates(root, splitIds, mode)
+
+  return candidates.size === 0 ? root : equalizeSplitWeightsInTree(root, candidates)
+}
+
+/** Equalize all eligible split levels once after changing the setting. */
+export function equalizeCurrentPaneTree() {
+  const tree = $layoutTree.get()
+
+  if (!tree || $paneDistributionMode.get() === 'preserve') {
+    return
+  }
+
+  const next = equalizeChangedSplits(tree, allSplitIds(tree))
+
+  if (next !== tree) {
+    commit(next)
+  }
+}
+
+/** The titlebar flip toggle (⌘\\): mirror the whole layout left↔right. */
 export function mirrorLayoutTree() {
   const tree = $layoutTree.get()
 
@@ -1460,8 +1642,10 @@ export function adoptContributedPanes(): void {
   )
 
   if (missing.length === 0) {
-    if (healed !== tree) {
-      commit(healed)
+    const next = equalizeChangedSplits(healed, changedSplitIds(tree, healed))
+
+    if (next !== tree) {
+      commit(next)
     }
 
     return
@@ -1502,8 +1686,10 @@ export function adoptContributedPanes(): void {
     }
   }
 
-  if (next !== tree) {
-    commit(next)
+  const balanced = equalizeChangedSplits(next, changedSplitIds(tree, next))
+
+  if (balanced !== tree) {
+    commit(balanced)
   }
 
   // After the commit, so the zone exists to minimize. `defaultCollapsed` is the
@@ -1609,7 +1795,8 @@ export function dockPaneBeside(paneId: string, anchorPaneId: string) {
     : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId))
 
   if (next && next !== tree) {
-    commit(next)
+    const balanced = equalizeChangedSplits(next, changedSplitIds(tree, next))
+    commit(balanced)
   }
 }
 
@@ -1625,7 +1812,8 @@ export function moveTreePane(paneId: string, target: { groupId: string; pos: Dro
   // movePane returns the SAME root for no-op drops ("stays here") — only a
   // real move customizes the preset or pins the pane as user-placed.
   if (next !== tree) {
-    commit(next)
+    const balanced = equalizeChangedSplits(next, changedSplitIds(tree, next))
+    commit(balanced)
     markActivePreset('custom')
     markPaneUserPlaced(paneId)
   }
@@ -1684,7 +1872,8 @@ export function moveTreePanes(
   const next = movePanesOp(tree, paneIds, target, activeId)
 
   if (next !== tree) {
-    commit(next)
+    const balanced = equalizeChangedSplits(next, changedSplitIds(tree, next))
+    commit(balanced)
     markActivePreset('custom')
 
     for (const paneId of paneIds) {
@@ -1709,7 +1898,8 @@ export function mergeTreeZones(groupIds: string[], paneId: string | readonly str
   const merged = mergeZonesWithPaneOp(tree, groupIds, paneId)
 
   if (merged) {
-    commit(merged)
+    const balanced = equalizeChangedSplits(merged, changedSplitIds(tree, merged))
+    commit(balanced)
     markActivePreset('custom')
 
     for (const id of paneIds) {

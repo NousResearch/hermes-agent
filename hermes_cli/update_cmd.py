@@ -86,7 +86,7 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _sync_python_dependencies_after_pull, _update_node_dependencies,
     _upgrade_pip_before_lazy_refresh, _validate_critical_modules_import,
     _venv_core_imports_healthy, _venv_foreign_owned_paths, _web_build_toolchain_ready,
-    _web_toolchain_roots)
+    _web_toolchain_roots, _verify_update_post_hooks)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,

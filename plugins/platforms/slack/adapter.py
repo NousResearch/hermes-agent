@@ -2110,7 +2110,25 @@ class SlackAdapter(BasePlatformAdapter):
             value = _first_truthy(md, sources)
             if value:
                 start_payload[key] = value
-        result = await client.api_call("chat.startStream", json=start_payload)
+        try:
+            result = await client.api_call("chat.startStream", json=start_payload)
+        except Exception as exc:
+            if not (
+                _slack_error_is(exc, "user_not_found")
+                and start_payload.get("recipient_user_id")
+            ):
+                raise
+            # Slack Connect authors can have a user ID from the remote workspace
+            # that chat.startStream rejects even though the bot can reply in the
+            # shared channel.  Recipient targeting is optional; retry once without
+            # the foreign user so progress stays native instead of leaving a text
+            # fallback/status artifact behind.
+            logger.info(
+                "[Slack] startStream rejected recipient_user_id; retrying without it "
+                "for Slack Connect thread %s", stream.thread_ts)
+            retry_payload = dict(start_payload)
+            retry_payload.pop("recipient_user_id", None)
+            result = await client.api_call("chat.startStream", json=retry_payload)
         if hasattr(result, "get"):
             stream.stream_ts = str(result.get("ts") or result.get("message_ts") or "")
         if not stream.stream_ts:
@@ -3456,20 +3474,30 @@ class SlackAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
-        """Resolve a workspace ID from the event plus Bolt's outer payload.
-        Bolt passes only the inner ``event``; Slack puts ``team_id`` on the outer payload."""
-        for payload in (event, body or {}):
-            if not isinstance(payload, dict):
-                continue
-            team = payload.get("team_id") or payload.get("team")
-            if isinstance(team, str) and team:
-                return team
-            if isinstance(team, dict) and team.get("id"):
-                return str(team["id"])
-        authorizations = (body or {}).get("authorizations") if isinstance(body, dict) else None
-        for authorization in authorizations or []:
+        """Resolve the app installation workspace for a Slack event.
+
+        Prefer Bolt's outer payload.  In Slack Connect, the inner event's
+        ``team`` can identify the remote sender's workspace while the outer
+        ``team_id`` (or authorization) identifies the workspace where this app
+        received the event.  Using the inner team first splits one Slack post
+        into separate dedup/session namespaces when both ``message`` and
+        ``app_mention`` callbacks arrive.
+        """
+        outer = body if isinstance(body, dict) else {}
+        team = outer.get("team_id") or outer.get("team")
+        if isinstance(team, str) and team:
+            return team
+        if isinstance(team, dict) and team.get("id"):
+            return str(team["id"])
+        for authorization in outer.get("authorizations") or []:
             if isinstance(authorization, dict) and authorization.get("team_id"):
                 return str(authorization["team_id"])
+        inner = event if isinstance(event, dict) else {}
+        team = inner.get("team_id") or inner.get("team")
+        if isinstance(team, str) and team:
+            return team
+        if isinstance(team, dict) and team.get("id"):
+            return str(team["id"])
         return ""
 
     @staticmethod

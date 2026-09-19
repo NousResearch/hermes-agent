@@ -325,6 +325,31 @@ class TestSlackWorkspaceCollisionIsolation:
         assert adapter._channel_teams["D_SHARED"] == {"T_ONE", "T_TWO"}
         assert "D_SHARED" not in adapter._channel_team
 
+    @pytest.mark.asyncio
+    async def test_slack_connect_message_and_app_mention_share_outer_workspace_dedup(self, adapter):
+        """A Slack Connect sender's home team must not split one mention into two turns.
+
+        Slack can deliver the same tagged post through both ``app_mention`` and
+        ``message``.  The latter may carry the sender's foreign workspace in the
+        inner event while both envelopes target the app's installed workspace.
+        """
+        base = {
+            "text": "<@U_BOT> can you see learning paths in prod",
+            "user": "U_SHARED",
+            "channel": "C_CONNECT",
+            "channel_type": "channel",
+            "ts": "171.123",
+            "client_msg_id": "client-1",
+        }
+        await adapter._handle_slack_message(dict(base), {"team_id": "T_HOME"})
+        await adapter._handle_slack_message(
+            {**base, "team": "T_FOREIGN"}, {"team_id": "T_HOME"}
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        delivered = adapter.handle_message.await_args.args[0]
+        assert delivered.source.scope_id == "T_HOME"
+
 
 # ---------------------------------------------------------------------------
 # TestAppMentionHandler
@@ -5236,6 +5261,45 @@ class TestNativeTaskCardProgress:
             "chat.stopStream",
         ]
         assert adapter._native_task_card_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_slack_connect_stream_retries_without_foreign_recipient_user(self, adapter):
+        """Slack Connect authors can be invalid startStream recipients."""
+        client = adapter._app.client
+        starts = 0
+
+        async def api_call(method, *, json):
+            nonlocal starts
+            if method == "chat.startStream":
+                starts += 1
+                if "recipient_user_id" in json:
+                    raise _StreamExpiredError(
+                        "foreign user", {"ok": False, "error": "user_not_found"}
+                    )
+                return {"ts": "stream-1"}
+            return {"ok": True}
+
+        client.api_call.side_effect = api_call
+        result = await adapter.send_native_task_card_progress(
+            "C1",
+            [{"id": "call-1", "title": "web_search", "status": "in_progress"}],
+            metadata={
+                "thread_id": "thread-1",
+                "slack_team_id": "T_HOME",
+                "user_id": "U_FOREIGN",
+            },
+        )
+
+        assert result.success is True
+        assert starts == 2
+        start_payloads = [
+            call.kwargs["json"]
+            for call in client.api_call.await_args_list
+            if call.args[0] == "chat.startStream"
+        ]
+        assert start_payloads[0]["recipient_user_id"] == "U_FOREIGN"
+        assert "recipient_user_id" not in start_payloads[1]
+        assert start_payloads[1]["recipient_team_id"] == "T_HOME"
 
     @pytest.mark.asyncio
     async def test_append_payload_never_mixes_markdown_text_with_chunks(

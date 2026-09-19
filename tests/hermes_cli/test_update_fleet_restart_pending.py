@@ -898,3 +898,130 @@ def test_startup_warn_silent_when_completed_update_fleet_restarted_onto_moved_ch
     update_cmd._warn_pending_fleet_restart_on_startup()
 
     assert capsys.readouterr().err == ""
+
+
+def test_marker_without_inventory_discharged_when_fleet_current(monkeypatch, capsys):
+    """Issue #115638: A marker written without an inventory= line (e.g. from an updater crash
+    mid-cleanup or legacy format) must be discharged when all live fleet rows are verified
+    current at expected_sha matching checkout HEAD."""
+    disk_sha = "e" * 40
+    # Marker file with 3 keys and NO inventory= line, exactly as observed in #115638
+    marker_path = update_cmd._fleet_restart_pending_marker_path()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        f"started=1789765509.228936\npid=1744180\nexpected_sha={disk_sha}\n",
+        encoding="utf-8",
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.3", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert update_cmd_fleet._pending_fleet_restart_needed() is False
+
+
+def test_marker_without_inventory_recovers_owed_from_receipt(monkeypatch, capsys):
+    """When a marker has no inventory= line, owed runtimes are recovered from the latest
+    update receipt if its post_update SHA matches expected_sha. If an owed profile is
+    missing from the live fleet, the marker is kept fail-closed."""
+    disk_sha = "e" * 40
+    marker_path = update_cmd._fleet_restart_pending_marker_path()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        f"started=1789765509.228936\npid=1744180\nexpected_sha={disk_sha}\n",
+        encoding="utf-8",
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "partial",
+                "exit_code": 1,
+                "post_update": {"sha": disk_sha},
+                "plan": {
+                    "runtimes": [
+                        {"kind": "gateway", "profile": "alpha", "pid": 1},
+                        {"kind": "gateway", "profile": "beta", "pid": 2},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # 1. Fleet only covers 'alpha' (beta is missing/down) -> must stay fail-closed
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "alpha", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.3", "state": "current"}
+        ],
+    )
+    update_cmd._warn_pending_fleet_restart_on_startup()
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert marker_path.exists()
+
+    # 2. Fleet covers both 'alpha' and 'beta' -> discharges marker!
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "alpha", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.3", "state": "current"},
+            {"profile": "beta", "pid": 43, "code_sha": disk_sha, "code_version": "0.21.3", "state": "current"},
+        ],
+    )
+    update_cmd._warn_pending_fleet_restart_on_startup()
+    assert capsys.readouterr().err == ""
+    assert not marker_path.exists()
+
+
+def test_verify_fleet_after_update_dashboard_cleanup_crash_resilience(monkeypatch, capsys):
+    """Issue #115638: When _finish_dashboard_update_cleanup raises mid-cleanup (e.g. TypeError from
+    out-of-sync bytecode), _verify_fleet_after_update isolates the failure and clears the marker
+    when gateway restart was completed and clean."""
+    disk_sha = "e" * 40
+    marker_path = update_cmd._fleet_restart_pending_marker_path()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(f"started=123.0\npid=999\nexpected_sha={disk_sha}\n", encoding="utf-8")
+
+    restart = SimpleNamespace(
+        incomplete=False,
+        restarted_services=["hermes-gateway.service"],
+        relaunched_profiles=[],
+        externally_supervised_profiles=[],
+        killed_pids=set(),
+        failed_or_stale_units=[],
+        fleet_probe_signals=lambda: ([], set()),
+    )
+
+    def _crash(*a, **kw):
+        raise TypeError("_find_stale_dashboard_pids() got an unexpected keyword argument 'scope_home'")
+
+    monkeypatch.setattr("hermes_cli.update_cmd._finish_dashboard_update_cleanup", _crash)
+    monkeypatch.setattr(update_cmd_fleet, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda *a: [])
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd_fleet._collect_fleet_snapshot",
+        lambda *a, **kw: [{"profile": "default", "pid": 42, "code_sha": disk_sha, "state": "current"}],
+    )
+    monkeypatch.setattr("hermes_cli.update_receipt.print_fleet_version_matrix", lambda snapshot: False)
+    monkeypatch.setattr("hermes_cli.update_receipt.finalize_update_receipt", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+
+    update_cmd_fleet._verify_fleet_after_update(
+        restart,
+        _pre_update_plan=None,
+        _windows_gateway_resume=None,
+        node_failures=[],
+        update_complete=True,
+    )
+
+    assert not marker_path.exists()

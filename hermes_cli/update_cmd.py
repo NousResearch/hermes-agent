@@ -1530,9 +1530,13 @@ def _finish_pulled_update(
 
     _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)
     _resume_windows_gateways_and_merge_outcome(_restart, _windows_gateway_resume, gateway_mode)
-    _verify_fleet_after_update(
-        _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
-        node_failures=node_failures, update_complete=update_complete)
+    try:
+        _verify_fleet_after_update(
+            _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
+            node_failures=node_failures, update_complete=update_complete)
+    finally:
+        if not getattr(_restart, "incomplete", True) and update_complete:
+            _clear_fleet_restart_pending_marker()
 
 
 def _cmd_update_impl(args, gateway_mode: bool):

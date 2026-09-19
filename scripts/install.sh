@@ -1015,6 +1015,123 @@ npm_supports_npmrc() {
     return 0
 }
 
+# Inspect npm output for a TLS-trust failure and, if found, print actionable
+# remediation. npm/Node surface corporate MITM proxies and missing root CAs as
+# "unable to get local issuer certificate" / "self-signed certificate in
+# certificate chain" / UNABLE_TO_VERIFY_LEAF_SIGNATURE, which reads as a
+# generic install failure and gets reported as one (issue #38016). install.ps1
+# already routes its npm stages through Show-NpmCertHint; this is the POSIX
+# half, which was never written. Returns 0 when a cert error was detected.
+npm_cert_hint() {
+    local log_file="$1"
+    [ -s "$log_file" ] || return 1
+    grep -qiE 'unable to get local issuer certificate|self[- ]signed certificate|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN|CERT_HAS_EXPIRED' \
+        "$log_file" || return 1
+    log_warn "This looks like a TLS certificate-trust failure, not a network or permissions problem."
+    log_info "  A corporate proxy or antivirus is likely intercepting HTTPS and presenting a"
+    log_info "  certificate Node.js doesn't trust. Node ignores SSL_CERT_FILE and CURL_CA_BUNDLE,"
+    log_info "  so pointing curl at the CA is not enough — Node needs telling separately."
+    log_info "  If the CA is already in your OS trust store (usual on a managed machine):"
+    log_info "    export NODE_OPTIONS=--use-system-ca"
+    log_info "  Otherwise point Node at the certificate directly:"
+    log_info "    1. Get your organization's root CA as a .pem/.crt from your IT team."
+    log_info "    2. export NODE_EXTRA_CA_CERTS=/path/to/corp-ca.pem"
+    log_info "  Then re-run the installer in that shell (add it to your shell profile to persist)."
+    log_info "  Quick (less secure) alternative — disable TLS verification just for the install:"
+    log_info "    npm config set strict-ssl false   (re-enable afterwards: npm config set strict-ssl true)"
+    return 0
+}
+
+# Inspect npm output for the recurring non-TLS failure classes and print the
+# fix for each one found. Complements npm_cert_hint (TLS). These are the
+# signatures that actually showed up in install failure reports: a cache dir
+# owned by another user (EACCES deep in _cacache, classic after a past
+# `sudo npm`), an unsupported Node engine, a native build with no C++
+# toolchain, a registry that is unreachable, and a full disk. Each block is
+# independent — one log can match several classes. Returns 0 when any hint
+# printed.
+npm_failure_hints() {
+    local log_file="$1"
+    local hinted=1
+    [ -s "$log_file" ] || return 1
+
+    if grep -qiE 'EACCES|EPERM' "$log_file" && grep -qiE '_cacache|cache' "$log_file"; then
+        log_warn "This looks like an npm cache permissions problem — the cache directory is not writable by you."
+        log_info "  npm fails deep into its cache minutes into the install instead of saying this up front."
+        log_info "  Fix ownership, then re-run the installer:"
+        log_info "    sudo chown -R \"$(id -un)\" \"${npm_config_cache:-$HOME/.npm}\" && chmod -R u+rwX \"${npm_config_cache:-$HOME/.npm}\""
+        hinted=0
+    fi
+
+    if grep -qiE 'EBADENGINE|unsupported engine' "$log_file"; then
+        log_warn "This looks like a Node.js version mismatch — a package declares an engines range your Node doesn't satisfy."
+        log_info "  Hermes needs Node 22.22+, 24.11+, or 26+. Install a supported Node (or let the"
+        log_info "  installer manage one) and re-run; check which node npm used with: npm doctor"
+        hinted=0
+    fi
+
+    if grep -qiE 'gyp ERR|node-gyp|prebuild-install|error C[0-9]{4}|clang: error|make: \*\*\*' "$log_file"; then
+        log_warn "This looks like a failed native-module build — a C++ toolchain piece is missing."
+        log_info "  Install build tools, then re-run the installer:"
+        log_info "    Debian/Ubuntu: sudo apt install build-essential    macOS: xcode-select --install"
+        hinted=0
+    fi
+
+    if grep -qiE 'ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH' "$log_file"; then
+        log_warn "This looks like a network problem reaching the npm registry."
+        log_info "  Check connectivity and any proxy/firewall. If you need a proxy, npm reads:"
+        log_info "    npm config set https-proxy http://proxy:port   (or export npm_config_https_proxy=...)"
+        hinted=0
+    fi
+
+    if grep -qiE 'ENOSPC|no space left on device' "$log_file"; then
+        log_warn "This looks like a full disk (npm: ENOSPC)."
+        log_info "  Free some space and re-run the installer."
+        hinted=0
+    fi
+
+    return $hinted
+}
+
+# Point at npm's own debug log. npm writes a full *_debug log under
+# ${npm_config_cache:-~/.npm}/_logs on every run, even when its console output
+# is captured or silenced — the captured snippet above is often the tip of the
+# failure, and this is where the complete error chain lives. Silent when no
+# debug log exists yet (e.g. the failure happened before npm got that far).
+npm_debug_log_hint() {
+    local newest_log
+    newest_log="$(ls -t "${npm_config_cache:-$HOME/.npm}"/_logs/*-debug-0.log 2>/dev/null | head -n 1 || true)"
+    [ -n "$newest_log" ] || return 1
+    log_info "npm's full debug log (kept even when console output is captured): $newest_log"
+    return 0
+}
+
+# Probe the npm cache before spending minutes downloading into it. A cache dir
+# owned by another user (typically from a past `sudo npm`) fails with EACCES
+# deep inside _cacache after the resolve, which reads as a generic npm failure.
+# When the default cache is not writable, fall back to a Hermes-owned cache so
+# the install self-heals instead of aborting; the warning still prints the
+# chown command for users who want their default cache back. Idempotent across
+# stages: an already-exported npm_config_cache is probed as-is.
+prepare_npm_cache() {
+    local cache_dir="${npm_config_cache:-$HOME/.npm}"
+    if mkdir -p "$cache_dir" 2>/dev/null \
+        && touch "$cache_dir/.hermes-write-probe" 2>/dev/null \
+        && rm -f "$cache_dir/.hermes-write-probe" 2>/dev/null; then
+        return 0
+    fi
+
+    export npm_config_cache="$HERMES_HOME/npm-cache"
+    mkdir -p "$npm_config_cache" || {
+        log_error "Neither $cache_dir nor $npm_config_cache is writable; npm cannot cache downloads."
+        return 1
+    }
+    log_warn "npm cache $cache_dir is not writable by $(id -un) — using an isolated cache instead:"
+    log_info "  $npm_config_cache"
+    log_info "  (to repair the default cache: sudo chown -R \"$(id -un)\" \"$cache_dir\" && chmod -R u+rwX \"$cache_dir\")"
+    return 0
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
@@ -2613,9 +2730,21 @@ run_playwright_install() {
     shift
 
     # First attempt: native platform resolution (inherits any operator override).
-    if run_browser_install_with_timeout "$timeout_seconds" "$@" 2>/dev/null; then
+    # stderr is captured rather than sent to /dev/null: Playwright only reports
+    # its real failure mode (TLS trust, 404, disk space) there, and "failed or
+    # hung" with no output is the same undiagnosable class #87340 fixed for npm.
+    # The download progress bar stays live on stdout.
+    local pw_err_log
+    pw_err_log="$(mktemp)"
+    if run_browser_install_with_timeout "$timeout_seconds" "$@" 2>"$pw_err_log"; then
+        rm -f "$pw_err_log"
         return 0
     fi
+    if [ -s "$pw_err_log" ]; then
+        log_warn "Playwright install output:"
+        cat "$pw_err_log" >&2
+    fi
+    rm -f "$pw_err_log"
 
     # Operator already pinned the platform — their choice already applied to the
     # attempt above; a second identical run won't help.
@@ -2638,8 +2767,18 @@ run_playwright_install() {
 
     log_warn "Playwright doesn't recognize ${DISTRO} ${DISTRO_VERSION} yet — retrying with PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=$fallback"
     log_info "(apt releases newer than Playwright knows hang at this step; see #35166)"
-    PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$fallback" \
-        run_browser_install_with_timeout "$timeout_seconds" "$@"
+    pw_err_log="$(mktemp)"
+    if PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$fallback" \
+        run_browser_install_with_timeout "$timeout_seconds" "$@" 2>"$pw_err_log"; then
+        rm -f "$pw_err_log"
+        return 0
+    fi
+    if [ -s "$pw_err_log" ]; then
+        log_warn "Playwright retry output:"
+        cat "$pw_err_log" >&2
+    fi
+    rm -f "$pw_err_log"
+    return 1
 }
 
 configure_browser_env_from_system_browser() {
@@ -2718,24 +2857,36 @@ install_node_deps() {
     if [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
+        # Fail fast on an unusable npm cache (owned by another user after a
+        # past `sudo npm`, read-only mount): npm would otherwise die with
+        # EACCES deep into _cacache after the resolve and read as a generic
+        # npm failure. Falls back to a Hermes-owned cache and says so.
+        prepare_npm_cache || return 1
         # Time-boxed: a stalled registry fetch would otherwise hang here with no
         # progress (same #39219 stall class as the desktop build below).
         # A failed npm install used to still print "✓ Node.js dependencies
         # installed", hiding the degradation from the user (#77003). Now it
         # fails the install outright instead of burying the warning (#85297).
-        # Capture npm output so failures are diagnosable (#87340).
+        # Capture npm output so failures are diagnosable (#87340). NOT --silent:
+        # that suppresses npm's own error reporting, so the capture above it
+        # recorded an empty log and printed a bare "npm output:" with nothing
+        # behind it. Output is only ever shown on failure, so the verbosity
+        # costs nothing on the happy path.
         # Scoped to the workspaces a CLI install needs so apps/desktop's
         # node-pty is never built here — see node_deps_workspace_args().
         node_deps_workspace_args "$INSTALL_DIR"
         local npm_log
         npm_log="$(mktemp)"
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install "${NODE_DEPS_WORKSPACE_ARGS[@]}" --silent \
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install "${NODE_DEPS_WORKSPACE_ARGS[@]}" \
                 >"$npm_log" 2>&1; then
             log_error "npm install failed or timed out; Node.js dependencies were not installed"
             if [ -s "$npm_log" ]; then
                 log_error "npm output:"
                 cat "$npm_log" >&2
             fi
+            npm_cert_hint "$npm_log" || true
+            npm_failure_hints "$npm_log" || true
+            npm_debug_log_hint || true
             rm -f "$npm_log"
             restore_dirty_lockfiles "$INSTALL_DIR"
             return 1
@@ -2842,16 +2993,20 @@ install_node_deps() {
         # Time-boxed: a stalled registry fetch would otherwise hang here (#39219).
         # Report success only on actual success, same as node-deps above
         # (#77003) — and fail the install outright (#85297).
-        # Capture npm output so failures are diagnosable (#87340).
+        # Capture npm output so failures are diagnosable (#87340). NOT --silent
+        # — see the node-deps site above.
         local tui_npm_log
         tui_npm_log="$(mktemp)"
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent \
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install \
                 >"$tui_npm_log" 2>&1; then
             log_error "TUI npm install failed or timed out; TUI dependencies were not installed"
             if [ -s "$tui_npm_log" ]; then
                 log_error "npm output:"
                 cat "$tui_npm_log" >&2
             fi
+            npm_cert_hint "$tui_npm_log" || true
+            npm_failure_hints "$tui_npm_log" || true
+            npm_debug_log_hint || true
             rm -f "$tui_npm_log"
             restore_dirty_lockfiles "$INSTALL_DIR"
             return 1

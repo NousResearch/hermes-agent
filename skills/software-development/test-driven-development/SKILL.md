@@ -33,8 +33,9 @@ Write the test first. Watch it fail. Write minimal code to pass.
 - Throwaway prototypes
 - Generated code
 - Configuration files
+- Trivial one-off scripts the user explicitly describes as small / throwaway and that do not need a release pipeline (e.g., a single-file mod, a one-time zip upload) — the user's own framing is the permission to skip.
 
-Thinking "skip TDD just this once"? Stop. That's rationalization.
+Thinking "skip TDD just this once" for a task that is not in the When to Use exceptions? Stop. That's rationalization.
 
 ## The Iron Law
 
@@ -42,15 +43,17 @@ Thinking "skip TDD just this once"? Stop. That's rationalization.
 NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
 ```
 
+This applies to production or deliverable code. Tasks that fall under `When to Use > Exceptions` may skip the cycle entirely.
+
 Write code before the test? Delete it. Start over.
 
-**No exceptions:**
+**No exceptions to this rule:**
 - Don't keep it as "reference"
 - Don't "adapt" it while writing tests
 - Don't look at it
 - Delete means delete
 
-Implement fresh from tests. Period.
+Implement fresh from tests, unless the task is in `When to Use > Exceptions`.
 
 ## Red-Green-Refactor Cycle
 
@@ -244,7 +247,7 @@ Tests-after are biased by your implementation. You test what you built, not what
 
 | Excuse | Reality |
 |--------|---------|
-| "Too simple to test" | Simple code breaks. Test takes 30 seconds. |
+| "Too simple to test" | If the user described it as a trivial one-off with no release pipeline, see When to Use exceptions. Otherwise, simple code still breaks — test it. |
 | "I'll test after" | Tests passing immediately prove nothing. |
 | "Tests after achieve same goals" | Tests-after = "what does this do?" Tests-first = "what should this do?" |
 | "Already manually tested" | Ad-hoc ≠ systematic. No record, can't re-run. |
@@ -270,7 +273,6 @@ If you catch yourself doing any of these, delete the code and restart with TDD:
 - "Tests after achieve the same purpose"
 - "Keep as reference" or "adapt existing code"
 - "Already spent X hours, deleting is wasteful"
-- "TDD is dogmatic, I'm being pragmatic"
 - "This is different because..."
 
 **All of these mean: Delete code. Start over with TDD.**
@@ -288,7 +290,7 @@ Before marking work complete:
 - [ ] Tests use real code (mocks only if unavoidable)
 - [ ] Edge cases and errors covered
 
-Can't check all boxes? You skipped TDD. Start over.
+Can't check all boxes? You skipped TDD — unless the task is in `When to Use > Exceptions`, in which case document why TDD was skipped.
 
 ## When Stuck
 
@@ -359,4 +361,4 @@ Production code → test exists and failed first
 Otherwise → not TDD
 ```
 
-No exceptions without the user's explicit permission.
+No exceptions beyond those in `When to Use` without the user's explicit permission.

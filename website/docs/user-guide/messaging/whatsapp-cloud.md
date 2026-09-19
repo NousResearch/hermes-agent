@@ -401,12 +401,22 @@ This uses your Nous Portal access token instead of needing a separate OpenAI key
 | Groups | Full support | DMs only (v1) |
 | 24h window | No restriction | Hard rule — templates required after |
 | Voice notes (out) | Native | Native with ffmpeg, MP3 fallback otherwise |
-| Read receipts | No | Yes (blue double-checkmarks) |
+| Read receipts | Optional (`send_read_receipts`) | Yes (blue double-checkmarks) |
 | Typing indicator | No | Yes (auto-dismisses on response) |
-| Interactive buttons | Text fallback only | Native (clarify, approval, slash-confirm) |
+| Interactive buttons | Text fallback; clarify can use native polls | Native (clarify, approval, slash-confirm) |
+| Native polls (out) | Yes (`/send-poll`; clarify-as-poll) | No |
+| Location pins (out) | Yes (`/send-location`) | No |
+| Location inbound | Native location / live location messages | Accepted as text context only |
+| Stickers inbound | Native sticker messages | Accepted as image media |
+| Contact cards inbound | Native contact messages | Accepted as text context only |
+| Reactions inbound | Native reaction messages | Not mapped as a first-class message type |
+| Message edit (out) | Yes (bridge `/edit`) | No Hermes edit path in v1 |
+| Stickers / reactions / contacts (out) | Not exposed as first-class agent send APIs | Cloud-only families (flows, payments, catalogs) not implemented |
 | Production use | Risky (Meta can ban) | Designed for it |
 
 Most users running Hermes for personal projects prefer Baileys. Most users running customer-facing bots prefer Cloud API.
+
+The rows above describe **what Hermes implements today**, not the full Meta product surface. Cloud-only product families such as Flows, payments, and catalogs are not Hermes features yet.
 
 ---
 

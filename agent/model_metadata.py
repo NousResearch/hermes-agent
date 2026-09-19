@@ -867,9 +867,13 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         pricing: Dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
-                    break
+                if alias in normalized:
+                    val = normalized[alias]
+                    if isinstance(val, (list, dict)):  # e.g. input: ["text"] — not a scalar price; skip
+                        continue
+                    if val not in {None, ""}:
+                        pricing[target] = val
+                        break
         if pricing:
             return _normalize_token_rates(pricing, normalized.get("unit"))
     return {}

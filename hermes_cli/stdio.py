@@ -7,6 +7,7 @@ subprocesses and child Python ``print()`` calls agree on encoding.
 
 from __future__ import annotations
 
+import ntpath
 import os
 import sys
 
@@ -90,6 +91,13 @@ def _default_windows_editor() -> str:
     return "notepad" if shutil.which("notepad") else ""
 
 
+def _windows_path_key(value: str) -> str:
+    r"""Windows path equality key: ``C:\Foo\``, ``c:/foo`` and ``c:\FOO`` are the same
+    directory. ``ntpath`` is used explicitly so the comparison behaves Windows-correct
+    even when this module is imported on another host (tests, WSL introspection)."""
+    return ntpath.normcase(ntpath.normpath(value)) if value else value
+
+
 def _augment_path_with_known_tools() -> None:
     r"""Prepend Hermes-managed tool directories to ``PATH`` (no-op on POSIX / missing dirs).
 
@@ -114,7 +122,11 @@ def _augment_path_with_known_tools() -> None:
         os.path.join(local_appdata, "hermes", "hermes-agent", "venv", "Scripts"),
         os.path.join(local_appdata, "Microsoft", "WinGet", "Links")]
     existing = os.environ.get("PATH", "")
-    existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
-    prepend = [d for d in candidate_dirs if os.path.isdir(d) and d.lower() not in existing_lower]
+    existing_keys = {_windows_path_key(p) for p in existing.split(os.pathsep) if p}
+    prepend = [
+        d
+        for d in candidate_dirs
+        if os.path.isdir(d) and _windows_path_key(d) not in existing_keys
+    ]
     if prepend:
         os.environ["PATH"] = os.pathsep.join([*prepend, existing])

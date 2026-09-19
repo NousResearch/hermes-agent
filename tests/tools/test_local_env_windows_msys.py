@@ -43,6 +43,7 @@ from tools.environments.local import (
     _make_run_env,
     _msys_to_windows_path,
     _prepend_git_bash_dirs,
+    _prepend_missing_path_entries,
     _quote_bash_path,
     _resolve_safe_cwd,
     _sanitize_subprocess_env,
@@ -332,3 +333,21 @@ class TestWrapCommandWindowsNativeCwd:
         script = captured["script"]
         assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh" in script
         assert r"C:\Users\Alexander\AppData" not in script
+
+
+# ---------------------------------------------------------------------------
+# _prepend_missing_path_entries — Windows spelling-variant dedup (#108508)
+# ---------------------------------------------------------------------------
+
+class TestPrependMissingPathEntriesWindows:
+    @pytest.mark.windows_only
+    def test_spelling_variant_already_present_is_not_prepended(self):
+        existing = "C:\\Git\\bin;C:\\Windows\\System32"
+        result = _prepend_missing_path_entries(existing, ["c:/git/bin/"])
+        assert result == existing
+
+    @pytest.mark.linux_only
+    def test_posix_entries_stay_case_sensitive(self):
+        existing = "/opt/Git/bin:/bin"
+        result = _prepend_missing_path_entries(existing, ["/opt/git/bin"])
+        assert result == os.pathsep.join(["/opt/git/bin", existing])

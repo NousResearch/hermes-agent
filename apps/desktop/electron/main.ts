@@ -326,6 +326,7 @@ import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
 import { capturePreviewContents } from './preview-capture'
+import { homeRelativePreviewFallbackCandidates } from './preview-fallback'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -6431,6 +6432,33 @@ async function previewFileTarget(rawTarget, baseDir) {
 
   if (directoryExists(resolved)) {
     resolved = path.join(resolved, 'index.html')
+  }
+
+  // Attachment refs stored in chat history are frequently home-relative (no
+  // leading slash, no `~`), so the agent-cwd resolution above misses them and
+  // the preview card goes dead even though the file is on disk. Retry under
+  // the user home and the well-known attachments root before giving up.
+  if (!fileExists(resolved) && !directoryExists(resolved)) {
+    const attachmentsRoot = path.join(resolveHermesHome(), 'attachments')
+
+    for (const candidate of homeRelativePreviewFallbackCandidates(raw, {
+      attachmentsRoot,
+      homeDir: app.getPath('home')
+    })) {
+      const fallback = resolveRequestedPathForIpc(candidate, { purpose: 'Preview target' })
+
+      if (directoryExists(fallback)) {
+        resolved = path.join(fallback, 'index.html')
+
+        break
+      }
+
+      if (fileExists(fallback)) {
+        resolved = fallback
+
+        break
+      }
+    }
   }
 
   const ext = path.extname(resolved).toLowerCase()

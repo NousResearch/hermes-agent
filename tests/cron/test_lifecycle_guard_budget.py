@@ -239,3 +239,61 @@ def test_default_budget_admits_a_wide_benign_wrapper_graph(tmp_path):
     evil.write_text("hermes gateway restart\n", encoding="utf-8")
     hub.write_text(hub.read_text() + f"bash {evil}\n", encoding="utf-8")
     assert guard(f"bash {hub}") is True
+
+
+def test_non_shell_shebang_skips_recursive_scan(tmp_path):
+    """A Node/Python/Ruby/etc. bundle must not be shell-tokenized: shlex turns
+    regex literals and strings into bogus path tokens that exhaust the
+    remote-read budget and fail closed on an innocent command."""
+    bundle = tmp_path / "ob"
+    # Minified-JS shape: many slash-containing tokens, non-shell shebang.
+    bundle.write_text(
+        "#!/usr/bin/env node\n"
+        "const r1 = /foo/bar/g;\n"
+        "const r2 = /^[a-z/]+$/g;\n"
+        "const r3 = /usr/bin/env node;\n",
+        encoding="utf-8",
+    )
+    bundle.chmod(0o755)
+
+    reads: list[str] = []
+
+    def remote(path: str):
+        reads.append(path)
+        return None
+
+    assert guard(str(bundle), cwd=str(tmp_path), read_remote_script=remote) is False
+    # No remote reads attempted for bogus tokens inside the bundle.
+    assert reads == []
+
+
+def test_shell_shebang_still_recurses(tmp_path):
+    """A script with a POSIX shell shebang is still recursed into."""
+    inner = tmp_path / "inner.sh"
+    outer = tmp_path / "outer.sh"
+    inner.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+    outer.write_text(f"#!/bin/bash\n{inner}\n", encoding="utf-8")
+    inner.chmod(0o755)
+    outer.chmod(0o755)
+
+    assert guard(str(outer), cwd=str(tmp_path)) is True
+
+
+def test_no_shebang_shell_extension_still_recurses(tmp_path):
+    """Backward compat: .sh files without a shebang are still treated as shell."""
+    inner = tmp_path / "inner.sh"
+    outer = tmp_path / "outer.sh"
+    inner.write_text("hermes gateway restart\n", encoding="utf-8")
+    outer.write_text(f"{inner}\n", encoding="utf-8")
+    inner.chmod(0o755)
+    outer.chmod(0o755)
+
+    assert guard(str(outer), cwd=str(tmp_path)) is True
+
+
+def test_unknown_extension_without_shebang_is_skipped(tmp_path):
+    """A .py/.js/etc. file without a shebang is not shell-tokenized."""
+    script = tmp_path / "helper.py"
+    script.write_text("# hermes gateway restart\n", encoding="utf-8")
+
+    assert guard(f"python {script}", cwd=str(tmp_path)) is False

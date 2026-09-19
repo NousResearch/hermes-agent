@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import gzip
 import json
 import logging
 import os
@@ -79,13 +80,20 @@ def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: floa
 
 
 def _get_json(
-    url: str, *, timeout: float, headers: Optional[dict[str, str]] = None, opener=None, **open_kwargs: Any
+    url: str, *, timeout: float, headers: Optional[dict[str, str]] = None, opener=None,
+    accept_gzip: bool = False, **open_kwargs: Any
 ) -> Any:
     """GET ``url`` and parse the JSON body. ``opener`` defaults to the catalog opener (resolved at
     call time so monkeypatching ``_urlopen_model_catalog_request`` still applies). Raises on failure."""
-    req = urllib.request.Request(url, headers=headers or {})
+    request_headers = dict(headers or {})
+    if accept_gzip:
+        request_headers["Accept-Encoding"] = "gzip"
+    req = urllib.request.Request(url, headers=request_headers)
     with (opener or _urlopen_model_catalog_request)(req, timeout=timeout, **open_kwargs) as resp:
-        return json.loads(resp.read().decode())
+        body = resp.read()
+        if accept_gzip and resp.headers.get("Content-Encoding", "").lower() == "gzip":
+            body = gzip.decompress(body)
+        return json.loads(body.decode())
 
 
 def _read_json_cache(path: Path, *, errors=Exception) -> Optional[dict]:
@@ -370,7 +378,8 @@ def fetch_nous_recommended_models(
         return cached[0]
     try:
         data = _get_json(
-            f"{base}{NOUS_RECOMMENDED_MODELS_PATH}", timeout=timeout, headers={"Accept": "application/json"}
+            f"{base}{NOUS_RECOMMENDED_MODELS_PATH}", timeout=timeout,
+            headers={"Accept": "application/json"}, accept_gzip=True
         )
         if not isinstance(data, dict):
             data = {}

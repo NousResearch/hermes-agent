@@ -61,6 +61,12 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
 # Slack click handler shows on a dead entry).
 _CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
 
+# A card row whose tool never reported a completion (the engine skips
+# ``tool_complete_callback`` for a blocked call, and an interrupted turn drops the events
+# still queued behind it) is written back as ``error`` when the turn ends: the card must not
+# be sealed with a task spinning on "running" forever.
+_TASK_CARD_UNFINISHED_STATUS = "error"
+
 
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
@@ -336,6 +342,11 @@ class TurnRunner:
         # dynamically so the state is visible where it lives.
         publication_suppressed: bool = False
         anonymous_seq: int = 0
+        # A change the card still owes the user: set by every applied lifecycle event, cleared
+        # by the publish attempt that delivers it. Read by the turn-end write-back, so an event
+        # applied while live publication was suppressed (post-interrupt) still lands before the
+        # card is sealed.
+        unpublished: bool = False
 
         @staticmethod
         def _compact(value: Any, limit: int = 120) -> str:
@@ -365,6 +376,7 @@ class TurnRunner:
                 self.anonymous_seq += 1
                 call_id = f"anonymous_{self.anonymous_seq}"
             tool_name = str(raw.get("tool_name") or "tool")
+            self.unpublished = True
             if event_type == "tool.started":
                 preview = self._compact(raw.get("preview"), 64)
                 self._upsert(call_id, f"{tool_name} - {preview}" if preview else tool_name)
@@ -406,6 +418,9 @@ class TurnRunner:
 
     async def _task_card_publish(self, st) -> None:
         ctx = self._ctx
+        # This attempt settles whatever the card owed: it delivers the frame, hands it to the
+        # editable text fallback, or is terminally suppressed for this turn.
+        st.unpublished = False
         if not st.tasks:
             return
         if st.publication_suppressed:
@@ -493,6 +508,35 @@ class TurnRunner:
             logger.debug("Slack native progress queue drain failed", exc_info=True)
         return changed
 
+    def _task_card_close_out(self, st) -> bool:
+        """Terminal write-back for the card at turn end. True when the projection changed.
+
+        Both halves are facts the card still owes the user: the completion events the run
+        emitted before it ended (an interrupted turn left them queued) and a terminal status
+        for every row the turn ended WITHOUT one — the engine skips ``tool_complete_callback``
+        for a blocked call, so that row would spin on "running" in a card nobody updates again
+        (#115177). Returns False for a clean turn (nothing to write back), keeping the API
+        call count of a healthy turn unchanged.
+        """
+        changed = self._task_card_drain(st)
+        if st.unpublished:
+            changed = True
+        for task in st.tasks.values():
+            if task["status"] == "in_progress":
+                task["status"] = _TASK_CARD_UNFINISHED_STATUS
+                changed = True
+        return changed
+
+    async def _task_card_write_back(self, st) -> None:
+        """Best-effort terminal write-back; never lets a transport error skip the card stop."""
+        try:
+            if self._task_card_close_out(st):
+                await self._task_card_publish(st)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("task-card terminal write-back failed", exc_info=True)
+
     async def _send_native_task_card_progress(self, adapter) -> None:
         """Drain progress into native cards; supported destinations retain editable fallback.
         Unsupported destinations and egress refusals suppress publication, never finalization.
@@ -508,12 +552,17 @@ class TurnRunner:
                 except queue.Empty:
                     await asyncio.sleep(0.1)
                     continue
-                if not self._agent_interrupted() and st.apply_event(raw):
+                if st.apply_event(raw) and not self._agent_interrupted():
+                    # Post-interrupt events still land in the card's STATE (the terminal
+                    # write-back needs the truth about a tool that did finish) but never as a
+                    # live publication: nothing new renders for a turn the user stopped.
                     await self._task_card_publish(st)
-        except asyncio.CancelledError:
-            if self._task_card_drain(st) and ctx._run_still_current() and not self._agent_interrupted():
-                await self._task_card_publish(st)
         finally:
+            # Terminal write-back BEFORE the stop, on every exit path (cancellation, /stop,
+            # interrupt, superseded generation): a sealed card is never updated again, so the
+            # turn's last state has to land here or the user keeps a "Hermes is working" card
+            # with a tool stuck on running forever.
+            await self._task_card_write_back(st)
             if hasattr(adapter, "stop_native_task_card_progress"):
                 # Best-effort on the turn-cleanup path: an escaping transport exception would skip
                 # final-delivery logic (cleanup awaits catch only CancelledError).

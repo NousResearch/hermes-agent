@@ -9,18 +9,50 @@ from acp_adapter import entry
 
 
 def test_main_enables_unstable_protocol(monkeypatch):
-    calls = {}
+    calls = {"order": []}
+
+    class FakeAgent:
+        def __init__(self):
+            calls["order"].append("agent")
 
     async def fake_run_agent(agent, **kwargs):
         calls["kwargs"] = kwargs
+        calls["order"].append("run")
 
     monkeypatch.setattr(entry, "_setup_logging", lambda: None)
     monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr(entry, "_preload_stdin_sensitive_dependencies", lambda: calls["order"].append("preload"))
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.start_background_mcp_discovery",
+        lambda **_kwargs: calls["order"].append("mcp"),
+    )
+    monkeypatch.setattr("acp_adapter.server.HermesACPAgent", FakeAgent)
     monkeypatch.setattr(acp, "run_agent", fake_run_agent)
 
     entry.main([])
 
     assert calls["kwargs"]["use_unstable_protocol"] is True
+    assert calls["order"] == ["preload", "mcp", "agent", "run"]
+
+
+def test_preloads_numpy_only_for_holographic_memory(monkeypatch):
+    imported = []
+    monkeypatch.setattr("plugins.memory._get_active_memory_provider", lambda: "holographic")
+    monkeypatch.setattr(entry.importlib, "import_module", imported.append)
+
+    entry._preload_stdin_sensitive_dependencies()
+
+    assert imported == ["numpy"]
+
+
+def test_preload_preserves_holographic_fallback_without_numpy(monkeypatch):
+    def missing_numpy(_name):
+        raise ModuleNotFoundError("No module named 'numpy'", name="numpy")
+
+    monkeypatch.setattr("plugins.memory._get_active_memory_provider", lambda: "holographic")
+    monkeypatch.setattr(entry.importlib, "import_module", missing_numpy)
+
+    entry._preload_stdin_sensitive_dependencies()
 
 
 def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):

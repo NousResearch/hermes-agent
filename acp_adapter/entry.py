@@ -22,6 +22,7 @@ else:
 
 import argparse
 import asyncio
+import importlib
 import logging
 import os
 import sys
@@ -82,6 +83,23 @@ def _load_env() -> None:
         log.info("Loaded env from %s", env_file)
     if not loaded:
         log.info("No .env found at %s, using system env", hermes_home / ".env")
+
+
+def _preload_stdin_sensitive_dependencies() -> None:
+    """Load holographic memory's NumPy dependency before ACP starts its stdin reader.
+
+    On native Windows, NumPy DLL initialization can wait on a console stdin handle already owned by the
+    ACP reader thread. Importing it before ``acp.run_agent`` starts that thread avoids the deadlock while
+    keeping the dependency lazy for every other memory provider. NumPy is optional: without it holographic
+    memory falls back to non-HRR retrieval, so a missing dependency must not prevent ACP from starting.
+    """
+    from plugins.memory import _get_active_memory_provider
+
+    if _get_active_memory_provider() == "holographic":
+        try:
+            importlib.import_module("numpy")
+        except ImportError:
+            pass
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -181,6 +199,10 @@ def main(argv: list[str] | None = None) -> None:
 
     import acp
     from .server import HermesACPAgent
+
+    # This must run before MCP discovery starts its daemon thread: on native Windows, NumPy DLL
+    # initialization can deadlock when another thread already owns the console stdin handle.
+    _preload_stdin_sensitive_dependencies()
 
     # MCP discovery from config.yaml runs in a background daemon thread so the ACP server is
     # responsive immediately (blocking here cost 2-5 s); per-session MCP servers registered via

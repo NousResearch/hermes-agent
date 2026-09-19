@@ -209,7 +209,7 @@ Which auxiliary model handles the text-description path is configurable under `a
 
 ### `vision_analyze` has the same dual behavior
 
-The `vision_analyze` tool itself follows the same routing. When the active main model is vision-capable **and** its provider supports image content inside tool results (currently the Anthropic, OpenAI, Azure-OpenAI, and Gemini 3.x stacks), `vision_analyze` short-circuits the auxiliary describer and returns the raw image pixels as a multimodal tool-result envelope. The main model sees the image natively on its next turn — no aux call, no text-summary information loss, no extra latency.
+The `vision_analyze` tool itself follows the same routing. When the active main model is vision-capable **and** its provider supports image content inside tool results (currently the Anthropic, OpenAI, Azure-OpenAI, and Gemini 3.x stacks), `vision_analyze` short-circuits the auxiliary describer and returns the raw image pixels as a multimodal tool-result envelope. The main model sees the image natively on its next turn — no aux call, no text-summary information loss, no extra latency. One exception: an image that is already attached natively to the current user message is not re-embedded — `vision_analyze` on that same path returns a short text result saying the image is already in context (pass a `region` to zoom into part of it, which does embed the crop).
 
 For text-only main models (or providers whose tool-result channel doesn't carry images), `vision_analyze` falls back to the legacy path: it asks the configured auxiliary vision model to describe the image and returns the description as plain text. Either way the calling tool signature is the same — the tool decides which path to take at runtime based on the active model.
 

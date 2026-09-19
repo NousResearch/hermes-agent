@@ -259,9 +259,12 @@ _CONTEXT_OVERFLOW_PATTERNS = (
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —
 # model_not_found triggers fallback instead of burning retries (#58446).
+# The "supported API model names" wording: a deterministic 400 naming the ids the
+# provider will accept (retired/renamed model id) must fail over, not retry (#113272).
 _MODEL_NOT_FOUND_PATTERNS = (
     "is not a valid model", "invalid model", "model not found", "model_not_found", "does not exist",
     "no such model", "unknown model", "unsupported model", "no endpoints found that support tool use",
+    "supported api model names",
 )
 
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body

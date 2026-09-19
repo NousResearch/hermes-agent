@@ -997,9 +997,10 @@ def _read_discord_prompt_timeout() -> int:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_overflow import DiscordOverflowMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
+class DiscordAdapter(DiscordOverflowMixin, DiscordMediaMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -2996,12 +2997,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(channel, content, metadata=metadata)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
-            chunks = self._cap_split_chunks(
-                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-            )
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            if metadata and metadata.get("expect_edits") and not final_delivery:
+                chunks = chunks[:1]
+            if len(chunks) > self.MAX_SPLIT_MESSAGES:
+                result = await self._deliver_overflow_attachment(
+                    channel, content, reply_to=reply_to, metadata=metadata,
+                )
+                return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
@@ -3057,11 +3063,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
         return thread_channel, thread_id, starter_msg, message_id
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(self, forum_channel: Any, content: str, metadata=None) -> SendResult:
         """Create a forum thread post with the message as starter (forum channels reject direct
         sends; name from the first line). Chunk failures land in ``raw_response['warnings']``."""
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        if metadata and metadata.get("expect_edits") and not metadata.get("notify"):
+            chunks = chunks[:1]
+        if len(chunks) > self.MAX_SPLIT_MESSAGES:
+            return await self._deliver_overflow_attachment(forum_channel, content, metadata=metadata)
         thread_name = _derive_forum_thread_name(content)
         starter_content = chunks[0] if chunks else thread_name
         try:
@@ -3087,7 +3097,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _forum_post_file(
         self, forum_channel: Any, *, thread_name: Optional[str] = None, content: str = "",
-        file: Any = None, files: Optional[list] = None,
+        file: Any = None, files: Optional[list] = None, raise_on_error: bool = False,
     ) -> SendResult:
         """Create a forum thread whose starter message carries file attachments."""
         if not thread_name:
@@ -3108,6 +3118,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             thread = await forum_channel.create_thread(**kwargs)
         except Exception as e:
+            if raise_on_error:
+                raise
             logger.error(
                 "[%s] Failed to create forum thread with file in %s: %s", self.name,
                 getattr(forum_channel, "id", "?"), e,
@@ -3154,7 +3166,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             msg = channel.get_partial_message(int(message_id))
             formatted = self.format_message(content)
             _preview_key = (str(chat_id), str(message_id))
@@ -3165,7 +3177,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Pre-flight oversize: final edits split-and-deliver; streaming edits truncate in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
-                    return await self._edit_overflow_split(channel, msg, message_id, content)
+                    result = await self._edit_overflow_split(channel, msg, message_id, content, metadata=metadata)
+                    if (result.raw_response or {}).get("partial_overflow"):
+                        return result
+                    return await self._record_response_async(
+                        (metadata or {}).get("reply_to_message_id"), result, content, True, metadata,
+                    )
                 formatted = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap every edit is the same text; skip until finalize.
@@ -3177,14 +3194,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # Content shrank under the cap: clear saturation state so dedup can't mask a real edit.
                 self._last_overflow_preview.pop(_preview_key, None)
             try:
-                await msg.edit(content=formatted)
+                await self._edit_overflow_text(channel, msg, formatted)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:
                 # Reactive split: format_message inflation can exceed 2,000 (50035) even after pre-flight.
                 if self._is_length_overflow_error(edit_err):
                     if finalize:
-                        return await self._edit_overflow_split(channel, msg, message_id, content)
+                        result = await self._edit_overflow_split(channel, msg, message_id, content, metadata=metadata)
+                        if (result.raw_response or {}).get("partial_overflow"):
+                            return result
+                        return await self._record_response_async(
+                            (metadata or {}).get("reply_to_message_id"), result, content, True, metadata,
+                        )
                     truncated = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                     if self._last_overflow_preview.get(_preview_key) == truncated:
                         # Saturated-preview dedup (see pre-flight path above).
@@ -3219,20 +3241,24 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
 
     async def _edit_overflow_split(
-        self, channel: Any, msg: Any, message_id: str, content: str,
+        self, channel: Any, msg: Any, message_id: str, content: str, metadata=None,
     ) -> SendResult:
         """Deliver an oversized final edit: edit ``message_id`` with chunk 1, send chunks 2..N as
         replies to the previous. Returns ``message_id=<last-id>`` + ``continuation_message_ids``.
         A continuation failure still reports success plus ``partial_overflow`` so the consumer
         delivers the tail; only a first-chunk edit failure returns ``success=False``."""
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        if len(chunks) > self.MAX_SPLIT_MESSAGES:
+            return await self._deliver_overflow_attachment(
+                channel, content, metadata=metadata, message=msg,
+            )
         if len(chunks) <= 1:
             # Defensive: pre-flight should guarantee >1 chunk; otherwise edit normally.
-            await msg.edit(content=chunks[0] if chunks else formatted)
+            await self._edit_overflow_text(channel, msg, chunks[0] if chunks else formatted)
             return SendResult(success=True, message_id=message_id)
         try:
-            await msg.edit(content=chunks[0])
+            await self._edit_overflow_text(channel, msg, chunks[0])
         except Exception as e:
             logger.error(
                 "[%s] Overflow split: first-chunk edit failed: %s", self.name, e, exc_info=True,

@@ -22,7 +22,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
@@ -1917,6 +1917,11 @@ class GatewayTurnMixin:
 
         adapter = self._delivery_adapter_for(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
+        deferred = agent_result.get("deferred_final_delivery")
+        if isinstance(deferred, SendResult) and not deferred.success and not agent_result.get("failed"):
+            # The stream attempted this final already. The normal delivery lane must
+            # ledger its failure, not immediately send a duplicate corrective final.
+            event._deferred_final_delivery = (response, deferred)
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
         )
@@ -3933,6 +3938,11 @@ class GatewayTurnMixin:
         except Exception as _edit_err:
             logger.warning(fail_exc, _sk, _edit_err)
             return
+        if (isinstance(_res, SendResult) and not _res.success
+                and isinstance(_res.raw_response, dict)
+                and _res.raw_response.get("defer_final_delivery")):
+            response["deferred_final_delivery"] = _res
+            return
         if fail_result is not None and not getattr(_res, "success", True):
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
@@ -3950,6 +3960,11 @@ class GatewayTurnMixin:
         if not isinstance(response, dict) or response.get("failed"):
             return
         _final = response.get("final_response") or ""
+        deferred_hook = getattr(_sc, "deferred_final_delivery", None)
+        deferred = deferred_hook(_final) if callable(deferred_hook) else None
+        if isinstance(deferred, SendResult) and not deferred.success:
+            response["deferred_final_delivery"] = deferred
+            return
         _is_empty_sentinel = not _final or _final == "(empty)"
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.
         # Unrelated commentary/progress must not be mistaken for the final response (#14238).

@@ -22,17 +22,39 @@ class StreamTransportMixin:
 
     _MIN_NEW_MSG_CHARS = 4
 
+    def deferred_final_delivery(self, text: str):
+        """Failed final owned by the durable-delivery lane, never a success signal.
+
+        Bound to the exact final payload so a stale failure cannot swallow a later
+        corrected response. Opt-in adapters use raw_response['defer_final_delivery']
+        to prevent inline text fallback from bypassing bounded attachment delivery.
+        """
+        pending = self._deferred_final_delivery
+        return pending[1] if pending is not None and pending[0] == text else None
+
+    def _defer_failed_final(self, result, text: str) -> bool:
+        raw = getattr(result, "raw_response", None)
+        if not result.success and isinstance(raw, dict) and raw.get("defer_final_delivery"):
+            self._deferred_final_delivery = (text, result)
+            self._final_response_sent = False
+            self._final_content_delivered = False
+            return True
+        return False
+
     async def _edit_message(self, *, message_id: str, content: str, finalize: bool = False):
         """Edit via the adapter, passing routing metadata when supported."""
         # Contract: adapters must accept finalize= even when False (test-guarded).
         kwargs = dict(chat_id=self.chat_id, message_id=message_id, content=content,
                       finalize=finalize)
-        if self.metadata:
+        metadata = (self._metadata_for_send(final=finalize)
+                    if getattr(self.adapter, "MANAGES_STREAM_OVERFLOW", False) is True
+                    else self.metadata)
+        if metadata:
             try:
                 params = inspect.signature(self.adapter.edit_message).parameters
                 if "metadata" in params or any(
                     param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()):
-                    kwargs["metadata"] = self.metadata
+                    kwargs["metadata"] = metadata
             except (TypeError, ValueError):
                 pass
         return await self.adapter.edit_message(**kwargs)
@@ -313,7 +335,8 @@ class StreamTransportMixin:
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
         # connector re-appends the whole snapshot.  The final is still fence-closed.
         pre_fence_text = text
-        text = ensure_closed_code_fences(text)
+        if not (finalize and getattr(self.adapter, "MANAGES_STREAM_OVERFLOW", False) is True):
+            text = ensure_closed_code_fences(text)
         # A bare cursor renders as a stray tofu box on some clients.
         visible_stripped = (text.replace(self.cfg.cursor, "") if self.cfg.cursor else text).strip()
         if not visible_stripped:
@@ -443,6 +466,8 @@ class StreamTransportMixin:
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
         if not result.success:
+            if finalize:
+                self._defer_failed_final(result, text)
             self._edit_supported = False
             return False
         self._already_sent = True
@@ -461,7 +486,11 @@ class StreamTransportMixin:
         """Edit the live preview (or replace it via fresh-final when finalizing)."""
         # REQUIRES_EDIT_FINALIZE adapters need the finalize=True edit even when
         # unchanged; everyone else short-circuits.
-        if text == self._last_sent_text and not (finalize and self._adapter_requires_finalize):
+        manages_overflow = getattr(self.adapter, "MANAGES_STREAM_OVERFLOW", False) is True
+        if text == self._last_sent_text and not (
+            finalize and (self._adapter_requires_finalize
+                          or (manages_overflow and len(text) > self._raw_message_limit()))
+        ):
             return True
         # Fresh-final: replace a long-lived preview with a fresh message, or whenever
         # the adapter prefers it (Telegram's send path renders richer markdown).  An
@@ -478,7 +507,8 @@ class StreamTransportMixin:
             return True
         result = await self._edit_message(message_id=self._message_id, content=text,
                                           finalize=finalize)
-        if not result.success:
+        raw = getattr(result, "raw_response", None)
+        if not result.success or (isinstance(raw, dict) and raw.get("partial_overflow")):
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)
         self._already_sent = True
@@ -509,6 +539,8 @@ class StreamTransportMixin:
                                ) -> bool:
         """Classify a failed edit: partial overflow, flood backoff, or fallback mode.  Always
         False; the caller's finalize path may still deliver the tail."""
+        if finalize and is_turn_final and self._defer_failed_final(result, text):
+            return False
         # P5(b): an AUTHORIZATION decline is terminal for the run. Every branch
         # below treats a failed edit as "editing is unavailable" and hands the
         # unseen tail to the fallback, which SENDS it as a new message to the

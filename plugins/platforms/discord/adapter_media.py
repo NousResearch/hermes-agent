@@ -79,6 +79,8 @@ class DiscordMediaMixin:
     async def _send_file_attachment(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        *, reply_to: Optional[str] = None, channel: Any = None, message: Any = None,
+        raise_on_error: bool = False,
     ) -> SendResult:
         """Send a local file as a Discord attachment (forum channels get a new thread). Path-based
         ``discord.File`` only: the open-handle form can race the multipart encoder after an image
@@ -92,7 +94,8 @@ class DiscordMediaMixin:
             return SendResult(success=False, error="Not connected")
         if not os.path.isfile(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
-        channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
+        if channel is None:
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
         filename = file_name or os.path.basename(file_path)
@@ -103,14 +106,35 @@ class DiscordMediaMixin:
             "[%s] Sending file attachment %s (%s) to %s", self.name, filename,
             os.path.splitext(filename)[1].lower() or "no-ext", chat_id,
         )
-        # Path-based File (discord.py owns open/close); ``files=[...]`` over deprecated ``file=``.
-        discord_file = discord.File(file_path, filename=filename)
-        if self._is_forum_parent(channel):
-            result = await self._forum_post_file(
-                channel, content=(caption or "").strip(), files=[discord_file],
-            )
-            return result
-        msg = await channel.send(content=caption if caption else None, files=[discord_file])
+        reference = self._reply_reference_for_send(reply_to, channel)
+        # Re-open on anchor rejection: discord.py closes File on failed sends too.
+        for attempt in range(2):
+            discord_file = discord.File(file_path, filename=filename)
+            try:
+                if message is not None:
+                    # This is a stream preview owned by this adapter. Replace it atomically
+                    # rather than sending a second final and then trying to clean up the first.
+                    msg = await message.edit(content=caption, attachments=[discord_file])
+                elif self._is_forum_parent(channel):
+                    return await self._forum_post_file(
+                        channel, content=(caption or "").strip(), files=[discord_file],
+                        raise_on_error=raise_on_error,
+                    )
+                else:
+                    kwargs = {"content": caption if caption else None, "files": [discord_file]}
+                    if reply_to is not None:
+                        kwargs["reference"] = reference
+                    msg = await channel.send(**kwargs)
+                break
+            except Exception as exc:
+                if attempt == 0 and reference is not None and self._is_reply_reference_rejected(exc):
+                    reference = None
+                    continue
+                raise
+            finally:
+                close = getattr(discord_file, "close", None)
+                if close is not None:
+                    close()
         attachments = getattr(msg, "attachments", None) or []
         if not attachments:
             # Discord accepted the message but attached nothing: fail loud instead of a silent drop.

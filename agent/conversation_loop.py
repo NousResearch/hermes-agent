@@ -624,8 +624,13 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
         try:
             from agent.system_prompt import _agent_home
             home = _agent_home(agent)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 — the capability probe must never break the turn
+            logger.debug(
+                "Bot Chat capability probe: could not resolve the agent's own profile home; "
+                "comparing against ambient home resolution instead, which on a gateway "
+                "multiplexing profiles is a different profile (session=%s): %s",
+                agent.session_id, exc,
+            )
         if stored_prompt_capability_stale(stored_prompt, home):
             return True
         if not getattr(agent, "_bot_mode_protocol", True):
@@ -692,8 +697,14 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             try:
                 from agent.prompt_builder import clear_skills_system_prompt_cache
                 clear_skills_system_prompt_cache(clear_snapshot=True)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 — the rebuild still proceeds without the eviction
+                logger.debug(
+                    "Skills-index cache eviction failed during the Bot Chat capability refresh "
+                    "(session=%s); newly available skills may be missing from the rebuilt prompt, "
+                    "and because that prompt is stamped with the current fingerprint the staleness "
+                    "check will not re-fire: %s",
+                    agent.session_id, exc,
+                )
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
             stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
@@ -1023,8 +1034,11 @@ def _compression_deferred_result(agent, messages: List[Dict], api_call_count: in
         )
     try:
         agent._flush_status_buffer()
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — the deferred turn result must still be returned
+        logger.debug(
+            "Status-buffer flush failed on the compression-deferred result path (session=%s): %s",
+            session, exc,
+        )
     return _partial_turn_result(
         _final, messages, api_call_count,
         failed=False, compression_deferred=True, session_id=agent.session_id,
@@ -1261,8 +1275,10 @@ def _decode_inline_moa_turn(user_message, persist_user_message):
             if persist_user_message is None:
                 persist_user_message = _decoded_message
             return _decoded_message, _decoded_moa_config, persist_user_message
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — an undecodable inline preset is not a MoA turn
+        logger.debug(
+            "Inline MoA preset decode failed; treating the turn as a plain message: %s", exc,
+        )
     return user_message, None, persist_user_message
 
 

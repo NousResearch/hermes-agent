@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "is 1-klik op volgen, favoriet, boost, en bladwijzer voor Mastodon, ongeacht welke instantie u thuis belt.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "De naam van uw Mastodon-instance",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Hulp nodig?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Account verbinden",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Terug Naar Accounts",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Nog niet op Mastodon?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Kan deze instantie niet vinden, controleer het adres en probeer het opnieuw.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Rekeningen"
+  },
+  "add_account": {
+    "message": "+ ACCOUNT TOEVOEGEN",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Meldingen afbeelden",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Niet-vermind",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Account verwijderen",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "von"
+  },
+  "or": {
+    "message": "of"
+  },
+  "send_feedback": {
+    "message": "Feedback verzenden",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Bug rapport",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Ondersteuning ophalen",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Doneren",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze voor Mastodon is klaar om te gebruiken!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Dit tabblad wordt gesloten",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "seconden",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "bijv.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Volgen",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Volgt u",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Ontvolgen",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Vermelding",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Rechtstreeks Berichten",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Delen",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Dempen",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Blokkeren",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Rapporteer",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Domein blokkeren",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Oorspronkelijke pagina openen",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Link naar post kopiëren",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Insluiten",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Functie op profiel",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Geplaatste talen wijzigen",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Boosts verbergen voor",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Toevoegen of verwijderen uit lijsten",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "uur",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "onder",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "U hebt voor dit antwoord gestemd",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Instellingen",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "thema"
+  },
+  "graze_theme_p": {
+    "message": "Graze komt automatisch overeen met uw thema, u kunt het overschrijven als u wilt.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Mastodon-donker",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Mastodonlicht",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Accentkleur Mastodon-thema vervangen",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "Taal"
+  },
+  "Afrikaans": {
+    "message": "Afrikaans"
+  },
+  "Arabic": {
+    "message": "Arabisch"
+  },
+  "Bengali": {
+    "message": "Bengaals"
+  },
+  "Bulgarian": {
+    "message": "Bulgaars"
+  },
+  "Chinese_Simplified": {
+    "message": "Vereenvoudigd Chinees"
+  },
+  "Chinese_Traditional": {
+    "message": "Traditioneel Chinees"
+  },
+  "Czech": {
+    "message": "Tsjechisch"
+  },
+  "Danish": {
+    "message": "Deens"
+  },
+  "Dutch": {
+    "message": "Nederlands"
+  },
+  "English": {
+    "message": "Engels"
+  },
+  "Finnish": {
+    "message": "Fins"
+  },
+  "French": {
+    "message": "Frans"
+  },
+  "German": {
+    "message": "Duits"
+  },
+  "Greek": {
+    "message": "Grieks"
+  },
+  "Hawaiian": {
+    "message": "Hawaiian"
+  },
+  "Hebrew": {
+    "message": "Hebreeuws"
+  },
+  "Hindi": {
+    "message": "Hindi"
+  },
+  "Hungarian": {
+    "message": "Hongaars"
+  },
+  "Icelandic": {
+    "message": "IJslands"
+  },
+  "Indonesian": {
+    "message": "Indonesië"
+  },
+  "Italian": {
+    "message": "Italiaans"
+  },
+  "Japanese": {
+    "message": "Japans"
+  },
+  "Korean": {
+    "message": "Koreaans"
+  },
+  "Malay": {
+    "message": "Maleis"
+  },
+  "Maori": {
+    "message": "Maori"
+  },
+  "Norwegian": {
+    "message": "Noors"
+  },
+  "Polish": {
+    "message": "Pools"
+  },
+  "Portuguese": {
+    "message": "Portugees"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Portugees, Braziliaans"
+  },
+  "Romanian": {
+    "message": "Roemeens"
+  },
+  "Russian": {
+    "message": "Russisch"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Servisch (Cyrillisch)"
+  },
+  "Spanish_Modern": {
+    "message": "Spaans (Modern)"
+  },
+  "Swedish": {
+    "message": "Zweeds"
+  },
+  "Tamil": {
+    "message": "Tamil"
+  },
+  "Thai": {
+    "message": "Thais"
+  },
+  "Turkish": {
+    "message": "Turks"
+  },
+  "Ukrainian": {
+    "message": "Oekraïens"
+  },
+  "Urdu_India": {
+    "message": "Urdu (India)"
+  },
+  "Vietnamese": {
+    "message": "Vietnam"
+  },
+  "Welsh": {
+    "message": "Welsh"
+  },
+  "convenience": {
+    "message": "Gemak"
+  },
+  "graze_convenience_p": {
+    "message": "Graze kan mastodon gebruikersnaam maken in links rond het web.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Linkify Mastodon-gebruikersnamen",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze kan mastodon gebruikersnaam maken in links rond het web.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Hovercards weergeven",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Hovercards kunnen snelle informatie over de gebruiker tonen wanneer u de muisaanwijzer op hun naam plaatst.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Toon popup voor instanties waar u niet verbonden bent",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Suggereer voorbeelden om te federeren tijdens het bezoeken",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Toon popup wanneer u bent ingelogd op een account niet is toegevoegd aan graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Voeg account snel login popup toe",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Automatische taal in Graze overschrijven",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Wanneer u klikt op antwoord op een server op afstand of \"toot deze pagina\" Graze kan een snel antwoord openen of u naar uw thuis-instance.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Antwoord van Graze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Antwoord van home-instance",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "Op afstand is de lokale tijdlijn meer in overeenstemming met de gebruikers en de inhoud van die instance.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Explore</strong> to <strong>Local</strong> tijdschema",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "inhoud",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Maak de content van een instance op afstand overeen met uw eigen content, of meng deze door.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Inhoud afbeelden achter een inhoudswaarschuwing (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Automatisch GIFs afspelen",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "NSFW/gevoelige afbeeldingen weergeven",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "Actief account instellen",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Slepen om opnieuw te rangschikken",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Berichten voor {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Meldingen voor {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "ACTIES VAN DIT ACCOUNT UITVOEREN",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Acties als {username} nemen",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Toon ronde avatar afbeeldingen",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Link, afbeelding en tekstsnippet delen vanuit het contextmenu op het web weergeven",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Contextmenu Graze afbeelden",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Lege (unfederated) profielen omleiden naar home-instances om een klik veilig te maken",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Automatisch doorsturen",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Links uitvouwen naar Mastodon-berichten in uw tijdlijnen",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Uitgebreide in-line berichten weergeven",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Post afbeeldingen en link voorbeelden",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Standaardpreviews van links vervangen door grotere afbeeldingen en volledige snippettekst",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Previews van rich links afbeelden",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze kan beeld-descriptins \"Alt Tekst\" onder beelden rathrer tonen dan alleen in een tooltip voor eenvoudiger lezen",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Beeldbeschrijvingen onder afbeeldingen weergeven",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze is alleen compatibel met exemplaren van Mastodon versie 4.0.0 of hoger",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Kan deze instantie niet vinden, controleer het adres en probeer het opnieuw.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Er is een fout opgetreden. Probeer het later opnieuw.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Berichten",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Volgers",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Volgt",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Nee Bedankt",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Ga naar Profielmap",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Ga naar lokale tijdlijn",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Volg een account van de lokale feed om inhoud in je Home feed te kunnen zien.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Je bent niet gebundeld naar $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Op elke Instantie kun je acties van dit account nemen.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "$display_name$ toevoegen aan Graze?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Toevoegen aan beoordeling",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

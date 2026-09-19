@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "הוא 1-לחיצה על מעקב, מועדף, דחיפה וסימניה עבור Mastodon, לא משנה איזה מופע אתם מכנים בית.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "שם מופע של Mastodon שלכם",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "זקוקים לעזרה?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "חשבון חיבור",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "חזרה לחשבונות",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "עדיין לא על מאסטודון?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "לא ניתן לאתר מופע זה, נא לבדוק את הכתובת ולנסות שוב.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "חשבונות"
+  },
+  "add_account": {
+    "message": "+ הוספת חשבון",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "הצגת דיווחים",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "לא משנה",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "סילוק חשבון",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "על ידי"
+  },
+  "or": {
+    "message": "או"
+  },
+  "send_feedback": {
+    "message": "משלוח משוב",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "באג דוח",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "קבלת תמיכה",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "דונטה",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze for Mastodon מוכן לשימוש!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "לשונית זו תיסגר ב",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "שניות",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "לדוג'",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "מעקב",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "עוקב אחריך",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "ביטול מעקב",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "בקשה",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "הודעה ישירה",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "שיתוף",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "השתקה",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "בלוק",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "דיווח",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "תחום בלוק",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "פתיחת הדף המקורי",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "העתקת קישור להודעה",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "הטמעה",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "מאפיין בפרופיל",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "שינוי שפות חתומים",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "הסתרת אתחול מ",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "הוספה או סילוק מהרשימות",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "שעה",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "תְּחוֹת",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "אתה הצבעת עבור תשובה זו",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "הגדרות",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "נושא"
+  },
+  "graze_theme_p": {
+    "message": "הגרף מתאים באופן אוטומטי לנושא שלכם, תוכלו לעקוף אותו אם תרצו.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "מאסטודון כהה",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "אור מאסטודון",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "עקיפת צבע ערכת נושא של Mastodon",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "שפה"
+  },
+  "Afrikaans": {
+    "message": "אפריקאנס"
+  },
+  "Arabic": {
+    "message": "ערבית"
+  },
+  "Bengali": {
+    "message": "בנגלי"
+  },
+  "Bulgarian": {
+    "message": "בולגרית"
+  },
+  "Chinese_Simplified": {
+    "message": "סינית פשוטה"
+  },
+  "Chinese_Traditional": {
+    "message": "סינית מסורתית"
+  },
+  "Czech": {
+    "message": "צ ' כית"
+  },
+  "Danish": {
+    "message": "דנית"
+  },
+  "Dutch": {
+    "message": "דאטץ"
+  },
+  "English": {
+    "message": "אנגלית"
+  },
+  "Finnish": {
+    "message": "פינית"
+  },
+  "French": {
+    "message": "צרפתית"
+  },
+  "German": {
+    "message": "גרמנית"
+  },
+  "Greek": {
+    "message": "יוונית"
+  },
+  "Hawaiian": {
+    "message": "הוואי"
+  },
+  "Hebrew": {
+    "message": "עברית"
+  },
+  "Hindi": {
+    "message": "הינדי"
+  },
+  "Hungarian": {
+    "message": "הונגרית"
+  },
+  "Icelandic": {
+    "message": "איסלנדית"
+  },
+  "Indonesian": {
+    "message": "אינדונזי"
+  },
+  "Italian": {
+    "message": "איטלקית"
+  },
+  "Japanese": {
+    "message": "יפנית"
+  },
+  "Korean": {
+    "message": "קוריאנית"
+  },
+  "Malay": {
+    "message": "מאליי"
+  },
+  "Maori": {
+    "message": "מאורי"
+  },
+  "Norwegian": {
+    "message": "נורווגית"
+  },
+  "Polish": {
+    "message": "פולני"
+  },
+  "Portuguese": {
+    "message": "פורטוגזית"
+  },
+  "Portuguese_Brazilian": {
+    "message": "פורטוגזית, ברזילאית"
+  },
+  "Romanian": {
+    "message": "רומנית"
+  },
+  "Russian": {
+    "message": "רוסי"
+  },
+  "Serbian_Cyrillic": {
+    "message": "סרבית (קירילית)"
+  },
+  "Spanish_Modern": {
+    "message": "ספרדית (מודרני)"
+  },
+  "Swedish": {
+    "message": "שוודית"
+  },
+  "Tamil": {
+    "message": "טמילית"
+  },
+  "Thai": {
+    "message": "תאילנדית"
+  },
+  "Turkish": {
+    "message": "טורקית"
+  },
+  "Ukrainian": {
+    "message": "אוקראינית"
+  },
+  "Urdu_India": {
+    "message": "אורדו (הודו)"
+  },
+  "Vietnamese": {
+    "message": "וייטנאמים"
+  },
+  "Welsh": {
+    "message": "וולשית"
+  },
+  "convenience": {
+    "message": "נוחות"
+  },
+  "graze_convenience_p": {
+    "message": "גרף יכול להפוך שם משתמש mastodon לקישורים מסביב לרשת.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "קישור שמות משתמשים של Mastodon",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "גרף יכול להפוך שם משתמש mastodon לקישורים מסביב לרשת.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "הצגת כרטיסי ברכה",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "כרטיסי ברכה יכולים להציג מידע מהיר על המשתמש כשמרחפים מעל שמו.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "הצגת צץ עבור מופעים שאינכם מאוגדים ל -",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "הצעת מופעים לאגד בעת ביקור",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "הצגת חלון צץ כאשר מחובר לחשבון שלא נוסף ל-Graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "הצגה של צץ התחברות מהירה של חשבון",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "עקיפת שפה אוטומטית בגבעה",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "כשתלחצו על תשובה בשרת מרוחק או \"טוט בדף זה\" תוכלו לפתוח תשובה מהירה או לקחת אתכם למופע הבית שלכם.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "תשובה מGraze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "תשובה ממופע הבית",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "במקרה מרוחק, ציר הזמן המקומי משקף באופן הדוק יותר את המשתמשים והתוכן של מופע זה.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>סיור</strong> עד <strong>ציר זמן מקומי</strong> ציר זמן",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "תוכן",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "הפיכת הצגת תוכן של מופע מרוחק תואמת משלכם, או לערבב אותה.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "הצגת תוכן מאחורי אזהרות תוכן (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "הרצה אוטומטית של GIFS",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "הצגת NSFW/תמונות רגישות",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "הגדרת חשבון פעיל",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "גררו כדי לשנות את הסדר",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "הודעות עבור {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "הודעות עבור {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "קבלת פעולות מחשבון זה",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "פעולות לביצוע בתור {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "הצגת תמונות אוואטאר עגולות",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "הצגת קישור, תמונה ותמליל לשיתוף תמליל מתוך תפריט הקשר דרך האינטרנט",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "הצגת תפריט הקשר של כיתה",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "ניתוב מחדש של פרופילים ריקים (לא מאוגדים) למופעי בית כדי להבטיח לכם לחיצה",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "ניתוב אוטומטי",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "הרחבת קישורים לפרסומים של Mastodon בצירי הזמן שלכם",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "הצגת פרסומים מורחבים ב-שורות",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "פרסום תמונות וקישור של תצוגות מקדימות",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "החלפת תצוגות ברירת מחדל של תצוגות מקדימות עם תמונות גדולות ותמליל חרבון מלא",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "הצגת תצוגות מקדימות של קישור עשיר.",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze יכול להציג תמונה של מתאר תמונה \"תמליל חלופי\" מתחת לתמונת rathrer מאשר רק בתיאור כלים לקריאה קלה יותר",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "הצגת תיאורי תמונות מתחת לתמונות",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "גרף תואם רק למופעים המריצים גרסה 4.0.0 ואילך",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "לא ניתן לאתר מופע זה, נא לבדוק את הכתובת ולנסות שוב.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "אירעה שגיאה. נא לנסות שוב מאוחר יותר.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "פוסטים",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "עוקבים",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "ברשימת המעקב",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "לא תודה",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "מעבר למדריך הפרופילים",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "מעבר אל ציר הזמן המקומי",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "עקבו אחר חשבון מההזנה המקומית כדי להתחיל לראות תוכן בערוץ הבית שלכם.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "אינכם מאוגדים ל- $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "תוכלו לבצע פעולות מחשבון זה בכל מופע.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "להוסיף $display_name$ לגראזה?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "הוספה לגבעה",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

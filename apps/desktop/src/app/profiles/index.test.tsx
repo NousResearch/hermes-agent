@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteProfile } from '@/hermes'
 import { retireLocalProfileGateways } from '@/store/gateway'
-import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
+import { refreshProfiles, selectProfile, setActiveProfile, setProfileColor } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { ProfilesView } from './index'
@@ -17,6 +17,12 @@ import { ProfilesView } from './index'
 // precisely because nothing rendered this view.
 
 afterEach(cleanup)
+
+globalThis.ResizeObserver ??= class ResizeObserver {
+  disconnect() {}
+  observe() {}
+  unobserve() {}
+}
 
 // Real i18n (useI18n falls back to English with no provider), so labels are the
 // actual strings — no brittle key snapshot to maintain here.
@@ -61,7 +67,8 @@ vi.mock('@/store/profile', () => ({
     (profile.display_name ?? '').trim() || profile.name,
   refreshProfiles: vi.fn(async () => [] as ProfileInfo[]),
   selectProfile: vi.fn(),
-  setActiveProfile: vi.fn()
+  setActiveProfile: vi.fn(),
+  setProfileColor: vi.fn()
 }))
 
 // The one non-default profile these tests act on. Its name doubles as the row's
@@ -130,6 +137,21 @@ describe('ProfilesView', () => {
 
     expect(soul.tagName).toBe('TEXTAREA')
     expect(soul.getAttribute('id')).toBe('new-profile-soul')
+  })
+
+  it('offers the existing color picker for named profiles and can reset to auto color', async () => {
+    vi.mocked(setProfileColor).mockClear()
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
+
+    await renderProfilesView()
+
+    realClick(await findRowMenu(NAMED_PROFILE))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Color…' }))
+
+    const reset = await screen.findByRole('button', { name: 'Auto' })
+    fireEvent.click(reset)
+
+    expect(setProfileColor).toHaveBeenCalledWith(NAMED_PROFILE, null)
   })
 
   it('re-homes to default when the active profile is deleted', async () => {

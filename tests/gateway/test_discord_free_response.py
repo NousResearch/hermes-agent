@@ -111,6 +111,7 @@ def adapter(monkeypatch):
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_FREE_RESPONSE_AUTO_THREAD",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
@@ -401,25 +402,51 @@ async def test_discord_free_response_auto_thread_opt_in(adapter, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_discord_no_thread_channels_wins_over_free_response_auto_thread(adapter, monkeypatch):
-    """An explicit ``no_thread_channels`` listing still forces inline replies."""
+    """An explicit ``no_thread_channels`` listing still forces inline replies with the opt-in on."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", "true")
-    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
 
+    # Baseline: the opt-in alone threads this channel.
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=456, name="t"))
+    first = make_message(channel=FakeTextChannel(channel_id=789), content="threaded by opt-in")
+    await adapter._handle_message(first)
+    adapter._auto_create_thread.assert_awaited_once_with(first)
+
+    # ...and listing the same channel in no_thread_channels overrides it.
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
+    adapter._auto_create_thread.reset_mock()
+    adapter.handle_message.reset_mock()
+    await adapter._handle_message(
+        make_message(channel=FakeTextChannel(channel_id=789), content="explicitly inline"),
+    )
+    adapter._auto_create_thread.assert_not_awaited()
+    assert adapter.handle_message.await_args.args[0].source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_voice_linked_channel_ignores_free_response_auto_thread(adapter, monkeypatch):
+    """Voice-linked text channels stay inline even with the opt-in on.
+
+    The opt-in clears ``skip_thread`` for free channels, so the voice-linked exclusion in the
+    auto-thread gate is the only thing keeping these channels unthreaded.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    adapter._voice_text_channels[111] = 789
     adapter._auto_create_thread = AsyncMock()
 
-    message = make_message(
-        channel=FakeTextChannel(channel_id=789),
-        content="explicitly inline",
+    await adapter._handle_message(
+        make_message(channel=FakeTextChannel(channel_id=789), content="voice follow-up"),
     )
 
-    await adapter._handle_message(message)
-
     adapter._auto_create_thread.assert_not_awaited()
-    event = adapter.handle_message.await_args.args[0]
-    assert event.source.chat_type == "group"
+    assert adapter.handle_message.await_args.args[0].source.chat_type == "group"
 
 
 @pytest.mark.asyncio

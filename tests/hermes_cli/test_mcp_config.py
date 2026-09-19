@@ -141,6 +141,26 @@ class TestMcpList:
         assert "1 selected" in out
         assert "all" not in out
 
+    def test_list_empty_include_block_all_still_renders_zero_selected(self, tmp_path, capsys):
+        """#12865 guard for this display block: an explicit ``include: []``
+        registers nothing (block-all), so it must render "0 selected", never
+        collapse to "all" — the scalar-normalization rework must not reopen
+        the truthiness hole b70e0f4603 closed."""
+        _seed_config(tmp_path, {
+            "ink": {
+                "url": "https://mcp.ml.ink/mcp",
+                "enabled": True,
+                "tools": {"include": []},
+            },
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "0 selected" in out
+        assert "all" not in out
+        assert "pattern" not in out
+
     def test_list_scalar_exclude_counts_as_one_pattern(self, tmp_path, capsys):
         """#93313: scalar exclude mirrors the same normalization shape —
         one configured pattern. #98067: an exclude count must say

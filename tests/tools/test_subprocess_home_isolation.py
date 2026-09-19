@@ -71,6 +71,24 @@ class TestGetSubprocessHome:
         from hermes_constants import get_subprocess_home
         assert get_subprocess_home() == str(profile_home)
 
+    def test_container_auto_prefers_profile_home_when_home_is_missing(self, tmp_path, monkeypatch):
+        self._container_mode(monkeypatch)
+        hermes_home = tmp_path / ".hermes"
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.delenv("HOME", raising=False)
+
+        env = {"HERMES_HOME": str(hermes_home), "HERMES_REAL_HOME": str(real_home)}
+
+        hermes_constants.apply_subprocess_home_env(env)
+
+        assert env["HOME"] == str(profile_home)
+        assert env["HERMES_REAL_HOME"] == str(real_home)
+
     def test_returns_profile_specific_path(self, tmp_path, monkeypatch):
         """Explicit profile mode keeps the old per-profile HOME behavior."""
         self._host_mode(monkeypatch)

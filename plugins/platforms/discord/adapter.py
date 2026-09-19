@@ -12,6 +12,7 @@ Uses discord.py library for:
 import asyncio
 import datetime as dt
 import hashlib
+import functools
 import inspect
 import json
 import logging
@@ -648,6 +649,26 @@ def _discord_ready_timeout_seconds() -> float:
     return 30.0
 
 
+def _voice_callback_accepts(callback, name: str) -> bool:
+    """True when ``callback`` declares keyword ``name`` (or ``**kwargs``).
+
+    Mirrors the signature-inspection rule used for plugin hook payloads so a consumer written
+    against the older narrow signature keeps working unchanged.
+    """
+    target = callback
+    while isinstance(target, functools.partial):
+        if name in (target.keywords or {}):
+            return True
+        target = target.func
+    try:
+        params = inspect.signature(target).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 class VoiceReceiver:
     """Captures voice audio from a Discord voice channel: hooks the VoiceClient socket, decrypts
     RTP (NaCl + DAVE E2EE), decodes Opus per user; a polling loop delivers utterances on silence."""
@@ -657,9 +678,12 @@ class VoiceReceiver:
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
-    def __init__(self, voice_client, allowed_user_ids: set = None):
+    def __init__(self, voice_client, allowed_user_ids: set = None, *, transcribe_all: bool = False):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
+        # discord.voice_transcribe_all: attribute packets from every member, not just allowlisted
+        # ones, so a bystander's utterance can be transcribed (authorization is enforced later).
+        self._transcribe_all = bool(transcribe_all)
         self._running = False
         self._secret_key: Optional[bytes] = None
         self._dave_session = None
@@ -857,7 +881,7 @@ class VoiceReceiver:
             if not channel:
                 return 0
             bot_id = self._vc.user.id if self._vc.user else 0
-            allowed = self._allowed_user_ids
+            allowed = None if self._transcribe_all else self._allowed_user_ids
             candidates = [
                 m.id for m in channel.members
                 if m.id != bot_id and (not allowed or str(m.id) in allowed)
@@ -3345,6 +3369,25 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             logger.debug("Could not load discord.%s config: %s", key, e)
             return default
 
+    def _load_discord_bool_config(self, key: str, default: bool) -> bool:
+        """Read a non-secret boolean from the top-level ``discord`` config."""
+        try:
+            from hermes_cli.config import read_raw_config
+            raw = ((read_raw_config() or {}).get("discord") or {}).get(key, default)
+            if isinstance(raw, str):
+                return raw.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(raw)
+        except Exception as e:
+            logger.debug("Could not load discord.%s config: %s", key, e)
+            return default
+
+    def _voice_transcribe_all(self) -> bool:
+        """``discord.voice_transcribe_all``: transcribe every speaker in the voice channel.
+
+        Transcription only — who may drive a turn is unchanged and stays with the allowlist.
+        """
+        return self._load_discord_bool_config("voice_transcribe_all", False)
+
     def _load_voice_timeout(self) -> int:
         """Return voice-channel inactivity timeout seconds; 0 disables it."""
         return self._load_discord_int_config(
@@ -3528,7 +3571,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if source is not None:
                 self._voice_sources[guild_id] = source
             try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver = VoiceReceiver(
+                    vc, allowed_user_ids=self._allowed_user_ids,
+                    transcribe_all=self._voice_transcribe_all())
                 receiver.start()
                 self._voice_receivers[guild_id] = receiver
                 self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
@@ -3784,19 +3829,31 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 completed = receiver.check_silence()
                 # Pass guild so role checks stay guild-scoped.
                 _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
+                transcribe_all = self._voice_transcribe_all()
                 for user_id, pcm_data in completed:
-                    if not self._is_allowed_user(str(user_id), guild=_vc_guild, is_dm=False):
+                    authorized = self._is_allowed_user(
+                        str(user_id), guild=_vc_guild, is_dm=False)
+                    # Without voice_transcribe_all, non-allowlisted speech is dropped before STT
+                    # (historical behaviour). With it, the utterance is transcribed and carried
+                    # with authorized=False so the gateway can route it as context, not a request.
+                    if not authorized and not transcribe_all:
                         continue
                     # User speech is activity too; keeps active listeners connected.
                     self._reset_voice_timeout(guild_id)
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
+                    await self._process_voice_input(
+                        guild_id, user_id, pcm_data, authorized=authorized)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error("Voice listen loop error: %s", e, exc_info=True)
 
-    async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
-        """Convert PCM -> WAV -> STT -> callback."""
+    async def _process_voice_input(
+        self, guild_id: int, user_id: int, pcm_data: bytes, *, authorized: bool = True
+    ):
+        """Convert PCM -> WAV -> STT -> callback.
+
+        ``authorized`` False marks a speaker who may be transcribed but must not drive a turn.
+        """
         from tools.voice_mode import is_whisper_hallucination
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
@@ -3812,9 +3869,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
             if self._voice_input_callback:
-                await self._voice_input_callback(
-                    guild_id=guild_id, user_id=user_id, transcript=transcript,
-                )
+                kwargs = {"guild_id": guild_id, "user_id": user_id, "transcript": transcript}
+                if not authorized:
+                    # Only bystander speech is annotated: `authorized` absent means authorized,
+                    # so every existing consumer keeps its exact previous call shape.
+                    if not _voice_callback_accepts(self._voice_input_callback, "authorized"):
+                        # The consumer cannot be told this speaker is a bystander, so it would
+                        # treat the transcript as an addressed request. Drop it instead.
+                        logger.debug(
+                            "Voice callback lacks 'authorized'; dropping bystander transcript "
+                            "for %s", user_id)
+                        return
+                    kwargs["authorized"] = False
+                await self._voice_input_callback(**kwargs)
         except Exception as e:
             # Surface ffmpeg's captured stderr from CalledProcessError, else log just says "exit status N".
             _ff_err = getattr(e, "stderr", None)

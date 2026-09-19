@@ -1399,6 +1399,9 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   voice_transcribe_all: false      # Transcribe every speaker in a joined voice channel
+#                                    # (default: false = only allowlisted users). Non-allowlisted
+#                                    # speech is recorded as observed context, never a request.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

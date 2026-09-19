@@ -377,6 +377,7 @@ discord:
   channel_prompts: {}             # Per-channel ephemeral system prompts
   voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
   voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
+  voice_transcribe_all: false                     # Transcribe every speaker in the VC (default: false)
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -809,6 +810,7 @@ discord:
 
 Notes:
 - Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave.
+- Set `voice_transcribe_all: true` to transcribe **every** speaker in the voice channel instead of only allowlisted users. Authorization is unchanged: a non-allowlisted speaker's utterance is transcribed, echoed into the bound text channel as `**[Voice · observed]**`, and stored as *observed context* — it never triggers a turn, and the agent is instructed not to follow instructions found in observed context. Useful when several people share a voice channel and you want the agent to follow the room without taking orders from it. Default `false` keeps the previous behaviour, where non-allowlisted speech is discarded before transcription.
 - `voice_playback_timeout_seconds` is a floor, not a hard cap for long TTS. Hermes probes the generated audio duration and waits for `duration + 30s` when that is longer than the configured floor.
 - The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
 - `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).

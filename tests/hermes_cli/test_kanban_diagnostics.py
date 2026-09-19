@@ -212,6 +212,64 @@ def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     assert stranded[0].data["assignee"] == "demo"
 
 
+# ---------------------------------------------------------------------------
+# truthful running liveness
+# ---------------------------------------------------------------------------
+
+
+def test_running_diagnostic_rejects_stale_heartbeat_and_foreign_pid(monkeypatch):
+    """A running row is not live merely because its stale PID now exists.
+
+    This models the two production failures safely: an orphaned child process
+    survives after its worker exits, and a recycled PID belongs to a stranger.
+    The diagnostic must surface both stale heartbeat and mismatched identity.
+    """
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 100_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: False)
+    task = _task(
+        status="running",
+        claim_lock=f"{kb._host_prefix()}123",
+        worker_pid=4242,
+        worker_started_at="old-boot|10",
+        started_at=now - 2 * 3600,
+        last_heartbeat_at=now - 3601,
+    )
+
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+    liveness = [d for d in diags if d.kind == "running_liveness_stale"]
+
+    assert len(liveness) == 1
+    assert liveness[0].severity == "error"
+    assert liveness[0].data["heartbeat_stale"] is True
+    assert liveness[0].data["worker_identity_matches"] is False
+    assert "heartbeat" in liveness[0].detail.lower()
+    assert "identity" in liveness[0].detail.lower()
+
+
+def test_running_liveness_reports_unavailable_heartbeat_without_zero_age(monkeypatch):
+    """A dead local worker with no timestamp must not imply a fabricated 0s age."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 100_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: False)
+    task = _task(
+        status="running",
+        claim_lock=f"{kb._host_prefix()}123",
+        worker_pid=4242,
+        worker_started_at="old-boot|10",
+        started_at=None,
+        last_heartbeat_at=None,
+    )
+
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+    liveness = [d for d in diags if d.kind == "running_liveness_stale"]
+
+    assert len(liveness) == 1
+    assert "heartbeat timestamp unavailable" in liveness[0].detail.lower()
+    assert "for 0s" not in liveness[0].detail.lower()
+    assert liveness[0].data["heartbeat_age_seconds"] is None
 
 
 # ---------------------------------------------------------------------------

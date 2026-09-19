@@ -187,6 +187,21 @@ def _current_model_runtime(agent, explicit_provider: str) -> tuple:
     return provider, current_model, str(runtime.get("base_url", "") or ""), key
 
 
+def _carried_reasoning_notice(agent, explicit_effort: str = "") -> str:
+    """Describe the live effort that a model switch keeps unless it overrides it."""
+    if agent is None or explicit_effort:
+        return ""
+    config = getattr(agent, "reasoning_config", None)
+    if not isinstance(config, dict):
+        return ""
+    effort = "none" if config.get("enabled") is False else str(config.get("effort", "") or "").strip()
+    return f"reasoning still {effort}" if effort else ""
+
+
+def _combine_switch_warning(*messages: str) -> str:
+    return " · ".join(message for message in messages if message)
+
+
 def _merge_preflight_warning(result, agent, session: dict, cfg, custom_provs) -> None:
     """Fold the context-compression preflight warning into ``result`` (best-effort)."""
     try:
@@ -257,6 +272,7 @@ def _apply_model_switch(
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)
     agent = session.get("agent")
+    carried_reasoning_notice = _carried_reasoning_notice(agent, reasoning_effort)
     if one_turn and not agent:
         raise ValueError("/model --once requires a live session")
     current_provider, current_model, current_base_url, current_api_key = _current_model_runtime(
@@ -298,7 +314,8 @@ def _apply_model_switch(
     if reasoning_effort:
         _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     return {
-        "value": result.new_model, "warning": result.warning_message or "",
+        "value": result.new_model,
+        "warning": _combine_switch_warning(result.warning_message or "", carried_reasoning_notice),
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session")}
 

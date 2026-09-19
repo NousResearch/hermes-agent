@@ -95,7 +95,8 @@ const groupChatSyncRetryTimers = new Map<string, ReturnType<typeof setTimeout>>(
 const groupChatSyncRetryCounts = new Map<string, number>()
 export let groupChatSyncDisposed = false
 
-/** Cut one sync-projection line to the per-message budget and mark the cut.
+/** Cut one room body to a per-message budget and mark the cut (the sync
+ *  projection and the per-turn delta window share the convention).
  *  Receivers used to see a silent mid-sentence slice with no signal that the
  *  body continued. Keep the mark inside the same char budget so CJK/envelope
  *  accounting does not grow. */
@@ -1273,7 +1274,22 @@ export const GROUP_CHAT_MAX_ROUNDS = 3
 // #94478 review: continuation rounds are bounded independently of the message cap so a pathological mention chain can't consume the room's whole budget on handoffs.
 export const GROUP_CHAT_MAX_MESSAGES = 10
 export const GROUP_CHAT_MAX_CONTINUATIONS = 2
-export const GROUP_CHAT_HISTORY_LIMIT = 24
+// Per-turn room window (#114341 follow-up): a member sees every message since
+// its last turn, up to BOTH ceilings — oldest dropped first, the cut named
+// exactly. Room lines are short by construction (the rules ask for 1-3
+// sentences; user lines average ~100-300 chars), so ~200 entries and ~32 KB
+// (~8k tokens) bite at about the same place for ordinary traffic; the char
+// budget is what keeps a prompt bounded when the lines are long. One body
+// is cut to LINE_CHARS (mark: '… [truncated]') rather than evicting whole
+// messages, so a single giant paste costs a quarter of the window, not all
+// of it, while a multi-paragraph member result still lands intact.
+export const GROUP_CHAT_HISTORY_LIMIT = 200
+export const GROUP_CHAT_HISTORY_CHARS = 32_000
+export const GROUP_CHAT_HISTORY_LINE_CHARS = 8_000
+// Room log retained locally: twice the turn window so a member that skipped
+// a whole window still receives an exact omitted count, not a clamped
+// watermark and a silently shortened room.
+export const GROUP_CHAT_LOG_RETAIN = GROUP_CHAT_HISTORY_LIMIT * 2
 export const GROUP_CHAT_MAX_MEMBERS = 6
 
 /** Transcript form of a room speaker's identity. Friendly identity wins:
@@ -1367,7 +1383,7 @@ export function groupSpeakerLabel(name?: null | string, group?: null | string) {
 export function trimGroupChatLog(
   log: GroupMessage[],
   watermarks: Record<string, number>,
-  limit = GROUP_CHAT_HISTORY_LIMIT * 4
+  limit = GROUP_CHAT_LOG_RETAIN
 ) {
   if (log.length <= limit) {
     return {

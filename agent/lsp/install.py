@@ -198,26 +198,53 @@ def _link_into_bin(target: Path) -> str:
     return str(link if link.exists() else target)
 
 
+# Node package manager → argv that installs into ``<staging>/node_modules`` (``lsp.package_manager``).
+# Every manager keeps the staging-dir semantics: nothing touches the user's project or global tree.
+_NODE_PM_ARGV: Dict[str, Callable[[str], list]] = {
+    "npm": lambda staging: ["install", "--prefix", staging, "--silent", "--no-fund", "--no-audit"],
+    "pnpm": lambda staging: ["add", "--dir", staging],
+    "yarn": lambda staging: ["add", "--cwd", staging],
+}
+
+
+def _node_package_manager() -> str:
+    """``lsp.package_manager`` from config (npm default); unknown values warn once and fall back to npm."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        lsp_cfg = load_config_readonly().get("lsp") or {}
+    except Exception:  # noqa: BLE001 — installer must not die on a broken config; npm is the historical default
+        return "npm"
+    pm = str(lsp_cfg.get("package_manager") or "npm").strip().lower() if isinstance(lsp_cfg, dict) else "npm"
+    if pm not in _NODE_PM_ARGV:
+        logger.warning("[install] lsp.package_manager=%r is not one of %s; using npm", pm, sorted(_NODE_PM_ARGV))
+        return "npm"
+    return pm
+
+
 def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> Optional[str]:
-    """``npm install --prefix <staging>`` then link ``node_modules/.bin/<bin_name>`` into ``lsp/bin/``."""
-    # Managed npm first: $HERMES_HOME/node isn't on an arbitrary process's
+    """Install with the configured Node package manager into ``<staging>`` and link
+    ``node_modules/.bin/<bin_name>`` into ``lsp/bin/``."""
+    pm = _node_package_manager()
+    # Managed Node first: $HERMES_HOME/node isn't on an arbitrary process's
     # PATH, so a bare which() would miss the Node that Hermes installed.
-    npm = find_node_executable("npm")
-    if npm is None:
-        logger.info("[install] cannot install %s: no usable npm found", pkg)
+    pm_bin = find_node_executable(pm)
+    if pm_bin is None:
+        # Deliberately no silent fallback to npm: a pnpm/yarn choice is usually a supply-chain policy.
+        logger.warning("[install] cannot install %s: lsp.package_manager is %r but no usable %s was found "
+                       "(install it, or set lsp.package_manager: npm)", pkg, pm, pm)
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])
-    logger.info("[install] npm install --prefix %s %s", staging, " ".join(install_targets))
-    cmd = [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets]
-    if not _run_installer("npm", pkg, cmd, timeout=300):
+    cmd = [pm_bin, *_NODE_PM_ARGV[pm](str(staging)), *install_targets]
+    logger.info("[install] %s %s", pm, " ".join(cmd[1:]))
+    if not _run_installer(pm, pkg, cmd, timeout=300):
         return None
     found = _first_existing(staging / "node_modules" / ".bin" / bin_name)
     if found is not None:
         # npm's Windows wrappers resolve their payload via ``%~dp0\..\<pkg>``, so a copy or symlink
         # in ``lsp/bin/`` points at nothing; use them where npm put them (``_existing_binary`` probes there).
         return str(found) if _is_windows() and found.suffix.lower() in (".cmd", ".bat") else _link_into_bin(found)
-    logger.warning("[install] npm install for %s succeeded but bin %s not found", pkg, bin_name)
+    logger.warning("[install] %s install for %s succeeded but bin %s not found", pm, pkg, bin_name)
     return None
 
 

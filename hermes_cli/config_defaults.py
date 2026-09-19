@@ -2250,6 +2250,10 @@ DEFAULT_CONFIG = {
         # Missing server binaries: auto = install via npm/go/pip into <HERMES_HOME>/lsp/bin/ on
         # first use; manual = only binaries on PATH; off = alias for manual.
         "install_strategy": "auto",
+        # Node package manager for the npm-recipe servers: npm | pnpm | yarn. Installs still land in
+        # <HERMES_HOME>/lsp/node_modules; a configured manager that is not installed skips the install
+        # (no silent fallback to npm) so a pnpm/yarn supply-chain policy is never bypassed.
+        "package_manager": "npm",
         # Idle seconds before a server is shut down (respawned on demand), so long- running
         # processes don't accumulate stale children (hundreds of MB + pipe FDs each) across
         # worktrees. 0 = keep servers for process lifetime.

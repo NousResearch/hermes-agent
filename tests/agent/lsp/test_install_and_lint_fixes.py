@@ -186,3 +186,32 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_silently(tmp_path, monkeypatch):
+    """``lsp.package_manager`` picks the Node installer (staging-dir semantics kept); a configured manager
+    that is missing skips the install instead of quietly using npm; unknown values fall back to npm."""
+    from unittest.mock import MagicMock
+
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    staging = str(install_mod.hermes_lsp_bin_dir().parent)
+    cfg = {"lsp": {}}
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    runs = []
+    monkeypatch.setattr(install_mod.subprocess, "run", lambda cmd, **kw: (runs.append(cmd), MagicMock(returncode=0, stderr=""))[1])
+    present = {"npm": "/usr/bin/npm", "pnpm": "/usr/bin/pnpm"}
+    monkeypatch.setattr(install_mod, "find_node_executable", lambda name: present.get(name))
+
+    cfg["lsp"] = {"package_manager": "pnpm"}
+    install_mod._install_npm("pyright", "pyright-langserver")
+    assert runs[-1] == ["/usr/bin/pnpm", "add", "--dir", staging, "pyright"]
+
+    cfg["lsp"] = {"package_manager": "bogus"}  # unknown → npm, unchanged historical argv
+    install_mod._install_npm("pyright", "pyright-langserver")
+    assert runs[-1] == ["/usr/bin/npm", "install", "--prefix", staging, "--silent", "--no-fund", "--no-audit", "pyright"]
+
+    cfg["lsp"] = {"package_manager": "yarn"}  # configured but absent → no install, no npm run
+    assert install_mod._install_npm("pyright", "pyright-langserver") is None
+    assert len(runs) == 2

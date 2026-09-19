@@ -193,6 +193,13 @@ lsp:
   #   manual  — only use binaries already on PATH
   install_strategy: auto
 
+  # Node package manager for the npm-based servers: npm (default), pnpm
+  # or yarn. Installs still land in <HERMES_HOME>/lsp/node_modules; a
+  # manager that is configured but not installed skips the install with
+  # a warning instead of silently using npm, so a pnpm/yarn supply-chain
+  # policy (minimumReleaseAge, allowBuilds, …) is never bypassed.
+  package_manager: npm
+
   # How long an unused language-server client stays alive (seconds).
   # Idle servers are shut down automatically and respawned on the next
   # relevant file operation. Set to 0 to disable idle reaping and keep

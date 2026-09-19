@@ -4,6 +4,7 @@ file-serving helpers shared with the local-skill path. Helpers tests patch on th
 
 import json
 import logging
+import os
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
@@ -65,6 +66,28 @@ def _available_skill_files(skill_dir: Path) -> Dict[str, List[str]]:
     return {k: groups[k] for k in (*_SUPPORT_DIRS, "other") if k in groups}
 
 
+def _containment_error(target: Path, root: Path, path_error: str) -> str:
+    """Sharpen the containment error when the only reason *target* is refused is a link.
+
+    ``validate_within_dir`` resolves symlinks, so a path that is lexically inside ``root`` but
+    whose link target lives elsewhere reports a bare "Path escapes allowed directory". Called out
+    explicitly when that is what happened (a ``link_skill_tree.py`` profile skill is the common
+    case): the user needs to know the entry is a link, not that their relative path is wrong.
+    """
+    try:
+        Path(os.path.abspath(target)).relative_to(Path(os.path.abspath(root)))
+    except (ValueError, OSError):
+        return path_error
+    with suppress(OSError):
+        resolved = target.resolve()
+        return (
+            f"Path escapes allowed directory: '{target.name}' is a link that resolves to "
+            f"{resolved}, outside the skill directory {root}. A profile skill built from "
+            f"file-level links (link_skill_tree.py) cannot serve linked files there; use a real "
+            f"copy, or link the whole support directory instead.")
+    return path_error
+
+
 def _serve_skill_file(
     skill_root: Path, file_path: str, label: str, *, hint: str | None = None,
     list_available: bool = False, read_error_prefix: bool = False, mark_read: bool = False) -> str:
@@ -78,7 +101,7 @@ def _serve_skill_file(
         return _fail("Path traversal ('..') is not allowed.", **extra)
     target = skill_root / file_path
     if path_error := validate_within_dir(target, skill_root):
-        return _fail(path_error, **extra)
+        return _fail(_containment_error(target, skill_root, path_error), **extra)
     # is_file(), not exists(): a bare directory must take the not-found branch.
     if not target.is_file():
         listing = {} if not list_available else {

@@ -50,7 +50,7 @@ export async function exportSession(sessionId: string, params: Omit<ExportSessio
     anchor.href = downloadUrl
     anchor.download = sessionExportFilename(sessionId, params.title)
     anchor.click()
-    URL.revokeObjectURL(downloadUrl)
+    window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 30_000)
 
     notify({ kind: 'success', message: translateNow('desktop.sessionExported'), durationMs: 2_000 })
   } catch (err) {

@@ -211,6 +211,8 @@ def run_tool_round(
     # follow-up API call can exceed the gateway inactivity timeout (HERMES_AGENT_TIMEOUT, default 1800s) and
     # the gateway kills the session before the next activity touch fires (#69559, #69131).
     agent._touch_activity(f"tool results posted, continuing iteration #{api_call_count}")
+    # Successful tool round — reset the false-stop nudge budget for this turn.
+    agent._false_stop_nudges = 0
     return _verdict("continue")
 
 

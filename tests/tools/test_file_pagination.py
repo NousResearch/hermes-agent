@@ -14,6 +14,7 @@ from tools.file_operations_common import (
 @pytest.mark.parametrize("field", ["offset", "limit"])
 @pytest.mark.parametrize("number", ["1e309", "-1e309", "NaN"])
 def test_nonfinite_pagination_uses_default(normalize, field, number):
+    """Overflowing JSON numbers must fall back without changing the other bound."""
     args = {"offset": 2, "limit": 3}
     args.update(json.loads(f'{{"{field}": {number}}}'))
     expected = normalize(**{key: value for key, value in args.items() if key != field})
@@ -24,6 +25,7 @@ def test_nonfinite_pagination_uses_default(normalize, field, number):
 @pytest.mark.parametrize("field", ["offset", "limit"])
 @pytest.mark.parametrize("number", ["1e309", "-1e309"])
 def test_registry_pagination_reads_real_files(tmp_path, monkeypatch, tool, field, number):
+    """Schema-bypassing JSON must still produce file results through real dispatch."""
     from tools import file_tools
     from tools.environments.local import LocalEnvironment
     from tools.file_operations import ShellFileOperations

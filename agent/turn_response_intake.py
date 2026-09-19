@@ -96,18 +96,23 @@ def _fire_post_api_request_hook(
 
 
 def _relay_thinking(agent: Any, content: str) -> None:
-    """Relay the model's text to the progress callback: subagents send the first line to
-    the parent display; any agent with a structured callback gets ``reasoning.available``."""
+    """Relay a subagent's first content line to the parent display — a child's answer *is* the
+    parent's reasoning surface, so it belongs there.
+
+    A top-level agent's content is its answer, not its reasoning. Emitting it as
+    ``reasoning.available`` rendered that answer a second time as a "thinking" block that matched
+    the reply word for word. Real chain-of-thought never came through here: it reaches consumers
+    via ``reasoning_callback`` (``stream_delivery._fire_reasoning_delta``), which each gateway
+    surface wires for itself. A model that produces no reasoning now shows none, instead of an
+    echo.
+    """
+    if getattr(agent, '_delegate_depth', 0) <= 0:
+        return
     _think_text = _REASONING_TAG_RE.sub('', content.strip()).strip()
     first_line = _think_text.split('\n')[0][:80] if _think_text else ""
-    if first_line and getattr(agent, '_delegate_depth', 0) > 0:
+    if first_line:
         try:
             agent.tool_progress_callback("_thinking", first_line)
-        except Exception:
-            pass
-    elif _think_text:
-        try:
-            agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
         except Exception:
             pass
 

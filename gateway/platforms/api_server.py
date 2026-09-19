@@ -2146,7 +2146,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
-        stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
+        stream_delta_callback=None, tool_progress_callback=None, reasoning_callback=None,
+        tool_start_callback=None,
         tool_complete_callback=None, gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
@@ -2198,6 +2199,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
             "tool_progress_callback": tool_progress_callback,
+            # Real chain-of-thought deltas; ``None`` for surfaces that don't render reasoning.
+            "reasoning_callback": reasoning_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
             "session_db": self._ensure_session_db(),
@@ -3217,6 +3220,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if delta:
                 events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
+        def _reasoning(text: str) -> None:
+            # Same ``tool.progress``/``_thinking`` wire event this surface already emitted — only
+            # the source changes, from the answer echo to the model's real reasoning deltas.
+            if text:
+                events.enqueue("tool.progress", {"message_id": message_id, "tool_name": "_thinking", "delta": text})
+
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
@@ -3233,7 +3242,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
+                    tool_progress_callback=_tool_progress, reasoning_callback=_reasoning,
+                    active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3730,7 +3740,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _run_agent(
         self, user_message: str, conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
-        stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
+        stream_delta_callback=None, tool_progress_callback=None, reasoning_callback=None,
+        tool_start_callback=None,
         tool_complete_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
@@ -3770,6 +3781,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
                         stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
+                        reasoning_callback=reasoning_callback,
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,

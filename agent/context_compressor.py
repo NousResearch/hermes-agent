@@ -1772,9 +1772,12 @@ in-flight work is cancelled."
 If no outstanding task exists, write "None."]""",
         "goal": "[What the user is trying to accomplish overall]",
         "constraints": (
-            "[User preferences, coding style, constraints, important decisions. Any security or safety constraint "
-            "the user stated (files/data to avoid, operations that must not be performed, credential-handling rules) "
-            "MUST be quoted VERBATIM here so it continues to apply after compaction — never paraphrase those.]"
+            "[Only include durable, cross-task user preferences, coding style, or an explicit standing constraint "
+            "the user intended to apply to future tasks. Do NOT promote an operation-scoped instruction into this "
+            "section, even when it is phrased as a safety rule: for example, 'Do not delete the script.' while "
+            "repairing one command belongs in Historical Task Snapshot when still active, or in Completed Actions, "
+            "Active State, or Key Decisions when it describes past work. Preserve a genuine explicit standing "
+            "constraint (including security or safety rules) VERBATIM here — never paraphrase it.]"
         ),
         "resolved_questions": (
             "[Questions the user asked that were ALREADY answered — include the answer so it is not repeated]"

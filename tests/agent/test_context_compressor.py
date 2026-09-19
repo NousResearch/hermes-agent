@@ -43,6 +43,25 @@ def compressor():
         return c
 
 
+def test_batch_summary_prompt_keeps_task_scoped_instructions_out_of_preferences(compressor):
+    """Batch compaction must distinguish a one-off operation guard from a standing preference."""
+    prompt = compressor._build_summary_prompt(
+        "[USER]: Do not delete the script while repairing this command.\n\n"
+        "[USER]: Always respond in concise English.",
+        summary_budget=800,
+        focus_topic=None,
+        memory_context="",
+        has_user_turn=True,
+    )
+
+    assert "Only include durable, cross-task user preferences" in prompt
+    assert "operation-scoped instruction" in prompt
+    assert "Do not delete the script." in prompt
+    assert "Historical Task Snapshot" in prompt
+    assert "Completed Actions, Active State, or Key Decisions" in prompt
+    assert "explicit standing constraint" in prompt
+
+
 class TestSummarizeToolResultWebExtract:
     """Pre-compression pruning must survive web_extract calls whose ``urls`` are
     web_search result dicts ({"url"/"href": ...}), which models routinely forward

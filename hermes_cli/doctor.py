@@ -29,6 +29,7 @@ from hermes_cli.doctor_config import (
     _check_config_file,
     _check_env_file,
     _check_mcp_security,
+    _check_approval_mode,
     _check_xai_retirement,
     _check_plugin_compat,
 )
@@ -109,6 +110,7 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
 # Ordered (section title, check). None title = check prints its own header (or none); order is user-visible.
 DOCTOR_CHECKS = (
     ('Security Advisories', _check_security_advisories), ('MCP Server Security', _check_mcp_security),
+    ('Approval Prompt Safety', _check_approval_mode),
     ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
     ('Required Packages', _check_required_packages), ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),

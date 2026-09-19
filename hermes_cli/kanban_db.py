@@ -24,11 +24,21 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
+
+
+def _task_budget_payload(title: object, body: object, goal_max_turns: object) -> dict:
+    """Resolve v1 worker budgets at a durable lifecycle boundary."""
+    from hermes_cli.kanban_budget_policy import resolve_task_budget
+
+    return resolve_task_budget(SimpleNamespace(
+        title=title, body=body, goal_max_turns=goal_max_turns,
+    ))
 
 
 # --- Shared micro-helpers (row access, JSON, env, git) ---
@@ -1392,6 +1402,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "budget_policy": _task_budget_payload(title, body, goal_max_turns),
                     },
                 )
                 if task_status == "blocked":
@@ -2234,27 +2245,39 @@ def _claim_and_open_run(
     if cur.rowcount != 1:
         return None
     trow = conn.execute(
-        "SELECT assignee, max_runtime_seconds, current_step_key "
+        "SELECT assignee, max_runtime_seconds, current_step_key, title, body, goal_max_turns "
         "FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     run_cur = conn.execute(
         """
         INSERT INTO task_runs (
             task_id, profile, step_key, status,
-            claim_lock, claim_expires, max_runtime_seconds,
+            claim_lock, claim_expires, max_runtime_seconds, metadata,
             started_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
         """,
         (
             task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
-            lock, expires, trow["max_runtime_seconds"] if trow else None, now,
+            lock, expires, trow["max_runtime_seconds"] if trow else None,
+            _json_or_null(_task_budget_payload(
+                trow["title"] if trow else "", trow["body"] if trow else None,
+                trow["goal_max_turns"] if trow else None,
+            )),
+            now,
         ),
     )
     run_id = run_cur.lastrowid
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
     _append_event(
         conn, task_id, "claimed",
-        {"lock": lock, "expires": expires, "run_id": run_id, **(event_extra or {})}, run_id=run_id,
+        {
+            "lock": lock, "expires": expires, "run_id": run_id,
+            "budget_policy": _task_budget_payload(
+                trow["title"] if trow else "", trow["body"] if trow else None,
+                trow["goal_max_turns"] if trow else None,
+            ),
+            **(event_extra or {}),
+        }, run_id=run_id,
     )
     return run_id
 

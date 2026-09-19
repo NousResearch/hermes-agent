@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -2807,6 +2808,13 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_KANBAN_GOAL_MODE"] = "1"
         if task.goal_max_turns is not None:
             env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
+    # The regular agent loop honours HERMES_MAX_ITERATIONS.  Preserve the
+    # complete selected policy separately so phase reservations are inspectable
+    # by the worker and its handoff without inventing a new global setting.
+    from hermes_cli.kanban_budget_policy import resolve_task_budget
+    budget_policy = resolve_task_budget(task)
+    env["HERMES_MAX_ITERATIONS"] = str(budget_policy["max_turns"])
+    env["HERMES_KANBAN_BUDGET_POLICY"] = json.dumps(budget_policy, sort_keys=True)
     for var in ("TERMINAL_TIMEOUT", "TERMINAL_MAX_FOREGROUND_TIMEOUT"):
         override = _worker_terminal_timeout_env(task.max_runtime_seconds, env.get(var))
         if override is not None:

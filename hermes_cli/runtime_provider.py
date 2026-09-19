@@ -649,6 +649,8 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
         api_key = creds.get("api_key", "")
         if not base_url:
             base_url = _actual_url(provider, creds.get("base_url", "").rstrip("/"))
+    if provider == "lmstudio":
+        base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
     api_mode = _api_key_provider_api_mode(provider, model_cfg, api_key, base_url, target_model or model_cfg.get("default", ""),
                                           opencode_by_model=False)
     api_key = _actual_local_key(provider, api_key, base_url)

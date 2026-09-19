@@ -160,6 +160,15 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     return _transport_is_dead(session.get("transport"))
 
 
+def _sessions_quiescent(exclude: str | None = None) -> bool:
+    """No session but ``exclude`` is mid-turn, building, awaiting input, holding live delegations, or on a live
+    transport. A non-forced memory trim holds the GIL (gc.collect) and every glibc arena lock (malloc_trim) for
+    its whole duration — 20-50 s on multi-GB heaps — which stalls the event loop, drops WS clients past the
+    write deadline and interrupts their turns (#58576); this is the only moment it costs nobody."""
+    with _sessions_lock:
+        return all(_session_is_lru_evictable(sid, s) for sid, s in _sessions.items() if sid != exclude)
+
+
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     """TTL eviction: the LRU exemptions plus idle-for-TTL AND older-than-TTL."""
     if not _session_is_lru_evictable(sid, session):
@@ -185,14 +194,9 @@ def _reap_idle_sessions() -> None:
     _enforce_session_cap()
     _reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
-    # every scan to prevent unbounded RSS growth over days/weeks. The trim holds the GIL (gc.collect) and every
-    # glibc arena lock (malloc_trim) for its whole duration — 20-50 s on multi-GB heaps — which stalls the event
-    # loop, drops WS clients past the write deadline and interrupts their turns (#58576). So the periodic trim
-    # waits for a quiescent scan: no session mid-turn, building, awaiting input, or on a live transport. Forced
-    # trims (agent close, cache pressure) are unaffected.
-    with _sessions_lock:
-        quiescent = all(_session_is_lru_evictable(sid, s) for sid, s in _sessions.items())
-    if not quiescent:
+    # every quiescent scan to prevent unbounded RSS growth over days/weeks. Forced trims (agent close, cache
+    # pressure) are unaffected.
+    if not _sessions_quiescent():
         logger.debug("idle reaper periodic trim deferred: a session is busy or attached")
         return
     try:

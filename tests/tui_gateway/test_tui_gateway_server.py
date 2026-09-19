@@ -19666,32 +19666,6 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
         server._sessions.clear()
 
 
-def test_reap_idle_sessions_calls_periodic_trim(monkeypatch):
-    """The idle reaper must call trim_memory every scan, even with no victims."""
-    trim_calls = []
-    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
-    monkeypatch.setattr(server, "_close_session_by_id", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
-    monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
-
-    # Patch the delayed import path: the function does
-    # `from hermes_cli.mem_trim import trim_memory` at call time.
-    import hermes_cli.mem_trim as mem_trim
-
-    monkeypatch.setattr(
-        mem_trim, "trim_memory",
-        lambda **kw: trim_calls.append(kw.get("reason", "")) or True,
-    )
-
-    server._sessions.clear()
-    try:
-        server._reap_idle_sessions()
-        assert len(trim_calls) == 1
-        assert trim_calls[0] == "idle reaper periodic trim"
-    finally:
-        server._sessions.clear()
-
-
 def _periodic_trim_calls(monkeypatch):
     """Stub the reaper's side effects and capture trim_memory calls (delayed import → patch the module attr)."""
     import hermes_cli.mem_trim as mem_trim
@@ -19714,7 +19688,7 @@ def test_periodic_trim_deferred_while_a_session_is_busy_or_attached(monkeypatch)
     for busy in ({"running": True}, {"transport": live}):
         server._sessions.clear()
         server._sessions["idle"] = _idle_evictable_session(now)
-        server._sessions["busy"] = _idle_evictable_session(now) | {"last_active": now, "created_at": now} | busy
+        server._sessions["busy"] = _idle_evictable_session(now) | busy
         try:
             server._reap_idle_sessions()
             assert calls == [], busy
@@ -19723,25 +19697,46 @@ def test_periodic_trim_deferred_while_a_session_is_busy_or_attached(monkeypatch)
 
 
 def test_periodic_trim_runs_once_every_session_is_quiescent(monkeypatch):
+    """Every quiescent scan trims, even with no victims: no sessions at all, or only recent (not yet
+    TTL-evictable) sessions that are detached and idle."""
     calls = _periodic_trim_calls(monkeypatch)
     now = time.time()
+    for sessions in ({}, {"parked": _idle_evictable_session(now) | {"last_active": now, "created_at": now}}):
+        calls.clear()
+        server._sessions.clear()
+        server._sessions.update(sessions)
+        try:
+            server._reap_idle_sessions()
+            assert calls == ["idle reaper periodic trim"], sessions
+        finally:
+            server._sessions.clear()
+
+
+def test_turn_completion_trim_skips_while_another_session_is_running(monkeypatch):
+    """The finishing session is still marked running when _finish_turn runs, so only OTHER sessions gate its
+    trim: a sole session trims at every turn end; a second in-flight turn defers it (#58576)."""
+    calls = _periodic_trim_calls(monkeypatch)
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    now = time.time()
+    own = _idle_evictable_session(now) | {"running": True, "transport": types.SimpleNamespace(_closed=False)}
     server._sessions.clear()
-    # Recent (not TTL-evictable) but detached and idle: still quiescent, so the trim proceeds.
-    server._sessions["parked"] = _idle_evictable_session(now) | {"last_active": now, "created_at": now}
+    server._sessions["own"] = own
     try:
-        server._reap_idle_sessions()
-        assert calls == ["idle reaper periodic trim"]
+        server._finish_turn("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
+        assert calls == ["tui turn completion"]
+
+        calls.clear()
+        server._sessions["other"] = _idle_evictable_session(now) | {"running": True}
+        server._finish_turn("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
+        assert calls == []
     finally:
         server._sessions.clear()
 
 
 def test_reap_idle_sessions_logs_trim_failure(monkeypatch, caplog):
-    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
-    monkeypatch.setattr(server, "_close_session_by_id", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
-    monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
     import hermes_cli.mem_trim as mem_trim
 
+    _periodic_trim_calls(monkeypatch)
     monkeypatch.setattr(mem_trim, "trim_memory", lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
     server._sessions.clear()
     try:

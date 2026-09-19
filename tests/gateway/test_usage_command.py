@@ -1,6 +1,7 @@
 from hermes_state import AsyncSessionDB
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -199,6 +200,47 @@ class TestUsageAccountSection:
 
         account_call = next(c for c in calls if c["args"] == ("nvidia",))
         assert account_call["kwargs"]["base_url"] == "https://integrate.api.nvidia.com/v1/"
+
+    @pytest.mark.asyncio
+    async def test_usage_command_falls_back_to_runtime_snapshot(self, monkeypatch):
+        """A session served by a fallback provider records that route in
+        ``model_config.gateway_runtime`` but may carry no ``billing_provider`` yet. /usage must
+        fetch account usage for the snapshot provider + base URL, not skip the account section
+        (#75535)."""
+        runner = _make_runner(SK)
+        runner._session_db = AsyncSessionDB(MagicMock())
+        # No billing_provider/billing_base_url on the row; only the live-routing snapshot.
+        runner._session_db._db.get_session.return_value = {
+            "model_config": json.dumps(
+                {"gateway_runtime": {"provider": "custom:freellmapi",
+                                     "base_url": "https://fallback.example/v1"}}
+            ),
+        }
+        runner._session_db._db.get_recent_session_model_route.return_value = {}
+        session_entry = MagicMock(session_id="sess-1")
+        runner.session_store.get_or_create_session.return_value = session_entry
+
+        calls = []
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["account limits"],
+        )
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+
+        await runner._handle_usage_command(MagicMock())
+
+        account_call = next(c for c in calls if c["args"] == ("custom:freellmapi",))
+        assert account_call["kwargs"]["base_url"] == "https://fallback.example/v1"
 
 
 class TestUsageReset:

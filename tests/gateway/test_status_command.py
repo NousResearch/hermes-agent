@@ -2,6 +2,7 @@ from hermes_state import AsyncSessionDB, SessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -353,6 +354,57 @@ async def test_status_command_default_route_keeps_runtime_endpoint_and_context_p
         kwargs = lookup.call_args.kwargs
         assert (kwargs["base_url"], kwargs["api_key"], kwargs["config_context_length"]) == (
             runtime["base_url"], runtime["api_key"], 32_768)
+
+
+def _runner_with_row(session_row: dict):
+    """Runner with a persisted SessionDB row and no resident agent / override / recent route."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    session_entry.last_prompt_tokens = 1_000
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = session_row
+    runner._session_db._db.get_recent_session_model_route.return_value = {}
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_status_command_shows_runtime_fallback_provider():
+    """A session served by a fallback provider records that route in
+    ``model_config.gateway_runtime`` but may carry no ``billing_provider`` yet. /status must show
+    the snapshot provider, not the configured default (#75535)."""
+    row = {
+        "model": "z-ai/glm-5.2",
+        "model_config": json.dumps(
+            {"gateway_runtime": {"provider": "custom:freellmapi",
+                                 "base_url": "https://fallback.example/v1"}}
+        ),
+    }
+    runner = _runner_with_row(row)
+    config = {"model": {"default": "configured-model", "provider": "configured-default"}}
+    with patch("gateway.run._load_gateway_config", return_value=config):
+        result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `z-ai/glm-5.2` (custom:freellmapi)" in result
+    assert "(configured-default)" not in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_falls_to_configured_default_without_snapshot():
+    """Negative path: no runtime snapshot and no billing_provider → /status shows the configured
+    default provider. The #75535 fallback must not fabricate a provider when none was recorded."""
+    row = {"model_config": json.dumps({"gateway_runtime": {}})}
+    runner = _runner_with_row(row)
+    config = {"model": {"default": "configured-model", "provider": "configured-default"}}
+    with patch("gateway.run._load_gateway_config", return_value=config):
+        result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `configured-model` (configured-default)" in result
 
 
 @pytest.mark.asyncio

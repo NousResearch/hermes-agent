@@ -207,6 +207,16 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.auth
         assert result.should_fallback is True
 
+    def test_403_upstream_unavailable_code_is_transient_not_auth(self):
+        """A gateway 403 stamped ``code=upstream_unavailable`` is a transient upstream
+        outage: retried with backoff, credential untouched (#75388)."""
+        body = {"error": {"message": "Upstream service temporarily unavailable. Please retry later.",
+                          "type": "upstream_unavailable", "code": "upstream_unavailable"}}
+        result = classify_api_error(MockAPIError("Forbidden", status_code=403, body=body), provider="custom")
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
 
 
 

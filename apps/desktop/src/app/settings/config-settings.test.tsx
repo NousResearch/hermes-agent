@@ -17,7 +17,8 @@ vi.mock('@/hermes', () => ({
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
-  setApiRequestProfile: () => {}
+  setApiRequestProfile: () => {},
+  profileScopeKey: (profile?: string) => (profile ?? '').trim() || 'default'
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({

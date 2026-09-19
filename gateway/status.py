@@ -604,21 +604,26 @@ def _pid_exists(pid: int) -> bool:
     try:
         import psutil  # type: ignore
         # Best-effort zombie check: status-read failures fall through to pid_exists().
-        try:
-            # A zombie (defunct) process is still in the process table, so ``psutil.pid_exists()`` returns
-            # True for it — but it is already dead: SIGKILL has no effect and it cannot be a running
-            # gateway. Treating a zombie as alive makes ``--replace`` wait for the old PID to die (it never
-            # does, until its parent reaps it), then abort with exit 1 — a silent crash loop under systemd
-            # ``Restart=always``, which respawns the gateway before reaping the previous process (issue
-            # #42126). Report zombies as dead so the takeover proceeds. Best-effort: any failure to read
-            # status (partial/stub psutil, access denied, transient race) falls through to the authoritative
-            # ``pid_exists()`` below rather than raising.
-            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+        # POSIX-only: Windows has no zombie state to detect, and ``psutil.Process(pid).status()``
+        # costs ~7 ms per call there — paid once per registry entry while holding the
+        # active-session file lock on every poller pass (#115578). Dead/alive stays
+        # authoritative via ``psutil.pid_exists()`` below on both platforms.
+        if not _IS_WINDOWS:
+            try:
+                # A zombie (defunct) process is still in the process table, so ``psutil.pid_exists()`` returns
+                # True for it — but it is already dead: SIGKILL has no effect and it cannot be a running
+                # gateway. Treating a zombie as alive makes ``--replace`` wait for the old PID to die (it never
+                # does, until its parent reaps it), then abort with exit 1 — a silent crash loop under systemd
+                # ``Restart=always``, which respawns the gateway before reaping the previous process (issue
+                # #42126). Report zombies as dead so the takeover proceeds. Best-effort: any failure to read
+                # status (partial/stub psutil, access denied, transient race) falls through to the authoritative
+                # ``pid_exists()`` below rather than raising.
+                if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                    return False
+            except getattr(psutil, "NoSuchProcess", ()):
                 return False
-        except getattr(psutil, "NoSuchProcess", ()):
-            return False
-        except Exception:
-            pass
+            except Exception:
+                pass
         return bool(psutil.pid_exists(pid))
     except ImportError:
         pass  # Fall through to stdlib fallback.

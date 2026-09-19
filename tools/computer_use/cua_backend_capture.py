@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, UIElement
 from tools.computer_use.cua_backend_input import _BTF_UNSUPPORTED_MSG
@@ -20,6 +20,9 @@ from tools.computer_use.cua_backend_parse import (
     _is_real_app_window, _parse_elements_from_structured, _parse_elements_from_tree, _parse_xprop_net_active_window,
     _positive_int, _split_tree_text, _windows_from_tool_result, _z_index_uninformative,
 )
+
+if TYPE_CHECKING:
+    from tools.computer_use.remote import RemoteCuaConfig
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
 
@@ -56,7 +59,7 @@ def _linux_x11_active_window_id() -> Optional[int]:
     return _parse_xprop_net_active_window(proc.stdout or "") if proc.returncode == 0 else None
 
 def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool,
-                           exact_target: bool = False) -> Dict[str, Any]:
+                           exact_target: bool = False, allow_local_probe: bool = True) -> Dict[str, Any]:
     """Best window from z-sorted (frontmost-first) list_windows output. Unqualified default captures on
     Linux (no app filter, no exact target) skip desktop/shell helper windows first — targetable but capture
     as empty — and when every remaining candidate shares one ``z_index`` (the common X11 case)
@@ -64,9 +67,12 @@ def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool
 
     Callers pass windows already sorted by ``z_index`` descending (higher = frontmost). When ordering is
     informative, keep that frontmost contract. See #58026.
+
+    ``allow_local_probe`` is False for remote CUA sessions: xprop would probe the agent's local X11
+    display, not the remote desktop the cua-driver is driving.
     """
     pool = [w for w in windows if not w["off_screen"]]
-    if not exact_target and not app_requested and sys.platform == "linux":
+    if allow_local_probe and not exact_target and not app_requested and sys.platform == "linux":
         pool = [w for w in pool if _is_real_app_window(w)] or pool
         if pool and _z_index_uninformative(pool):
             active_id = _linux_x11_active_window_id()
@@ -106,6 +112,8 @@ def _is_desktop_window(w: Dict[str, Any], names: Tuple[str, ...] = _DESKTOP_WIND
 class _CaptureMixin:
     """capture()/list_windows()/list_apps()/focus_app() and their window-discovery helpers."""
 
+    _remote_config: Optional[RemoteCuaConfig]
+
     @contextmanager
     def _disarming(self) -> Iterator[None]:
         """Forget the sticky target when the wrapped capture-stage step raises."""
@@ -133,7 +141,9 @@ class _CaptureMixin:
     def _cli_refetch(self, name: str, args: Dict[str, Any], timeout: float, what: str,
                      warning: str, *warning_args: Any) -> Optional[Dict[str, Any]]:
         """MCP came back empty/imageless without raising: log *warning*, then a one-shot call over the CLI
-        transport (different daemon socket). None on failure."""
+        transport (different daemon socket). None on failure; remote results never use the host CLI."""
+        if getattr(self, "_remote_config", None) is not None:
+            return None
         logger.warning(warning, *warning_args)
         try:
             cli_out = self._session._call_tool_via_cli(name, args, timeout)
@@ -213,7 +223,8 @@ class _CaptureMixin:
         if not windows:
             # Diagnose instead of a bare 0x0: the dominant real-world cause on Linux is a locked desktop session.
             from tools.computer_use import cua_backend as _cb
-            return self._failed_capture(mode, _cb._empty_discovery_reason())
+            return self._failed_capture(mode, _cb._empty_discovery_reason(
+                remote=self._remote_config is not None))
         if not app:
             return windows
         if app.strip().lower() in _DESKTOP_SHELL_SENTINELS:
@@ -290,7 +301,9 @@ class _CaptureMixin:
         windows = self._resolve_capture_windows(mode, app, pid, window_id)
         if isinstance(windows, CaptureResult):
             return windows
-        self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
+        self._set_active_target(target := _select_capture_target(
+            windows, app_requested=bool(app), exact_target=exact_target,
+            allow_local_probe=getattr(self, "_remote_config", None) is None))
         app_name = target["app_name"]
         # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
         # to the frontmost window.

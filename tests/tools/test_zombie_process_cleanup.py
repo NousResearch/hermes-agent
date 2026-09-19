@@ -95,7 +95,7 @@ class TestZombieReproduction:
 class TestAgentCloseMethod:
     """Verify AIAgent.close() exists, is idempotent, and calls cleanup."""
 
-    def test_close_calls_cleanup_functions(self):
+    def test_close_calls_cleanup_functions(self, tmp_path):
         """close() should release every session-owned execution backend."""
         from unittest.mock import patch
 
@@ -103,6 +103,7 @@ class TestAgentCloseMethod:
             from run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-cleanup"
+            agent._session_hermes_home = tmp_path
             agent._process_owner_task_ids = {"sa-owned"}
             agent._active_children = []
             agent._active_children_lock = threading.Lock()
@@ -143,7 +144,7 @@ class TestAgentCloseMethod:
             agent.close()
             agent.close()
 
-    def test_close_releases_computer_use_when_earlier_cleanup_fails(self):
+    def test_close_releases_computer_use_when_earlier_cleanup_fails(self, tmp_path):
         """One failed cleanup step must not strand the computer-use session."""
         from unittest.mock import patch
 
@@ -151,6 +152,7 @@ class TestAgentCloseMethod:
             from run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-after-failure"
+            agent._session_hermes_home = tmp_path
             agent._active_children = []
             agent._active_children_lock = threading.Lock()
             agent.client = None
@@ -512,6 +514,8 @@ class TestDelegationCleanup:
 
         child.run_conversation.side_effect = run_conversation
         try:
+            # Let a late worker acquire its turn before timeout cleanup checks it.
+            child.interrupt.side_effect = lambda: child_started.wait(timeout=5)
             result = _run_single_child(
                 task_index=0,
                 goal="test timed-out turn cleanup",
@@ -519,7 +523,7 @@ class TestDelegationCleanup:
                 parent_agent=parent,
             )
 
-            assert child_started.is_set()
+            assert child_started.wait(timeout=5), "Child worker did not start within 5 seconds"
             assert result["status"] == "timeout"
             assert relay_runtime.SESSION_COORDINATOR.has_active_turn(
                 profile_key=str(profile_home),

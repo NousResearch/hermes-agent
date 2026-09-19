@@ -49,6 +49,7 @@ def test_locked_probe_fails_safe(monkeypatch):
 def test_empty_capture_carries_reason(monkeypatch):
     """capture() with zero discovered windows must explain itself."""
     backend = object.__new__(cb.CuaDriverBackend)
+    backend._remote_config = None
     backend._active_pid = None
     backend._active_window_id = None
     backend._last_app = None
@@ -56,7 +57,7 @@ def test_empty_capture_carries_reason(monkeypatch):
     backend._snapshot_tokens = {}
     monkeypatch.setattr(backend, "list_windows", lambda: [], raising=False)
     monkeypatch.setattr(cb, "_empty_discovery_reason",
-                        lambda: "the desktop session is LOCKED (test)")
+                        lambda remote=False: "the desktop session is LOCKED (test)")
     cap = backend.capture(mode="ax")
     assert cap.width == 0 and cap.height == 0
     assert "LOCKED" in cap.window_title

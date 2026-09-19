@@ -49,6 +49,7 @@ class ProviderRegistry(Generic[P]):
         self._scoped_providers: Dict[str, Dict[str, P]] = {}
         self._generation = 0
         self._scoped_generations: Dict[str, int] = {}
+        self._registration_generations: Dict[tuple, object] = {}
         self._lock = threading.Lock()
         # "TTS provider" but "Registered browser provider": acronyms keep their case.
         self._log_label = label if label.isupper() else label[0].lower() + label[1:]
@@ -60,14 +61,19 @@ class ProviderRegistry(Generic[P]):
             return self._scoped_providers.setdefault(scope, {})
         return self._scoped_providers.get(scope, {})
 
-    def _bump(self, scope: Optional[str]) -> None:
+    def _bump(self, scope: Optional[str], name: str) -> None:
+        self._registration_generations[(scope, name)] = object()
         if scope is None:
             self._generation += 1
         else:
             self._scoped_generations[scope] = self._scoped_generations.get(scope, 0) + 1
 
-    def register(self, provider: P, *, scope: Optional[str] = None) -> None:
-        """Register a provider; same-name re-registration overwrites (hot reload)."""
+    def register(self, provider: P, *, scope: Optional[str] = None, builtin: bool = False) -> None:
+        """Register a provider; same-name re-registration overwrites (hot reload).
+
+        ``builtin=True`` is for global in-tree factories whose names this registry
+        reserves. Scoped plugin registrars never grant this exemption.
+        """
         if not isinstance(provider, self.provider_cls):
             article = "an" if self.provider_cls.__name__[0] in "AEIOU" else "a"
             raise TypeError(
@@ -78,7 +84,7 @@ class ProviderRegistry(Generic[P]):
         if not isinstance(raw_name, str) or not raw_name.strip():
             raise ValueError(f"{self.label} provider .name must be a non-empty string")
         key = self.normalize(raw_name)
-        if key in self.builtin_names:
+        if key in self.builtin_names and not (builtin and scope is None):
             if self._on_builtin_collision is not None:
                 self._on_builtin_collision(key)
             return
@@ -86,7 +92,7 @@ class ProviderRegistry(Generic[P]):
             target = self._target(scope, create=True)
             existing = target.get(key)
             target[key] = provider
-            self._bump(scope)
+            self._bump(scope, key)
         if existing is not None:
             self.logger.debug(
                 f"{self.label} provider '%s' re-registered (was %r)", key, type(existing).__name__,
@@ -118,6 +124,21 @@ class ProviderRegistry(Generic[P]):
                 or self._providers.get(key)
             )
 
+    def get_registration(self, name: str, *, scope: Optional[str] = None) -> tuple:
+        """Atomically resolve a provider and its slot revision (scoped before global).
+
+        Revisions fence unload/restore even when the same object returns. Unrelated
+        provider names and profiles do not invalidate a cached backend's authority.
+        """
+        key = self.normalize(name)
+        active_scope = scope or hermes_home_key()
+        with self._lock:
+            scoped = self._scoped_providers.get(active_scope, {})
+            source = active_scope if key in scoped else None
+            provider = scoped[key] if source is not None else self._providers.get(key)
+            return provider, (self._registration_generations.get((source, key)),
+                              self._registration_generations.get((active_scope, key)))
+
     def registry_generation(self, *, scope: Optional[str] = None) -> tuple:
         """Cache fingerprint ``(global_generation, scoped_generation)``."""
         active_scope = scope or hermes_home_key()
@@ -142,7 +163,7 @@ class ProviderRegistry(Generic[P]):
                 target.pop(key, None)
             else:
                 target[key] = previous
-            self._bump(scope)
+            self._bump(scope, key)
             if scope is not None and not target:
                 self._scoped_providers.pop(scope, None)
         return True
@@ -153,6 +174,7 @@ class ProviderRegistry(Generic[P]):
             self._providers.clear()
             self._scoped_providers.clear()
             self._scoped_generations.clear()
+            self._registration_generations.clear()
             self._generation += 1
 
     def export(self, namespace: Dict[str, Any]) -> None:
@@ -161,7 +183,8 @@ class ProviderRegistry(Generic[P]):
         namespace.update(
             _providers=self._providers, _scoped_providers=self._scoped_providers, _lock=self._lock,
             register_provider=self.register, list_providers=self.list_providers,
-            get_provider=self.get_provider, snapshot_registration=self.snapshot_registration,
+            get_provider=self.get_provider, get_registration=self.get_registration,
+            snapshot_registration=self.snapshot_registration,
             restore_registration=self.restore_registration,
             registry_generation=self.registry_generation, _reset_for_tests=self.reset_for_tests,
         )

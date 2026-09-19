@@ -106,8 +106,10 @@ def admit_api_turn(adapter, **kwargs):
     if settings.get('room_dispatch') is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch
         from gateway.session_api_replay import authenticate_room_retry
-        authenticate_room_retry(adapter, authority, sid,
-            HostedMemberDispatch.from_mapping(settings['room_dispatch']), kwargs.get('_room_grant_token'))
+        bound_dispatch = HostedMemberDispatch.from_mapping(settings['room_dispatch'])
+        authenticate_room_retry(adapter, authority, sid, bound_dispatch, kwargs.get('_room_grant_token'))
+        if kwargs['user_message'] != bound_dispatch.prompt:
+            raise RuntimeStoreError('admission_conflict')
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):

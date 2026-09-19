@@ -53,6 +53,10 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
 
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":
+    from hermes_state_runtime import RuntimeStoreError
+    if isinstance(exc, RuntimeStoreError) and exc.reason in {'storage_unavailable', 'admission_conflict'}:
+        return _json_error(_openai_error, exc.reason, code=exc.reason,
+                           status=503 if exc.reason == 'storage_unavailable' else 409)
     message, code = str(exc), "invalid_room_dispatch"
     lowered = message.lower()
     if "execution policy" in lowered or "remote room execution requires" in lowered:

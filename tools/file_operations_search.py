@@ -636,7 +636,11 @@ class SearchMixin:
                 value = _msys_to_windows_path(value).replace("\\", "/")
             if not os.path.isabs(value):
                 value = os.path.join(getattr(self.env, "cwd", None) or self.cwd, value)
-            return os.path.normcase(os.path.abspath(value))
+            # Classify the linked target, not the link: ``find -H`` now follows an
+            # operand symlink, so a link pointing at $HOME (or at the filesystem root)
+            # must not slip a recursive find past this guard (#116270). Local-only by
+            # the isinstance check above, so this resolves on the host that runs find.
+            return os.path.normcase(os.path.realpath(value))
 
         from tools import file_operations as _fo  # lazy: _HOME is monkeypatched there
         root = normalized(path)
@@ -702,7 +706,14 @@ class SearchMixin:
         protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(roots)]
         protected_prune = f" {self._prune_expr(protected_paths)} -o" if protected_paths else ""
         fetch_limit = offset + limit + 1
-        base = (f"find {' '.join(q_roots)}{protected_prune}{hidden_prune} -type f "
+        # ``-H`` follows a symlink handed in as an OPERAND, and only an operand: without
+        # it ``find <link> -type f`` tests the link itself, so ``target="files"`` listed
+        # nothing at all for a symlinked root - total_count: 0, no error, no warning,
+        # indistinguishable from an empty directory - while ``rg --files`` followed the
+        # same argument (#116270). Following the operand inside the command is also what
+        # covers a link that only exists on the execution host (SSH/container), with no
+        # probe of its own.
+        base = (f"find -H {' '.join(q_roots)}{protected_prune}{hidden_prune} -type f "
                 f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
         if order == "modified":
             cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {fetch_limit}"

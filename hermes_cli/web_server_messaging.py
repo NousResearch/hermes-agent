@@ -151,6 +151,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     "teams": {
         "description": "Connect Hermes to Microsoft Teams chats via the Bot Framework.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
+        "env_vars": ("TEAMS_PLAYGROUND_URL", "TEAMS_PLAYGROUND_ALLOW_PRIVATE"),
     },
     # Bundled platform plugins: name comes from the plugin registry label;
     # give each a human description (the registry's install_hint is a

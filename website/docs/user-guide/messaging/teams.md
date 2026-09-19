@@ -172,6 +172,21 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
 | `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
 
+### Optional local homologation target
+
+**Why it matters:** The operational Playground shortens the path from configuration to a first local conversation. Teams admins can activate a repeatable local check, validate a bot endpoint during homologation, and keep the command and URLs visible for support hand-offs. This reduces avoidable setup back-and-forth without changing production Teams credentials or starting a process from Hermes.
+
+**What it does—and does not do:** The Playground is a local UI client for Bot Framework-style activities, not Microsoft Teams and not a production end-to-end test. Hermes' dashboard shows the sanitized launch command and explicit URLs, lets you open the UI or copy the command, and its test only probes the local bridge health endpoint. It does not verify Teams tenant consent, public reachability, identity, or production credentials.
+
+Hermes includes a disabled-by-default local Playground seam for testing a near-Teams UI without changing the production Teams adapter. The Microsoft 365 Agents Playground is a local UI client, not the bot endpoint: it receives the Hermes webhook through `-e`, sends Bot Framework Activity envelopes to it, and uses the Activity's `serviceUrl` for callbacks. Configure the Hermes bot endpoint explicitly:
+
+```bash
+TEAMS_PLAYGROUND_URL=http://127.0.0.1:3978/api/messages
+TEAMS_PLAYGROUND_ALLOW_PRIVATE=true
+```
+
+The dashboard validates that endpoint before showing the local UI URL (`http://127.0.0.1:56150`) and the bot callback endpoint. The installed CLI command is `agentsplayground -e <endpoint> -c emulator --disable-telemetry`. Loopback, private, and `.local`/`.lan`/`.internal` hosts require explicit opt-in; public hosts, credentials, query strings, cloud metadata addresses, non-HTTP schemes, and paths other than `/api/messages` are rejected. The health check probes the local bridge (`/api/health`, falling back to `/health`), sends no Teams credentials, and does not restart the gateway or mutate production Teams settings when it fails.
+
 ### config.yaml
 
 Alternatively, configure via `~/.hermes/config.yaml`:

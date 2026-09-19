@@ -37,6 +37,10 @@ from hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
 )
+from plugins.platforms.teams.playground import (
+    PlaygroundConfig, PlaygroundValidationError, build_playground_command, generated_callback_url,
+    generated_test_url, handshake as _playground_handshake,
+)
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -266,6 +270,24 @@ def _messaging_platform_payload(
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
+    if platform_id == "teams":
+        try:
+            from plugins.platforms.teams.playground import (
+                PlaygroundConfig, PlaygroundValidationError, build_playground_command, generated_callback_url, generated_test_url,
+            )
+            playground_config = PlaygroundConfig.from_extra({
+                "playground_url": env_value("TEAMS_PLAYGROUND_URL"),
+                "playground_allow_private": env_value("TEAMS_PLAYGROUND_ALLOW_PRIVATE"),
+            })
+            payload["playground"] = {
+                "enabled": playground_config.enabled,
+                "ui_url": playground_config.ui_url,
+                "command": build_playground_command(playground_config),
+                "test_url": generated_test_url(playground_config),
+                "callback_url": generated_callback_url(playground_config),
+            }
+        except PlaygroundValidationError:
+            payload["playground"] = {"enabled": False, "test_url": None, "callback_url": None}
     if platform_id == "whatsapp":
         whatsapp_mode = env_value("WHATSAPP_MODE").strip()
         payload["whatsapp_setup"] = {
@@ -784,6 +806,47 @@ async def cancel_telegram_onboarding(pairing_id: str):
     with _telegram_onboarding_lock:
         _telegram_onboarding_pairings.pop(pairing_id, None)
     return {"ok": True}
+
+
+# ── Teams Playground (opt-in local homologation) ────────────────────────────
+
+
+def _playground_payload(profile: Optional[str] = None) -> dict[str, Any]:
+    with _profile_scope(profile):
+        values = load_env()
+    extra = {
+        "playground_url": values.get("TEAMS_PLAYGROUND_URL", ""),
+        "playground_allow_private": values.get("TEAMS_PLAYGROUND_ALLOW_PRIVATE", ""),
+    }
+    try:
+        config = PlaygroundConfig.from_extra(extra)
+    except PlaygroundValidationError:
+        return {"enabled": False, "app_endpoint": None, "ui_url": None, "test_url": None, "callback_url": None}
+    return {
+        "enabled": config.enabled,
+        "app_endpoint": config.app_endpoint,
+        "ui_url": config.ui_url,
+        "command": build_playground_command(config),
+        "test_url": generated_test_url(config),
+        "callback_url": generated_callback_url(config),
+    }
+
+
+@router.post("/api/messaging/platforms/teams/playground/test")
+async def test_teams_playground(profile: Optional[str] = None):
+    payload = _playground_payload(profile)
+    config = PlaygroundConfig(
+        enabled=bool(payload["enabled"]),
+        app_endpoint=payload.get("app_endpoint"),
+        allow_private=True,
+    )
+    result = await _playground_handshake(config)
+    return {
+        "ok": result.ok,
+        "message": result.message,
+        "test_url": payload.get("test_url") if result.ok else None,
+        "callback_url": payload.get("callback_url") if result.ok else None,
+    }
 
 
 # ── platform list / update / test ──────────────────────────────

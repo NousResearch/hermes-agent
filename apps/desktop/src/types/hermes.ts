@@ -295,10 +295,15 @@ export interface MessagingPlatformInfo {
   gateway_running: boolean
   home_channel?: MessagingHomeChannel | null
   id: string
-  /** Served secondary under a multiplexed gateway: the /p/<profile>/ URL on the shared listener
-   *  the client (or vendor console) must call. Null for standalone and default-profile platforms. */
   ingress_url?: null | string
   name: string
+  playground?: {
+    callback_url?: null | string
+    command?: null | string
+    enabled: boolean
+    test_url?: null | string
+    ui_url?: null | string
+  }
   state?: null | string
   updated_at?: null | string
 }

@@ -11,8 +11,15 @@ vi.mock('./client', () => ({
 
 const client = await import('./client')
 
-const { deleteSession, getSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
-  await import('./sessions')
+const {
+  deleteSession,
+  getSession,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote,
+  listSidebarSessions,
+  searchSessions
+} = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
@@ -164,6 +171,21 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
     const req = hermesApi.mock.calls[0][0] as { body: Record<string, unknown> }
     expect(req).toMatchObject({ method: 'PATCH', body: { pinned: false } })
     expect(req.body).not.toHaveProperty('profile')
+  })
+})
+
+describe('searchSessions exclude_sources', () => {
+  it('includes a2a in exclude_sources by default', async () => {
+    hermesApi.mockResolvedValue({ results: [] } as never)
+
+    await searchSessions('bug')
+
+    const path = (hermesApi.mock.calls[0][0] as { path: string }).path
+    const params = new URLSearchParams(path.slice(path.indexOf('?') + 1))
+
+    expect(path.startsWith('/api/sessions/search?')).toBe(true)
+    expect(params.get('q')).toBe('bug')
+    expect((params.get('exclude_sources') ?? '').split(',')).toContain('a2a')
   })
 })
 

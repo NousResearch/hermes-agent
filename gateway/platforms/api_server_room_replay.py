@@ -42,33 +42,17 @@ def _legacy_policy(adapter, record, scope, session_id, dispatch):
 
 
 def _require_unaccepted(adapter, dispatch, session_id, scope):
-    """A lost HTTP receipt cannot turn an accepted canonical attempt into NEW.
-
-    Payload-free terminal evidence cannot identify the old logical task: hold
-    that session rather than guess or recapture. No receipt repair is attempted.
-    """
+    """Only prepared canonical absence permits NEW; no hot migration or repair."""
     from gateway.session_authorities import active_authority
+    from hermes_state_logical_attempts import lookup_logical_attempt
     authority = active_authority(adapter.gateway_runner)
     if authority is None:
-        return
-    from hermes_state_terminal import ADMISSION_PREFIX
-    with authority.db._read_ctx() as conn:
-        rows = conn.execute("SELECT payload_json FROM session_admissions WHERE principal_id='api' "
-                            'AND target_session_id=?', (session_id,)).fetchall()
-        for row in rows:
-            turn = json.loads(row[0]).get('api_turn_v1', {})
-            # The physical member session survives Home authority changes;
-            # task/generation alone must not alias a different signed scope.
-            if turn.get('run_owner_scope') not in (None, scope):
-                continue
-            old = turn.get('settings', {}).get('room_dispatch')
-            if old is None or (old.get('task_id'), old.get('execution_generation')) == (
-                    dispatch.task_id, dispatch.execution_generation):
-                raise RuntimeStoreError('storage_unavailable')
-        for row in conn.execute('SELECT value FROM state_meta WHERE key LIKE ?', (ADMISSION_PREFIX + '%',)):
-            old = json.loads(row[0])
-            if old.get('principal_id') == 'api' and old.get('target_session_id') == session_id:
-                raise RuntimeStoreError('storage_unavailable')
+        raise RuntimeStoreError('storage_unavailable')
+    accepted = lookup_logical_attempt(authority.db, principal_id='api',
+        session_id=session_id, owner_scope=scope, task_id=dispatch.task_id,
+        execution_generation=dispatch.execution_generation)
+    if accepted is not None:
+        raise RuntimeStoreError('storage_unavailable')
 
 
 def room_replay(adapter, request, dispatch, *, _openai_error):

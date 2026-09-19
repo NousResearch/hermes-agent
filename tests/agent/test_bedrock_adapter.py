@@ -1119,6 +1119,57 @@ class TestInferenceProfileContextLength:
         assert kwargs["system"][-1] == {"cachePoint": {"type": "default"}}
 
 
+class TestInferenceProfileCapabilityGates:
+    """Every capability gate in build_converse_kwargs matches on the model the profile wraps.
+    An application-inference-profile ARN is an opaque cost-allocation wrapper: gating on it sends
+    fields the wrapped model hard-rejects (#114476)."""
+
+    ARN = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abcdef123456"
+    MESSAGES = [{"role": "user", "content": "Hi"}]
+
+    def setup_method(self):
+        from agent import bedrock_adapter
+        bedrock_adapter._inference_profile_model_cache.clear()
+
+    def _kwargs(self, wrapped: str, **extra):
+        from agent.bedrock_adapter import build_converse_kwargs
+        client = MagicMock()
+        client.get_inference_profile.return_value = {"models": [
+            {"modelArn": f"arn:aws:bedrock:us-west-2::foundation-model/{wrapped}"}]}
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client):
+            return build_converse_kwargs(model=self.ARN, messages=self.MESSAGES, **extra)
+
+    @pytest.mark.parametrize("wrapped", ["anthropic.claude-opus-4-7", "xai.grok-4"])
+    def test_profile_wrapping_a_no_sampling_model_omits_temperature_and_top_p(self, wrapped):
+        # Opus 4.7+ and Grok 400 on any non-default temperature/topP. The gates ran on the ARN,
+        # which is neither, so both fields went on the wire and every turn failed.
+        kwargs = self._kwargs(wrapped, temperature=0.7, top_p=0.9)
+        assert kwargs["modelId"] == self.ARN  # the request still targets the profile
+        assert kwargs["inferenceConfig"] == {"maxTokens": 4096}
+
+    def test_profile_wrapping_a_non_tool_model_strips_toolconfig(self):
+        # DeepSeek R1 raises ValidationException on toolConfig, which the agent retries forever.
+        tools = [{"name": "ls", "description": "list", "input_schema": {"type": "object", "properties": {}}}]
+        kwargs = self._kwargs("deepseek.r1-v1:0", tools=tools)
+        assert "toolConfig" not in kwargs
+
+    def test_profile_wrapping_a_sampling_model_still_sends_them(self):
+        # The resolution must not become a blanket suppression: Sonnet 4.6 accepts both.
+        kwargs = self._kwargs("anthropic.claude-sonnet-4-6", temperature=0.7, top_p=0.9)
+        assert kwargs["inferenceConfig"]["temperature"] == 0.7
+        assert kwargs["inferenceConfig"]["topP"] == 0.9
+
+    def test_plain_model_ids_need_no_lookup(self):
+        # Non-ARN ids must not reach the control plane at all.
+        from agent.bedrock_adapter import build_converse_kwargs
+        with patch("agent.bedrock_adapter._get_bedrock_control_client") as factory:
+            kwargs = build_converse_kwargs(
+                model="anthropic.claude-opus-4-7", messages=self.MESSAGES, temperature=0.7,
+            )
+        factory.assert_not_called()
+        assert kwargs["inferenceConfig"] == {"maxTokens": 4096}
+
+
 class TestBedrockContextProbe:
     """Test the live context-window probe that reads the real window from
     Bedrock's 'prompt is too long' validation error."""

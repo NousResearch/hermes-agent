@@ -160,7 +160,10 @@ def finish_text_response(
         and agent.valid_tool_names
         and codex_ack_continuations < 2
         and (
-            trailing_continue_intent(_stall_text)
+            trailing_continue_intent(
+                _stall_text,
+                getattr(agent, "_trailing_continue_intent_patterns", None),
+            )
             or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
         )
     )

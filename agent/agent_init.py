@@ -1339,6 +1339,8 @@ def _apply_agent_section(agent, _agent_cfg):
 
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
+    # Extra regexes widening the stall-guard continue-intent detector beyond English + pt-BR.
+    agent._trailing_continue_intent_patterns = _agent_section.get("trailing_continue_intent_patterns") or None
 
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.

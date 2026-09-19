@@ -389,6 +389,37 @@ def test_ignores_conversational_future_offers():
     )
 
 
+def test_detects_trailing_ptbr_announced_actions():
+    # Non-English agents end turns with pt-BR acks; the guard must re-prompt those
+    # too (real case: a tool-heavy pt-BR turn ended on "preciso checar…", #105163).
+    assert trailing_continue_intent(
+        "Curso. Antes de decidir o passo de produção, preciso checar o órfão de "
+        "render de Cascavel, o status da live de Chapecó e o guard de cron."
+    )
+    assert trailing_continue_intent("Vou verificar o status dos jobs agora.")
+    assert trailing_continue_intent("Deixa eu conferir a fila primeiro.")
+
+
+def test_ignores_ptbr_final_reports():
+    assert not trailing_continue_intent(
+        "Publiquei o corte d046569f às 12:43. Fila: 2 pendentes, próximo às 18:30."
+    )
+    assert not trailing_continue_intent("Fila vazia. Nada a fazer nesta batida.")
+    assert not trailing_continue_intent(
+        "O gate verify falhou em 1 de 7 checks; não publiquei."
+    )
+
+
+def test_extra_patterns_extend_the_detector():
+    # agent.trailing_continue_intent_patterns widens the built-in sets per locale.
+    assert not trailing_continue_intent("Abriendo el archivo ahora.")
+    assert trailing_continue_intent(
+        "Abriendo el archivo ahora.", [r"\babriendo\b[^.!?\n]{0,40}\bahora\b"]
+    )
+    # A broken pattern is skipped with a warning, never fatal.
+    assert not trailing_continue_intent("nada disto", ["("])
+
+
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
 
 

@@ -1246,6 +1246,15 @@ agent:
   service_tier: ""
   fast_auto_seconds: 60
 
+  # Extra regexes for the anti-stall continue-intent detector (see stall_guards).
+  # When a turn ends with no tool calls but the reply trails off announcing an
+  # action ("Let me now…", pt-BR "preciso checar…", "vou verificar…"), Hermes
+  # re-prompts the model to act (max 2 per turn). English and pt-BR ship built
+  # in; add patterns here for other locales. Each entry is a Python regex
+  # matched case-insensitively against the last 160 chars of the visible reply.
+  # Example (Spanish): ["\\bvoy a (?:revisar|verificar|comprobar)\\b"]
+  trailing_continue_intent_patterns: []
+
   # Custom personalities (use with /personality command).
   # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,
   # pirate, shakespeare, surfer, noir, uwu, philosopher, hype) are always

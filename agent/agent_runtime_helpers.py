@@ -3015,9 +3015,15 @@ def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
 # message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# Ships English + pt-BR sets (workers commonly run pt-BR and ended turns on "preciso checar…"
+# with the detector silent — #105163); other locales extend via
+# agent.trailing_continue_intent_patterns.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
-    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
+    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b"
+    r"|\b(?:preciso|precisamos) (?:agora )?(?:checar|verificar|conferir|olhar|rodar|validar|testar)\b"
+    r"|\bvou (?:agora )?(?:checar|verificar|conferir|olhar|rodar|validar|testar)\b"
+    r"|\bdeixa eu (?:checar|verificar|conferir|olhar|ver|rodar|validar)\b)"
     r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
 )
 
@@ -3025,12 +3031,30 @@ _TRAILING_CONTINUE_INTENT_RE = re.compile(
 _TRAILING_CONTINUE_INTENT_MAX_CHARS = 400
 
 
-def trailing_continue_intent(text: str) -> bool:
-    """Whether ``text`` is a short reply ENDING on an announced next action (stall-guard re-prompt trigger)."""
+def _extra_trailing_patterns_match(patterns: List[str], tail: str) -> bool:
+    """User-configured extra patterns (``agent.trailing_continue_intent_patterns``).
+    A broken pattern is skipped with a warning — config must not break the turn."""
+    for pattern in patterns:
+        try:
+            if re.search(pattern, tail, re.IGNORECASE):
+                return True
+        except re.error as exc:
+            logger.warning("Invalid trailing_continue_intent_patterns entry %r: %s", pattern, exc)
+    return False
+
+
+def trailing_continue_intent(text: str, extra_patterns: Optional[List[str]] = None) -> bool:
+    """Whether ``text`` is a short reply ENDING on an announced next action (stall-guard re-prompt trigger).
+
+    ``extra_patterns`` (from ``agent.trailing_continue_intent_patterns``) widens the built-in
+    English + pt-BR sets with user regexes matched against the same tail window."""
     t = (text or "").strip()
     if not t or len(t) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
         return False
-    return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
+    tail = t[-160:]
+    if _TRAILING_CONTINUE_INTENT_RE.search(tail):
+        return True
+    return bool(extra_patterns) and _extra_trailing_patterns_match(extra_patterns, tail)
 
 
 # Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered

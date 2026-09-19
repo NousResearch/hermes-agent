@@ -3977,14 +3977,17 @@ class GatewayTurnMixin:
         elif _sc is not None and getattr(_sc, "stream_deltas_enabled", True):
             # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log
             # the decision inputs ("signal never set" vs "ack-pending race"). Skipped for consumers
-            # never fed the final's deltas (interim-only wiring, #105341) — they cannot have raced
-            # the normal final send, so the warning would be a guaranteed false positive.
-            logger.warning(
-                "Normal final-send NOT suppressed despite active stream consumer for session %s: "
-                "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "
-                "possible duplicate send (see wecom ack-timeout RCA).",
-                _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
-            )
+            # never fed the final's deltas (interim-only wiring, #105341 / #107619) — they cannot have
+            # raced the normal final send, so the warning would be a guaranteed false positive.
+            # Interim-only consumers never receive on_delta leftovers (commentary reset clears
+            # _accumulated / _message_id / _last_sent_text; finish() does not adopt).
+            if getattr(_sc, "_accumulated", None) or getattr(_sc, "_message_id", None) or getattr(_sc, "_last_sent_text", None):
+                logger.warning(
+                    "Normal final-send NOT suppressed despite active stream consumer for session %s: "
+                    "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "
+                    "possible duplicate send (see wecom ack-timeout RCA).",
+                    _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
+                )
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.

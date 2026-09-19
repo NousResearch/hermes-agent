@@ -52,6 +52,7 @@ def _reset_cfg_cache() -> None:
 
 def _bind_homes(monkeypatch, launch: Path, worker: Path) -> None:
     monkeypatch.setattr(server, "_hermes_home", launch)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setattr(
         server,
         "_profile_home",

@@ -141,6 +141,52 @@ cooldowns are preserved. Reauthenticate with `hermes auth add nous --type oauth`
 to update the singleton; this does not refresh an independent account. Other
 providers retain their existing source-specific refresh support.
 
+## Telegram account management
+
+In a private Telegram conversation, `/auth` manages account enrollment and the
+existing credential-pool order without a model call. It remains available when
+a model turn is busy or its inference account has exhausted its quota.
+
+```text
+/auth list openai-codex
+/auth add openai-codex --label "Work Pro" --priority 0
+/auth add openai-codex --label "Personal reserve"
+/auth priority openai-codex "Personal reserve" 1
+/auth cancel
+```
+
+Enrollment currently supports OpenAI Codex device login. The bot sends the OpenAI
+verification URL and one-time code only to the requesting private chat and topic;
+finish sign-in in your browser with the intended account. Do not paste passwords,
+API keys, access tokens or refresh tokens into Telegram. Custom labels are required
+at enrollment, are limited to 60 characters and cannot contain control characters.
+The device code is not also printed to the gateway's terminal output.
+
+`--priority 0` places the new credential first. Omitting `--priority` appends it as
+a reserve rather than silently making it primary. `/auth priority` accepts an
+existing entry ID, unambiguous exact label or one-based index, and uses the same
+zero-based, clamped positions as `hermes auth priority`. `/auth list` and
+`/auth priority` also work with other providers' already configured pools. Account
+health, exhausted-account cooldowns and the rotation strategy are not reset.
+
+This controls the **same-provider account order**, not the fallback model/provider
+chain. `fill_first` follows this order; other strategies may choose differently.
+Existing sessions may still hold their previous credential. Use `/new` when you
+are ready to start a fresh session; this command does not interrupt or rewrite an
+in-flight conversation or change its model configuration.
+
+Only one enrollment may be pending in a gateway process. `/auth cancel` cancels
+the attempt belonging to the same profile and private requester; it cannot cancel
+another person's sign-in. A different profile's credential store is not read or
+modified. A failed challenge delivery aborts before the provider polling begins.
+
+The gateway's existing Telegram `allow_admin_from` policy applies to these
+operations, including listing. As with other administrative commands, when no
+admin list is configured, users already allowed to talk to the bot can administer
+it. Set `allow_admin_from` on a shared bot. Group chats and anonymous requesters
+cannot use `/auth`. Renaming existing entries and graphical account selection are
+not part of this command.
+
 ## Rotation Strategies
 
 Priority positions are zero-based and clamp to the pool's ends; displayed targets

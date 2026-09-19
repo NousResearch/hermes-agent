@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
@@ -962,7 +962,9 @@ def _codex_request_device_code(issuer: str, client_id: str) -> Dict[str, Any]:
 
 
 def _codex_poll_authorization_code(
-    issuer: str, *, device_auth_id: str, user_code: str, poll_interval: int) -> Dict[str, Any]:
+    issuer: str, *, device_auth_id: str, user_code: str, poll_interval: int,
+    cancel_event: Optional[threading.Event] = None,
+) -> Dict[str, Any]:
     """Step 3 of the Codex device flow: poll until sign-in completes (403/404 = still pending)."""
     max_wait = 15 * 60  # 15 minutes
     max_consecutive_blips = 6  # survives transient drops, still fails fast on a dead network
@@ -972,7 +974,10 @@ def _codex_poll_authorization_code(
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             consecutive_blips = 0
             while time.monotonic() - start < max_wait:
-                time.sleep(poll_interval)
+                if cancel_event is None:
+                    time.sleep(poll_interval)
+                elif cancel_event.wait(poll_interval):
+                    raise _codex_err("Sign-in cancelled.", "device_code_cancelled")
                 try:
                     poll_resp = client.post(
                         f"{issuer}/api/accounts/deviceauth/token",
@@ -1036,24 +1041,34 @@ def _codex_exchange_authorization_code(
     return tokens
 
 
-def _codex_device_code_login() -> Dict[str, Any]:
-    """Run the OpenAI device code login flow and return credentials dict."""
+def _codex_device_code_login(
+    *, on_verification: Optional[Callable[[str, str], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> Dict[str, Any]:
+    """Run device login; a private surface callback replaces terminal code output."""
     from hermes_cli.auth import _utc_now_z
     issuer, client_id = "https://auth.openai.com", CODEX_OAUTH_CLIENT_ID
     device_data = _codex_request_device_code(issuer, client_id)
     user_code = device_data["user_code"]
 
-    # Step 2: Show user the code
-    print("To continue, follow these steps:\n")
-    print("  1. Open this URL in your browser:")
-    print(f"     \033[94m{issuer}/codex/device\033[0m\n")
-    print("  2. Enter this code:")
-    print(f"     \033[94m{user_code}\033[0m\n")
-    print("Waiting for sign-in... (press Ctrl+C to cancel)")
+    if on_verification is not None:
+        on_verification(f"{issuer}/codex/device", user_code)
+    else:
+        print("To continue, follow these steps:\n")
+        print("  1. Open this URL in your browser:")
+        print(f"     \033[94m{issuer}/codex/device\033[0m\n")
+        print("  2. Enter this code:")
+        print(f"     \033[94m{user_code}\033[0m\n")
+        print("Waiting for sign-in... (press Ctrl+C to cancel)")
     code_resp = _codex_poll_authorization_code(
         issuer, device_auth_id=device_data["device_auth_id"], user_code=user_code,
-        poll_interval=device_data["interval"])
+        poll_interval=device_data["interval"],
+        **({"cancel_event": cancel_event} if cancel_event is not None else {}))
+    if cancel_event is not None and cancel_event.is_set():
+        raise _codex_err("Sign-in cancelled.", "device_code_cancelled")
     tokens = _codex_exchange_authorization_code(issuer, client_id, code_resp)
+    if cancel_event is not None and cancel_event.is_set():
+        raise _codex_err("Sign-in cancelled.", "device_code_cancelled")
     # Return tokens for the caller to persist (never writes to ~/.codex/)
     return {
         "tokens": {

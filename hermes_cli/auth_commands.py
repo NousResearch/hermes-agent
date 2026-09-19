@@ -236,7 +236,9 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
             "expires_at_ms": creds.get("expires_at_ms"),
             "base_url": _provider_base_url(provider)}),
     "openai-codex": _OAuthAddSpec(
-        login=lambda args: auth_mod._codex_device_code_login(),
+        login=lambda args: auth_mod._codex_device_code_login(**{
+            key: getattr(args, key) for key in ("on_verification", "cancel_event")
+            if getattr(args, key, None) is not None}),
         token=lambda creds: creds["tokens"]["access_token"],
         source=SOURCE_MANUAL_DEVICE_CODE,
         fields=lambda creds, provider: {

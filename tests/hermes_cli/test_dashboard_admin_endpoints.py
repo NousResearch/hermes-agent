@@ -484,6 +484,84 @@ class TestSystemStatsEndpoint:
         # psutil flag tells the UI whether the richer metrics are populated.
         assert "psutil" in s
 
+    def test_stats_arch_prefers_the_native_probe(self, monkeypatch):
+        """The native probe wins over ``platform.machine()``, which lies under emulation.
+
+        An x64 process on Windows-on-ARM reads ``AMD64`` from ``platform.machine()`` while the
+        machine is ARM64; the endpoint must report the native architecture.
+        """
+        import platform
+
+        from hermes_cli.web_routers import status as status_mod
+
+        monkeypatch.setattr(status_mod, "_native_architecture", lambda: "ARM64")
+        monkeypatch.setattr(platform, "machine", lambda: "AMD64")
+
+        r = self.client.get("/api/system/stats")
+
+        assert r.status_code == 200
+        assert r.json()["arch"] == "ARM64"
+
+    def test_stats_arch_falls_back_to_env_when_native_and_machine_are_empty(self, monkeypatch):
+        """``platform.machine()`` passes PROCESSOR_ARCHITECTURE through on Windows, so a backend
+        started with a curated environment reported ``arch: ""`` on the System page."""
+        import platform
+
+        from hermes_cli.web_routers import status as status_mod
+
+        monkeypatch.setattr(status_mod, "_native_architecture", lambda: None)
+        monkeypatch.setattr(platform, "machine", lambda: "")
+        monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "ARM64")
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+
+        r = self.client.get("/api/system/stats")
+
+        assert r.status_code == 200
+        # ARCHITEW6432 wins: it is the native architecture when a 32-bit process runs on 64-bit.
+        assert r.json()["arch"] == "ARM64"
+
+    def test_stats_arch_uses_machine_when_native_is_unavailable(self, monkeypatch):
+        import platform
+
+        from hermes_cli.web_routers import status as status_mod
+
+        monkeypatch.setattr(status_mod, "_native_architecture", lambda: None)
+        monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+
+        r = self.client.get("/api/system/stats")
+
+        assert r.status_code == 200
+        assert r.json()["arch"] == "x86_64"
+
+    def test_stats_arch_is_never_empty(self, monkeypatch):
+        import platform
+
+        from hermes_cli.web_routers import status as status_mod
+
+        monkeypatch.setattr(status_mod, "_native_architecture", lambda: None)
+        monkeypatch.setattr(platform, "machine", lambda: "")
+        monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+        monkeypatch.delenv("PROCESSOR_ARCHITECTURE", raising=False)
+
+        r = self.client.get("/api/system/stats")
+
+        assert r.status_code == 200
+        assert r.json()["arch"] == "unknown"
+
+    def test_native_architecture_degrades_instead_of_raising(self, monkeypatch):
+        """A failing probe must yield None (so the fallbacks run), never a 500 on /api/system/stats."""
+        from hermes_cli.web_routers import status as status_mod
+
+        import hermes_cli.main_desktop as md
+
+        def _boom():
+            raise RuntimeError("probe unavailable")
+
+        monkeypatch.setattr(md, "_windows_native_machine", _boom)
+
+        assert status_mod._native_architecture() is None
+
 
 class TestCuratorEndpoints:
     @pytest.fixture(autouse=True)

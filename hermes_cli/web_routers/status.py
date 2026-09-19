@@ -527,6 +527,52 @@ async def get_status(profile: Optional[str] = None):
             status_scope.__exit__(*sys.exc_info())
 
 
+def _native_architecture() -> str | None:
+    """The host's NATIVE machine name, or None when it cannot be determined.
+
+    Delegates to ``hermes_cli.main_desktop._windows_native_machine()``, the canonical probe
+    (``IsWow64Process2`` → ``PROCESSOR_ARCHITEW6432``/``PROCESSOR_ARCHITECTURE`` →
+    ``platform.machine()``). Reusing it matters twice over: a display field must not disagree with
+    the update-integrity gate that uses the same probe, and writing the env-var ordering out again
+    here would make a fifth inline copy of a sequence the tree already repeats.
+
+    ``platform.machine()`` alone is not a substitute: it reports the PROCESS architecture, which
+    lies under emulation — an x64 process on Windows-on-ARM reads ``AMD64`` on an ARM64 machine
+    (see the open ARM64 issue #108893 for the same defect in the node-heal path).
+    """
+    try:
+        from hermes_cli.main_desktop import _windows_native_machine
+
+        return (_windows_native_machine() or "").strip() or None
+    except Exception:  # noqa: BLE001 — display must degrade, never 500 the endpoint
+        return None
+
+
+def _system_architecture() -> str:
+    """Host CPU architecture for display, never empty.
+
+    Order: the canonical native probe, then ``platform.machine()``, then the Windows environment
+    pair (``PROCESSOR_ARCHITEW6432`` first — it reports the native architecture when a 32-bit
+    process runs on 64-bit Windows), then ``"unknown"``.
+
+    The empty-string case this exists for: on Windows ``platform.machine()`` is a passthrough of
+    ``PROCESSOR_ARCHITECTURE``, so a process spawned with a curated environment — which is how the
+    Desktop launches its backend — reported ``""`` and ``/api/system/stats`` rendered ``arch: ""``.
+    Never returning empty also lets a consumer tell "unknown" from "absent".
+    """
+    native = _native_architecture()
+    if native:
+        return native
+
+    import platform as _platform
+
+    machine = (_platform.machine() or "").strip()
+    if machine:
+        return machine
+    env_arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE")
+    return (env_arch or "").strip() or "unknown"
+
+
 @router.get("/api/system/stats")
 async def get_system_stats():
     """Host + process system stats for the System page (stdlib identity; psutil CPU/memory/
@@ -537,7 +583,7 @@ async def get_system_stats():
         **_display_system_platform(
             system=_platform.system(), release=_platform.release(), version=_platform.version(),
             platform_label=_platform.platform()),
-        "arch": _platform.machine(), "hostname": _platform.node(),
+        "arch": _system_architecture(), "hostname": _platform.node(),
         "python_version": _platform.python_version(),
         "python_impl": _platform.python_implementation(),
         "hermes_version": __version__, "cpu_count": os.cpu_count()}

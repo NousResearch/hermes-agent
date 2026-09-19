@@ -358,3 +358,140 @@ def test_download_tolerates_stale_catalog_size(client, monkeypatch):
             break
         time.sleep(0.05)
     assert status is not None and status["status"] == "done", status.get("error")
+
+
+# ── resumable ranged downloads ───────────────────────────────
+# The ranged path is the one a multi-GB fetch actually takes; a CDN or egress proxy that closes one of
+# the parallel streams early shows up as a CLEAN EOF (no exception), which used to short the byte count
+# and void the whole file after hours. These tests pin the two halves of the fix: retry the truncated
+# span from the last byte received, and keep the partial + ledger so a retry resumes instead of restarting.
+
+_BODY = bytes(i % 251 for i in range(4096))
+
+
+class _FakeRangedResponse(io.BytesIO):
+    def __init__(self, chunk: bytes, *, start: int, total: int, status: int = 206):
+        super().__init__(chunk)
+        self.status = status
+        self.headers = {"Content-Range": f"bytes {start}-{start + len(chunk) - 1}/{total}",
+                        "Content-Length": str(len(chunk))}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeRangedServer:
+    """Range-capable server whose streams can be cut short mid-span. ``on_request(start, end)`` returns
+    how many bytes to deliver (None = the whole requested span)."""
+
+    def __init__(self, body: bytes, on_request=None):
+        self.body = body
+        self.on_request = on_request or (lambda start, end: None)
+        self.requests: list = []
+
+    def __call__(self, req, timeout=None):
+        ranged = req.get_header("Range") or ""
+        assert ranged.startswith("bytes="), ranged
+        first, _, last = ranged[len("bytes="):].partition("-")
+        start = int(first)
+        end = int(last) if last else len(self.body) - 1
+        self.requests.append((start, end))
+        chunk = self.body[start:end + 1]
+        limit = self.on_request(start, end)
+        if limit is not None:
+            chunk = chunk[:limit]
+
+        return _FakeRangedResponse(chunk, start=start, total=len(self.body))
+
+
+def _download_job():
+    return {"job_id": "t", "kind": "model-download", "target": "t", "status": "running",
+            "phase": "downloading", "detail": "", "total_bytes": None, "done_bytes": 0, "error": None}
+
+
+@pytest.fixture
+def fast_retries(monkeypatch):
+    """Keep the retry budget under test tiny; the sleeps are production pacing, not logic."""
+    from hermes_cli.web_routers import local_models as lm
+
+    monkeypatch.setattr(lm, "_RANGE_ATTEMPTS", 2)
+    monkeypatch.setattr(lm, "_RANGE_BACKOFF_S", 0)
+    monkeypatch.setattr(lm, "_DOWNLOAD_CONNECTIONS", 4)
+    return lm
+
+
+def test_span_ledger_math():
+    from hermes_cli.web_routers.local_models import _merge_spans, _open_spans
+
+    assert _merge_spans([(10, 20), (21, 30), (0, 5)]) == [(0, 5), (10, 30)]
+    assert _open_spans([(0, 99)], 200) == [(100, 199)]
+    assert _open_spans([], 50) == [(0, 49)]
+    assert _open_spans([(0, 49)], 50) == []
+
+
+def test_download_resumes_a_span_truncated_mid_stream(tmp_path, monkeypatch, fast_retries):
+    lm = fast_retries
+    truncation = {(2048, 3071): 100}  # this task's first attempt dies 100 bytes in
+    server = _FakeRangedServer(_BODY, on_request=lambda s, e: truncation.get((s, e)))
+    monkeypatch.setattr("urllib.request.urlopen", server)
+
+    dest = tmp_path / "M.gguf"
+    job = _download_job()
+    lm.download_file("https://example.invalid/M.gguf", dest, job)
+
+    assert dest.read_bytes() == _BODY
+    assert job["done_bytes"] == len(_BODY)
+    part, ledger = lm._staging_paths(dest)
+    assert not part.exists() and not ledger.exists()
+    # The retry resumed at the byte after the truncation instead of re-asking for the whole span.
+    assert (2048, 3071) in server.requests
+    assert (2148, 3071) in server.requests
+
+
+def test_interrupted_download_keeps_partial_and_the_retry_resumes(tmp_path, monkeypatch, fast_retries):
+    lm = fast_retries
+
+    # Phase 1: everything past byte 2048 dies 50 bytes in on every attempt -> those spans end the job in error.
+    broken = _FakeRangedServer(_BODY, on_request=lambda s, e: 50 if s >= 2048 else None)
+    monkeypatch.setattr("urllib.request.urlopen", broken)
+
+    dest = tmp_path / "M.gguf"
+    with pytest.raises(RuntimeError):
+        lm.download_file("https://example.invalid/M.gguf", dest, _download_job())
+
+    part, ledger = lm._staging_paths(dest)
+    assert part.exists() and part.stat().st_size == len(_BODY)  # preallocated, ready to be filled in
+    assert ledger.exists()
+    assert not dest.exists()  # nothing staged, nothing half-served
+
+    # Phase 2: the link recovers. The second call must fetch ONLY the missing half.
+    good = _FakeRangedServer(_BODY)
+    monkeypatch.setattr("urllib.request.urlopen", good)
+    job = _download_job()
+    lm.download_file("https://example.invalid/M.gguf", dest, job)
+
+    assert dest.read_bytes() == _BODY
+    assert job["done_bytes"] == len(_BODY)
+    assert not part.exists() and not ledger.exists()
+    # Requests: the 0-0 range probe, then only spans at/after the hole.
+    assert all(start == 0 or start >= 2048 for start, _ in good.requests), good.requests
+
+
+def test_resume_ignores_a_ledger_written_for_a_different_size(tmp_path, monkeypatch, fast_retries):
+    """An upstream re-upload changes the file; spans recorded for the old size must not be trusted."""
+    lm = fast_retries
+    dest = tmp_path / "M.gguf"
+    part, ledger = lm._staging_paths(dest)
+    part.write_bytes(b"\x00" * len(_BODY))
+    ledger.write_text(json.dumps({"total": 999, "spans": [[0, 998]]}), encoding="utf-8")
+    server = _FakeRangedServer(_BODY)
+    monkeypatch.setattr("urllib.request.urlopen", server)
+    job = _download_job()
+
+    lm.download_file("https://example.invalid/M.gguf", dest, job)
+
+    assert dest.read_bytes() == _BODY
+    assert job["done_bytes"] == len(_BODY)

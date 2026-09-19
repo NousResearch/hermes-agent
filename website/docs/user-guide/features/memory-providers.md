@@ -669,6 +669,31 @@ hermes config set memory.provider memori
 hermes memory setup
 ```
 
+### Palimpsest
+
+Local-first long-term memory backend: hybrid vector search + a weighted knowledge graph + FTS5 full-text retrieval, fused and re-ranked in one local store. Writes run conflict detection and keep a version chain (`REVISED_BY`), so a superseded fact is marked `outdated` and stays traceable instead of being overwritten; sensitivity rules scan content before it is stored. Everything runs on your own machine — no cloud, no API key.
+
+| | |
+|---|---|
+| **Best for** | Fully local cross-session memory with graph recall and versioned, auditable facts |
+| **Requires** | `hermes plugins install palimpsest` + a running Palimpsest REST service (default `http://127.0.0.1:8090`) |
+| **Data storage** | Local (TriviumDB) |
+| **Cost** | Free |
+
+**Tools (4):** `palimpsest_search` (hybrid + graph recall), `palimpsest_ingest` (write a memory), `palimpsest_link` (create a graph edge), `palimpsest_graph` (expand graph neighbors)
+
+**Context engine:** ships alongside the provider as `palimpsest-graph`, distilling graph-linked context before compression.
+
+**Setup:**
+```bash
+hermes plugins install palimpsest
+hermes plugins enable palimpsest
+hermes config set memory.provider palimpsest
+hermes config set context.engine palimpsest-graph
+```
+
+See [HERMES_INTEGRATION.md](https://github.com/JiaY-77/Palimpsest/blob/main/docs/HERMES_INTEGRATION.md) for the full setup.
+
 ---
 
 ## Provider Comparison
@@ -684,6 +709,7 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud/Self-hosted | Free/Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **Palimpsest** | Local | Free | 4 | Palimpsest REST service | Local vector + graph retrieval with versioned conflict tracking |
 
 ## Profile Isolation
 

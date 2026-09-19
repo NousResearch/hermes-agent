@@ -1,0 +1,29 @@
+name: palimpsest
+repo: https://github.com/JiaY-77/Palimpsest
+sha: 9a3f06c8eac2cdea02a7db7a830936097054cc56
+subdir: hermes-plugin
+description: Local-first long-term memory backend — hybrid vector + knowledge-graph + full-text retrieval with versioned conflict tracking, entirely on your own machine.
+maintainer: JiaY-77
+tier: community
+category: memory
+docs_url: https://github.com/JiaY-77/Palimpsest/blob/9a3f06c8eac2cdea02a7db7a830936097054cc56/docs/HERMES_INTEGRATION.md
+version: "1.0.0"
+capabilities:
+  provides_tools:
+  - palimpsest_search
+  - palimpsest_ingest
+  - palimpsest_link
+  - palimpsest_graph
+  provides_hooks:
+  - on_session_end
+  - on_pre_compress
+  provides_middleware: []
+  requires_env:
+  - PALIMPSEST_BASE_URL
+  - PALIMPSEST_DOMAIN
+  - PALIMPSEST_PREFETCH_TOP_K
+  - PALIMPSEST_PREFETCH_NEIGHBORS
+  - PALIMPSEST_PREFETCH_MIN_SCORE
+  - PALIMPSEST_PREFETCH_TIER
+  - PALIMPSEST_AUTO_INGEST
+  - PALIMPSEST_GRAPH_TOPICS

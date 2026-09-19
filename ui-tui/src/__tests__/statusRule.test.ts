@@ -72,7 +72,8 @@ describe('statusBarSegments', () => {
       subagents: true,
       cacheHit: true,
       latency: true,
-      tps: true
+      tps: true,
+      tokens: true
     } satisfies StatusBarSegments)
   })
 

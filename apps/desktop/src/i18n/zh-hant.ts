@@ -527,6 +527,23 @@ export const zhHant = defineLocale({
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       userBubbleTitle: '訊息氣泡',
       userBubbleDesc: '你自己的訊息有多透明。0 為不透明，100 時只保留邊框。',
+      chatBubblesTitle: '聊天版面',
+      chatBubblesDesc: '氣泡版面讓你的提示靠右、Hermes 的回覆靠左，一輪對話讀起來更像聊天。文件版面保留原本的整欄寬度。',
+      chatBubblesLayoutDocument: '文件',
+      chatBubblesLayoutBubbles: '氣泡',
+      chatBubblesCornersTitle: '圓角',
+      chatBubblesCorners: {
+        soft: '柔和',
+        round: '圓潤',
+        pill: '膠囊'
+      },
+      chatBubblesColorTitle: '顏色',
+      chatBubblesColor: {
+        theme: '主題',
+        accent: '強調色',
+        neutral: '中性'
+      },
+      chatBubblesFillTitle: '填色',
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',

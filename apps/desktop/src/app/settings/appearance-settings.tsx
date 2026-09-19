@@ -63,12 +63,13 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
+import { ChatBubbleSetting } from './chat-bubble-setting'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
 import { PetSettings } from './pet-settings'
-import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
-import { APPEARANCE_SETTING_IDS } from './settings-search'
+import { ControlRow, ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
+import { APPEARANCE_SETTING_IDS, appearanceSettingElementId } from './settings-search'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
@@ -159,7 +160,6 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
 // exact current percent.
 const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
 const APPEARANCE_SEARCH_TARGETS = new Set<string>(Object.values(APPEARANCE_SETTING_IDS))
-const appearanceSettingElementId = (id: string) => `setting-field-${id}`
 
 type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
 
@@ -378,23 +378,6 @@ function TranslucencySlider({ label, onChange, value }: TranslucencySliderProps)
         {value}%
       </span>
     </>
-  )
-}
-
-interface GlassRowProps {
-  children: React.ReactNode
-  label: string
-}
-
-/** A labelled control in the Glass sub-panel: tint, fade, frost, area. */
-function GlassRow({ children, label }: GlassRowProps) {
-  return (
-    <div className="flex items-center gap-3">
-      <span className="w-12 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {label}
-      </span>
-      {children}
-    </div>
   )
 }
 
@@ -730,21 +713,21 @@ export function AppearanceSettings() {
               below={
                 glassMode ? (
                   <div className="mt-3 flex flex-col gap-2.5" data-translucency-peek-scope="">
-                    <GlassRow label={a.translucencyTintTitle}>
+                    <ControlRow label={a.translucencyTintTitle}>
                       <TranslucencySlider
                         label={a.translucencyTintTitle}
                         onChange={setTranslucency}
                         value={translucency.intensity}
                       />
-                    </GlassRow>
-                    <GlassRow label={a.translucencyFadeTitle}>
+                    </ControlRow>
+                    <ControlRow label={a.translucencyFadeTitle}>
                       <TranslucencySlider
                         label={a.translucencyFadeTitle}
                         onChange={setTranslucencyFade}
                         value={translucency.fade}
                       />
-                    </GlassRow>
-                    <GlassRow label={a.translucencyFrostTitle}>
+                    </ControlRow>
+                    <ControlRow label={a.translucencyFrostTitle}>
                       <SegmentedControl
                         onChange={pickTranslucency(setTranslucencyMaterial)}
                         // Windows renders four rungs as three backdrops, so it
@@ -756,8 +739,8 @@ export function AppearanceSettings() {
                         }))}
                         value={glassMaterialForPicker(translucency.material, GLASS_IS_WINDOWS)}
                       />
-                    </GlassRow>
-                    <GlassRow label={a.translucencyScopeTitle}>
+                    </ControlRow>
+                    <ControlRow label={a.translucencyScopeTitle}>
                       <SegmentedControl
                         onChange={pickTranslucency(setTranslucencyScope)}
                         options={GLASS_SCOPES.map(scope => ({
@@ -766,7 +749,7 @@ export function AppearanceSettings() {
                         }))}
                         value={translucency.scope}
                       />
-                    </GlassRow>
+                    </ControlRow>
                   </div>
                 ) : undefined
               }
@@ -793,6 +776,8 @@ export function AppearanceSettings() {
             id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.userBubble)}
             title={a.userBubbleTitle}
           />
+
+          <ChatBubbleSetting />
 
           <ListRow
             action={

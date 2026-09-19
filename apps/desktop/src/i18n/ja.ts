@@ -544,6 +544,24 @@ export const ja = defineLocale({
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',
       userBubbleTitle: 'メッセージの吹き出し',
       userBubbleDesc: '自分のメッセージの透け具合。0 で不透明、100 で枠線だけが残ります。',
+      chatBubblesTitle: 'チャットのレイアウト',
+      chatBubblesDesc:
+        'バブルでは自分のプロンプトが右、Hermes の返信が左に並び、1 ターンが会話として読めます。ドキュメントは従来どおりの全幅レイアウトです。',
+      chatBubblesLayoutDocument: 'ドキュメント',
+      chatBubblesLayoutBubbles: 'バブル',
+      chatBubblesCornersTitle: '角丸',
+      chatBubblesCorners: {
+        soft: 'ソフト',
+        round: 'ラウンド',
+        pill: 'ピル'
+      },
+      chatBubblesColorTitle: 'カラー',
+      chatBubblesColor: {
+        theme: 'テーマ',
+        accent: 'アクセント',
+        neutral: 'ニュートラル'
+      },
+      chatBubblesFillTitle: '塗り',
       introSplashTitle: 'イントロ表示',
       introSplashDesc: '空のチャットに表示されるワードマークとプロンプト。',
       reactionsTitle: 'メッセージリアクション',

@@ -136,11 +136,35 @@ def _owned_profile_platforms(writer_identity: Optional[tuple], platforms: dict) 
         and value.get("writer_start_time") == live_start}
 
 
+def _profile_gateway_route_summary(profile_home: Path) -> List[Dict[str, str]]:
+    """Return enabled multiplex routes without exposing chat/guild/thread IDs."""
+    try:
+        from gateway.profile_routing import parse_profile_routes
+        from hermes_cli.config import read_user_config_raw
+
+        raw = read_user_config_raw(profile_home / "config.yaml")
+        gateway = raw.get("gateway") if isinstance(raw.get("gateway"), dict) else {}
+        routes = parse_profile_routes(raw.get("profile_routes") or gateway.get("profile_routes") or [])
+    except Exception:
+        _log.debug("gateway route summary failed for %s", profile_home, exc_info=True)
+        return []
+
+    return [
+        {
+            "platform": route.platform,
+            "profile": route.profile,
+            "scope": "scoped" if any((route.guild_id, route.chat_id, route.thread_id)) else "all",
+        }
+        for route in routes
+        if route.enabled
+    ]
+
+
 def _collect_profile_gateway_topology() -> Dict[str, Any]:
     """Enumerate profiles and the gateways serving them for ``/api/status``.
 
     Returns ``profiles`` (all profile names via the cheap ``profiles_to_serve(True)`` chokepoint),
-    ``gateways`` (one ``{"profile", "ports", "served_profiles"?}`` per LIVE gateway; liveness via
+    ``gateways`` (one ``{"profile", "ports", "served_profiles"?, "profile_routes"?}`` per LIVE gateway; liveness via
     ``_check_gateway_running`` so it agrees with the sidebar), ``gateway_mode``
     (multiplex / single / multiple / none) and ``profile_platforms`` — ownership-filtered runtime
     platform maps per live gateway, an internal aggregation input never exposed directly.
@@ -167,7 +191,7 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         except Exception:
             runtime = None
         served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
-        if name == "default" and len(served) > 1:
+        if len(served) > 1:
             multiplex = True
         plats = (runtime or {}).get("platforms")
         if isinstance(plats, dict) and plats:
@@ -177,6 +201,10 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         entry: Dict[str, Any] = {"profile": name, "ports": _profile_platform_ports(home, runtime)}
         if served:
             entry["served_profiles"] = served
+        if len(served) > 1:
+            routes = _profile_gateway_route_summary(home)
+            if routes:
+                entry["profile_routes"] = routes
         gateways.append(entry)
 
     if multiplex:

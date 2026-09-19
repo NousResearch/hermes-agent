@@ -3199,7 +3199,13 @@ def _route_block(
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
-        return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
+        # A real unfinished parent is productive waiting, not a recurrence of
+        # a prior synthetic request. Its completion starts a fresh cycle.
+        return (
+            "todo", "dependency_wait",
+            "block_kind    = ?,\n                       block_recurrences = ?",
+            (kind, 0), payload,
+        )
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}

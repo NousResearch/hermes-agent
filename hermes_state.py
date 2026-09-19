@@ -571,6 +571,12 @@ class SessionDB(
         # Read-open failure backoff is a TIMESTAMP, not a sticky bool: the likeliest trigger
         # is transient EMFILE, and a permanent flag would demote every reader forever.
         self._read_open_failed_at = 0.0
+        # Read-pool epoch marker, created when the handle adopts a new WAL generation
+        # (the #109687 self-heal): a reader checked out mid-heal holds a descriptor
+        # into the orphaned generation, and returning it to the pool would serve stale
+        # reads forever. Once the set exists, only connections in it (minted or
+        # verified after the heal) are usable; a pre-heal checkout is closed instead.
+        self._fresh_read_conns: Optional[set] = None
         self._wal_active, self._write_count = False, 0
         # File identity of the opened state.db, compared on every write so an out-of-band
         # replace cannot limp through in-place surgery (inode: mv/new-file; application_id: cp).
@@ -830,6 +836,8 @@ class SessionDB(
             apply_database_pragmas(conn, db_label="state.db")
             if self._fts_cjk_loaded:  # registers in the connection, not the file: ro is fine
                 load_fts5_cjk_extension(conn)
+            if self._fresh_read_conns is not None:
+                self._fresh_read_conns.add(conn)
         except BaseException as exc:
             # A half-open connection (open ok, extension load failed) is a live tracked descriptor,
             # the leak shape this pool exists to fix; a stranded permit would shrink the read
@@ -867,10 +875,18 @@ class SessionDB(
         A pool hit costs no permit (the connection already holds one)."""
         if not self._wal_active or self.read_only:
             return None
-        try:
-            return self._read_pool.get_nowait()
-        except queue.Empty:
-            return self._get_read_conn()
+        while True:
+            try:
+                conn = self._read_pool.get_nowait()
+            except queue.Empty:
+                return self._get_read_conn()
+            fresh = self._fresh_read_conns
+            if fresh is not None and conn not in fresh:
+                # Minted before a WAL-generation self-heal adopted the current
+                # generation: its descriptors name the orphaned one. Never reuse.
+                self._close_read_conn(conn)
+                continue
+            return conn
 
     @contextmanager
     def _read_ctx(self) -> Iterator[sqlite3.Connection]:
@@ -888,6 +904,8 @@ class SessionDB(
                     if not self._read_conns_closed:
                         try:
                             self._read_pool.put_nowait(conn)
+                            if self._fresh_read_conns is not None:
+                                self._fresh_read_conns.add(conn)
                             returned = True
                         except queue.Full:
                             pass
@@ -1193,6 +1211,89 @@ class SessionDB(
             self._db_sidecar_identity = current_identity
         return False
 
+    def _wal_self_heal_enabled(self) -> bool:
+        """Whether the operator opted into automatic WAL-generation recovery.
+
+        Default OFF: losing the -wal/-shm generation under a live writer is a
+        data-integrity event, and the fail-closed halt (capture + sticky
+        refusal) is the conservative posture (#109687 keeps it for unflagged
+        installs). An operator who accepts the trade-off -- captured frames are
+        preserved for inspection in the retired-wal artifact, then this handle
+        drops its orphaned descriptors and reopens onto the current generation
+        -- can enable ``database.wal_self_heal: true`` so a short-lived CLI
+        reader no longer bricks the gateway until a human intervenes.
+        """
+        try:
+            from hermes_cli.config import load_config_readonly
+            database = (load_config_readonly() or {}).get("database", {})
+            raw = database.get("wal_self_heal", False) if isinstance(database, dict) else False
+            return bool(raw)
+        except Exception:
+            return False
+
+    def _try_heal_lost_wal_generation(self) -> bool:
+        """Recover this handle from a lost WAL/SHM generation in place (#109687).
+
+        Automates the exact remediation the capture machinery already defines:
+        (1) capture the retired frames durably (the unlinked WAL inode dies
+        with this process's last descriptor -- preserved frames outlive it),
+        (2) close this handle's descriptors with SQLite's close-time
+        checkpoint disabled so retired frames cannot be written over the newer
+        generation (Python < 3.12 cannot disable it, so no heal is attempted
+        there: the pin path stays), (3) reopen through
+        ``refuse_deleted_wal_generation`` exactly like a fresh process -- if
+        any OTHER process still holds an orphaned sidecar, the guard refuses
+        and the heal fails closed -- and (4) adopt the current generation's
+        identity. The sticky halt flags are cleared only after the reopen
+        succeeded. Caller holds ``self._lock``.
+        """
+        if not _close_time_checkpoint_configurable():
+            return False
+        conn = self._conn
+        if conn is None:
+            return False
+        try:
+            artifact = self._capture_retired_generation("self-heal")
+        except RetiredGenerationCaptureError:
+            return False  # capture retries at close(); the handle stays halted
+        # Close every descriptor this handle holds onto the orphaned generation
+        # BEFORE reopening: the refuse-guard scans /proc for deleted sidecars,
+        # and this process's own fds would trip it (self-pid is not exempt there).
+        if not self._disable_close_time_checkpoint():
+            return False  # cannot suppress the close-time checkpoint: closing here
+            # could write the retired frames over the newer generation; fail closed
+        self._conn = None
+        self._close_connection_quietly(conn)
+        while self._evict_one_idle_read_conn():
+            pass
+        # From here on only descriptors opened against the CURRENT generation may
+        # serve reads: a reader checked out mid-heal still holds an orphaned fd and
+        # must never re-enter the pool.
+        self._fresh_read_conns = set()
+        try:
+            refuse_deleted_wal_generation(self.db_path)
+        except DeletedWalGenerationError:
+            # Another process still holds an orphaned sidecar: this handle alone
+            # cannot clear the box. Fail closed with the canonical refusal.
+            logger.error(_DELETED_WAL_GENERATION_MSG)
+            raise
+        except Exception as exc:
+            raise DeletedWalGenerationError(
+                f"state.db WAL-generation self-heal for {self.db_path} failed at the "
+                f"pre-reopen guard: {exc}"
+            ) from exc
+        self._conn = self._open_writer_conn()
+        # Adopt the current generation and clear the sticky halt: writes resume.
+        self._record_db_file_identity()
+        self._db_wal_generation_lost = False
+        logger.warning(
+            "state.db %s lost its WAL/SHM generation under a live writer (#109687); the retired frames "
+            "are preserved at %s, this handle dropped its orphaned descriptors and reopened onto the "
+            "current generation — writes resumed without operator intervention (database.wal_self_heal).",
+            self.db_path, artifact,
+        )
+        return True
+
     def _halt_if_db_generation_changed(self) -> None:
         """Stop writes (logging once) when the file was replaced or its WAL/SHM generation
         is gone: never run in-file repair on a new generation, never keep committing on a
@@ -1215,6 +1316,8 @@ class SessionDB(
                     "Could not capture the retired WAL generation of %s at halt: %s. close() retries "
                     "the capture and refuses to settle without it.", self.db_path, exc,
                 )
+            if self._wal_self_heal_enabled() and self._try_heal_lost_wal_generation():
+                return  # healed: sticky flags cleared, current generation adopted
             logger.error(_DELETED_WAL_GENERATION_MSG)
             raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
 

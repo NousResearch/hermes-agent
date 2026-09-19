@@ -9,6 +9,7 @@ are read lazily from ``tools.transcription_tools``.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import tempfile
@@ -104,14 +105,50 @@ def _transcribe_groq(
     return _with_openai_client(api_key, GROQ_BASE_URL, file_path, "Groq", _run)
 
 
+def _normalize_openai_model(model_name: str) -> str:
+    """Apply the native Groq-only correction before selecting model-specific context."""
+    if model_name in GROQ_MODELS:
+        logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
+        return DEFAULT_STT_MODEL
+    return model_name
+
+
+def _is_native_openai_transcription_endpoint(base_url: Any) -> bool:
+    """Check the constructed SDK client's URL, never a provider label or assumed default."""
+    return re.fullmatch(r"(?i:https://api\.openai\.com)(?::443)?/v1/?", str(base_url)) is not None
+
+
+def _decode_transcription_keywords(value: Any) -> list[str]:
+    """Leading ``[`` reserves JSON-list syntax; validate raw keywords before trimming."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        if any(char in value for char in "<>\r\n"):
+            raise ValueError("stt.openai.keywords: forbidden character (<, >, CR or LF)")
+        if value.lstrip().startswith("["):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError("stt.openai.keywords: expected a valid JSON list of strings") from exc
+        else:
+            value = [value]
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError("stt.openai.keywords: expected a string or list of strings")
+    if any(char in item for item in value for char in "<>\r\n"):
+        raise ValueError("stt.openai.keywords: forbidden character (<, >, CR or LF)")
+    return [item.strip() for item in value if item.strip()]
+
+
 def _transcribe_openai(
     file_path: str, model_name: str, *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, provider_label: str = "openai", language: Optional[str] = None,
-    prompt: Optional[str] = None) -> Dict[str, Any]:
+    prompt: Optional[str] = None, stt_config: Optional[Dict[str, Any]] = None,
+    extra_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape, shared by every
     OpenAI-compatible endpoint (DeepInfra etc.): explicit ``api_key``/``base_url`` skip the
     OpenAI-only auth chain; ``provider_label`` names the response's provider."""
-    from tools.transcription_tools import _HAS_OPENAI, _resolve_stt_language
+    from tools.transcription_tools import _HAS_OPENAI, _load_stt_config, _resolve_stt_language
+    from tools.transcription_command import _enforce_prompt_length_limit
     if api_key is None:
         try:
             api_key, fallback_base = _resolve_openai_audio_client_config()
@@ -119,30 +156,65 @@ def _transcribe_openai(
             return _error_result(str(exc))
         base_url = base_url or fallback_base
     # Language: hook override > stt.<provider>.language > stt.language > env > auto.
-    language = language or _resolve_stt_language(provider_label)
+    language = language or _resolve_stt_language(provider_label, stt_config)
     if not _HAS_OPENAI:
         return _error_result("openai package not installed")
     # Auto-correct a Groq-only model on the native OpenAI path only (third-party endpoints may serve it).
-    if provider_label == "openai" and model_name in GROQ_MODELS:
-        logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
-        model_name = DEFAULT_STT_MODEL
+    if provider_label == "openai":
+        model_name = _normalize_openai_model(model_name)
 
     def _run(client):
         from openai import BadRequestError
+
+        request_prompt = prompt
+        request_language = language
+        body = dict(extra_body or {})
+        native_context = model_name == "gpt-transcribe" and _is_native_openai_transcription_endpoint(
+            getattr(client, "base_url", None))
+        if model_name == "gpt-transcribe":
+            if native_context:
+                cfg = _load_stt_config() if stt_config is None else stt_config
+                openai_cfg = _get_stt_section(cfg, "openai")
+                if request_prompt is None:
+                    request_prompt = openai_cfg.get("prompt")
+                    if request_prompt is None or (isinstance(request_prompt, str) and not request_prompt.strip()):
+                        generic_prompt = cfg.get("prompt")
+                        request_prompt = (generic_prompt if isinstance(generic_prompt, str)
+                                          and generic_prompt.strip() else None)
+                if request_prompt is not None and not isinstance(request_prompt, str):
+                    raise ValueError("stt.openai.prompt: expected a string")
+                # Hermes acceptance ceiling, checked BEFORE the established whisper tail cap.
+                if request_prompt and len(request_prompt) > 5000:
+                    raise ValueError("OpenAI transcription prompt exceeds 5000 characters")
+                keywords = _decode_transcription_keywords(openai_cfg.get("keywords"))
+                if keywords:
+                    body["keywords"] = keywords
+            if request_language:
+                # Keep the legacy string as one hint, including any commas.
+                body["languages"] = [request_language]
+            body.pop("language", None)
+            request_language = None
+        # Deferred compatible routes also include DeepInfra's catalog-selected non-GPT models.
+        # Only native GPT context changes defaults/validation; every other route keeps its old cap.
+        if not native_context and request_prompt is None and stt_config is not None:
+            request_prompt = stt_config.get("prompt")
+            if not isinstance(request_prompt, str) or not request_prompt.strip():
+                request_prompt = None
+        if native_context or stt_config is not None:
+            request_prompt = _enforce_prompt_length_limit(
+                request_prompt, "openai" if native_context else provider_label)
 
         def _create_transcription(path: str):
             create_kwargs: Dict[str, Any] = {
                 "model": model_name, "response_format": "text" if model_name == "whisper-1" else "json",
             }
-            if language:
-                # gpt-transcribe takes a ``languages`` list and rejects the legacy field.
-                if model_name == "gpt-transcribe":
-                    create_kwargs["extra_body"] = {"languages": [language]}
-                else:
-                    create_kwargs["language"] = language
-                logger.debug("Using language hint '%s' for OpenAI STT", language)
-            if prompt:  # only when set so the bare request stays byte-identical
-                create_kwargs["prompt"] = prompt
+            if request_language:
+                create_kwargs["language"] = request_language
+                logger.debug("Using language hint '%s' for OpenAI STT", request_language)
+            if body:
+                create_kwargs["extra_body"] = body
+            if request_prompt:  # only when set so the bare request stays byte-identical
+                create_kwargs["prompt"] = request_prompt
             with open(path, "rb") as audio_file:
                 return client.audio.transcriptions.create(file=audio_file, **create_kwargs)
         with tempfile.TemporaryDirectory(prefix="hermes-stt-") as work_dir:
@@ -328,7 +400,8 @@ def _transcribe_elevenlabs(
 
 
 def _transcribe_deepinfra(
-    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
+    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None,
+    stt_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Resolve DeepInfra credentials/model (shared ``hermes_cli.models`` helpers), then delegate to :func:`_transcribe_openai`."""
     from tools.transcription_tools import _load_stt_config, _resolve_provider_key
@@ -337,14 +410,16 @@ def _transcribe_deepinfra(
         return _error_result("DEEPINFRA_API_KEY not set")
     from hermes_cli.models import deepinfra_base_url, deepinfra_model_ids
     # ``stt.deepinfra: null`` in YAML yields None, not {} — coalesce.
-    base_url = deepinfra_base_url(_get_stt_section(_load_stt_config(), "deepinfra"))
+    cfg = _load_stt_config() if stt_config is None else stt_config
+    base_url = deepinfra_base_url(_get_stt_section(cfg, "deepinfra"))
     model_name = model_name or next(iter(deepinfra_model_ids("stt")), None)
     if not model_name:
         return _error_result(
             "No DeepInfra STT model available. Pin one in config.yaml under stt.deepinfra.model, "
             "or check connectivity to api.deepinfra.com so the live catalog can be fetched.")
     return _transcribe_openai(file_path, model_name, api_key=api_key, base_url=base_url,
-                              provider_label="deepinfra", language=language, prompt=prompt)
+                              provider_label="deepinfra", language=language, prompt=prompt,
+                              stt_config=stt_config)
 
 
 # ---- OpenAI audio credential resolution -----------------------------------

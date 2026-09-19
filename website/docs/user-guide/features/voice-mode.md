@@ -541,6 +541,63 @@ DISCORD_ALLOWED_USERS=...
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
 
+### OpenAI transcription prompts and keywords
+
+For the Python STT pipeline, `gpt-transcribe` accepts a contextual prompt and vocabulary keywords:
+
+```yaml
+stt:
+  provider: openai
+  prompt: "General vocabulary for prompt-capable providers."
+  openai:
+    model: gpt-transcribe
+    prompt: "A discussion of Hermes and Nous Research."
+    keywords: ["Hermes", "Nous Research"]
+```
+
+The added `stt.openai.prompt` and `stt.openai.keywords` settings apply only
+when the final model is exactly `gpt-transcribe` and the constructed SDK client's base
+URL is `https://api.openai.com/v1` (optional trailing slash, default or port 443,
+no user information, query, or fragment). Custom and managed compatible endpoints
+retain the generic `stt.prompt` and existing singular-language behavior. These settings
+do not change provider selection, endpoints, or credentials.
+
+A `pre_transcription` hook may change the model before context is chosen. A hook's
+explicit prompt wins; `{"prompt": ""}` clears the prompt and prevents configured
+prompt fallback, even when another hook changes the model. Otherwise the native
+OpenAI prompt takes precedence over the generic prompt. Hooks merge fields in
+registration order, with the last valid string for each field winning.
+
+Hermes checks the effective, untruncated native prompt against its **5000-character
+acceptance ceiling**, then retains the existing **896-character tail cap** (224 times
+4 characters). Only that tail is sent. The ceiling is a Hermes limit, not a claim
+about the provider's numeric maximum or full forwarding of 5000 characters.
+
+Keywords accept a string or a list of strings. CLI JSON-list strings are decoded,
+for example:
+
+```bash
+hermes config set stt.openai.keywords '["Hermes", "Nous Research"]'
+```
+
+A string beginning with `[` after leading whitespace is reserved for JSON-list
+syntax; malformed JSON is rejected. For a literal bracket-prefixed keyword, use
+an explicit list, such as `keywords: ["[Hermes]"]`.
+
+Non-string list members are rejected. Keywords must not contain `<`, `>`, carriage
+returns, or line feeds, including at their edges before whitespace is trimmed.
+Hermes sends `prompt` as the SDK argument and merges `keywords` into a copied
+`extra_body`, preserving unrelated fields.
+
+The existing language-string mapping is preserved: `gpt-transcribe` receives one
+hint in `languages`, with comma strings kept intact; other models retain singular
+`language`. Native language-array support, automatic detection, config roundtrips,
+and multipart coverage are credited separately to itkonen's
+[#103867](https://github.com/NousResearch/hermes-agent/pull/103867).
+
+See OpenAI's [speech-to-text guide](https://developers.openai.com/api/docs/guides/speech-to-text)
+and [transcription create reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
+
 ### TTS Provider Comparison
 
 | Provider | Quality | Cost | Latency | Key Required |

@@ -3647,14 +3647,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route = route or {}
         requested_runtime = requested_runtime or {}
         if confirmed_runtime_lock:
-            expected_provider = self._clean_runtime_id(
+            requested_provider = self._clean_runtime_id(
                 route.get("provider") or requested_runtime.get("provider"), max_len=80)
+            # _create_agent records the provider after resolving the request through the
+            # provider catalog. Compare that identity with the agent's actual runtime so
+            # aliases and named custom providers do not fail a literal-string check.
+            expected_provider = self._clean_runtime_id(
+                runtime.get("provider") or requested_provider, max_len=80)
             expected_model = self._clean_runtime_id(route.get("model") or requested_runtime.get("model"))
             if (expected_provider and actual_provider != expected_provider) or (
                 expected_model and actual_model != expected_model):
                 raise RuntimeError(
                     "confirmed model lock runtime mismatch: "
-                    f"expected provider={expected_provider or '<unspecified>'} "
+                    f"expected provider={requested_provider or expected_provider or '<unspecified>'} "
                     f"model={expected_model or '<unspecified>'}; "
                     f"actual provider={actual_provider or '<unknown>'} "
                     f"model={actual_model or '<unknown>'}")

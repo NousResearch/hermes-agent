@@ -1947,7 +1947,7 @@ class GatewayInboundMixin:
 
         analysis_prompt = (
             "Concisely describe this image in 2-4 sentences "
-            "(~200 Chinese characters or ~150 English words). "
+            "(~150 words). "
             "Cover the main subject, key visible text/data/code, and overall context. "
             "If it is a chart, diagram, or scientific figure, include the important "
             "labels, legend, and key values. Skip decorative details."

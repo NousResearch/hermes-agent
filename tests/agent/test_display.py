@@ -48,6 +48,49 @@ class TestBuildToolPreview:
         """Empty dict has no keys to preview."""
         assert build_tool_preview("terminal", {}) is None
 
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            pytest.param(
+                {"action": "wait", "session_id": "proc_scout", "timeout": 40},
+                "wait proc_scout timeout=40s",
+                id="40-seconds",
+            ),
+            pytest.param(
+                {"action": "wait", "session_id": "proc_scout", "timeout": 40000},
+                "wait proc_scout timeout=40000s",
+                id="40000-seconds",
+            ),
+        ],
+    )
+    def test_process_wait_preview_labels_raw_timeout(self, args, expected):
+        original_args = args.copy()
+
+        assert build_tool_preview("process_manage", args) == expected
+        assert args == original_args
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            pytest.param({"action": "wait", "session_id": "proc_scout"}, "wait proc_scout", id="omitted-timeout"),
+            pytest.param(
+                {"action": "wait", "session_id": "proc_scout", "timeout": 0},
+                "wait proc_scout",
+                id="zero-timeout",
+            ),
+            pytest.param(
+                {"action": "poll", "session_id": "proc_scout", "timeout": 40},
+                "poll proc_scout",
+                id="non-wait-action",
+            ),
+        ],
+    )
+    def test_process_preview_only_labels_wait_timeout(self, args, expected):
+        original_args = args.copy()
+
+        assert build_tool_preview("process_manage", args) == expected
+        assert args == original_args
+
 
 
 

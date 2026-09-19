@@ -364,3 +364,99 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
 
     assert _git(target, "rev-parse", "HEAD") == old_sha
     assert _metadata(home)["demo"]["pinned"] is True
+
+
+@pytest.mark.windows_only
+@pytest.mark.parametrize("existing", [False, True])
+def test_failed_install_restores_state_before_readonly_cleanup(tmp_path, monkeypatch, existing):
+    import stat
+    from hermes_cli import plugins_cmd
+
+    repo, old_sha, new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target = home / "plugins" / "demo"
+    if existing:
+        plugins_cmd._install_plugin_core(repo.as_uri(), force=False, ref=old_sha)
+        (target / "local-data").write_bytes(b"irreplaceable local data")
+    before = plugins_cmd._read_install_metadata()
+    write = plugins_cmd._write_install_metadata
+
+    def fail_new_metadata(metadata):
+        if metadata != before:
+            # Real NTFS read-only file, not a mocked rmtree or host OS.
+            (target / "marker.txt").chmod(stat.S_IREAD)
+            raise OSError("metadata unavailable")
+        write(metadata)
+
+    monkeypatch.setattr(plugins_cmd, "_write_install_metadata", fail_new_metadata)
+    with pytest.raises(OSError, match="metadata unavailable"):
+        plugins_cmd._install_plugin_core(repo.as_uri(), force=True, ref=new_sha)
+
+    assert plugins_cmd._read_install_metadata() == before
+    if existing:
+        assert _git(target, "rev-parse", "HEAD") == old_sha
+        assert (target / "local-data").read_bytes() == b"irreplaceable local data"
+    else:
+        assert not target.exists()
+    assert not any(path.is_dir() for path in target.parent.glob(".install-*"))
+    assert not list(target.parent.glob(".demo.install-*"))
+
+
+@pytest.mark.parametrize("failure", ["publish", "restore_tree", "restore_metadata"])
+def test_failed_install_keeps_original_or_durable_recovery(tmp_path, monkeypatch, failure):
+    import os
+    from hermes_cli import plugins_cmd
+
+    repo, old_sha, new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target, _, _ = plugins_cmd._install_plugin_core(repo.as_uri(), force=False, ref=old_sha)
+    payload = b"irreplaceable local data\x00"
+    (target / "local-data").write_bytes(payload)
+    before = plugins_cmd._read_install_metadata()
+    replace = os.replace
+    write = plugins_cmd._write_install_metadata
+    rolling_back = False
+
+    def fail_replace(src, dst):
+        if Path(dst) == target:
+            if failure == "publish" and Path(src).name == "plugin":
+                raise OSError("publish unavailable")
+            if failure == "restore_tree" and rolling_back:
+                raise OSError("restore unavailable")
+        return replace(src, dst)
+
+    def fail_metadata(metadata):
+        nonlocal rolling_back
+        rolling_back = True
+        if failure == "restore_metadata":
+            # A writer can fail after replacement (e.g. filesystem fallback).
+            if metadata != before:
+                write(metadata)
+            raise OSError("metadata unavailable")
+        if metadata != before:
+            raise OSError("metadata unavailable")
+        write(metadata)
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr(plugins_cmd, "_write_install_metadata", fail_metadata)
+    with pytest.raises((OSError, plugins_cmd.PluginOperationError)) as raised:
+        plugins_cmd._install_plugin_core(repo.as_uri(), force=True, ref=new_sha)
+
+    # Inspect after the caller's TemporaryDirectory has exited: a backup inside
+    # that directory would already be gone, along with uncommitted user files.
+    originals = list(target.parent.rglob("local-data"))
+    assert len(originals) == 1
+    assert originals[0].read_bytes() == payload
+    assert _git(originals[0].parent, "rev-parse", "HEAD") == old_sha
+    assert not any(path.is_dir() for path in target.parent.glob(".install-*"))
+    if failure == "publish":
+        assert originals[0].parent == target
+        assert plugins_cmd._read_install_metadata() == before
+        assert not list(target.parent.glob(".demo.install-*"))
+    else:
+        records = list(target.parent.glob(".demo.install-*/recovery.json"))
+        assert len(records) == 1
+        assert json.loads(records[0].read_text(encoding="utf-8"))["metadata"] == before
+        assert str(records[0]) in str(raised.value)

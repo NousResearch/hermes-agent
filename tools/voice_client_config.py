@@ -130,8 +130,16 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
         api_key = tt._resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
         if not api_key:
             return _relay("no credentials")
+        # ElevenLabs keys this ``model_id``, matching the relay path in
+        # tools.transcription_tools.transcribe_recording. A hand-edited
+        # legacy ``model`` key is deliberately NOT consulted: load_config()
+        # merges the ``model_id`` default into this section, so a fallback
+        # after ``model_id`` could never fire — and consulting ``model``
+        # first would invert canonical precedence AND diverge from the
+        # relay path, which has never read ``model``. Divergence between
+        # the two paths is the defect this resolver exists to prevent.
         return direct(STT_WIRE_ELEVENLABS, env_base_url("ELEVENLABS_STT_BASE_URL", tc.ELEVENLABS_STT_BASE_URL),
-                      api_key, section.get("model") or tc.DEFAULT_ELEVENLABS_STT_MODEL)
+                      api_key, section.get("model_id") or tc.DEFAULT_ELEVENLABS_STT_MODEL)
     if provider == "deepinfra":
         api_key = tt._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
         if not api_key:

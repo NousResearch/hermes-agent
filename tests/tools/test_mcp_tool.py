@@ -1632,8 +1632,20 @@ class TestSanitizeError:
             ("key sk-sp-ABCDEFGH12345678.abcdefgh_XYZ-0987.", "key [REDACTED]."),
             ("Authorization: Bearer eyJabc123def", "Authorization: [REDACTED]"),
             ("url?token=secret123", "url?[REDACTED]"),
+            # Zhipu's unprefixed id.secret shape (32 hex + "." + 16+ alnum) — mirrors
+            # agent.redact._ZHIPU_API_KEY_RE, which this sanitizer must independently track.
+            ("Zhipu key a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4.SecretPart1234567890 rejected",
+             "Zhipu key [REDACTED] rejected"),
         ):
             assert _sanitize_error(text) == expected, text
+
+    def test_content_hash_filename_is_not_mistaken_for_a_zhipu_key(self):
+        """A 32-hex-char content-hash filename must not false-positive as a Zhipu key —
+        the boundary/length constraints mirror agent.redact._ZHIPU_API_KEY_RE exactly."""
+        from tools.mcp_tool_common import _sanitize_error
+
+        result = _sanitize_error("cached at a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4.bundle")
+        assert result == "cached at a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4.bundle"
 
         # Several credentials in one message are all masked.
         multi = _sanitize_error("ghp_abc123 and sk-projXyz789 and token=foo")

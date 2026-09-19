@@ -57,38 +57,21 @@ interface LoadOptions {
 /** Live runtime plugins: id -> disposers (unload/reload support). */
 const loaded = new Map<string, (() => void)[]>()
 
-// Matches the specifier of a static `from '…'`, a side-effect `import '…'`, or
-// a dynamic `import('…')` — anchored to import/export syntax so a bare string
-// literal or comment (e.g. `notify('react')`) is never touched.
+// Matches a specifier after `from '…'`, a side-effect `import '…'`, or a
+// dynamic `import('…')`, so REWRITING only has to consider those positions.
+// It is a text scan and cannot tell code from prose — a comment that happens to
+// read `from 'react'` is rewritten too (harmless: unmapped specifiers are left
+// alone). Never use it to decide whether a plugin is VALID; see loadRuntimePlugin.
 const importSpecifierRe = () => /(from\s*|import\s*\(\s*|import\s+)(['"])([^'"]+)\2/g
 
 /** Rewrite ONLY mapped import specifiers (@hermes/plugin-sdk, react*) to their
- *  live shim blob URLs — never occurrences inside strings/comments. */
+ *  live shim blob URLs. */
 function rewriteSpecifiers(source: string): string {
   const map = sdkImportMap()
 
   return source.replace(importSpecifierRe(), (whole, pre, quote, spec) =>
     map[spec] ? `${pre}${quote}${map[spec]}${quote}` : whole
   )
-}
-
-/** Bare import specifiers the loader can't resolve (not relative/URL, not in
- *  the SDK map). Surfaced up-front so they don't fail as a cryptic native
- *  "Failed to resolve module specifier" from the blob import. */
-function unsupportedImports(source: string): string[] {
-  const map = sdkImportMap()
-  const bare = new Set<string>()
-
-  for (const m of source.matchAll(importSpecifierRe())) {
-    const spec = m[3]
-
-    // Skip relative/absolute (./ ../ /) and any URL scheme (blob: http(s):).
-    if (spec && !/^[./]/.test(spec) && !/^[a-z][a-z0-9+.-]*:/i.test(spec) && !map[spec]) {
-      bare.add(spec)
-    }
-  }
-
-  return [...bare]
 }
 
 async function verifyIntegrity(source: string, integrity: string): Promise<boolean> {
@@ -123,15 +106,13 @@ export async function loadRuntimePlugin(
       throw new Error(`integrity check failed for ${origin}`)
     }
 
-    const unsupported = unsupportedImports(source)
-
-    if (unsupported.length > 0) {
-      throw new Error(
-        `unsupported import${unsupported.length > 1 ? 's' : ''}: ${unsupported.join(', ')} — ` +
-          `runtime plugins may only import @hermes/plugin-sdk and react`
-      )
-    }
-
+    // No bare-import PRE-SCAN. It used to regex the raw source and reject any
+    // specifier not in the SDK map — but that regex cannot tell code from prose,
+    // so `t('wd.from')` in a label (with another quote later on the line) read as
+    // an unsupported import and took the WHOLE plugin down: the panel vanished
+    // while the app stayed healthy. A source that really cannot resolve now fails
+    // where resolution actually happens — the blob import below — and the catch
+    // reports it to the inventory like any other load failure.
     const url = URL.createObjectURL(new Blob([rewriteSpecifiers(source)], { type: 'text/javascript' }))
 
     let mod: { default?: HermesPlugin }

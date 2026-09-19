@@ -385,6 +385,76 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
   })
 })
 
+describe('plugin validity follows module resolution, not a text scan', () => {
+  /** Same blob→data: URL reroute as the shadowing test below: vite cannot
+   *  import a blob:, and the loader's verdict must come from the real import. */
+  function importableSources() {
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    return () => {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+    }
+  }
+
+  it('loads a plugin whose own text contains import-looking strings', async () => {
+    // `from 'x'` in a comment and a label call that closes on a later quote:
+    // both matched the loader's old bare-import regex, which then rejected the
+    // whole plugin (a watchdog panel shipped that way and simply vanished).
+    const restore = importableSources()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "// see from 'x' in the docs\n" +
+          'const t = s => s\n' +
+          "const label = t('wd.from') + ' ok'\n" +
+          'export default { id: "texty", register() {} }\n',
+        'texty'
+      )
+
+      expect(id).toBe('texty')
+      expect($pluginRecords.get().texty).toMatchObject({ kind: 'disk', status: 'loaded' })
+    } finally {
+      restore()
+    }
+  })
+
+  it('still fails loudly on an import the runtime cannot resolve', async () => {
+    const restore = importableSources()
+
+    try {
+      const id = await loadRuntimePlugin(
+        'import nope from "@nope/definitely-not-installed"\nexport default { id: "unresolvable", register() {} }',
+        'unresolvable'
+      )
+
+      expect(id).toBeNull()
+      expect($pluginRecords.get().unresolvable).toMatchObject({ status: 'error' })
+    } finally {
+      restore()
+    }
+  })
+})
+
 describe('bundled-shadowed disk copies', () => {
   it('skips a disk copy of a bundled plugin but publishes a visible inventory row', async () => {
     // The bundled twin is already registered (build-time glob).

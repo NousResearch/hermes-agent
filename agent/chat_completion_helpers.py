@@ -2626,6 +2626,10 @@ class _StreamingCall(StreamingWaitMonitor):
         self.provider_tool_in_flight = {"yes": False}
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
         self.last_chunk_time = {"t": time.time()}
+        self.reasoning_seen = {"yes": False}
+        self.last_content_chunk_time = {"t": time.time()}
+        self.reasoning_stale_killed = {"yes": False}
+        self._reasoning_only_stale_timeout = 0.0
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
         # detector (``_resolve_stale_timeout``); None until resolved.
         self._stream_stale_timeout = None
@@ -2983,6 +2987,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 reasoning_text = separate_glued_reasoning_blocks(
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
                 reasoning_parts.append(reasoning_text)
+                if not self.reasoning_seen["yes"]:
+                    self.last_content_chunk_time["t"] = time.time()
+                self.reasoning_seen["yes"] = True
                 self._emit_reasoning(reasoning_text)
             # Structured reasoning_details deltas carry the provider's replay data; the
             # non-streaming path already keeps them, so dropping them here lost
@@ -3005,6 +3012,8 @@ class _StreamingCall(StreamingWaitMonitor):
             # buffered until it can be judged.
             delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
             if delta_content:
+                self.reasoning_seen["yes"] = False
+                self.last_content_chunk_time["t"] = time.time()
                 content_parts.append(delta_content)
                 if tool_calls_acc:
                     self._route_suppressed_text(delta_content)
@@ -3022,6 +3031,8 @@ class _StreamingCall(StreamingWaitMonitor):
 
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if delta_tool_calls:
+                self.reasoning_seen["yes"] = False
+                self.last_content_chunk_time["t"] = time.time()
                 _flush_pending_stream_text()
                 for tc_delta in delta_tool_calls:
                     name = tool_calls.feed(tc_delta)
@@ -3175,6 +3186,8 @@ class _StreamingCall(StreamingWaitMonitor):
         # message_start); shims may fabricate a contentless Message. All -> EmptyStreamError.
         saw_stream_event = False
         self.last_chunk_time["t"] = time.time()
+        self.last_content_chunk_time["t"] = time.time()
+        self.reasoning_seen["yes"] = False
         _diag = self._new_diag()
         self._writer_token = self._attempt_stream_response = None
         self._attempt_request_client = request_client
@@ -3218,6 +3231,8 @@ class _StreamingCall(StreamingWaitMonitor):
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
                         has_tool_use = True
+                        self.reasoning_seen["yes"] = False
+                        self.last_content_chunk_time["t"] = time.time()
                         if getattr(block, "name", None):
                             self._emit_tool_started(block.name)
                             # Same as the chat_completions wire: a stream that dies inside the
@@ -3228,10 +3243,19 @@ class _StreamingCall(StreamingWaitMonitor):
                     delta_type = getattr(delta, "type", None) if delta else None
                     if delta_type == "text_delta":
                         text = getattr(delta, "text", "")
+                        if text:
+                            self.reasoning_seen["yes"] = False
+                            self.last_content_chunk_time["t"] = time.time()
                         if text and not has_tool_use:
                             self._emit_text(text)
                     elif delta_type == "thinking_delta" and getattr(delta, "thinking", ""):
+                        if not self.reasoning_seen["yes"]:
+                            self.last_content_chunk_time["t"] = time.time()
+                        self.reasoning_seen["yes"] = True
                         self._emit_reasoning(delta.thinking)
+                    elif delta_type == "input_json_delta":
+                        self.reasoning_seen["yes"] = False
+                        self.last_content_chunk_time["t"] = time.time()
             raw_stream = _stream_context["stream"]
             if not self.agent._interrupt_requested and raw_stream is not None:
                 try:
@@ -3322,6 +3346,10 @@ class _StreamingCall(StreamingWaitMonitor):
         # poll loop raises InterruptedError).
         if self._request_cancelled["value"]:
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
+            return False
+        if self.reasoning_stale_killed["yes"]:
+            logger.warning("Streaming worker caught %s after reasoning-only stale kill — exiting without retry.", type(e).__name__)
+            self.result["error"] = e
             return False
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
         # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader,
@@ -3560,8 +3588,21 @@ class _StreamingCall(StreamingWaitMonitor):
             self._stream_stale_timeout = env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", _local_default)
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
-            return
-        self._stream_stale_timeout = _cloud_stale_timeout(base, self.api_kwargs)
+        else:
+            self._stream_stale_timeout = _cloud_stale_timeout(base, self.api_kwargs)
+
+        timeout = 300.0
+        with contextlib.suppress(Exception):
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly()
+            agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+            value = agent_cfg.get("reasoning_only_stale_timeout") if isinstance(agent_cfg, dict) else None
+            if value is not None:
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    timeout = float("inf") if value == 0 else max(0.0, float(value))
+                else:
+                    logger.warning("Ignoring invalid agent.reasoning_only_stale_timeout value %r", value)
+        self._reasoning_only_stale_timeout = timeout
 
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the

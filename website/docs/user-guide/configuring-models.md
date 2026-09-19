@@ -216,7 +216,7 @@ providers:
       - my-finetune-v1
 ```
 
-With discovery off, the model picker (`hermes model`, `/model`) shows the configured list instead of a live probe.
+With discovery off, the model picker (`hermes model`, `/model`) shows the configured list instead of a live probe. On a built-in provider (e.g. `openrouter`), a `models:` list extends that provider's curated picker row with the declared ids, for when a model is missing from the curated catalog.
 
 **`openai_native_compaction`** — set this capability to `true` only for an OpenAI-compatible endpoint that you trust with conversation content. Native compaction sends its payload to that provider's configured `base_url`:
 

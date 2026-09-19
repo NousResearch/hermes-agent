@@ -73,7 +73,10 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     print()
 
     # Static list — mantle doesn't need boto3 for discovery
-    model_list = _PROVIDER_MODELS.get("bedrock", [])
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    # Declared providers.bedrock.models extend the curated list (deduped, declared-first).
+    model_list = _with_declared_models(_providers, "bedrock", _PROVIDER_MODELS.get("bedrock", []))
     print(f"  Showing {len(model_list)} curated models")
     selected = _pick_model_or_prompt(
         model_list, "  Model ID: ", current_model=current_model, confirm_provider="custom",
@@ -196,7 +199,11 @@ def _model_flow_bedrock(config, current_model=""):
             return
         print(f"  Using {len(model_list)} curated models (live discovery unavailable)")
 
-    # 4. Model selection
+    # 4. Model selection — declared providers.bedrock.models extend whichever list the
+    # branch above produced (live discovery or static fallback), declared-first/deduped.
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    model_list = _with_declared_models(_providers, "bedrock", model_list)
     runtime_url = f"https://bedrock-runtime.{region}.amazonaws.com"
     selected = _pick_model_or_prompt(model_list, "  Model ID: ", current_model=current_model, confirm_provider="bedrock", confirm_base_url=runtime_url)
     # api_mode is dropped: bedrock_converse is auto-detected.

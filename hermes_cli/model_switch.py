@@ -56,6 +56,17 @@ def _declared_item_id(item: dict) -> Any:
     return model_id if isinstance(model_id, str) and model_id.strip() else item.get("name")
 
 
+def _with_declared_models(user_providers, provider: str, model_ids: list) -> list:
+    """Extend *model_ids* with the user's declared ``providers.<provider>.models`` ids.
+
+    Declared-first and deduped — the same extension the picker rows apply
+    (``_lap_builtin_rows``). ``user_providers`` is the config's ``providers:`` mapping; a
+    missing/None/malformed mapping or entry is a no-op."""
+    entry = user_providers.get(provider) if isinstance(user_providers, dict) else None
+    declared = _declared_model_ids(entry.get("models")) if isinstance(entry, dict) else []
+    return list(dict.fromkeys([*declared, *model_ids]))
+
+
 def _entry_models_discovered(entry: Any) -> bool:
     """True when the entry's ``models`` mapping was auto-discovered by Hermes.
 

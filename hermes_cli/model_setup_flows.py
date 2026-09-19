@@ -64,8 +64,11 @@ def _model_flow_openrouter(config, current_model=""):
         return
 
     from hermes_cli.models import model_ids
+    from hermes_cli.model_switch import _with_declared_models
     from hermes_cli.models_pricing import get_pricing_for_provider
-    openrouter_models = model_ids(force_refresh=True)
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    # Declared providers.openrouter.models extend the catalog (deduped, declared-first).
+    openrouter_models = _with_declared_models(_providers, "openrouter", model_ids(force_refresh=True))
     # Live pricing is non-blocking — empty dict on failure.
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
     selected = _prompt_model_selection(
@@ -91,8 +94,11 @@ def _model_flow_ai_gateway(config, current_model=""):
         return
 
     from hermes_cli.models import ai_gateway_model_ids
+    from hermes_cli.model_switch import _with_declared_models
     from hermes_cli.models_pricing import get_pricing_for_provider
-    models_list = ai_gateway_model_ids(force_refresh=True)
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    # Declared providers.ai-gateway.models extend the catalog (deduped, declared-first).
+    models_list = _with_declared_models(_providers, "ai-gateway", ai_gateway_model_ids(force_refresh=True))
     pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
     selected = _prompt_model_selection(models_list, current_model=current_model, pricing=pricing)
     # Inline credentials are deliberately left untouched here (historical behavior).
@@ -296,6 +302,7 @@ def _model_flow_nous(config, current_model="", args=None):
     # instead of the hundreds returned by the live /models endpoint.
     from hermes_cli.models import check_nous_free_tier, get_curated_nous_model_ids
     from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_cli.model_switch import _with_declared_models
     from hermes_cli.model_switch_providers import _free_tier_nous_row
     tier_row = _free_tier_nous_row({"name": "Nous Portal", "models": []})
     if tier_row is None:
@@ -311,7 +318,9 @@ def _model_flow_nous(config, current_model="", args=None):
         _nous_persist_selection(selected, creds)
         print(f"Default model set to: {selected} (via {tier_row['name']})")
         return
-    model_ids = get_curated_nous_model_ids()
+    # Declared providers.nous.models extend the curated list (deduped, declared-first).
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    model_ids = _with_declared_models(_providers, "nous", get_curated_nous_model_ids())
     if not model_ids:
         print("No curated models available for Nous Portal.")
         return
@@ -384,6 +393,9 @@ def _model_flow_openai_codex(config, current_model=""):
             _codex_token = resolve_codex_runtime_credentials().get("api_key")
 
     codex_models = get_codex_model_ids(access_token=_codex_token)
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    codex_models = _with_declared_models(_providers, "openai-codex", codex_models)
     selected = _prompt_model_selection(
         codex_models, current_model=current_model, confirm_provider="openai-codex",
         confirm_base_url=DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")
@@ -391,7 +403,7 @@ def _model_flow_openai_codex(config, current_model=""):
                              f"Default model set to: {selected} (via OpenAI Codex)")
 
 
-def _model_flow_xai_oauth(_config, current_model="", *, args=None):
+def _model_flow_xai_oauth(config, current_model="", *, args=None):
     """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_xai_oauth_auth_status, _prompt_model_selection, resolve_xai_oauth_runtime_credentials, _login_xai_oauth,
@@ -412,12 +424,15 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
 
     models = provider_model_ids("xai-oauth")
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    models = _with_declared_models(_providers, "xai-oauth", models)
     selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
     _activate_provider_model(selected, "xai-oauth", base_url,
                              f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
 
 
-def _model_flow_qwen_oauth(_config, current_model=""):
+def _model_flow_qwen_oauth(config, current_model=""):
     """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
     from hermes_cli.main_provider_setup import _DEFAULT_QWEN_PORTAL_MODELS
     from hermes_cli.auth import (
@@ -438,6 +453,9 @@ def _model_flow_qwen_oauth(_config, current_model=""):
     if not models:
         models = list(_DEFAULT_QWEN_PORTAL_MODELS)
 
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    models = _with_declared_models(_providers, "qwen-oauth", models)
     default = current_model or (models[0] if models else "qwen3-coder-plus")
     selected = _prompt_model_selection(models, current_model=default, confirm_provider="qwen-oauth", confirm_base_url=DEFAULT_QWEN_BASE_URL)
     _activate_provider_model(selected, "qwen-oauth", DEFAULT_QWEN_BASE_URL, f"Default model set to: {selected} (via Qwen OAuth)")
@@ -466,6 +484,9 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
 
     from hermes_cli.models import _PROVIDER_MODELS
     model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    model_ids = _with_declared_models(_providers, "minimax-oauth", model_ids)
     selected = _prompt_model_selection(model_ids, current_model, confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
     _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
 
@@ -571,8 +592,14 @@ def _model_flow_copilot(config, current_model=""):
     if not catalog:
         live_models = fetch_api_models(api_key, effective_base)
 
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    copilot_models = _copilot_model_list(live_models)
+    # Declared ids survive `_normalize` (identity for unknown ids) and the pattern-based
+    # api_mode lookup, so wrapping the picker list is safe downstream.
+    copilot_models = _with_declared_models(_providers, "copilot", copilot_models)
     selected = _pick_model_or_prompt(
-        _copilot_model_list(live_models), "Model name: ", current_model=_normalize(current_model),
+        copilot_models, "Model name: ", current_model=_normalize(current_model),
         confirm_provider=provider_id, confirm_base_url=effective_base, confirm_api_key=api_key)
     if not selected:
         print("No change.")
@@ -589,7 +616,6 @@ def _model_flow_copilot_acp(config, current_model=""):
         PROVIDER_REGISTRY, get_external_process_provider_status, resolve_api_key_provider_credentials,
         resolve_external_process_provider_credentials)
 
-    del config
     provider_id = "copilot-acp"
     pconfig = PROVIDER_REGISTRY[provider_id]
     status = get_external_process_provider_status(provider_id)
@@ -611,8 +637,12 @@ def _model_flow_copilot_acp(config, current_model=""):
     with contextlib.suppress(Exception):
         catalog_api_key = resolve_api_key_provider_credentials("copilot").get("api_key", "")
     _catalog, catalog_ids, _normalize = _copilot_catalog(catalog_api_key)
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    acp_models = _copilot_model_list(catalog_ids)
+    acp_models = _with_declared_models(_providers, "copilot-acp", acp_models)
     selected = _pick_model_or_prompt(
-        _copilot_model_list(catalog_ids), "Model name: ", current_model=_normalize(current_model),
+        acp_models, "Model name: ", current_model=_normalize(current_model),
         confirm_provider=provider_id, confirm_base_url=effective_base, confirm_api_key=catalog_api_key)
     if selected:
         selected = _normalize(selected)
@@ -647,6 +677,10 @@ def _model_flow_kimi(config, current_model=""):
     print()
 
     model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    # Slug is `kimi-coding` even on the Moonshot branch — that's the config key the user declares under.
+    model_list = _with_declared_models(_providers, "kimi-coding", model_list)
     selected = _pick_model_or_prompt(
         model_list, "Enter model name: ", current_model=current_model, confirm_provider=provider_id,
         confirm_base_url=effective_base, confirm_api_key=existing_key)
@@ -698,6 +732,9 @@ def _model_flow_stepfun(config, current_model=""):
         if model_list:
             print(f"  Could not auto-detect models from {pconfig.name} API — showing Step Plan fallback catalog.")
 
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    model_list = _with_declared_models(_providers, "stepfun", model_list)
     selected = _pick_model_or_prompt(
         model_list, "Model name: ", current_model=current_model, confirm_provider=provider_id,
         confirm_base_url=effective_base, confirm_api_key=existing_key)
@@ -749,6 +786,9 @@ def _model_flow_vertex(config, current_model=""):
 
     # 4. Model selection (curated list — Vertex has no /models listing route).
     model_list = _PROVIDER_MODELS.get("vertex", []) or ["google/gemini-3-pro-preview", "google/gemini-3-flash-preview"]
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    model_list = _with_declared_models(_providers, "vertex", model_list)
     host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
     base_url_preview = f"https://{host}/v1beta1/projects/<project>/locations/{region}/endpoints/openapi"
     selected = _prompt_model_selection(model_list, current_model=current_model, confirm_provider="vertex", confirm_base_url=base_url_preview)
@@ -939,6 +979,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         effective_base = _prompt_base_url_override(effective_base, base_url_env, persist_env=provider_id != "actual")
 
     model_list = _api_key_provider_model_list(provider_id, pconfig, existing_key, key_env, effective_base)
+    # Declared providers.<slug>.models extend the discovered list (deduped, declared-first) —
+    # wrapped at the flow level, the helper itself stays a pure catalog resolver.
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    from hermes_cli.model_switch import _with_declared_models
+    model_list = _with_declared_models(_providers, provider_id, model_list)
     if is_opencode:
         model_list = [normalize_opencode_model_id(provider_id, mid) for mid in model_list]
         current_model = normalize_opencode_model_id(provider_id, current_model)
@@ -1038,8 +1083,11 @@ def _model_flow_anthropic(config, current_model=""):
         return
     print()
 
+    from hermes_cli.model_switch import _with_declared_models
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    anthropic_models = _with_declared_models(_providers, "anthropic", _PROVIDER_MODELS.get("anthropic", []))
     selected = _pick_model_or_prompt(
-        _PROVIDER_MODELS.get("anthropic", []), "Model name (e.g., claude-sonnet-4-20250514): ",
+        anthropic_models, "Model name (e.g., claude-sonnet-4-20250514): ",
         current_model=current_model, confirm_provider="anthropic")
     # Clear base_url: resolve_runtime_provider() always hardcodes Anthropic's URL, and a
     # stale value can contaminate other providers on a later switch.

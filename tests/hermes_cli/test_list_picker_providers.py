@@ -9,6 +9,9 @@ post-processes the result for interactive pickers (Telegram, Discord):
 - Provider rows with an empty ``models`` list are dropped, except custom
   endpoints (``is_user_defined=True`` with an ``api_url``) where the user
   may supply their own model set through config.
+- OpenRouter's declared ``providers.openrouter.models`` ids are preserved
+  when the row is rebuilt from the curated list — declared ids are merged
+  back on top (deduped, declared-first) exactly as for every other provider.
 
 These tests exercise the filter in isolation by mocking
 ``list_authenticated_providers`` and ``fetch_openrouter_models`` so no
@@ -240,3 +243,114 @@ def test_distinct_kimi_china_credential_still_listed(monkeypatch):
     assert slugs.count("kimi-coding") == 1
     assert "kimi" not in slugs          # alias collapsed into the canonical row
     assert "kimi-coding-cn" in slugs    # distinct China endpoint preserved
+
+
+# ---------------------------------------------------------------------------
+# Declared providers.openrouter.models must survive the curated-list override
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_declared_models_survive_curated_override(monkeypatch):
+    """``providers.openrouter.models`` extends the picker row, not replaces it.
+
+    The curated fetch does not contain the declared id, so a rebuild from the
+    curated list alone silently drops it. Declared ids are merged back on top
+    (declared-first, deduped) with the same semantics as _lap_builtin_rows,
+    and they must survive the ``max_models`` cap.
+    """
+    declared = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+
+    def _fake(**kwargs):
+        return [_make_provider("openrouter", models=[declared, "z-ai/glm-5.2"])]
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", _fake)
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "list_authenticated_providers", _fake)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("z-ai/glm-5.2", "")])
+
+    result = model_switch_providers.list_picker_providers(
+        user_providers={"openrouter": {"models": [declared]}}, max_models=50)
+    row = next(p for p in result if p["slug"] == "openrouter")
+    assert row["models"] == [declared, "z-ai/glm-5.2"]
+    assert row["total_models"] == 2
+
+    # The cap truncates the curated tail, never the user's declared ids.
+    capped = model_switch_providers.list_picker_providers(
+        user_providers={"openrouter": {"models": [declared]}}, max_models=1)
+    capped_row = next(p for p in capped if p["slug"] == "openrouter")
+    assert capped_row["models"] == [declared]
+
+
+def test_openrouter_declared_models_survive_curated_fetch_failure(monkeypatch):
+    """Fail-open contract: declared ids are still MERGED when the curated fetch raises.
+
+    When ``fetch_openrouter_models`` raises, the row is rebuilt from the base rows'
+    models; the fake base row here deliberately does NOT contain the declared id, so
+    only the merge step can put it in the row. Neutralising the merge (making
+    ``_with_declared_models`` an identity) turns this test red — it pins the merge on
+    the exception path, not the fallback's copy of the base models.
+    """
+    declared = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+
+    def _fake(**kwargs):
+        return [_make_provider("openrouter", models=["z-ai/glm-5.2"])]
+
+    def _boom(*a, **kw):
+        raise RuntimeError("catalog fetch failed")
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", _fake)
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "list_authenticated_providers", _fake)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models", _boom)
+
+    result = model_switch_providers.list_picker_providers(
+        user_providers={"openrouter": {"models": [declared]}}, max_models=50)
+    row = next(p for p in result if p["slug"] == "openrouter")
+    assert declared in row["models"]
+
+
+# ---------------------------------------------------------------------------
+# Declared providers.<slug>.models must reach the section-2b canonical rows
+# ---------------------------------------------------------------------------
+
+
+def _stub_tokenhub_discovery(monkeypatch):
+    """Isolate list_authenticated_providers to one canonical-only provider.
+
+    ``tencent-tokenhub`` is in CANONICAL_PROVIDERS but not models.dev-mapped and has no
+    Hermes overlay, so sections 1/2 cannot claim it — its row is built ONLY by the
+    section-2b canonical lap. The models.dev fetch and ``cached_provider_model_ids`` are
+    stubbed so discovery stays offline and deterministic.
+    """
+    import agent.models_dev as md
+    import hermes_cli.models as hm
+    import hermes_cli.models_catalog_static as models_catalog_static
+    from hermes_cli import models_catalog_static as _mcs
+
+    monkeypatch.setattr(md, "PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr(md, "fetch_models_dev", lambda *a, **k: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    canonical = [models_catalog_static.ProviderEntry("tencent-tokenhub", "Tencent TokenHub", "desc")]
+    monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", canonical)
+    monkeypatch.setattr(_mcs, "CANONICAL_PROVIDERS", canonical)
+    monkeypatch.setattr(hm, "cached_provider_model_ids", lambda *a, **k: ["hunyuan-3.0"])
+    monkeypatch.setattr(hm, "clear_provider_models_cache", lambda *a, **k: None)
+
+
+def test_declared_models_extend_canonical_section_2b_row(monkeypatch):
+    """``providers.<canonical-slug>.models`` extends the section-2b picker row.
+
+    A declared id the discovered catalog does not carry must lead the row — deduped,
+    declared-first — exactly as sections 1/2 extend theirs; section 3 cannot rescue it
+    afterwards because the canonical row owns the slug.
+    """
+    declared = "hunyuan-turbo-latest"
+    _stub_tokenhub_discovery(monkeypatch)
+    monkeypatch.setenv("TOKENHUB_API_KEY", "sk-test-tokenhub")
+
+    rows = model_switch.list_authenticated_providers(
+        user_providers={"tencent-tokenhub": {"models": [declared]}}, max_models=10)
+    row = next(r for r in rows if r["slug"] == "tencent-tokenhub")
+    assert row["models"][0] == declared
+    assert row["models"].count(declared) == 1
+    # The declared id extends the discovered catalog, it never replaces it.
+    assert "hunyuan-3.0" in row["models"]

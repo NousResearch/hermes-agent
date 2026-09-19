@@ -96,6 +96,19 @@ model_catalog:
 
 The overriding manifest only needs to populate the provider block(s) it cares about. Other providers continue to resolve against the master URL.
 
+### Adding individual models to a curated list
+
+A `models:` list on a `providers.<slug>` entry extends that provider's picker row instead of replacing it. This works for built-in providers too, not just self-hosted custom endpoints — use it when one model is missing from the curated catalog and hosting a fork of the manifest is overkill:
+
+```yaml
+providers:
+  openrouter:
+    models:
+      - nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+```
+
+Every picker honours it: the Desktop, TUI and dashboard pickers, the `/model` picker in the CLI and on messaging platforms, and the `hermes model` wizard. Declared ids are deduped against the curated/live list and placed first, so the `max_models` cap never drops them. They are listed as-is — unlike curated entries, which are filtered against the provider's live model listing, a declared id is not validated, so a typo or a retired id still appears in the picker and fails when selected. This complements the per-provider override URL above rather than replacing it.
+
 ### Hiding providers from the picker
 
 `excluded_providers` lets you hide specific providers from the `/model` picker even when valid credentials exist. Useful when credentials are present for legacy or testing providers that shouldn't appear in normal use (e.g. an old Copilot or OpenRouter token still cached in `auth.json` or discovered via the `gh` CLI).

@@ -241,12 +241,14 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
-    _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
+    _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON, _arg("--force", action="store_true", help="Reclaim even when the task worktree holds uncommitted work")], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,
         _arg("profile", help="New profile name (or 'none' to unassign)"),
         _arg("--reclaim", action="store_true",
              help="Release any active claim before reassigning (required if task is running)"),
+        _arg("--force", action="store_true",
+             help="With --reclaim, proceed even when the task worktree holds uncommitted work"),
         _RECLAIM_REASON,
     ], help="Reassign a task to a different profile, optionally reclaiming first"),
     _cmd("diagnostics", [

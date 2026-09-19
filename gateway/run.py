@@ -608,13 +608,11 @@ def _format_exec_approval_fallback(
 
 # Ordered: auth beats policy beats rate-limit beats connection; first match wins.
 _PROVIDER_ERROR_REPLIES = (
-    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
-                             "or ask whoever runs this bot to run `hermes doctor` on the host."),
-    (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
-                                  "message, or use /model to switch models."),
-    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."),
+    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in failed. Use /login to sign in again."),
+    (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ Request rejected. Try rephrasing your message, or use /model to switch models."),
+    (_GATEWAY_RATE_LIMIT_RE, "⏱️ Rate-limiting requests: please wait a moment, then use /retry."),
     (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The model server is not responding — it looks like the configured "
-                                   "model endpoint is not running or is unreachable."))
+                                   "model endpoint is not running or is unreachable. Wait a moment and use /retry."))
 
 # Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
 # commands (/compress, /new) — the /compact and /reset aliases are absent from /help.
@@ -629,8 +627,8 @@ def _gateway_provider_error_reply(text: str) -> str:
         if pattern.search(text):
             return reply
     return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics.")
+        "⚠️ Service failed after retries. Use /retry to try again, or /model to switch "
+        "models. Details are in the gateway log (`hermes logs`).")
 
 
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.

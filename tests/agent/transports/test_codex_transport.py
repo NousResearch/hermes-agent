@@ -258,6 +258,26 @@ class TestCodexBuildKwargs:
         assert "id" not in message_item
         assert message_item["phase"] == "final_answer"
 
+    @pytest.mark.parametrize(("is_codex_backend", "expected_user", "expected_assistant"), [
+        (True, [{"type": "input_text", "text": "hi"}], [{"type": "output_text", "text": "pong"}]),
+        (False, "hi", "pong"),  # other Responses routes keep the string shorthand they always sent
+    ], ids=["codex-typed-parts", "other-route-string"])
+    def test_codex_backend_sends_typed_text_parts_for_string_content(
+        self, transport, is_codex_backend, expected_user, expected_assistant,
+    ):
+        """#51512 (no-replay atom): the ChatGPT Codex backend 400s ``{"detail": "Unsupported content type"}``
+        on a role message whose ``content`` is a plain string, even with no reasoning replay in the request.
+        Text must go out as typed ``input_text``/``output_text`` parts; the preflight the real call runs
+        through must keep them."""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "pong"},
+            {"role": "user", "content": "hi"},
+        ]
+        kw = transport.build_kwargs(model="gpt-5.5", messages=messages, tools=[], is_codex_backend=is_codex_backend)
+        kw = transport.preflight_kwargs(kw, sanitize_harmony_tokens=is_codex_backend)
+        assert [item["content"] for item in kw["input"]] == [expected_user, expected_assistant, expected_user]
+
     @pytest.mark.parametrize("model", [
         "gpt-5.5",
         "gpt-5.5-pro",

@@ -540,6 +540,11 @@ def _chat_messages_to_responses_input(
     item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
     wire_ids = _WireCallIds()
+    # The ChatGPT Codex backend rejects a role message whose ``content`` is a plain string with
+    # ``{"detail": "Unsupported content type"}`` (400) — even a single user turn with no replay state
+    # (#51512). It accepts only typed parts, so string text goes out as ``input_text``/``output_text``
+    # there; other Responses routes keep the string shorthand they have always received.
+    typed_text_only = current_issuer_kind == "codex_backend"
     def emit(new_items: List[Dict[str, Any]], msg: Dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
@@ -559,8 +564,10 @@ def _chat_messages_to_responses_input(
             "".join(p["text"] for p in content_parts if p["type"] == text_type)
             if isinstance(content, list) else _str_or_empty(content)
         )
+        def wire_content(value: Any) -> Any:
+            return [{"type": text_type, "text": value}] if typed_text_only and isinstance(value, str) else value
         if role == "user":
-            emit([{"role": role, "content": content_parts or content_text}], msg)
+            emit([{"role": role, "content": wire_content(content_parts or content_text)}], msg)
             continue
         reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
@@ -581,7 +588,7 @@ def _chat_messages_to_responses_input(
         # non-empty: strict Responses-compatible providers reject "" with 400.
         if fallback is not None and not (fallback == "" and tool_items):
             follower = " " if fallback == "" else fallback
-            emit([{"role": "assistant", "content": follower}], msg)
+            emit([{"role": "assistant", "content": wire_content(follower)}], msg)
         emit(tool_items, msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
     # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint

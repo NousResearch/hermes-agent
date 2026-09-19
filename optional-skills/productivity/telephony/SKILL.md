@@ -7,7 +7,7 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [telephony, phone, sms, mms, voice, twilio, bland.ai, vapi, calling, texting]
+    tags: [telephony, phone, sms, mms, voice, twilio, bland.ai, vapi, speko, calling, texting]
     related_skills: [maps, google-workspace, agentmail]
     category: productivity
 ---
@@ -24,7 +24,7 @@ It ships with a helper script, `scripts/telephony.py`, that can:
 - poll inbound SMS for that number with no webhook server required
 - make direct Twilio calls using TwiML `<Say>` or `<Play>`
 - import the owned Twilio number into Vapi
-- place outbound AI calls through Bland.ai or Vapi
+- place outbound AI calls through Bland.ai, Vapi, or Speko
 
 ## What this solves
 
@@ -100,6 +100,18 @@ Why:
 - easiest way to play a custom MP3
 - pairs well with Hermes `text_to_speech` plus a public file host or tunnel
 
+### 5) "The call is not in English" or "one provider keeps degrading mid-call"
+Use **Speko**.
+
+Why:
+- it picks the STT / LLM / TTS stack per language from its own provider benchmarks, so a
+  Spanish or Hindi call does not need a hand-tuned stack
+- it fails over to the runner-up provider when one degrades during the call
+- it provisions its own numbers, so there is no Twilio import step
+
+Tradeoff:
+- one more account to hold, and outbound calls need a number provisioned in Speko first
+
 ## Files and persistent state
 
 The skill persists telephony state in two places:
@@ -113,7 +125,11 @@ Used for long-lived provider credentials and owned-number IDs, for example:
 - `BLAND_API_KEY`
 - `VAPI_API_KEY`
 - `VAPI_PHONE_NUMBER_ID`
-- `PHONE_PROVIDER` (AI call provider: bland or vapi)
+- `SPEKO_API_KEY`
+- `SPEKO_PHONE_NUMBER`
+- `SPEKO_AGENT_ID` (optional — reuse a saved Speko agent instead of an ad-hoc prompt)
+- `SPEKO_LANGUAGE`
+- `PHONE_PROVIDER` (AI call provider: bland, vapi, or speko)
 
 ### `~/.hermes/telephony_state.json`
 Used for skill-only state that should survive across sessions, for example:
@@ -216,6 +232,27 @@ If you already know the Vapi phone number ID, save it directly:
 ```bash
 python "$SCRIPT" save-vapi your_vapi_api_key --phone-number-id vapi_phone_number_id_here
 ```
+
+### Speko — routed AI calls, multilingual, own numbers
+
+Sign up at:
+- https://platform.speko.ai
+
+Save the API key:
+
+```bash
+python "$SCRIPT" save-speko your_speko_api_key
+```
+
+List the numbers the Speko account owns, and save one as the outbound caller ID:
+
+```bash
+python "$SCRIPT" speko-numbers
+python "$SCRIPT" save-speko your_speko_api_key --phone-number "+14155550123" --language en
+```
+
+If the account owns exactly one outbound-capable number, `ai-call --provider speko` uses it
+without any `--from-number`. With several, pass `--from-number` or save a default.
 
 ## Diagnose current state
 
@@ -368,6 +405,28 @@ python "$SCRIPT" ai-call "+15551230000" "You are calling to make a dinner reserv
 python "$SCRIPT" ai-status <call_id> --provider vapi
 ```
 
+### I. Outbound AI phone call with Speko (non-English or routed)
+
+No number import step — the call goes out on a number the Speko account already owns:
+
+```bash
+python "$SCRIPT" ai-call "+15551230000" "Llama a la clinica, confirma la cita del martes por la tarde y pregunta si hay que llegar antes." --provider speko --language es
+```
+
+Check the result. Once the call has ended this also returns Speko's own call summary,
+outcome, structured data, and the full transcript:
+
+```bash
+python "$SCRIPT" ai-status <session_id> --provider speko
+```
+
+To run the call as a saved Speko agent (voice, tools, and knowledge base already attached)
+instead of an ad-hoc prompt:
+
+```bash
+python "$SCRIPT" save-speko your_speko_api_key --agent-id agent_abc123
+```
+
 ## Suggested agent procedure
 
 When the user asks for a call or text:
@@ -395,6 +454,14 @@ Those would require more infrastructure than a pure optional skill.
 - `twilio-inbox` polls the REST API; it is not instant push delivery.
 - Vapi outbound calling still depends on having a valid imported number.
 - Bland is easiest, but not always the best-sounding.
+- Speko needs a number provisioned in the Speko account before any outbound call; the
+  helper says so explicitly instead of failing at dial time.
+- `--max-duration` is a Bland/Vapi option; Speko ignores it. Bound the call in the task
+  prompt instead.
+- Reading a Speko call back within a second or two of dialing can fail while the session is
+  still being created — retry `ai-status` rather than treating it as a lost call.
+- Speko's post-call analysis echoes the dialed number back inside `structured_data`. That
+  payload is passed through as-is, so safety rule 4 above still applies when summarizing it.
 - Do not store arbitrary third-party phone numbers in Hermes memory.
 
 ## Verification checklist
@@ -408,6 +475,7 @@ After setup, you should be able to do all of the following with just this skill:
 5. poll inbound texts for the owned number later
 6. place a direct Twilio call
 7. place an AI call via Bland or Vapi
+8. place an AI call via Speko and read its summary and transcript with `ai-status`
 
 ## References
 
@@ -416,3 +484,5 @@ After setup, you should be able to do all of the following with just this skill:
 - Twilio voice: https://www.twilio.com/docs/voice/api/call-resource
 - Vapi docs: https://docs.vapi.ai/
 - Bland.ai: https://app.bland.ai/
+- Speko phone agents: https://docs.speko.ai/guides/phone-agents
+- Speko dial endpoint: https://docs.speko.ai/api-reference/sessions-phone

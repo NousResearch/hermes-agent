@@ -8,7 +8,7 @@ Capabilities:
 - Send SMS / MMS via Twilio
 - Poll inbound SMS for an owned Twilio number using only this script + state
 - Import a Twilio number into Vapi and persist the returned Vapi phone_number_id
-- Make outbound AI voice calls via Bland.ai or Vapi
+- Make outbound AI voice calls via Bland.ai, Vapi, or Speko
 
 This file intentionally uses Python stdlib HTTP clients so the skill can run in a
 minimal environment with no extra pip installs.
@@ -35,6 +35,7 @@ from typing import Any
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
 VAPI_API_BASE = "https://api.vapi.ai"
 BLAND_API_BASE = "https://api.bland.ai/v1"
+SPEKO_API_BASE = "https://api.speko.dev/v1"
 
 BLAND_DEFAULT_VOICE = "mason"
 BLAND_DEFAULT_MODEL = "enhanced"
@@ -53,6 +54,7 @@ VAPI_DEFAULT_VOICE_ID = "cjVigY5qzO86Huf0OWal"  # ElevenLabs "Eric"
 VAPI_DEFAULT_MODEL = "gpt-4o"
 TWILIO_DEFAULT_TTS_VOICE = "Polly.Joanna"
 DEFAULT_AI_PROVIDER = "bland"
+SPEKO_DEFAULT_LANGUAGE = "en"
 STATE_VERSION = 1
 
 
@@ -448,6 +450,64 @@ def _bland_api_key() -> str:
         "BLAND_API_KEY",
         ("telephony", "bland", "api_key"),
         ("phone", "bland", "api_key"),
+    )
+
+
+def _speko_api_key() -> str:
+    return _env_or_config(
+        "SPEKO_API_KEY",
+        ("telephony", "speko", "api_key"),
+        ("phone", "speko", "api_key"),
+    )
+
+
+def _speko_from_number() -> str:
+    state = _load_state()
+    speko_state = state.get("speko", {}) if isinstance(state.get("speko"), dict) else {}
+    return _env_or_config(
+        "SPEKO_PHONE_NUMBER",
+        ("telephony", "speko", "phone_number"),
+        ("phone", "speko", "phone_number"),
+        default=str(speko_state.get("phone_number", "")),
+    )
+
+
+def _speko_agent_id() -> str:
+    state = _load_state()
+    speko_state = state.get("speko", {}) if isinstance(state.get("speko"), dict) else {}
+    return _env_or_config(
+        "SPEKO_AGENT_ID",
+        ("telephony", "speko", "agent_id"),
+        ("phone", "speko", "agent_id"),
+        default=str(speko_state.get("agent_id", "")),
+    )
+
+
+def _speko_language() -> str:
+    return _env_or_config(
+        "SPEKO_LANGUAGE",
+        ("telephony", "speko", "language"),
+        ("phone", "speko", "language"),
+        default=SPEKO_DEFAULT_LANGUAGE,
+    )
+
+
+def _speko_request(method: str, path: str, *, json_body: dict[str, Any] | None = None) -> Any:
+    """Call the Speko REST API.
+
+    Returns whatever the endpoint answers with: most routes reply with an object,
+    but ``GET /phone-numbers`` replies with a bare array.
+    """
+    api_key = _speko_api_key()
+    if not api_key:
+        raise TelephonyError(
+            f"Speko is not configured. Use 'save-speko' or set SPEKO_API_KEY in {_env_path()}."
+        )
+    return _json_request(
+        method,
+        f"{SPEKO_API_BASE}{path}",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body=json_body,
     )
 
 
@@ -968,6 +1028,121 @@ def _vapi_status(call_id: str) -> dict[str, Any]:
     }
 
 
+def _speko_owned_numbers() -> list[dict[str, Any]]:
+    """List the phone numbers the Speko organization owns (bare array response)."""
+    payload = _speko_request("GET", "/phone-numbers")
+    numbers = payload if isinstance(payload, list) else (payload or {}).get("phone_numbers", [])
+    return [n for n in numbers if isinstance(n, dict)]
+
+
+def _speko_resolve_from_number(explicit: str | None = None) -> str:
+    candidate = (explicit or _speko_from_number()).strip()
+    if candidate:
+        return _normalize_phone(candidate)
+    outbound = [
+        n
+        for n in _speko_owned_numbers()
+        if str(n.get("direction", "both")) in {"both", "outbound"} and n.get("e164")
+    ]
+    if not outbound:
+        raise TelephonyError(
+            "Speko has no outbound-capable phone number. Provision one in the Speko "
+            "dashboard (Phone numbers -> Buy or import), then re-run 'save-speko' with "
+            "--phone-number."
+        )
+    if len(outbound) > 1:
+        options = ", ".join(_mask_phone(str(n["e164"])) for n in outbound)
+        raise TelephonyError(
+            f"Speko owns several outbound numbers ({options}). Pass --from-number or save a "
+            "default with 'save-speko --phone-number'."
+        )
+    return _normalize_phone(str(outbound[0]["e164"]))
+
+
+def _speko_call(
+    phone_number: str,
+    task: str,
+    *,
+    voice: str | None = None,
+    first_sentence: str | None = None,
+    from_identifier: str | None = None,
+    agent_id: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
+    normalized = _normalize_phone(phone_number)
+    from_number = _speko_resolve_from_number(from_identifier)
+    agent = (agent_id if agent_id is not None else _speko_agent_id()).strip()
+    body: dict[str, Any] = {"to": normalized, "from": from_number, "systemPrompt": task}
+    if agent:
+        body["agentId"] = agent
+    else:
+        body["intent"] = {"language": (language or _speko_language()).strip()}
+    if voice:
+        body["voice"] = voice
+    if first_sentence:
+        body["firstMessage"] = first_sentence
+
+    payload = _speko_request("POST", "/sessions/phone", json_body=body)
+    session_id = str(payload.get("sessionId") or "")
+    if not session_id:
+        raise TelephonyError(f"Speko returned no sessionId: {payload}")
+    return {
+        "success": True,
+        "provider": "speko",
+        "call_id": session_id,
+        "status": payload.get("status"),
+        "agent_id": agent,
+        "language": body.get("intent", {}).get("language", ""),
+        "to_phone_number_masked": _mask_phone(normalized),
+        "from_phone_number_masked": _mask_phone(from_number),
+        "message": "AI call queued with Speko.",
+    }
+
+
+def _speko_transcript(report: dict[str, Any]) -> str:
+    entries = (report.get("transcript") or {}).get("entries") or []
+    lines = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("text") or "").strip()
+        if text:
+            lines.append(f"{entry.get('source', 'unknown')}: {text}")
+    return "\n".join(lines)
+
+
+def _speko_status(session_id: str) -> dict[str, Any]:
+    try:
+        call = _speko_request("GET", f"/calls/{urllib.parse.quote(session_id)}")
+    except TelephonyError as exc:
+        raise TelephonyError(
+            f"Could not read Speko call {session_id}: {exc}. A call that was only just "
+            "dialed may not be readable yet — retry in a few seconds."
+        ) from exc
+    result = {
+        "success": True,
+        "provider": "speko",
+        "call_id": session_id,
+        "status": call.get("status"),
+        "language": call.get("language"),
+        "duration_seconds": call.get("duration_seconds"),
+        "ended_at": call.get("ended_at"),
+        "recording_status": call.get("recording_status"),
+    }
+    if call.get("status") == "ended":
+        try:
+            report = _speko_request("GET", f"/calls/{urllib.parse.quote(session_id)}/report")
+        except TelephonyError:
+            report = {}
+        if report:
+            result["summary"] = report.get("summary")
+            result["outcome"] = report.get("outcome")
+            result["transcript"] = _speko_transcript(report)
+            result["structured_data"] = report.get("structured_data")
+            result["cost_micro_usd"] = report.get("cost_micro_usd")
+    return result
+
+
 def _provider_decision_tree() -> list[dict[str, str]]:
     return [
         {
@@ -984,6 +1159,11 @@ def _provider_decision_tree() -> list[dict[str, str]]:
             "need": "I want premium conversational voice quality for AI calls, ideally on my own number.",
             "use": "Twilio + Vapi",
             "why": "Buy/import the number with Twilio, then import it into Vapi for better voices and more flexible assistants.",
+        },
+        {
+            "need": "I need the call in a language other than English, or provider failover mid-call.",
+            "use": "Speko",
+            "why": "Speko picks the STT/LLM/TTS stack per language from its own benchmarks and fails over to the runner-up provider when one degrades, so non-English calls do not need a hand-tuned stack.",
         },
         {
             "need": "I want to call with a prerecorded/custom voice message generated elsewhere.",
@@ -1018,6 +1198,7 @@ def diagnose() -> dict[str, Any]:
 
     bland_key = _bland_api_key()
     vapi_key = _vapi_api_key()
+    speko_key = _speko_api_key()
     vapi_phone_id = _vapi_phone_number_id() or str(vapi_state.get("phone_number_id", ""))
 
     return {
@@ -1065,12 +1246,19 @@ def diagnose() -> dict[str, Any]:
                     default=VAPI_DEFAULT_MODEL,
                 ),
             },
+            "speko": {
+                "configured": bool(speko_key),
+                "phone_number": _speko_from_number(),
+                "agent_id": _speko_agent_id(),
+                "language": _speko_language(),
+            },
         },
         "decision_tree": _provider_decision_tree(),
         "notes": [
             "Twilio is the best path for owning a durable phone number, texting, and polling inbound SMS.",
             "Bland is the easiest path for outbound AI calls only.",
             "Vapi is best when you want better AI voice quality, usually backed by a Twilio-owned number.",
+            "Speko is best for non-English calls and for automatic failover across speech providers; it provisions its own numbers, so no Twilio import step.",
             "VoIP numbers are not guaranteed to work for every third-party 2FA flow.",
         ],
     }
@@ -1145,6 +1333,64 @@ def save_vapi(
     return result
 
 
+def save_speko(
+    api_key: str,
+    *,
+    phone_number: str = "",
+    agent_id: str = "",
+    language: str = SPEKO_DEFAULT_LANGUAGE,
+) -> dict[str, Any]:
+    updates = {
+        "SPEKO_API_KEY": api_key.strip(),
+        "SPEKO_LANGUAGE": language.strip() or SPEKO_DEFAULT_LANGUAGE,
+        "PHONE_PROVIDER": "speko",
+    }
+    normalized = _normalize_phone(phone_number) if phone_number.strip() else ""
+    if normalized:
+        updates["SPEKO_PHONE_NUMBER"] = normalized
+    if agent_id.strip():
+        updates["SPEKO_AGENT_ID"] = agent_id.strip()
+    env_file = _upsert_env_file(updates)
+
+    state = _load_state()
+    speko_state = state.get("speko", {}) if isinstance(state.get("speko"), dict) else {}
+    if normalized:
+        speko_state["phone_number"] = normalized
+    if agent_id.strip():
+        speko_state["agent_id"] = agent_id.strip()
+    if speko_state:
+        state["speko"] = speko_state
+        _save_state(state)
+
+    return {
+        "success": True,
+        "provider": "speko",
+        "saved_env_keys": sorted(updates),
+        "env_path": str(env_file),
+        "phone_number_masked": _mask_phone(normalized) if normalized else "",
+        "message": f"Speko configuration saved to {env_file}.",
+    }
+
+
+def speko_numbers() -> dict[str, Any]:
+    numbers = _speko_owned_numbers()
+    return {
+        "success": True,
+        "provider": "speko",
+        "count": len(numbers),
+        "numbers": [
+            {
+                "phone_number": str(n.get("e164") or ""),
+                "phone_number_masked": _mask_phone(str(n.get("e164") or "")),
+                "direction": n.get("direction"),
+                "source": n.get("source"),
+                "agent_id": n.get("agentId") or n.get("agent_id") or "",
+            }
+            for n in numbers
+        ],
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes telephony helper")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1167,6 +1413,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--voice-provider", default=VAPI_DEFAULT_VOICE_PROVIDER)
     p.add_argument("--voice-id", default=VAPI_DEFAULT_VOICE_ID)
     p.add_argument("--model", default=VAPI_DEFAULT_MODEL)
+
+    p = sub.add_parser("save-speko", help="Save Speko settings to the Hermes .env file")
+    p.add_argument("api_key")
+    p.add_argument("--phone-number", default="", help="Outbound caller ID owned in Speko")
+    p.add_argument("--agent-id", default="", help="Reuse a saved Speko agent instead of an ad-hoc prompt")
+    p.add_argument("--language", default=SPEKO_DEFAULT_LANGUAGE)
+
+    sub.add_parser("speko-numbers", help="List phone numbers owned in Speko")
 
     p = sub.add_parser("twilio-search", help="Search Twilio numbers available for purchase")
     p.add_argument("--country", default="US")
@@ -1214,17 +1468,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--phone-number", default="")
     p.add_argument("--save-env", action="store_true")
 
-    p = sub.add_parser("ai-call", help="Place an outbound AI voice call via Bland.ai or Vapi")
+    p = sub.add_parser("ai-call", help="Place an outbound AI voice call via Bland.ai, Vapi, or Speko")
     p.add_argument("to_number")
     p.add_argument("task")
-    p.add_argument("--provider", choices=["bland", "vapi"], default="")
+    p.add_argument("--provider", choices=["bland", "vapi", "speko"], default="")
     p.add_argument("--voice", default="")
     p.add_argument("--first-sentence", default="")
     p.add_argument("--max-duration", type=int, default=3)
+    p.add_argument("--from-number", default="", help="Caller ID (Speko only; Bland/Vapi use their own)")
+    p.add_argument("--language", default="", help="Call language (Speko only, e.g. es, de, hi)")
 
-    p = sub.add_parser("ai-status", help="Check an AI call status via Bland.ai or Vapi")
+    p = sub.add_parser("ai-status", help="Check an AI call status via Bland.ai, Vapi, or Speko")
     p.add_argument("call_id")
-    p.add_argument("--provider", choices=["bland", "vapi"], default="")
+    p.add_argument("--provider", choices=["bland", "vapi", "speko"], default="")
     p.add_argument("--analyze", default="")
 
     return parser
@@ -1236,6 +1492,15 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return diagnose()
     if cmd == "save-twilio":
         return save_twilio(args.account_sid, args.auth_token, phone_number=args.phone_number, phone_sid=args.phone_sid)
+    if cmd == "save-speko":
+        return save_speko(
+            args.api_key,
+            phone_number=args.phone_number,
+            agent_id=args.agent_id,
+            language=args.language,
+        )
+    if cmd == "speko-numbers":
+        return speko_numbers()
     if cmd == "save-bland":
         return save_bland(args.api_key, voice=args.voice)
     if cmd == "save-vapi":
@@ -1310,8 +1575,17 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 first_sentence=args.first_sentence or None,
                 max_duration=args.max_duration,
             )
+        if provider == "speko":
+            return _speko_call(
+                args.to_number,
+                args.task,
+                voice=args.voice or None,
+                first_sentence=args.first_sentence or None,
+                from_identifier=args.from_number or None,
+                language=args.language or None,
+            )
         raise TelephonyError(
-            f"Unsupported AI call provider '{provider}'. Use --provider bland or --provider vapi, "
+            f"Unsupported AI call provider '{provider}'. Use --provider bland, vapi, or speko, "
             f"or set PHONE_PROVIDER in {_env_path()}."
         )
     if cmd == "ai-status":
@@ -1320,8 +1594,10 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
             return _vapi_status(args.call_id)
         if provider == "bland":
             return _bland_status(args.call_id, analyze=args.analyze or None)
+        if provider == "speko":
+            return _speko_status(args.call_id)
         raise TelephonyError(
-            f"Unsupported AI call provider '{provider}'. Use --provider bland or --provider vapi, "
+            f"Unsupported AI call provider '{provider}'. Use --provider bland, vapi, or speko, "
             f"or set PHONE_PROVIDER in {_env_path()}."
         )
     raise TelephonyError(f"Unknown command: {cmd}")

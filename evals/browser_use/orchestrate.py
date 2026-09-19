@@ -65,6 +65,8 @@ def reset_browser_state():
             ["browser-use"],
             input=code,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=120,
             env=ENV,
@@ -91,6 +93,8 @@ for arm, task, model, rep in cells:
             [PY, os.path.join(ROOT, "single_run.py"), arm, task, model, str(rep)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=args.run_timeout,
             env={**ENV, "BUBENCH_TASKS": args.tasks},
         )

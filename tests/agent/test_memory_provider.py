@@ -8,7 +8,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+from agent.memory_manager import (
+    MemoryManager,
+    _EXTERNAL_PREFETCH_TIMEOUT_S,
+    inject_memory_provider_tools,
+    memory_manager_from_config,
+    resolve_external_prefetch_timeout,
+)
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -108,9 +114,11 @@ class BlockingPrefetchProvider(FakeMemoryProvider):
         super().__init__(name=name)
         self.started = threading.Event()
         self.release = threading.Event()
+        self.prefetch_sessions = []
 
     def prefetch(self, query, *, session_id=""):
         self.prefetch_queries.append(query)
+        self.prefetch_sessions.append(session_id)
         self.started.set()
         self.release.wait(timeout=5.0)
         return self._prefetch_result
@@ -392,6 +400,175 @@ class TestMemoryManager:
         assert external.prefetch_queries == ["query", "query 3"]
         assert external.name not in mgr._external_prefetch_threads
 
+    def test_timed_out_prefetch_is_delivered_next_turn_for_same_query(self):
+        """A slow-but-finite backend must not stay silent after the cap.
+
+        The first turn times out; when the in-flight call finishes, the
+        same query on the next turn receives the late result without
+        parking the provider for the rest of the session.
+        """
+        mgr = MemoryManager(external_prefetch_timeout=0.01)
+        builtin = FakeMemoryProvider("builtin")
+        builtin._prefetch_result = "builtin memory"
+        external = BlockingPrefetchProvider("hindsight")
+        external._prefetch_result = "late hindsight memory"
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        first = mgr.prefetch_all("same query")
+        assert first == "builtin memory"
+        assert external.started.wait(timeout=1.0)
+        external.release.set()
+
+        deadline = time.monotonic() + 1.0
+        while (
+            external.name in mgr._external_prefetch_threads
+            and mgr._external_prefetch_threads[external.name].is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        second = mgr.prefetch_all("same query")
+        assert second == "builtin memory\n\nlate hindsight memory"
+        assert external.prefetch_queries == ["same query"]
+
+    @staticmethod
+    def _wait_for_external_prefetch_idle(mgr, provider_name, timeout=1.0):
+        deadline = time.monotonic() + timeout
+        while (
+            provider_name in mgr._external_prefetch_threads
+            and mgr._external_prefetch_threads[provider_name].is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+    def _late_prefetch_after_timeout(self, *, session_id, result="SESSION-A-SECRET"):
+        """Time out an external prefetch, then let the late value land in cache."""
+        mgr = MemoryManager(external_prefetch_timeout=0.01)
+        builtin = FakeMemoryProvider("builtin")
+        builtin._prefetch_result = "builtin memory"
+        external = BlockingPrefetchProvider("hindsight")
+        external._prefetch_result = result
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        first = mgr.prefetch_all("same query", session_id=session_id)
+        assert first == "builtin memory"
+        assert external.started.wait(timeout=1.0)
+        external.release.set()
+        self._wait_for_external_prefetch_idle(mgr, external.name)
+        return mgr, builtin, external
+
+    def test_late_prefetch_is_not_replayed_in_another_session(self):
+        """A reused manager must not stamp another session's late recall."""
+        mgr, _builtin, external = self._late_prefetch_after_timeout(session_id="session-a")
+        external._prefetch_result = "session-b memory"
+        external.release.set()
+
+        second = mgr.prefetch_all("same query", session_id="session-b")
+
+        assert "SESSION-A-SECRET" not in second
+        assert "session-b memory" in second
+        assert external.prefetch_queries == ["same query", "same query"]
+        assert external.prefetch_sessions == ["session-a", "session-b"]
+
+    @pytest.mark.parametrize(
+        ("boundary_name", "fire_boundary"),
+        [
+            ("switch", lambda mgr: mgr.on_session_switch(
+                "session-b", parent_session_id="session-a", reason="resume",
+            )),
+            ("rewind", lambda mgr: mgr.on_session_switch("session-a", rewound=True)),
+            ("compression", lambda mgr: mgr.on_pre_compress([])),
+        ],
+    )
+    def test_late_prefetch_is_invalidated_on_session_boundary(self, boundary_name, fire_boundary):
+        """Session switch, rewind, and compression must drop cached late recall."""
+        mgr, _builtin, external = self._late_prefetch_after_timeout(session_id="session-a")
+        fire_boundary(mgr)
+        external._prefetch_result = f"fresh memory after {boundary_name}"
+        external.release.set()
+
+        consume_sid = "session-b" if boundary_name == "switch" else "session-a"
+        second = mgr.prefetch_all("same query", session_id=consume_sid)
+
+        assert "SESSION-A-SECRET" not in second
+        assert f"fresh memory after {boundary_name}" in second
+        assert external.prefetch_queries == ["same query", "same query"]
+
+    def test_in_flight_late_prefetch_is_dropped_after_session_switch(self):
+        """A timed-out worker that finishes after switch must not re-cache old recall."""
+        mgr = MemoryManager(external_prefetch_timeout=0.01)
+        builtin = FakeMemoryProvider("builtin")
+        builtin._prefetch_result = "builtin memory"
+        external = BlockingPrefetchProvider("hindsight")
+        external._prefetch_result = "SESSION-A-SECRET"
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        first = mgr.prefetch_all("same query", session_id="session-a")
+        assert first == "builtin memory"
+        assert external.started.wait(timeout=1.0)
+
+        mgr.on_session_switch("session-b", parent_session_id="session-a", reason="resume")
+        external.release.set()
+        self._wait_for_external_prefetch_idle(mgr, external.name)
+
+        external._prefetch_result = "fresh session-a"
+        second = mgr.prefetch_all("same query", session_id="session-a")
+
+        assert "SESSION-A-SECRET" not in second
+        assert "fresh session-a" in second
+        assert external.prefetch_queries == ["same query", "same query"]
+
+    def test_oversized_late_prefetch_is_spilled(self, tmp_path, monkeypatch):
+        """Late cached recall must hit the same spill cap as a live prefetch."""
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+        mgr = MemoryManager(external_prefetch_timeout=0.01)
+        builtin = FakeMemoryProvider("builtin")
+        builtin._prefetch_result = "builtin memory"
+        external = BlockingPrefetchProvider("hindsight")
+        external._prefetch_result = "recalled " * 20
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        first = mgr.prefetch_all("same query", session_id="session-1")
+        assert first == "builtin memory"
+        assert external.started.wait(timeout=1.0)
+        external.release.set()
+        self._wait_for_external_prefetch_idle(mgr, external.name)
+
+        spill_files = list((tmp_path / "session-1").glob("*.txt"))
+        assert len(spill_files) == 1
+        assert spill_files[0].read_text(encoding="utf-8") == external._prefetch_result + "\n"
+
+        second = mgr.prefetch_all("same query", session_id="session-1")
+        assert "hindsight memory prefetch output truncated" in second
+        assert external._prefetch_result not in second
+        assert external.prefetch_queries == ["same query"]
+
+    def test_resolve_external_prefetch_timeout_falls_back(self):
+        assert resolve_external_prefetch_timeout(None) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert resolve_external_prefetch_timeout({}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": 30}) == 30.0
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": "15"}) == 15.0
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": 0}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": -1}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": "nope"}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+
+    def test_memory_manager_from_config_uses_resolved_timeout(self):
+        mgr = memory_manager_from_config({"external_prefetch_timeout": 30})
+        assert mgr._external_prefetch_timeout == 30.0
+        default_mgr = memory_manager_from_config({})
+        assert default_mgr._external_prefetch_timeout == _EXTERNAL_PREFETCH_TIMEOUT_S
+
+    def test_default_config_prefetch_timeout_matches_constant(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert (
+            DEFAULT_CONFIG["memory"]["external_prefetch_timeout"]
+            == _EXTERNAL_PREFETCH_TIMEOUT_S
+        )
 
 class TestPluginMemoryDiscovery:
     """Memory providers are discovered from plugins/memory/ directory."""

@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import { useNavigate } from 'react-router'
 
 import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
+import { ProfileSwitcher } from '@/app/chat/sidebar/profile-dropdown-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
@@ -37,7 +38,9 @@ import { copyFilePath, revealFile } from '@/store/file-actions'
 import { $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
+import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { $projectTree, projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
@@ -112,6 +115,7 @@ export function useStatusbarItems({
   // minimized zone, which lit the button for a pane the user couldn't see.
   const terminalShowing = useStore($paneVisible('terminal'))
   const sessionsShowing = useStore($paneVisible('sessions'))
+  const profileRailVisible = useStore($profileRailVisible)
   const botsShowing = useStore($paneVisible('hermes-bots:pane'))
   const primaryBusy = useStore($busy)
   // Draft / primary composer atom — used only while the focused surface is the
@@ -139,6 +143,12 @@ export function useStatusbarItems({
   // Backend truth for the free-tier chip. Refreshed on the ambient status
   // cadence (use-status-snapshot), never polled from here.
   const freeTier = useStore($freeTierStatus)
+  // The chip is a standing invitation to sign in. During the guided first
+  // launch that invitation lives on the guide's own ready screen; a second
+  // one in the statusbar is a distraction from the chat they are in. The
+  // subscription is what makes the check reactive.
+  useStore($onboardingGate)
+  const guideOwnsSignIn = guidedOnboardingActive()
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const backendUpdateStatus = useStore($backendUpdateStatus)
@@ -440,6 +450,14 @@ export function useStatusbarItems({
         render: () => <StatusbarGatewaySwitcher />
       },
       {
+        // The rail's stand-in: the profile picker moves down here while the
+        // colored strip is hidden, so switching profiles always has a door.
+        hidden: !sessionsShowing || profileRailVisible,
+        id: 'profile-switcher',
+        lockedVisible: true,
+        render: () => <ProfileSwitcher compact />
+      },
+      {
         className: gatewayRestarting ? undefined : gatewayClassName,
         detail: gatewayRestarting ? copy.gatewayRestarting : gatewayDetail,
         hidden: botsShowing,
@@ -478,7 +496,7 @@ export function useStatusbarItems({
         // Shown while a free-tier identity exists and the tier is on: it names the
         // identity that carries the connectors (and inference when nothing else
         // does), and it is the persistent way in to the sign-in.
-        hidden: !freeTier?.available,
+        hidden: !freeTier?.available || guideOwnsSignIn,
         icon: <Codicon name="account" size="0.75rem" />,
         id: 'free-tier',
         label: freeTierCopy.providerName,
@@ -576,6 +594,7 @@ export function useStatusbarItems({
       fileMenu.revealInSidebar,
       freeTier?.available,
       freeTier?.model,
+      guideOwnsSignIn,
       gatewayMenuContent,
       gatewayClassName,
       gatewayDetail,
@@ -583,6 +602,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
+      profileRailVisible,
       projectName,
       sessionsShowing,
       subagentsFailed,

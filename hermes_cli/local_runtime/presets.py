@@ -155,17 +155,8 @@ def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path
             body = "\n".join(f"{k} = {v}" for k, v in entry.keys.items())
             sections.append(f"[{entry.model_id}]\n{body}\n")
 
-    preset_path.parent.mkdir(parents=True, exist_ok=True)
-    import os
-    import tempfile
-
-    fd, tmp = tempfile.mkstemp(prefix=preset_path.name, suffix=".tmp", dir=preset_path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write("\n".join(sections))
-        os.replace(tmp, preset_path)
-    finally:
-        Path(tmp).unlink(missing_ok=True)
+    from utils import atomic_write_text
+    atomic_write_text(preset_path, "\n".join(sections), tmp_prefix=f".{preset_path.name}_", mode=0o600)
     logger.info("wrote %d preset sections to %s", sum(e.keys is not None for e in entries), preset_path)
     return entries
 

@@ -215,7 +215,7 @@ class GatewaySlashCommandsMixin(
         OWN transport (profile-aware, fail-closed) — ``self.adapters`` is the default profile's map."""
         if not event.source:
             return None, None
-        return self._adapter_for_source(event.source), self._session_key_for_source(event.source)
+        return self._delivery_adapter_for(event.source), self._session_key_for_source(event.source)
 
     def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
         from gateway.run import _telegramize_command_mentions
@@ -259,7 +259,7 @@ class GatewaySlashCommandsMixin(
         (WeCom msgtype:"stream"), which need it sent directly with control-lane metadata (reliable
         proactive send, not the finalized reply stream). ``is not True``: mocks auto-create attrs."""
         source = event.source
-        adapter = self._adapter_for_source(source)  # the receiving bot, not the default profile's
+        adapter = self._delivery_adapter_for(source)  # the receiving bot, not the default profile's
         if adapter:
             adapter.resume_typing_for_chat(source.chat_id)  # agent is about to continue
         if getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
@@ -435,18 +435,36 @@ class GatewaySlashCommandsMixin(
             await _stop(session_key, "stop_command_handler")
             return EphemeralReply(t("gateway.stop.stopped"))
 
-        # No run under the caller's own key. In a per-user thread (thread_sessions_per_user=True) a
-        # run another user started lives under a different key, yet authorized users must still be
-        # able to /stop it: fall back to sibling runs in this thread, gated on authorization.
-        sibling_keys = self._sibling_thread_run_keys(source, session_key)
-        if sibling_keys and self._is_user_authorized(source):
-            for sibling_key in sibling_keys:
-                await _stop(sibling_key, "stop_command_thread_sibling")
-            logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
-                        session_key, len(sibling_keys), ", ".join(sibling_keys))
+        # No run under the caller's own key: a live turn in THIS chat may still carry a differently
+        # shaped key. One scan feeds both tiers; the chat tier is a superset of the thread-sibling
+        # tier (a sibling needs the caller's own thread slot, which satisfies the chat predicate), so
+        # it is the set to act on — acting on the sibling subset alone would reply "Stopped" while a
+        # same-thread run under a differently shaped key kept going. See `_chat_scoped_run_keys` for
+        # the shapes and isolation bounds; both tiers are authorization-gated.
+        runs = self._same_chat_runs(source, session_key)
+        sibling_keys = self._sibling_thread_run_keys(source, runs)
+        fallback_keys = self._chat_scoped_run_keys(source, runs)
+        # Reason is per-stop, not per-key: a stop that only ever had thread siblings keeps its own
+        # label for hook consumers, anything wider is a chat-scope stop.
+        reason = (
+            "stop_command_thread_sibling"
+            if fallback_keys == sibling_keys
+            else "stop_command_chat_scope"
+        )
+        if fallback_keys and self._is_user_authorized_for_source(source):
+            for fallback_key in fallback_keys:
+                await _stop(fallback_key, reason)
+            logger.info("STOP (%s) by %s — interrupted %d run(s): %s",
+                        reason, session_key, len(fallback_keys), ", ".join(fallback_keys))
             return EphemeralReply(t("gateway.stop.stopped"))
 
-        # No running agent anywhere for this scope. A platform status indicator can still be stuck —
+        # No running agent anywhere for this scope. Background delegations the session dispatched in an
+        # earlier turn still count as "active": stop them; each returns as an interrupted completion.
+        from tools.async_delegation import interrupt_for_session
+        if interrupt_for_session(session_key=session_key, reason="stop_command",
+                                 parent_session_id=str(getattr(session_entry, "session_id", "") or "")):
+            return EphemeralReply(t("gateway.stop.stopped"))
+        # A platform status indicator can still be stuck —
         # e.g. Slack's persistent assistant.threads.setStatus survives a gateway restart or a turn
         # that died without a final send.
         # Best-effort clear so /stop always dismisses a phantom "is thinking...". See #32295.
@@ -588,7 +606,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.set_home.save_failed", error="Missing logical platform")
         via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
         if via_relay:
-            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            adapter_for_source = getattr(self, "_intake_adapter_for", None)
             relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
             fronts_platform = getattr(relay_adapter, "fronts_platform", None)
             if (source.platform in {None, Platform.LOCAL, Platform.RELAY}
@@ -629,7 +647,7 @@ class GatewaySlashCommandsMixin(
         # independent /voice state.
         # See #75198.
         voice_key = self._voice_key_for_source(event.source)
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
 
         def _set_mode(mode: str) -> None:
             self._voice_mode[voice_key] = mode
@@ -684,9 +702,15 @@ class GatewaySlashCommandsMixin(
         tokens = event.get_command_args().strip().split()
         restore_all = any(tok.lower() in ("--all", "--force") for tok in tokens)
         arg = " ".join(tok for tok in tokens if tok.lower() not in ("--all", "--force"))
+        # Container-backed session: host checkpoints belong to another tree, so a restore is
+        # refused; the bare listing stays visible, prefixed with the reason (same as the CLI).
+        reason = mgr.unsupported_backend_reason()
+        if reason and arg:
+            return reason
         checkpoints = mgr.list_checkpoints(cwd)
         if not arg:
-            return format_checkpoint_list(checkpoints, cwd)
+            listing = format_checkpoint_list(checkpoints, cwd)
+            return f"{reason}\n{listing}" if reason else listing
         if not checkpoints:
             return t("gateway.rollback.none_found", cwd=cwd)
 
@@ -724,6 +748,8 @@ class GatewaySlashCommandsMixin(
             mgr = self._checkpoint_manager()
             if mgr is None:
                 return t("gateway.diff.not_enabled")
+            if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
+                return reason
             result = await asyncio.to_thread(mgr.session_diff, cwd)
         else:
             from tools.working_diff import collect_working_diff
@@ -805,7 +831,11 @@ class GatewaySlashCommandsMixin(
             model, rt = None, {}
         if not rt.get("api_key"):
             return t("gateway.btw.no_provider")
-        main_runtime = {"model": model, **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")}}
+        main_runtime = {
+            "model": model,
+            **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            "session_id": session_entry.session_id,
+        }
         history_snapshot = list(history)
         # Prefer the cache-parity fork when a live cached AIAgent exists: it replays the snapshot
         # against the warm provider prefix cache, giving FULL context at cache-read prices. With no
@@ -815,7 +845,7 @@ class GatewaySlashCommandsMixin(
         except Exception:
             parent_agent = None
         _thread_metadata = self._reply_metadata(event)
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         preview = _preview(question)
 
         async def _run_side_question() -> None:
@@ -950,15 +980,15 @@ class GatewaySlashCommandsMixin(
             return EphemeralReply("Busy input mode could not be saved to config. Mode unchanged.")
         profile_name = self._busy_profile_name_for_source(event.source)
         if profile_name:
-            from gateway.run import _load_gateway_runtime_config
-            self._snapshot_profile_busy_modes(profile_name, _load_gateway_runtime_config())
+            from gateway.run import _load_gateway_config
+            self._snapshot_profile_busy_modes(profile_name, _load_gateway_config())
         else:
             self._busy_input_mode = arg
             # busy_input_mode is also the source of truth for the text mode — re-derive it so the
             # adapter refresh below doesn't keep a stale value and keep interrupting.
             self._busy_text_mode = self._load_busy_text_mode()
 
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if adapter is not None:
             adapter._busy_text_mode = self._effective_busy_text_mode(event.source)
         return EphemeralReply(

@@ -17,98 +17,6 @@ export type Locale =
   | "hu"
   | "ar";
 
-export interface WisdomTranslations {
-  syncRecovery?: import('@hermes/shared').WisdomSyncCopy
-  notificationPreferences: import('@hermes/shared').WisdomMuteCopy;
-  tab: string
-  browseHub: string
-  title: string
-  loading: string
-  unavailable: string
-  setup: string
-  setupDisclosure: string
-  setupAction: string
-  settingUp: string
-  scanLocal: string
-  search: string
-  potential: string
-  potentialHelp: string
-  noSuggestions: string
-  browseLocal: (count: number) => string
-  browseLocalHelp: string
-  ownerReview: string
-  ownerReviewHelp: string
-  noDrafts: string
-  prepare: string
-  continueDraft: string
-  localOnly: string
-  qualifiedLocally: string
-  qualificationFirst: (organizationName?: string | null) => string
-  qualificationReturning: string
-  savedLocally: string
-  reviewExact: string
-  draftState: (state: string) => string
-  serverScanPassed: string
-  noDescription: string
-  managedInstalls: string
-  close: string
-  readEvery: string
-  editReview: string
-  unsavedChanges: string
-  saveAndRescan: string
-  savingRevision: string
-  resetChanges: string
-  reviewedHashes: string
-  prepareTitle: string
-  prepareNotice: string
-  ownerDescription: string
-  systemSpecification: string
-  localOverlay: string
-  cancel: string
-  submit: string
-  submitting: string
-  publishing: string
-  approve: string
-  decline: string
-  checkUpdates: (count: number) => string
-  checking: string
-  refreshShared: string
-  refreshingShared: string
-  installReferenceLabel: string
-  installReferencePlaceholder: string
-  installReferenceHelp: string
-  reviewInstall: string
-  planningInstall: string
-  updateModeLabel: string
-  updateModeDefault: string
-  updateModeManual: string
-  updateModeAutomatic: string
-  updateModeRequired: string
-  updateModeHelp: string
-  updateModePlan: (mode: string) => string
-  activityReady: (count: number) => string
-  decisionPublished: (skill: string) => string
-  decisionChanges: (skill: string) => string
-  decisionDeclined: (skill: string) => string
-  decisionChanged: (skill: string, state: string) => string
-  installedNotice: (skill: string, version?: string) => string
-  updateNotice: (skill: string, version?: string) => string
-  newSkillNotice: (skill: string) => string
-  archivedNotice: (skill: string) => string
-  takedownNotice: (skill: string) => string
-  markSeen: string
-  install: string
-  uninstall: string
-  checkSkill: string
-  updateAvailable: (version?: number) => string
-  reviewUpdate: string
-  installed: (version: number, mode: string) => string
-  confirmAction: (action: string) => string
-  acceptCompatibility: string
-  acceptSensitive: string
-  preserveModified: string
-}
-
 export interface Translations {
   // ── Common ──
   common: {
@@ -120,6 +28,9 @@ export interface Translations {
     delete: string;
     refresh: string;
     retry: string;
+    /** Optional — English fallback until translated. "{what}" = the noun that failed to load. */
+    loadFailed?: string;
+    loadFailedDetails?: string;
     search: string;
     loading: string;
     create: string;
@@ -173,7 +84,9 @@ export interface Translations {
     activeSessionsLabel: string;
     gatewayStatusLabel: string;
     gatewayStrip: {
+      degraded?: string;
       failed: string;
+      heartbeatStale?: string;
       off: string;
       running: string;
       starting: string;
@@ -358,6 +271,9 @@ export interface Translations {
 
   // ── Cron page ──
   cron: {
+    /** Optional — English fallback until translated. */
+    loadWhat?: string;
+    scriptRequired?: string;
     confirmDeleteMessage: string;
     confirmDeleteTitle: string;
     newJob: string;
@@ -406,6 +322,8 @@ export interface Translations {
     noJobs: string;
     last: string;
     next: string;
+    overdueSince?: string;
+    schedulerLastTicked?: string;
     pause: string;
     resume: string;
     triggerNow: string;
@@ -543,9 +461,12 @@ export interface Translations {
 
   // ── Skills page ──
   skills: {
-    wisdom: WisdomTranslations;
     title: string;
     searchPlaceholder: string;
+    /** Optional — English fallback until translated. */
+    loadWhat?: string;
+    browseHub?: string;
+    createSkill?: string;
     enabledOf: string;
     all: string;
     categories: string;

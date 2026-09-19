@@ -35,8 +35,6 @@ class SkillMeta:
     path: Optional[str] = None
     tags: List[str] = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
-    editorial_name: Optional[str] = None
-    editorial_description: Optional[str] = None
 
 
 @dataclass
@@ -132,6 +130,8 @@ class SkillSource(ABC):
 
     SOURCE_ID: str = ""
     TRUST_LEVEL: str = "community"
+    # Consecutive failed fetches of one catalog page/shard before a walk gives up as partial.
+    CATALOG_PAGE_RETRIES = 5
 
     @abstractmethod
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:

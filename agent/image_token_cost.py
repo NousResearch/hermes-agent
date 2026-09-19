@@ -28,6 +28,9 @@ _EMA_ALPHA = 0.5
 _image_cost_var: ContextVar[Optional[int]] = ContextVar("hermes_image_token_cost", default=None)
 _LEARNED: Dict[str, int] = {}
 _LOADED = False
+# Routed profiles (multiplexed gateway) keep their own table, loaded from THEIR cache file: the
+# module slot above is the launch profile's and would otherwise be persisted into every home.
+_LEARNED_BY_HOME: Dict[str, Dict[str, int]] = {}
 
 
 def _cache_path():
@@ -42,22 +45,33 @@ def _key(model: Any, base_url: Any) -> str:
     return f"{model or ''}@{base_url_hostname(base_url or '') or ''}"
 
 
-def _load() -> None:
-    global _LOADED
-    if _LOADED:
-        return
-    _LOADED = True
+def _read_cache() -> Dict[str, int]:
     from agent.model_metadata import _load_json_dict
 
-    for k, v in _load_json_dict(_cache_path()).items():
-        if isinstance(v, int) and _MIN_PLAUSIBLE <= v <= _MAX_PLAUSIBLE:
-            _LEARNED[k] = v
+    return {k: v for k, v in _load_json_dict(_cache_path()).items()
+            if isinstance(v, int) and _MIN_PLAUSIBLE <= v <= _MAX_PLAUSIBLE}
+
+
+def _table() -> Dict[str, int]:
+    """The active profile's learned table, loaded lazily from its cache file."""
+    global _LOADED
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+
+    if get_hermes_home_override() is None:
+        if not _LOADED:
+            _LOADED = True
+            _LEARNED.update(_read_cache())
+        return _LEARNED
+    home_key = hermes_home_key()
+    table = _LEARNED_BY_HOME.get(home_key)
+    if table is None:
+        table = _LEARNED_BY_HOME[home_key] = _read_cache()
+    return table
 
 
 def learned_image_token_cost(model: Any, base_url: Any) -> int:
     """Learned per-image cost for ``model@host``, else the flat default."""
-    _load()
-    return _LEARNED.get(_key(model, base_url), DEFAULT_IMAGE_TOKEN_COST)
+    return _table().get(_key(model, base_url), DEFAULT_IMAGE_TOKEN_COST)
 
 
 def current_image_token_cost() -> int:
@@ -117,15 +131,15 @@ def calibrate_from_usage(agent: Any, messages: List[Dict[str, Any]], prompt_toke
     if not _MIN_PLAUSIBLE <= per_image <= _MAX_PLAUSIBLE:
         return None
     key = _key(getattr(agent, "model", None), getattr(agent, "base_url", None))
-    _load()
-    prior = _LEARNED.get(key)
+    table = _table()
+    prior = table.get(key)
     learned = per_image if prior is None else int(prior + _EMA_ALPHA * (per_image - prior))
-    _LEARNED[key] = learned
+    table[key] = learned
     _image_cost_var.set(learned)
     try:
         from utils import atomic_json_write
 
-        atomic_json_write(_cache_path(), dict(_LEARNED), indent=0, separators=(",", ":"))
+        atomic_json_write(_cache_path(), dict(table), indent=0, separators=(",", ":"))
     except Exception:
         logger.debug("image token cost persist failed", exc_info=True)
     logger.info(

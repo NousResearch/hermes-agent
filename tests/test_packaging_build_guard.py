@@ -80,11 +80,6 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
         for path in (PROJECT_ROOT / "plugins").rglob(pattern)
     }
     assert expected, "expected bundled plugin manifests under plugins/"
-    expected.update(
-        path.relative_to(PROJECT_ROOT).as_posix()
-        for pattern in ("*.py", "*.json")
-        for path in (PROJECT_ROOT / "hermes_wisdom").rglob(pattern)
-    )
 
     if kind == "wheel":
         with zipfile.ZipFile(artifacts[0]) as wheel:
@@ -98,4 +93,4 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
             }
 
     missing = sorted(expected - shipped)
-    assert not missing, f"{kind} omits runtime modules or bundled data: {missing}"
+    assert not missing, f"{kind} omits bundled plugin manifests: {missing}"

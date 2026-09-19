@@ -143,6 +143,24 @@ async def restart_gateway(profile: Optional[str] = None):
     return {"ok": True, "pid": proc.pid, "name": "gateway-restart"}
 
 
+@router.get("/api/gateway/migrate/plan")
+async def gateway_migrate_plan():
+    """Preflight for folding per-profile gateways into one multiplexer (same JSON as the CLI plan)."""
+    from hermes_cli.gateway_migrate import build_migration_plan
+    plan = await asyncio.to_thread(build_migration_plan)
+    return plan.to_dict()
+
+
+@router.post("/api/gateway/migrate")
+async def gateway_migrate():
+    """Run ``hermes gateway migrate --multiplex --yes`` detached; the CLI re-runs the preflight and
+    refuses (exit 1 into the action log) when blocked, so the UI should gate on the plan first."""
+    from hermes_cli.web_server_gateway import _spawn_hermes_action
+    with http_failure("Failed to spawn gateway migrate", 500, "Failed to start gateway migration"):
+        proc = _spawn_hermes_action(["gateway", "migrate", "--multiplex", "--yes"], "gateway-migrate")
+    return {"ok": True, "pid": proc.pid, "name": "gateway-migrate"}
+
+
 @router.post("/api/gateway/drain")
 async def gateway_drain(request: Request):
     """Begin or cancel an external (NAS-driven) gateway drain.

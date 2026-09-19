@@ -40,13 +40,14 @@ def auth_json_path():
 def _read_nous_provider_state() -> Optional[dict]:
     """The profile's Nous state, or None. A free-tier identity counts only while the free tier is on:
     with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
-    attached to a request."""
+    attached to a request.
+
+    Reads the profile's own ``auth.json`` through ``get_provider_auth_state`` like every other
+    credential reader."""
     try:
-        path = auth_json_path()
-        if not path.is_file():
-            return None
-        providers = json.loads(path.read_text(encoding="utf-8-sig")).get("providers", {})
-        nous_provider = providers.get("nous", {}) if isinstance(providers, dict) else None
+        from hermes_cli.auth import get_provider_auth_state
+
+        nous_provider = get_provider_auth_state("nous")
         if not isinstance(nous_provider, dict):
             return None
         from hermes_cli.anon_auth import guest_enabled, is_guest_state
@@ -122,16 +123,19 @@ def read_nous_access_token() -> Optional[str]:
         from hermes_cli.anon_auth import AnonCredentialDead
 
         if isinstance(exc, AnonCredentialDead):
-            return _replace_dead_guest_token(nous_provider)
+            return _replace_dead_guest_token(nous_provider, str(exc.code or "anon_credential_dead"))
         logger.debug("Nous access token refresh failed: %s", exc)
     return cached_token
 
 
-def _replace_dead_guest_token(dead_state: dict) -> Optional[str]:
-    from hermes_cli.anon_auth import clear_dead_guest, ensure_portal_identity
+def _replace_dead_guest_token(dead_state: dict, code: str = "anon_credential_dead") -> Optional[str]:
+    from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED, clear_dead_guest, ensure_portal_identity
     from hermes_cli.auth import resolve_nous_access_token
 
-    clear_dead_guest("anon_credential_dead", dead_token=dead_state.get("anon_token"))
+    clear_dead_guest(code, dead_token=dead_state.get("anon_token"))
+    # Same rule as inference: a locked account is retired but never silently replaced.
+    if code == ANON_ACCOUNT_LOCKED:
+        return None
     try:
         if ensure_portal_identity(explicit=True) is None:
             return None

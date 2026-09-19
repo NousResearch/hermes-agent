@@ -306,7 +306,7 @@ class TestResolveProvider:
             lambda env=None: False,
         )
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
-        with pytest.raises(AuthError, match="No inference provider configured"):
+        with pytest.raises(AuthError, match="not connected to any AI provider"):
             resolve_provider("auto")
 
 
@@ -740,6 +740,18 @@ class TestZaiEndpointAutoDetect:
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == ""
+
+    def test_failed_probe_is_not_repeated_within_ttl(self, monkeypatch):
+        """A key whose detection fails (429 on every endpoint) is probed once, not on every
+        credential resolution — the picker resolves Z.AI dozens of times per open (#114215)."""
+        from hermes_cli import auth_zai_kimi
+        monkeypatch.setenv("GLM_API_KEY", "glm-key-that-429s")
+        monkeypatch.setattr(auth_zai_kimi, "_zai_probe_failed_until", {})
+        calls = []
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: calls.append(1))
+        for _ in range(3):
+            assert resolve_api_key_provider_credentials("zai")["base_url"] == "https://api.z.ai/api/paas/v4"
+        assert len(calls) == 1
 
 
 class TestZaiParallelProbe:

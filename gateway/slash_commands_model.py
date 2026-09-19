@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
-from hermes_cli.config import atomic_config_write, clear_model_endpoint_credentials
+from hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
 
 logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
@@ -55,46 +55,10 @@ def _model_switch_skew_guard() -> Optional[str]:
 
 
 async def _persist_model_switch_to_config(result, config_path) -> None:
-    """Write-through a resolved /model switch to ``config_path`` (model.default/provider/base_url).
-
-    Raw read: merged defaults must not be persisted back. A scalar/None ``model:`` is coerced to a
-    dict first. Named providers re-resolve base_url/api_mode, so leftovers are cleared; custom
-    providers have no registry entry to re-derive from and need an explicit set-or-clear.
-    """
-    from hermes_cli.config import read_user_config_raw, save_config
-
-    cfg = read_user_config_raw(config_path)
-    raw_model = cfg.get("model")
-    if isinstance(raw_model, dict):
-        model_cfg = raw_model
-    elif isinstance(raw_model, str) and raw_model.strip():
-        model_cfg = cfg["model"] = {"default": raw_model.strip()}
-    else:
-        model_cfg = cfg["model"] = {}
-    try:
-        from hermes_cli.route_identity import should_clear_context_pin_async
-        clear_pin = await should_clear_context_pin_async(
-            model_cfg.get("default") or model_cfg.get("model"), result.new_model,
-            model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider,
-        )
-    except Exception:
-        clear_pin = True
-    if clear_pin:
-        model_cfg.pop("context_length", None)
-    model_cfg["default"] = result.new_model
-    model_cfg["provider"] = result.target_provider
-    is_custom_target = str(result.target_provider or "").strip().lower() == "custom"
-    if result.base_url:
-        model_cfg["base_url"] = result.base_url
-    elif is_custom_target:
-        model_cfg.pop("base_url", None)
-    if not is_custom_target:
-        clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
-    elif result.api_mode:
-        model_cfg["api_mode"] = result.api_mode
-    else:
-        model_cfg.pop("api_mode", None)
-    save_config(cfg)
+    """Write-through a resolved /model switch to the profile config at ``config_path``, off the
+    event loop (the route comparison can do cold-start disk I/O)."""
+    from hermes_cli.model_switch import persist_model_selection
+    await asyncio.to_thread(persist_model_selection, result, config_path)
 
 
 @dataclasses.dataclass
@@ -106,6 +70,7 @@ class _ModelSwitchContext:
     config_path: Any
     persist_global: bool
     one_turn: bool = False
+    reasoning_effort: str = ""  # `--reasoning <level>` riding with the pick (typed path only)
     restore_snapshot: Optional[dict] = None
     current_model: str = ""
     current_provider: str = "openrouter"
@@ -267,10 +232,9 @@ class GatewayModelCommandsMixin:
             "capabilities": dict(result.runtime_capabilities or {}),
         }
         if one_turn:
-            if not hasattr(self, "_pending_one_turn_model_restores"):
-                self._pending_one_turn_model_restores = {}
-            snapshot = ctx.restore_snapshot or {"had_override": False, "override": None}
-            self._pending_one_turn_model_restores[ctx.session_key] = snapshot
+            # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
+            # command's snapshot is the first temporary model, not the user's standing override.
+            self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)
         # Non-secret write-through so the override survives a restart (api_key/api_mode are
@@ -357,7 +321,15 @@ class GatewayModelCommandsMixin:
         if error is not None:
             return error
         await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
-        return await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        reply = await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        if ctx.reasoning_effort and not one_turn:
+            # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
+            # The record step already evicted the cached agent, so the pin lands on the rebuild.
+            from gateway.run import _platform_config_key
+            reply += "\n" + self._apply_reasoning_selection(
+                ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
+                persist_global=ctx.persist_global)
+        return reply
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
@@ -396,7 +368,7 @@ class GatewayModelCommandsMixin:
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
         )
-        adapter = self._adapter_for_source(ctx.source)
+        adapter = self._delivery_adapter_for(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
             async def _picker_switch(model_id: str, provider_slug: str) -> str:
                 # The picker callback binds the raw event source (pre-normalization).
@@ -436,11 +408,13 @@ class GatewayModelCommandsMixin:
         rendered confirm buttons itself.
         """
         try:
-            from hermes_cli.model_selection_guards import combined_selection_warning
+            from hermes_cli.model_selection_guards import (
+                combined_selection_warning, selection_context_for_agent)
             warning = await asyncio.to_thread(
                 combined_selection_warning, result.new_model, provider=result.target_provider,
                 base_url=result.base_url or ctx.current_base_url or "",
                 api_key=result.api_key or ctx.current_api_key or "", model_info=result.model_info,
+                selection_context=selection_context_for_agent(self._cached_agent_for(ctx.session_key)),
             )
         except Exception:
             warning = None
@@ -503,6 +477,7 @@ class GatewayModelCommandsMixin:
                 explicit_provider=request.explicit_provider,
             ),
             one_turn=request.is_once,
+            reasoning_effort=request.reasoning_effort,
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
         ctx.read_config()
@@ -643,7 +618,7 @@ class GatewayModelCommandsMixin:
     ) -> bool:
         """Send an interactive choice picker when the adapter *type* supports it (the /model gate);
         a failed send returns False (text fallback) instead of erroring."""
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
             return False
         try:

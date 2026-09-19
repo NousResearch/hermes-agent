@@ -15,6 +15,12 @@ Resolution order for an ``https://`` URL:
 3. ``git credential fill`` against the user's configured credential helpers (any host: GitLab,
    Bitbucket, self-hosted) with prompting disabled, so a stored credential is returned and a
    missing one fails in ~100 ms instead of asking.
+
+The credential is attached only after an anonymous attempt is refused
+(:func:`run_git_with_credential_fallback`). Most catalog repos are public, and a stale or
+revoked stored token sent pre-emptively turns a clone that works anonymously into a 401 that git
+can only answer with the prompt this module disables — "could not read Username for
+'https://github.com': terminal prompts disabled".
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import shutil
 import subprocess
 import urllib.parse
@@ -125,3 +132,46 @@ def with_git_auth(env: Mapping[str, str], url: str) -> dict[str, str]:
     env[f"GIT_CONFIG_VALUE_{idx}"] = f"Authorization: basic {encoded}"
     env["GIT_CONFIG_COUNT"] = str(idx + 1)
     return env
+
+
+# What git prints when the remote wants a credential it could not obtain: the prompt that
+# GIT_TERMINAL_PROMPT=0 refused, a rejected credential, or a bare 401/403 from the server.
+_CREDENTIAL_REQUIRED_RE = re.compile(
+    r"could not read (?:username|password)|terminal prompts disabled|authentication failed"
+    r"|(?:error|status|http)[: ]+40[13]\b",
+    re.IGNORECASE,
+)
+
+
+def is_credential_required_error(result: subprocess.CompletedProcess) -> bool:
+    """True when a failed git run says the remote demands a credential (vs. a typo'd URL,
+    a missing commit, a network error, ...)."""
+    parts = []
+    for stream in (result.stderr, result.stdout):
+        if isinstance(stream, bytes):
+            stream = stream.decode("utf-8", errors="replace")
+        parts.append(stream or "")
+    return _CREDENTIAL_REQUIRED_RE.search("\n".join(parts)) is not None
+
+
+def run_git_with_credential_fallback(
+    argv: list[str], url: str, *, env: Mapping[str, str], **run_kwargs,
+) -> subprocess.CompletedProcess:
+    """Run the git network verb *argv* against *url* anonymously; when the remote refuses with
+    the credential-required class and the user owns a credential for that host, rerun once with
+    it attached. *env* is a :func:`noninteractive_git_env`; *run_kwargs* must capture output so
+    the refusal can be classified. Empty *url* means no fallback (local verbs)."""
+    run_kwargs.setdefault("stdin", subprocess.DEVNULL)
+    env = dict(env)
+    # An inherited askpass (VS Code terminal, ksshaskpass) would swallow the remote's 401 into a
+    # dialog nobody answers: the run hits its timeout instead of failing with "could not read
+    # Username", and the refusal below is never classified. Same drop _credential_fill does.
+    env.pop("GIT_ASKPASS", None)
+    env.pop("SSH_ASKPASS", None)
+    result = subprocess.run(argv, env=env, **run_kwargs)
+    if result.returncode == 0 or not url or not is_credential_required_error(result):
+        return result
+    auth_env = with_git_auth(env, url)
+    if auth_env == env:
+        return result
+    return subprocess.run(argv, env=auth_env, **run_kwargs)

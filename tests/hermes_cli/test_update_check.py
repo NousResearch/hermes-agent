@@ -98,10 +98,12 @@ def test_cache_is_daily_but_invalidated_when_head_moves(git_repo, monkeypatch):
     tip.assert_called_once()
 
 
-def test_prefetch_non_blocking():
+def test_prefetch_non_blocking(monkeypatch):
     """prefetch_update_check() should return immediately without blocking."""
+    # Reset module state; force the real (non-pytest) thread path.
     banner._update_result = None
     banner._update_check_done = threading.Event()
+    monkeypatch.setattr(banner, "_skip_background_prefetch", lambda: False)
 
     with patch.object(banner, "check_for_updates", return_value=5):
         start = time.monotonic()
@@ -109,6 +111,39 @@ def test_prefetch_non_blocking():
         assert time.monotonic() - start < 1.0
         banner._update_check_done.wait(timeout=5)
         assert banner._update_result == 5
+
+
+def test_prefetch_update_check_is_noop_under_pytest():
+    """Under pytest the prefetch must NOT start the git-spawning daemon
+    thread: a process-wide ``patch("subprocess.run")`` in an unrelated test
+    can capture the thread's ``git fetch``/``rev-parse`` spawns, flaking the
+    unrelated test's call_args assertions (seen in
+    tests/tui_gateway/test_subprocess_encoding.py and
+    test_bot_relay_methods.py on CI, 2026-08-28)."""
+    banner._update_result = None
+    banner._update_check_done = threading.Event()
+
+    before = {t.ident for t in threading.enumerate()}
+    with patch.object(banner, "check_for_updates") as mock_check:
+        banner.prefetch_update_check()
+        # The done event is set synchronously so get_update_result() callers
+        # don't burn their timeout waiting on a check that will never run.
+        assert banner._update_check_done.is_set()
+        mock_check.assert_not_called()
+    after = {t.ident for t in threading.enumerate()}
+    assert after <= before, "prefetch_update_check spawned a thread under pytest"
+
+
+def test_prefetch_banner_data_is_noop_under_pytest(monkeypatch):
+    """Same stray-git-spawn class: prefetch_banner_data must not start its
+    daemon thread under pytest."""
+    monkeypatch.setattr(banner, "_banner_data_prefetch_started", False)
+    with patch.object(banner, "get_git_banner_state") as mock_state:
+        banner.prefetch_banner_data()
+        # Give a hypothetical stray thread a beat to run — nothing should.
+        time.sleep(0.05)
+        mock_state.assert_not_called()
+    assert banner._banner_data_prefetch_started is True
 
 
 def test_upstream_main_sha_ls_remote_fallback_disables_git_prompts(monkeypatch):

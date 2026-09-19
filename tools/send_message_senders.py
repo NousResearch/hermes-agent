@@ -236,10 +236,7 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(
-    token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
-    force_document=False, url_buttons=None, action_buttons=None, action_button_rows=None, rich_message_html=None,
-):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
@@ -251,17 +248,6 @@ async def _send_telegram(
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = _telegram_thread_kwargs(thread_id)
-        from tools.wisdom_notifications import telegram_notification_markup, try_telegram_rich_notification
-
-        if rich_message_html and not media_files:
-            result = await try_telegram_rich_notification(
-                bot, int_chat_id, rich_message_html, thread_kwargs, disable_link_previews=disable_link_previews,
-            )
-            if result is not None:
-                return result
-        reply_markup = telegram_notification_markup(
-            action_button_rows=action_button_rows, action_buttons=action_buttons, url_buttons=url_buttons,
-        )
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None
@@ -271,14 +257,8 @@ async def _send_telegram(
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ()
-        for index, chunk in enumerate(chunks):
-            chunk_kwargs = dict(text_kwargs)
-            if reply_markup is not None and index == len(chunks) - 1:
-                chunk_kwargs["reply_markup"] = reply_markup
-            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, chunk_kwargs)
-            if "message_thread_id" not in chunk_kwargs:
-                text_kwargs.pop("message_thread_id", None)
+        for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
+            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")

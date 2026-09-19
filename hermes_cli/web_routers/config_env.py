@@ -15,12 +15,14 @@ from hermes_cli.web_routers._common import http_failure, scoped_to_thread
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
+    _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_ids,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, redact_key, _deep_merge
+from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, redact_key, _deep_merge
+from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -313,6 +315,24 @@ def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
     return slug or fallback
 
 
+def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """Resolve a custom endpoint id using the stored key first, then its legacy slug.
+
+    The list route hands Desktop the literal ``providers.<key>`` (a v11→v12
+    migration keeps dots/colons from the display name: ``local-127.0.0.1:8283``;
+    hand-written keys keep their case), so that spelling must round-trip
+    unchanged. Slugging is only the compatibility path for callers that still
+    send an unslugged display name.
+    """
+    stored_key, entry = find_provider_entry(providers, endpoint_id)
+    if entry is not None:
+        return stored_key, entry
+    normalized_key = _custom_endpoint_id(endpoint_id)
+    if normalized_key == endpoint_id:
+        return None, None
+    return find_provider_entry(providers, normalized_key)
+
+
 def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     models: List[str] = []
     raw_models = entry.get("models")
@@ -375,6 +395,21 @@ def _endpoint_row(
     }
 
 
+def _model_names_provider(model_cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]]) -> bool:
+    """True when ``model.provider`` points at this ``providers`` entry.
+
+    ``switch_model`` spells the active provider either as the stored key or as
+    ``custom:<lowercased name>``; the list's ``is_current`` and delete's mirror
+    detach must accept both, or a mixed-case key activates but never shows as
+    active.
+    """
+    names = {coerce_provider_id(provider_key).lower()}
+    if isinstance(entry, dict) and coerce_provider_id(entry.get("name")):
+        names.add(coerce_provider_id(entry.get("name")).lower())
+    current = str(model_cfg.get("provider") or "").strip().lower()
+    return current.removeprefix("custom:") in names
+
+
 def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
@@ -396,10 +431,34 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 endpoint_id, str(raw_entry.get("name") or endpoint_id), base_url,
                 str(raw_entry.get("model") or raw_entry.get("default_model") or (models[0] if models else "")),
                 models, raw_entry.get("context_length"), bool(raw_entry.get("discover_models", True)),
-                raw_entry, endpoint_id == current_provider, "providers",
+                raw_entry, _model_names_provider(model_cfg, endpoint_id, raw_entry), "providers",
             ))
 
-    if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
+    # Legacy ``custom_providers:`` list entries the migration left behind are
+    # still routed at runtime (get_compatible_custom_providers), so they need a
+    # row too, or the panel hides an endpoint the agent can pick. Entries from
+    # ``providers:`` carry ``provider_key``; the legacy ones do not. A bare
+    # ``provider: custom`` main slot is "current" for the legacy row whose
+    # base_url it points at.
+    is_bare_custom = current_provider.lower() == "custom" and bool(current_base_url)
+    seen_ids = {e["id"] for e in endpoints}
+    for entry in get_compatible_custom_providers(cfg):
+        if entry.get("provider_key"):
+            continue
+        endpoint_id = _custom_endpoint_id(entry["name"])
+        if endpoint_id in seen_ids:
+            continue
+        seen_ids.add(endpoint_id)
+        models = _models_from_custom_endpoint_entry(entry)
+        is_current = is_bare_custom and entry["base_url"].rstrip("/") == current_base_url.rstrip("/")
+        endpoints.append(_endpoint_row(
+            endpoint_id, entry["name"], entry["base_url"],
+            str(entry.get("model") or (models[0] if models else "")), models,
+            entry.get("context_length"), bool(entry.get("discover_models", True)),
+            entry, is_current, "custom_providers",
+        ))
+
+    if is_bare_custom and not any(e["id"] == "custom" or e["is_current"] for e in endpoints):
         endpoints.insert(0, _endpoint_row(
             "custom", "Custom", current_base_url, current_model, [current_model] if current_model else [],
             model_cfg.get("context_length"), True, model_cfg, True, "direct-config",
@@ -413,21 +472,32 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> None:
+def _pop_legacy_custom_provider(cfg: Dict[str, Any], provider_key: str) -> Optional[Dict[str, Any]]:
+    """Remove and return the legacy ``custom_providers:`` list entry whose name slugs to *provider_key*."""
+    legacy = cfg.get("custom_providers")
+    if not isinstance(legacy, list):
+        return None
+    for index, entry in enumerate(legacy):
+        if isinstance(entry, dict) and _custom_endpoint_id(str(entry.get("name") or "")) == provider_key:
+            return legacy.pop(index)
+    return None
+
+
+def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]] = None) -> None:
     """Drop the main-slot mirror of a provider that no longer exists.
 
     ``activate_custom_endpoint`` copies the endpoint's ``base_url`` and
     ``api_key`` onto ``model``; that mirror outranks the environment at client
     construction, so deleting the endpoint without clearing it leaves the agent
     authenticating to the deleted host with the deleted key (and the key in
-    config.yaml). Only touches ``model`` when it names the deleted provider.
+    config.yaml). Only touches ``model`` when it names the deleted provider —
+    ``switch_model`` spells that either as the stored key or as
+    ``custom:<lowercased name>``, so both spellings count.
 
     See #62269.
     """
     model_cfg = cfg.get("model")
-    if not isinstance(model_cfg, dict):
-        return
-    if str(model_cfg.get("provider") or "").strip().lower() != provider_key:
+    if not isinstance(model_cfg, dict) or not _model_names_provider(model_cfg, provider_key, entry):
         return
     for field in ("provider", "base_url", "api_key", "key_env"):
         model_cfg.pop(field, None)
@@ -435,7 +505,6 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> 
 
 
 def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
-    endpoint_id = _custom_endpoint_id(body.id or body.name)
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
     model = (body.model or "").strip()
@@ -456,7 +525,10 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     providers = cfg.get("providers")
     if not isinstance(providers, dict):
         providers = {}
-    stored_key, existing = find_provider_entry(providers, endpoint_id)
+    # An edit payload carries the stored key verbatim; slugging it first would
+    # miss the entry and fork a slugged twin next to the original.
+    stored_key, existing = _resolve_custom_endpoint_entry(providers, body.id or body.name)
+    endpoint_id = coerce_provider_id(stored_key) if existing is not None else _custom_endpoint_id(body.id or body.name)
     if existing is None:
         existing = {}
 
@@ -516,9 +588,8 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     cfg["providers"] = providers
 
     if body.make_default:
-        cfg["model"] = _apply_main_model_assignment(
-            cfg.get("model", {}), endpoint_id, model, base_url
-        )
+        result = _validated_main_model_selection(cfg, endpoint_id, model, base_url)
+        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         if entry.get("key_env") and isinstance(cfg["model"], dict):
             cfg["model"]["key_env"] = entry["key_env"]
             cfg["model"].pop("api_key", None)
@@ -543,7 +614,10 @@ def list_custom_endpoints(profile: Optional[str] = None):
 def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     with http_failure("POST /api/providers/custom-endpoints failed", 500, detail="Failed to save custom endpoint"):
-        with _config_profile_scope(profile):
+        # Sync-def endpoints run on worker threads: the load→mutate→save span
+        # holds _CONFIG_MUTATION_LOCK so a concurrent config autosave cannot
+        # drop this write (or vice versa).
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             cfg = load_config()
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
@@ -560,20 +634,32 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         f"POST /api/providers/custom-endpoints/{endpoint_id}/activate failed", 500,
         detail="Failed to activate custom endpoint",
     ):
-        with _config_profile_scope(profile):
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
-            provider_key = _custom_endpoint_id(endpoint_id)
-            _stored, entry = find_provider_entry(cfg.get("providers"), provider_key)
+            stored_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
             if entry is None:
-                raise HTTPException(status_code=404, detail="custom endpoint not found")
+                # A legacy ``custom_providers:`` row: the main slot names providers by
+                # key, so promote the entry to ``providers.<key>`` (the v12 shape the
+                # migration would have written) before activating it.
+                provider_key = _custom_endpoint_id(endpoint_id)
+                legacy = _pop_legacy_custom_provider(cfg, provider_key)
+                entry = _custom_provider_entry_to_provider_config(legacy, provider_key=provider_key) if legacy else None
+                if entry is None:
+                    raise HTTPException(status_code=404, detail="custom endpoint not found")
+                providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+                providers[provider_key] = entry
+                cfg["providers"] = providers
+            else:
+                provider_key = coerce_provider_id(stored_key)
 
             models = _models_from_custom_endpoint_entry(entry)
-            model = str(entry.get("model") or (models[0] if models else "")).strip()
-            base_url = str(entry.get("base_url") or "").strip()
+            model = str(entry.get("model") or entry.get("default_model") or (models[0] if models else "")).strip()
+            base_url = str(entry.get("base_url") or entry.get("api") or "").strip()
             if not model or not base_url:
                 raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
-            model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
+            model_cfg = _apply_main_model_assignment(
+                cfg.get("model", {}), _validated_main_model_selection(cfg, provider_key, model, base_url))
             if entry.get("key_env"):
                 model_cfg["key_env"] = entry["key_env"]
                 model_cfg.pop("api_key", None)
@@ -600,16 +686,20 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         f"DELETE /api/providers/custom-endpoints/{endpoint_id} failed", 500,
         detail="Failed to delete custom endpoint",
     ):
-        with _config_profile_scope(profile):
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
-            provider_key = _custom_endpoint_id(endpoint_id)
             providers = cfg.get("providers")
-            stored_key, entry = find_provider_entry(providers, provider_key)
-            if entry is None or not isinstance(providers, dict):
-                raise HTTPException(status_code=404, detail="custom endpoint not found")
-            providers.pop(stored_key, None)
-            cfg["providers"] = providers
-            _detach_main_model_from_provider(cfg, provider_key)
+            stored_key, entry = _resolve_custom_endpoint_entry(providers, endpoint_id)
+            if entry is not None and isinstance(providers, dict):
+                provider_key = coerce_provider_id(stored_key)
+                providers.pop(stored_key, None)
+                cfg["providers"] = providers
+            else:
+                # A legacy ``custom_providers:`` row is addressed by its slug.
+                provider_key = _custom_endpoint_id(endpoint_id)
+                if _pop_legacy_custom_provider(cfg, provider_key) is None:
+                    raise HTTPException(status_code=404, detail="custom endpoint not found")
+            _detach_main_model_from_provider(cfg, provider_key, entry)
             remove_env_value(custom_endpoint_key_env(provider_key))
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
@@ -697,6 +787,10 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         return {"ok": True, "reachable": False, "message": ""}
 
     url, auth = probe
+    if key == "GEMINI_API_KEY":
+        from agent.gemini_native_adapter import normalize_gemini_base_url
+        # A Vertex express key (AQ.) can only 403 on the Studio host; normalize routes it to aiplatform.
+        url = normalize_gemini_base_url(url.rsplit("/models", 1)[0], value) + "/models"
     headers = {"Accept": "application/json"}
     params = {}
     if auth == "bearer":

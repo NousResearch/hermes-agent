@@ -102,7 +102,10 @@ function isUpdateToastSnoozed(): boolean {
 // v5: requires raised WebSocket frame size for large one-shot file.attach.
 // v6: requires key-addressed plugins.manage rows (keyless rows render
 //     read-only in Capabilities → Plugins).
-const REQUIRED_BACKEND_CONTRACT = 6
+// v7: requires JSON-RPC server->client requests for every blocking prompt
+//     (approval/clarify/sudo/secret/vault/MCP setup); a v6 backend's
+//     `<kind>.request` notifications would never render a card.
+export const REQUIRED_BACKEND_CONTRACT = 7
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even

@@ -26,7 +26,7 @@ def setup_route(raft=False):
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
     runner.adapters = {adapter.platform: adapter}
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     runner._kanban_dispatcher_lock_handle = object()
     source = SessionSource(platform=adapter.platform, chat_id="42", user_id="42", chat_type="dm")
     return runner, adapter, source, build_session_key(source)
@@ -148,3 +148,44 @@ async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path
     assert len(adapter.wire) == 2
     assert not any(unseen(mode) for mode in tids)
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_suppressed_ping_has_no_sent_receipt_but_wake_executes(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
+    (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
+    runner, adapter, source, key = setup_route()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="failure", assignee="worker", session_id=key)
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="42",
+                          user_id="42", chat_type="dm", delivery_mode="notify+wake")
+        kb.block_task(conn, tid, reason="worker failure", kind="transient")
+    finally:
+        conn.close()
+    work = []
+    async def handler(event):
+        work.append(event)
+        return "technical diagnostic echo"
+    adapter.set_message_handler(handler)
+    await adapter.connect()
+    try:
+        deliveries = await asyncio.to_thread(_notifier_collect, runner, kb,
+            notifier_profile=None, gc_due=False, gc_retention_days=30)
+        for delivery in deliveries:
+            await _KanbanNotification(runner, delivery, platform_cls=Platform,
+                                      sub_fail_counts={}).deliver()
+        await drain(adapter)
+        assert len(work) == 1
+        assert work[0].metadata["notification_category"] == "diagnostic"
+        assert adapter.wire == []
+        conn = kbc.connect()
+        try:
+            row = conn.execute("SELECT last_ping_event_id, last_event_id FROM kanban_notify_subs WHERE task_id=?", (tid,)).fetchone()
+            assert row["last_ping_event_id"] == 0
+            assert row["last_event_id"] > 0
+        finally:
+            conn.close()
+    finally:
+        await adapter.disconnect()

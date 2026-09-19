@@ -50,7 +50,7 @@ Field notes:
 
 - **`version`** — integer schema version. Future schemas bump this; Hermes refuses manifests with versions it doesn't understand and falls back to the hardcoded snapshot.
 - **`metadata`** — free-form dict at the manifest, provider, and model level. Any keys. Hermes ignores unknown fields, so you can annotate entries (`"tier": "paid"`, `"tags": [...]`, etc.) without coordinating a schema change.
-- **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, `"default"`, or empty). Nous Portal doesn't use this — free-tier gating is determined live from the Portal's pricing endpoint.
+- **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, `"default"`, or empty). Nous Portal doesn't use this.
 - **`default`** — exactly one entry per provider may carry `"default": true`. That model is the **silent default**: what Hermes lands on when the user never selected a model (GUI onboarding confirm card, `provider` configured with no `model`, empty `model.default`). Read cache-only at runtime (`get_default_model_from_cache`) so hot resolution paths never hit the network; when no cached manifest exists, Hermes falls back to the in-repo `PREFERRED_SILENT_DEFAULT_MODEL` constant, which must match the labeled entry. This lets maintainers rotate the silent default without shipping a release. It is deliberately a capable low-cost model, never the priciest flagship.
 - **Pricing and context length** are NOT in the manifest. Those come from live provider APIs (`/v1/models` endpoints, models.dev) at fetch time.
 
@@ -66,6 +66,10 @@ Field notes:
 | Manifest fails schema validation | Treated as unreachable |
 
 Cache location: `~/.hermes/cache/model_catalog.json`.
+
+### Per-provider model lists in the GUI picker
+
+The Desktop, TUI and dashboard pickers (`model.options`) build each provider's row from the disk-cached live catalog (`~/.hermes/provider_models_cache.json`) or, when nothing is cached yet, the curated list. Opening the picker never waits on a provider's `/v1/models` probe or on an auth probe: stale or missing catalogs are refreshed in a background thread and land on the next open, so one slow, rate-limited or unreachable provider cannot hold the whole picker on its loading state. **Refresh models** (or `/model --refresh`) is the explicit action that busts the cache and probes every provider live.
 
 ## Config
 

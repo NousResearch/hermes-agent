@@ -37,7 +37,7 @@ const WORD_TIMES = streamingSchedule(INTRO_REPLY_WORDS.length, REPLY_T + 150, RE
 interface Frame {
   beat: number
   replyWords: number
-  /** 45ms quantized clock — drives braille spinners + scramble decodes. */
+  /** 45ms quantized clock. Drives the braille spinners and the scramble decodes. */
   tick: number
   toolDone: number // bitmask
   toolShown: number // bitmask
@@ -130,10 +130,9 @@ export function useIntroClock() {
     const pad = startPad()
     const start = performance.now()
     let prevT = -1
-    // `start` is wall time; everything downstream of `elapsed` is score time.
-    // Dividing once, here, is what makes the whole piece — beats, schedules,
-    // the cube's rotation and tear — play at INTRO_PACE with nothing else to
-    // keep in step.
+    // `start` is wall time; everything downstream of `elapsed` is score time. This
+    // one division is what makes the beats, the schedules and the cube all play at
+    // INTRO_PACE.
     const elapsed = () => (performance.now() - start) / INTRO_PACE
     let raf = 0
     let currentBeat = 0
@@ -173,10 +172,10 @@ export function useIntroClock() {
         return f * f * (3 - 2 * f)
       }
 
-      // The stage never sits still: a slow drift-up across the whole piece,
-      // a gentle scale breath, and a lateral ease as the constellation opens
-      // (hero sits slightly left once the side agents arrive — asymmetric,
-      // not centered). All one transform, compositor-only.
+      // The stage transform combines a drift up across the whole piece, a scale
+      // oscillation of 0.4%, and a lateral shift of -18px as the constellation
+      // opens, which leaves the hero left of centre once the side agents arrive.
+      // One transform, so the whole stage stays on the compositor.
       if (stageRef.current) {
         const rise = -10 - ss(0, INTRO_TOTAL_MS) * 26
         const breathe = 1 + Math.sin(t / 2600) * 0.004
@@ -188,10 +187,9 @@ export function useIntroClock() {
         stageRef.current.style.opacity = String(1 - brandPush)
       }
 
-      // The ENTIRE brand close (glow + badge + wordmark + tagline) rides ONE
-      // alpha so nothing is ever readable against a half-faded bloom. It
-      // rises in with the glow and the whole group breathes out together
-      // through the exit window.
+      // The glow, badge, wordmark and tagline share one alpha, so no part of the
+      // brand close is readable against a half-faded glow. The group fades in with
+      // the glow and fades out through the exit window.
       const brandIn = ss(BRAND_T - 200, BRAND_T + 1300)
       const brandOut = 1 - ss(INTRO_TOTAL_MS - 500, INTRO_TOTAL_MS + INTRO_EXIT_MS - 100)
       const brandAlpha = brandIn * brandOut
@@ -224,7 +222,7 @@ export function useIntroClock() {
     }
   }, [reduceMotion, skip])
 
-  // ── Esc to skip (local — never depends on the main renderer). ───────────
+  // Esc to skip, handled here so it does not depend on the main renderer.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {

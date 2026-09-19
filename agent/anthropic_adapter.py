@@ -8,6 +8,7 @@ import logging
 import math
 import re
 import subprocess
+from collections.abc import Iterable
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
@@ -419,12 +420,17 @@ def build_anthropic_bedrock_client(region: str):
     ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
     A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
     (primary, auxiliary, per-request rebuild) enforces it."""
-    from agent.bedrock_adapter import bedrock_guardrail_headers
+    from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
         raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
+    # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
+    # launch profile's process env); unscoped passes nothing and keeps the default chain.
+    scoped = scoped_aws_session_kwargs()
+    aws_kwargs = {"aws_access_key": scoped.get("aws_access_key_id"), "aws_secret_key": scoped.get("aws_secret_access_key"),
+                  "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
     return sdk.AnthropicBedrock(
-        aws_region=region, timeout=_client_timeout(None),
+        aws_region=region, timeout=_client_timeout(None), **{k: v for k, v in aws_kwargs.items() if v},
         max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
         default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
     )
@@ -462,9 +468,14 @@ def _oauth_wire_namer(anthropic_tools: List[Dict[str, Any]]):
 
 
 _OAUTH_SYSTEM_REPLACEMENTS = (
-    ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"),
-    ("hermes-agent", "claude-code"), ("Nous Research", "Anthropic"),
+    ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"), ("Nous Research", "Anthropic"),
 )
+# The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
+# or quoted as an identifier (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
+# ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``) it is an address the model
+# dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
+# identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
+_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
@@ -481,6 +492,7 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
             text = block.get("text", "")
             for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
                 text = text.replace(old, new)
+            text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
             block["text"] = _apply_oauth_prose_aliases(text)
     for tool in anthropic_tools or []:
         if "name" in tool:
@@ -619,6 +631,21 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
     return api_kwargs
 
 
+def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None) -> None:
+    """Retry knob for a malformed fine-grained tool-JSON stream (#107830): the beta streams tool
+    args unvalidated, so a model that emits ``{"names": cronjob_manage}`` breaks the SDK parser
+    and an identical retry breaks identically. ``eager_input_streaming: false`` per tool restores
+    Anthropic's buffered, validated args for the rest of this turn (the flag lives on the turn's
+    kwargs, so a later retry of the same turn keeps it; the changed ``tools`` block costs one
+    prompt-cache miss, cheaper than a dead turn). Off the happy path on purpose:
+    buffering a large payload is a zero-event gap the stale-stream detector kills. No-op on
+    endpoints that never get the beta (MiniMax) rather than sending them an unknown field."""
+    if _TOOL_STREAMING_BETA not in _common_betas_for_base_url(base_url):
+        return
+    for tool in api_kwargs.get("tools") or ():
+        tool["eager_input_streaming"] = False
+
+
 def _is_stream_unavailable_error(exc: Exception) -> bool:
     """True when an Anthropic stream call should fall back to create()."""
     err_lower = str(exc).lower()
@@ -642,7 +669,16 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
         # returns the accumulated snapshot. TimeoutError is the caller's deadline seam: the host
         # has given up, so abandon the stream (``with`` closes it) instead of streaming an answer
         # nobody reads.
-        for event in stream if callable(on_stream_event) else ():
+        # Some SDK versions drop optional message_delta metadata from the final snapshot.
+        # Non-iterable shims (get_final_message-only) skip straight to the snapshot.
+        stop_details = None
+        for event in (stream if isinstance(stream, Iterable) else ()):
+            if getattr(event, "type", None) == "message_delta":
+                details = getattr(getattr(event, "delta", None), "stop_details", None)
+                if details is not None:
+                    stop_details = details
+            if not callable(on_stream_event):
+                continue
             try:
                 on_stream_event(event)
             except TimeoutError:
@@ -652,7 +688,10 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
                 raise
             except Exception:
                 logger.debug("%son_stream_event callback failed", log_prefix, exc_info=True)
-        return stream.get_final_message()
+        message = stream.get_final_message()
+        if stop_details is not None:
+            message.stop_details = stop_details
+        return message
 
 
 def create_anthropic_message(

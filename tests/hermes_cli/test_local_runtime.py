@@ -38,6 +38,8 @@ class _StubHandler(BaseHTTPRequestHandler):
     chat_answer = "Paris"
     requests_processing = 0
     slots: list = []
+    slots_error = 0
+    metrics_error = 0
 
     def _send(self, code: int, body: dict | str | None = None) -> None:
         raw = (json.dumps(body) if isinstance(body, dict) else (body or "")).encode()
@@ -62,8 +64,16 @@ class _StubHandler(BaseHTTPRequestHandler):
             else:
                 self._send(200, self.models)
         elif path == "/metrics":
-            self._send(200, f"llamacpp:requests_processing {self.requests_processing}\n")
+            if self.metrics_error:
+                self._send(self.metrics_error, {})
+            else:
+                self._send(
+                    200, f"llamacpp:requests_processing {self.requests_processing}\n"
+                )
         elif path == "/slots":
+            if self.slots_error:
+                self._send(self.slots_error, {})
+                return
             raw = json.dumps(self.slots).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -586,6 +596,55 @@ def test_idle_sweep_busy_model_resets_clock(tmp_path, monkeypatch, stub_server):
     assert handler.unloaded == []
 
 
+def test_idle_sweep_probe_failure_keeps_clock(tmp_path, monkeypatch, stub_server):
+    """A failed telemetry probe is not activity: /slots or /metrics errors must keep the
+    idle clock instead of resetting it, so one flaky probe per sweep can't pin a resident
+    model (and its VRAM) for hours."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "stuck-m", "status": {"value": "loaded"}}]}
+    handler.slots = []
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port)
+
+    t0 = 1000.0
+    assert sup.sweep_idle(now=t0) == []  # clock starts
+    handler.metrics_error = 500  # probe fails mid-window
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 1) == []  # kept, not reset
+    assert handler.unloaded == []
+    handler.metrics_error = 0  # telemetry recovers
+    # The clock survived the failures: unload happens at the first healthy sweep.
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 2) == ["stuck-m"]
+    assert handler.unloaded == ["stuck-m"]
+
+
+def test_idle_sweep_busy_after_probe_failure_still_resets_clock(
+    tmp_path, monkeypatch, stub_server
+):
+    """A kept clock must not mask real activity: a confirmed busy slot still resets it."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "m", "status": {"value": "loaded"}}]}
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port)
+
+    t0 = 1000.0
+    assert sup.sweep_idle(now=t0) == []  # clock starts
+    handler.slots_error = 500  # probe fails: clock kept
+    assert sup.sweep_idle(now=t0 + 100) == []
+    handler.slots_error = 0
+    handler.slots = [{"is_processing": True}]  # confirmed busy: clock resets
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 5) == []
+    handler.slots = []
+    # Fresh clock since the busy sighting — not the original t0 one.
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 6) == []
+    assert handler.unloaded == []
+
+
 def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     """A split GGUF mid-download must NOT count as staged: the picker, the
     catalog's 'downloaded' flag, and the router's model list all read
@@ -811,3 +870,16 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+def test_manifest_verified_tolerates_non_dict_manifest(tmp_path):
+    """A parseable-but-non-object manifest used to raise AttributeError out of
+    manifest_verified (the .get ran inside a try that only caught decode/OSError),
+    breaking any() scans over install dirs."""
+    from hermes_cli.local_runtime.binaries import manifest_verified
+
+    m = tmp_path / "manifest.json"
+    m.write_text('"oops"', encoding="utf-8")
+    assert manifest_verified(m) is False
+    m.write_text(json.dumps({"verified_version": "5015 (abc)"}), encoding="utf-8")
+    assert manifest_verified(m) is True

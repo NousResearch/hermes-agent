@@ -13,7 +13,7 @@ import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropRespon
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
-import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
+import { isUsableClipboardText, readClipboardImage, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
@@ -103,6 +103,35 @@ export function looksLikeDroppedPath(text: string): boolean {
   }
 
   return false
+}
+
+interface ClipboardGateway {
+  request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>
+}
+
+type ClipboardImageResponse = ClipboardPasteResponse & ImageAttachResponse & { path?: string }
+
+export async function requestClipboardImage(
+  gw: ClipboardGateway,
+  sessionId: string,
+  readImage: typeof readClipboardImage = readClipboardImage,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<ClipboardImageResponse | null> {
+  if (env.HERMES_TUI_GATEWAY_URL?.trim()) {
+    const image = await readImage()
+
+    if (!image) {
+      return null
+    }
+
+    return gw.request<ClipboardImageResponse>('image.attach_bytes', {
+      content_base64: image.contentBase64,
+      filename: image.filename,
+      session_id: sessionId
+    })
+  }
+
+  return gw.request<ClipboardImageResponse>('clipboard.paste', { session_id: sessionId })
 }
 
 export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions): UseComposerStateResult {
@@ -213,9 +242,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         return null
       }
 
-      const r = await gw
-        .request<ClipboardPasteResponse & { path?: string }>('clipboard.paste', { session_id: sid })
-        .catch(() => null)
+      const r = await requestClipboardImage(gw, sid).catch(() => null)
 
       if (r?.attached) {
         return attachImageToken(r, value, cursor)

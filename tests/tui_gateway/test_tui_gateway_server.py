@@ -9681,6 +9681,19 @@ def test_complete_slash_leaves_argument_stages_alone(monkeypatch):
     assert [item["text"] for item in items] == ["collapsed", "cycle"]
 
 
+def test_config_get_reasoning_renders_dict_form_custom_tier(tmp_path, monkeypatch):
+    """`agent.reasoning_effort: {enabled: true, effort: thinking}` (a provider's bespoke tier)
+    must read back as the tier name, not `str(dict)`."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  reasoning_effort:\n    enabled: true\n    effort: thinking\n", encoding="utf-8"
+    )
+
+    resp = server.handle_request({"id": "1", "method": "config.get", "params": {"key": "reasoning"}})
+
+    assert resp["result"]["value"] == "thinking"
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")

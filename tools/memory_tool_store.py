@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from contextlib import contextmanager, suppress
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -62,6 +63,37 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     if len({entries[i] for i in matches}) > 1:
         return None, True
     return (matches[0] if matches else None), False
+
+
+# Fuzzy resolution for OVERSIZED old_text only. Models regenerate entry text from
+# context with drift (punctuation, spacing, rewording), so a pasted-back full entry
+# routinely fails the exact substring test and gets rejected — the model then
+# retries the same paste and loops. A drifted paste is still safe to resolve when it
+# clearly identifies ONE entry: accept the best similarity score only past a high
+# threshold AND with a clear margin over the runner-up. Short old_text keeps
+# exact-substring semantics (unchanged behavior).
+_FUZZY_MIN_SCORE = 0.85   # below this the paste is not recognizable as an entry
+_FUZZY_MIN_MARGIN = 0.10  # best must beat the runner-up by this much to be unambiguous
+
+
+def _fuzzy_entry_match(entries: List[str], old_text: str) -> Optional[int]:
+    """Index of the single entry a drifted *old_text* paste clearly identifies,
+    else None (no recognizable match, or ambiguous between entries)."""
+    if not entries or len(old_text) < 40:
+        return None
+    best_i, best_s, second_best = None, 0.0, 0.0
+    for i, e in enumerate(entries):
+        s = SequenceMatcher(None, old_text, e).ratio()
+        if best_i is None or s > best_s:
+            # the previous best becomes the runner-up
+            if best_i is not None and best_s > second_best:
+                second_best = best_s
+            best_i, best_s = i, s
+        elif s > second_best:
+            second_best = s
+    if best_s < _FUZZY_MIN_SCORE or (best_s - second_best) < _FUZZY_MIN_MARGIN:
+        return None
+    return best_i
 
 
 class MemoryStore:
@@ -280,12 +312,24 @@ class MemoryStore:
         return self._edit(target, old_text.strip(), None)
 
     def _edit(self, target: str, old_text: str, new_content: Optional[str]) -> Dict[str, Any]:
-        """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*."""
+        """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*.
+
+        An oversized *old_text* that fails the exact substring test gets ONE fuzzy
+        resolution attempt (a drifted full-entry paste from a local model); only when
+        that is also unresolvable does the pasted-text rejection fire."""
+        if oversized := self.oversized_old_text_error(target, old_text):
+            fuzzy_idx = _fuzzy_entry_match(self._entries_for(target), old_text)
+            if fuzzy_idx is None:
+                return _error(oversized)
+
         def _apply(entries, limit):
             idx, ambiguous = _find_unique_match(entries, old_text)
             if ambiguous:
                 return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
                               matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
+            if idx is None and oversized:
+                # Exact test failed on a long paste; fall back to the fuzzy match.
+                idx = _fuzzy_entry_match(entries, old_text)
             if idx is None:
                 return self._consolidation_failure(_error(
                     f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
@@ -302,6 +346,58 @@ class MemoryStore:
             return replaced, "Entry replaced."
         return self._mutate(target, _apply)
 
+    # old_text longer than this is SUSPICIOUS: it usually means the model pasted
+    # back whole entries (or the whole store) instead of a short unique substring.
+    # Such payloads take minutes to stream on local models and drop mid-arguments
+    # (losing sibling keys like 'content'); the failure response then echoes every
+    # entry back, which the model pastes into the NEXT old_text -- growing the
+    # payload each retry until the turn's loop breaker fires. Suspicious values are
+    # rejected ONLY when they don't resolve to exactly one distinct entry: a long
+    # but unique substring is still legitimate and must keep working. The error
+    # message deliberately carries no entry text, so the feedback loop can't feed.
+    _OLD_TEXT_SUSPICIOUS_CHARS = 200
+
+    def oversized_old_text_error(self, target: str, old_text: str) -> Optional[str]:
+        """Error string when a suspiciously long *old_text* is ambiguous (matches
+        several distinct entries) or matches none. Returns None when the value is
+        short, or long-but-unique (still a valid anchor)."""
+        if len(old_text) <= self._OLD_TEXT_SUSPICIOUS_CHARS:
+            return None
+        matches = {e for e in self._entries_for(target) if old_text in e}
+        if len(matches) == 1:
+            return None  # long but unambiguous -- let it through
+        kind = "matched NO entry" if not matches else f"matched {len(matches)} distinct entries"
+        return (f"old_text is {len(old_text)} chars and {kind}, and no single entry was clearly identified -- "
+                f"it looks like pasted text that doesn't map to one entry. Reissue with old_text set to "
+                f"~10-40 distinctive characters from the ONE entry you mean; do NOT paste entries back.")
+
+    @staticmethod
+    def _infer_memory_action(action: Optional[str], has_content: bool, has_old_text: bool) -> Optional[str]:
+        """Recover a missing/None ``action`` from the fields that ARE present.
+
+        Local (smaller) models routinely drop the ``action`` field from memory
+        tool calls while emitting the rest of the payload. Each combination of
+        present fields maps to exactly one valid action, so inference is
+        unambiguous:
+
+          old_text + content -> replace
+          old_text only      -> remove
+          content only       -> add
+
+        A non-empty but unrecognized action (e.g. a typo) is returned as-is so
+        the normal "unknown action" error still fires -- we only fill in
+        missing values, never override explicit ones.
+        """
+        if action:
+            return action
+        if has_old_text and has_content:
+            return "replace"
+        if has_old_text:
+            return "remove"
+        if has_content:
+            return "add"
+        return None
+
     @staticmethod
     def _apply_batch_op(working: List[str], act: str, content: str, old_text: str, pos: str) -> Optional[str]:
         """Apply one batch op to *working* in place; return an error message or None."""
@@ -316,10 +412,15 @@ class MemoryStore:
         if not old_text:
             return f"{pos}: old_text is required."
         if act == "replace" and not content:
-            return f"{pos}: content is required (use action='remove' to delete)."
+            return (f"{pos}: 'content' key is missing from the op object -- reissue with all three "
+                    f"keys present: {{'action': 'replace', 'old_text': ..., 'content': ...}} "
+                    f"(Use action='remove' if you meant to delete.)")
         idx, ambiguous = _find_unique_match(working, old_text)
         if ambiguous:
             return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific."
+        if idx is None and len(old_text) > MemoryStore._OLD_TEXT_SUSPICIOUS_CHARS:
+            # Drifted full-entry paste: one fuzzy resolution attempt before failing.
+            idx = _fuzzy_entry_match(working, old_text)
         if idx is None:
             return f"{pos}: no entry matched '{old_text}'."
         working[idx:idx + 1] = [content] if act == "replace" else []
@@ -331,12 +432,42 @@ class MemoryStore:
         an over-limit result writes NOTHING and returns the first failure plus live state."""
         if not operations:
             return _error("operations list is empty.")
-        ops = [op or {} for op in operations]
+        # Local models sometimes drop the per-op ``action`` field (or emit
+        # JSON null). The remaining fields determine the action
+        # unambiguously -- infer it so one dropped key doesn't abort the
+        # whole batch and trigger retry loops.
+        ops = []
+        for op in operations:
+            op = op or {}
+            if not isinstance(op, dict):
+                ops.append(op)
+                continue
+            if not op.get("action"):
+                inferred = self._infer_memory_action(
+                    None,
+                    bool((op.get("content") or op.get("new_text"))),
+                    bool(op.get("old_text")),
+                )
+                if inferred:
+                    op["action"] = inferred
+            ops.append(op)
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):
             scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
             if scan_error:
                 return _error(f"Operation {i + 1}: {scan_error}")
+        # Reject pasted-back old_text up front. The error is SHORT on purpose:
+        # carrying current_entries here lets the model paste them into the next
+        # attempt's old_text, and each retry streams a bigger payload until a
+        # weaker local model drops mid-arguments.
+        # A drifted full-entry paste that still clearly identifies ONE entry is
+        # resolved fuzzily in _apply_batch_op instead of rejected.
+        for i, op in enumerate(ops):
+            if op.get("action") in ("replace", "remove"):
+                old = (op.get("old_text") or "").strip()
+                oversized = self.oversized_old_text_error(target, old)
+                if oversized and _fuzzy_entry_match(self._entries_for(target), old) is None:
+                    return _error(f"Operation {i + 1}: {oversized} No operations were applied (batch is all-or-nothing).")
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates

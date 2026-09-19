@@ -304,7 +304,7 @@ MEMORY_SCHEMA = {
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. A full pasted entry is also accepted when it clearly identifies exactly one entry (fuzzy-matched); prefer ~10-40 chars. Omit only for 'add'."
             },
             "new_text": {
                 "type": "string",

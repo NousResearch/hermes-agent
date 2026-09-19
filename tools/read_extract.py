@@ -189,15 +189,20 @@ def _finalize_anydoc_text(text: Any, path: str, pdf_note: Callable[[], str]) -> 
     return (pdf_note() if Path(path).suffix.lower() == ".pdf" else "") + text.rstrip("\n") + "\n"
 
 
-def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
+def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException, *, data: Optional[bytes] = None) -> str:
     """anydoc >= 0.2 scanned-pages signal: hosted OCR when a route exists, else teach recovery."""
     pages = list(getattr(exc, "pages", []) or [])
     enabled, api_key, api_url = _hosted_ocr_config()
     hosted_error = ""
     if enabled:
         try:
-            extra = {k: v for k, v in (("api_key", api_key), ("api_url", api_url)) if v}
-            return mod.to_markdown(path, ocr="hosted", **extra).rstrip("\n") + "\n"
+            # Explicit values prevent SDK fallback to another profile's process credentials.
+            extra = {"api_key": api_key or "", "api_url": api_url or "https://api.firecrawl.dev"}
+            if data is None:
+                return mod.to_markdown(path, ocr="hosted", **extra).rstrip("\n") + "\n"
+            text = mod.to_markdown_bytes(data, ocr="hosted", **extra)
+            return _finalize_anydoc_text(
+                text, path, lambda: "")
         except Exception as hosted_exc:  # noqa: BLE001
             hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
     return _needs_ocr_warning(path, pages, hosted_error)  # whole doc is scans: the warning IS it
@@ -231,6 +236,9 @@ def _extract_anydoc_bytes(data: bytes, path: str) -> str:
     try:
         text = mod.to_markdown_bytes(data)
     except Exception as exc:
+        needs_ocr = getattr(mod, "NeedsOcrError", None)
+        if needs_ocr is not None and isinstance(exc, needs_ocr):
+            return _ocr_scanned_pdf(mod, path, exc, data=data)
         raise ExtractionError(f"{type(exc).__name__}: {exc}") from exc
     return _finalize_anydoc_text(text, path, lambda: _pdf_coverage_note_from_bytes(data, path))
 

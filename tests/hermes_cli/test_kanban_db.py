@@ -768,6 +768,37 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     ]
 
 
+def test_complete_task_deduplicates_resolved_scratch_artifact_sources(kanban_home):
+    """Equivalent declarations preserve one logical scratch artifact once."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="render chart")
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        workspace = kbw.resolve_workspace(task)
+        kbw.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "chart.png"
+        artifact.write_bytes(b"png-bytes")
+        equivalent_path = workspace / ".." / workspace.name / artifact.name
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result="ok",
+            summary=f"Rendered {equivalent_path}",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        completed = [
+            event for event in kb.list_events(conn, task_id) if event.kind == "completed"
+        ][-1]
+        assert completed.payload is not None
+        attachments = kb.list_attachments(conn, task_id)
+
+    assert len(completed.payload["artifacts"]) == 1
+    assert [(attachment.filename, attachment.size) for attachment in attachments] == [
+        ("chart.png", len(b"png-bytes"))
+    ]
+
+
 def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
     """A review-bound card's declared files must outlive the reviewer's
     completion — that completion is what cleans the scratch workspace up."""

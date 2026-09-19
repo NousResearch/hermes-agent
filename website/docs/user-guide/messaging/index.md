@@ -331,13 +331,15 @@ platforms:
         system_prompt: "You are the #dev channel code-review specialist."
       "987654321098765432":
         model: openai/gpt-5-mini
+        fallback_providers: []       # retry the primary, but never use the global fallback
 ```
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- All four keys are optional — set only `model`, only `system_prompt`, only `fallback_providers`, or any combination. Unset fields fall back to the global defaults.
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
+- Set `fallback_providers` in an override to replace the global fallback chain for that channel. An empty list keeps local or private channel content on its primary provider when a request fails.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 
 ## Security

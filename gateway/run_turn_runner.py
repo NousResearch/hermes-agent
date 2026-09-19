@@ -1109,7 +1109,7 @@ class TurnRunner:
             session_db=getattr(runner._session_db, "_db", runner._session_db),
             # Reload from disk — do not reuse the startup snapshot.
             # See #60955.
-            fallback_model=self._runner._refresh_fallback_model(),
+            fallback_model=runner._resolve_fallback_model_for_source(src),
             skip_context_files=skip_context_files,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
@@ -1138,7 +1138,9 @@ class TurnRunner:
         # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
         # configured after caching must reach the next turn; per-session serialization keeps it safe.
         if found.reused and agent is not None:
-            self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())
+            self._runner._apply_fallback_chain_to_agent(
+                agent, runner._resolve_fallback_model_for_source(ctx.source)
+            )
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:

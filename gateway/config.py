@@ -336,10 +336,11 @@ class SessionResetPolicy:
 
 @dataclass
 class ChannelOverride:
-    """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+    """Per-channel model/provider/prompt/fallback override (``platforms.<name>.channel_overrides[channel_id]``)."""
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    fallback_providers: Optional[List[Dict[str, Any]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}

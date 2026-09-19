@@ -2406,7 +2406,7 @@ class GatewayTurnMixin:
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot.
                     # See #60955.
-                    fallback_model=self._refresh_fallback_model(),
+                    fallback_model=self._resolve_fallback_model_for_source(source),
                 )
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)

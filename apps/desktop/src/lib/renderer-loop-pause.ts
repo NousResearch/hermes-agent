@@ -5,6 +5,27 @@ interface WindowStatePayload {
 
 export const RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE = 'data-renderer-animations-paused'
 
+// Fail-open: with no busy signal the hidden/minimized pause still applies.
+// Live controllers subscribe so a busy flip re-syncs CSS and StatusPulse.
+let rendererBusyOverride = false
+const busyOverrideListeners = new Set<() => void>()
+
+/**
+ * Keep renderer activity indicators animating while Hermes is mid-turn,
+ * even if the window is occluded or minimized. Idle (false) restores pause.
+ */
+export function setRendererBusyOverride(busy: boolean): void {
+  if (rendererBusyOverride === busy) {
+    return
+  }
+
+  rendererBusyOverride = busy
+
+  for (const listener of busyOverrideListeners) {
+    listener()
+  }
+}
+
 export function createRendererLoopPauseController(onChange: () => void, { pauseWhenUnfocused = false } = {}) {
   let windowPaused = false
   let windowFocused = document.hasFocus()
@@ -43,14 +64,19 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
     window.addEventListener('focus', onFocus)
   }
 
+  busyOverrideListeners.add(onChange)
+
   return {
     dispose: () => {
+      busyOverrideListeners.delete(onChange)
       document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
       offWindowState?.()
     },
-    isPaused: () => document.visibilityState === 'hidden' || (pauseWhenUnfocused && !windowFocused) || windowPaused
+    isPaused: () =>
+      !rendererBusyOverride &&
+      (document.visibilityState === 'hidden' || (pauseWhenUnfocused && !windowFocused) || windowPaused)
   }
 }
 

@@ -1,6 +1,8 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setRendererBusyOverride } from '@/lib/renderer-loop-pause'
+
 import { installWindowStateBridge, type WindowStateBridge } from '../../test/window-state'
 
 import { StatusPulse } from './status-pulse'
@@ -54,6 +56,7 @@ describe('StatusPulse', () => {
   afterEach(() => {
     cleanup()
     played.length = 0
+    setRendererBusyOverride(false)
     Reflect.deleteProperty(HTMLElement.prototype, 'animate')
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
     vi.useRealTimers()
@@ -100,6 +103,40 @@ describe('StatusPulse', () => {
     expect(played[1]?.cancel).toHaveBeenCalledTimes(1)
     expect(windowState.off).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps pulsing while busy even when minimized', () => {
+    setRendererBusyOverride(true)
+    render(<StatusPulse kind="opacity" />)
+
+    expect(played).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(1)
+
+    act(() => windowState.emit({ isMinimized: true, isVisible: false }))
+
+    expect(played[0]?.cancel).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(1)
+
+    act(() => vi.advanceTimersByTime(5_000))
+    expect(played).toHaveLength(2)
+    expect(played[1]?.cancel).not.toHaveBeenCalled()
+  })
+
+  it('cancels scheduled work while idle and minimized after busy clears', () => {
+    setRendererBusyOverride(true)
+    render(<StatusPulse kind="opacity" />)
+
+    act(() => windowState.emit({ isMinimized: true, isVisible: false }))
+    expect(played[0]?.cancel).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(1)
+
+    act(() => setRendererBusyOverride(false))
+
+    expect(played[0]?.cancel).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    act(() => vi.advanceTimersByTime(5_000))
+    expect(played).toHaveLength(1)
   })
 
   it('stays static when reduced motion is requested', () => {

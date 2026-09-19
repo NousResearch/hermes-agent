@@ -131,6 +131,28 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert entry.cache_read_cost_per_million > flash.cache_read_cost_per_million
 
 
+def test_gpt_56_official_pricing_snapshot():
+    """Keep GPT-5.6 accounting aligned with the dated OpenAI snapshot."""
+    expected = {
+        "gpt-5.6-sol": ("4.00", "20.00", "0.40", "5.00"),
+        "gpt-5.6-terra": ("2.00", "12.00", "0.20", "2.50"),
+        "gpt-5.6-luna": ("0.20", "1.20", "0.02", "0.25"),
+    }
+
+    for model, rates in expected.items():
+        entry = get_pricing_entry(model, provider="openai")
+        assert entry is not None, model
+        assert (
+            entry.input_cost_per_million,
+            entry.output_cost_per_million,
+            entry.cache_read_cost_per_million,
+            entry.cache_write_cost_per_million,
+        ) == tuple(Decimal(rate) for rate in rates)
+        assert entry.pricing_version == "openai-gpt-5.6-2026-09-04"
+        assert entry.source == "official_docs_snapshot"
+        assert entry.source_url == "https://developers.openai.com/api/docs/pricing"
+
+
 def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
     """An exact bundled price must not block on the provider's /models API."""
     monkeypatch.setattr(

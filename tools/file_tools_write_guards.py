@@ -11,6 +11,7 @@ whole-file overwrite of content this task never saw or that changed since.
 """
 
 import fnmatch
+import hashlib
 import os
 from pathlib import Path
 
@@ -166,6 +167,69 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
     return None
+
+
+def snapshot_hermes_config_state() -> dict | None:
+    """Capture the active profile's config.yaml state for post-run mutation checks.
+
+    Resolved per call through ``_get_hermes_config_resolved`` so multiplexed
+    profiles each guard their own file. Returns ``None`` when the path cannot
+    be established or read — the caller then skips the comparison rather than
+    failing on a transient lock.
+    """
+    path_str = _get_hermes_config_resolved()
+    if not path_str:
+        return None
+    try:
+        p = Path(path_str)
+        if not p.exists():
+            return {"path": path_str, "exists": False}
+        data = p.read_bytes()
+        return {
+            "path": path_str,
+            "exists": True,
+            "size": len(data),
+            "mtime_ns": p.stat().st_mtime_ns,
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    except OSError:
+        return None
+
+
+def hermes_config_mutated(before: dict | None) -> tuple[bool, str | None]:
+    """Compare current config.yaml state against ``before``; ``(changed, detail)``.
+
+    Static analysis of arbitrary Python cannot hold, so ``execute_code`` snapshots
+    before the cell runs and calls this after. Any creation, deletion, or byte
+    change — including ``hooks.*`` and ``approvals.*``, which live in this file —
+    reports ``True`` with the same model-facing wording as ``_check_sensitive_path``.
+    """
+    if not before or not before.get("path"):
+        return False, None
+    path_str = str(before["path"])
+    try:
+        p = Path(path_str)
+        if not p.exists():
+            if not before.get("exists"):
+                return False, None
+            return True, (
+                f"Hermes config file was deleted during execute_code: {path_str}\n"
+                "Agent cannot modify security-sensitive configuration. "
+                "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+        data = p.read_bytes()
+        if not before.get("exists"):
+            return True, (
+                f"Hermes config file was created during execute_code: {path_str}\n"
+                "Agent cannot modify security-sensitive configuration. "
+                "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+        if hashlib.sha256(data).hexdigest() != before.get("sha256"):
+            return True, (
+                f"execute_code modified the Hermes config file: {path_str}\n"
+                "Agent cannot modify security-sensitive configuration. "
+                "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+        return False, None
+    except OSError:
+        return False, None
 
 
 # ── Protected agent-instruction files (always-ask approval gate) ─────────

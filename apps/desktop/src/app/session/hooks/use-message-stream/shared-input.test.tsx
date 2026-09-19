@@ -173,6 +173,52 @@ describe('shared starting input observation', () => {
     expect(h.state('missed').messages.map(m => m.inputIds)).toEqual([['old-input'], ['new-input']])
   })
 
+  it('renders the complete merged projection without hiding peer input or duplicating optimistic constituents', () => {
+    for (const ownCount of [0, 1, 2]) {
+      const h = renderMessageStream('s')
+      h.states.set('s', {
+        ...h.state(),
+        messages: Array.from({ length: ownCount }, (_, index) => ({
+          id: `own-${index}`,
+          role: 'user' as const,
+          parts: [textPart(`Part ${index}`)]
+        }))
+      })
+
+      const event: RpcEvent = {
+        ...start('merged-run', 'first'),
+        payload: {
+          input: { role: 'user', text: 'Part 0\nPart 1\nPeer addition' },
+          inputs: [{ id: 'first', ref: 'own-0' }, { id: 'second', ref: 'own-1' }, { id: 'peer' }],
+          inputs_complete: true
+        }
+      }
+
+      act(() => {
+        h.handleEvent(event)
+        h.handleEvent(event)
+      })
+      expect(h.state().messages.map(chatMessageText)).toEqual(['Part 0\nPart 1\nPeer addition'])
+      expect(h.state().messages[0]?.inputIds).toEqual(['first', 'second', 'peer'])
+
+      if (ownCount) {expect(h.state().messages[0]?.id).toBe('own-0')}
+      cleanup()
+    }
+
+    const h = renderMessageStream('s')
+    act(() => {
+      h.handleEvent({
+        ...start('evicted-run', 'unused'),
+        payload: {
+          input: { role: 'user', text: 'Visible even after correlation eviction' },
+          inputs: [],
+          inputs_complete: false
+        }
+      })
+    })
+    expect(h.state().messages.map(chatMessageText)).toEqual(['Visible even after correlation eviction'])
+  })
+
   it('binds the real optimistic submit by reference in either ACK order and never reuses it for a later occurrence', async () => {
     for (const ackFirst of [false, true]) {
       const h = renderMessageStream('s')

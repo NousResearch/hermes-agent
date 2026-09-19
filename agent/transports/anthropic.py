@@ -26,6 +26,7 @@ def _unprefix_oauth_tool_name(name: str) -> str:
 # build_kwargs params forwarded to build_anthropic_kwargs, with the defaults applied when absent.
 _BUILD_KWARG_DEFAULTS = {
     "max_tokens": 16384, "reasoning_config": None, "tool_choice": None, "is_oauth": False, "preserve_dots": False,
+    "preserve_anthropic_model_id": False,
     "context_length": None, "base_url": None, "fast_mode": False, "drop_context_1m_beta": False,
 }
 

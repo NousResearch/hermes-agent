@@ -2673,3 +2673,57 @@ def test_run_codex_stream_retired_request_stops_firing_callbacks(monkeypatch):
 
     assert streamed == ["keep"]
     assert "DROPPED" not in streamed
+
+
+def _codex_truncated_tool_call_response():
+    """``status=incomplete`` (max_output_tokens) whose function_call item was cut mid-arguments
+    and settled as ``completed`` — the self-hosted /v1/responses shape from #91770."""
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal",
+                arguments='{"command": "echo hel', status="completed",
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=50, output_tokens=8, total_tokens=58),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5.4",
+    )
+
+
+def test_codex_truncated_tool_call_is_retried_with_boosted_output_budget(monkeypatch):
+    """A tool call cut off by max_output_tokens on the Responses wire gets the same
+    budget-boost retry as chat modes instead of a refused partial turn (#91770)."""
+    agent = _build_copilot_agent(monkeypatch)
+    agent.max_tokens = 1000
+    responses = [_codex_truncated_tool_call_response(), _codex_message_response("Done.")]
+    seen_caps: list = []
+
+    def _fake_call(api_kwargs):
+        seen_caps.append(api_kwargs.get("max_output_tokens"))
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_call)
+
+    result = agent.run_conversation("run it")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Done."
+    assert seen_caps == [1000, 2000]
+    # The retry re-issues the same call: no interim assistant row, no continuation nudge.
+    assert [m["role"] for m in result["messages"] if m["role"] != "system"] == ["user", "assistant"]
+
+
+def test_codex_text_only_max_output_incomplete_keeps_codex_continuation(monkeypatch):
+    """Text truncation is not rerouted: it stays on the Codex incomplete continuation and
+    never takes the length path's nudge (no double continuation, #91770)."""
+    agent = _build_copilot_agent(monkeypatch)
+    responses = [_codex_max_output_incomplete_response("Partial"), _codex_message_response("rest.")]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("write")
+
+    assert result["completed"] is True
+    assert not any(m.get("_length_continuation_nudge") for m in result["messages"])
+    assert any(m.get("finish_reason") == "incomplete" for m in result["messages"] if m["role"] == "assistant")

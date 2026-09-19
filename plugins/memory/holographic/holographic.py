@@ -59,6 +59,10 @@ def bundle(*vectors: "np.ndarray") -> "np.ndarray":
 def similarity(a: "np.ndarray", b: "np.ndarray") -> float:
     """Phase cosine similarity in [-1, 1]; ~0 for unrelated vectors."""
     _require_numpy()
+    if a.shape != b.shape:
+        raise ValueError(
+            f"dimension mismatch: {a.shape} vs {b.shape} — run rebuild_all_vectors()"
+        )
     return float(np.mean(np.cos(a - b)))
 
 

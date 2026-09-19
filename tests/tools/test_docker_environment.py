@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from tools.environments import docker as docker_env
+from tools.environments.docker_egress import _extra_args_egress_collisions
 
 
 def _mock_subprocess_run(monkeypatch):
@@ -1030,6 +1031,125 @@ def test_forward_env_non_suffixed_egress_name_refuses_under_egress(monkeypatch):
 
     with pytest.raises(RuntimeError, match="docker_forward_env.*AWS_SECRET_ACCESS_KEY"):
         _make_dummy_env(forward_env=["AWS_SECRET_ACCESS_KEY"])
+
+
+_CRITICAL = {"HTTPS_PROXY", "AWS_SECRET_ACCESS_KEY"}
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        # Baseline forms the scanner already caught.
+        ["-e", "HTTPS_PROXY=http://evil"],
+        ["-e=HTTPS_PROXY=http://evil"],
+        ["--env", "HTTPS_PROXY=http://evil"],
+        ["--env=HTTPS_PROXY=http://evil"],
+        # pflag joined shorthand: docker parses "-eNAME=v" as "-e NAME=v".
+        ["-eHTTPS_PROXY=http://evil"],
+        # Name-only passthrough shorthand injects the host's real variable.
+        ["-eAWS_SECRET_ACCESS_KEY"],
+        # Chained after docker run's boolean shorthands (-d -i -t -P -q).
+        ["-iteHTTPS_PROXY=http://evil"],
+        ["-deHTTPS_PROXY=http://evil"],
+        # A chain ending in bare "e" takes the next arg as its value.
+        ["-ite", "HTTPS_PROXY=http://evil"],
+        ["-dit", "-eHTTPS_PROXY=http://evil"],
+        # A value-taking flag's operand is not a positional: the env flag
+        # after it is still parsed by docker and must still collide.
+        ["--entrypoint", "/bin/sh", "-e", "HTTPS_PROXY=x"],
+        ["-w", "/app", "-eHTTPS_PROXY=x"],
+        ["--name", "ctr", "--env", "AWS_SECRET_ACCESS_KEY"],
+    ],
+)
+def test_extra_args_egress_collision_shorthand_forms(extra_args):
+    """Docker's pflag CLI accepts a value-taking shorthand joined to its value
+    and chained after boolean shorthands; every spelling of ``-e`` that injects
+    a critical env name must collide."""
+    collisions = _extra_args_egress_collisions(extra_args, _CRITICAL)
+    assert collisions, f"{extra_args} injects a critical env name under docker's own parsing"
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["-dit"],                          # boolean chain only
+        ["-p8080:80"],                     # non-env value shorthand, joined
+        ["-v/tmp:/tmp"],                   # volume shorthand, joined
+        ["-w/app"],                        # workdir shorthand, joined
+        ["-eFOO=bar"],                     # joined env, non-critical name
+        ["-e", "FOO=bar"],                 # two-arg env, non-critical
+        ["--", "-e", "HTTPS_PROXY=x"],     # pflag terminator: rest is image/cmd
+        ["-x"],                            # unknown shorthand; docker errors
+        ["--entrypoint=/bin/sh"],
+        ["--name", "ctr"],
+    ],
+)
+def test_extra_args_egress_collision_non_env_forms(extra_args):
+    """Args that cannot inject env under docker's parsing must not collide."""
+    assert _extra_args_egress_collisions(extra_args, _CRITICAL) == []
+
+
+def test_extra_args_env_file_shorthand_and_terminator():
+    """--env-file collides unconditionally; the scan honors the terminator."""
+    assert _extra_args_egress_collisions(["--env-file", "f"], _CRITICAL) == ["--env-file"]
+    assert _extra_args_egress_collisions(["--env-file=f"], _CRITICAL) == ["--env-file"]
+    assert _extra_args_egress_collisions(
+        ["--", "--env-file", "f"], _CRITICAL) == []
+
+
+def test_extra_args_joined_shorthand_refuses_under_egress(monkeypatch):
+    """End to end: a combined ``-eNAME=v`` in docker_extra_args must trip the
+    enforced-egress guard exactly like the spaced ``-e NAME=v`` form."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: ([], {"HTTPS_PROXY": "http://host.docker.internal:9090"}, []),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_extra_args.*HTTPS_PROXY"):
+        _make_dummy_env(extra_args=["-eHTTPS_PROXY=http://10.0.0.9:3128"])
+
+
+def test_extra_args_joined_shorthand_real_egress_chain(monkeypatch, tmp_path):
+    """Deepest e2e: the real ``_egress_proxy_args_for_docker`` plumbing (config,
+    iron-proxy status, token mappings) produces the critical-name set, and a
+    joined ``-e<name>=v`` shorthand collides before ``docker run`` is invoked.
+    A mapped credential name (OPENAI_API_KEY) is critical by suffix, so this
+    also covers real-credential injection, not only proxy-control vars."""
+    import agent.proxy_sources.iron_proxy as ip
+    from hermes_cli import config as hc
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    ca = tmp_path / "hermes-egress-ca.crt"
+    ca.write_text("x")
+    proxy_cfg = tmp_path / "proxy.yaml"
+    proxy_cfg.write_text("x")
+    monkeypatch.setattr(
+        hc, "load_config",
+        lambda: {"proxy": {"enabled": True, "enforce_on_docker": True}})
+    monkeypatch.setattr(
+        ip, "get_status",
+        lambda: ip.ProxyStatus(
+            enabled=True, config_path=proxy_cfg, ca_cert_path=ca,
+            pid=4321, listening=True))
+    monkeypatch.setattr(
+        ip, "load_mappings",
+        lambda: [ip.TokenMapping(
+            proxy_token="tok", real_env_name="OPENAI_API_KEY",
+            upstream_hosts=("api.openai.com",))])
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_extra_args.*OPENAI_API_KEY"):
+        _make_dummy_env(extra_args=["-eOPENAI_API_KEY=sk-real"])
+
+    run_calls = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+        and "sleep" not in c[0]
+    ]
+    assert not run_calls, "the collision must refuse before docker run"
 
 
 def test_reuse_starts_stopped_container_before_attaching(monkeypatch):

@@ -146,23 +146,61 @@ def _critical_egress_env_names(env_overrides: dict[str, str]) -> set[str]:
     return set(_PROXY_CONTROL_ENV) | {"NODE_OPTIONS"} | set(env_overrides)
 
 
+# ``docker run`` boolean shorthands that may precede a value-taking shorthand
+# in a single-dash chain (pflag: "-iteNAME=v" parses as -i -t -e NAME=v).
+_DOCKER_RUN_BOOL_SHORTHANDS = frozenset("ditPq")
+
+
+def _env_flag_value(arg: str) -> tuple[str, str | None] | None:
+    """``("env"|"env-file", inline_value)`` when ``arg`` spells a docker env flag
+    under pflag parsing, else ``None``. ``inline_value`` is the joined value
+    (``--env=N=v``, ``-eN=v``) or ``None`` when the flag consumes the next arg
+    (``-e``, ``--env``, ``-ite``)."""
+    if arg.startswith("--"):
+        flag, sep, inline = arg.partition("=")
+        if flag in ("--env", "--env-file"):
+            return flag[2:], inline if sep else None
+        return None
+    # A single dash heads a shorthand chain: every letter before the last must
+    # be a boolean shorthand, and the last takes the rest of the arg (or the
+    # next arg when bare) as its value.
+    for pos, ch in enumerate(arg[1:]):
+        if ch in _DOCKER_RUN_BOOL_SHORTHANDS:
+            continue
+        if ch == "e":
+            rest = arg[pos + 2:]
+            if rest.startswith("="):
+                rest = rest[1:]
+            return "env", rest or None
+        return None
+    return None
+
+
 def _extra_args_egress_collisions(extra_args: list[str], critical_names: set[str]) -> list[str]:
     """Return docker_extra_args entries that can override egress controls."""
     collisions: list[str] = []
     i = 0
     while i < len(extra_args):
         arg = extra_args[i]
-        flag, sep, inline_value = arg.partition("=")  # ``-e NAME=v`` vs ``-e=NAME=v`` / ``--env-file=f``
-        if flag in ("-e", "--env", "--env-file"):
-            value = inline_value if sep else (extra_args[i + 1] if i + 1 < len(extra_args) else "")
-            name = value.split("=", 1)[0]
-            if flag == "--env-file":
-                collisions.append(flag)
-            elif name in critical_names:
-                collisions.append(name)
-            i += 1 if sep else 2
+        # pflag stops flag parsing at "--"; the rest is image/command. Bare
+        # positionals keep being scanned: a preceding long flag may consume
+        # them as its value, and over-scanning errs toward enforcement.
+        if arg == "--":
+            break
+        parsed = _env_flag_value(arg)
+        if parsed is not None:
+            kind, inline_value = parsed
+            if kind == "env-file":
+                collisions.append("--env-file")
+            else:
+                value = inline_value if inline_value is not None else (
+                    extra_args[i + 1] if i + 1 < len(extra_args) else "")
+                name = value.split("=", 1)[0]
+                if name in critical_names:
+                    collisions.append(name)
+            i += 1 if inline_value is not None else 2
             continue
-        if flag in ("--network", "--net"):
+        if arg.partition("=")[0] in ("--network", "--net"):
             collisions.append(arg)
         i += 1
     return sorted(set(collisions))

@@ -71,8 +71,8 @@ def owned(monkeypatch):
 
 
 def _rpc(client, method, **params):
-    return server.dispatch({"jsonrpc": "2.0", "id": 7, "method": method, "params": {"session_id": SID, **params}},
-                           client.transport)
+    return server.dispatch({"jsonrpc": "2.0", "id": 7, "method": method,
+                            "params": {"owner": {"type": "session", "session_id": SID}, **params}}, client.transport)
 
 
 def _connect_rpc(client, **params):

@@ -565,8 +565,62 @@
       }
     },
     {
+      "name": "connectors.accounts",
+      "summary": "The scoped member's hosted connector accounts, optionally filtered by connector slug.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorAccountsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorAccountsResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.accounts.remove",
+      "summary": "Remove one hosted connector account owned by the scoped member.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorAccountsRemoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorAccountsRemoveResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.catalog",
+      "summary": "The hosted connector catalog available to the scoped member.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorsCatalogResult"
+        }
+      }
+    },
+    {
       "name": "connectors.connect",
-      "summary": "Start (or re-initiate) authorization for named connectors on the session's connection operation.",
+      "summary": "Start or re-initiate authorization for named connectors on a session or account operation.",
       "params": [
         {
           "name": "params",
@@ -584,7 +638,7 @@
     },
     {
       "name": "connectors.list",
-      "summary": "Connector catalog + connection state for one owned session (``available=False`` when the toolset is off).",
+      "summary": "Connector catalog + connection state for one session or profile account owner.",
       "params": [
         {
           "name": "params",
@@ -602,7 +656,7 @@
     },
     {
       "name": "connectors.operation.status",
-      "summary": "The current snapshot of one open operation on an owned session.",
+      "summary": "The current snapshot of one open session or account operation.",
       "params": [
         {
           "name": "params",
@@ -633,6 +687,60 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ConnectionWakeResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.policy.get",
+      "summary": "Policy layers for the scoped member, from organization to member scope.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorPolicyGetResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.policy.set",
+      "summary": "Apply one scoped member connector or tool-list policy change.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorPolicySetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorPolicySetResult"
+        }
+      }
+    },
+    {
+      "name": "connectors.tools",
+      "summary": "The scoped profile's cached or current tool list for one connector.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorToolsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorToolsResult"
         }
       }
     },
@@ -3951,6 +4059,21 @@
   ],
   "components": {
     "schemas": {
+      "AccountOwner": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "account",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "AccountOwner",
+        "type": "object"
+      },
       "ActiveIdResult": {
         "additionalProperties": false,
         "properties": {
@@ -8428,9 +8551,23 @@
             "default": null,
             "title": "Profile"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
           },
           "op_id": {
             "title": "Op Id",
@@ -8438,7 +8575,7 @@
           }
         },
         "required": [
-          "session_id",
+          "owner",
           "op_id"
         ],
         "title": "ConnectionOperationParams",
@@ -8687,9 +8824,23 @@
             "default": null,
             "title": "Profile"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
           },
           "op_id": {
             "title": "Op Id",
@@ -8700,7 +8851,7 @@
           }
         },
         "required": [
-          "session_id",
+          "owner",
           "op_id",
           "result"
         ],
@@ -8854,6 +9005,24 @@
             "title": "Targets",
             "type": "array"
           },
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
+          },
           "target": {
             "anyOf": [
               {
@@ -8917,7 +9086,8 @@
           "seq",
           "deadline_at",
           "settled",
-          "targets"
+          "targets",
+          "owner"
         ],
         "title": "ConnectionUpdatePayload",
         "type": "object"
@@ -8934,6 +9104,541 @@
           "status"
         ],
         "title": "ConnectionWakeResult",
+        "type": "object"
+      },
+      "ConnectorAccountRow": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConnectorAccountStatus"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Reason"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias"
+          },
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "connector",
+          "status",
+          "label",
+          "active",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ConnectorAccountRow",
+        "type": "object"
+      },
+      "ConnectorAccountStatus": {
+        "enum": [
+          "pending",
+          "active",
+          "failed",
+          "expired",
+          "revoked",
+          "inactive"
+        ],
+        "title": "ConnectorAccountStatus",
+        "type": "string"
+      },
+      "ConnectorAccountsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "connector": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9][a-z0-9_-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connector"
+          }
+        },
+        "title": "ConnectorAccountsParams",
+        "type": "object"
+      },
+      "ConnectorAccountsRemoveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "connection_id": {
+            "minLength": 1,
+            "title": "Connection Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id"
+        ],
+        "title": "ConnectorAccountsRemoveParams",
+        "type": "object"
+      },
+      "ConnectorAccountsRemoveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "removed",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "status"
+        ],
+        "title": "ConnectorAccountsRemoveResult",
+        "type": "object"
+      },
+      "ConnectorAccountsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorAccountRow"
+            },
+            "title": "Accounts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "accounts"
+        ],
+        "title": "ConnectorAccountsResult",
+        "type": "object"
+      },
+      "ConnectorCatalogRow": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "logo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Logo Url"
+          }
+        },
+        "required": [
+          "slug",
+          "name",
+          "description",
+          "category"
+        ],
+        "title": "ConnectorCatalogRow",
+        "type": "object"
+      },
+      "ConnectorChange": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "connector",
+            "title": "Type",
+            "type": "string"
+          },
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type",
+          "connector",
+          "enabled"
+        ],
+        "title": "ConnectorChange",
+        "type": "object"
+      },
+      "ConnectorPolicyAllowBody": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "allow",
+            "title": "Mode",
+            "type": "string"
+          },
+          "connectors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Connectors",
+            "type": "array"
+          },
+          "tools": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Tools",
+            "type": "object"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyTags"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "mode",
+          "connectors",
+          "tools"
+        ],
+        "title": "ConnectorPolicyAllowBody",
+        "type": "object"
+      },
+      "ConnectorPolicyDenyAllBody": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "deny-all",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "ConnectorPolicyDenyAllBody",
+        "type": "object"
+      },
+      "ConnectorPolicyDenyBody": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "deny",
+            "title": "Mode",
+            "type": "string"
+          },
+          "disabled_connectors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disabled Connectors",
+            "type": "array"
+          },
+          "tools": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Tools",
+            "type": "object"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyTags"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "mode",
+          "disabled_connectors",
+          "tools"
+        ],
+        "title": "ConnectorPolicyDenyBody",
+        "type": "object"
+      },
+      "ConnectorPolicyGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "layers": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorPolicyLayer"
+            },
+            "title": "Layers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "layers"
+        ],
+        "title": "ConnectorPolicyGetResult",
+        "type": "object"
+      },
+      "ConnectorPolicyLayer": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ConnectorPolicyLayerKind"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "body": {
+            "discriminator": {
+              "mapping": {
+                "allow": "#/components/schemas/ConnectorPolicyAllowBody",
+                "deny": "#/components/schemas/ConnectorPolicyDenyBody",
+                "deny-all": "#/components/schemas/ConnectorPolicyDenyAllBody",
+                "unrestricted": "#/components/schemas/ConnectorPolicyUnrestrictedBody"
+              },
+              "propertyName": "mode"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyUnrestrictedBody"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyDenyAllBody"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyAllowBody"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorPolicyDenyBody"
+              }
+            ],
+            "title": "Body"
+          }
+        },
+        "required": [
+          "kind",
+          "revision",
+          "body"
+        ],
+        "title": "ConnectorPolicyLayer",
+        "type": "object"
+      },
+      "ConnectorPolicyLayerKind": {
+        "enum": [
+          "org",
+          "role",
+          "member"
+        ],
+        "title": "ConnectorPolicyLayerKind",
+        "type": "string"
+      },
+      "ConnectorPolicySetParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "change": {
+            "discriminator": {
+              "mapping": {
+                "connector": "#/components/schemas/ConnectorChange",
+                "tools": "#/components/schemas/ToolsChange"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ToolsChange"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorChange"
+              }
+            ],
+            "title": "Change"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          }
+        },
+        "required": [
+          "change"
+        ],
+        "title": "ConnectorPolicySetParams",
+        "type": "object"
+      },
+      "ConnectorPolicySetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "ConnectorPolicySetResult",
+        "type": "object"
+      },
+      "ConnectorPolicyTags": {
+        "additionalProperties": false,
+        "properties": {
+          "enable": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enable"
+          },
+          "disable": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disable"
+          }
+        },
+        "title": "ConnectorPolicyTags",
+        "type": "object"
+      },
+      "ConnectorPolicyUnrestrictedBody": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "unrestricted",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "ConnectorPolicyUnrestrictedBody",
         "type": "object"
       },
       "ConnectorRow": {
@@ -9009,6 +9714,168 @@
         "title": "ConnectorRow",
         "type": "object"
       },
+      "ConnectorToolFacet": {
+        "enum": [
+          "read",
+          "write",
+          "destructive",
+          "unclassified"
+        ],
+        "title": "ConnectorToolFacet",
+        "type": "string"
+      },
+      "ConnectorToolRow": {
+        "additionalProperties": false,
+        "properties": {
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "facet": {
+            "$ref": "#/components/schemas/ConnectorToolFacet"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Hints",
+            "type": "array"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "deprecated": {
+            "title": "Deprecated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slug",
+          "name",
+          "description",
+          "facet",
+          "hints",
+          "categories",
+          "deprecated"
+        ],
+        "title": "ConnectorToolRow",
+        "type": "object"
+      },
+      "ConnectorToolsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "refresh": {
+            "default": false,
+            "title": "Refresh",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "title": "ConnectorToolsParams",
+        "type": "object"
+      },
+      "ConnectorToolsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "toolkit_version": {
+            "title": "Toolkit Version",
+            "type": "string"
+          },
+          "etag": {
+            "title": "Etag",
+            "type": "string"
+          },
+          "fetched_at": {
+            "title": "Fetched At",
+            "type": "number"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConnectorToolsSource"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorToolRow"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "connector",
+          "toolkit_version",
+          "etag",
+          "fetched_at",
+          "source",
+          "stale",
+          "tools"
+        ],
+        "title": "ConnectorToolsResult",
+        "type": "object"
+      },
+      "ConnectorToolsSource": {
+        "enum": [
+          "cache",
+          "network",
+          "revalidated"
+        ],
+        "title": "ConnectorToolsSource",
+        "type": "string"
+      },
+      "ConnectorsCatalogResult": {
+        "additionalProperties": false,
+        "properties": {
+          "connectors": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorCatalogRow"
+            },
+            "title": "Connectors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "connectors"
+        ],
+        "title": "ConnectorsCatalogResult",
+        "type": "object"
+      },
       "ConnectorsConnectParams": {
         "additionalProperties": false,
         "properties": {
@@ -9024,14 +9891,30 @@
             "default": null,
             "title": "Profile"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
           },
           "connectors": {
             "items": {
+              "pattern": "^[a-z0-9][a-z0-9_-]*$",
               "type": "string"
             },
+            "minItems": 1,
             "title": "Connectors",
             "type": "array"
           },
@@ -9042,7 +9925,7 @@
           }
         },
         "required": [
-          "session_id",
+          "owner",
           "connectors"
         ],
         "title": "ConnectorsConnectParams",
@@ -9050,7 +9933,7 @@
       },
       "ConnectorsConnectResult": {
         "additionalProperties": false,
-        "description": "The operation the connect opened (or re-minted on): ``tools/connectors/managed.py``\n``_off_desktop_result`` / ``methods_connectors._reissue``. ``status``/``note`` ride along from\nthe tool result when the call ran through ``manage_connections``.",
+        "description": "``methods_connectors._reissue`` / ``managed._off_desktop_result``: the operation the connect opened; ``status``/``note`` ride along from the tool result.",
         "properties": {
           "op_id": {
             "title": "Op Id",
@@ -9148,13 +10031,27 @@
             "default": null,
             "title": "Profile"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
+          "owner": {
+            "discriminator": {
+              "mapping": {
+                "account": "#/components/schemas/AccountOwner",
+                "session": "#/components/schemas/SessionOwner"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionOwner"
+              },
+              {
+                "$ref": "#/components/schemas/AccountOwner"
+              }
+            ],
+            "title": "Owner"
           }
         },
         "required": [
-          "session_id"
+          "owner"
         ],
         "title": "ConnectorsListParams",
         "type": "object"
@@ -13943,6 +14840,18 @@
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "connector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connector"
           },
           "installed": {
             "title": "Installed",
@@ -26457,6 +27366,27 @@
         "title": "SessionMostRecentResult",
         "type": "object"
       },
+      "SessionOwner": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "session",
+            "title": "Type",
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "session_id"
+        ],
+        "title": "SessionOwner",
+        "type": "object"
+      },
       "SessionParams": {
         "additionalProperties": false,
         "description": "Any method addressed at one live session.",
@@ -30844,6 +31774,35 @@
         ],
         "title": "ToolsAction",
         "type": "string"
+      },
+      "ToolsChange": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "tools",
+            "title": "Type",
+            "type": "string"
+          },
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "disabled_tools": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2000,
+            "title": "Disabled Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "type",
+          "connector",
+          "disabled_tools"
+        ],
+        "title": "ToolsChange",
+        "type": "object"
       },
       "ToolsConfigureParams": {
         "additionalProperties": false,

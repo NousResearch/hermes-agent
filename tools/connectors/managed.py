@@ -49,10 +49,16 @@ NOTE = (
 )
 
 
-def _default_client():
+def managed_client():
+    """The managed connector client created inside the caller's active profile scope."""
     from tools.connectors.gateway.client import ConnectorClient
 
     return ConnectorClient()
+
+
+def managed_kind(client: Any, action: str, force: bool) -> Kind:
+    """The managed operation hooks shared by model- and account-originated connections."""
+    return Kind(prepare=_prepare(client, action, force), observe=lambda operation: _observe(client, operation), note=NOTE)
 
 
 def _status_by_slug(client: Any) -> Dict[str, Dict[str, Any]]:
@@ -220,7 +226,7 @@ def run_managed_action(
     if connectors_available is not None and not connectors_available():
         return tool_error("Connectors are not available in this session.")
     try:
-        client = (client_factory or _default_client)()
+        client = (client_factory or managed_client)()
         if action == "status":
             items = client.list_connectors()
             if connectors:
@@ -240,7 +246,7 @@ def run_managed_action(
             return _off_desktop_result(client, action, connectors, force, session_key)
         return run_operation(
             [Target(n, "connector", action) for n in connectors],
-            Kind(prepare=_prepare(client, action, force), observe=lambda op: _observe(client, op), note=NOTE),
+            managed_kind(client, action, force),
             session_key=session_key, tool_call_id=tool_call_id, tick_seconds=WATCH_TICK_SECONDS,
             connection_callback=connection_callback, with_urls_in_result=False,
         )

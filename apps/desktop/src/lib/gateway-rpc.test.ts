@@ -1,7 +1,7 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
-import { isMissingPendingPromptRequest, isMissingRpcMethod } from './gateway-rpc'
+import { isMissingPendingPromptRequest, isMissingRpcMethod, isOutOfSyncRpcParams } from './gateway-rpc'
 
 describe('isMissingRpcMethod', () => {
   it('trusts the JSON-RPC code over the message when the frame survived', () => {
@@ -19,6 +19,13 @@ describe('isMissingRpcMethod', () => {
   it('ignores unrelated failures', () => {
     expect(isMissingRpcMethod(new Error('Hermes gateway is not connected'))).toBe(false)
     expect(isMissingRpcMethod(new Error('no such project'))).toBe(false)
+  })
+})
+
+describe('isOutOfSyncRpcParams', () => {
+  it('matches only the parameter-skew reply', () => {
+    expect(isOutOfSyncRpcParams(new Error('invalid params — the client and the Hermes backend are out of sync (different versions)'))).toBe(true)
+    expect(isOutOfSyncRpcParams(new Error('gateway is unavailable'))).toBe(false)
   })
 })
 

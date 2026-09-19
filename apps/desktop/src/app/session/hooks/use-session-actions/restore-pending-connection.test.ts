@@ -61,6 +61,7 @@ describe('restoring a pending connection from a resume snapshot', () => {
     const live = applyConnectionUpdate(cached(), {
       deadline_at: SNAPSHOT.deadline_at,
       op_id: 'op-1',
+      owner: { session_id: SESSION_ID, type: 'session' },
       seq: 7,
       settled: false,
       targets: [{ action: 'connect', kind: 'connector', name: 'gmail', state: 'connected' }]

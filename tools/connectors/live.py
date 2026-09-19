@@ -24,10 +24,14 @@ _open: Dict[Tuple[str, str], ConnectionOperation] = {}
 _lock = threading.Lock()
 
 
-def _key(session_key: str, profile_home: Optional[str]) -> Tuple[str, str]:
+def _profile_key(profile_home: Optional[str]) -> str:
     """A session record names its profile home only for a non-default profile; the tool thread sees
     the same home through its turn override, and the default profile through the process home."""
-    return hermes_home_key(profile_home or get_process_hermes_home()), session_key
+    return hermes_home_key(profile_home or get_process_hermes_home())
+
+
+def _key(session_key: str, profile_home: Optional[str]) -> Tuple[str, str]:
+    return _profile_key(profile_home), session_key
 
 
 def open(operation: ConnectionOperation) -> None:  # noqa: A001 - the verb is the API
@@ -50,6 +54,23 @@ def get(session_key: str, op_id: str, *, profile_home: Optional[str] = None) -> 
     with _lock:
         operation = _open.get(_key(session_key, profile_home))
     return operation if operation is not None and operation.op_id == op_id else None
+
+
+def get_by_op_id(op_id: str, *, profile_home: Optional[str] = None) -> Optional[ConnectionOperation]:
+    """The profile-local operation whose opaque id is ``op_id``, whatever opened it."""
+    profile_key = _profile_key(profile_home)
+    with _lock:
+        return next((operation for (key, _), operation in _open.items()
+                     if key == profile_key and operation.op_id == op_id and not operation.settled), None)
+
+
+def find_target(name: str, *, profile_home: Optional[str] = None) -> Optional[ConnectionOperation]:
+    """The profile-local open operation carrying this managed connector target."""
+    profile_key = _profile_key(profile_home)
+    with _lock:
+        return next((operation for (key, _), operation in _open.items()
+                     if key == profile_key and not operation.settled
+                     and (target := operation.target(name)) is not None and target.kind == "connector"), None)
 
 
 def close(operation: ConnectionOperation) -> None:

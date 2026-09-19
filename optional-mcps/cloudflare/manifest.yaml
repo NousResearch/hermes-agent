@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: cloudflare
+connector: cloudflare_mcp
 description: Full Cloudflare API access via the official remote MCP.
 source: https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/
 

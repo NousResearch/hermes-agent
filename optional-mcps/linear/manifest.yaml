@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: linear
+connector: linear
 description: Find, create, and update Linear issues, projects, and comments.
 source: https://linear.app/docs/mcp
 

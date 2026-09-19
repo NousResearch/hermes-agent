@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: figma
+connector: figma
 description: >-
   Official Figma remote MCP — design context, Code Connect, and
   write-to-canvas via https://mcp.figma.com/mcp (OAuth).

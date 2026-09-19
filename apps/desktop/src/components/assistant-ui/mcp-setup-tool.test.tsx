@@ -141,8 +141,8 @@ describe('the MCP setup card', () => {
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
-        result: { targets: [{ name: 'linear', status: 'approved' }] },
-        session_id: SESSION_ID
+        owner: { session_id: SESSION_ID, type: 'session' },
+        result: { targets: [{ name: 'linear', status: 'approved' }] }
       })
     })
     expect(request.mock.calls.map(([method]) => method)).toEqual(['connection.respond'])
@@ -192,8 +192,8 @@ describe('the MCP setup card', () => {
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
-        result: { targets: [{ env: { LINEAR_API_KEY: 'lin_123' }, name: 'linear', status: 'approved' }] },
-        session_id: SESSION_ID
+        owner: { session_id: SESSION_ID, type: 'session' },
+        result: { targets: [{ env: { LINEAR_API_KEY: 'lin_123' }, name: 'linear', status: 'approved' }] }
       })
     })
   })
@@ -213,7 +213,11 @@ describe('the MCP setup card', () => {
     const [method, params] = request.mock.calls[0]
 
     expect(method).toBe('connectors.connect')
-    expect(params).toMatchObject({ connectors: ['linear'], reconnect: true, session_id: SESSION_ID })
+    expect(params).toMatchObject({
+      connectors: ['linear'],
+      owner: { session_id: SESSION_ID, type: 'session' },
+      reconnect: true
+    })
   })
 
 

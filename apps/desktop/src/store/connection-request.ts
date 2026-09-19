@@ -289,14 +289,14 @@ export const hasConnectionRequest = (sessionId: string | null | undefined): bool
 export async function respondToConnectionRequest(request: ConnectionRequest, outcome: ConnectionOutcome): Promise<boolean> {
   const current = $connectionRequests.get()[keyFor(request.sessionId)]
 
-  if (!current || current.opId !== request.opId || current.settled) {
+  if (!current || current.opId !== request.opId || current.settled || !request.sessionId) {
     return false
   }
 
   await $gateway.get()?.request('connection.respond', {
     op_id: request.opId,
-    result: outcome,
-    session_id: request.sessionId
+    owner: { session_id: request.sessionId, type: 'session' },
+    result: outcome
   })
 
   return true

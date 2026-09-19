@@ -110,6 +110,7 @@ class CatalogEntry:
     source: str
     transport: TransportSpec
     auth: AuthSpec
+    connector: Optional[str] = None
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
     post_install: str = ""
@@ -258,6 +259,14 @@ def _parse_suggest(path: Path, suggest_raw: Any) -> Optional[SuggestSpec]:
         applications=applications, examples=examples, requires_app=requires_app)
 
 
+def _parse_connector(path: Path, value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value):
+        raise CatalogError(f"{path}: connector must be a hosted connector slug")
+    return value
+
+
 def _parse_install(path: Path, install_raw: Any) -> Optional[InstallSpec]:
     if install_raw is None:
         return None
@@ -300,10 +309,11 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     auth = _parse_auth(path, data.get("auth"), name, transport.type == "http")
     tools = _parse_tools(path, data.get("tools"))
     suggest = _parse_suggest(path, data.get("suggest"))
+    connector = _parse_connector(path, data.get("connector"))
     install = _parse_install(path, data.get("install"))
     return CatalogEntry(
         name=name, description=description, source=str(data.get("source") or "").strip(),
-        transport=transport, auth=auth, tools=tools, install=install,
+        transport=transport, auth=auth, connector=connector, tools=tools, install=install,
         post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path,
     )
 

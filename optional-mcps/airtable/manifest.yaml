@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: airtable
+connector: airtable
 description: >-
   Bases, tables, and records from your Airtable workspace.
 source: https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server

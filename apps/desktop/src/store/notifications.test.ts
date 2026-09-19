@@ -94,6 +94,16 @@ test('session storage write failure is treated as disk-full class', () => {
   expect(lastMessage()).toMatch(/Disk full/i)
 })
 
+test('out-of-sync RPC errors summarize the version mismatch and open backend updates', () => {
+  notifyError(
+    new Error('4000 invalid params — the client and the Hermes backend are out of sync (different versions); run hermes update'),
+    'Connectors are unavailable.'
+  )
+
+  expect(lastMessage()).toBe(en.notifications.errors.rpcOutOfSync)
+  expect($notifications.get()[0]?.action?.label).toBe(en.notifications.updateHermes)
+})
+
 test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', () => {
   notifyError(
     new Error(

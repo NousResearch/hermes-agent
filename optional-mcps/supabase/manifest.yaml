@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: supabase
+connector: supabase
 description: >-
   Database, auth, and storage from your Supabase projects.
 source: https://supabase.com/docs/guides/ai-tools/mcp

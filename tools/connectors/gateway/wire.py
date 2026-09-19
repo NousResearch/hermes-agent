@@ -188,6 +188,11 @@ class ConnectorAccountsResponse(_Wire):
     accounts: list[ConnectorAccount]
 
 
+class RemovedConnectorAccount(_Wire):
+    connection_id: str = Field(alias="connectionId")
+    status: Literal["removed"]
+
+
 class ConnectorConnectionsSummary(_Wire):
     total: int = 0
     active: int = 0

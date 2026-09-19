@@ -185,7 +185,7 @@ describe('ConnectorTool operation card', () => {
     })
     expect(request).toHaveBeenCalledWith(
       'connectors.connect',
-      { connectors: ['gmail'], reconnect: true, session_id: SESSION_ID },
+      { connectors: ['gmail'], owner: { session_id: SESSION_ID, type: 'session' }, reconnect: true },
       expect.any(Number),
       undefined
     )
@@ -220,8 +220,8 @@ describe('ConnectorTool operation card', () => {
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
-        result: { settled_by: 'continue' },
-        session_id: SESSION_ID
+        owner: { session_id: SESSION_ID, type: 'session' },
+        result: { settled_by: 'continue' }
       })
     })
   })
@@ -250,7 +250,7 @@ describe('ConnectorTool operation card', () => {
 
     expect(method).toBe('connectors.operation.wake')
     // The operation is addressed by the runtime session id the card drives it with.
-    expect(params).toEqual({ op_id: 'operation-1', session_id: SESSION_ID })
+    expect(params).toEqual({ op_id: 'operation-1', owner: { session_id: SESSION_ID, type: 'session' } })
   })
 
   it('a deep link for an operation this window has no card for moves nothing', async () => {

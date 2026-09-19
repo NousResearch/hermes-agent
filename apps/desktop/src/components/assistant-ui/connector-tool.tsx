@@ -112,7 +112,7 @@ export async function openConnectionDoneLink(
   try {
     await requestGatewayForAgent(owner.connectionId, owner.profile, 'connectors.operation.wake', {
       op_id: op,
-      session_id: request.sessionId
+      owner: { session_id: request.sessionId, type: 'session' }
     })
   } catch {
     // The wake only shortens the wait. The operation can settle and leave the live registry between
@@ -127,14 +127,18 @@ export async function reissueConnectionTarget(
   request: ConnectionRequest,
   name: string
 ): Promise<null | string> {
+  if (!request.sessionId) {
+    return null
+  }
+
   const reply = await requestGatewayForAgent<ToolCallMessagePartProps['result']>(
     owner.connectionId,
     owner.profile,
     'connectors.connect',
     {
       connectors: [name],
-      reconnect: true,
-      session_id: request.sessionId
+      owner: { session_id: request.sessionId, type: 'session' },
+      reconnect: true
     },
     45000
   )

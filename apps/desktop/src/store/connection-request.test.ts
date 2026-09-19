@@ -55,6 +55,7 @@ function frame(
   return {
     deadline_at: WIRE.deadline_at,
     op_id: 'op-1',
+    owner: { session_id: 'a', type: 'session' },
     seq: nextSeq++,
     settled: false,
     settled_by: null,
@@ -236,7 +237,7 @@ describe('connection-request store', () => {
 
     expect(await skipConnectionTarget(req, 'notion')).toBe(true)
     expect(rpc.mock.calls[0][0]).toBe('connection.respond')
-    expect(rpc.mock.calls[0][1]).toMatchObject({ op_id: 'op-1', session_id: 'a' })
+    expect(rpc.mock.calls[0][1]).toMatchObject({ op_id: 'op-1', owner: { session_id: 'a', type: 'session' } })
     expect(rpc.mock.calls[0][1].result).toEqual({ targets: [{ name: 'notion', status: 'skipped' }] })
     expect($connectionRequests.get().a).toBeDefined()
 

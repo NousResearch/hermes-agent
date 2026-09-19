@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: intercom
+connector: intercom_mcp
 description: >-
   Conversations, tickets, and customer data from Intercom.
 source: https://developers.intercom.com/docs/guides/mcp

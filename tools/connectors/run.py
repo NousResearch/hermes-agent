@@ -55,8 +55,27 @@ def run_operation(
             f"a connection operation is already open in this session ({exc.existing.op_id}); it settles "
             "when the user finishes with the card, on Continue, or at its deadline. Do not start another."
         )
+    return drive_operation(
+        operation,
+        kind,
+        connection_callback=connection_callback,
+        tick_seconds=tick_seconds,
+        with_urls_in_result=with_urls_in_result,
+    )
+
+
+def drive_operation(
+    operation: ConnectionOperation,
+    kind: Kind,
+    *,
+    connection_callback: Optional[Callback],
+    tick_seconds: Optional[float] = None,
+    with_urls_in_result: bool,
+) -> str:
+    """Run an already-registered operation to settlement; the caller owns its registration."""
     try:
         kind.prepare(operation)
+        operation.settle_if_all_resolved()
         if connection_callback is not None and not operation.settled:
             connection_callback(operation.request_payload())
         _watch(operation, kind, tick_seconds)

@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: neon
+connector: neon_mcp
 description: 'Neon serverless Postgres: projects, branches, and SQL.'
 source: https://neon.com/docs/ai/neon-mcp-server
 

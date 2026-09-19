@@ -1251,6 +1251,7 @@ def _(rid, params: dict) -> dict:
         transport = getattr(entry, "transport", None)  # TransportSpec → its kind string
         out.append({
             "name": entry.name, "description": getattr(entry, "description", "") or "",
+            "connector": getattr(entry, "connector", None),
             "installed": bool(mcp_catalog.is_installed(entry.name)),
             "enabled": bool(mcp_catalog.is_enabled(entry.name)), "requires": requires,
             "transport": str(getattr(transport, "kind", "") or transport or "stdio")})

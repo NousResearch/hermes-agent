@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: sentry
+connector: sentry_mcp
 description: >-
   Issues, stack traces, and error context from Sentry.
 source: https://docs.sentry.io/product/sentry-mcp/

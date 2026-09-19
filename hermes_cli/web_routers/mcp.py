@@ -345,6 +345,7 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
     return {
         "name": entry.name,
         "description": entry.description,
+        "connector": entry.connector,
         "source": entry.source,
         "transport": transport.type,
         "auth_type": getattr(auth, "type", "none"),

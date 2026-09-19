@@ -122,6 +122,16 @@ class TestManifestParsing:
         assert e.auth.type == "none"
         assert e.install is None
         assert e.suggest is None
+        assert e.connector is None
+
+    def test_connector_metadata_reaches_the_catalog_payload(self, catalog_dir):
+        from hermes_cli.mcp_catalog import _parse_manifest
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        path = _write_manifest(catalog_dir, "demo", _basic_manifest(connector="demo-connector"))
+        entry = _parse_manifest(path)
+
+        assert _catalog_entry_json(entry, False, False)["connector"] == "demo-connector"
 
     def test_suggest_block_parsed_and_normalized(self, catalog_dir):
         _write_manifest(
@@ -952,6 +962,18 @@ class TestShippedCatalog:
             assert ref and ref.group(1) in declared, (key, cfg["oauth"][key])
         # Asana matches the registered redirect URL exactly; the callback must be pinned.
         assert cfg["oauth"]["redirect_host"] and cfg["oauth"]["redirect_port"]
+
+    def test_manifest_connectors_are_valid_and_unique(self, monkeypatch):
+        from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
+
+        source_catalog = Path(__file__).parents[2] / "optional-mcps"
+        monkeypatch.setattr("hermes_cli.mcp_catalog._catalog_root", lambda: source_catalog)
+        connectors = [entry.connector for entry in list_catalog() if entry.connector is not None]
+
+        # A malformed ``connector:`` field drops its whole manifest, so validity shows up as a diagnostic.
+        assert catalog_diagnostics() == []
+        assert connectors
+        assert len(connectors) == len(set(connectors))
 
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.

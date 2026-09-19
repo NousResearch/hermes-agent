@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: dropbox
+connector: dropbox
 description: Search, read, and manage files in Dropbox.
 source: https://help.dropbox.com/integrations/connect-dropbox-mcp-server
 

@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: calendly
+connector: calendly
 description: Scheduling links, events, and invitees from Calendly.
 source: https://developer.calendly.com/calendly-mcp-server
 

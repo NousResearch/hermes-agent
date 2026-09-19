@@ -584,6 +584,13 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def resolve_nous_portal_base_url() -> str:
+    """Current profile's portal origin, including its operator override."""
+    from hermes_cli.auth import _nous_portal_base_url, get_provider_auth_state
+
+    return _nous_portal_base_url(get_provider_auth_state("nous") or {})
+
+
 def _portal_base_url(state: dict[str, Any]) -> Optional[str]:
     value = state.get("portal_base_url")
     return value.strip().rstrip("/") if _nonblank(value) else None

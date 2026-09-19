@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: attio
+connector: attio
 description: CRM records, lists, and notes in Attio.
 source: https://attio.com/help/apps/other-apps/using-the-attio-mcp-server
 

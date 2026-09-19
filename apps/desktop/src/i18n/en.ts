@@ -245,6 +245,7 @@ export const en: Translations = {
       openaiRejectedApiKey: "OpenAI didn't accept your API key. Update it in Settings → Keys, then try again.",
       openaiTtsNeedsKey: 'Voice needs an OpenAI key. Add one in Settings → Keys.',
       codeSkewRestartRequired: 'Hermes was updated but is still running the old version. Restart it to finish the update.',
+      rpcOutOfSync: 'The app and the backend are on different versions. Update both.',
       restartHermesFailed: "Couldn't restart Hermes"
     },
     actions: {

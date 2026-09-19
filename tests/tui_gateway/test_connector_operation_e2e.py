@@ -153,7 +153,7 @@ def _rpc(client, method, **params):
             "jsonrpc": "2.0",
             "id": 7,
             "method": method,
-            "params": {"session_id": SID, **params},
+            "params": {"owner": {"type": "session", "session_id": SID}, **params},
         },
         client.transport,
     )

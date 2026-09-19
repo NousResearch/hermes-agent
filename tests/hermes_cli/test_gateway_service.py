@@ -678,7 +678,7 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_pid_exit",
-            lambda pid, timeout: waited.append((pid, timeout)) or True,
+            lambda pid, timeout, **_: waited.append((pid, timeout)) or True,
         )
 
         run_calls = []
@@ -816,6 +816,58 @@ class TestLaunchdDomainDetection:
         assert domain == "user/501"
 
 
+class TestLaunchdUnsupportedFallbackPolicy:
+    """A 5/125 launchctl exit must not brand a domain the host is demonstrably managing.
+
+    Regression for the recurrence where ``hermes gateway install --force`` over the LIVE job
+    returned EIO (5) — launchctl's answer for an already-loaded label — which
+    ``_launchd_degrade_or_raise`` read as "this macOS cannot manage launchd services". It wrote the
+    permanent launchd-unsupported marker and started a detached gateway beside the supervised one,
+    and the marker made ``wait_for_launchd_gateway_supervision()`` answer True unconditionally, so
+    no later install/update could see that nothing tied the gateway to launchd any more.
+    """
+
+    def _spy_fallback(self, monkeypatch):
+        """Record the two side effects of degrading; return the lists."""
+        marker_writes, spawned = [], []
+        monkeypatch.setattr(
+            gateway_cli, "_write_launchd_unsupported_marker", lambda: marker_writes.append("marker")
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append("detached") or True
+        )
+        return marker_writes, spawned
+
+    def test_eio_on_a_supervised_label_does_not_degrade_to_detached(self, monkeypatch):
+        exc = subprocess.CalledProcessError(
+            5, ["launchctl", "bootstrap"], stderr="Bootstrap failed: 5: Input/output error"
+        )
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(
+            gateway_cli, "_launchctl_label_supervising_process", lambda label: True
+        )
+        marker_writes, spawned = self._spy_fallback(monkeypatch)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            gateway_cli._launchd_degrade_or_raise(exc, "launchctl bootstrap")
+
+        assert marker_writes == [], "a supervised job's domain must not be branded unsupported"
+        assert spawned == [], "no detached gateway beside a supervised one"
+
+    def test_eio_without_a_supervised_process_still_falls_back(self, monkeypatch):
+        """The detached fallback for a domain that really cannot manage the job is unchanged."""
+        exc = subprocess.CalledProcessError(125, ["launchctl", "kickstart"])
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(
+            gateway_cli, "_launchctl_label_supervising_process", lambda label: False
+        )
+        marker_writes, spawned = self._spy_fallback(monkeypatch)
+
+        gateway_cli._launchd_degrade_or_raise(exc, "launchctl kickstart")
+
+        assert marker_writes == ["marker"]
+        assert spawned == ["detached"]
+
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
@@ -874,7 +926,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(
             gateway_cli,
             "_graceful_restart_via_sigusr1",
-            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+            lambda pid, timeout, **_: calls.append(("graceful", pid, timeout)) or True,
         )
 
         # Once SIGUSR1 makes the gateway exit with the planned restart code,
@@ -913,7 +965,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
-        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: True)
         waits = iter((False, True))
         monkeypatch.setattr(
             gateway_cli,
@@ -947,7 +999,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
-        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: True)
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_systemd_service_restart",
@@ -974,7 +1026,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
-        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: True)
 
         def failed_replacement_wait(
             system=False, previous_pid=None, replacement_observed=None
@@ -1004,7 +1056,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
-        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: True)
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_systemd_service_restart",
@@ -1063,6 +1115,27 @@ class TestGatewaySystemServiceRouting:
         assert result is False
         assert replacement_observed == [True]
 
+    def test_wait_accepts_a_degraded_replacement_as_restarted(self, monkeypatch, capsys):
+        """A replacement serving with a parked platform stamps ``degraded`` for its whole life; the
+        restart verifier must report a restart (with a warning), not wait out the timeout (#91547)."""
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {"ActiveState": "active", "MainPID": "777"},
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 777)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_gateway_runtime_status",
+            lambda: {"pid": 777, "gateway_state": "degraded"},
+        )
+
+        result = gateway_cli._wait_for_systemd_service_restart(previous_pid=654, timeout=1.0)
+
+        assert result is True
+        assert "DEGRADED" in capsys.readouterr().out
+
     def test_launchd_restart_uses_sigusr1_and_exit_wait_budget(self, monkeypatch, capsys):
         """launchd_restart must take the same graceful path as systemd_restart.
 
@@ -1091,7 +1164,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(
             gateway_cli,
             "_graceful_restart_via_sigusr1",
-            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+            lambda pid, timeout, **_: calls.append(("graceful", pid, timeout)) or True,
         )
         monkeypatch.setattr(
             gateway_cli,
@@ -1153,7 +1226,7 @@ class TestGatewaySystemServiceRouting:
         )
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr(
-            gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True
+            gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: True
         )
         monkeypatch.setattr(
             gateway_cli,
@@ -1825,7 +1898,9 @@ class TestDockerAwareGateway:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
-        with pytest.raises(RuntimeError, match="systemctl is not available"):
+        from hermes_cli.gateway_command_errors import SystemctlUnavailableError
+
+        with pytest.raises(SystemctlUnavailableError):
             gateway_cli._run_systemctl(["start", "hermes-gateway"])
 
     def test_run_systemctl_passes_through_on_success(self, monkeypatch):
@@ -1862,6 +1937,58 @@ class TestDockerAwareGateway:
         out = capsys.readouterr().out
         assert "Docker" in out or "docker" in out
         assert "restart" in out.lower()
+
+    def test_install_in_systemd_container_refuses_user_scope(self, monkeypatch, capsys):
+        """A bind-mounted home must not receive a host-visible user unit."""
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_install_systemd_from_cli",
+            lambda *args, **kwargs: pytest.fail("must not install a user unit in a container"),
+        )
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=False, run_as_user=None)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(args)
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "--system" in out
+        assert "user-scope" in out
+
+    def test_install_in_systemd_container_keeps_explicit_system_scope(self, monkeypatch):
+        """Explicit system installs stay available for systemd-managed containers."""
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_install_systemd_from_cli",
+            lambda *args, **kwargs: calls.append(kwargs),
+        )
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=True, run_as_user=None)
+        gateway_cli.gateway_command(args)
+
+        assert calls == [{"force": False, "system": True, "run_as_user": None}]
+
+    def test_setup_wizard_user_scope_in_container_skips_install(self, monkeypatch, capsys):
+        """The wizard's default "user service" choice is the same host-visible unit (#112323):
+        inside a container it prints the guidance and reports no install instead of writing it."""
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        monkeypatch.setattr(gateway_cli, "prompt_linux_gateway_install_scope", lambda: "user")
+        monkeypatch.setattr(
+            gateway_cli, "systemd_install",
+            lambda **kwargs: pytest.fail("must not install a user unit in a container"),
+        )
+
+        assert gateway_cli.install_linux_gateway_from_setup(force=False, enable_on_startup=True) == ("user", False)
+        assert "--system" in capsys.readouterr().out
 
 
 class TestLegacyHermesUnitDetection:
@@ -2407,6 +2534,22 @@ class TestServiceTakeoverGovernance:
         assert "<string>run</string>" in plist
         assert "<key>KeepAlive</key>" in plist
         assert "<true/>" in plist
+
+    def test_launchd_plist_parks_ex_config_instead_of_keepalive_loop(self, tmp_path, monkeypatch):
+        """Token-collision EX_CONFIG (78) must not KeepAlive-respawn on macOS.
+
+        systemd parks via RestartPreventExitStatus=78; launchd cannot gate on a
+        specific status. Unconditional KeepAlive=true turned that exit into a
+        30s crash loop (#89477). SuccessfulExit=false plus the stderr wrapper
+        mapping 78→0 is the launchd twin: a clean stop stays down, exit 75 and
+        crashes still relaunch.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        parsed = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        assert parsed["KeepAlive"] == {"SuccessfulExit": False}
+        assert parsed["RunAtLoad"] is True
 
     def test_systemd_unit_does_not_arm_takeover(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"

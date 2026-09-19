@@ -118,3 +118,28 @@ def test_rank_slash_completions_ties_break_on_usage_then_name():
         score_of=lambda item: 1.0,
     )
     assert [item["text"] for item in ranked] == ["/alpha", "/beta"]
+
+
+def test_repo_file_cache_sweeps_expired_roots_on_write(tmp_path, monkeypatch):
+    """A root queried once and never again is dropped by the next write past its TTL — the TTL
+    used to be checked only on read, pinning every worktree listing for the process lifetime."""
+    import time
+
+    import tui_gateway.server as server
+
+    now = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    roots = []
+    for i in range(3):
+        root = tmp_path / f"wt{i}"
+        root.mkdir()
+        (root / "a.py").write_text("")
+        roots.append(str(root))
+    server._fuzzy_cache.clear()
+    server._list_repo_files(roots[0])
+    now[0] += server._FUZZY_CACHE_TTL_S / 2
+    server._list_repo_files(roots[1])  # still fresh when the next write happens
+    now[0] += server._FUZZY_CACHE_TTL_S / 2 + 0.1  # roots[0] expired, roots[1] not
+    server._list_repo_files(roots[2])
+    assert set(server._fuzzy_cache) == {roots[1], roots[2]}
+    server._fuzzy_cache.clear()

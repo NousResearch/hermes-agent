@@ -64,6 +64,39 @@ class TestSummarizeToolResultWebExtract:
         assert summary == "[web_extract] https://example.com/h (500 chars)"
 
 
+class TestSummarizeToolResultSkillTools:
+    """`skill_manage` names live at ``operations[i].name`` and `skills_list` has no ``name`` arg at
+    all, so the shared ``name=`` stub rendered ``name=?`` for both and dropped the outcome — a failed
+    batch compressed into the same line as a success (#112710)."""
+
+    @pytest.mark.parametrize("args", [
+        {"operations": [{"action": "create", "name": "orca-ade"}, {"action": "patch", "name": "llama-server"}]},
+        {"action": "create", "name": "orca-ade"},  # legacy flat shape, still accepted by the tool
+    ])
+    def test_skill_manage_names_ops_and_keeps_failure_visible(self, args):
+        error = "operations[0] (create on 'orca-ade') failed: content is required for 'create'\n— batch rolled back."
+        failed = _summarize_tool_result("skill_manage", json.dumps(args), json.dumps({"success": False, "error": error}))
+        ok = _summarize_tool_result("skill_manage", json.dumps(args), json.dumps({"success": True, "operations_applied": 1}))
+
+        for summary in (failed, ok):
+            assert summary.startswith("[skill_manage] create orca-ade")
+            assert "name=?" not in summary and "\n" not in summary
+        assert "FAILED: operations[0] (create on 'orca-ade') failed: content is required" in failed
+        assert "FAILED" not in ok
+        assert failed != ok
+
+    def test_skills_list_uses_category_and_count_and_marks_failure(self):
+        args = json.dumps({"category": "devops"})
+        ok_content = json.dumps({"success": True, "skills": [{}, {}], "count": 2})
+        ok = _summarize_tool_result("skills_list", args, ok_content)
+        failed = _summarize_tool_result("skills_list", "{}", json.dumps({"success": False, "error": "skills dir unreadable"}))
+
+        assert ok == f"[skills_list] category=devops 2 skills ({len(ok_content)} chars)"
+        assert failed.startswith("[skills_list] FAILED: skills dir unreadable")
+        # Control: skill_view really has a top-level ``name`` and keeps its stub.
+        assert _summarize_tool_result("skill_view", json.dumps({"name": "github"}), "x" * 100) == "[skill_view] name=github (100 chars)"
+
+
 class TestSummarizeToolResultClarify:
     def test_preserves_resolved_user_response_without_metadata(self):
         content = json.dumps({
@@ -839,6 +872,14 @@ class TestAuthFailureAborts:
             "found. Set the OPENCODE-ZEN_API_KEY environment variable."
         )
         assert _is_summary_access_or_quota_error(err) is True
+        # OAuth aux provider with no login: the hint names the sign-in command instead of an
+        # env var (#114405 / #78996) and must classify as permanent, not be retried.
+        oauth_err = RuntimeError(
+            "Provider 'minimax-oauth' is set in config.yaml but no credentials were found. "
+            "Run `hermes auth add minimax-oauth` to sign in, or switch to a different provider "
+            "with `hermes model`."
+        )
+        assert _is_summary_access_or_quota_error(oauth_err) is True
 
     def test_unscoped_secret_read_is_terminal_access_failure(self):
         # Multiplexed gateway: a credential read reached get_secret() from a
@@ -2222,6 +2263,27 @@ class TestThresholdTokensCap:
         assert comp.threshold_tokens == 500_000
         assert comp.threshold_tokens_cap is None
 
+    @pytest.mark.parametrize("context_length", [128_000, 272_000, 400_000, 1_000_000])
+    def test_default_config_uses_lower_effective_trigger(self, context_length):
+        """Shipped defaults: the trigger is the LOWER of the ratio trigger and the absolute cap, so a
+        1M window compacts at the cap while windows whose ratio trigger sits below it are untouched."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        default_pct = DEFAULT_CONFIG["compression"]["threshold"]
+        default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
+        assert isinstance(default_cap, int) and 0 < default_cap < 1_000_000
+        with patch("agent.context_compressor.get_model_context_length", return_value=context_length):
+            ratio_only = ContextCompressor("model-a", threshold_percent=default_pct, quiet_mode=True)
+            comp = ContextCompressor(
+                "model-a", threshold_percent=default_pct, threshold_tokens_cap=default_cap, quiet_mode=True,
+            )
+            _ = ratio_only.context_length, comp.context_length
+
+        expected_threshold = min(ratio_only.threshold_tokens, default_cap)
+        assert comp.threshold_tokens == expected_threshold
+        assert comp.should_compress(expected_threshold - 1) is False
+        assert comp.should_compress(expected_threshold) is True
+
 
 
 
@@ -2263,32 +2325,23 @@ class TestThresholdTokensCap:
         assert comp.should_compress(200_000) is True    # at cap (below 500K pct)
         assert comp.should_compress(250_000) is True    # above cap
 
-    def test_default_config_disabled_and_no_behavior_change(self):
-        """DEFAULT_CONFIG ships threshold_tokens=None (disabled) and both
-        None and 0 leave the ratio-based trigger byte-identical."""
+    def test_default_config_cap_survives_model_switch(self):
+        """The shipped cap remains effective when the active model changes."""
         from hermes_cli.config import DEFAULT_CONFIG
-        assert DEFAULT_CONFIG["compression"]["threshold_tokens"] is None
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
-            baseline = ContextCompressor(
-                "model-a", threshold_percent=0.50, quiet_mode=True,
+            comp = ContextCompressor(
+                "model-a",
+                threshold_percent=DEFAULT_CONFIG["compression"]["threshold"],
+                threshold_tokens_cap=DEFAULT_CONFIG["compression"]["threshold_tokens"],
+                quiet_mode=True,
             )
-            comp_none = ContextCompressor(
-                "model-a", threshold_percent=0.50, quiet_mode=True,
-                threshold_tokens_cap=None,
-            )
-            comp_zero = ContextCompressor(
-                "model-a", threshold_percent=0.50, quiet_mode=True,
-                threshold_tokens_cap=0,
-            )
-        assert comp_none.threshold_tokens == baseline.threshold_tokens
-        assert comp_zero.threshold_tokens == baseline.threshold_tokens
-        # And after a model switch, still identical to baseline.
-        baseline.update_model("model-b", context_length=200_000)
-        comp_none.update_model("model-b", context_length=200_000)
-        comp_zero.update_model("model-b", context_length=200_000)
-        assert comp_none.threshold_tokens == baseline.threshold_tokens
-        assert comp_zero.threshold_tokens == baseline.threshold_tokens
+            _ = comp.context_length
+
+        default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
+        assert comp.threshold_tokens == default_cap
+        comp.update_model("model-b", context_length=2_000_000)
+        assert comp.threshold_tokens == default_cap
 
 
 
@@ -3400,6 +3453,63 @@ class TestMinTailUserMessages:
         from agent.context_compressor import _estimate_msg_budget_tokens
         accumulated = sum(_estimate_msg_budget_tokens(m) for m in tail)
         assert accumulated > c.tail_token_budget
+
+
+class TestTailTokenBudgetCeiling:
+    def test_message_floor_does_not_unboundedly_override_soft_ceiling(self):
+        """Oversized optional rows must not ride the count floor past 1.5x budget."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=20,
+                quiet_mode=True,
+                tail_mode="lean",
+            )
+        c.tail_token_budget = 10_000
+        oversized = "x" * 24_000
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": oversized},
+            {"role": "assistant", "content": oversized},
+            {"role": "user", "content": oversized},
+            {"role": "assistant", "content": oversized},
+            {"role": "user", "content": oversized},
+            {"role": "assistant", "content": oversized},
+            {"role": "user", "content": "latest request"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call-latest", "function": {"name": "read_file", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call-latest", "content": "result " + ("r" * 20_000)},
+            {"role": "assistant", "content": "latest answer"},
+        ]
+
+        cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+        tail = messages[cut:]
+
+        from agent.context_compressor import _estimate_msg_budget_tokens
+        tail_tokens = sum(_estimate_msg_budget_tokens(message) for message in tail)
+        assert tail_tokens <= int(c.tail_token_budget * 1.5)
+        assert any(message.get("content") == "latest request" for message in tail)
+        assert tail[-1]["content"] == "latest answer"
+        assert [message.get("role") for message in tail if message.get("tool_call_id") == "call-latest"] == ["tool"]
+        assert any(
+            call.get("id") == "call-latest"
+            for message in tail
+            for call in message.get("tool_calls", [])
+        )
+
+        # The ceiling remains soft when required continuity is itself oversized:
+        # keep the active user's whole tool group and final assistant response.
+        messages[9]["content"] = "result " + ("r" * 80_000)
+        oversized_cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+        oversized_tail = messages[oversized_cut:]
+        assert sum(_estimate_msg_budget_tokens(message) for message in oversized_tail) > int(
+            c.tail_token_budget * 1.5
+        )
+        assert messages[7:] == oversized_tail
 
 
 

@@ -1,3 +1,4 @@
+export { hasAnsi, sanitizeAnsiForRender, stripAnsi } from './ansi'
 export { backendScopeKey, backendScopePrefix, LOCAL_CONNECTION_ID, registryBackendScopeKey } from './backend-scope'
 export {
   BILLING_REFUSAL_POLICY,
@@ -7,7 +8,6 @@ export {
 } from './billing-policy'
 export type {
   BillingAutoReload,
-  BillingBlock,
   BillingCardInfo,
   BillingChargeResponse,
   BillingChargeStatusResponse,
@@ -36,6 +36,18 @@ export {
   type SettlementOutcome
 } from './charge-settlement'
 export {
+  contrastRatio,
+  darken,
+  ensureContrast,
+  lighten,
+  mix,
+  parseColor,
+  readableOn,
+  relativeLuminance,
+  type Rgb,
+  toHex
+} from './color'
+export {
   createCronTriggerController,
   type CronTriggerController,
   type CronTriggerRunResult
@@ -46,19 +58,54 @@ export {
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
+export { compactNumber } from './format'
+export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
+export * from './gateway-events'
+export {
+  applyDocumentLocale,
+  type EndonymLocale,
+  isRecord,
+  LOCALE_ENDONYMS,
+  mergeTranslations,
+  RTL_LOCALES,
+  type TranslationOverride
+} from './i18n'
+export {
+  DEFAULT_HEARTBEAT_DEADLINE_MS,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  type GatewayRequestId,
+  JSON_RPC_INTERNAL_ERROR,
+  JSON_RPC_METHOD_NOT_FOUND,
+  jsonRpcErrorFromFrame,
+  type JsonRpcErrorPayload,
+  type JsonRpcFrame,
+  JsonRpcGatewayError,
+  JsonRpcRequestChannel,
+  type JsonRpcRequestChannelOptions,
+  type JsonRpcTransport,
+  type ServerRequest,
+  type ServerRequestHandler,
+  type ServerRequestParams,
+  wireFrameText
+} from './json-rpc-channel'
 export {
   type ConnectionState,
   type GatewayClientOptions,
-  type GatewayEvent,
-  type GatewayEventName,
-  type GatewayRequestId,
+  GatewayEventHub,
   isGatewayWebSocketUrl,
-  type JsonRpcErrorPayload,
-  type JsonRpcFrame,
   JsonRpcGatewayClient,
-  JsonRpcGatewayError,
   type WebSocketLike
 } from './json-rpc-gateway'
+export { modelSearchText } from './model-search-text'
+export {
+  DEFAULT_REASONING_EFFORT,
+  isReasoningEffort,
+  REASONING_EFFORT_VALUES,
+  REASONING_EFFORTS,
+  type ReasoningEffort,
+  type ReasoningEffortValue
+} from './reasoning-effort'
+export { reconnectBackoffDelayMs, type ReconnectBackoffOptions } from './reconnect-backoff'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,
@@ -69,6 +116,25 @@ export {
   type SkinColors,
   type SkinColorToken
 } from './skin'
+export {
+  type AliasCommandDispatchResponse,
+  type CommandDispatchResponse,
+  type ExecCommandDispatchResponse,
+  looksLikeSlashCommand,
+  parseCommandDispatch,
+  type ParsedSlashCommand,
+  parseSlashCommand,
+  type PrefillCommandDispatchResponse,
+  type SendCommandDispatchResponse,
+  type SkillCommandDispatchResponse,
+  SLASH_COMMAND_RE
+} from './slash'
+export {
+  THEME_PRESET_PALETTES,
+  type ThemePresetColors,
+  type ThemePresetName,
+  type ThemePresetPalette
+} from './theme-presets'
 export {
   backgroundMaterialFor,
   clampIntensity,

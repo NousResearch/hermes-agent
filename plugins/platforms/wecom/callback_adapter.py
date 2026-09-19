@@ -34,6 +34,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.helpers import MessageDeduplicator
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._apps: List[Dict[str, Any]] = self._normalize_apps(extra)
         self._runner = self._site = self._app = self._http_client = self._poll_task = None
         self._message_queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
-        self._seen_messages: Dict[str, float] = {}
+        self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
         self._user_app_map: Dict[str, str] = {}
         self._access_tokens: Dict[str, Dict[str, Any]] = {}
 
@@ -233,7 +234,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 event = self._build_event(app, self._decrypt_request(app, body, msg_signature, timestamp, nonce))
                 if event is not None:
                     # WeCom retries callbacks on timeout → duplicate inbound messages.
-                    if event.message_id and self._is_duplicate(event.message_id):
+                    if event.message_id and self._dedup.is_duplicate(event.message_id):
                         logger.debug("[WecomCallback] Duplicate MsgId %s, skipping", event.message_id)
                         return _ack()
                     if event.source and event.source.user_id:
@@ -250,17 +251,6 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     @staticmethod
     def _signature_params(request: web.Request):
         return tuple(request.query.get(k, "") for k in ("msg_signature", "timestamp", "nonce"))
-
-    def _is_duplicate(self, message_id: str) -> bool:
-        # Deduplicate: WeCom retries callbacks on timeout, producing duplicate inbound messages (#10305).
-        now = time.time()
-        if now - self._seen_messages.get(message_id, float("-inf")) < MESSAGE_DEDUP_TTL_SECONDS:
-            return True
-        self._seen_messages[message_id] = now
-        if len(self._seen_messages) > 2000:  # prune expired entries
-            cutoff = now - MESSAGE_DEDUP_TTL_SECONDS
-            self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
-        return False
 
     async def _poll_loop(self) -> None:
         while True:

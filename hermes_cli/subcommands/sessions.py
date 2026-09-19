@@ -68,9 +68,10 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
 
     sessions_export = sessions_subparsers.add_parser(
         "export", help="Export sessions to JSONL, Markdown, or QMD")
-    sessions_export.add_argument("output", nargs="?",
-        help="Output path. JSONL: file path (use - for stdout, required). "
-            "md/qmd: output directory (default: <hermes home>/session-exports)")
+    sessions_export.add_argument("output", nargs="?", metavar="OUTPUT",
+        help="Where to write. jsonl/html/trace: a file path, or a directory (existing, or ending in /) "
+            "to write a default-named file into; - for stdout (jsonl/trace only; jsonl requires OUTPUT). "
+            "md/qmd: a directory, one file per session (default: <hermes home>/session-exports)")
     sessions_export.add_argument(
         "--format", choices=["jsonl", "md", "qmd", "html", "trace"], default="jsonl",
         help="Export format (default: jsonl). 'trace' emits Claude Code JSONL "
@@ -181,6 +182,26 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Window between a keyed predecessor's last activity and an "
             "orphan's start for them to count as the same conversation "
             "(default: 900)")
+
+    sessions_repair_profiles = sessions_subparsers.add_parser(
+        "repair-profiles", help="Settle session/routing state that landed under the wrong profile",
+        description="Scan every profile's state.db (and the gateway's voice-mode / sessions.json "
+            "files) for durable state crossed between profiles: rows whose profile_name "
+            "disagrees with their session key, rows sitting in another profile's store, "
+            "parent links crossing namespaces, routing rows outside the default store or for a "
+            "profile that no longer exists, and Telegram topic / voice-mode entries missing "
+            "their bot's profile. Reports without touching anything unless --apply is given; "
+            "--apply refuses while a gateway is running, snapshots every store first, and is "
+            "safe to re-run.")
+    _flag(sessions_repair_profiles, "--apply", help="Perform the repairs (default: report only)")
+    _flag(sessions_repair_profiles, "--json", help="Machine-readable report")
+    _flag(sessions_repair_profiles, "--yes", "-y", default=False, help="Skip the confirmation prompt")
+    sessions_repair_profiles.add_argument(
+        "--legacy-main", choices=("report", "rekey", "move"), default="report",
+        help="What to do with agent:main rows found inside a named profile's store: 'rekey' them "
+            "to that profile (a standalone gateway's own history, e.g. after multiplexing was "
+            "switched on), 'move' them to the default store (a default chat that leaked in), or "
+            "'report' (default) — the rows themselves cannot tell the two cases apart")
 
     sessions_recover = sessions_subparsers.add_parser(
         "recover", help="Rebuild canonical session data into a separate clean database",

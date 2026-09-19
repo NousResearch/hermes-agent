@@ -46,7 +46,7 @@ async def main(base_poller):
     runner._run_in_executor_with_context = asyncio.to_thread
     adapter = WireAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
     adapter.wire = []
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm")
     key = build_session_key(source)
     watch = {key: (source, "wire-session")}

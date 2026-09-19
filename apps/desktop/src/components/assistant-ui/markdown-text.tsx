@@ -8,14 +8,16 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
+import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -218,7 +220,7 @@ function MediaAttachment({ path }: { path: string }) {
     return (
       <span className="my-3 block max-w-2xl rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
-        <video
+        <TranscriptVideo
           className="block max-h-112 w-full rounded-lg bg-black"
           controls
           onError={() => setFailed(true)}
@@ -461,6 +463,11 @@ interface MarkdownTextSurfaceProps {
   disableArtifacts?: boolean
   /** Foreign history must not load images or mount live transcript directives. */
   previewOnly?: boolean
+  /** Re-render the direct text nodes of paragraph-level containers (p / li /
+   *  td) — a transcript surface styles its own inline tokens (a Bot Mode room's
+   *  routed @mentions) without owning the Markdown pipeline. Nested inline
+   *  markup and code are left as rendered. */
+  decorateText?: (children: ReactNode) => ReactNode
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -576,6 +583,7 @@ function MarkdownParagraph({
 function MarkdownTextSurface({
   containerClassName,
   containerProps,
+  decorateText,
   defer,
   disableArtifacts,
   previewOnly,
@@ -606,11 +614,13 @@ function MarkdownTextSurface({
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: (props: ComponentProps<'p'>) =>
+        p: ({ children, ...props }: ComponentProps<'p'>) =>
           previewOnly ? (
-            <p {...props} />
+            <p {...props}>{decorateText ? decorateText(children) : children}</p>
           ) : (
-            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming} />
+            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming}>
+              {decorateText ? decorateText(children) : children}
+            </MarkdownParagraph>
           ),
         a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
@@ -657,8 +667,10 @@ function MarkdownTextSurface({
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
           <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
-        li: ({ className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props} />
+        li: ({ children, className, ...props }: ComponentProps<'li'>) => (
+          <li className={cn('leading-(--dt-line-height)', className)} {...props}>
+            {decorateText ? decorateText(children) : children}
+          </li>
         ),
         // Columns are drag-resizable; the widths live outside the transcript
         // (see markdown-table-widths.ts) so a new turn or a session switch
@@ -668,8 +680,10 @@ function MarkdownTextSurface({
           <thead className={cn('m-0 bg-muted/35 text-muted-foreground', className)} {...props} />
         ),
         th: ResizableMarkdownTh,
-        td: ({ className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
+        td: ({ children, className, ...props }: ComponentProps<'td'>) => (
+          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props}>
+            {decorateText ? decorateText(children) : children}
+          </td>
         ),
         img: previewOnly ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span> : MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; substantial
@@ -694,7 +708,7 @@ function MarkdownTextSurface({
           )
         }
       }) as StreamdownTextComponents,
-    [disableArtifacts, isStreaming, previewOnly, scratchpad]
+    [decorateText, disableArtifacts, isStreaming, previewOnly, scratchpad]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {
@@ -748,6 +762,30 @@ function MarkdownTextSurface({
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
   isRunning: boolean
   text: string
+}
+
+/** Render raw assistant-style message text through the complete Desktop text
+ * pipeline. `MEDIA:` directives must be transformed before Markdown rendering
+ * so the canonical link component can route them to inline players/previews.
+ * Fenced blocks stay plain code (`disableArtifacts`): a transcript rendered
+ * outside a session — a Bot Mode group room — has no session to own artifact
+ * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
+ * against the ACTIVE gateway, so a message written on another machine (a
+ * Connections Bot in a cross-machine room) must not have its path read here —
+ * that is a broken image at best and a same-path local file at worst. */
+export function MessageTextContent({
+  decorateText,
+  media = true,
+  text
+}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
+  return (
+    <MarkdownTextContent
+      decorateText={decorateText}
+      disableArtifacts
+      isRunning={false}
+      text={media ? renderMediaTags(text) : text}
+    />
+  )
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {

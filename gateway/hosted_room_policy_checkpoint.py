@@ -105,17 +105,20 @@ class HostedRoomPolicyCheckpoint:
     """Incrementally index room policy without compacting visible history."""
     def __init__(self, db_path: DbPath) -> None:
         self.db_path = Path(db_path)
-        with self._connect() as conn:
+        with self._transaction() as conn:
             for ddl in _SCHEMA_DDL:
                 conn.execute(ddl)
 
     def _connect(self) -> sqlite3.Connection:
-        from hermes_state_wal import apply_wal_with_fallback
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        apply_wal_with_fallback(conn, db_label="shared-state.db (room policy checkpoint)")
-        return conn
+        # Late import: a gateway that outlives an on-disk upgrade has the OLD sqlite_util cached.
+        from hermes_cli.sqlite_util import open_db
+
+        return open_db(self.db_path, db_label="shared-state.db (room policy checkpoint)", busy_timeout_ms=10_000)
+
+    def _transaction(self):
+        from hermes_cli.sqlite_util import transaction
+
+        return transaction(self._connect())
 
     @staticmethod
     def _store_active_event(
@@ -278,7 +281,7 @@ class HostedRoomPolicyCheckpoint:
 
     def sync(self, *, room_id: str, latest_seq: int) -> int:
         """Materialize each unseen event exactly once by durable cursor."""
-        with self._connect() as conn:
+        with self._transaction() as conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = self._ensure_cursor_and_transcript(conn, room_id)
         if cursor > latest_seq:
@@ -290,7 +293,7 @@ class HostedRoomPolicyCheckpoint:
             next_cursor = int(page.get("cursor") or cursor)
             if not rows or next_cursor <= cursor:
                 raise RuntimeError("hosted room policy cursor did not advance")
-            with self._connect() as conn:
+            with self._transaction() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 _require_room(conn, room_id)
                 for event in rows:
@@ -305,7 +308,7 @@ class HostedRoomPolicyCheckpoint:
     def snapshot(self, *, room_id: str, latest_seq: int) -> PolicySnapshot:
         """Return only the oldest active discussion and its watermark set."""
         through_seq = self.sync(room_id=room_id, latest_seq=latest_seq)
-        with self._connect() as conn:
+        with self._transaction() as conn:
             cursor = conn.execute(
                 "SELECT stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
             stopped_through_seq = int(cursor["stopped_through_seq"])
@@ -335,12 +338,12 @@ class HostedRoomPolicyCheckpoint:
             ("""SELECT 1 FROM hosted_room_policy_publications
                      WHERE room_id=? AND task_id=? AND kind IN ('turn.settled', 'turn.failed', 'turn.cancelled')""",
              (room_id, task_id)))
-        with self._connect() as conn:
+        with self._transaction() as conn:
             return conn.execute(sql, params).fetchone() is not None
 
     def events_for_task(self, *, room_id: str, source_event_seq: int) -> list[dict[str, Any]]:
         """Load one bounded discussion projection for terminal reconstruction."""
-        with self._connect() as conn:
+        with self._transaction() as conn:
             row = conn.execute(
                 f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?",
                 (room_id, source_event_seq)).fetchone()
@@ -359,7 +362,7 @@ class HostedRoomPolicyCheckpoint:
 
     def compact_completed(self, *, room_id: str) -> None:
         """Drop any completed projections left by an interrupted sync."""
-        with self._connect() as conn:
+        with self._transaction() as conn:
             for row in conn.execute(
                 "SELECT discussion_event_id FROM hosted_room_policy_threads WHERE room_id=? AND completed=1", (room_id,)
             ).fetchall():

@@ -229,13 +229,17 @@ Tool/status activity is shown in a live activity lane. Transcript rows stay focu
 
 ## Prompt flows
 
-The Python gateway can pause the main loop and request structured input:
+The Python gateway can pause the main loop and ask the client a question. These are JSON-RPC
+**requests from the server** (string id, answered with a response frame of the same id — see
+`createServerRequestHandler.ts`), not events:
 
-- `approval.request`: allow once, allow for session, allow always, or deny
-- `clarify.request`: pick from choices or type a custom answer
-- `sudo.request`: masked password entry
-- `secret.request`: masked value entry for a named env var
+- `approval`: allow once, allow for session, allow always, or deny → `{ choice }`
+- `clarify`: pick from choices or type a custom answer → `{ answer }` (batch: `{ answers }`)
+- `sudo`: masked password entry → `{ value }`
+- `secret`: masked value entry for a named env var → `{ value }`
 - `session.list`: used by `SessionPicker` for `/resume`
+
+A withdrawn question (timeout, interrupt) arrives as a `request.cancel` event carrying its id.
 
 These are stateful UI branches in `app.tsx`, not separate screens.
 
@@ -304,12 +308,7 @@ Primary event types the client handles today:
 | `tool.generating`          | `{ name }`                                                                  |
 | `tool.progress`            | `{ name, preview }`                                                         |
 | `tool.complete`            | `{ tool_id, name, error?, summary?, duration_s?, inline_diff?, todos? }`    |
-| `clarify.request`          | `{ question, choices?, request_id }`                                        |
-| `approval.request`         | `{ command, description, allow_permanent? }`                                |
-| `sudo.request`             | `{ request_id }`                                                            |
-| `sudo.expire`              | `{ request_id }` clears a timed-out sudo prompt                             |
-| `secret.request`           | `{ prompt, env_var, request_id }`                                           |
-| `secret.expire`            | `{ request_id }` clears a timed-out secret prompt                           |
+| `request.cancel`           | `{ id, method, reason }` clears the withdrawn server→client request         |
 | `background.complete`      | `{ task_id, text }`                                                         |
 | `billing.step_up.verification` | `{ verification_url, user_code }`                                       |
 | `review.summary`           | `{ text }`                                                                  |

@@ -11,7 +11,6 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
     CredentialPool, PooledCredential, credential_pool_matches_provider, custom_provider_pool_key_candidates,  # noqa: F401
     load_pool,
 )
-from agent.secret_scope import get_secret as _get_secret
+from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
@@ -32,8 +31,8 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
 from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.providers import determine_api_mode, is_actual_route, is_official_openai_host, nous_api_mode
-from utils import base_url_host_matches, base_url_hostname, env_int
+from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
+from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
 
 
 # Late-bound delegates, deliberately NOT module-level from-imports: this module is often imported
@@ -49,13 +48,6 @@ def get_compatible_custom_providers(config=None):
 
 def normalize_extra_headers(value):
     return _config_mod.normalize_extra_headers(value)
-
-
-def _getenv(name: str, default: str = "") -> str:
-    """Profile-scoped ``os.getenv`` for credential/provider reads: identical to ``os.getenv`` when
-    multiplexing is off; scope-aware (fail-closed on an unscoped read) when on."""
-    val = _get_secret(name, default)
-    return val if val is not None else default
 
 
 def _loopback_hostname(host: str) -> bool:
@@ -81,7 +73,11 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     """
     cfg_provider_norm = (cfg_provider or "").strip().lower()
     bu = (cfg_base_url or "").strip()
-    return bool(bu) and (cfg_provider_norm == "custom" or _resolves_to_custom(cfg_provider_norm)
+    # A bare or ``auto`` provider is the caller currently resolving auto. Asking
+    # ``resolve_provider`` whether it aliases custom re-enters that same path.
+    return bool(bu) and (cfg_provider_norm == "custom" or (
+        cfg_provider_norm not in {"", "auto"} and _resolves_to_custom(cfg_provider_norm)
+    )
                          or (not base_url_host_matches(bu, "openrouter.ai") and _loopback_hostname(base_url_hostname(bu))))
 
 
@@ -121,7 +117,7 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     mandated = _HOST_MANDATED_API_MODES.get(hostname) or ("codex_responses" if is_official_openai_host(base_url) else None)
     if mandated:
         return mandated
-    path = urlparse(normalized).path.rstrip("/")
+    path = base_url_path(normalized)
     if path.endswith(("/anthropic", "/anthropic/v1")) or (hostname == "api.kimi.com" and "/coding" in normalized):
         # Direct native Anthropic host: realign with providers.determine_api_mode, which already maps this
         # host to anthropic_messages. The exact-hostname match rejects lookalike subdomains
@@ -143,10 +139,41 @@ def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
     """api_mode when no explicit/persisted mode applies: URL detection (host-mandated wire shapes)
     first, then the transport the provider overlay declares via ``providers.determine_api_mode``
     (``openai-api`` pointed at us.api.openai.com 400'd on every tool call without it), then
-    ``chat_completions``."""
+    ``chat_completions``. A declared ``anthropic_messages`` is kept only on the provider's own
+    endpoint (#76836)."""
     if is_actual_route(provider, base_url):
         return "chat_completions"
-    return _detect_api_mode_for_url(base_url) or determine_api_mode(provider, base_url, model) or "chat_completions"
+    detected = _detect_api_mode_for_url(base_url)
+    if detected:
+        return detected
+    declared = determine_api_mode(provider, base_url, model)
+    if declared == "anthropic_messages" and not _on_declared_anthropic_endpoint(provider, base_url):
+        # The declared Anthropic transport describes the provider's own endpoint. A base_url
+        # override at a foreign host (OpenAI-compatible relay, LiteLLM, egress proxy) or at the
+        # provider's OpenAI-compatible path (api.minimax.io/v1) speaks chat/completions; sending
+        # Messages-shaped requests with x-api-key there is a 401 on every turn (#76836).
+        return "chat_completions"
+    return declared
+
+
+def _on_declared_anthropic_endpoint(provider: str, base_url: str) -> bool:
+    """True when ``base_url`` is the provider's own Anthropic-protocol endpoint: the catalog
+    default's host (or a subdomain of it) and either the bare host — the provider's own host
+    with no path still means the native endpoint (#53054) — or the default's path
+    (``/anthropic`` for MiniMax, ``/plan/anthropic`` for Tencent) with or without a ``/v1``
+    tail. With nothing to compare — no URL, an overlay-only provider whose models.dev default
+    is not cached (offline), or a default with no path at all (``api.anthropic.com``: no sibling
+    OpenAI-compatible path exists to tell an override's protocol from) — keep the declared
+    transport: demoting the provider's own endpoint would be the worse failure."""
+    pdef = get_provider(provider, allow_network=False)
+    default = (pdef.base_url if pdef else "").strip()
+    default_path = base_url_path(default).removesuffix("/v1")
+    if not default_path or not (base_url or "").strip():
+        return True
+    if not base_url_host_matches(base_url, base_url_hostname(default)):
+        return False
+    path = base_url_path(base_url)
+    return path == "" or path == default_path or path.startswith(default_path + "/")
 
 
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
@@ -245,8 +272,8 @@ def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model
 # ── base_url / credential helpers ──────────────────────────────────────────────────────────
 
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
-_NO_ANTHROPIC_CREDENTIALS_MSG = ("No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                                 "run 'claude setup-token', or authenticate with 'claude /login'.")
+_NO_ANTHROPIC_CREDENTIALS_MSG = ("No Anthropic credentials found. Run 'hermes auth add anthropic' to sign in, "
+                                 "or set ANTHROPIC_TOKEN / ANTHROPIC_API_KEY.")
 
 
 def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra: Any) -> Dict[str, Any]:
@@ -287,10 +314,15 @@ def _anthropic_cfg_base_url(model_cfg: Dict[str, Any]) -> str:
     return cfg_base_url if _anthropic_base_url_override_ok(cfg_base_url) else ""
 
 
-def _anthropic_token_or_raise() -> str:
+def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     from agent.anthropic_credentials import resolve_anthropic_token
-    token = resolve_anthropic_token()
+    token = resolve_anthropic_token(model=model)
     if not token:
+        # A key the pool benched for *this* model is not a missing credential; telling the
+        # user to re-authenticate would send them chasing a cooldown that lifts on its own.
+        if model and resolve_anthropic_token():
+            raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
+                            "other Claude models remain available (see `hermes auth list`).")
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 
@@ -309,7 +341,7 @@ def _host_derived_api_key(base_url: str) -> str:
     sanitized = "".join(ch if ch.isalnum() else "_" for ch in labels[-2]).upper() if len(labels) >= 2 else ""
     if not sanitized or not sanitized[0].isalpha() or sanitized in ("OPENAI", "OPENROUTER", "OLLAMA"):
         return ""
-    return (_getenv(f"{sanitized}_API_KEY", "") or "").strip()
+    return (get_secret_str(f"{sanitized}_API_KEY", "") or "").strip()
 
 
 def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
@@ -318,9 +350,9 @@ def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
     (GHSA-76xc-57q6-vm5m); match on HOST, not substring. ``_host_derived_api_key`` skips OLLAMA, so
     callers that want it opt in via ``ollama``."""
     is_openai = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
-    candidates = [_getenv("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
-    return candidates + [_getenv("OPENAI_API_KEY", "").strip() if is_openai else "",
-                         _getenv("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",
+    candidates = [get_secret_str("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
+    return candidates + [get_secret_str("OPENAI_API_KEY", "").strip() if is_openai else "",
+                         get_secret_str("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",
                          _host_derived_api_key(base_url)]
 
 
@@ -341,7 +373,7 @@ def _nous_min_key_ttl() -> int:
 
 
 def _resolve_nous_creds() -> Dict[str, Any]:
-    return resolve_nous_runtime_credentials(timeout_seconds=float(_getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")))
+    return resolve_nous_runtime_credentials(timeout_seconds=float(get_secret_str("HERMES_NOUS_TIMEOUT_SECONDS", "15")))
 
 
 def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
@@ -414,13 +446,13 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     cfg_provider = _get_model_config().get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
-    return _getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
+    return get_secret_str("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
 
 
 # ── extracted collaborators (re-exported; see module docstring) ────────────────────────────
 
 from hermes_cli.runtime_provider_custom import (  # noqa: E402,F401
-    _apply_custom_provider_extras, _custom_provider_request_overrides, _filter_capabilities, _find_custom_identity,
+    _LLAMACPP_ALIASES, _apply_custom_provider_extras, _custom_provider_request_overrides, _filter_capabilities, _find_custom_identity,
     _get_named_custom_provider, _lift_common_custom_fields, _lift_extra_headers,
     _lift_model_capabilities, _normalize_base_url_for_match, _normalize_custom_provider_name, _resolve_named_custom_runtime,
     _try_resolve_from_custom_pool, canonical_custom_identity, find_custom_provider_identity,
@@ -452,6 +484,13 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
         base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
     if provider in _POOL_ENTRY_SIMPLE_MODES:
         api_mode, default_url = _POOL_ENTRY_SIMPLE_MODES[provider]
+        if provider == "openai-codex":
+            # Pool entries retain the canonical ChatGPT URL, but the profile-wide
+            # HERMES_CODEX_BASE_URL override must apply consistently to every
+            # credential source, including pooled OAuth credentials.
+            override_url = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+            if override_url:
+                return api_mode, override_url
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL
@@ -490,8 +529,15 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
 def _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key, explicit_base_url) -> bool:
     """OpenRouter pool only for a plain openrouter/auto request with no custom endpoint or override."""
     cfg_base_url = str(model_cfg.get("base_url") or "").strip()
-    env_base_urls = _getenv("OPENAI_BASE_URL", "").strip() or _getenv("OPENROUTER_BASE_URL", "").strip()
-    has_custom_endpoint = bool(explicit_base_url or env_base_urls or (cfg_base_url and _cfg_provider(model_cfg) in {"auto", "custom"}))
+    env_base_urls = get_secret_str("OPENAI_BASE_URL", "").strip() or get_secret_str("OPENROUTER_BASE_URL", "").strip()
+    # A config base_url under provider: openrouter is a mirror only when it is NOT the canonical
+    # OpenRouter host — `hermes setup` persists https://openrouter.ai/api/v1 for plain installs,
+    # and treating that as custom would drop the auth.json pool (empty key).
+    cfg_is_mirror = bool(cfg_base_url) and (
+        _cfg_provider(model_cfg) in {"auto", "custom"}
+        or (_cfg_provider(model_cfg) == "openrouter" and not base_url_host_matches(cfg_base_url, "openrouter.ai"))
+    )
+    has_custom_endpoint = bool(explicit_base_url or env_base_urls or cfg_is_mirror)
     return requested_provider in {"openrouter", "auto"} and not has_custom_endpoint and not bool(explicit_api_key or explicit_base_url)
 
 
@@ -527,7 +573,7 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
         pool = None
     if not (pool and pool.has_credentials()):
         return None
-    entry = pool.select()
+    entry = pool.select(model=target_model or None)
     if entry is None:
         return None
     pool_api_key = _pool_entry_api_key(entry)
@@ -544,7 +590,7 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
 
 def _explicit_anthropic(requested_provider, model_cfg, api_key, base_url, target_model):
     base_url = base_url or _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
-    api_key = api_key or _anthropic_token_or_raise()
+    api_key = api_key or _anthropic_token_or_raise(model=target_model)
     return _runtime("anthropic", "anthropic_messages", base_url, api_key, source="explicit", requested_provider=requested_provider)
 
 
@@ -595,7 +641,7 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
         elif provider in {"kimi-coding", "kimi-coding-cn"}:
             base_url = resolve_api_key_provider_credentials(provider).get("base_url", "").rstrip("/")
         else:
-            env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/") if pconfig.base_url_env_var else ""
+            env_url = get_secret_str(pconfig.base_url_env_var, "").strip().rstrip("/") if pconfig.base_url_env_var else ""
             base_url = env_url or pconfig.inference_base_url
     base_url = _actual_url(provider, base_url)
     if not api_key:
@@ -664,17 +710,10 @@ _OAUTH_RUNTIME_PROVIDERS: Dict[str, _OAuthRuntimeSpec] = {
 
 
 def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model) -> Optional[Dict[str, Any]]:
-    """Runtime from an ``_OAUTH_RUNTIME_PROVIDERS`` spec. On AuthError: re-raise for an explicit
-    request; for "auto" (auto-detected but credentials stale/revoked) log and return None so the
-    ladder falls through to env-var providers (e.g. OpenRouter)."""
+    """Runtime from an ``_OAUTH_RUNTIME_PROVIDERS`` spec; raises AuthError when the credential is
+    stale/revoked/benched (``_ladder_rungs`` decides whether an "auto" request falls through)."""
     spec = _OAUTH_RUNTIME_PROVIDERS[provider]
-    try:
-        creds = spec.resolve()
-    except AuthError:
-        if requested_provider != "auto":
-            raise
-        logger.info("%s; falling through to next provider.", spec.failure_msg)
-        return None
+    creds = spec.resolve()
     api_mode = spec.api_mode(_effective_model(model_cfg, target_model)) if callable(spec.api_mode) else spec.api_mode
     return _runtime(provider, api_mode, (creds.get("base_url") or "").rstrip("/") or spec.default_base_url,
                     creds.get("api_key", ""), source=creds.get("source", spec.default_source),
@@ -698,13 +737,13 @@ def _azure_anthropic_env_key(model_cfg: Dict[str, Any]) -> str:
     api_key (multi-profile setups), then the historical fixed names."""
     for hint_key in ("key_env", "api_key_env"):
         env_var = str(model_cfg.get(hint_key) or "").strip()
-        if env_var and (token := _getenv(env_var, "").strip()):
+        if env_var and (token := get_secret_str(env_var, "").strip()):
             return token
-    return (str(model_cfg.get("api_key") or "").strip() or _getenv("AZURE_ANTHROPIC_KEY", "").strip()
-            or _getenv("ANTHROPIC_API_KEY", "").strip())
+    return (str(model_cfg.get("api_key") or "").strip() or get_secret_str("AZURE_ANTHROPIC_KEY", "").strip()
+            or get_secret_str("ANTHROPIC_API_KEY", "").strip())
 
 
-def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: str | None = None) -> Dict[str, Any]:
     """Native Anthropic (Messages API) from env/auth store; ``model.base_url`` honoured only when
     the configured provider is anthropic (else a Codex endpoint would leak into Anthropic requests)."""
     base_url = _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
@@ -716,7 +755,7 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any]) -
             raise AuthError("No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or ANTHROPIC_API_KEY, or point "
                             "key_env/api_key_env in your config.yaml model section at a custom env var.")
     else:
-        token = _anthropic_token_or_raise()
+        token = _anthropic_token_or_raise(model=target_model)
     return _runtime("anthropic", "anthropic_messages", base_url, token, source="env", requested_provider=requested_provider)
 
 
@@ -758,6 +797,37 @@ def _raise_if_provider_disabled(requested_provider: str) -> None:
     if isinstance(block, dict) and not _config_mod.is_provider_enabled(block):
         raise ValueError(f"provider {requested_provider!r} is disabled in config "
                          f"(providers.{requested_provider}.enabled: false)")
+
+
+def _raise_if_local_alias_missing_endpoint(requested_provider: str, explicit_base_url: Optional[str]) -> None:
+    """A local-server alias (``ollama``, ``vllm`` — anything ``auth.resolve_provider`` maps to
+    ``custom`` without a rung of its own) with NO endpoint configured anywhere would otherwise walk
+    the whole ladder to the OpenRouter fallback and spend an unrelated cloud key there (#113703).
+    Keyed on the ABSENCE of an endpoint, not on the alias name: ``/model <direct-alias>`` resolves
+    the alias label with the alias endpoint as ``explicit_base_url`` and must keep working, which
+    is why the name-keyed version was reverted (e9a54c48f2 / a9fabe43c4). Endpoint sources:
+    explicit call base_url, ``CUSTOM_BASE_URL``, a trusted ``model.base_url``, or a
+    ``providers.<alias>`` block carrying a ``base_url``. ``OPENROUTER_BASE_URL`` is never the
+    alias endpoint, and an explicit api_key does not lift the guard — that key was meant for the
+    alias's own server. ``llamacpp`` fails fast on its own managed-server rung."""
+    requested_norm = (requested_provider or "").strip().lower()
+    if (requested_norm in ("", "custom") or requested_norm in _LLAMACPP_ALIASES
+            or not _resolves_to_custom(requested_norm)):
+        return
+    if str(explicit_base_url or "").strip() or get_secret_str("CUSTOM_BASE_URL", "").strip():
+        return
+    model_cfg = _get_model_config()
+    if _config_base_url_trustworthy_for_bare_custom(str(model_cfg.get("base_url") or ""), _cfg_provider(model_cfg)):
+        return
+    if str((_get_named_custom_provider(requested_provider) or {}).get("base_url") or "").strip():
+        return
+    raise AuthError(
+        f"provider '{requested_provider}' has no endpoint configured, so the request is not sent anywhere "
+        f"(it would otherwise fall back to OpenRouter). Set providers.{requested_norm}.base_url or "
+        "model.base_url in config.yaml.",
+        provider=requested_provider,
+        code="missing_base_url",
+    )
 
 
 def _resolve_vertex_runtime(requested_provider: str) -> Dict[str, Any]:
@@ -822,16 +892,6 @@ def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url
                                             explicit_base_url=explicit_base_url), requested_provider)
 
 
-def _opencode_free_runtime(provider, requested_provider, model_cfg, target_model) -> Optional[Dict[str, Any]]:
-    """OpenCode Zen free tier (*-free slugs) is served ANONYMOUSLY on the Zen relay only: unknown
-    bearers 401 and the Go relay rejects free models, so free slugs route through the keyless Zen
-    runtime BEFORE the pool / explicit / api_key paths."""
-    if _models.opencode_provider_family(provider) is None:
-        return None
-    model = str(target_model or model_cfg.get("default") or model_cfg.get("model") or "").strip()
-    return _tag(_models.opencode_zen_free_runtime(provider, model), requested_provider)
-
-
 def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
                              explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
@@ -840,16 +900,40 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       2. requested-name shortcuts: moa, anthropic@azure, azure-foundry, vertex
       3. named custom provider / llamacpp alias / bare-custom direct alias
       4. local-endpoint bypass (no explicit creds, config base_url at a non-cloud host)
-      5. ``auth.resolve_provider`` → OpenCode free tier → explicit --api-key/--base-url path
+      5. ``auth.resolve_provider`` → explicit --api-key/--base-url path
       6. credential pool (OpenRouter pool only without custom endpoint/override)
-      7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError and logs) → minimax-oauth
+      7. OAuth specs (nous/codex/xai/qwen; "auto" swallows AuthError, logs, and stamps it on a
+         keyless fallback as ``auth_error``) → minimax-oauth
          → external-process → anthropic env → bedrock → registry api_key providers
       8. OpenRouter / bare-custom fallback
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
-    return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
+    runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    return runtime
+
+
+def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict[str, Any]) -> None:
+    """Reject a bare ``custom`` placeholder request that fell through the whole ladder to the
+    OpenRouter default endpoint with no credential. Every other custom rung (named entry, local
+    bypass, pool, ``key_cmd``) yields a key, a callable or the ``no-key-required`` placeholder, so
+    an EMPTY key on a ``custom`` runtime is exactly the dead shape that otherwise dies at agent
+    construction as ``No LLM provider configured``. Keyed on the literal request, not the resolved
+    shape: local aliases (``ollama``, ``vllm``) are resolved tolerantly by ``/model`` direct-alias
+    switching, which supplies the alias endpoint AFTER this call and must not fail here. Typed
+    ``AuthError`` so every caller's fallback chain (CLI, gateway, TUI, cron) still advances (#17929).
+    """
+    if requested_provider != "custom" or runtime.get("provider") != "custom" or runtime.get("api_key"):
+        return
+    raise AuthError(
+        f"provider '{requested_provider}' resolved without credentials (no endpoint or API key configured). "
+        "If this is a named custom provider, use its real name (see providers: in config.yaml).",
+        provider=requested_provider,
+        code="missing_api_key",
+    )
 
 
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):
@@ -866,25 +950,36 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
         yield _local_endpoint_bypass(requested_provider, explicit_api_key, explicit_base_url)
     provider = resolve_provider(requested_provider, explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url)
     model_cfg = _get_model_config()
-    yield _opencode_free_runtime(provider, requested_provider, model_cfg, target_model)
     yield _resolve_explicit_runtime(provider=provider, requested_provider=requested_provider, model_cfg=model_cfg,
                                     explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url,
                                     target_model=target_model)
     yield _resolve_from_pool(provider, requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)
+    swallowed_auth_error = None
     if provider in _OAUTH_RUNTIME_PROVIDERS:
-        yield _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model)
+        try:
+            yield _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model)
+        except AuthError as exc:
+            # Auto-detected login with stale/revoked/benched credentials: fall through to the env-var
+            # providers, but keep the error so a keyless fallback can still say what is wrong.
+            if requested_provider != "auto":
+                raise
+            logger.info("%s; falling through to next provider.", _OAUTH_RUNTIME_PROVIDERS[provider].failure_msg)
+            swallowed_auth_error = exc
     if provider == "minimax-oauth":
         yield _minimax_oauth_runtime(provider, requested_provider)
     if _is_external_process_provider(provider):
         yield _resolve_external_process_runtime(provider, requested_provider)
     if provider == "anthropic":
-        yield _anthropic_env_runtime(requested_provider, model_cfg)
+        yield _anthropic_env_runtime(requested_provider, model_cfg, target_model)
     if provider == "bedrock":
         yield _resolve_bedrock_runtime(requested_provider, model_cfg, target_model)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
-    yield _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
+    fallback = _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
+    if swallowed_auth_error is not None and not fallback.get("api_key"):
+        fallback["auth_error"] = swallowed_auth_error
+    yield fallback
 
 
 def format_runtime_provider_error(error: Exception) -> str:

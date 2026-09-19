@@ -21,7 +21,7 @@ Use, configure, theme, extend, and orchestrate Hermes Agent.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `hermes`, `setup`, `configuration`, `multi-agent`, `spawning`, `cli`, `gateway`, `bots`, `bot-mode`, `features`, `themes`, `skins`, `desktop-plugins`, `tui-widgets`, `petdex`, `development` |
-| Related skills | [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) |
+| Related skills | [`claude-code`](./autonomous-ai-agents-claude-code.md), [`codex`](./autonomous-ai-agents-codex.md), [`opencode`](./autonomous-ai-agents-opencode.md) |
 
 ## Reference: full SKILL.md
 

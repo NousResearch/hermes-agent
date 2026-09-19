@@ -7,12 +7,13 @@ import {
   finishIntroReveal,
   installIntroRevealBridgeListeners,
   isIntroRevealEnabled,
+  isIntroRevealSkipped,
   leaveIntroReveal,
   shouldPlayFirstRunIntro,
   startIntroReveal
 } from '@/store/intro-reveal'
 import { $desktopOnboarding } from '@/store/onboarding'
-import { beginOnboardingFlow, queueGuideAfterIntro } from '@/store/onboarding-gate'
+import { beginOnboardingFlow, beginOnboardingFlowWithoutIntro, queueGuideAfterIntro } from '@/store/onboarding-gate'
 
 import { INTRO_DEADMAN_MS, INTRO_EXIT_MS } from './timeline'
 
@@ -48,7 +49,23 @@ export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
   }, [enabled])
 
   useEffect(() => {
-    if (enabled && intro.phase === 'hidden' && shouldPlayFirstRunIntro(onboarding.firstRunSkipped)) {
+    if (!enabled) {
+      return
+    }
+
+    // skipIntro turns the film off; the guided chat behind it must still run.
+    // Take the guide's shape on this tick, exactly like the film's completion
+    // edge, so no full-size shell paints while the guide session comes up.
+    if (isIntroRevealSkipped()) {
+      if (intro.phase === 'hidden') {
+        beginOnboardingFlowWithoutIntro(onboarding.firstRunSkipped)
+        takeGuideShape()
+      }
+
+      return
+    }
+
+    if (intro.phase === 'hidden' && shouldPlayFirstRunIntro(onboarding.firstRunSkipped)) {
       beginOnboardingFlow()
       startIntroReveal()
     }

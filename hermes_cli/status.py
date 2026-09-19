@@ -137,7 +137,7 @@ def _banner(lines, *styles) -> None:
 
 def _render_header(ctx):
     _banner(("┌─────────────────────────────────────────────────────────┐",
-             "│                 ⚕ Hermes Agent Status                  │",
+             "│                 ☤ Hermes Agent Status                  │",
              "└─────────────────────────────────────────────────────────┘"), Colors.CYAN)
     paused = _estop_status_line()
     if paused:
@@ -278,7 +278,7 @@ def _render_sessions(ctx):
     # pre-migration installs.
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=True)  # status only reads; never a writer beside a running gateway
         try:
             gateway_rows = db.list_gateway_sessions(active_only=True) or []
         finally:

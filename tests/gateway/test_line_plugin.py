@@ -45,7 +45,6 @@ check_requirements = _line.check_requirements
 validate_config = _line.validate_config
 _standalone_send = _line._standalone_send
 _env_enablement = _line._env_enablement
-_MessageDeduplicator = _line._MessageDeduplicator
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +111,7 @@ class TestAllowlist:
 class TestDedup:
 
     def test_first_event_not_duplicate(self):
-        d = _MessageDeduplicator()
+        d = _line.MessageDeduplicator(max_size=1000, ttl_seconds=float("inf"))
         assert not d.is_duplicate("evt1")
 
 
@@ -411,6 +410,22 @@ class TestValidateConfig:
 
 
 class TestAdapterInit:
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_channel_lock_held(self, monkeypatch):
+        """``acquire_scoped_lock`` returns ``(acquired, existing)``; a live foreign holder must stop
+        connect() before the LINE client is built (the tuple is truthy, so a bare ``if not`` never fired)."""
+        import gateway.status as gateway_status
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setattr(
+            gateway_status, "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, {"pid": 4242, "profile": "other"}))
+        ad = LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok", "channel_secret": "sec"}))
+        assert await ad.connect() is False
+        assert ad._fatal_error_code == "line_lock"
+        assert "other" in ad._fatal_error_message
+        assert ad._client is None
 
     def test_init_from_config_extra(self, monkeypatch):
         for k in ("LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "LINE_PORT"):

@@ -161,7 +161,7 @@ class TestManagerUserPeerOverride:
         mgr = HonchoSessionManager(honcho=MagicMock(), config=HonchoClientConfig(api_key="k", peer_name="eri", ai_peer="hermes"),
                                    runtime_user_peer_name="7654321")
         mgr._get_or_create_peer = MagicMock(side_effect=lambda pid: MagicMock(name=f"peer:{pid}"))
-        mgr._get_or_create_honcho_session = MagicMock(return_value=(MagicMock(), []))
+        mgr._get_or_create_honcho_session = MagicMock(return_value=(MagicMock(), [], None))
 
         session = mgr.get_or_create("Bot-Chat:a2a:bot-coder-0123abcd", user_peer_id="coder")
 

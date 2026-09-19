@@ -15,6 +15,7 @@ import json
 import os
 import time
 from typing import Optional
+from utils import atomic_json_write
 
 _MAX_ENTRIES = 1000
 _MAX_TEXT_CHARS = 2000
@@ -47,10 +48,7 @@ def _update(chat_id, message_id, fields: dict) -> None:
         if len(data) > _MAX_ENTRIES:  # trim oldest by timestamp
             for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - _MAX_ENTRIES]:
                 data.pop(k, None)
-        tmp = f"{path}.tmp.{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False)
-        os.replace(tmp, path)  # atomic; tolerates concurrent writers racing
+        atomic_json_write(path, data, indent=None)  # atomic; tolerates concurrent writers racing
     except Exception:
         return
 

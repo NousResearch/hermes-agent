@@ -15,8 +15,11 @@ import ssl
 import time
 from typing import Any, Dict, List, Optional
 
-from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
@@ -158,15 +161,8 @@ class IRCAdapter(BasePlatformAdapter):
             logger.error("IRC: server and channel must be configured")
             return self._fail("config_missing", "IRC_SERVER and IRC_CHANNEL must be set", retryable=False)
         # Prevent two profiles from using the same IRC identity
-        try:
-            from gateway.status import acquire_scoped_lock
-            lock_key = f"{self.server}:{self.nickname}"
-            if not acquire_scoped_lock("irc", lock_key):
-                logger.error("IRC: %s@%s already in use by another profile", self.nickname, self.server)
-                return self._fail("lock_conflict", "IRC identity in use by another profile", retryable=False)
-            self._lock_key = lock_key
-        except ImportError:
-            self._lock_key = None  # status module not available (e.g. tests)
+        if not self._acquire_platform_lock("irc", f"{self.server}:{self.nickname}", f"IRC identity {self.nickname}@{self.server}"):
+            return False
         try:
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self.server, self.port, ssl=_ssl_ctx(self.use_tls)), timeout=30.0)
@@ -195,10 +191,8 @@ class IRCAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Quit and close the connection."""
-        if getattr(self, "_lock_key", None):
-            with contextlib.suppress(Exception):
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("irc", self._lock_key)
+        with contextlib.suppress(Exception):
+            self._release_platform_lock()
         self._mark_disconnected()
         if self._writer and not self._writer.is_closing():
             with contextlib.suppress(Exception):
@@ -207,10 +201,7 @@ class IRCAdapter(BasePlatformAdapter):
             with contextlib.suppress(Exception):
                 self._writer.close()
                 await self._writer.wait_closed()
-        if self._recv_task and not self._recv_task.done():
-            self._recv_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._recv_task
+        await cancel_task(self._recv_task)
         self._reader = None
         self._writer = None
         self._registered = False
@@ -349,6 +340,7 @@ def interactive_setup() -> None:
     """`hermes gateway setup` flow (lazy hermes_cli imports keep the plugin importable outside the CLI)."""
     from hermes_cli.setup import (
         prompt, prompt_yes_no, save_env_value, get_env_value, print_header, print_info, print_warning, print_success)
+    from hermes_cli.setup_platforms import declines_reconfigure
 
     def info(*lines: str) -> None:
         for line in lines:
@@ -363,10 +355,8 @@ def interactive_setup() -> None:
         return True
     print_header("IRC")
     existing_server = get_env_value("IRC_SERVER")
-    if existing_server:
-        print_info(f"IRC: already configured (server: {existing_server})")
-        if not prompt_yes_no("Reconfigure IRC?", False):
-            return
+    if declines_reconfigure("IRC", "Reconfigure IRC?", "IRC_SERVER"):
+        return
     info("Connect Hermes to an IRC network. Uses Python stdlib — no extra packages needed.",
          "   Works with Libera.Chat, OFTC, your own ZNC/InspIRCd, etc.")
     print()
@@ -424,26 +414,21 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> dict | None:
-    """Seed ``PlatformConfig.extra`` from env vars BEFORE adapter construction; ``None`` when IRC isn't
-    minimally configured (caller skips auto-enabling). ``home_channel`` becomes a ``HomeChannel``."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env BEFORE adapter construction;
+    ``None`` when IRC isn't minimally configured. Passwords also live in extra for back-compat with
+    config.yaml users; env wins at construct time. Home channel defaults to IRC_CHANNEL so cron
+    ``deliver=irc`` has a target without extra config."""
     server = _get_scoped_secret("IRC_SERVER", "").strip()
     channel = _get_scoped_secret("IRC_CHANNEL", "").strip()
     if not (server and channel):
         return None
-    seed: dict = {"server": server, "channel": channel}
-    for env, key, conv in (("IRC_PORT", "port", int), ("IRC_NICKNAME", "nickname", str),
-                           ("IRC_USE_TLS", "use_tls", lambda v: v.lower() in _TRUTHY)):
-        if raw := _get_scoped_secret(env, "").strip():
-            with contextlib.suppress(ValueError):  # non-numeric IRC_PORT is dropped, not fatal
-                seed[key] = conv(raw)
-    # Passwords also live in extra for back-compat with config.yaml users; env wins at construct time.
-    for env, key in (("IRC_SERVER_PASSWORD", "server_password"), ("IRC_NICKSERV_PASSWORD", "nickserv_password")):
-        if secret := _get_scoped_secret(env):
-            seed[key] = secret
-    # Home channel defaults to IRC_CHANNEL so cron ``deliver=irc`` has a target without extra config.
-    if home := _get_scoped_secret("IRC_HOME_CHANNEL") or channel:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("IRC_HOME_CHANNEL_NAME", home)}
-    return seed
+    seed = _seed_extra_from_env((
+        ("IRC_PORT", "port", int), ("IRC_NICKNAME", "nickname", None),
+        ("IRC_USE_TLS", "use_tls", lambda v: v.lower() in _TRUTHY),
+        ("IRC_SERVER_PASSWORD", "server_password", None), ("IRC_NICKSERV_PASSWORD", "nickserv_password", None),
+    ), home_env="IRC_HOME_CHANNEL", home_default=channel)
+    return {"server": server, "channel": channel, **seed}
+
 
 
 def _strip_irc_control_chars(text: str) -> str:
@@ -456,7 +441,7 @@ def _is_irc_channel(target: str) -> bool:
 
 
 def _sa_error(detail: str) -> Dict[str, Any]:
-    return {"error": f"IRC standalone send: {detail}"}
+    return send_error(f"IRC standalone send: {detail}")
 
 
 class _StandaloneConn:
@@ -563,7 +548,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        return {"error": f"IRC standalone connect failed: {e}"}
+        return send_error(f"IRC standalone connect failed: {e}")
     conn = _StandaloneConn(reader, writer)
     try:
         if error := await _sa_register(conn, nick_base, _env_or_extra(extra, "IRC_SERVER_PASSWORD", "server_password")):
@@ -591,7 +576,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         raise
     except Exception as e:
         logger.debug("IRC standalone send raised", exc_info=True)
-        return {"error": f"IRC standalone send failed: {e}"}
+        return send_error(f"IRC standalone send failed: {e}")
     finally:
         await conn.close()
 

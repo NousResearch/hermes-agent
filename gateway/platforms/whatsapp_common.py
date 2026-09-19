@@ -5,7 +5,7 @@ to-bot detection, broadcast filtering, WhatsApp markdown conversion, chunk budge
 
 Mixin contract — the host adapter sets these on ``self`` before calling any mixin
 method: ``config`` (PlatformConfig), ``name``, ``_dm_policy`` / ``_group_policy``
-("open" | "allowlist" | "disabled"), ``_allow_from`` / ``_group_allow_from`` (set[str]),
+("open" | "allowlist" | "disabled" | "pairing"), ``_allow_from`` / ``_group_allow_from`` (set[str]),
 ``_mention_patterns`` (list[re.Pattern]), ``_reply_prefix`` (Optional[str]).
 """
 
@@ -18,13 +18,13 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gateway.platforms._shared import get_scoped_secret as _get_wsecret
+from gateway.platforms._shared import extra_or_secret as _extra_or_wsecret, get_scoped_secret as _get_wsecret
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 
 
 logger = logging.getLogger(__name__)
 
 _TRUTHY = {"true", "1", "yes", "on"}
-_OPTIN_TRUTHY = {"true", "1", "yes"}
 
 
 def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
@@ -47,15 +47,16 @@ def _header_to_bold(m: re.Match) -> str:
     return f"*{inner}*"
 
 
-class WhatsAppBehaviorMixin:
+class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     """Shared behavior for all WhatsApp adapters (Baileys + Cloud API); owns no state
     of its own — see the module docstring for the host adapter's attribute contract."""
 
     # Practical UX limit, not the ~65K protocol max (long messages are unreadable on mobile).
     MAX_MESSAGE_LENGTH: int = 4096
+    ALLOW_ALL_ENV_PREFIX = "WHATSAPP"
     supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
 
-    DEFAULT_REPLY_PREFIX: str = "⚕ *Hermes Agent*\n────────────\n"
+    DEFAULT_REPLY_PREFIX: str = "☤ *Hermes Agent*\n────────────\n"
 
     _OUTBOUND_INVISIBLE_CHARS_RE = re.compile(r"[\u200b\u2060\u2063\ufeff]")
     _OUTBOUND_ODD_SPACE_RE = re.compile(r"[\u00a0\u1680\u180e\u2000-\u200a\u202f\u205f\u3000]")
@@ -67,11 +68,6 @@ class WhatsAppBehaviorMixin:
         if not content:
             return content
         return cls._OUTBOUND_ODD_SPACE_RE.sub(" ", cls._OUTBOUND_INVISIBLE_CHARS_RE.sub("", content))
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
-        return True
 
     def _effective_reply_prefix(self) -> str:
         """Prefix for outgoing replies in self-chat mode (Cloud API overrides to ``""``)."""
@@ -97,10 +93,9 @@ class WhatsAppBehaviorMixin:
         return bool(configured)
 
     def _whatsapp_free_response_chats(self) -> set[str]:
-        raw = self.config.extra.get("free_response_chats")
-        if raw is None:
-            raw = _get_wsecret("WHATSAPP_FREE_RESPONSE_CHATS", default="") or ""
-        return self._coerce_allow_list(raw)
+        """``extra.free_response_chats`` (blank = unset) else the scoped env CSV."""
+        return self._coerce_allow_list(
+            _extra_or_wsecret(self.config.extra, "free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS"))
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
@@ -110,20 +105,24 @@ class WhatsAppBehaviorMixin:
         parts = raw if isinstance(raw, list) else str(raw).split(",")
         return {str(part).strip() for part in parts if str(part).strip()}
 
-    def _select_dm_allowlist(self, extra: Dict[str, Any], env_keys, read_env) -> Any:
-        """Pick the raw DM allowlist by key *presence*: ``allow_from``/``allowFrom`` in config (an
-        explicit empty list stays authoritative), then the first truthy env carrier. Records the
-        winning source in ``_dm_allowlist_source`` so live DM checks keep the same precedence."""
-        for key in ("allow_from", "allowFrom"):
+    @staticmethod
+    def _select_allowlist(extra: Dict[str, Any], config_keys, env_keys, read_env) -> tuple[Optional[str], Any]:
+        """``(source, raw)`` by key *presence*: a config key wins (an explicit empty list stays authoritative),
+        then the first truthy env carrier; ``(None, None)`` when neither is set."""
+        for key in config_keys:
             if key in extra:
-                self._dm_allowlist_source = "config"
-                return extra.get(key)
+                return "config", extra.get(key)
         for env in env_keys:
-            if read_env(env):
-                self._dm_allowlist_source = env
-                return read_env(env)
-        self._dm_allowlist_source = None
-        return None
+            raw = read_env(env)
+            if raw:
+                return env, raw
+        return None, None
+
+    def _select_dm_allowlist(self, extra: Dict[str, Any], env_keys, read_env) -> Any:
+        """Raw DM allowlist; records the winning source in ``_dm_allowlist_source`` so live DM checks keep
+        the same precedence."""
+        self._dm_allowlist_source, raw = self._select_allowlist(extra, ("allow_from", "allowFrom"), env_keys, read_env)
+        return raw
 
     def _live_dm_allow_from(self) -> set[str]:
         """Allowlist currently enforced for DM intake / strict DM auth. Env-seeded adapters re-read
@@ -143,10 +142,8 @@ class WhatsAppBehaviorMixin:
     def _normalize_whatsapp_id(value: Optional[str]) -> str:
         if not value:
             return ""
-        normalized = str(value).strip()
-        if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
-        return normalized
+        # Device-qualified ids (`<user>:<device>@lid`) must equal their bare form.
+        return re.sub(r":\d+(?=@)", "", str(value).strip())
 
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:
@@ -156,12 +153,6 @@ class WhatsAppBehaviorMixin:
         return cid == "status@broadcast" or cid.endswith(("@broadcast", "@newsletter"))
 
     # ------------------------------------------------------------------ gating
-    def _open_dm_opted_in(self) -> bool:
-        # Both names via the scoped reader — the DEFAULT profile's os.environ opt-in must not open
-        # a secondary bot's DMs.
-        return any((_get_wsecret(name, default="") or "").lower() in _OPTIN_TRUTHY
-                   for name in ("GATEWAY_ALLOW_ALL_USERS", "WHATSAPP_ALLOW_ALL_USERS"))
-
     @staticmethod
     def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
         """Match a WhatsApp identifier against an allowlist across phone/LID forms. Inbound senders
@@ -182,28 +173,8 @@ class WhatsAppBehaviorMixin:
             for entry in allow_from
         )
 
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Strict DM authorization — pairing does not imply access."""
-        if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(sender_id, self._live_dm_allow_from())
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        """Whether a DM may reach the gateway intake (pairing handshake path)."""
-        principal = str(sender_id or "").strip()
-        if not principal:
-            return False
-        if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(principal, self._live_dm_allow_from())
-        if self._dm_policy == "pairing":
-            return True
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_group_allowed(self, chat_id: str) -> bool:
-        """Check whether a group chat should be processed."""
-        if self._group_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
-        return self._group_policy == "open"
+    def _entry_matches(self, entries, target: str) -> bool:
+        return self._matches_whatsapp_allowlist(target, entries)
 
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")

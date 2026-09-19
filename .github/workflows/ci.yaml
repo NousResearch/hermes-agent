@@ -68,11 +68,13 @@ jobs:
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
   # Skipped workflows (if condition is false) don't spin up runners.
   # ─────────────────────────────────────────────────────────────────────
-  tests:
+  full-suite:
     name: Python tests
     needs: detect
     if: needs.detect.outputs.python == 'true'
-    uses: ./.github/workflows/tests.yml
+    uses: ./.github/workflows/ftask-full-suite.yml
+    with:
+      via_ci: true
 
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the
@@ -227,7 +229,7 @@ jobs:
     name: All required checks pass
     needs:
       - detect
-      - tests
+      - full-suite
       - tests-os
       - lint
       - js-tests

@@ -412,6 +412,12 @@ class AIAgent(
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+        try:
+            from agent.session_budget_guardrail import reset_state as _reset_session_budget_guardrail
+
+            _reset_session_budget_guardrail(self)
+        except Exception:
+            pass
 
         # Session boundary: the usage anchor describes the OLD transcript; fall back to full estimation.
         self._usage_anchor = None

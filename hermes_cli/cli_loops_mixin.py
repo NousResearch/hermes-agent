@@ -213,6 +213,18 @@ class CLILoopsMixin:
         text = execute_command("egress", CommandContext(surface="cli")).text
         self._console_print(text, highlight=False, markup=False)
 
+    def _cmd_checkpoint(self, cmd_original: str):
+        from hermes_cli.commands import resolve_command
+        from hermes_cli.checkpoint_commands import run_checkpoint_command
+
+        parts = str(cmd_original or "").strip().split(maxsplit=1)
+        name = parts[0].lstrip("/") if parts else ""
+        cmd_def = resolve_command(name)
+        command = f"/{cmd_def.name if cmd_def else name}"
+        args = parts[1] if len(parts) > 1 else ""
+        result = run_checkpoint_command(command, session_id=getattr(self, "session_id", "") or "", args=args)
+        self._console_print(result.text, highlight=False, markup=False)
+
     def _cmd_statusbar(self, cmd_original: str):
         self._status_bar_visible = not self._status_bar_visible
         self._console_print(f"  Status bar {'visible' if self._status_bar_visible else 'hidden'}")

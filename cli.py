@@ -3218,6 +3218,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         "undo": ("_cmd_undo", True), "save": ("save_conversation", True), "skills": ("_cmd_skills", True),
         "platforms": ("_show_gateway_status", False), "status": ("_show_session_status", False),
         "context": ("_show_context_breakdown", True), "egress": ("_cmd_egress", True),
+        "lock-this-chat-into-law": ("_cmd_checkpoint", True),
+        "promote-since-last-checkpoint": ("_cmd_checkpoint", True),
         "statusbar": ("_cmd_statusbar", True), "verbose": ("_toggle_verbose", False), "yolo": ("_toggle_yolo", False),
         "compress": ("_manual_compress", True), "subscription": ("_show_subscription", False),
         "topup": ("_show_billing", True), "insights": ("_show_insights", True), "update": ("_cmd_update", True),

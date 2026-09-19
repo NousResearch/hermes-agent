@@ -54,6 +54,7 @@ from agent.turn_preflight_gate import run_preflight_gate
 from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
+from agent.turn_session_budget_guardrail import run_session_budget_guardrail_gate
 from agent.turn_tool_round import run_tool_round
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
@@ -1526,6 +1527,9 @@ def _run_conversation_turn(
         )
 
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        _sbg = _run_phase(run_session_budget_guardrail_gate, agent, s)
+        if _sbg.action == "return":
+            return _sbg.result
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)

@@ -2328,6 +2328,13 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    try:
+        from agent.session_budget_guardrail import initialize_agent as _init_session_budget_guardrail
+
+        _init_session_budget_guardrail(agent, _agent_cfg)
+    except Exception:
+        pass
+
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform)
     _apply_agent_section(agent, _agent_cfg)

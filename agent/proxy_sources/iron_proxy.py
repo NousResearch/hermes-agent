@@ -92,6 +92,8 @@ _NON_BEARER_PROVIDERS: Tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCES
 
 # Default SSRF deny list (docs promise: cloud metadata IPs refused regardless of allowlist);
 # callers pass [] to disable (hermetic tests only).
+_SECRET_RULE_HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+
 _DEFAULT_UPSTREAM_DENY_CIDRS: Tuple[str, ...] = (
     "127.0.0.0/8", "::1/128",                                       # loopback v4 / v6
     "169.254.0.0/16", "fe80::/10",                                  # link-local incl. AWS/GCP/Azure IMDS
@@ -529,7 +531,7 @@ def build_proxy_config(
             "proxy_value": m.proxy_token, "match_headers": list(m.match_headers or ("Authorization",)),
             "match_query": True, "match_body": False, "require": True,
         },
-        "rules": [{"host": h} for h in m.upstream_hosts],
+        "rules": [{"host": h, "methods": list(_SECRET_RULE_HTTP_METHODS)} for h in m.upstream_hosts],
     } for m in mappings]
     # ONE string per listener field.  tunnel_listen is the CONNECT+MITM listener sandboxes reach via
     # HTTPS_PROXY (a CONNECT to http_listen is forwarded upstream and 400s); http_listen is plain-HTTP

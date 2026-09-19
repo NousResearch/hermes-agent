@@ -334,6 +334,39 @@ class GatewaySlashCommandsMixin(
         runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else "(none)"
         return head + f"Tier: user\nSlash commands you can run: {runnable_str}"
 
+
+    async def _handle_lock_this_chat_into_law_command(self, event: MessageEvent) -> str:
+        return await self._handle_checkpoint_command(event, "/lock-this-chat-into-law")
+
+    async def _handle_promote_since_last_checkpoint_command(self, event: MessageEvent) -> str:
+        return await self._handle_checkpoint_command(event, "/promote-since-last-checkpoint")
+
+    async def _handle_checkpoint_command(
+        self,
+        event: MessageEvent,
+        command: str | None = None,
+        *,
+        session_id: str | None = None,
+        source=None,
+    ) -> str:
+        from hermes_cli.commands import resolve_command
+        from hermes_cli.checkpoint_commands import run_checkpoint_command
+
+        if command is None:
+            raw = event.get_command() if callable(getattr(event, "get_command", None)) else "lock-this-chat-into-law"
+            cmd_def = resolve_command(str(raw or "").lstrip("/"))
+            command = f"/{cmd_def.name if cmd_def else str(raw or '').lstrip('/')}"
+        args = (event.get_command_args() or "").strip()
+        resolved_session_id = session_id or getattr(event, "session_key", "") or ""
+        resolved_source = source if source is not None else getattr(event, "source", None)
+        if resolved_source is not None:
+            try:
+                entry = await self.async_session_store.get_or_create_session(resolved_source, touch_activity=False)
+                resolved_session_id = getattr(entry, "session_id", None) or getattr(entry, "session_key", None) or resolved_session_id
+            except Exception:
+                logger.debug("checkpoint command could not resolve source session", exc_info=True)
+        return run_checkpoint_command(command, session_id=resolved_session_id, args=args).text
+
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI (DB work in a thread pool). Allowed
         while an agent runs: the board is profile-agnostic and never touches agent state."""

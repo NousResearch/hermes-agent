@@ -242,6 +242,16 @@ def record_response_usage(
             _cost_delta = (_cost_delta or 0.0) + _moa_cost
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
+    try:
+        from agent.session_budget_guardrail import record_usage as _record_session_budget_usage
+
+        _record_session_budget_usage(
+            agent,
+            prompt_tokens=prompt_tokens,
+            projected_cost_usd=getattr(agent, "session_estimated_cost_usd", 0.0),
+        )
+    except Exception:
+        pass
 
     # Persist per-call token deltas for any session_id so non-CLI runs can't lose
     # accounting; gateway/session-store writes use absolute totals and safely overwrite

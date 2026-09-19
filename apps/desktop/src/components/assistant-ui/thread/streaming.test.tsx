@@ -603,7 +603,9 @@ describe('assistant-ui streaming renderer', () => {
     expect(full).toContain(`${(609_920).toLocaleString()} cached`)
     expect(full).toContain('92% hit')
     expect(full).toContain('14 calls')
-    expect(full).toContain('$0.0166')
+    // The cost delta is an estimate, and the strip says so — readers must not
+    // take the figure as billing truth.
+    expect(full).toContain('$0.0166 est.')
 
     cleanup()
 

@@ -2265,13 +2265,17 @@ def _probe_result(
         "used_fallback": used_fallback}
 
 
+_MAX_MODEL_CATALOG_PAGES = 100
+
+
 def probe_api_models(
     api_key: Optional[str], base_url: Optional[str], timeout: float = 5.0,
     api_mode: Optional[str] = None, request_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics (``base`` then ``base±/v1``).
-    ``anthropic_messages`` mode sends ``x-api-key`` + ``anthropic-version`` instead of a bearer; the
-    ``data[].id`` response shape is identical. ``models`` is None when no candidate answered."""
+    ``anthropic_messages`` mode sends ``x-api-key`` + ``anthropic-version`` instead of a bearer;
+    catalog entries normally use ``data[].id``, but compatible endpoints may use ``data[].model``
+    and cursor pagination. ``models`` is None when no candidate answered."""
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return _probe_result(None, None, "")
@@ -2279,7 +2283,13 @@ def probe_api_models(
         models = _fetch_github_models(api_key=api_key, timeout=timeout)
         return _probe_result(models, COPILOT_MODELS_URL, COPILOT_BASE_URL)
 
-    alternate_base = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
+    parsed_normalized = urllib.parse.urlsplit(normalized)
+    normalized_path = parsed_normalized.path.rstrip("/")
+    if normalized_path.endswith("/v1"):
+        alternate_path = normalized_path[:-3].rstrip("/")
+    else:
+        alternate_path = normalized_path + "/v1"
+    alternate_base = urllib.parse.urlunsplit(parsed_normalized._replace(path=alternate_path))
     candidates: list[tuple[str, bool]] = [(normalized, False)]
     if alternate_base and alternate_base != normalized:
         candidates.append((alternate_base, True))
@@ -2316,10 +2326,60 @@ def probe_api_models(
         _open_kwargs["ssl_context"] = _ssl_context
     reachable = False
     for candidate_base, is_fallback in candidates:
-        url = candidate_base.rstrip("/") + "/models"
+        parsed_base = urllib.parse.urlsplit(candidate_base)
+        models_path = parsed_base.path.rstrip("/") + "/models"
+        url = urllib.parse.urlunsplit(parsed_base._replace(path=models_path))
         tried.append(url)
         try:
-            data = _get_json(url, timeout=timeout, headers=headers, **_open_kwargs)
+            discovered_models: list[str] = []
+            seen_models: set[str] = set()
+            seen_cursors = {
+                value.strip()
+                for key, value in urllib.parse.parse_qsl(parsed_base.query, keep_blank_values=True)
+                if key == "cursor" and value.strip()
+            }
+            page_url = url
+            for _page in range(_MAX_MODEL_CATALOG_PAGES):
+                data = _get_json(page_url, timeout=timeout, headers=headers, **_open_kwargs)
+                if not isinstance(data, dict):
+                    raise ValueError("invalid model catalog response")
+                page_items = data.get("data")
+                if not isinstance(page_items, list):
+                    raise ValueError("invalid model catalog data")
+                if "has_more" in data and not isinstance(data["has_more"], bool):
+                    raise ValueError("invalid model catalog pagination metadata")
+                for item in page_items:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_id = item.get("id")
+                    raw_model = item.get("model")
+                    model_id = raw_id.strip() if isinstance(raw_id, str) else ""
+                    if not model_id and isinstance(raw_model, str):
+                        model_id = raw_model.strip()
+                    if not model_id or model_id in seen_models:
+                        continue
+                    seen_models.add(model_id)
+                    discovered_models.append(model_id)
+                if data.get("has_more") is not True:
+                    if _neg_key is not None:
+                        _probe_neg_cache.pop(_neg_key, None)
+                    return _probe_result(
+                        discovered_models, url, candidate_base.rstrip("/"),
+                        alternate_base if alternate_base != candidate_base else normalized, is_fallback)
+                raw_cursor = data.get("next_cursor")
+                cursor = raw_cursor.strip() if isinstance(raw_cursor, str) else ""
+                if not cursor or cursor in seen_cursors:
+                    raise ValueError("invalid model catalog cursor")
+                seen_cursors.add(cursor)
+                parsed_url = urllib.parse.urlsplit(url)
+                query = [
+                    (key, value)
+                    for key, value in urllib.parse.parse_qsl(parsed_url.query, keep_blank_values=True)
+                    if key != "cursor"
+                ]
+                query.append(("cursor", cursor))
+                page_url = urllib.parse.urlunsplit(parsed_url._replace(query=urllib.parse.urlencode(query)))
+            raise ValueError("model catalog page limit exceeded")
         except urllib.error.HTTPError:
             # The host answered: an auth/404 failure is not unreachability, and a user fixing
             # their key must not be served a cached "no models" for the next TTL window.
@@ -2327,11 +2387,6 @@ def probe_api_models(
             continue
         except Exception:
             continue
-        if _neg_key is not None:
-            _probe_neg_cache.pop(_neg_key, None)
-        return _probe_result(
-            [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
-            alternate_base if alternate_base != candidate_base else normalized, is_fallback)
 
     if _neg_key is not None and not reachable:
         _probe_neg_cache[_neg_key] = time.monotonic()

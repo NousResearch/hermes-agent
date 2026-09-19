@@ -55,7 +55,9 @@ def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
             if env_map.get(name) is not None and str(env_map[name]).strip() != ""]
 
 
-def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict | None) -> list[tuple[str, str]]:
+def collect_relay_plugin_cutover_findings(
+    raw_config: dict | None, env_map: dict | None, *, merge_process_env: bool = False
+) -> list[tuple[str, str]]:
     """Return actionable findings for the removed Hermes Relay plugin."""
     from hermes_cli.relay_plugin_cutover import (LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV,
                                                  configured_legacy_relay_env_vars, legacy_relay_plugin_keys)
@@ -65,9 +67,8 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
         findings += [(f"plugins.enabled: {key}", f"remove it and configure {RELAY_PLUGINS_CONFIG_ENV}")
                      for key in legacy_relay_plugin_keys(plugins.get("enabled"))]
     effective_env = dict(env_map or {})
-    # Fall through to process env ONLY when no explicit env_map was given: run_doctor passes None and wants
-    # live-process vars, but an explicit map describes a complete environment (merging os.environ breaks hermeticity).
-    if env_map is None:
+    # Explicit maps stay isolated unless the live diagnostic requests shell relay settings.
+    if env_map is None or merge_process_env:
         for name in (*LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV):
             if name not in effective_env and os.environ.get(name) is not None:
                 effective_env[name] = os.environ[name]
@@ -78,11 +79,14 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
     return findings
 
 
-def report_deprecated_config_and_env(raw_config: dict | None = None, env_map: dict | None = None) -> list[tuple[str, str]]:
+def report_deprecated_config_and_env(
+    raw_config: dict | None = None, env_map: dict | None = None, *, merge_process_env: bool = False
+) -> list[tuple[str, str]]:
     """Emit non-failing doctor warnings for deprecated config keys and env vars; returns the findings reported.
     Does not mutate config/env and does not append to the blocking ``issues`` list."""
     deprecated = collect_deprecated_config_keys(raw_config) + collect_deprecated_env_vars(env_map)
-    relay_cutover = collect_relay_plugin_cutover_findings(raw_config, env_map)
+    relay_cutover = collect_relay_plugin_cutover_findings(
+        raw_config, env_map, merge_process_env=merge_process_env)
     findings = deprecated + relay_cutover
     if not findings:
         check_ok("No deprecated config keys or env vars")
@@ -364,13 +368,13 @@ def _drift_max_iterations_ghost(f: Finding, should_fix: bool, config_path) -> No
 
 
 def _drift_deprecations(f: Finding, should_fix: bool, config_path) -> None:
-    """Warn-only deprecation sweep over the raw file + on-disk .env (process env would false-positive)."""
+    """Check files for deprecations; include shell settings only for the removed relay plugin."""
     from hermes_cli.config import load_env, read_user_config_raw
     raw = read_user_config_raw(config_path) if config_path is not None else {}
     env = {}
     with warn_on_error(""):
         env = load_env()
-    report_deprecated_config_and_env(raw, env)
+    report_deprecated_config_and_env(raw, env, merge_process_env=True)
 
 
 def _drift_structure(f: Finding, should_fix: bool, config_path) -> None:

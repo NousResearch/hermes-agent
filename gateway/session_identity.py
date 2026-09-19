@@ -15,6 +15,7 @@ receiving bot's own profile — so nothing here changes the wire format or any h
 from __future__ import annotations
 
 import dataclasses
+import logging
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from gateway.session import SessionSource
+
+logger = logging.getLogger(__name__)
 
 _IDENTITY_ATTR = "_identity"
 # Wire-invisible provenance copied alongside the identity when a source is duplicated.
@@ -97,6 +100,26 @@ def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":
 def _name(value: Any) -> Optional[str]:
     text = value.strip() if isinstance(value, str) else ""
     return text or None
+
+
+def canonical_identity(
+    source: "SessionSource", *, runner: Any, adapter: Any = None,
+    transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
+) -> Optional[RoutingIdentity]:
+    """The identity already pinned on *source*, else :func:`resolve_identity` — the one call every
+    ingress path makes FIRST, before any key is derived. ``None`` = unresolved under multiplexing
+    (``source.profile_route_rejected`` is set): the caller drops the event and says so once; it
+    must never fall through to ``agent:main``."""
+    identity = identity_of(source)
+    if identity is not None:
+        return identity
+    try:
+        return resolve_identity(
+            source, runner=runner, adapter=adapter, transport_profile=transport_profile,
+            primary_home=primary_home)
+    except IdentityUnresolved as exc:
+        logger.debug("identity unresolved: %s", exc)
+        return None
 
 
 def resolve_identity(

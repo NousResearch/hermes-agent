@@ -6305,6 +6305,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _route_photo_event(self, msg, event: MessageEvent) -> None:
         """Album items debounce on media_group_id; singles go through the photo burst batcher."""
+        if self._drop_unresolved(event):  # identity FIRST: the batch lane is derived from it
+            return
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
             await self._queue_media_group_event(str(media_group_id), event)

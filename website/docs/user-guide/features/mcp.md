@@ -63,15 +63,15 @@ the chat, and Install writes the same config the CLI would. On the CLI and in
 messaging apps the agent relays the commands below instead.
 
 ```bash
-hermes mcp                # interactive picker (default)
-hermes mcp catalog        # plain-text list, scriptable
-hermes mcp install n8n    # install a catalog entry by name
+hermes mcp                   # interactive picker (default)
+hermes mcp catalog           # plain-text list, scriptable
+hermes mcp install deepwiki  # install a catalog entry by name
 ```
 
 The picker shows each entry with its current status:
 
 ```
-n8n          available              Manage and inspect n8n workflows from Hermes
+deepwiki     available              Ask questions about public GitHub repositories
 linear       enabled                Linear issue/project management (remote OAuth)
 github       installed (disabled)   GitHub repo + PR tools
 ```
@@ -81,6 +81,14 @@ enable, disable, or uninstall. Catalog entries are stored under
 `optional-mcps/` in the hermes-agent repo — presence in that directory means
 Nous approval. There is no community submission tier; entries are added by
 merging a PR.
+
+The third-party n8n bridge is no longer available for catalog installation.
+Existing installations keep their `mcp_servers` configuration, credentials,
+installed files, and selected tools. They continue to load as configured MCP
+servers and appear as custom entries in the picker, where you can still
+configure tools or enable and disable them. Catalog reinstall is no longer
+available. This change does not migrate existing connections to
+[n8n's official MCP server](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
 
 Catalog entries can require:
 

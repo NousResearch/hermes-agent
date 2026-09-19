@@ -738,7 +738,40 @@ def resolve_skill_config_values(config_vars: List[Dict[str, Any]]) -> Dict[str, 
     return resolved
 
 
-SKILL_PROMPT_DESC_LIMIT = 60
+SKILL_PROMPT_DESC_LIMIT_DEFAULT = 60  # upstream default; skills.prompt_desc_limit overrides
+SKILL_PROMPT_DESC_LIMIT = SKILL_PROMPT_DESC_LIMIT_DEFAULT  # legacy import name: the static
+# default; runtime truncation uses _prompt_desc_limit(), i.e. the configured value
+_DESC_LIMIT_CACHE: tuple[int, int] = (0, SKILL_PROMPT_DESC_LIMIT_DEFAULT)  # (config_mtime, value)
+
+
+def _prompt_desc_limit() -> int:
+    """Effective index-description budget: ``skills.prompt_desc_limit``, default 60.
+
+    Cached on the config file's mtime so the hot prompt-build path never re-reads
+    config.yaml; clamped to [20, 400] because values outside that range are
+    user error, not intent. Parsing is deliberately lenient (``int(raw)``):
+    non-numeric strings fall back to the default, and booleans coerce via
+    ``int(True) == 1`` (then clamp to 20) — malformed input fails safe, never
+    raises.
+    """
+    global _DESC_LIMIT_CACHE
+    try:
+        from hermes_cli.config import get_config_path
+        cfg_path = get_config_path()
+        mtime = int(cfg_path.stat().st_mtime) if cfg_path else 0
+        if mtime != _DESC_LIMIT_CACHE[0]:
+            limit = None
+            try:
+                from hermes_cli.config import load_config_readonly
+                raw = (load_config_readonly() or {}).get("skills", {}).get("prompt_desc_limit")
+                limit = int(raw) if isinstance(raw, (int, str)) and str(raw).strip() else None
+            except Exception:  # noqa: BLE001 — config IO failure -> default
+                limit = None
+            value = limit if limit is not None else SKILL_PROMPT_DESC_LIMIT_DEFAULT
+            _DESC_LIMIT_CACHE = (mtime, max(20, min(400, value)))
+    except Exception:  # noqa: BLE001 — never break prompt build over a config knob
+        pass
+    return _DESC_LIMIT_CACHE[1]
 
 
 def _normalize_skill_description(frontmatter: Dict[str, Any]) -> str:
@@ -750,12 +783,13 @@ def _normalize_skill_description(frontmatter: Dict[str, Any]) -> str:
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
     """Extract a system-prompt-length description from parsed frontmatter."""
     desc = _normalize_skill_description(frontmatter)
-    return desc[:SKILL_PROMPT_DESC_LIMIT - 3] + "..." if len(desc) > SKILL_PROMPT_DESC_LIMIT else desc
+    limit = _prompt_desc_limit()
+    return desc[:limit - 3] + "..." if len(desc) > limit else desc
 
 
 def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bool:
     """True when the description will be truncated in the system prompt skill index."""
-    return len(_normalize_skill_description(frontmatter)) > SKILL_PROMPT_DESC_LIMIT
+    return len(_normalize_skill_description(frontmatter)) > _prompt_desc_limit()
 
 
 def iter_skill_index_files(skills_dir: Path, filename: str):

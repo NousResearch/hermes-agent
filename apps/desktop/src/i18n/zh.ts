@@ -2215,6 +2215,8 @@ export const zh = defineLocale({
     noUsage: period => `最近 ${period} 天暂无用量。`,
     retry: '重试',
     dailyTokens: '每日词元',
+    cacheHitRate: '缓存命中率',
+    cacheHitRateVolume: '按提示词 Token 加权',
     input: '输入',
     output: '输出',
     noDailyActivity: '暂无每日活动。',

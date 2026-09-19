@@ -835,6 +835,7 @@ export interface AnalyticsDailyEntry {
   actual_cost: number
   api_calls: number
   cache_read_tokens: number
+  cache_write_tokens: number
   day: string
   estimated_cost: number
   input_tokens: number

@@ -2358,7 +2358,9 @@ class TestTruncateToolCallArgsJson:
         shrunk = shrink(original)
         parsed = _json.loads(shrunk)  # must not raise
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        # Head + tail are both kept (a head-only cut destroyed the file ending, #110094).
+        assert "...[truncated" in parsed["content"]
+        assert parsed["content"].endswith("abc " * 50)
         assert len(shrunk) < len(original)
 
 
@@ -2379,7 +2381,7 @@ class TestTruncateToolCallArgsJson:
         assert parsed["enabled"] is True
         assert parsed["timeout"] is None
         assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].endswith("...[truncated]")
+        assert parsed["note"].endswith("z" * 200)  # tail kept, not cut to a 200-char head
 
 
 
@@ -2417,7 +2419,8 @@ class TestTruncateToolCallArgsJson:
         # Must parse — otherwise downstream provider returns 400
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        assert "...[truncated" in parsed["content"]
+        assert parsed["content"].endswith("x " * 100)
 
 
 class TestLazyContextResolution:

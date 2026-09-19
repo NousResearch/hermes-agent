@@ -1347,8 +1347,15 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     return pruned
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+def _truncate_tool_call_args_json(args: str, head_chars: int = 200, tail_chars: int = 200) -> str:
+    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
+
+    Long leaves keep BOTH ends — head, an explicit ``...[truncated N chars]...`` marker, tail —
+    and ``args`` is returned unchanged when nothing needed shrinking. A head-only cut is
+    non-destructive-looking data loss: the rewritten message stays in the list, so the model
+    re-reads a mangled version of its own ``write_file``/``execute_code`` payload with the body
+    (and any file ending) gone, with no marker a reader could act on (#110094).
+    """
     try:
         parsed = json.loads(args)
     except (ValueError, TypeError):
@@ -1356,7 +1363,10 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
+            if len(obj) <= head_chars + tail_chars:
+                return obj
+            tail = obj[-tail_chars:] if tail_chars > 0 else ""
+            return obj[:head_chars] + f"...[truncated {len(obj) - head_chars - tail_chars:,} chars]..." + tail
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -1364,6 +1374,9 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
         return obj
 
     shrunken = _shrink(parsed)
+    if type(shrunken) is type(parsed) and shrunken == parsed:
+        # Nothing shrank: re-serializing would only reflow whitespace and can grow the blob.
+        return args
     # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
     return json.dumps(shrunken, ensure_ascii=False)
 

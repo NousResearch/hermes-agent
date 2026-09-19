@@ -165,7 +165,7 @@ class TestProfileRuntimeStatus:
         adapter._runtime_status_platform_key = "reviewer:discord"
         writes = []
         monkeypatch.setattr(
-            "gateway.status.write_runtime_status",
+            "gateway.status.publish_runtime_status",
             lambda **kwargs: writes.append(kwargs),
         )
 
@@ -852,7 +852,7 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
         status = {}
         monkeypatch.setattr(
-            "gateway.status.write_runtime_status",
+            "gateway.status.publish_runtime_status",
             lambda **kwargs: status.update(kwargs),
         )
 
@@ -867,7 +867,7 @@ class TestSecondaryProfileConfigHandling:
 
     @pytest.mark.asyncio
     async def test_single_profile_start_clears_inherited_served_profiles(self, monkeypatch, tmp_path):
-        """``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+        """Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
         ``served_profiles`` survived into a later single-profile run and every `hermes -p X` surface
         kept treating X as served (exit 78 on start, "running via multiplexer" on status)."""
         import json

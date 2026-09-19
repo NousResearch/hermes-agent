@@ -3276,10 +3276,10 @@ _AUTO_RESET_CONTEXT_NOTES = {
 
 
 def _write_runtime_status_quiet(**fields: Any) -> None:
-    """Best-effort ``gateway_state.json`` write; status persistence must never abort the caller."""
+    """Best-effort status publication; persistence must never abort or block the caller."""
     try:
-        from gateway.status import write_runtime_status
-        write_runtime_status(**fields)
+        from gateway.status import publish_runtime_status
+        publish_runtime_status(**fields)
     except Exception:
         pass
 

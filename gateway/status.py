@@ -1,6 +1,7 @@
 """Gateway runtime status helpers: PID/lock/marker files under ``{HERMES_HOME}`` (one set per
 home/profile) that tell whether the gateway daemon is running."""
 
+import asyncio
 import contextlib
 import copy
 import hashlib
@@ -44,6 +45,142 @@ _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple, Optional[int]]] = {}
 
 logger = logging.getLogger(__name__)
+
+
+class _RuntimeStatusWriter:
+    """Persist the latest complete status snapshot on one daemon thread.
+
+    Runtime status is diagnostic state, not an event log. While one write is
+    blocked in filesystem I/O, newer submissions replace the single pending
+    snapshot. This bounds memory and keeps every status producer off asyncio.
+    """
+
+    def __init__(self, write_fn: Optional[Callable[[Path, dict[str, Any]], None]] = None):
+        self._write_fn = write_fn
+        self._condition = threading.Condition()
+        self._pending: Optional[tuple[int, Path, dict[str, Any]]] = None
+        self._writing_generation = 0
+        self._submitted_generation = 0
+        self._completed_generation = 0
+        self._successful_generation = 0
+        self._last_error: Optional[BaseException] = None
+        self._failure_logged = False
+        self._thread: Optional[threading.Thread] = None
+
+    def submit(self, path: Path, payload: dict[str, Any]) -> int:
+        with self._condition:
+            self._submitted_generation += 1
+            generation = self._submitted_generation
+            self._pending = (generation, path, copy.deepcopy(payload))
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(
+                    target=self._run, daemon=True, name="gateway-runtime-status-writer")
+                self._thread.start()
+            self._condition.notify_all()
+            return generation
+
+    def wait(self, generation: int, timeout: Optional[float] = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(timeout, 0.0)
+        with self._condition:
+            while self._successful_generation < generation:
+                no_more_work = (
+                    self._completed_generation >= generation
+                    and self._writing_generation == 0
+                    and self._pending is None
+                )
+                if no_more_work:
+                    if timeout is None and self._last_error is not None:
+                        raise self._last_error
+                    return False
+                if deadline is None:
+                    self._condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(timeout=remaining)
+            return True
+
+    def flush(self, timeout: float = 2.0) -> bool:
+        with self._condition:
+            generation = self._submitted_generation
+        return generation == 0 or self.wait(generation, timeout=timeout)
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while self._pending is None:
+                    self._condition.wait()
+                generation, path, payload = self._pending
+                self._pending = None
+                self._writing_generation = generation
+            error: Optional[BaseException] = None
+            try:
+                (self._write_fn or _write_json_file)(path, payload)
+            except BaseException as exc:
+                error = exc
+            with self._condition:
+                self._writing_generation = 0
+                self._completed_generation = max(self._completed_generation, generation)
+                if error is None:
+                    self._successful_generation = max(self._successful_generation, generation)
+                    self._last_error = None
+                else:
+                    self._last_error = error
+                self._condition.notify_all()
+            if error is None:
+                if self._failure_logged:
+                    logger.info("Gateway runtime-status persistence recovered")
+                    self._failure_logged = False
+            elif not self._failure_logged:
+                logger.warning(
+                    "Failed to persist gateway runtime status; later updates will retry: %s", error)
+                self._failure_logged = True
+            else:
+                logger.debug("Failed to persist gateway runtime status: %s", error)
+
+
+_runtime_status_state_lock = threading.RLock()
+_runtime_status_state_path: Optional[Path] = None
+_runtime_status_state: Optional[dict[str, Any]] = None
+_runtime_status_writer_lock = threading.Lock()
+_runtime_status_writer: Optional[_RuntimeStatusWriter] = None
+
+
+def _get_runtime_status_writer() -> _RuntimeStatusWriter:
+    global _runtime_status_writer
+    if _runtime_status_writer is not None:
+        return _runtime_status_writer
+    with _runtime_status_writer_lock:
+        if _runtime_status_writer is None:
+            _runtime_status_writer = _RuntimeStatusWriter()
+        return _runtime_status_writer
+
+
+def flush_runtime_status(timeout: float = 2.0) -> bool:
+    """Wait boundedly for all runtime-status updates submitted so far."""
+    writer = _runtime_status_writer
+    return True if writer is None else writer.flush(timeout=timeout)
+
+
+async def flush_runtime_status_async(timeout: float = 2.0) -> bool:
+    """Await the current writer generation without blocking the event loop."""
+    writer = _runtime_status_writer
+    if writer is None:
+        return True
+    with writer._condition:
+        generation = writer._submitted_generation
+    if generation == 0:
+        return True
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(timeout, 0.0)
+    while True:
+        if writer.wait(generation, timeout=0.0):
+            return True
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(0.02, remaining))
 
 
 class StormInfo(NamedTuple):
@@ -827,7 +964,7 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
     return {"status": state if state in {"ok", "unavailable", "retrying"} else "unknown"}
 
 
-def write_runtime_status(
+def _prepare_runtime_status_update(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
@@ -835,72 +972,130 @@ def write_runtime_status(
     multiplex_standalone_reason: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
-) -> None:
-    """Persist gateway runtime health information for diagnostics/status. ``drop_profile_platforms``
-    removes one deleted profile's ``<profile>:<platform>`` entries (hot unroute)."""
+    load_existing: bool = True, reload_existing: bool = False,
+) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    """Merge one update into the process-wide canonical status snapshot."""
+    global _runtime_status_state_path, _runtime_status_state
     path = _get_runtime_status_path()
-    payload = _read_json_file(path) or _build_runtime_status_record()
-    previous_payload = copy.deepcopy(payload)
-    current_record = _build_pid_record()
-    payload.setdefault("platforms", {})
-    if clear_profile_platforms or drop_profile_platforms:
-        # Secondary-profile entries are keyed ``<profile>:<platform>``. A fresh process must not
-        # inherit them or /api/status stays degraded until every old adapter re-emits.
-        platforms = payload["platforms"] if isinstance(payload["platforms"], dict) else {}
-        drop_prefix = f"{drop_profile_platforms}:" if drop_profile_platforms else None
-        payload["platforms"] = {
-            k: v for k, v in platforms.items()
-            if not isinstance(k, str) or ":" not in k or (drop_prefix is not None and not k.startswith(drop_prefix))
-        }
-    # Re-stamp identity + code fields on every write: the file can outlive its creator and the
-    # top-level record must describe the CURRENT writer.
-    payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
-    payload["updated_at"] = _utc_now_iso()
-    payload.update(_get_code_identity_fields())
-    _apply_set_fields(payload, (
-        ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
-        ("restart_requested", restart_requested, bool),
-        ("active_agents", active_agents, parse_active_agents),
-        # Named in-flight units (see GatewayShutdownMixin._describe_active_work); None clears.
-        ("active_work", active_work, lambda v: list(v) if v else None),
-        # Multiplexed profiles; absent/empty for a single-profile gateway.
-        ("served_profiles", served_profiles, lambda v: list(v or [])),
-        # Why an unset-default (multiplex on) gateway is serving one profile; None clears it.
-        ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),
-        ("session_store", session_store, _coerce_session_store),
-    ))
-    if platform is not _UNSET:
-        platform_payload = payload["platforms"].get(platform, {})
-        if platform_state == "connected":
-            # Every writer that publishes ``connected`` (startup stamp, adapter ``_mark_connected``,
-            # Telegram's in-place polling recovery) ends the retry episode; only the watcher's
-            # reconnect path used to say so, and a restart after a NEEDS_ATTENTION escalation
-            # carried the flag into a healthy record for weeks.
-            needs_attention = False if needs_attention is _UNSET else needs_attention
-            retrying_since = None if retrying_since is _UNSET else retrying_since
-        _apply_set_fields(platform_payload, (
-            ("state", platform_state, None), ("error_code", error_code, None),
-            ("error_message", error_message, None),
-            # Reconnect-loop escalation past the attention threshold: a signal for owners/fleet
-            # monitoring, not a circuit breaker (retry never stops). Cleared on reconnect.
-            ("needs_attention", needs_attention, bool),
-            # ISO start of the current retry episode; None clears it.
-            ("retrying_since", retrying_since, None),
-            # Shared-listener secondaries: the /p/<profile>/ callback URL the vendor console must target.
-            ("ingress_url", ingress_url, None),
-            # Bound listener (``http://host:port``) of the default's api_server/webhook: a served
-            # profile's mirror of that platform is reported off it (``<listener_base>/p/<profile>/...``).
-            ("listener_base", listener_base, None),
+    with _runtime_status_state_lock:
+        if reload_existing or _runtime_status_state_path != path or _runtime_status_state is None:
+            _runtime_status_state_path = path
+            _runtime_status_state = (
+                (_read_json_file(path) if load_existing else None) or _build_runtime_status_record())
+        payload = copy.deepcopy(_runtime_status_state)
+        previous_payload = copy.deepcopy(payload)
+        current_record = _build_pid_record()
+        payload.setdefault("platforms", {})
+        if not isinstance(payload["platforms"], dict):
+            payload["platforms"] = {}
+        if clear_profile_platforms or drop_profile_platforms:
+            drop_prefix = f"{drop_profile_platforms}:" if drop_profile_platforms else None
+            payload["platforms"] = {
+                k: v for k, v in payload["platforms"].items()
+                if not isinstance(k, str) or ":" not in k
+                or (drop_prefix is not None and not k.startswith(drop_prefix))
+            }
+        payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
+        payload["updated_at"] = _utc_now_iso()
+        payload.update(_get_code_identity_fields())
+        _apply_set_fields(payload, (
+            ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
+            ("restart_requested", restart_requested, bool),
+            ("active_agents", active_agents, parse_active_agents),
+            ("active_work", active_work, lambda v: list(v) if v else None),
+            ("served_profiles", served_profiles, lambda v: list(v or [])),
+            ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),
+            ("session_store", session_store, _coerce_session_store),
         ))
-        # Per-entry writer provenance: top-level pid/start_time only identify the most recent
-        # writer; /api/status tells "live" from "preserved" by exact (pid, start_time) equality.
-        platform_payload.update(updated_at=_utc_now_iso(), writer_pid=current_record["pid"],
-                                writer_start_time=current_record["start_time"])
-        payload["platforms"][platform] = platform_payload
-    _write_json_file(path, payload)
+        if platform is not _UNSET:
+            platform_payload = copy.deepcopy(payload["platforms"].get(platform, {}))
+            if not isinstance(platform_payload, dict):
+                platform_payload = {}
+            if platform_state == "connected":
+                needs_attention = False if needs_attention is _UNSET else needs_attention
+                retrying_since = None if retrying_since is _UNSET else retrying_since
+            _apply_set_fields(platform_payload, (
+                ("state", platform_state, None), ("error_code", error_code, None),
+                ("error_message", error_message, None),
+                ("needs_attention", needs_attention, bool),
+                ("retrying_since", retrying_since, None),
+                ("ingress_url", ingress_url, None),
+                ("listener_base", listener_base, None),
+            ))
+            platform_payload.update(
+                updated_at=_utc_now_iso(), writer_pid=current_record["pid"],
+                writer_start_time=current_record["start_time"])
+            payload["platforms"][platform] = platform_payload
+        _runtime_status_state = copy.deepcopy(payload)
+        return path, payload, previous_payload
+
+
+def _emit_runtime_status_transition(
+    previous_payload: dict[str, Any], payload: dict[str, Any]
+) -> None:
     with contextlib.suppress(Exception):
         from agent.monitoring.gateway_health import emit_runtime_status_transition
         emit_runtime_status_transition(previous_payload, payload)
+
+
+def write_runtime_status(
+    *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
+    active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
+    error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
+    retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
+    multiplex_standalone_reason: Any = _UNSET,
+    ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
+    drop_profile_platforms: Optional[str] = None, _reload_existing: bool = False,
+    _wait_timeout: Optional[float] = None,
+) -> bool:
+    """Synchronously persist status for CLI callers and off-loop startup.
+
+    ``_wait_timeout`` bounds how long the caller waits for durable persistence.
+    A timed-out update remains queued for the single background writer.
+    """
+    with _runtime_status_state_lock:
+        path, payload, previous_payload = _prepare_runtime_status_update(
+            gateway_state=gateway_state, exit_reason=exit_reason,
+            restart_requested=restart_requested, active_agents=active_agents, active_work=active_work,
+            platform=platform, platform_state=platform_state, error_code=error_code,
+            error_message=error_message, needs_attention=needs_attention,
+            retrying_since=retrying_since, served_profiles=served_profiles,
+            session_store=session_store, multiplex_standalone_reason=multiplex_standalone_reason,
+            ingress_url=ingress_url, listener_base=listener_base,
+            clear_profile_platforms=clear_profile_platforms, drop_profile_platforms=drop_profile_platforms,
+            reload_existing=_reload_existing)
+        writer = _get_runtime_status_writer()
+        generation = writer.submit(path, payload)
+    persisted = writer.wait(generation, timeout=_wait_timeout)
+    if persisted:
+        _emit_runtime_status_transition(previous_payload, payload)
+    return persisted
+
+
+def publish_runtime_status(
+    *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
+    active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
+    error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
+    retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
+    multiplex_standalone_reason: Any = _UNSET,
+    ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
+    drop_profile_platforms: Optional[str] = None,
+) -> int:
+    """Merge and enqueue status without waiting for filesystem persistence."""
+    with _runtime_status_state_lock:
+        path, payload, previous_payload = _prepare_runtime_status_update(
+            gateway_state=gateway_state, exit_reason=exit_reason,
+            restart_requested=restart_requested, active_agents=active_agents, active_work=active_work,
+            platform=platform, platform_state=platform_state, error_code=error_code,
+            error_message=error_message, needs_attention=needs_attention,
+            retrying_since=retrying_since, served_profiles=served_profiles,
+            session_store=session_store, multiplex_standalone_reason=multiplex_standalone_reason,
+            ingress_url=ingress_url, listener_base=listener_base,
+            clear_profile_platforms=clear_profile_platforms, drop_profile_platforms=drop_profile_platforms,
+            load_existing=False)
+        generation = _get_runtime_status_writer().submit(path, payload)
+    _emit_runtime_status_transition(previous_payload, payload)
+    return generation
 
 
 def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:

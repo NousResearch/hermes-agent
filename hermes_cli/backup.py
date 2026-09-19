@@ -324,11 +324,50 @@ def _query_ro_sqlite(path: Path, fn):
         _close_quietly(conn)
 
 
+def _warn_if_source_malformed(src: Path) -> Optional[str]:
+    """Warn when *src* is ALREADY corrupt before we copy it; returns the message or None.
+
+    ``conn.backup()`` copies pages without validating them, so a source database that is
+    already corrupt is reproduced faithfully into the snapshot/backup and the corruption
+    travels silently into the thing the user is relying on to recover. Downstream
+    ``copy_db_and_verify()`` only checks the DESTINATION, so it reports "backup failed
+    integrity verification" — which reads as "the backup broke" when the truth is "your
+    live database was already broken". Naming that distinction is the whole point here.
+
+    Uses ``verify_sqlite_integrity`` so this inherits the project's existing size policy
+    (#70553): databases above ``DEFAULT_INTEGRITY_CHECK_MAX_BYTES`` get the O(1) header +
+    schema probe instead of a full page walk, so a 30 GB ``state.db`` never turns
+    ``hermes update`` into a multi-minute CPU stall.
+
+    Advisory only — it never blocks the copy. A corrupt source is exactly when you most
+    want whatever salvage a backup can give you.
+    """
+    try:
+        result = verify_sqlite_integrity(src)
+    except Exception as exc:  # a failed check must never break the backup
+        logger.debug("Source integrity check skipped for %s: %s", src, exc)
+        return None
+    if result.get("valid"):
+        return None
+    message = (
+        f"Warning: {src} is already malformed BEFORE this copy "
+        f"({result.get('message')}). The snapshot/backup will faithfully preserve the "
+        f"corruption — it is not a usable recovery point. Investigate the source database.")
+    # Both surfaces on purpose: logger.warning lands in agent.log/errors.log, but a normal
+    # (non-verbose) CLI run installs no console handler, so the log alone is invisible to
+    # the person running `hermes backup`. See review on #39758.
+    logger.warning("%s", message)
+    print(message)
+    return message
+
+
 def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> bool:
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 
     Fails closed when no consistent snapshot can be made: copying only the main file loses WAL data.
+    Warns (without blocking) when the SOURCE is already corrupt — see ``_warn_if_source_malformed``.
     """
+    _warn_if_source_malformed(src)
     conn = backup_conn = None
     try:
         # sqlite3.connect() creates a missing destination with the process

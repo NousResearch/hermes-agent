@@ -2136,10 +2136,108 @@ class TestRestoreConfigModelSettingsIfRewritten:
 
 
 # ---------------------------------------------------------------------------
-# Memory-provider external paths (~/.honcho, ~/.hindsight, ...) — captured via
-# MemoryProvider.backup_paths() and restored to their original home-relative
-# location, NOT under HERMES_HOME. (backup/import cycle data-loss fix)
+# Source-DB integrity check before snapshot/backup (#39758)
 # ---------------------------------------------------------------------------
+
+def _corrupt_db(path: Path) -> None:
+    """Create a SQLite DB then scribble over a page so integrity_check fails."""
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE t(x)")
+    for i in range(500):
+        conn.execute("INSERT INTO t VALUES (?)", (i,))
+    conn.commit()
+    conn.close()
+    with open(path, "r+b") as f:
+        f.seek(4096)
+        f.write(b"\xde\xad\xbe\xef" * 400)
+
+
+def _healthy_db(path: Path) -> None:
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE t(x)")
+    conn.execute("INSERT INTO t VALUES (1)")
+    conn.commit()
+    conn.close()
+
+
+class TestMalformedSourceWarning:
+    """``backup()`` copies pages verbatim, so an unchecked corrupt source propagates into
+    the snapshot silently. Destination-only verification blames the backup for damage the
+    live database already had."""
+
+    def test_healthy_source_is_silent(self, tmp_path, capsys):
+        from hermes_cli.backup import _warn_if_source_malformed
+        db = tmp_path / "good.db"
+        _healthy_db(db)
+        assert _warn_if_source_malformed(db) is None
+        assert capsys.readouterr().out == ""
+
+    def test_malformed_source_is_reported(self, tmp_path):
+        from hermes_cli.backup import _warn_if_source_malformed
+        db = tmp_path / "bad.db"
+        _corrupt_db(db)
+        assert _warn_if_source_malformed(db) is not None
+
+    def test_warning_reaches_stdout_not_just_the_log(self, tmp_path, capsys, caplog):
+        """The review point on #39758: a normal CLI run installs no console log handler,
+        so ``logger.warning`` alone is invisible to whoever ran ``hermes backup``."""
+        import logging
+        from hermes_cli.backup import _safe_copy_db
+        db = tmp_path / "bad.db"
+        _corrupt_db(db)
+        with caplog.at_level(logging.WARNING):
+            _safe_copy_db(db, tmp_path / "out.db")
+        out = capsys.readouterr().out
+        assert "already malformed BEFORE this copy" in out, "warning must be visible on the terminal"
+        assert any("already malformed BEFORE this copy" in r.getMessage() for r in caplog.records), \
+            "the log entry must be preserved too"
+
+    def test_healthy_copy_prints_nothing(self, tmp_path, capsys):
+        from hermes_cli.backup import _safe_copy_db
+        db = tmp_path / "good.db"
+        _healthy_db(db)
+        assert _safe_copy_db(db, tmp_path / "out.db") is True
+        assert capsys.readouterr().out == ""
+
+    def test_warning_does_not_block_the_copy(self, tmp_path, capsys):
+        """A corrupt source is exactly when you most want whatever salvage a copy gives."""
+        from hermes_cli.backup import _safe_copy_db
+        db = tmp_path / "bad.db"
+        _corrupt_db(db)
+        _safe_copy_db(db, tmp_path / "out.db")
+        assert "already malformed BEFORE this copy" in capsys.readouterr().out
+
+    def test_a_failing_check_never_breaks_the_backup(self, tmp_path, monkeypatch, capsys):
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import _safe_copy_db
+        db = tmp_path / "good.db"
+        _healthy_db(db)
+
+        def _boom(*a, **k):
+            raise OSError("integrity check exploded")
+
+        monkeypatch.setattr(backup_mod, "verify_sqlite_integrity", _boom)
+        assert _safe_copy_db(db, tmp_path / "out.db") is True
+        assert capsys.readouterr().out == ""
+
+    def test_huge_source_skips_the_page_walk(self, tmp_path, monkeypatch):
+        """Inherits the #70553 size policy: no multi-minute stall on a 30 GB state.db."""
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import _warn_if_source_malformed
+        db = tmp_path / "big.db"
+        _healthy_db(db)
+        monkeypatch.setattr(backup_mod, "DEFAULT_INTEGRITY_CHECK_MAX_BYTES", 1)
+        called = []
+        real = backup_mod._query_ro_sqlite
+
+        def _spy(path, fn):
+            called.append(fn)
+            return real(path, fn)
+
+        monkeypatch.setattr(backup_mod, "_query_ro_sqlite", _spy)
+        _warn_if_source_malformed(db)
+        assert len(called) <= 1, "above the ceiling the full integrity_check must be skipped"
+
 
 class TestMemoryProviderExternalPaths:
     def _make_min_tree(self, hermes_home: Path) -> None:

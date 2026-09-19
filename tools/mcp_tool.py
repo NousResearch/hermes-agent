@@ -237,6 +237,10 @@ _MAX_BACKOFF_SECONDS = 60
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # Parked servers (tools deregistered) self-probe on this cadence: nothing else can revive them.
 _PARKED_RETRY_INTERVAL = 300
+# Cap for the parked self-probe backoff: each consecutive still-failed probe doubles the wait from
+# _PARKED_RETRY_INTERVAL up to this ceiling, so a server whose failure is provably persistent (a
+# duplicate stdio instance holding a single-writer lock) stops re-spawning a doomed child forever.
+_PARKED_PROBE_BACKOFF_MAX = 3600
 # Bounded wait for a respawned stdio child when a call finds it dead (gateway restarts kill
 # every MCP child); bounded so a broken server still parks via run()'s rapid-drop budget.
 _STDIO_RESPAWN_WAIT_SEC = 15.0
@@ -317,7 +321,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected", "_sse_fallback", "_park_reason")
+        "_ever_connected", "_sse_fallback", "_park_reason", "_single_instance",
+        "_parked_probe_failures")
 
     def __init__(self, name: str):
         self.name = name
@@ -357,6 +362,11 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # Lets cron preflight tell a network-blip park (recovering) from a permanent-error park
         # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
         self._park_reason: Optional[str] = None
+        # True when this stdio server must have exactly ONE live child system-wide (a single-writer
+        # datastore). A non-owner that finds the resource taken parks quietly instead of self-probing.
+        self._single_instance: bool = False
+        # Consecutive self-probes that came back still-broken; drives the parked-probe backoff.
+        self._parked_probe_failures: int = 0
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a

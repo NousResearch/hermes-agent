@@ -467,6 +467,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
+| `single_instance` | bool | If `true`, this stdio server must have exactly one live child system-wide (a single-writer datastore). A second Hermes context that finds the resource already held parks quietly — no timed self-probe — and is revived by an explicit reconnect (`/reload-mcp` or `hermes mcp` refresh) once the owning instance exits. |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example

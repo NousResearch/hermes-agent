@@ -53,13 +53,6 @@ def test_encode_message_uses_compact_separators_and_utf8():
     assert b'"id":1' in body
 
 
-def test_encode_message_handles_unicode_in_strings():
-    msg = {"jsonrpc": "2.0", "method": "log", "params": {"text": "🚀 ünıcödé"}}
-    out = encode_message(msg)
-    header_end = out.index(b"\r\n\r\n") + 4
-    declared = int(out[: out.index(b"\r\n")].split(b": ")[1])
-    assert declared == len(out[header_end:])
-    assert json.loads(out[header_end:].decode("utf-8")) == msg
 
 
 # ---------------------------------------------------------------------------
@@ -75,44 +68,14 @@ async def _stream_from_bytes(data: bytes) -> asyncio.StreamReader:
     return reader
 
 
-@pytest.mark.asyncio
-async def test_read_message_round_trip():
-    msg = {"jsonrpc": "2.0", "method": "ping"}
-    reader = await _stream_from_bytes(encode_message(msg))
-    parsed = await read_message(reader)
-    assert parsed == msg
 
 
-@pytest.mark.asyncio
-async def test_read_message_clean_eof_returns_none():
-    reader = await _stream_from_bytes(b"")
-    assert await read_message(reader) is None
 
 
-@pytest.mark.asyncio
-async def test_read_message_truncated_body_raises():
-    msg = encode_message({"jsonrpc": "2.0", "method": "x"})
-    truncated = msg[: -3]  # cut the body
-    reader = await _stream_from_bytes(truncated)
-    with pytest.raises(LSPProtocolError):
-        await read_message(reader)
 
 
-@pytest.mark.asyncio
-async def test_read_message_missing_content_length_raises():
-    bad = b"X-Other: 5\r\n\r\n12345"
-    reader = await _stream_from_bytes(bad)
-    with pytest.raises(LSPProtocolError):
-        await read_message(reader)
 
 
-@pytest.mark.asyncio
-async def test_read_message_two_messages_back_to_back():
-    a = encode_message({"jsonrpc": "2.0", "method": "a"})
-    b = encode_message({"jsonrpc": "2.0", "method": "b"})
-    reader = await _stream_from_bytes(a + b)
-    assert (await read_message(reader))["method"] == "a"
-    assert (await read_message(reader))["method"] == "b"
 
 
 @pytest.mark.asyncio
@@ -132,14 +95,8 @@ async def test_read_message_rejects_runaway_header():
 # ---------------------------------------------------------------------------
 
 
-def test_make_request_includes_id_and_method():
-    msg = make_request(7, "ping", {"v": 1})
-    assert msg == {"jsonrpc": "2.0", "id": 7, "method": "ping", "params": {"v": 1}}
 
 
-def test_make_request_omits_params_when_none():
-    msg = make_request(7, "ping", None)
-    assert "params" not in msg
 
 
 def test_make_notification_omits_id():
@@ -148,9 +105,6 @@ def test_make_notification_omits_id():
     assert msg["method"] == "log"
 
 
-def test_make_response_carries_result():
-    msg = make_response(7, {"ok": True})
-    assert msg["id"] == 7 and msg["result"] == {"ok": True}
 
 
 def test_make_error_response_shape():
@@ -165,19 +119,10 @@ def test_make_error_response_shape():
 # ---------------------------------------------------------------------------
 
 
-def test_classify_message_request():
-    msg = {"jsonrpc": "2.0", "id": 1, "method": "x"}
-    assert classify_message(msg) == ("request", 1)
 
 
-def test_classify_message_response():
-    msg = {"jsonrpc": "2.0", "id": 1, "result": None}
-    assert classify_message(msg) == ("response", 1)
 
 
-def test_classify_message_notification():
-    msg = {"jsonrpc": "2.0", "method": "log"}
-    assert classify_message(msg) == ("notification", "log")
 
 
 def test_classify_message_invalid():

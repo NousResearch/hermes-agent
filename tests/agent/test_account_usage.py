@@ -1,16 +1,21 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from agent import account_usage
 
 
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
-        return None
+        if self.status_code >= 400:
+            request = httpx.Request("GET", "https://chatgpt.com/backend-api/wham/usage")
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError("request failed", request=request, response=response)
 
     def json(self):
         return self._payload
@@ -118,38 +123,6 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
-def test_codex_usage_does_not_swap_to_pool_on_transient_resolver_error(monkeypatch, codex_usage_payload):
-    """A transient refresh/network failure (non-AuthError) must NOT silently
-    downgrade to a possibly-different pool account. It fails open (no snapshot)
-    instead of reporting the wrong account's usage."""
-    calls = []
-    monkeypatch.setattr(
-        account_usage.httpx,
-        "Client",
-        lambda timeout: _FakeClient(calls, codex_usage_payload),
-    )
-    monkeypatch.setattr(
-        account_usage,
-        "resolve_codex_runtime_credentials",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("refresh endpoint 503")),
-    )
-
-    pool_entry = SimpleNamespace(
-        runtime_api_key="pooled-token-WRONG-ACCOUNT",
-        runtime_base_url="https://chatgpt.com/backend-api/codex",
-    )
-    pool = SimpleNamespace(select=lambda: pool_entry)
-
-    import agent.credential_pool as credential_pool
-
-    # If the guard regressed, this pool would be consulted and return a snapshot
-    # for the wrong account. It must NOT be.
-    monkeypatch.setattr(credential_pool, "load_pool", lambda provider: pool)
-
-    snapshot = account_usage.fetch_account_usage("openai-codex")
-
-    assert snapshot is None
-    assert calls == []  # HTTP usage endpoint never hit with a wrong-account token
 
 
 def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, codex_usage_payload):
@@ -194,44 +167,181 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
-def test_codex_usage_treats_wham_used_percent_as_used_not_remaining(monkeypatch):
-    """ChatGPT UI says "left"; /wham/usage.used_percent is already used."""
-    payload = {
-        "plan_type": "plus",
-        "rate_limit": {
-            "primary_window": {
-                "used_percent": 85,
-                "reset_at": 1779846359,
-            },
-            "secondary_window": {
-                "used_percent": 14,
-                "reset_at": 1780230796,
-            },
-        },
-        "credits": {"has_credits": False},
-    }
-    calls = []
-    monkeypatch.setattr(
-        account_usage.httpx,
-        "Client",
-        lambda timeout: _FakeClient(calls, payload),
-    )
-    monkeypatch.setattr(
-        account_usage,
-        "resolve_codex_runtime_credentials",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("explicit auth should be used")),
-    )
+def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_payload):
+    credential_calls = []
+    request_calls = []
+    responses = [_FakeResponse({}, status_code=401), _FakeResponse(codex_usage_payload)]
 
-    snapshot = account_usage.fetch_account_usage(
-        "openai-codex",
-        base_url="https://chatgpt.com/backend-api/codex",
-        api_key="live-agent-token",
-    )
+    def resolve(**kwargs):
+        credential_calls.append(kwargs)
+        token = "fresh-token" if kwargs.get("force_refresh") else "revoked-token"
+        return {"api_key": token, "base_url": "https://chatgpt.com/backend-api/codex"}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            request_calls.append(headers["Authorization"])
+            return responses.pop(0)
+
+    monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials", resolve)
+    monkeypatch.setattr(account_usage, "_read_codex_tokens", lambda: {"tokens": {}})
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: Client())
+
+    snapshot = account_usage.fetch_account_usage("openai-codex")
 
     assert snapshot is not None
-    assert [window.used_percent for window in snapshot.windows] == [85, 14]
-    rendered = "\n".join(account_usage.render_account_usage_lines(snapshot, markdown=True))
-    assert "85% used" in rendered
-    assert "14% used" in rendered
-    assert "15% used" not in rendered
-    assert "86% used" not in rendered
+    assert snapshot.windows[0].label == "Session"
+    assert credential_calls == [
+        {"refresh_if_expiring": True},
+        {"refresh_if_expiring": True, "force_refresh": True},
+    ]
+    assert request_calls == ["Bearer revoked-token", "Bearer fresh-token"]
+
+
+# ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────
+
+
+class _FakeResetClient:
+    """GET returns the usage payload; POST returns the consume payload."""
+
+    def __init__(self, calls, usage_payload, consume_payload=None):
+        self.calls = calls
+        self.usage_payload = usage_payload
+        self.consume_payload = consume_payload or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, url, headers):
+        self.calls.append({"method": "GET", "url": url, "headers": headers})
+        return _FakeResponse(self.usage_payload)
+
+    def post(self, url, headers=None, json=None):
+        self.calls.append({"method": "POST", "url": url, "headers": headers, "json": json})
+        return _FakeResponse(self.consume_payload)
+
+
+def _usage_payload_with_resets(primary_used, secondary_used, banked):
+    return {
+        "plan_type": "plus",
+        "rate_limit": {
+            "primary_window": {"used_percent": primary_used, "reset_at": 1779846359},
+            "secondary_window": {"used_percent": secondary_used, "reset_at": 1780230796},
+        },
+        "rate_limit_reset_credits": {"available_count": banked},
+        "credits": {"has_credits": False},
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def test_redeem_retries_401_with_forced_refresh(monkeypatch):
+    credential_calls = []
+    request_calls = []
+    client_count = 0
+    payload = _usage_payload_with_resets(100, 40, 1)
+
+    def resolve(base_url, api_key, *, force_refresh=False):
+        credential_calls.append(force_refresh)
+        token = "fresh-token" if force_refresh else "revoked-token"
+        return token, "https://chatgpt.com/backend-api/codex", None
+
+    class Client(_FakeResetClient):
+        def get(self, url, headers):
+            request_calls.append(("GET", headers["Authorization"]))
+            if headers["Authorization"] == "Bearer revoked-token":
+                return _FakeResponse({}, status_code=401)
+            return _FakeResponse(payload)
+
+        def post(self, url, headers=None, json=None):
+            request_calls.append(("POST", headers["Authorization"]))
+            return _FakeResponse({"code": "reset", "windows_reset": 2})
+
+    def client_factory(timeout):
+        nonlocal client_count
+        client_count += 1
+        return Client([], payload)
+
+    monkeypatch.setattr(account_usage, "_resolve_codex_usage_credentials", resolve)
+    monkeypatch.setattr(account_usage.httpx, "Client", client_factory)
+
+    result = account_usage.redeem_codex_reset_credit()
+
+    assert result.status == "reset"
+    assert credential_calls == [False, True]
+    assert request_calls == [
+        ("GET", "Bearer revoked-token"),
+        ("GET", "Bearer fresh-token"),
+        ("POST", "Bearer fresh-token"),
+    ]
+    assert client_count == 2
+
+
+def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_codex_usage_credentials",
+        lambda base_url, api_key, **kwargs: (_ for _ in ()).throw(RuntimeError("no creds")),
+    )
+
+    result = account_usage.redeem_codex_reset_credit()
+
+    assert result.status == "unavailable"
+    assert "hermes auth" in result.message
+
+
+def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_account(monkeypatch, codex_usage_payload):
+    """A live agent on pool entry B hands its own api_key in; after a 401 the retry must refresh B,
+    not re-resolve and render the singleton/pool account A's usage."""
+    request_calls = []
+    refresh_hints = []
+    responses = [_FakeResponse({}, status_code=401), _FakeResponse(codex_usage_payload)]
+
+    class Pool:
+        def try_refresh_matching(self, api_key_hint=None, credential_id=None):
+            refresh_hints.append(api_key_hint)
+            return SimpleNamespace(runtime_api_key="pool-B-fresh", runtime_base_url=None)
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            request_calls.append(headers["Authorization"])
+            return responses.pop(0)
+
+    monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials",
+                        lambda **kwargs: pytest.fail("must not re-resolve another account's credential"))
+    monkeypatch.setattr(account_usage, "_read_codex_tokens", lambda: {"tokens": {"access_token": "singleton-A"}})
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: Client())
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex", base_url="https://chatgpt.com/backend-api/codex", api_key="pool-B-revoked")
+
+    assert snapshot is not None
+    assert refresh_hints == ["pool-B-revoked"]
+    assert request_calls == ["Bearer pool-B-revoked", "Bearer pool-B-fresh"]

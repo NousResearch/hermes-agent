@@ -37,3 +37,9 @@ optional_env:
     description: "Display name for the Slack home channel"
     prompt: "Home channel display name"
     password: false
+  - name: SLACK_THREAD_REQUIRE_MENTION
+    description: >-
+      Require an explicit @mention for Slack thread replies while preserving
+      top-level free response channels
+    prompt: "Require mentions in Slack threads? (true/false)"
+    password: false

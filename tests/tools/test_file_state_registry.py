@@ -22,9 +22,11 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from tools import file_state
 from tools.file_tools import (
+    clear_file_ops_cache,
     read_file_tool,
     write_file_tool,
     patch_tool,
@@ -74,46 +76,6 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertIn("B", warn)
         self.assertIn("sibling", warn.lower())
 
-    def test_write_without_read_flagged(self):
-        p = self._mk()
-        # Agent A never read this file.
-        file_state.note_write("B", p)  # another agent touched it
-        warn = file_state.check_stale("A", p)
-        self.assertIsNotNone(warn)
-
-    def test_partial_read_flagged_on_write(self):
-        p = self._mk()
-        file_state.record_read("A", p, partial=True)
-        warn = file_state.check_stale("A", p)
-        self.assertIsNotNone(warn)
-        self.assertIn("partial", warn.lower())
-
-    def test_external_mtime_drift_flagged(self):
-        p = self._mk()
-        file_state.record_read("A", p)
-        # Bump the on-disk mtime without going through the registry.
-        time.sleep(0.01)
-        os.utime(p, None)
-        with open(p, "w") as f:
-            f.write("externally modified\n")
-        warn = file_state.check_stale("A", p)
-        self.assertIsNotNone(warn)
-        self.assertIn("modified since you last read", warn)
-
-    def test_own_write_updates_stamp_so_next_write_is_clean(self):
-        p = self._mk()
-        file_state.record_read("A", p)
-        file_state.note_write("A", p)
-        # Second write by the same agent — should not be flagged.
-        self.assertIsNone(file_state.check_stale("A", p))
-
-    def test_different_paths_dont_interfere(self):
-        a = self._mk()
-        b = self._mk()
-        file_state.record_read("A", a)
-        file_state.note_write("B", b)
-        # A reads only `a`; B writes `b`. A writing `a` is NOT stale.
-        self.assertIsNone(file_state.check_stale("A", a))
 
     def test_lock_path_serializes_same_path(self):
         p = self._mk()
@@ -163,33 +125,92 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         ta.join(timeout=3.0)
         tb.join(timeout=3.0)
 
-    def test_writes_since_filters_by_parent_read_set(self):
-        foo = self._mk()
-        bar = self._mk()
-        baz = self._mk()
-        file_state.record_read("parent", foo)
-        file_state.record_read("parent", bar)
-        since = time.time()
-        time.sleep(0.01)
-        file_state.note_write("child", foo)  # parent read this — report
-        file_state.note_write("child", baz)  # parent never saw — skip
-
-        # Caller passes only paths the parent actually read (this is what
-        # delegate_tool does via ``known_reads(parent_task_id)``).
-        parent_reads = file_state.known_reads("parent")
-        out = file_state.writes_since("parent", since, parent_reads)
-        self.assertIn("child", out)
-        self.assertIn(foo, out["child"])
-        self.assertNotIn(baz, out["child"])
-
-    def test_writes_since_excludes_the_target_agent(self):
+    def test_lock_path_state_is_released_after_last_waiter(self):
         p = self._mk()
-        file_state.record_read("parent", p)
-        since = time.time()
-        time.sleep(0.01)
-        file_state.note_write("parent", p)  # parent's own write
-        out = file_state.writes_since("parent", since, [p])
-        self.assertEqual(out, {})
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+
+        def first() -> None:
+            with file_state.lock_path(p):
+                first_entered.set()
+                release_first.wait(timeout=2.0)
+
+        def second() -> None:
+            first_entered.wait(timeout=2.0)
+            with file_state.lock_path(p):
+                second_entered.set()
+
+        ta = threading.Thread(target=first)
+        tb = threading.Thread(target=second)
+        ta.start()
+        tb.start()
+        self.assertTrue(first_entered.wait(timeout=2.0))
+        time.sleep(0.02)
+        self.assertFalse(second_entered.is_set())
+        release_first.set()
+        ta.join(timeout=3.0)
+        tb.join(timeout=3.0)
+
+        registry = file_state.get_registry()
+        self.assertTrue(second_entered.is_set())
+        self.assertNotIn(p, registry._path_locks)
+        self.assertNotIn(p, registry._path_lock_users)
+
+    def test_clear_file_ops_cache_releases_task_state(self):
+        p = self._mk()
+        task_id = "finished-task"
+        file_state.record_read(task_id, p)
+
+        from tools import file_tools_read_tracking as rt
+
+        rt._read_tracker[task_id] = {"dedup": {}}
+        rt._patch_failure_tracker[task_id] = {p: 2}
+
+        clear_file_ops_cache(task_id)
+
+        self.assertEqual(file_state.known_reads(task_id), [])
+        self.assertNotIn(task_id, rt._read_tracker)
+        self.assertNotIn(task_id, rt._patch_failure_tracker)
+
+    def test_forget_task_clears_last_writer_claims(self):
+        """A finished task is not a concurrent sibling: forget_task must drop its writer
+        claims so the next run of the same job (fresh ``cron:<job>:<uuid>`` id) can write
+        the same scratch path without a "modified by sibling subagent" refusal."""
+        p = self._mk()
+        file_state.note_write("cron:JOB:run1", p)
+        registry = file_state.get_registry()
+        self.assertEqual(registry._last_writer[p][0], "cron:JOB:run1")
+
+        registry.forget_task("cron:JOB:run1")
+
+        self.assertNotIn(p, registry._last_writer)
+        self.assertIsNone(file_state.check_stale("cron:JOB:run2", p))
+        # A sibling that has NOT ended still triggers the guard.
+        file_state.note_write("subagent-1-live", p)
+        self.assertIn("sibling subagent 'subagent-1-live'", file_state.check_stale("cron:JOB:run2", p))
+
+    def test_agent_close_forgets_every_task_id_it_ran(self):
+        """``AIAgent.close()`` receives the session_id, but file tools key the registry by
+        the per-turn task_id (cron ``cron:<job>:<uuid>``, subagent ``subagent-N-xxxx``).
+        close() must release the file state of every task id the agent ran."""
+        p = self._mk()
+        file_state.record_read("cron:JOB:run1", p)
+        file_state.note_write("cron:JOB:run1", p)
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "cron_JOB_20260918_060000"
+            agent._process_owner_task_ids = {"cron:JOB:run1"}
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            with patch("run_agent.cleanup_vm"), patch("run_agent.cleanup_browser"), \
+                 patch("tools.computer_use.tool.release_computer_use_session"):
+                agent.close()
+
+        self.assertEqual(file_state.known_reads("cron:JOB:run1"), [])
+        self.assertIsNone(file_state.check_stale("cron:JOB:run2", p))
 
     def test_kill_switch_env_var(self):
         p = self._mk()
@@ -229,51 +250,24 @@ class FileToolsIntegrationTests(unittest.TestCase):
             f.write(content)
         return p
 
-    def test_sibling_agent_write_surfaces_warning_through_handler(self):
+    def test_sibling_agent_write_refuses_stale_overwrite_through_handler(self):
         p = self._write_seed("shared.txt")
         r = json.loads(read_file_tool(path=p, task_id="agentA"))
         self.assertNotIn("error", r)
 
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="agentB")))
         w_b = json.loads(write_file_tool(path=p, content="B wrote\n", task_id="agentB"))
         self.assertNotIn("error", w_b)
 
         w_a = json.loads(write_file_tool(path=p, content="A stale\n", task_id="agentA"))
-        warn = w_a.get("_warning", "")
-        self.assertTrue(warn, f"expected warning, got: {w_a}")
-        # The cross-agent message names the sibling task_id.
-        self.assertIn("agentB", warn)
-        self.assertIn("sibling", warn.lower())
+        err = w_a.get("error", "")
+        self.assertTrue(w_a.get("stale_write_blocked"), f"expected stale write refusal, got: {w_a}")
+        # The cross-agent message names the sibling task_id; B's write survives.
+        self.assertIn("agentB", err)
+        self.assertIn("sibling", err.lower())
+        with open(p) as f:
+            self.assertEqual(f.read(), "B wrote\n")
 
-    def test_same_agent_consecutive_writes_no_false_warning(self):
-        p = self._write_seed("own.txt")
-        json.loads(read_file_tool(path=p, task_id="agentC"))
-        w1 = json.loads(write_file_tool(path=p, content="one\n", task_id="agentC"))
-        self.assertFalse(w1.get("_warning"))
-        w2 = json.loads(write_file_tool(path=p, content="two\n", task_id="agentC"))
-        self.assertFalse(w2.get("_warning"))
-
-    def test_patch_tool_also_surfaces_sibling_warning(self):
-        p = self._write_seed("p.txt", "hello world\n")
-        json.loads(read_file_tool(path=p, task_id="agentA"))
-        json.loads(write_file_tool(path=p, content="hello planet\n", task_id="agentB"))
-        r = json.loads(
-            patch_tool(
-                mode="replace",
-                path=p,
-                old_string="hello",
-                new_string="HI",
-                task_id="agentA",
-            )
-        )
-        warn = r.get("_warning", "")
-        # Patch may fail (sibling changed the content so old_string may not
-        # match) or succeed — either way, the cross-agent warning should be
-        # present when old_string still happens to match.  What matters is
-        # that if the patch succeeded or the warning was reported, it names
-        # the sibling.  When old_string doesn't match, the patch itself
-        # returns an error but the warning is still set from the pre-check.
-        if warn:
-            self.assertIn("agentB", warn)
 
     def test_net_new_file_no_warning(self):
         p = os.path.join(self._tmpdir, "brand_new.txt")

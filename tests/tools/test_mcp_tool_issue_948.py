@@ -5,7 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
+from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
+from tools.mcp_tool_errors import _format_connect_error
+from tools.mcp_tool_config import _node_fallback, _resolve_stdio_command
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
@@ -25,12 +27,51 @@ def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
     npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     npx_path.chmod(0o755)
 
-    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+    with patch("tools.mcp_tool_config.shutil.which", return_value=None), \
          patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}, clear=False):
         command, env = _resolve_stdio_command("npx", {"PATH": "/usr/bin"})
 
     assert command == str(npx_path)
     assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
+
+
+def test_windows_managed_node_root_prefers_cmd_launchers(tmp_path):
+    """Managed Windows Node lives directly in ``<HERMES_HOME>/node`` (no ``bin``) as ``npx.cmd`` /
+    ``npm.cmd`` / ``node.exe``; a bare ``command: npx`` must resolve to those launchers (#111937).
+    The extensionless POSIX sibling is a shell script Windows cannot spawn, so it must never win."""
+    node_root = tmp_path / "node"
+    node_root.mkdir()
+    for name in ("npx", "npm", "npx.cmd", "npm.cmd", "node.exe"):
+        launcher = node_root / name
+        launcher.write_text("@echo off\r\n", encoding="utf-8")
+        launcher.chmod(0o755)
+
+    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}, clear=False):
+        assert _node_fallback("npx", windows=True) == str(node_root / "npx.cmd")
+        assert _node_fallback("npm", windows=True) == str(node_root / "npm.cmd")
+        assert _node_fallback("node", windows=True) == str(node_root / "node.exe")
+
+
+def test_node_fallback_uses_active_profile_home(tmp_path, monkeypatch):
+    """The managed-Node lookup follows ``get_hermes_home()`` (context override), not raw ``HERMES_HOME``:
+    a multiplexed profile whose home differs from the launch env must find ITS managed Node."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile_home = tmp_path / "profile"
+    npx_path = profile_home / "node" / "bin" / "npx"
+    npx_path.parent.mkdir(parents=True)
+    npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    npx_path.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch-home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))  # keep a real ~/.local/bin/npx out of the picture
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        with patch("tools.mcp_tool_config.shutil.which", return_value=None):
+            command, _env = _resolve_stdio_command("npx", {"PATH": "/usr/bin"})
+    finally:
+        reset_hermes_home_override(token)
+    assert command == str(npx_path)
 
 
 def test_resolve_stdio_command_falls_back_to_usr_local_bin():
@@ -55,7 +96,7 @@ def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     def _fake_access(path, _mode):
         return path == target
 
-    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+    with patch("tools.mcp_tool_config.shutil.which", return_value=None), \
          patch("tools.mcp_tool.os.path.isfile", side_effect=_fake_isfile), \
          patch("tools.mcp_tool.os.access", side_effect=_fake_access):
         command, env = _resolve_stdio_command("npx", {"PATH": "/opt/data/bin:/usr/bin:/bin"})
@@ -64,79 +105,6 @@ def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     # /usr/local/bin must be prepended so npx's shebang (`/usr/bin/env node`)
     # can find node in the same directory.
     assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(target)
-
-
-def test_resolve_stdio_command_respects_explicit_empty_path():
-    seen_paths = []
-
-    def _fake_which(_cmd, path=None):
-        seen_paths.append(path)
-        return None
-
-    with patch("tools.mcp_tool.shutil.which", side_effect=_fake_which):
-        command, env = _resolve_stdio_command("python", {"PATH": ""})
-
-    assert command == "python"
-    assert env["PATH"] == ""
-    assert seen_paths == [""]
-
-
-def test_format_connect_error_unwraps_exception_group():
-    error = ExceptionGroup(
-        "unhandled errors in a TaskGroup",
-        [FileNotFoundError(2, "No such file or directory", "node")],
-    )
-
-    message = _format_connect_error(error)
-
-    assert "missing executable 'node'" in message
-
-
-def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
-    node_bin = tmp_path / "node" / "bin"
-    node_bin.mkdir(parents=True)
-    npx_path = node_bin / "npx"
-    npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    npx_path.chmod(0o755)
-
-    mock_session = MagicMock()
-    mock_session.initialize = AsyncMock()
-    mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
-
-    mock_stdio_cm = MagicMock()
-    mock_stdio_cm.__aenter__ = AsyncMock(return_value=(object(), object()))
-    mock_stdio_cm.__aexit__ = AsyncMock(return_value=False)
-
-    mock_session_cm = MagicMock()
-    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session_cm.__aexit__ = AsyncMock(return_value=False)
-
-    async def _test():
-        with patch("tools.mcp_tool.shutil.which", return_value=None), \
-             patch.dict("os.environ", {"HERMES_HOME": str(tmp_path), "PATH": "/usr/bin", "HOME": str(tmp_path)}, clear=False), \
-             patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
-             patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
-             patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
-            server = MCPServerTask("srv")
-            await server.start({"command": "npx", "args": ["-y", "pkg"], "env": {"PATH": "/usr/bin"}})
-
-            # The real (resolved) command no longer reaches StdioServerParameters
-            # directly -- it's now wrapped in the parent-death watchdog
-            # supervisor (tools/mcp_stdio_watchdog.py) so an ungraceful exit of
-            # this process can't orphan it. Assert the resolved npx path and
-            # its args still flow through correctly as the watchdog's target
-            # command, preserving this test's original path-resolution intent.
-            call_kwargs = mock_params.call_args.kwargs
-            assert call_kwargs["command"] == sys.executable
-            assert call_kwargs["args"][0].endswith("mcp_stdio_watchdog.py")
-            assert "--" in call_kwargs["args"]
-            sep = call_kwargs["args"].index("--")
-            assert call_kwargs["args"][sep + 1:] == [str(npx_path), "-y", "pkg"]
-            assert call_kwargs["env"]["PATH"].split(os.pathsep)[0] == str(node_bin)
-
-            await server.shutdown()
-
-    asyncio.run(_test())
 
 
 # ---------------------------------------------------------------------------

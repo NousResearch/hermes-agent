@@ -1,27 +1,27 @@
 ---
-title: "Scrapling"
+title: "Scrapling — Scrape sites with stealth browsing and Cloudflare bypass"
 sidebar_label: "Scrapling"
-description: "Web scraping with Scrapling - HTTP fetching, stealth browser automation, Cloudflare bypass, and spider crawling via CLI and Python"
+description: "Scrape sites with stealth browsing and Cloudflare bypass"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Scrapling
 
-Web scraping with Scrapling - HTTP fetching, stealth browser automation, Cloudflare bypass, and spider crawling via CLI and Python.
+Scrape sites with stealth browsing and Cloudflare bypass.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/scrapling` |
-| Path | `optional-skills/research/scrapling` |
+| Path | `optional-skills/research\scrapling` |
 | Version | `1.0.0` |
 | Author | FEUAZUR |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Web Scraping`, `Browser`, `Cloudflare`, `Stealth`, `Crawling`, `Spider` |
-| Related skills | [`duckduckgo-search`](/docs/user-guide/skills/optional/research/research-duckduckgo-search), [`domain-intel`](/docs/user-guide/skills/optional/research/research-domain-intel) |
+| Related skills | [`duckduckgo-search`](./research-duckduckgo-search.md), [`domain-intel`](./research-domain-intel.md) |
 
 ## Reference: full SKILL.md
 

@@ -46,7 +46,9 @@ def test_real_stdio_server_uses_configured_cwd(tmp_path, monkeypatch):
         "tools.osv_check.check_package_for_malware",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(mcp_tool, "_kill_orphaned_mcp_children", lambda: None)
+    monkeypatch.setattr(
+        "tools.mcp_tool_lifecycle._kill_orphaned_mcp_children", lambda: None
+    )
 
     async def drive_server():
         server = mcp_tool.MCPServerTask("cwd-probe")

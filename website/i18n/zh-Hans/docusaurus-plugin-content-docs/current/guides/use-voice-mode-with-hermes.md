@@ -6,7 +6,7 @@ description: "在 CLI、Telegram、Discord 及 Discord 语音频道中设置和�
 
 # 在 Hermes 中使用语音模式
 
-本指南是[语音模式功能参考](/user-guide/features/voice-mode)的实用配套文档。
+本指南是[语音模式功能参考](../user-guide/features/voice-mode.md)的实用配套文档。
 
 功能页面介绍语音模式能做什么，本指南则说明如何真正用好它。
 
@@ -162,6 +162,7 @@ python -m pip install -U neutts[all]
 ```yaml
 voice:
   record_key: "ctrl+b"
+  submit_mode: "direct"  # TUI：direct | draft
   max_recording_seconds: 120
   auto_tts: false
   beep_enabled: true
@@ -180,6 +181,18 @@ tts:
 ```
 
 这是适合大多数人的保守默认配置。
+
+在 TUI 中，`voice.submit_mode` 控制转写完成后的行为：
+
+- `direct`（默认）会立即提交转写文本。
+- `draft` 会把转写文本放入输入框，供你编辑或取消，按 Enter 后才发送。
+
+如需可编辑的语音草稿，请设置：
+
+```yaml
+voice:
+  submit_mode: "draft"
+```
 
 如果想改用本地 TTS，将 `tts` 块替换为：
 
@@ -440,7 +453,7 @@ Hermes 加入 Discord 语音频道（VC），监听用户语音，转录后运�
 如果你想走最短的成功路径：
 
 1. 让文本 Hermes 正常工作
-2. 安装 `hermes-agent[voice]`
+2. 运行 `hermes setup voice` 以启用语音支持
 3. 使用本地 STT + Edge TTS 的 CLI 语音模式
 4. 然后在 Telegram 或 Discord 中启用 `/voice on`
 5. 只有在此之后，再尝试 Discord 语音频道模式
@@ -449,8 +462,8 @@ Hermes 加入 Discord 语音频道（VC），监听用户语音，转录后运�
 
 ## 下一步阅读
 
-- [语音模式功能参考](/user-guide/features/voice-mode)
-- [消息 Gateway](/user-guide/messaging)
-- [Discord 设置](/user-guide/messaging/discord)
-- [Telegram 设置](/user-guide/messaging/telegram)
-- [配置](/user-guide/configuration)
+- [语音模式功能参考](../user-guide/features/voice-mode.md)
+- [消息 Gateway](../user-guide/messaging/index.md)
+- [Discord 设置](../user-guide/messaging/discord.md)
+- [Telegram 设置](../user-guide/messaging/telegram.md)
+- [配置](../user-guide/configuration.md)

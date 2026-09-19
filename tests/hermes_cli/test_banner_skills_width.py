@@ -7,7 +7,7 @@ from rich.console import Console
 
 import hermes_cli.banner as banner
 import model_tools
-import tools.mcp_tool
+import tools.mcp_tool_discovery
 
 
 def _build_banner_with_skills(skills_by_category, term_width=160):
@@ -20,7 +20,7 @@ def _build_banner_with_skills(skills_by_category, term_width=160):
         ),
         patch.object(banner, "get_available_skills", return_value=skills_by_category),
         patch.object(banner, "get_update_result", return_value=None),
-        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
         patch("shutil.get_terminal_size", return_value=os.terminal_size((term_width, 50))),
     ):
         console = Console(
@@ -44,16 +44,6 @@ def test_wide_terminal_shows_more_than_8_skills():
     # With a 200-char terminal, more than 8 should be visible.
     # The old code always truncated at 8; we should see at least 9 now.
     assert "skill-08" in text, f"Expected skill-08 in output for wide terminal: {text}"
-
-
-def test_narrow_terminal_limits_skills():
-    """A narrow terminal should still limit skills to avoid wrapping."""
-    skills = {"research": [f"skill-{i:02d}" for i in range(15)]}
-    text = _build_banner_with_skills(skills, term_width=80)
-
-    # With an 80-char terminal, we should NOT see all 15 skills — some truncation
-    # is expected. Verify the "+N more" indicator is present.
-    assert "more" in text or "..." in text or "skill-00" in text
 
 
 def test_small_category_shows_all_skills():

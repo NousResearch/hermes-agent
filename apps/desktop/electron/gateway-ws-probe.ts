@@ -44,11 +44,21 @@ function probeGatewayWebSocket<T>(
     WebSocketImpl?: any
     connectTimeoutMs?: number
     readyGraceMs?: number
+    /** Extra upgrade-request headers (access-proxy credentials such as
+     * Cloudflare Access service tokens). Passed as the non-standard second
+     * constructor argument `{ headers }` that Node's (undici) WebSocket —
+     * the impl the Electron main process supplies — understands. Without
+     * this the probe would dial the bare upgrade and fail against a gateway
+     * the renderer (whose upgrade gets headers injected via
+     * webRequest.onBeforeSendHeaders) can actually reach — the exact
+     * false-negative the probe exists to prevent. */
+    headers?: Record<string, string>
   } = {}
 ) {
   const WebSocketImpl = options.WebSocketImpl
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
   const readyGraceMs = options.readyGraceMs ?? DEFAULT_READY_GRACE_MS
+  const headers = options.headers && Object.keys(options.headers).length > 0 ? options.headers : null
 
   if (typeof WebSocketImpl !== 'function') {
     return Promise.resolve({
@@ -80,6 +90,7 @@ function probeGatewayWebSocket<T>(
       if (settled) {
         return
       }
+
       settled = true
       clearTimers()
 
@@ -93,7 +104,7 @@ function probeGatewayWebSocket<T>(
     }
 
     try {
-      socket = new WebSocketImpl(wsUrl)
+      socket = headers ? new WebSocketImpl(wsUrl, { headers }) : new WebSocketImpl(wsUrl)
     } catch (error) {
       finish({
         ok: false,
@@ -107,6 +118,7 @@ function probeGatewayWebSocket<T>(
       if (settled) {
         return
       }
+
       opened = true
       // Upgrade accepted. Give the server a brief window to reject the
       // credential post-handshake (early close) before declaring success.
@@ -189,6 +201,7 @@ function extractErrorReason(event) {
   if (event instanceof Error) {
     return event.message
   }
+
   const err = event.error || event.message
 
   if (err instanceof Error) {

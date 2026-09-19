@@ -46,6 +46,7 @@ async function renderField(value: unknown, onChange = vi.fn()) {
 async function renderFieldWithRerender(value: unknown, onChange = vi.fn()) {
   const { FallbackModelsField } = await import('./fallback-models-field')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
   const view = render(
     <QueryClientProvider client={client}>
       <FallbackModelsField onChange={onChange} value={value} />
@@ -77,12 +78,15 @@ describe('FallbackModelsField', () => {
     await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
   })
 
-  it('removing a row emits the remaining entries', async () => {
-    const onChange = await renderField(CHAIN)
+  it('removing a row emits the remaining entries with their routing keys intact', async () => {
+    // #89184: a hand-written local-gateway chain carries base_url/api_key per
+    // entry; the editor only owns provider/model and must not strip the rest.
+    const routed = { provider: 'custom', model: 'glm-5.08', base_url: 'http://gw:8080/v1', api_key: '${GW_KEY}' }
+    const onChange = await renderField([...CHAIN, routed])
 
     fireEvent.click(screen.getAllByLabelText('Remove')[0])
 
-    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([{ provider: 'openai-codex', model: 'gpt-5.4-mini' }])
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([{ provider: 'openai-codex', model: 'gpt-5.4-mini' }, routed])
   })
 
   it('adding a blank row does not persist a partial entry', async () => {
@@ -107,6 +111,21 @@ describe('FallbackModelsField', () => {
     expect(screen.getAllByLabelText('Remove')).toHaveLength(2)
 
     rerender([{ provider: 'nous', model: 'hermes-4' }])
+
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
+  })
+
+  it('keeps a draft row visible after autosave re-renders the same persisted chain', async () => {
+    const onChange = vi.fn()
+    const rerender = await renderFieldWithRerender([], onChange)
+
+    fireEvent.click(screen.getByText('Add fallback'))
+
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([])
+    expect(screen.getAllByLabelText('Remove')).toHaveLength(1)
+
+    // Parent autosave echo — same complete chain, new array identity.
+    rerender([])
 
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
   })

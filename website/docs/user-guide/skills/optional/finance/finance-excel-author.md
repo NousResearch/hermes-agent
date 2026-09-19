@@ -1,27 +1,27 @@
 ---
-title: "Excel Author"
+title: "Excel Author — Build auditable financial workbooks headless via openpyxl"
 sidebar_label: "Excel Author"
-description: "Build auditable Excel workbooks headless with openpyxl — blue/black/green cell conventions, formulas over hardcodes, named ranges, balance checks, sensitivit..."
+description: "Build auditable financial workbooks headless via openpyxl"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Excel Author
 
-Build auditable Excel workbooks headless with openpyxl — blue/black/green cell conventions, formulas over hardcodes, named ranges, balance checks, sensitivity tables. Use for financial models, audit outputs, reconciliations.
+Build auditable financial workbooks headless via openpyxl.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/excel-author` |
-| Path | `optional-skills/finance/excel-author` |
+| Path | `optional-skills/finance\excel-author` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `excel`, `openpyxl`, `finance`, `spreadsheet`, `modeling` |
-| Related skills | [`pptx-author`](/docs/user-guide/skills/optional/finance/finance-pptx-author), [`dcf-model`](/docs/user-guide/skills/optional/finance/finance-dcf-model), [`comps-analysis`](/docs/user-guide/skills/optional/finance/finance-comps-analysis), [`lbo-model`](/docs/user-guide/skills/optional/finance/finance-lbo-model), [`3-statement-model`](/docs/user-guide/skills/optional/finance/finance-3-statement-model) |
+| Related skills | [`xlsx`](../../bundled/productivity/productivity-xlsx.md), [`pptx-author`](./finance-pptx-author.md), [`dcf-model`](./finance-dcf-model.md), [`comps-analysis`](./finance-comps-analysis.md), [`lbo-model`](./finance-lbo-model.md), [`3-statement-model`](./finance-3-statement-model.md) |
 
 ## Reference: full SKILL.md
 

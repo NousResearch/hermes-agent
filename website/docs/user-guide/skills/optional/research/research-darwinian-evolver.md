@@ -15,13 +15,13 @@ Evolve prompts/regex/SQL/code with Imbue's evolution loop.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/darwinian-evolver` |
-| Path | `optional-skills/research/darwinian-evolver` |
+| Path | `optional-skills/research\darwinian-evolver` |
 | Version | `0.1.0` |
 | Author | Bihruze (Asahi0x), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `evolution`, `optimization`, `prompt-engineering`, `research` |
-| Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), [`jupyter-live-kernel`](/docs/user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel) |
+| Related skills | [`arxiv`](../../bundled/research/research-arxiv.md), [`jupyter-notebook`](../data-science/data-science-jupyter-notebook.md) |
 
 ## Reference: full SKILL.md
 

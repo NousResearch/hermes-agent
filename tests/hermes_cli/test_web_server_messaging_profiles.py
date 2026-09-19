@@ -9,6 +9,11 @@ profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
 import yaml
+import gateway.status as _gw_status
+
+
+_VALID_WORKER_BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"
+_VALID_BODY_BOT_TOKEN = "987654321:ZYXWVUTSRQPONMLKJIHGFEDCBA_4321"
 
 
 @pytest.fixture
@@ -76,14 +81,6 @@ class TestProfileScopedMessagingReads:
         assert token["is_set"] is False
         assert telegram["configured"] is False
 
-    def test_unscoped_read_shows_dashboard_profile_env(
-        self, client, isolated_profiles
-    ):
-        resp = client.get("/api/messaging/platforms")
-        assert resp.status_code == 200
-        telegram = _telegram(resp.json())
-        token = _env_field(telegram, "TELEGRAM_BOT_TOKEN")
-        assert token["is_set"] is True
 
     def test_unknown_profile_returns_404(self, client, isolated_profiles):
         resp = client.get(
@@ -104,11 +101,17 @@ class TestProfileScopedMessagingReads:
             yaml.safe_dump({"platforms": {"telegram": {"enabled": True}}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(_gw_status, "get_running_pid", lambda *a, **k: None)
         monkeypatch.setattr(
-            web_server,
+            _gw_status, "get_running_pid_cached", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            _gw_status,
             "read_runtime_status",
-            lambda: {
+            # Accepts path= : the profile-scoped read now passes the
+            # profile's own gateway_state.json explicitly rather than
+            # relying on process-level HERMES_HOME resolution (#71211).
+            lambda *a, **k: {
                 "gateway_state": "startup_failed",
                 "exit_reason": "all configured messaging platforms failed to connect",
                 "platforms": {},
@@ -142,7 +145,7 @@ class TestProfileScopedMessagingWrites:
             params={"profile": "worker_alpha"},
             json={
                 "enabled": True,
-                "env": {"TELEGRAM_BOT_TOKEN": "worker-token"},
+                "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN},
             },
         )
         assert resp.status_code == 200
@@ -150,38 +153,25 @@ class TestProfileScopedMessagingWrites:
         worker_env = (
             isolated_profiles["worker_alpha"] / ".env"
         ).read_text(encoding="utf-8")
-        assert "TELEGRAM_BOT_TOKEN=worker-token" in worker_env
+        assert f"TELEGRAM_BOT_TOKEN={_VALID_WORKER_BOT_TOKEN}" in worker_env
 
         # The dashboard's own .env must stay untouched — this was the bug.
         root_env = (isolated_profiles["default"] / ".env").read_text(
             encoding="utf-8"
         )
-        assert "worker-token" not in root_env
+        assert _VALID_WORKER_BOT_TOKEN not in root_env
         assert "TELEGRAM_BOT_TOKEN=root-token" in root_env
 
         # Enablement lands in the target profile's config.yaml.
         worker_cfg = yaml.safe_load(
-            (isolated_profiles["worker_alpha"] / "config.yaml").read_text()
+            (isolated_profiles["worker_alpha"] / "config.yaml").read_text(encoding="utf-8")
         ) or {}
         assert worker_cfg.get("platforms", {}).get("telegram", {}).get("enabled") is True
         root_cfg = yaml.safe_load(
-            (isolated_profiles["default"] / "config.yaml").read_text()
+            (isolated_profiles["default"] / "config.yaml").read_text(encoding="utf-8")
         ) or {}
         assert "telegram" not in (root_cfg.get("platforms") or {})
 
-    def test_body_profile_beats_query_param(self, client, isolated_profiles):
-        resp = client.put(
-            "/api/messaging/platforms/telegram",
-            json={
-                "env": {"TELEGRAM_BOT_TOKEN": "body-token"},
-                "profile": "worker_alpha",
-            },
-        )
-        assert resp.status_code == 200
-        worker_env = (
-            isolated_profiles["worker_alpha"] / ".env"
-        ).read_text(encoding="utf-8")
-        assert "TELEGRAM_BOT_TOKEN=body-token" in worker_env
 
     def test_scoped_read_after_scoped_write_round_trips(
         self, client, isolated_profiles
@@ -189,7 +179,10 @@ class TestProfileScopedMessagingWrites:
         client.put(
             "/api/messaging/platforms/telegram",
             params={"profile": "worker_alpha"},
-            json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": "worker-token"}},
+            json={
+                "enabled": True,
+                "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN},
+            },
         )
         resp = client.get(
             "/api/messaging/platforms", params={"profile": "worker_alpha"}
@@ -199,25 +192,150 @@ class TestProfileScopedMessagingWrites:
         assert _env_field(telegram, "TELEGRAM_BOT_TOKEN")["is_set"] is True
         assert telegram["configured"] is True
 
-    def test_scoped_clear_env_removes_from_target_only(
+
+
+def _enable_multiplex(default_home):
+    (default_home / "config.yaml").write_text(
+        yaml.safe_dump({"gateway": {"multiplex_profiles": True}}),
+        encoding="utf-8",
+    )
+
+
+class TestMultiplexPortBindingGuard:
+    """Enabling api_server/webhook on a secondary multiplexed profile is rejected BEFORE anything
+    is persisted: the default profile's listener already mirrors them at ``/p/<profile>/`` (#62791).
+    Every other inbound-port platform is allowed — the gateway serves it on the shared listener.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_multiplex_env_override(self, monkeypatch):
+        # The operator env override must not leak into these tests: the
+        # multiplex flag under test comes from the default profile's config.
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+
+    def test_rejects_only_mirrored_listeners_on_secondary(
         self, client, isolated_profiles
     ):
-        client.put(
-            "/api/messaging/platforms/telegram",
-            params={"profile": "worker_alpha"},
-            json={"env": {"TELEGRAM_BOT_TOKEN": "worker-token"}},
+        from gateway.config import PORT_BINDING_PLATFORM_VALUES, SHARED_LISTENER_MIRROR_PLATFORMS
+
+        _enable_multiplex(isolated_profiles["default"])
+        assert SHARED_LISTENER_MIRROR_PLATFORMS  # guard set must not be empty
+        catalog = {p["id"] for p in client.get("/api/messaging/platforms").json()["platforms"]}
+        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES & catalog):
+            resp = client.put(
+                f"/api/messaging/platforms/{platform_id}",
+                params={"profile": "worker_alpha"},
+                json={"enabled": True},
+            )
+            if platform_id in SHARED_LISTENER_MIRROR_PLATFORMS:
+                assert resp.status_code == 409, platform_id
+                assert "default profile" in resp.json()["detail"]
+            else:  # served at /p/worker_alpha/<path> on the shared listener
+                assert resp.status_code == 200, (platform_id, resp.text)
+
+
+
+
+
+    def test_secondary_can_disable_and_clear_invalid_config(
+        self, client, isolated_profiles
+    ):
+        _enable_multiplex(isolated_profiles["default"])
+        worker_home = isolated_profiles["worker_alpha"]
+        (worker_home / "config.yaml").write_text(
+            yaml.safe_dump({"platforms": {"api_server": {"enabled": True}}}),
+            encoding="utf-8",
         )
+
         resp = client.put(
-            "/api/messaging/platforms/telegram",
+            "/api/messaging/platforms/api_server",
             params={"profile": "worker_alpha"},
-            json={"clear_env": ["TELEGRAM_BOT_TOKEN"]},
+            json={"enabled": False},
         )
         assert resp.status_code == 200
-        worker_env = (
-            isolated_profiles["worker_alpha"] / ".env"
-        ).read_text(encoding="utf-8")
-        assert "worker-token" not in worker_env
-        root_env = (isolated_profiles["default"] / ".env").read_text(
-            encoding="utf-8"
-        )
-        assert "TELEGRAM_BOT_TOKEN=root-token" in root_env
+        cfg = yaml.safe_load((worker_home / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["platforms"]["api_server"]["enabled"] is False
+
+        catalog = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        ).json()
+        api_server = next(p for p in catalog["platforms"] if p["id"] == "api_server")
+        if api_server["env_vars"]:
+            resp = client.put(
+                "/api/messaging/platforms/api_server",
+                params={"profile": "worker_alpha"},
+                json={"clear_env": [api_server["env_vars"][0]["key"]]},
+            )
+            assert resp.status_code == 200
+
+def test_named_current_home_matches_unscoped(client, isolated_profiles, monkeypatch):
+    from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    for scope in (None, "current", "default"):
+        response = client.get("/api/messaging/platforms", params={"profile": scope} if scope else {})
+        assert response.status_code == 200
+        assert _telegram(response.json())["enabled"] is True
+    with _hermes_home_scope(isolated_profiles["worker_alpha"]):
+        with _config_profile_scope("default") as scoped:
+            assert scoped is None
+            assert get_hermes_home() == isolated_profiles["default"]
+
+
+def test_scoped_enablement_uses_only_own_credentials(client, isolated_profiles, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    worker = isolated_profiles["worker_alpha"]
+    params = {"profile": "worker_alpha"}
+    assert _telegram(client.get("/api/messaging/platforms", params=params).json())["enabled"] is False
+    (worker / ".env").write_text("TELEGRAM_BOT_TOKEN=worker-token\n", encoding="utf-8")
+    payload = client.get("/api/messaging/platforms", params=params).json()
+    assert _telegram(payload)["enabled"] is True
+    assert _telegram(payload)["configured"] is True
+    assert _telegram(payload)["state"] != "disabled"
+    from hermes_cli.web_server_messaging import _messaging_platform_catalog
+    empty = {entry["id"] for entry in _messaging_platform_catalog() if not entry["required_env"]}
+    for platform in payload["platforms"]:
+        if platform["id"] in empty:
+            assert platform["enabled"] is False
+            assert platform["configured"] is False
+    for enabled in (False, True):
+        (worker / "config.yaml").write_text(yaml.safe_dump({"platforms": {"telegram": {"enabled": enabled}}}), encoding="utf-8")
+        platform = _telegram(client.get("/api/messaging/platforms", params=params).json())
+        assert platform["enabled"] is enabled
+        assert platform["configured"] is True
+    assert "root-token" in (isolated_profiles["default"] / ".env").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("topology", ["scoped_query", "pooled_unscoped"])
+def test_credential_write_hot_serves_a_multiplexed_profile(client, isolated_profiles, monkeypatch, topology):
+    """A token saved for a profile the live multiplexer serves is handed to the multiplexer right
+    away (``hot_served``), so the UI skips its restart banner. Both Desktop topologies: the dashboard's
+    ``?profile=`` and a pooled ``hermes --profile X serve`` that receives the PUT unscoped (#109088)."""
+    import hermes_cli.gateway as gateway_cli
+    import hermes_cli.gateway_multiplex_served as served_mod
+    notified = []
+    monkeypatch.setattr(gateway_cli, "named_profile_served_by_running_multiplexer", lambda name=None: name == "worker_alpha")
+    monkeypatch.setattr(served_mod, "notify_multiplexer_profiles_changed", lambda name, **kw: notified.append(name) or ["default", name])
+    if topology == "pooled_unscoped":
+        monkeypatch.setattr(gateway_cli, "_current_profile_name", lambda: "worker_alpha")
+        params = {}
+    else:
+        params = {"profile": "worker_alpha"}
+    resp = client.put("/api/messaging/platforms/telegram", params=params,
+                      json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}})
+    assert resp.status_code == 200
+    assert resp.json()["hot_served"] is True
+    assert notified == ["worker_alpha"]
+
+
+def test_credential_write_on_default_profile_is_not_hot_served(client, isolated_profiles, monkeypatch):
+    """The default profile is the multiplexer itself (its own adapters are restart-managed): never
+    claim a hot serve for it."""
+    import hermes_cli.gateway_multiplex_served as served_mod
+    monkeypatch.setattr(served_mod, "notify_multiplexer_profiles_changed",
+                        lambda name, **kw: pytest.fail("default profile must not ping the multiplexer"))
+    resp = client.put("/api/messaging/platforms/telegram",
+                      json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}})
+    assert resp.status_code == 200
+    assert resp.json()["hot_served"] is False

@@ -109,7 +109,7 @@ mcp_servers:
 
 对于敏感系统，这通常是最佳默认设置。
 
-## WSL2：将 WSL 中的 Hermes 桥接到 Windows Chrome
+## WSL2：将 WSL 中的 Hermes 桥接到 Windows Chrome {#wsl2-bridge-hermes-in-wsl-to-windows-chrome}
 
 以下是适用场景的实际配置：
 
@@ -485,6 +485,6 @@ enabled: false
 
 ## 相关文档
 
-- [MCP（模型上下文协议）](/user-guide/features/mcp)
-- [FAQ](/reference/faq)
-- [斜杠命令](/reference/slash-commands)
+- [MCP（模型上下文协议）](../user-guide/features/mcp.md)
+- [FAQ](../reference/faq.md)
+- [斜杠命令](../reference/slash-commands.md)

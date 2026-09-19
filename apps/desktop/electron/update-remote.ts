@@ -22,6 +22,7 @@ function canonicalGitHubRemote(url) {
   if (!url) {
     return ''
   }
+
   let value = String(url).trim()
 
   if (value.startsWith('git@github.com:')) {

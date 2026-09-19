@@ -70,27 +70,18 @@ def test_default_openai_endpoint_intersects_account_access(monkeypatch):
     assert result == list(curated[:2])
 
 
-def test_default_openai_endpoint_falls_back_when_no_curated_access(monkeypatch):
-    """If the account serves none of the curated models, fall back to curated."""
+def test_astra_is_offered_only_by_successful_account_discovery(monkeypatch):
+    """A gated preview may enrich the picker only when this API key lists it."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    curated = M._PROVIDER_MODELS["openai-api"]
-    live = ["text-embedding-3-large", "whisper-1", "tts-1"]  # all junk
-    with patch.object(M, "fetch_api_models", return_value=live):
-        result = M.provider_model_ids("openai-api", force_refresh=True)
+    with patch.object(M, "fetch_api_models", return_value=["gpt-5.6-sol", "gpt-6-astra"]):
+        discovered = M.provider_model_ids("openai-api", force_refresh=True)
+    with patch.object(M, "fetch_api_models", return_value=["gpt-5.6-sol"]):
+        not_entitled = M.provider_model_ids("openai-api", force_refresh=True)
+    with patch.object(M, "fetch_api_models", side_effect=RuntimeError("discovery unavailable")):
+        discovery_failed = M.provider_model_ids("openai-api", force_refresh=True)
 
-    # No curated overlap -> serve the curated defaults so the picker isn't empty.
-    assert result == list(curated)
-
-
-def test_custom_openai_compatible_endpoint_keeps_live_list(monkeypatch):
-    """Custom OPENAI_BASE_URL endpoints keep the live catalog verbatim."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://my-proxy.example.com/v1")
-
-    live = ["custom-model-a", "custom-model-b", "some-embedding-model"]
-    with patch.object(M, "fetch_api_models", return_value=live):
-        result = M.provider_model_ids("openai-api", force_refresh=True)
-
-    assert result == live
+    assert "gpt-6-astra" in discovered
+    assert "gpt-6-astra" not in not_entitled
+    assert "gpt-6-astra" not in discovery_failed

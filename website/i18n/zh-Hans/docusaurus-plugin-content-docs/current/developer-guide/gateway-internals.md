@@ -21,7 +21,9 @@ description: "消息 gateway 如何启动、授权用户、路由会话以及投
 | `gateway/mirror.py` | 为 `send_message` 提供跨会话消息镜像 |
 | `gateway/status.py` | 面向 profile 范围的 gateway 实例的 token 锁管理 |
 | `gateway/builtin_hooks/` | 始终注册的 hook 扩展点（当前未内置任何 hook） |
-| `gateway/platforms/` | 平台适配器（每个消息平台一个） |
+| `gateway/platform_registry.py` | 适配器注册表、工厂，以及对捆绑平台插件的延迟（惰性）加载 |
+| `plugins/platforms/<name>/` | 捆绑的消息适配器（多数平台：`adapter.py` + `plugin.yaml`） |
+| `gateway/platforms/` | 共享的 `base.py` 与遗留/直接适配器（Signal、API server、webhooks 等） |
 
 ## 架构概览
 
@@ -191,7 +193,7 @@ gateway/platforms/                  # 核心 base 与旧的直接适配器
 
 - **直接回复** — 将响应发回原始聊天
 - **主频道投递** — 将 cron 任务输出和后台结果路由至已配置的主频道
-- **显式目标投递** — `send_message` 工具指定 `telegram:-1001234567890`，或通过 [`hermes send` CLI](/guides/pipe-script-output) 封装同一工具供 shell 脚本使用
+- **显式目标投递** — `send_message` 工具指定 `telegram:-1001234567890`，或通过 [`hermes send` CLI](../guides/pipe-script-output.md) 封装同一工具供 shell 脚本使用
 - **跨平台投递** — 投递至与原始消息不同的平台
 
 Cron 任务投递**不会**镜像到 gateway 会话历史中 — 它们仅存在于各自的 cron 会话中。这是有意为之的设计选择，以避免消息交替违规。
@@ -233,19 +235,17 @@ AIAgent._invoke_tool()
 
 ### 内存刷写生命周期
 
-当会话被重置、恢复或过期时：
-1. 内置内存刷写至磁盘
-2. 内存提供者的 `on_session_end()` hook 触发
-3. 临时 `AIAgent` 运行仅含内存的对话轮次
-4. 上下文随后被丢弃或归档
+显式对话边界（例如 `/new`、`/reset` 或 `/resume`）会刷新并结束原会话。空闲时间和每日时间边界不会结束会话。
+
+TTL、LRU 和内存压力触发的资源缓存淘汰会先将缓存的对话记录提交给已配置的记忆提供者，再释放 agent 客户端。它不会关闭持久化对话：下一轮会重新加载相同的对话记录和会话标识。
 
 ## 后台维护
 
 Gateway 在处理消息的同时运行周期性维护任务：
 
 - **Cron 计时** — 检查任务计划并触发到期任务
-- **会话过期** — 超时后清理废弃会话
-- **内存刷写** — 在会话过期前主动刷写内存
+- **会话维护** — 回收缓存资源，但不结束会话记录
+- **内存刷写** — 在软释放缓存前提交记忆
 - **缓存刷新** — 刷新模型列表和提供者状态
 
 ## 进程管理
@@ -264,4 +264,4 @@ Gateway 作为长期运行进程运行，管理方式如下：
 - [Cron 内部机制](./cron-internals.md)
 - [ACP 内部机制](./acp-internals.md)
 - [Agent 循环内部机制](./agent-loop.md)
-- [消息 Gateway（用户指南）](/user-guide/messaging)
+- [消息 Gateway（用户指南）](../user-guide/messaging/index.md)

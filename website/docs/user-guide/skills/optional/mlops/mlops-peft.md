@@ -1,21 +1,21 @@
 ---
-title: "Peft Fine Tuning — Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods"
-sidebar_label: "Peft Fine Tuning"
-description: "Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods"
+title: "Peft — Fine-tune large LLMs with LoRA on limited GPU memory"
+sidebar_label: "Peft"
+description: "Fine-tune large LLMs with LoRA on limited GPU memory"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Peft Fine Tuning
+# Peft
 
-Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods. Use when fine-tuning large models (7B-70B) with limited GPU memory, when you need to train &lt;1% of parameters with minimal accuracy loss, or for multi-adapter serving. HuggingFace's official library integrated with transformers ecosystem.
+Fine-tune large LLMs with LoRA on limited GPU memory.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/peft` |
-| Path | `optional-skills/mlops/peft` |
+| Path | `optional-skills/mlops\peft` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -440,8 +440,8 @@ TrainingArguments(learning_rate=1e-4)
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/peft/references/advanced-usage.md)** - DoRA, LoftQ, rank stabilization, custom modules
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/peft/references/troubleshooting.md)** - Common errors, debugging, optimization
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\peft/references/advanced-usage.md)** - DoRA, LoftQ, rank stabilization, custom modules
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\peft/references/troubleshooting.md)** - Common errors, debugging, optimization
 
 ## Resources
 

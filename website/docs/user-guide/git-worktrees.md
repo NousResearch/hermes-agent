@@ -37,6 +37,25 @@ See also: [Checkpoints and /rollback](./checkpoints-and-rollback.md).
 
 ## Quick Start: Creating a Worktree
 
+### From inside a session: `/worktree new`
+
+The fastest path (inspired by Copilot CLI's `/worktree new`): from an
+interactive CLI session, run
+
+```
+/worktree new my-experiment
+```
+
+Hermes creates `.worktrees/my-experiment/` inside the repo (branch
+`hermes/my-experiment`, based on the freshly-fetched remote tip unless
+`worktree_sync: false`), and retargets the session's terminal and file tools
+into it — no restart needed. Omit the name to get a random `hermes-<id>`
+tree. `/worktree` alone shows the active tree; `/worktree list` lists all of
+them. On exit the tree is kept only if it has unpushed commits, exactly like
+`hermes -w`.
+
+### Manually with git
+
 From your main repository (containing `.git/`), create a new worktree for a feature branch:
 
 ```bash
@@ -171,3 +190,7 @@ This combination gives you:
 - Strong guarantees that different agents and experiments do not step on each other.
 - Fast iteration cycles with easy recovery from bad edits.
 - Clean, reviewable pull requests.
+
+## Developing the UI surfaces across worktrees
+
+The TypeScript surfaces (`ui-tui/`, `apps/desktop/`) each need a `node_modules`, which a fresh `npm ci` per worktree duplicates across every branch. If you hack on the TUI or desktop app from multiple worktrees, see [TUI & Desktop from Worktrees](../developer-guide/worktree-ui-dev.md) for the `htui` / `hgui` helpers that share one install by symlink.

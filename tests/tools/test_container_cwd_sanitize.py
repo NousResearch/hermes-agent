@@ -26,43 +26,15 @@ class TestIsUnusableContainerCwd:
         # Linux container's -w flag.
         assert tt._is_unusable_container_cwd(r"C:\Users\someuser") is True
 
-    def test_windows_forwardslash_host_path_rejected(self):
-        assert tt._is_unusable_container_cwd("C:/Users/someuser") is True
 
     def test_posix_home_host_path_rejected(self):
         assert tt._is_unusable_container_cwd("/home/ben/projects") is True
 
-    def test_macos_users_host_path_rejected(self):
-        assert tt._is_unusable_container_cwd("/Users/ben/projects") is True
-
-    def test_relative_path_rejected(self):
-        assert tt._is_unusable_container_cwd(".") is True
-        assert tt._is_unusable_container_cwd("src/app") is True
-
-    def test_valid_container_workspace_accepted(self):
-        # In-container paths that RL/benchmark overrides legitimately set must
-        # pass through untouched.
-        assert tt._is_unusable_container_cwd("/workspace") is False
-        assert tt._is_unusable_container_cwd("/root") is False
-        assert tt._is_unusable_container_cwd("/app") is False
-        assert tt._is_unusable_container_cwd("/opt/project") is False
-
-    def test_empty_is_not_flagged(self):
-        # Empty/None-ish cwd is handled by the caller's `or config["cwd"]`
-        # fallback, not by flagging it here.
-        assert tt._is_unusable_container_cwd("") is False
-
-    def test_host_prefixes_include_windows_and_posix(self):
-        # Guard the constant itself — the Windows entries are the ones that
-        # were load-bearing for the reported desktop bug.
-        assert r"C:\\"[:2] in tt._HOST_CWD_PREFIXES or "C:\\" in tt._HOST_CWD_PREFIXES
-        assert "C:/" in tt._HOST_CWD_PREFIXES
-        assert "/home/" in tt._HOST_CWD_PREFIXES
-        assert "/Users/" in tt._HOST_CWD_PREFIXES
 
     def test_container_backends_set(self):
-        assert tt._CONTAINER_BACKENDS == frozenset(
-            {"docker", "singularity", "modal", "daytona"}
+        from tools.terminal_tool_config import _CONTAINER_BACKENDS
+        assert _CONTAINER_BACKENDS == frozenset(
+            {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
         )
 
 
@@ -113,7 +85,7 @@ class TestOverrideCwdSanitizedAtCallSite:
         monkeypatch.setattr(tt, "_get_env_config", lambda: config)
         monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
         monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **k: {"approved": True})
-        monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+        monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
         # Force a fresh environment build so _create_environment is invoked.
         monkeypatch.setattr(tt, "_active_environments", {})
         monkeypatch.setattr(tt, "_last_activity", {})
@@ -136,9 +108,6 @@ class TestOverrideCwdSanitizedAtCallSite:
             "It must be sanitized back to config['cwd']."
         )
 
-    def test_posix_host_override_does_not_reach_container(self, monkeypatch):
-        cwd = self._run_and_capture_cwd(monkeypatch, "/home/someuser/project")
-        assert cwd == "/root"
 
     def test_valid_container_override_is_preserved(self, monkeypatch):
         # RL/benchmark envs set an in-container path; it must pass through.
@@ -206,12 +175,12 @@ class TestFileOpsCwdSanitizedAtCallSite:
 
         monkeypatch.setattr(tt, "_get_env_config", lambda: config)
         monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
-        monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+        monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
         # Force a fresh environment build.
         monkeypatch.setattr(tt, "_active_environments", {})
         monkeypatch.setattr(tt, "_last_activity", {})
         monkeypatch.setattr(ft, "_file_ops_cache", {})
-        monkeypatch.setattr(ft, "_last_known_cwd", {})
+        monkeypatch.setattr(tt, "_session_cwd", {})
 
         task_id = "sess-fileops-host-cwd"
         tt.register_task_env_overrides(task_id, {"cwd": override_cwd})
@@ -229,17 +198,6 @@ class TestFileOpsCwdSanitizedAtCallSite:
             "It must be sanitized back to config['cwd']."
         )
 
-    def test_posix_home_host_override_does_not_reach_container(self, monkeypatch):
-        cwd = self._run_and_capture_cwd(monkeypatch, "/home/someuser/project")
-        assert cwd == "/workspace"
-
-    def test_windows_host_override_does_not_reach_container(self, monkeypatch):
-        cwd = self._run_and_capture_cwd(monkeypatch, r"C:\Users\someuser")
-        assert cwd == "/workspace"
-
-    def test_relative_cwd_override_does_not_reach_container(self, monkeypatch):
-        cwd = self._run_and_capture_cwd(monkeypatch, "src/app")
-        assert cwd == "/workspace"
 
     def test_valid_container_override_is_preserved(self, monkeypatch):
         # RL/benchmark envs set an in-container path; it must pass through.

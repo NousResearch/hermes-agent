@@ -170,7 +170,7 @@ hermes --provider minimax-oauth
 
 Both models support up to 200,000 tokens of context.
 
-`MiniMax-M2.7-highspeed` is also used automatically as the auxiliary model for vision and delegation tasks when `minimax-oauth` is the primary provider.
+`MiniMax-M2.7` is also used automatically as the auxiliary model for vision and delegation tasks when `minimax-oauth` is the primary provider.
 
 ## Troubleshooting
 
@@ -209,6 +209,12 @@ Hermes prints the URL and code. Open the URL on any device and complete the flow
 The auth store has no credentials for `minimax-oauth`. You have not logged in yet, or the credential file was deleted.
 
 **Fix:** run `hermes model` and select MiniMax (OAuth), or run `hermes auth add minimax-oauth`.
+
+### "Provider 'minimax-oauth' is set in config.yaml but no credentials were found"
+
+The main agent or an auxiliary task (compression, vision, …) is pinned to `minimax-oauth` and the auth store has no login. There is no `MINIMAX_API_KEY`-style environment variable for the OAuth provider — `MINIMAX_API_KEY` belongs to the plain API-key `minimax` provider.
+
+**Fix:** run `hermes auth add minimax-oauth` to sign in, or switch that provider to `minimax` with an API key.
 
 ## Logging Out
 

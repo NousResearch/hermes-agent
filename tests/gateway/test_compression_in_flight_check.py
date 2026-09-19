@@ -40,24 +40,26 @@ def test_method_is_coroutine():
 
 
 @pytest.mark.asyncio
-async def test_returns_true_when_lock_held():
-    runner = _make_runner(holder_value="agent-1")
-    assert await runner._session_has_compression_in_flight("k") is True
-
-
-@pytest.mark.asyncio
-async def test_returns_false_when_no_lock():
-    runner = _make_runner(holder_value=None)
-    assert await runner._session_has_compression_in_flight("k") is False
-
-
-@pytest.mark.asyncio
 async def test_returns_false_when_no_session_store():
     from gateway.run import GatewayRunner
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.session_store = None
     runner._session_db = MagicMock()
     assert await runner._session_has_compression_in_flight("k") is False
+
+
+@pytest.mark.asyncio
+async def test_returns_false_when_holder_is_not_a_string():
+    """Lock holders are session-id strings. A MagicMock auto-attr must not
+    look like an in-flight compression and skip hygiene (#96953)."""
+    runner = _make_runner(holder_value=MagicMock())
+    assert await runner._session_has_compression_in_flight("k") is False
+    runner = _make_runner(holder_value=True)
+    assert await runner._session_has_compression_in_flight("k") is False
+    runner = _make_runner(holder_value="")
+    assert await runner._session_has_compression_in_flight("k") is False
+    runner = _make_runner(holder_value="agent-1")
+    assert await runner._session_has_compression_in_flight("k") is True
 
 
 @pytest.mark.asyncio

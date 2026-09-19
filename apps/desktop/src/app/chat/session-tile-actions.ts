@@ -503,7 +503,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       truncateMessageId?: string,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      submissionRef?: string
     ) =>
       runRewindSubmit(
         requestSessionGateway,
@@ -518,7 +519,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        submissionRef
       ),
     [bindRecoveredRuntime, requestSessionGateway]
   )
@@ -569,7 +571,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            plan.submissionRef
           )
         )
       } catch (err) {
@@ -604,7 +607,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         sessionId
       })
 
-      update(state => applyRewindOptimistic(state, plan.sourceIndex))
+      update(state => applyRewindOptimistic(state, plan.sourceIndex, undefined, plan.submissionRef))
 
       try {
         applySurvivorRowIds(
@@ -615,7 +618,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            plan.submissionRef
           )
         )
       } catch (err) {
@@ -653,7 +657,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         sessionId
       })
 
-      update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+      update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage, plan.submissionRef))
 
       try {
         applySurvivorRowIds(
@@ -664,7 +668,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            plan.submissionRef
           )
         )
       } catch (err) {

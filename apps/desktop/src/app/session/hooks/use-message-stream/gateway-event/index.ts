@@ -20,6 +20,7 @@ import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageInputEvent } from './message-input'
+import { shouldIgnoreMessageStart } from './message-start-input'
 import { handleMessageStreamEvent } from './message-stream'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
@@ -164,13 +165,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         unscopedStreamSessionIds: unscopedStreamSessionIdsRef.current
       })
 
-      unscopedStreamSessionIdsRef.current = route.nextUnscopedStreamSessionIds
-
       if (route.drop) {
         return
       }
 
       const sessionId = route.sessionId
+
+      // Rejected starts must not mutate routing or any transient status store.
+      if (event.type === 'message.start' && shouldIgnoreMessageStart({ deps, event, sessionId, explicitSid })) {
+        return
+      }
+
+      unscopedStreamSessionIdsRef.current = route.nextUnscopedStreamSessionIds
 
       // Late stragglers: an unscoped stream event attributed via the
       // active-session fallback (no pin) to a session that has no live turn

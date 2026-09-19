@@ -935,7 +935,8 @@ export function usePromptActions({
       interruptFirst: boolean,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      submissionRef?: string
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -953,7 +954,8 @@ export function usePromptActions({
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        submissionRef
       ),
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
@@ -987,7 +989,8 @@ export function usePromptActions({
           false,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1049,7 +1052,9 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
+      updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, undefined, plan.submissionRef)
+      )
 
       try {
         const survivorRowIds = await submitRewindPrompt(
@@ -1060,7 +1065,8 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1116,7 +1122,9 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+      updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage, plan.submissionRef)
+      )
 
       const isStaleTargetError = (err: unknown) =>
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
@@ -1146,7 +1154,8 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1172,6 +1181,10 @@ export function usePromptActions({
             const retryPlan = planEdit(refreshed, edited)
 
             if (retryPlan && !retryPlan.isFailedTurn) {
+              updateSessionState(sessionId, state =>
+                applyRewindOptimistic(state, retryPlan.sourceIndex, retryPlan.editedMessage, retryPlan.submissionRef)
+              )
+
               const survivorRowIds = await submitRewindPrompt(
                 sessionId,
                 retryPlan.text,
@@ -1180,7 +1193,8 @@ export function usePromptActions({
                 false,
                 retryPlan.truncateRowId,
                 retryPlan.sourceText,
-                durableRowIdsForRebind(refreshed)
+                durableRowIdsForRebind(refreshed),
+                retryPlan.submissionRef
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)

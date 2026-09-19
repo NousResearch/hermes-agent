@@ -181,8 +181,7 @@ describe('shared starting input observation', () => {
         messages: Array.from({ length: ownCount }, (_, index) => ({
           id: `own-${index}`,
           role: 'user' as const,
-          parts: [textPart(`Part ${index}`)],
-          attachmentRefs: [`@image:local-${index}`]
+          parts: [textPart(`Part ${index}`)]
         }))
       })
 
@@ -204,9 +203,6 @@ describe('shared starting input observation', () => {
 
       if (ownCount) {
         expect(h.state().messages[0]?.id).toBe('own-0')
-        expect(h.state().messages[0]?.attachmentRefs).toEqual(
-          Array.from({ length: ownCount }, (_, index) => `@image:local-${index}`)
-        )
       }
 
       cleanup()

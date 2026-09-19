@@ -562,6 +562,7 @@ class TestWhisperHallucinationFilter:
 # play_audio_file
 # ============================================================================
 
+@pytest.mark.real_audio_playback
 class TestPlayAudioFile:
     @pytest.mark.linux_only
     def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
@@ -594,6 +595,7 @@ class TestPlayAudioFile:
 # macOS output policy (no sounddevice for OUTPUT -> avoids TCC prompt)
 # ============================================================================
 
+@pytest.mark.real_audio_playback
 class TestMacOSAudioOutputPolicy:
     """macOS-gated: the policy exists because PortAudio/CoreAudio init raises
     a TCC media-library prompt, which no faked platform on Linux reproduces —
@@ -694,7 +696,9 @@ class TestCleanupTempRecordings:
 # play_beep
 # ============================================================================
 
+@pytest.mark.real_audio_playback
 class TestPlayBeep:
+    @pytest.mark.linux_only
     def test_beep_calls_sounddevice_play(self, mock_sd):
         np = pytest.importorskip("numpy")
 
@@ -1408,6 +1412,7 @@ class TestDefaultInputSamplerate:
             assert wf.getframerate() == 48000
 
 
+@pytest.mark.real_audio_playback
 class TestWSL2PowerShellFallback:
     """Regression tests for WSL2 PowerShell TTS fallback (issue #17608).
 

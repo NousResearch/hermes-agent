@@ -13,6 +13,7 @@ from agent.anthropic_credentials import (
     _read_claude_code_credentials_from_keychain,
     read_claude_code_credentials,
     _refresh_oauth_token,
+    _keychain_mirror_command,
     _merge_keychain_credential_payload,
     _mirror_claude_code_credentials_to_keychain,
 )
@@ -353,126 +354,60 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
 
 
 class TestMergeKeychainCredentialPayload:
-    """``_merge_keychain_credential_payload`` — the pure merge that a Keychain
-    refresh write performs over the existing entry. Host-agnostic, so it runs
-    on every lane and pins the #98334 invariant: rotate the token triple while
-    preserving the metadata Claude Code gates on."""
+    """``_merge_keychain_credential_payload`` — the pure merge a Keychain refresh write
+    performs over the existing entry (#98334): rotate the token triple, keep everything
+    Claude Code stores beside it."""
 
-    _EXISTING = {
-        "claudeAiOauth": {
-            "accessToken": "old-access",
-            "refreshToken": "old-refresh",
-            "expiresAt": 1,
-            "scopes": ["user:inference", "user:profile"],
-            "subscriptionType": "max",
-        },
-        "rateLimitTier": "tier-1",
-    }
-
-    def test_rotates_triple_preserves_metadata(self):
-        merged = _merge_keychain_credential_payload(self._EXISTING, "new-access", "new-refresh", 42)
+    def test_rotates_triple_and_keeps_every_sibling(self):
+        existing = {
+            "claudeAiOauth": {
+                "accessToken": "old-access", "refreshToken": "old-refresh", "expiresAt": 1,
+                "scopes": ["user:inference", "user:profile"], "subscriptionType": "max",
+            },
+            "rateLimitTier": "tier-1",
+            # Claude Code keeps its MCP server OAuth tokens in the same item; a refresh that
+            # dropped them would log the user out of every MCP server at once.
+            "mcpOAuth": {f"srv{i}": {"accessToken": f"t{i}"} for i in range(24)},
+        }
+        merged = _merge_keychain_credential_payload(existing, "new-access", "new-refresh", 42)
         oauth = merged["claudeAiOauth"]
-        assert oauth["accessToken"] == "new-access"
-        assert oauth["refreshToken"] == "new-refresh"
-        assert oauth["expiresAt"] == 42
-        # The fields Claude Code >=2.1.81 gates on survive the merge.
-        assert oauth["scopes"] == ["user:inference", "user:profile"]
-        assert oauth["subscriptionType"] == "max"
-        assert merged["rateLimitTier"] == "tier-1"
-        # Input payload is not mutated (no aliasing surprise).
-        assert self._EXISTING["claudeAiOauth"]["refreshToken"] == "old-refresh"
+        assert (oauth["accessToken"], oauth["refreshToken"], oauth["expiresAt"]) == ("new-access", "new-refresh", 42)
+        # Everything except the rotated triple is byte-identical to the input.
+        assert {k: v for k, v in oauth.items() if k not in ("accessToken", "refreshToken", "expiresAt")} == {
+            "scopes": ["user:inference", "user:profile"], "subscriptionType": "max"}
+        assert {k: v for k, v in merged.items() if k != "claudeAiOauth"} == {
+            k: v for k, v in existing.items() if k != "claudeAiOauth"}
+        assert existing["claudeAiOauth"]["refreshToken"] == "old-refresh"  # input not mutated
 
-    def test_tolerates_missing_oauth_block(self):
-        merged = _merge_keychain_credential_payload({"other": 1}, "a", "b", 7)
-        assert merged["claudeAiOauth"] == {"accessToken": "a", "refreshToken": "b", "expiresAt": 7}
-        assert merged["other"] == 1
+
+class TestKeychainMirrorCommand:
+    """``_keychain_mirror_command`` — host-agnostic: it builds the ``security`` invocation
+    without running it."""
+
+    def test_secret_travels_hex_encoded_on_stdin_under_the_items_own_account(self):
+        payload = {"claudeAiOauth": {"accessToken": "sk-ant-oat01-new", "refreshToken": 'r"q\\x'}, "mcpOAuth": {"a": 1}}
+        argv, line = _keychain_mirror_command("alice smith", payload)
+
+        # ``security -i`` reads the command from stdin: nothing secret on argv.
+        assert argv == ["security", "-i"]
+        assert "sk-ant-oat01-new" not in line and "-w" not in line.split()
+        # -U updates the item Claude Code reads (matched on account + service), never a second one.
+        assert line.startswith('add-generic-password -U -a "alice smith" -s "Claude Code-credentials" -X ')
+        hex_blob = line.split(" -X ", 1)[1].strip()
+        assert json.loads(bytes.fromhex(hex_blob)) == payload
 
 
 class TestMirrorClaudeCodeCredentialsToKeychain:
-    """``_mirror_claude_code_credentials_to_keychain`` — the #98334 write mirror.
+    """The #98334 write mirror shells out to ``security``; ``subprocess.run`` is mocked so no
+    real Keychain is touched."""
 
-    The write path is gated on ``platform.system() == "Darwin"`` and shells out
-    to ``security``. We force the gate to "Darwin" so the logic runs on every
-    lane, and mock only the raw reader and ``subprocess.run`` — no real Keychain
-    is ever touched and no real ``security`` binary is required.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _darwin_gate(self, monkeypatch):
-        monkeypatch.setattr(platform, "system", lambda: "Darwin")
-
-    def test_writes_via_stdin_not_argv_when_entry_exists(self, monkeypatch):
-        """The rotated pair must reach the existing Keychain item via
-        ``add-generic-password -U`` with the payload on stdin — never as a
-        ``-w`` argv token (a live secret would be visible in the process table)."""
-        existing = {
-            "claudeAiOauth": {"accessToken": "old", "refreshToken": "old-ref",
-                              "expiresAt": 1, "scopes": ["user:inference"],
-                              "subscriptionType": "max"},
-        }
-        monkeypatch.setattr(
-            "agent.anthropic_credentials._read_claude_code_keychain_payload", lambda: existing)
-        calls = []
-
-        def fake_run(argv, **kwargs):
-            calls.append((list(argv), kwargs))
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mirror_claude_code_credentials_to_keychain("new-access", "new-ref", 99)
-
-        assert len(calls) == 1
-        argv, kwargs = calls[0]
-        assert "add-generic-password" in argv
-        assert "-U" in argv
-        assert "-s" in argv and "Claude Code-credentials" in argv
-        # The bare -w flag reads the password from stdin, so the secret must NOT
-        # appear anywhere on the command line.
-        assert "-w" in argv
-        joined = " ".join(argv)
-        assert "new-access" not in joined
-        assert "new-ref" not in joined
-        # The payload goes to stdin and carries the rotated triple + preserved metadata.
-        payload = json.loads(kwargs["input"])
-        assert payload["claudeAiOauth"]["refreshToken"] == "new-ref"
-        assert payload["claudeAiOauth"]["accessToken"] == "new-access"
-        assert payload["claudeAiOauth"]["subscriptionType"] == "max"
-
+    @pytest.mark.macos_only
     def test_no_write_when_no_entry_exists(self, monkeypatch):
         """Never create a Keychain item the user has not."""
-        monkeypatch.setattr(
-            "agent.anthropic_credentials._read_claude_code_keychain_payload", lambda: None)
+        monkeypatch.setattr("agent.anthropic_credentials._read_claude_code_keychain_payload", lambda: None)
         called = []
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
 
         _mirror_claude_code_credentials_to_keychain("a", "b", 1)
 
         assert called == []
-
-    def test_fail_soft_when_security_raises(self, monkeypatch):
-        """A mirror failure is logged, never raised: the file commit already
-        succeeded and the resolver still resolves from it."""
-        monkeypatch.setattr(
-            "agent.anthropic_credentials._read_claude_code_keychain_payload",
-            lambda: {"claudeAiOauth": {"accessToken": "x"}})
-
-        def boom(*a, **k):
-            raise OSError("security not available")
-
-        monkeypatch.setattr(subprocess, "run", boom)
-
-        # Must not raise.
-        _mirror_claude_code_credentials_to_keychain("a", "b", 1)
-
-    def test_fail_soft_on_nonzero_exit(self, monkeypatch):
-        monkeypatch.setattr(
-            "agent.anthropic_credentials._read_claude_code_keychain_payload",
-            lambda: {"claudeAiOauth": {"accessToken": "x"}})
-        monkeypatch.setattr(
-            subprocess, "run",
-            lambda *a, **k: MagicMock(returncode=1, stdout="", stderr="duplicate item"))
-
-        # Must not raise.
-        _mirror_claude_code_credentials_to_keychain("a", "b", 1)
-

@@ -12,12 +12,12 @@ re-reads them on every ``load_pool()``, so a failed write here is a failed refre
 import base64
 import contextlib
 import functools
-import getpass
 import hashlib
 import json
 import logging
 import os
 import platform
+import re
 import secrets
 import subprocess
 import threading
@@ -238,6 +238,37 @@ def _read_claude_code_keychain_payload() -> Optional[Dict[str, Any]]:
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _claude_code_keychain_account() -> str:
+    """The ``acct`` attribute of the existing Keychain item (``""`` when unreadable).
+
+    ``add-generic-password -U`` matches on account AND service; writing under a different
+    account would create a second item instead of updating the one Claude Code reads.
+    """
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    match = re.search(r'"acct"<blob>="((?:[^"\\]|\\.)*)"', result.stdout) if result.returncode == 0 else None
+    return match.group(1) if match else ""
+
+
+def _keychain_mirror_command(account: str, payload: Dict[str, Any]) -> tuple[list[str], str]:
+    """``(argv, stdin)`` that updates the Claude Code Keychain item with ``payload``.
+
+    The command line goes to ``security -i`` on stdin, with the secret hex-encoded (``-X``):
+    a bare ``-w`` prompts twice on /dev/tty when a terminal exists (hangs the CLI) and, with
+    no terminal, reads only the first line and stores an EMPTY password when the confirmation
+    read hits EOF — either way the live token must never sit on argv.
+    """
+    quoted = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'  # noqa: E731 - security -i tokenizer
+    encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8").hex()
+    line = f"add-generic-password -U -a {quoted(account)} -s {quoted(_CLAUDE_CODE_KEYCHAIN_SERVICE)} -X {encoded}\n"
+    return ["security", "-i"], line
 
 
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
@@ -487,7 +518,7 @@ def _mirror_claude_code_credentials_to_keychain(
     only wrote ``~/.claude/.credentials.json``. Because the refresh token is single-use and
     rotating, that left the Keychain holding an already-invalidated token, which Claude Code
     then spent into ``invalid_grant`` and discarded (``Login: Expired``). Mirror the rotated
-    pair back with ``security add-generic-password -U`` so both stores agree.
+    pair back with ``add-generic-password -U`` (through ``security -i``) so both stores agree.
 
     Fail-soft: a Keychain mirror failure is logged, never raised. The file commit has already
     succeeded and the resolver still resolves from it; only the secondary store stays stale.
@@ -497,25 +528,13 @@ def _mirror_claude_code_credentials_to_keychain(
         return
     try:
         existing = _read_claude_code_keychain_payload()
-        if not existing:
+        account = _claude_code_keychain_account() if existing else ""
+        if not existing or not account:
             return
-        payload = _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms)
-        encoded = json.dumps(payload)
-        # The bare ``-w`` (no value) tells ``security`` to read the password from
-        # stdin, so the live secret never lands on argv (process-table visible).
+        argv, line = _keychain_mirror_command(
+            account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
         result = subprocess.run(
-            [
-                "security", "add-generic-password", "-U",
-                "-a", getpass.getuser(),
-                "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE,
-                "-w",
-            ],
-            input=encoded,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
+            argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.debug("Keychain mirror skipped (%s)", e)

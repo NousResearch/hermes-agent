@@ -185,12 +185,13 @@ def _nous_logged_in() -> bool:
 
 def _fetch_portal_account(timeout: float):
     """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout)."""
-    import concurrent.futures
-    import contextvars
     from hermes_cli.nous_account import get_nous_portal_account_info
-    context = contextvars.copy_context()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(context.run, get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+    finally:
+        pool.shutdown(wait=False)
 
 
 def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list[str]:

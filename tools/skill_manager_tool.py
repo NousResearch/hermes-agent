@@ -219,10 +219,11 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
-        if not is_excluded_skill_path(skill_md):
-            yield skill_md.parent
+    # The explicit is_excluded_skill_path filter is redundant — iter_skill_index_files
+    # is the shared exclusion/symlink chokepoint and already prunes those dirs.
+    from agent.skill_utils import iter_skill_index_files
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
+        yield skill_md.parent
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -234,13 +235,7 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     from agent.skill_utils import get_all_skills_dirs
     local_root = None
     if "/" in name or "\\" in name:
-        try:
-            local_root = _skills_dir().resolve()
-        except OSError:
-            logger.debug(
-                "skills dir resolve failed; categorized lookups fall back to the unresolved path",
-                exc_info=True)
-            local_root = _skills_dir()
+        local_root = _skills_dir()
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
@@ -248,9 +243,11 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
             if skill_dir.name == name:
                 return {"path": skill_dir}
             if local_root is not None:
-                resolved = skill_dir.resolve()
-                if (resolved.is_relative_to(local_root)
-                        and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
+                try:
+                    relative = skill_dir.relative_to(local_root)
+                except ValueError:
+                    relative = None
+                if relative is not None and relative.as_posix() == name:
                     return {"path": skill_dir}
     return None
 

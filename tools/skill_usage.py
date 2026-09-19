@@ -212,9 +212,11 @@ def _toggle_suppressed_name(skill_name: str, *, add: bool) -> None:
 def _iter_skill_mds(base: Path, *, local_only: bool) -> Iterator[Tuple[str, Path]]:
     """``(frontmatter name, SKILL.md)`` under *base* minus metadata/VCS/venv/cache dirs; *local_only* also skips
     external skill dirs mounted below the tree (curation must not touch them)."""
-    for skill_md in base.rglob("SKILL.md"):
-        if not (is_excluded_skill_path(skill_md) or (local_only and is_external_skill_path(skill_md))):
-            yield _read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
+    from agent.skill_utils import iter_skill_index_files
+    for skill_md in iter_skill_index_files(base, "SKILL.md"):
+        if local_only and is_external_skill_path(skill_md):
+            continue
+        yield _read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
 
 
 def _scan_local_skills(keep: Callable[[str, Path, Set[str], Dict[str, Any]], bool]) -> List[str]:

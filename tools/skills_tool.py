@@ -561,7 +561,12 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
     with suppress(Exception):
         trusted_dirs.extend(d.resolve() for d in all_dirs)
     warnings = []
-    if not _under_any(skill_md, trusted_dirs):
+    # To support directory symlinks without globally weakening security controls (like the
+    # quarantine gate which also uses _under_any), check the lexical path against the raw
+    # trusted dirs first before falling back to the resolved path check.
+    unresolved_trusted = [active_skills_dir] + list(all_dirs)
+    lexically_trusted = any(skill_md.is_relative_to(d) for d in unresolved_trusted)
+    if not lexically_trusted and not _under_any(skill_md, trusted_dirs):
         warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
     if any(p in content.lower() for p in _INJECTION_PATTERNS):
         warnings.append("skill content contains patterns that may indicate prompt injection")

@@ -211,15 +211,20 @@ class TestBootstrapRecord:
     def test_the_background_loop_retries_a_transient_failure_until_it_settles(self, nas, monkeypatch):
         nas.raise_transport = httpx.ConnectTimeout("no route")
         slept = []
+        # A small exact clock instead of the real ``time.monotonic()`` (seconds since boot): the
+        # ladder waits are whole numbers, so ``ceil(not_before - monotonic())`` must land on the
+        # ladder value exactly. At real monotonic magnitude, ``(M+76)-(M+16)`` rounds to a hair over
+        # 60.0 and ``ceil`` flips the second wait to 61 (flaky on CI).
+        clock = [0.0]
 
         def _sleep(seconds):
             slept.append(seconds)
-            # The cooldown passes while we "slept".
-            failure = anon_auth._mint_failure_for_profile()
-            monkeypatch.setattr(anon_auth.time, "monotonic", lambda f=failure: f.not_before + 1)
+            # The cooldown passes while we "slept": advance the clock past the pending not_before.
+            clock[0] += seconds
             if len(slept) == 2:
                 nas.raise_transport = None          # the network comes back on the second wait
         monkeypatch.setattr(free_tier_bootstrap, "_sleep", _sleep)
+        monkeypatch.setattr(anon_auth.time, "monotonic", lambda: clock[0])
         free_tier_bootstrap._bootstrap_then_retry()
         record = free_tier_bootstrap.current_record()
         assert record.has_identity is True and record.free_tier is True

@@ -12,8 +12,8 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import time
 from typing import Any, Optional
-
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
 from hermes_cli.config import atomic_config_write
@@ -129,6 +129,98 @@ def _model_provider_listing_lines(providers) -> list[str]:
             lines.append(f"  `{p['api_url']}`")
         lines.append("")
     return lines
+
+
+# ── /model 序号选择：picker 列表快照（网关侧，TTL + 容量双防护） ──────────
+# 快照存网关 runner 而非 adapter：/model 流程归网关，adapter 会重连重建。
+_MODEL_PICKER_SNAPSHOT_TTL_SECONDS = 300.0  # 快照 5 分钟内可按序号解释
+_MODEL_PICKER_SNAPSHOT_MAX_ENTRIES = 256    # 容量上限，超出按最旧淘汰（LRU）
+
+
+def _flatten_picker_items(providers) -> tuple:
+    """把 picker 的 providers 列表展开为可选项序列 ``((slug, name, model), ...)``。
+
+    展开顺序即用户看到的序号顺序：providers 顺序 × 每个 provider 的 models
+    顺序，跳过无模型行（list_picker_providers 仅自定义端点可能无模型）。
+    onebot 插件的文字列表渲染（onebot_utils.render_model_picker_text）遵循
+    同一展开约定，两侧编号一致性由跨层测试锁定。
+    """
+    items: list = []
+    for p in providers or []:
+        slug = str(p.get("slug", "") or "")
+        name = str(p.get("name", "") or slug)
+        for model in p.get("models") or []:
+            items.append((slug, name, str(model)))
+    return tuple(items)
+
+
+class ModelPickerSnapshotStore:
+    """``/model`` picker 列表快照：session_key -> (展开项, 记录时刻)。
+
+    内存防护（评审专项，均为显式可测方法）：
+    - TTL：快照超过 TTL 即过期；过期项在 lookup/prune 时剔除，不会无限累积；
+    - 容量：至多 max_entries 条，超出按最旧淘汰；fresh 命中会把条目移到
+      队尾（LRU），最久未用的先被淘汰。
+    """
+
+    def __init__(
+        self,
+        ttl_seconds: float = _MODEL_PICKER_SNAPSHOT_TTL_SECONDS,
+        max_entries: int = _MODEL_PICKER_SNAPSHOT_MAX_ENTRIES,
+        clock=time.time,
+    ):
+        self._ttl = float(ttl_seconds)
+        self._max = int(max_entries)
+        self._clock = clock
+        self._entries: dict[str, tuple[tuple, float]] = {}
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def record(self, session_key: str, providers) -> None:
+        """picker 发送成功后记录快照；空列表不记录（并清掉同 key 旧快照）。"""
+        items = _flatten_picker_items(providers)
+        if not items:
+            self._entries.pop(session_key, None)
+            return
+        while len(self._entries) >= self._max and session_key not in self._entries:
+            self._entries.pop(next(iter(self._entries)))
+        # 先 pop 再赋值：覆盖同 key 旧快照时也刷新 LRU 位置（dict 原地赋值不动顺序）。
+        self._entries.pop(session_key, None)
+        self._entries[session_key] = (items, self._clock())
+
+    def lookup(self, session_key: str, *, now: Optional[float] = None):
+        """返回 ``(state, items)``；state ∈ {"absent", "fresh", "expired"}。
+
+        fresh 命中刷新 LRU 顺序；expired 顺手剔除该条目，但仍返回 items——精确
+        模型名比对不受 TTL 影响（序号使用由调用方按 state 拒绝）。
+        """
+        now = self._clock() if now is None else now
+        entry = self._entries.get(session_key)
+        if entry is None:
+            return "absent", None
+        items, recorded_at = entry
+        if (now - recorded_at) > self._ttl:
+            self._entries.pop(session_key, None)
+            return "expired", items
+        self._entries[session_key] = self._entries.pop(session_key)  # LRU touch
+        return "fresh", items
+
+    def prune(self, *, now: Optional[float] = None) -> int:
+        """显式清理：剔除全部过期快照，返回清理条数（可测的内存回收入口）。"""
+        now = self._clock() if now is None else now
+        # list() 拷贝：prune 可能被 housekeeping 线程调用，与事件循环线程的
+        # record/lookup 并发——在条目快照上判定，避免迭代中 dict 变更。
+        expired = [
+            key for key, (_items, recorded_at) in list(self._entries.items())
+            if (now - recorded_at) > self._ttl
+        ]
+        for key in expired:
+            self._entries.pop(key, None)
+        return len(expired)
+
+    def clear(self) -> None:
+        self._entries.clear()
 
 
 class GatewayModelCommandsMixin:
@@ -338,8 +430,6 @@ class GatewayModelCommandsMixin:
         try:  # off-loop: listing can hit a synchronous HTTP fetch on a stale cache
             # Offload blocking provider-listing (can fall through to a synchronous urllib HTTP fetch on a
             # stale cache) off the event loop so the gateway doesn't freeze. See #41289.
-            # Offload blocking provider-listing off the event loop so the gateway doesn't freeze on a
-            # stale-cache HTTP fetch. See #41289.
             providers = await asyncio.to_thread(
                 list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
             )
@@ -354,7 +444,65 @@ class GatewayModelCommandsMixin:
             on_model_selected=on_model_selected,
             metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
         )
+        if result.success:
+            # 记录 picker 列表快照（网关侧）：后续 /model <纯数字> 按此解释。
+            self._model_picker_store.record(session_key, providers)
         return bool(result.success)
+    @property
+    def _model_picker_store(self) -> ModelPickerSnapshotStore:
+        """Per-runner snapshot store, lazily built (bare-object test fixtures included)."""
+        store = getattr(self, "_model_picker_snapshots", None)
+        if store is None:
+            store = ModelPickerSnapshotStore()
+            self._model_picker_snapshots = store
+        return store
+
+    @staticmethod
+    def _model_numeric_target_wanted(request) -> bool:
+        """纯数字 target 且未带会改变语义的 flag 时才尝试序号解释。
+
+        --provider / --global / --session / --once 一律保持现有语义，不做序号
+        解释（--refresh 只刷缓存、--reasoning 随切换生效，都不影响序号解释）。
+        """
+        return bool(
+            request.target and request.target.isdigit()
+            and not request.explicit_provider
+            and not (request.is_global or request.is_session or request.is_once)
+        )
+
+    def _resolve_model_picker_number(self, session_key: str, target: str):
+        """按最近一次 picker 快照解释纯数字 ``/model`` target（/resume 数字分支先例）。
+
+        歧义优先级（README 同步记载）：精确模型名命中（无条件优先，快照过期后
+        纯数字模型名仍按字面切换）> 快照内序号（仅快照新鲜且 1≤n≤len）> 报错
+        提示过期/越界。返回：
+        - None            —— 不按序号解释（无快照 / 快照里存在同名精确模型），
+                             走原有字面切换路径，零行为变化；
+        - (model, slug)   —— 序号命中，切换目标改写为该 provider 下的该模型；
+        - str             —— 过期/越界错误回复（直接返回给用户）。
+
+        两级 provider→模型扩展点：快照条目本就是 (provider_slug, name, model)
+        三元组，后续 ``/model <provider序号> <模型序号>`` 只需在此解析器上
+        扩展多级索引，存储结构与 LRU/TTL 防护无需改动。
+        """
+        state, items = self._model_picker_store.lookup(session_key)
+        if state == "absent":
+            return None
+        try:
+            index = int(target)
+        except ValueError:  # e.g. "²".isdigit() is True but int() rejects it
+            return None
+        if any(model == target for (_slug, _name, model) in items):
+            return None  # 精确模型名命中优先于序号（含过期快照：字面切换）
+        if state == "expired":
+            return t("gateway.model.error_prefix", error=(
+                "the model picker list has expired — run /model again for a fresh list"))
+        if not 1 <= index <= len(items):
+            return t("gateway.model.error_prefix", error=(
+                f"model number {index} is out of range (1-{len(items)}) — "
+                "run /model again to refresh the list"))
+        slug, _name, model = items[index - 1]
+        return model, slug
 
     async def _model_listing_reply(
         self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home
@@ -484,7 +632,14 @@ class GatewayModelCommandsMixin:
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
-        result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
+        model_target, provider_target = request.target, request.explicit_provider
+        if self._model_numeric_target_wanted(request):
+            numeric = self._resolve_model_picker_number(session_key, request.target)
+            if isinstance(numeric, str):  # 过期/越界：快照拒绝，不落入字面切换
+                return numeric
+            if numeric is not None:
+                model_target, provider_target = numeric
+        result, error = await self._perform_model_switch(ctx, model_target, provider_target, source)
         if error is not None:
             return error
         guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)

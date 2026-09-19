@@ -107,6 +107,8 @@ Hermes 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Teleg
 | 中断当前工作 | `Ctrl+C` 或发送新消息 | `/stop` 或发送新消息 |
 | 平台特定状态 | `/platforms` | `/status`、`/sethome` |
 
+**按序号选模型（任何发过模型选择器的平台——OneBot 接入的 QQ、Telegram、Discord、Slack、Matrix 等）：** 发送 `/model`（无参数）会收到模型选择器（文字型为带序号列表并标 "← 当前"，按钮/表情型无数字 UI；无论哪种，网关都会按相同的 provider × 模型展开顺序记录快照），在 5 分钟内回复 `/model <序号>` 即可切换到第 N 项。序号始终按网关展开顺序解释（provider 顺序 × 各自模型顺序，即文字选择器打印的编号顺序）。歧义优先级固定为：精确模型名命中（无条件优先——纯数字模型名在快照过期后仍按字面切换）> 快照内序号（仅最近一次选择器列表新鲜且 1≤n≤长度时生效）> 报错提示过期/越界。`--provider` / `--global` / `--session` / `--once` 等参数保持既有语义，不做序号解释；未发过选择器列表的会话行为不变。
+
 完整命令列表请参阅 [CLI 指南](https://hermes-agent.nousresearch.com/docs/user-guide/cli) 和 [消息网关指南](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)。
 
 ---

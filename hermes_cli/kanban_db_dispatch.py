@@ -25,6 +25,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_db_dispatch_events import record_respawn_guard
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -2015,16 +2016,8 @@ def _dispatch_lane_task(
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
-        # Event so ``hermes kanban tail`` shows why the task looks stuck.
-        # Honour kanban.default_assignee: when the dispatcher hits an unassigned ready task and an
-        # operator-configured fallback exists, persist the assignment and proceed. This removes the
-        # dashboard footgun where a task created without an assignee parks in 'ready' forever even though
-        # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
-        # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
-        # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
         if not dry_run:
-            with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+            record_respawn_guard(conn, task_id, guard_reason)
         return False
 
     def _count_spawn(name: str) -> None:

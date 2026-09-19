@@ -558,12 +558,24 @@ def _merge_by_id(into: Dict[str, Dict[str, Any]], entries: List[Dict[str, Any]],
 
 def _merge_profile_tree(
     merged: Dict[str, Dict[str, Any]], projects: List[Dict[str, Any]], profile: str,
-    preview_limit: int) -> None:
+    preview_limit: int, default_cwd: Optional[str] = None) -> None:
     """Fold one profile's projects into the shared tree, keyed by folder: the same checkout
     in two profiles is one group, as is ``__no_project__`` (else one "Home" per profile), and
     a declared project (``p_<hash>``) folds with another profile's auto entry for the same
-    folder. Sessions carry the owning profile; a group header never claims a single owner."""
+    folder. Sessions carry the owning profile; a group header never claims a single owner.
+    ``defaultProfile`` is only a launch-target hint: the profile whose configured
+    ``terminal.cwd`` (*default_cwd*) is this project's folder."""
+    default_path = Path(default_cwd).expanduser().resolve(strict=False) if default_cwd else None
+
     for project in projects:
+        project_path = project.get("path")
+        if default_path is not None and project_path:
+            try:
+                if Path(project_path).expanduser().resolve(strict=False) == default_path:
+                    project["defaultProfile"] = profile
+            except (OSError, RuntimeError):
+                pass
+
         lane_sessions = (s for r in project.get("repos") or []
                          for lane in r.get("groups") or []
                          for s in lane.get("sessions") or [])
@@ -582,6 +594,9 @@ def _merge_profile_tree(
         if existing.get("isAuto") and not project.get("isAuto"):
             existing, project = project, existing
             merged[key] = existing
+
+        if project.get("defaultProfile") and not existing.get("defaultProfile"):
+            existing["defaultProfile"] = project["defaultProfile"]
 
         repos: Dict[str, Dict[str, Any]] = {r["id"]: r for r in existing.get("repos") or []}
         _merge_by_id(repos, project.get("repos") or [], "groups")
@@ -614,10 +629,15 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     for name, home in _profile_targets("GET /api/profiles/projects/tree"):
         def _read(db, name=name, home=home):
             with _hermes_home_scope(home):
+                from hermes_cli.config import load_config
+
+                # The profile's configured launch folder tags its project row (defaultProfile).
+                terminal_config = load_config().get("terminal") or {}
+                default_cwd = str(terminal_config.get("cwd") or "").strip()
                 tree, _active_id = gateway_server._build_project_tree(
                     db, preview_limit=preview_limit, hydrate=False,
                     session_limit=session_limit, include_discovered=False)
-                _merge_profile_tree(merged, tree["projects"], name, preview_limit)
+                _merge_profile_tree(merged, tree["projects"], name, preview_limit, default_cwd)
                 scoped_session_ids.extend(tree["scoped_session_ids"])
         _read_profile_db(name, home, errors, _read)
 

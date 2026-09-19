@@ -804,6 +804,21 @@ class LocalEnvironment(BaseEnvironment):
 
     _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
+
+    def _sudo_nopasswd_works(self) -> bool:
+        """Probe ``sudo -n`` outside Electron's NoNewPrivs tree when latched."""
+        if not self._sudo_nopasswd_probe_supported:
+            return False
+        proc = None
+        try:
+            proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)
+            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
+        except Exception:
+            return False
+        finally:
+            if proc is not None:
+                self._kill_process(proc)
+
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.
     is_local = True
@@ -888,19 +903,48 @@ class LocalEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
+        from tools.terminal_tool_sudo import (
+            _nnp_manager_keys_to_unset,
+            _nnp_sudo_unit_from_command,
+            _wrap_local_command_for_no_new_privs,
+            _write_nnp_env_file,
+        )
+
         bash = _find_bash()
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
         if login:
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
+        run_env = _make_run_env(self.env)
+        env_file = None
+        wrapped = _wrap_local_command_for_no_new_privs(cmd_string, cwd=self.cwd or None)
+        if wrapped != cmd_string:
+            env_file = _write_nnp_env_file(run_env)
+            cmd_string = _wrap_local_command_for_no_new_privs(
+                cmd_string,
+                cwd=self.cwd or None,
+                env_file=env_file,
+                unset_names=_nnp_manager_keys_to_unset(run_env),
+            )
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+        try:
+            proc = subprocess.Popen(
+            args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        except Exception:
+            if env_file:
+                with contextlib.suppress(OSError):
+                    os.unlink(env_file)
+            raise
+        unit = _nnp_sudo_unit_from_command(cmd_string)
+        if unit:
+            proc._nnp_sudo_unit = unit
+        if env_file:
+            proc._nnp_sudo_env_file = env_file
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
@@ -909,12 +953,30 @@ class LocalEnvironment(BaseEnvironment):
         return proc
 
     def _kill_process(self, proc):
-        """Kill the entire process group (all children)."""
+        """Kill the entire process group (all children) and any NNP sudo unit."""
+        from tools.terminal_tool_sudo import _nnp_sudo_unit_from_proc, _stop_nnp_sudo_unit
+
         try:
             (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
         except OSError:  # ProcessLookupError / PermissionError included
             with contextlib.suppress(Exception):
                 proc.kill()
+        unit = _nnp_sudo_unit_from_proc(proc)
+        if unit:
+            _stop_nnp_sudo_unit(unit)
+            with contextlib.suppress(AttributeError):
+                proc._nnp_sudo_unit = None
+        from tools.terminal_tool_sudo import _release_nnp_sudo_env_file
+        _release_nnp_sudo_env_file(proc)
+
+    def _wait_for_process(self, proc, timeout: int = 120, **kwargs):
+        """Base wait, then drop the EnvironmentFile once the unit has finished."""
+        try:
+            return super()._wait_for_process(proc, timeout, **kwargs)
+        finally:
+            if proc.poll() is not None:
+                from tools.terminal_tool_sudo import _release_nnp_sudo_env_file
+                _release_nnp_sudo_env_file(proc)
 
     def _extract_cwd_from_output(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —

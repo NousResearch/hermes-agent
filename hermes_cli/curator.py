@@ -31,6 +31,12 @@ def _fmt_ts(ts: Optional[str]) -> str:
     return f"{secs // 86400}d ago"
 
 
+def _absolute_ts(ts: Optional[str]) -> str:
+    """Render a ledger timestamp as ISO-8601 with an explicit UTC offset."""
+    dt = _parse_ts(ts)
+    return dt.isoformat() if dt is not None else str(ts or "?")
+
+
 def _confirm(prompt: str, cancel: str = "cancelled", eof_prefix: str = "\n") -> bool:
     """Ask ``prompt``; print ``cancel`` (prefixed on EOF/Ctrl-C) and return False unless y/yes."""
     try:
@@ -386,13 +392,18 @@ def _cmd_backup(args) -> int:
 
 def _cmd_ledger(args) -> int:
     """List per-mutation audit ledger entries (newest first)."""
+    import json as _json
     from tools import skill_ledger
     rows = skill_ledger.list_entries(
         skill=getattr(args, "skill", None), limit=getattr(args, "limit", None) or 20)
+    if getattr(args, "json", False):
+        output = [{**row, "ts": _absolute_ts(row.get("ts"))} for row in rows]
+        print(_json.dumps(output, indent=2, ensure_ascii=False))
+        return 0
     if not rows:
         print("curator: ledger is empty (or skills.ledger is disabled).")
         return 0
-    print(f"{'id':<14} {'when':<12} {'actor':<8} {'action':<12} skill")
+    print(f"{'id':<14} {'timestamp':<32} {'actor':<8} {'action':<12} skill")
     for r in rows:
         evidence = r.get("evidence") or {}
         extra = ""
@@ -401,7 +412,7 @@ def _cmd_ledger(args) -> int:
         elif evidence.get("rollback_target"):
             extra = f"  → rollback of {evidence['rollback_target']}"
         print(
-            f"{r.get('id', '?'):<14} {_fmt_ts(r.get('ts')):<12} "
+            f"{r.get('id', '?'):<14} {_absolute_ts(r.get('ts')):<32} "
             f"{r.get('actor', '?'):<8} {r.get('action', '?'):<12} "
             f"{r.get('skill', '?')}{extra}")
     print(
@@ -674,7 +685,8 @@ _SUBCOMMANDS = (
         "ledger", "List the per-mutation skill audit ledger (all actors: curator/agent/user)",
         _cmd_ledger,
         _arg("--skill", default=None, help="Only show entries for this skill"),
-        _arg("--limit", type=int, default=20, help="Max entries to show (default: 20)")),
+        _arg("--limit", type=int, default=20, help="Max entries to show (default: 20)"),
+        _arg("--json", **_STORE_TRUE, help="Emit ledger entries as JSON instead of a table")),
     (
         "purge",
         "Delete archived skills older than curator.archive_ttl_days "

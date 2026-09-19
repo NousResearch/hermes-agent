@@ -8,6 +8,8 @@ import contextlib
 import json
 import logging
 import os
+import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,6 +20,11 @@ from gateway.platforms._shared import coerce_port as _coerce_int
 from . import protocol, security
 
 logger = logging.getLogger(__name__)
+
+_CARD_CACHE_TTL = 60.0
+_card_cache: dict[tuple[str, str], tuple[float, Optional[dict]]] = {}
+_card_cache_lock = threading.Lock()
+_IN_PROGRESS_STATES = frozenset({protocol.STATE_WORKING, protocol.STATE_SUBMITTED})
 
 _DEFAULT_TIMEOUT = 120
 _ORCHESTRATE_MAX_WORKERS = 6  # max parallel peers for fan-out
@@ -76,6 +83,144 @@ def _fetch_card(base_url: str, headers: dict, timeout: int) -> dict:
     return _http_get_json(base + "/.well-known/agent.json", headers, timeout)
 
 
+def _fetch_card_cached(base_url: str, headers: dict, timeout: int) -> Optional[dict]:
+    """Best-effort Agent Card lookup with a short TTL.
+
+    a2a_call and a2a_get_task only need the JSON-RPC URL. Polling every few
+    seconds should not refetch the card each time. a2a_discover still calls
+    _fetch_card so it sees current skills.
+    """
+    key = (base_url.rstrip("/"), headers.get("Authorization", ""))
+    now = time.time()
+    with _card_cache_lock:
+        hit = _card_cache.get(key)
+        if hit is not None and (now - hit[0]) < _CARD_CACHE_TTL:
+            return hit[1]
+    card: Optional[dict] = None
+    try:
+        fetched = _fetch_card(base_url, headers, timeout)
+        if isinstance(fetched, dict):
+            card = fetched
+    except Exception:
+        card = None
+    with _card_cache_lock:
+        _card_cache[key] = (now, card)
+    return card
+
+
+def _interface_tenant(card: Optional[dict], peer: dict) -> str:
+    iface = _select_jsonrpc_interface(card)
+    if iface and iface.get("tenant"):
+        return str(iface["tenant"])
+    return str(peer.get("tenant") or "")
+
+
+def _short_state(state: str) -> str:
+    """TASK_STATE_COMPLETED -> completed (also passes through v0.3 states)."""
+    return state.replace("TASK_STATE_", "").replace("_", "-").lower() if state else ""
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
+def _format_peer_task(agent_label: str, reply: str, context_id: str, state: str,
+                      task_id: str = "") -> str:
+    header = f"[{agent_label}"
+    if task_id:
+        header += f" · task {task_id}"
+    if context_id:
+        header += f" · context {context_id}"
+    if state:
+        header += f" · {_short_state(state)}"
+    header += "]"
+    body = reply or "(no text reply)"
+    if state in _IN_PROGRESS_STATES:
+        body = reply or "Task is still running."
+        if task_id:
+            body += (
+                f"\n\nCall a2a_get_task with agent '{agent_label}' and "
+                f"task_id '{task_id}' to check it."
+            )
+        else:
+            body += "\n\nCall a2a_get_task with the same agent to check it."
+    elif state == protocol.STATE_INPUT_REQUIRED:
+        body += (
+            "\n\n(The peer needs more input. Answer by calling a2a_call again "
+            f"with context_id '{context_id}'.)"
+        )
+    return f"{header}\n{body}"
+
+
+def _peer_http_error(agent: str, exc: urllib.error.HTTPError) -> str:
+    if exc.code in (401, 403):
+        return f"Error: peer '{agent}' rejected auth (HTTP {exc.code}). Check the configured token."
+    if exc.code == 429:
+        return f"Error: peer '{agent}' rate limited us (HTTP 429). Retry later."
+    return f"Error: call to '{agent}' failed. HTTP {exc.code}."
+
+
+def a2a_get_task(args: dict, **_: Any) -> str:
+    """Fetch the current state of a peer task by id."""
+    agent = str(args.get("agent") or args.get("agent_name") or args.get("name") or "").strip()
+    task_id = str(args.get("task_id") or args.get("taskId") or args.get("id") or "").strip()
+    if not agent or not task_id:
+        return "Error: both 'agent' and 'task_id' are required."
+
+    peer = _resolve_peer(agent)
+    if not peer or not peer.get("url"):
+        return (
+            f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in "
+            f"config.yaml or pass a full http(s):// URL."
+        )
+
+    base_url = peer.get("url", "")
+    headers = _auth_header(peer.get("auth", {}) or {})
+    timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
+    card = _fetch_card_cached(base_url, headers, min(timeout, 30))
+
+    rpc_body = {
+        "jsonrpc": "2.0",
+        "id": protocol.new_task_id(),
+        "method": "GetTask",
+        # v1 GetTask params use id. Older peers used taskId. Send both.
+        "params": {"id": task_id, "taskId": task_id},
+    }
+    tenant = _interface_tenant(card, peer)
+    if tenant:
+        rpc_body["params"]["tenant"] = tenant
+
+    try:
+        resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    except urllib.error.HTTPError as e:
+        return _peer_http_error(agent, e)
+    except Exception as e:
+        return f"Error: GetTask on '{agent}' failed. {e}"
+
+    if "error" in resp:
+        err = resp["error"]
+        return f"Error: peer '{agent}' returned an error: {err.get('message', err)}"
+
+    # SendMessage and GetTask both return a Task. Some peers wrap it as
+    # {task: {...}} the same way SendMessage does, so reuse that unwrap.
+    payload = protocol.unwrap_send_message_response(resp.get("result", {}))
+    if not isinstance(payload, dict):
+        return f"Error: peer '{agent}' returned an unexpected GetTask result."
+    reply = _reply_text_from_result(payload)
+    ctx = str(payload.get("contextId") or "")
+    state = (payload.get("status") or {}).get("state", "")
+    got_id = str(payload.get("id") or task_id)
+    if state and state not in _IN_PROGRESS_STATES:
+        protocol.persist_peer_reply(ctx or "unknown", reply, got_id, base_url, tenant, state)
+    return _format_peer_task(agent, reply, ctx, state, got_id)
+
+
 def _select_jsonrpc_interface(card: Optional[dict]) -> Optional[dict]:
     if isinstance(card, dict):
         for iface in card.get("supportedInterfaces", []) or []:
@@ -93,40 +238,67 @@ def _rpc_url(base_url: str, card: Optional[dict]) -> str:
     return base_url.rstrip("/")
 
 
-def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
-    """One SendMessage to a peer -> (reply_text, context_id, state). Raises urllib errors /
-    ValueError for the caller to format; handles redaction, audit, persistence, metrics."""
+def _send_task(
+    agent_label: str,
+    peer: dict,
+    message: str,
+    context_id: str,
+    return_immediately: bool = False,
+) -> tuple[str, str, str, str]:
+    """Send one message/send to a peer.
+
+    Returns (reply_text, context_id, state, task_id).
+
+    Raises urllib errors / ValueError for the caller to format. Handles
+    outbound redaction, audit, persistence, and metrics.
+    """
     base_url = peer.get("url", "")
     headers = _auth_header(peer.get("auth", {}) or {})
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
-    try:
-        card = _fetch_card(base_url, headers, min(timeout, 30))  # best-effort, to learn the rpc URL
-    except Exception:
-        card = None
+
+    # Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
+    card = _fetch_card_cached(base_url, headers, min(timeout, 30))
+
     ctx = context_id or protocol.new_context_id()
     safe_message = security.redact_outbound(message)
     # v1.0: contextId lives inside the Message, not at the params top level.
-    rpc_body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "SendMessage",
-                "params": {"message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx)}}
-    iface = _select_jsonrpc_interface(card)
-    tenant = str(iface["tenant"]) if iface and iface.get("tenant") else str(peer.get("tenant") or "")
+    params: dict[str, Any] = {
+        "message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx),
+    }
+    if return_immediately:
+        params["configuration"] = {"returnImmediately": True}
+
+    rpc_body = {
+        "jsonrpc": "2.0",
+        "id": protocol.new_task_id(),
+        "method": "SendMessage",
+        "params": params,
+    }
+
+    tenant = _interface_tenant(card, peer)
     if tenant:
         rpc_body["params"]["tenant"] = tenant
+
     security.audit("outbound", agent_label, rpc_body["id"], safe_message)
-    protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
+    protocol.persist_message(ctx, "user", safe_message, rpc_body["id"], peer_url=base_url, tenant=tenant)
     protocol.metrics.outbound_total += 1
+
     resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
     if "error" in resp:
-        raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
-    payload = protocol.unwrap_send_message_response(resp.get("result", {}))
+        err = resp["error"]
+        raise ValueError(f"Peer '{agent_label}' returned an error: {err.get('message', err)}")
+
+    result = resp.get("result", {})
+    payload = protocol.unwrap_send_message_response(result)
     reply = _reply_text_from_result(payload)
-    reply_ctx, state = ctx, ""
+    reply_ctx, state, task_id = ctx, "", ""
     if isinstance(payload, dict):
         reply_ctx = payload.get("contextId", ctx)
         state = (payload.get("status") or {}).get("state", "")
-    protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
-    protocol.metrics.inbound_total += 1
-    return reply, reply_ctx, state
+        task_id = str(payload.get("id") or "")
+    if state not in _IN_PROGRESS_STATES:
+        protocol.persist_peer_reply(reply_ctx, reply, task_id or rpc_body["id"], base_url, tenant, state)
+    return reply, reply_ctx, state, task_id
 
 
 def _reply_text_from_result(result: Any) -> str:
@@ -171,30 +343,42 @@ def a2a_discover(args: dict, **_: Any) -> str:
 
 
 def a2a_call(args: dict, **_: Any) -> str:
-    """Send a task to a peer (configured name or direct URL); ``context_id`` continues a prior exchange."""
+    """Send a task to a peer agent and return its reply.
+
+    ``agent`` is a configured peer name (from ``a2a_agents``) or a direct URL.
+    ``context_id`` continues a prior exchange (multi-turn) when provided.
+    ``return_immediately`` asks the peer for a task id now so long jobs do
+    not hold this call open. Poll the id with a2a_get_task.
+    """
     # Accept common aliases models reach for (observed live: 'agent_name').
     agent = str(args.get("agent") or args.get("agent_name") or args.get("name") or "").strip()
     message = str(args.get("message") or args.get("text") or args.get("task") or "").strip()
     context_id = str(args.get("context_id") or args.get("contextId") or "").strip()
+    return_immediately = _as_bool(
+        args.get("return_immediately") if args.get("return_immediately") is not None
+        else args.get("returnImmediately")
+    )
     if not agent or not message:
         return "Error: both 'agent' and 'message' are required."
+
     peer = _resolve_peer(agent)
     if not peer or not peer.get("url"):
-        return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
+        return (
+            f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in "
+            f"config.yaml or pass a full http(s):// URL."
+        )
+
     try:
-        reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
+        reply, reply_ctx, state, task_id = _send_task(
+            agent, peer, message, context_id, return_immediately=return_immediately)
     except urllib.error.HTTPError as e:
-        return _HTTP_CALL_ERRORS.get(e.code, "Error: call to '{agent}' failed — HTTP {code}.").format(agent=agent, code=e.code)
+        return _peer_http_error(agent, e)
     except ValueError as e:
         return str(e)
     except Exception as e:
-        return f"Error: call to '{agent}' failed — {e}."
-    short_state = state.replace("TASK_STATE_", "").replace("_", "-").lower()  # v0.3 states pass through
-    header = f"[{agent} · context {reply_ctx}" + (f" · {short_state}" if state else "") + "]"
-    body = reply or "(no text reply)"
-    if state == protocol.STATE_INPUT_REQUIRED:
-        body += f"\n\n(The peer needs more input — answer by calling a2a_call again with context_id '{reply_ctx}'.)"
-    return f"{header}\n{body}"
+        return f"Error: call to '{agent}' failed. {e}"
+
+    return _format_peer_task(agent, reply, reply_ctx, state, task_id)
 
 
 def a2a_list(args: dict | None = None, **_: Any) -> str:
@@ -246,7 +430,7 @@ def _match_peers_by_capability(capability: str) -> list[tuple[str, dict]]:
 def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id: str = "") -> tuple[str, str]:
     """Call a single peer synchronously -> (agent_name, reply_text)."""
     try:
-        reply, _ctx, _state = _send_task(agent_name, _peer_from_entry(peer_entry), message, context_id)
+        reply, _ctx, _state, _task_id = _send_task(agent_name, _peer_from_entry(peer_entry), message, context_id)
         return (agent_name, reply or "(no reply)")
     except Exception as e:
         return (agent_name, f"Error: {e}")
@@ -306,8 +490,12 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                  "reply to continue a multi-turn exchange.",
                  {"agent": _str("Configured peer name (from a2a_agents) or a full http(s):// URL."),
                   "message": _str("The task / message to send the peer, in natural language."),
+                  "return_immediately": {"type": "boolean", "description": "Return a task id now; poll with a2a_get_task."},
                   "context_id": _str("Optional: context id from a prior reply, to continue the conversation.")},
                  ["agent", "message"]),
+    "a2a_get_task": (a2a_get_task, "Poll a peer task by id and return its current state and reply.",
+                     {"agent": _str("Configured peer name or URL."), "task_id": _str("Task id returned by a2a_call.")},
+                     ["agent", "task_id"]),
     "a2a_list": (a2a_list, "List configured A2A peer agents, persisted A2A conversations, and metrics.", {}, []),
     "a2a_history": (a2a_history,
                     "Recall a persisted A2A conversation transcript by context_id (survives restarts and "

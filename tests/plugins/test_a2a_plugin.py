@@ -544,6 +544,9 @@ class TestRegistryDispatchConvention:
         out = registry.dispatch("a2a_call", {"agent": "", "message": ""})
         assert "required" in out and "AttributeError" not in out
 
+        out = registry.dispatch("a2a_get_task", {"agent": "", "task_id": ""})
+        assert "required" in out and "AttributeError" not in out
+
         out = registry.dispatch("a2a_history", {})
         assert "required" in out and "AttributeError" not in out
 
@@ -1428,7 +1431,7 @@ class TestClientTenantAndDiscovery:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, _state = tools._send_task(
+        reply, _ctx, _state, _tid = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1"
         )
         assert reply == "ok"
@@ -1500,7 +1503,7 @@ class TestV1SpecRegressionFixes:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, state = tools._send_task(
+        reply, _ctx, state, _tid = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1")
         assert reply == "ok"
         assert state == protocol.STATE_COMPLETED
@@ -1593,6 +1596,7 @@ class TestV1SpecRegressionFixes:
         assert "one" in adapter._agents
         assert "two" not in adapter._agents
 
+    @pytest.mark.linux_only
     def test_forward_to_profile_first_contact_creates_then_resumes_fake_hermes(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig

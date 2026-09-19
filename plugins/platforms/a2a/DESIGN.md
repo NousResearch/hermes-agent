@@ -19,10 +19,13 @@ must not touch core files.** A2A now lives entirely under
 ### Outbound — client tools (`a2a` toolset)
 - `a2a_discover(url)` — fetch + summarize a peer's Agent Card (v1.0
   `supportedInterfaces` aware, tolerates 0.3 cards).
-- `a2a_call(agent, message, context_id?)` — send a JSON-RPC `message/send`
+- `a2a_call(agent, message, context_id?, return_immediately?)` — send a JSON-RPC `message/send`
   task to a peer, return the reply. Multi-turn via `context_id` (carried
   inside the Message per v1.0). Surfaces `TASK_STATE_INPUT_REQUIRED` so the
-  model knows to answer and continue the context.
+  model knows to answer and continue the context. `return_immediately` sets
+  `configuration.returnImmediately` so the peer returns a working task id
+  instead of holding the HTTP call until the job finishes.
+- `a2a_get_task(agent, task_id)` — JSON-RPC `GetTask` poll for that id.
 - `a2a_list()` — configured peers + persisted conversations + metrics.
 - `a2a_history(context_id, limit?)` — recall a persisted conversation
   (this is the production consumer of the persistence layer).
@@ -47,6 +50,15 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
 - JSON-RPC methods: `message/send`, `message/stream` (SSE), `tasks/get`,
   `tasks/list`, `tasks/cancel`, `tasks/subscribe`,
   `tasks/pushNotificationConfig/create` (legacy `set` names accepted).
+  `message/send` honors `configuration.returnImmediately` (and the older
+  `configuration.blocking: false`): the HTTP call returns a working Task at
+  once, a background waiter records the real result, and `tasks/get` can
+  poll it. Blocking send is unchanged (wait until done or `A2A_REPLY_TIMEOUT`).
+  The orphan watchdog skips task ids that still have a live waiter, so a
+  long job is not marked failed just because it has been working for more
+  than five minutes. The waiter itself stops after 24 hours
+  (`_BACKGROUND_WAIT_SECONDS`) and records the task as failed, so a hung
+  gateway turn cannot pin a daemon thread forever.
 - **Live-session injection (the #11025 insight):** inbound tasks route through
   the normal `MessageEvent` → `handle_message` path keyed by the A2A
   `contextId`, so the agent that answers is the same one serving the user —
@@ -57,8 +69,8 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
 - **Task store:** every task (including terminal ones, bounded to the last
   500) stays queryable via `tasks/get` / `tasks/list`, and `tasks/subscribe`
   reattaches to a running task's stream via store watchers. A watchdog fails
-  orphaned tasks after 5 minutes (idempotent transitions — no double
-  counting in metrics).
+  orphaned tasks after 5 minutes if they have no live waiter (idempotent
+  transitions, no double counting in metrics).
 - **input-required:** the platform hint tells the agent to start a reply with
   `[INPUT_REQUIRED]` when it needs clarification; the adapter maps that to
   `TASK_STATE_INPUT_REQUIRED` with the question in `status.message`.
@@ -124,8 +136,18 @@ outbound client tools (`/metrics` and `a2a_list` report both directions).
 
 ## Persistence (survives compaction)
 A2A conversations are written to `~/.hermes/a2a_conversations/<context>.jsonl`,
-outside the context-compaction pipeline — compaction and restarts can't lose
+outside the context-compaction pipeline. Compaction and restarts can't lose
 them (#11025 requirement). The `a2a_history` tool recalls them by context id.
+
+Outbound `a2a_call` with `return_immediately` writes the prompt at send time.
+The peer reply is written only when `a2a_get_task` sees a terminal state. An
+unpolled job therefore has a user line and no agent line in `a2a_history`.
+That is a known property, not a missing persist. Inbound tasks still write
+both sides, because the background waiter records the reply itself.
+
+`a2a_call` and `a2a_get_task` cache the peer Agent Card for 60 seconds so a
+polling loop does not refetch it on every GetTask. `a2a_discover` always
+fetches a fresh card.
 
 ## Requirements traced to the cluster
 

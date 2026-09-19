@@ -1645,13 +1645,20 @@ def _handoff_watch_scopes(runner: object) -> list:
     """``(profile_name, home)`` pairs whose ``state.db`` the watcher must poll; ``(None, None)`` = root
     poll, always first. ``/handoff`` writes into the store of the profile the CLI ran under; an unscoped
     watcher polls only the ROOT store, so a secondary profile's handoff would never be seen (CLI times
-    out). A raising resolver degrades to the root poll rather than silently disabling the watcher."""
+    out). A raising resolver degrades to the root poll rather than silently disabling the watcher.
+
+    Skips whichever served entry IS the root home, not whichever is literally named "default":
+    ``profiles_to_serve`` always includes ``("default", ...)``, but under a ``-p work`` multiplexer
+    the root/launch home is ``work``'s, not ``default``'s — skipping by name alone left ``default``
+    permanently unwatched whenever it isn't also the launch profile (the same class already fixed for
+    the heartbeat-restore sibling, ``run_heartbeat_restore.py::_watched_homes``)."""
     scopes: list = [(None, None)]
     try:
         config = getattr(runner, "config", None)
         if config is not None and getattr(config, "multiplex_profiles", False):
+            root_home = Path(get_hermes_home())
             for name, home in _multiplex_profile_homes(config):
-                if home is None or not name or name == "default":
+                if home is None or not name or Path(home) == root_home:
                     continue
                 scopes.append((name, home))
     except Exception:

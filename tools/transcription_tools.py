@@ -39,6 +39,7 @@ from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via 
 from tools.transcription_command import (
     _apply_pre_transcription_hook, _dispatch_to_plugin_provider, _enforce_prompt_length_limit,
     _resolve_command_stt_provider_config, _transcribe_command_stt, _unregistered_stt_provider_error)
+from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,10 @@ def _resolve_explicit_openai() -> str:
 
 def _detect_local_backend() -> Optional[str]:
     """faster-whisper > local whisper CLI > lazy-installed faster-whisper; None when nothing local works."""
+    unsupported_reason = x86_64_local_voice_native_unsupported_reason()
+    if unsupported_reason:
+        logger.warning("Local faster-whisper disabled: %s", unsupported_reason)
+        return "local_command" if _has_local_command() else None
     if _HAS_FASTER_WHISPER:
         return "local"
     return "local_command" if _has_local_command() else ("local" if _try_lazy_install_stt() else None)
@@ -173,6 +178,9 @@ def _resolve_explicit_local() -> str:
 def _resolve_explicit_local_command() -> str:
     if _has_local_command():
         return "local_command"
+    if x86_64_local_voice_native_unsupported_reason():
+        logger.warning("STT provider 'local_command' configured but unavailable")
+        return "none"
     if _HAS_FASTER_WHISPER:
         logger.info("Local STT command unavailable, using local faster-whisper")
         return "local"

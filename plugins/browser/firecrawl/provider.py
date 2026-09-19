@@ -30,6 +30,23 @@ class FirecrawlBrowserProvider(CloudBrowserProvider):
         {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
     ]
 
+    @staticmethod
+    def _browser_ttl() -> int:
+        """Resolve the browser-session TTL: config ``browser.firecrawl_ttl``
+        wins; ``FIRECRAWL_BROWSER_TTL`` env is the legacy fallback."""
+        try:
+            from hermes_cli.config import read_raw_config
+
+            val = (read_raw_config().get("browser") or {}).get("firecrawl_ttl")
+            if val not in (None, ""):
+                return int(val)
+        except Exception:
+            pass
+        try:
+            return int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
+        except (ValueError, TypeError):
+            return 300
+
     def _api_url(self) -> str:
         # Per-profile like the key: the scoped key must not be sent to the default profile's endpoint.
         return get_secret("FIRECRAWL_API_URL", "") or _BASE_URL
@@ -51,11 +68,7 @@ class FirecrawlBrowserProvider(CloudBrowserProvider):
         return {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
 
     def create_session(self, task_id: str) -> Dict[str, object]:
-        try:
-            ttl = int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
-        except (ValueError, TypeError):
-            ttl = 300
-
+        ttl = self._browser_ttl()
         response = self._post_create(f"{self._api_url()}/v2/browser", self._headers(), {"ttl": ttl})
         self._check_created(response)
         data = response.json()

@@ -858,15 +858,16 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
-    @pytest.mark.parametrize(("provider", "expected"), [
-        ("openai-codex", FailoverReason.invalid_encrypted_content),
-        ("openai", FailoverReason.format_error),  # same envelope elsewhere is a genuine request-shape 400
-    ], ids=["codex", "other-provider"])
-    def test_codex_unsupported_content_type_detail_reaches_replay_strip(self, provider, expected):
+    @pytest.mark.parametrize(("provider", "body", "expected"), [
+        ("openai-codex", {"detail": "Unsupported content type"}, FailoverReason.invalid_encrypted_content),
+        # Some SDK paths surface only the wrapped message text, no parsed body.
+        ("openai-codex", None, FailoverReason.invalid_encrypted_content),
+        ("openai", {"detail": "Unsupported content type"}, FailoverReason.format_error),  # elsewhere a genuine shape 400
+    ], ids=["codex-dict-body", "codex-message-only", "other-provider"])
+    def test_codex_unsupported_content_type_detail_reaches_replay_strip(self, provider, body, expected):
         """#51512: the ChatGPT Codex backend rejects a replayed encrypted-reasoning item as a bare
         ``{"detail": "Unsupported content type"}`` 400; only the codex provider maps it to the replay strip."""
-        e = MockAPIError("Error code: 400 - {'detail': 'Unsupported content type'}", status_code=400,
-                         body={"detail": "Unsupported content type"})
+        e = MockAPIError("Error code: 400 - {'detail': 'Unsupported content type'}", status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
     def test_thinking_signature_invalid_uses_encrypted_replay_recovery(self):

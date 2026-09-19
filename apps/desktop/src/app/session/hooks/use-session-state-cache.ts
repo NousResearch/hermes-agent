@@ -12,9 +12,9 @@ import {
   $messages,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
-  setCurrentModel,
+  setCurrentModelTransient,
   setCurrentPersonality,
-  setCurrentProvider,
+  setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setTurnStartedAt,
@@ -41,8 +41,13 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
-  setCurrentModel(state.model ?? '')
-  setCurrentProvider(state.provider ?? '')
+  // Transient: this runs on every session-state sync, including the periodic
+  // session.info heartbeat, whose reported model/provider is the runtime's
+  // resolved identity (e.g. the generic `custom` billing class), not a user
+  // pick. The persisting setters would silently overwrite the composer's
+  // sticky localStorage selection with that runtime value (#102793).
+  setCurrentModelTransient(state.model ?? '')
+  setCurrentProviderTransient(state.provider ?? '')
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
   setCurrentFastMode(state.fast ?? false)

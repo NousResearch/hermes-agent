@@ -6348,7 +6348,29 @@ def _handle_no_backend(subcommand: str, *, wsl: bool, s6: bool) -> None:
     _no_backend_exit(subcommand, reason)
 
 
+def _refuse_user_scope_install_in_container() -> None:
+    """Inside a container a user-scope unit is not container-scoped: the unit file and its
+    enable symlink land in the home directory, which is commonly the host's own home
+    bind-mounted in — the host's user manager then enables and starts the same unit, so a
+    second gateway polls the same bot token outside the container."""
+    print_error("A user-scope gateway service cannot be installed inside a container.")
+    _print_info_lines(
+        "The unit file and its enable symlink would be written to the shared home,",
+        "where the host's own user manager picks them up and starts a second gateway",
+        "(duplicate bot-token polling, 'Conflict: terminated by other getUpdates request').",
+        "",
+        "  hermes gateway run                                # run in the foreground",
+        "  docker run --restart unless-stopped ...           # container restart policy",
+        "",
+        "For a systemd container (systemd as PID 1), install the system scope instead:",
+        "  sudo hermes gateway install --system --run-as-user <user>",
+    )
+    sys.exit(1)
+
+
 def _install_systemd_from_cli(args, *, force: bool, system: bool, run_as_user) -> None:
+    if is_container() and not system:
+        _refuse_user_scope_install_in_container()
     if is_wsl():
         print_warning("WSL detected — systemd services may not survive WSL restarts.")
         _print_info_lines(

@@ -2190,7 +2190,9 @@ class CLITuiMixin:
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: get_skill_commands(),
             command_filter=cli_ref._command_available,
-            skill_bundles_provider=lambda: get_skill_bundles())
+            skill_bundles_provider=lambda: get_skill_bundles(),
+            session_provider=lambda: cli_ref._list_recent_sessions(limit=10),
+            checkpoint_provider=lambda: cli_ref._completion_checkpoints())
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,
@@ -2255,6 +2257,17 @@ class CLITuiMixin:
 
         input_area.control.input_processors.append(_PlaceholderProcessor(self._tui_placeholder_text))
         return input_area
+
+    def _completion_checkpoints(self):
+        """Return checkpoints for autocomplete without printing or mutating CLI state."""
+        try:
+            manager = getattr(getattr(self, "agent", None), "_checkpoint_mgr", None)
+            if manager is None or not manager.enabled:
+                return []
+            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+            return manager.list_checkpoints(cwd)
+        except Exception:
+            return []
 
     def _tui_set_base_style(self):
         """Populate ``self._tui_style_base`` (skin-aware defaults the style dict is built from)."""

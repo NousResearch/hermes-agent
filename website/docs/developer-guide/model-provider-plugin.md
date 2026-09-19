@@ -17,7 +17,7 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 `providers/__init__.py._discover_providers()` runs lazily the first time any code calls `get_provider_profile()` or `list_providers()`. Discovery order:
 
 1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
-2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in any directory; no restart required for subsequent sessions
+2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in a directory; restart an already-running Hermes process to discover it
 3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager
 4. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
 
@@ -101,11 +101,60 @@ Full definition in `providers/base.py`. The most useful ones:
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails |
+| `model_capabilities` | `dict[str, dict[str, Any]]` | Per-model capability declarations; see below |
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
 | `default_max_tokens` | `int \| None` | Provider-level max_tokens cap (Nvidia: 16384) |
 | `unsupported_response_formats` | `tuple` | `response_format` types the API rejects outright; auxiliary requests omit them instead of paying a guaranteed 400 (DeepSeek: `("json_schema",)`) |
 | `default_aux_model` | str | Cheap model for auxiliary tasks (compression, vision, summarization) |
+
+## Per-model capabilities
+
+A plugin can describe models that models.dev does not know, or patch metadata
+for an existing model. Add `model_capabilities` to the registered profile:
+
+```python
+model_capabilities={
+    "acme-large-high": {
+        "supports_reasoning": False,
+        "supports_vision": True,
+        "supports_tools": True,
+        "context_window": 64000,
+        "model_family": "acme",
+    },
+},
+```
+
+Keys are exact model IDs, not patterns or fallback model names. Values use the
+existing `model_overrides` schema: the three capability booleans above, a
+positive `context_window`, and an optional `model_family` string. Omit fields
+that the plugin does not know. For example, `supports_reasoning: False` can
+represent a model whose reasoning tier is fixed by its model ID rather than
+controlled by a separate reasoning setting.
+
+Declarations patch catalog metadata without erasing unrelated fields. On a
+catalog miss, unspecified capability booleans remain unknown, not false.
+Explicit per-model user `model_overrides` win over plugin declarations. A
+`_default` override fills a missing model only; it does not replace declared
+metadata. Context lookup similarly prefers explicit user context, then declared
+context, then catalog context, then a fill-gap default.
+
+Provider aliases resolve the same declaration. User override lookup retains its
+existing provider-key rules: for a custom plugin alias, key `model_overrides`
+with the provider ID used in the request/configuration. It does not automatically
+map arbitrary plugin aliases back to canonical user-config sections.
+
+These declarations feed the shared capability/model-info resolvers and context
+lookup, including the dashboard's `/api/model/info` response. They do not add
+models to a picker, define supported reasoning-effort names, or change transport
+request fields. Keep using `fallback_models`, `fetch_models`, and transport hooks
+for those purposes.
+
+Metadata lookup can trigger the existing lazy provider discovery, which imports
+provider plugin code. This is not a data-only manifest reader or a sandbox.
+The provider registry is process-global and discovered once: restart a running
+Hermes process after changing a plugin's declarations. Declarations do not add
+per-request profile isolation or hot reload.
 
 ## Overridable hooks
 
@@ -200,7 +249,7 @@ register_provider(ProviderProfile(
 ))
 ```
 
-Next session, `get_provider_profile("gmi").base_url` returns the staging URL. No repo patch, no rebuild. Because user plugins are discovered after bundled ones, the user `register_provider()` call wins.
+In a fresh Hermes process, `get_provider_profile("gmi").base_url` returns the staging URL. No repo patch, no rebuild. Because user plugins are discovered after bundled ones, the user `register_provider()` call wins.
 
 ## api_mode selection
 

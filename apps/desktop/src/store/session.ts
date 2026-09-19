@@ -1233,6 +1233,7 @@ export const $introSeed = atom(0)
 export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
 export const $sessionPickerOpen = atom(false)
+export const $sessionPickerCallerTileId = atom<string | null>(null)
 
 function rescopeComposerSelection(nextScope: string | null): void {
   if (nextScope === composerSelectionScope) {
@@ -1584,4 +1585,11 @@ export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom
 export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, next)
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
-export const setSessionPickerOpen = (next: Updater<boolean>) => updateAtom($sessionPickerOpen, next)
+
+export const setSessionPickerOpen = (next: Updater<boolean>, callerTileId?: string | null) => {
+  if (callerTileId !== undefined) {
+    $sessionPickerCallerTileId.set(callerTileId)
+  }
+
+  updateAtom($sessionPickerOpen, next)
+}

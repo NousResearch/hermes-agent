@@ -18,9 +18,12 @@ import type { WorkspaceMode } from '@/contrib/types'
 import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
+  $focusedSessionIsTile,
+  $focusedStoredSessionId,
   focusedSessionNeedsRoute,
   focusOpenSession,
   openSessionTile,
+  replaceSessionTile,
   reuseBlankDraftTile,
   setSessionTileWorkspaceScope
 } from '@/store/session-states'
@@ -28,7 +31,7 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
 
-export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
+export type OpenSessionIntent = 'active-tab' | 'in-place' | 'main' | 'stack' | 'tab' | 'window'
 
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
 
@@ -83,7 +86,8 @@ export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
   intent: OpenSessionIntent = 'in-place',
-  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' }
+  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' },
+  targetTileId?: string
 ): void {
   if (!storedSessionId) {
     return
@@ -114,6 +118,30 @@ export function openSession(
     // Canonical relationship chats explicitly own the main workspace. Route
     // even when the session is already open as a tile; resumeSession removes
     // that redundant tile when the main surface binds.
+    navigate(sessionRoute(storedSessionId))
+
+    return
+  }
+
+  if (resolved === 'active-tab') {
+    const focused = focusOpenSession(storedSessionId, workspaceScope)
+
+    if (focused) {
+      if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
+        navigate(sessionRoute(storedSessionId))
+      }
+
+      return
+    }
+
+    const tileId =
+      targetTileId ??
+      ($focusedSessionIsTile.get() ? $focusedStoredSessionId.get() : null)
+
+    if (tileId && replaceSessionTile(tileId, storedSessionId, botWorkspaceScope ?? workspaceScope)) {
+      return
+    }
+
     navigate(sessionRoute(storedSessionId))
 
     return

@@ -89,6 +89,10 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import {
+  $focusedSessionIsTile,
+  $focusedStoredSessionId
+} from '@/store/session-states'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -793,7 +797,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,
-    resumeStoredSession: resumeSession,
+    resumeStoredSession: (storedSessionId, options) => {
+      // A foreground slash routes through openSession's main path (resume path
+      // wins) unless the caller is a TILE — then use the `active-tab` intent so
+      // the resumed session replaces the caller's tab instead of main.
+      // The caller arrives via `options.callerTileId` (explicit target pinned
+      // at dispatch time); without it, fall back to the currently focused tile.
+      const targetTileId =
+        options?.callerTileId ?? ($focusedSessionIsTile.get() ? ($focusedStoredSessionId.get() ?? undefined) : undefined)
+
+      if (targetTileId) {
+        openSession(storedSessionId, navigate, 'active-tab', undefined, targetTileId)
+      } else {
+        void resumeSession(storedSessionId)
+      }
+    },
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
@@ -1358,7 +1376,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         profile={activeGatewayProfile}
         requestGateway={requestGateway}
       />
-      <SessionPickerOverlay onResume={sessionId => openSession(sessionId, navigate)} />
+      <SessionPickerOverlay
+        onResume={(sessionId, targetTileId) =>
+          openSession(sessionId, navigate, 'active-tab', undefined, targetTileId ?? undefined)
+        }
+      />
       <ModelVisibilityOverlay
         gateway={gateway || undefined}
         onOpenProviders={openProviderSettings}

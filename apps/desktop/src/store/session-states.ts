@@ -1819,6 +1819,45 @@ export function blankDraftTile(
   )
 }
 
+/** Replace an open session tile with `newStoredSessionId`, keeping its slot and group.
+ *  If the target tile was an empty draft, it is discarded (no ⌘⇧T resurrection);
+ *  otherwise it is closed. Returns false if the target tile does not exist. */
+export function replaceSessionTile(
+  targetStoredSessionId: string,
+  newStoredSessionId: string,
+  workspaceScope?: SessionTileWorkspaceScope
+): boolean {
+  const tiles = $sessionTiles.get()
+  const tile = tiles.find(t => t.storedSessionId === targetStoredSessionId)
+
+  if (!tile || tile.storedSessionId === newStoredSessionId) {
+    return false
+  }
+
+  const scope: SessionTileWorkspaceScope = workspaceScope ?? {
+    ownerProfile: tile.ownerProfile,
+    ownerRoute: tile.ownerRoute,
+    workspaceMode: tile.workspaceMode ?? 'sessions',
+    workspaceOwnerKey: tile.workspaceOwnerKey,
+    workspaceTabTitle: tile.workspaceTabTitle
+  }
+
+  const state = tile.runtimeId ? $sessionStates.get()[tile.runtimeId] : undefined
+  const isBlank = !state || (!state.busy && state.messages.length === 0)
+
+  if (isBlank) {
+    discardSessionTile(tile.storedSessionId)
+  } else {
+    closeSessionTile(tile.storedSessionId)
+  }
+
+  openSessionTile(newStoredSessionId, tile.dir ?? 'center', tile.anchor, tile.before, scope)
+  revealTreePane(`${TILE_PANE_PREFIX}${newStoredSessionId}`)
+  focusOpenSession(newStoredSessionId, scope)
+
+  return true
+}
+
 /** Hand an open blank draft tab over to `storedSessionId`, keeping its slot.
  *  False when there's no such tab, so the caller can fall back. The spent draft
  *  is DISCARDED rather than closed: it never held a conversation, so ⌘⇧T
@@ -1833,11 +1872,7 @@ export function reuseBlankDraftTile(
     return false
   }
 
-  discardSessionTile(tile.storedSessionId)
-  openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, workspaceScope)
-  revealTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`)
-
-  return true
+  return replaceSessionTile(tile.storedSessionId, storedSessionId, workspaceScope)
 }
 
 // Closed-tab stack for ⌘⇧T reopen (in-memory) — keyed PER PROFILE like the

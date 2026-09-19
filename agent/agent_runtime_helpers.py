@@ -1280,6 +1280,15 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
             parts.append(text)
     _add(getattr(assistant_message, "reasoning", None))
     _add(getattr(assistant_message, "reasoning_content", None))
+    # Providers the OpenAI SDK does not model (nous inference-api among them) return
+    # thinking as top-level JSON fields the SDK parks in ``model_extra``. Reading only
+    # the typed attributes drops them: nous' ``reasoning`` field arrives populated,
+    # gets stored as ``reasoning: ""``, and batch_runner's no-reasoning discard then
+    # deletes whole trajectories with perfectly good answers in them.
+    model_extra = getattr(assistant_message, "model_extra", None)
+    if isinstance(model_extra, dict):
+        _add(model_extra.get("reasoning"))
+        _add(model_extra.get("reasoning_content"))
     # reasoning_details: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
     for detail in getattr(assistant_message, "reasoning_details", None) or []:
         if isinstance(detail, dict):

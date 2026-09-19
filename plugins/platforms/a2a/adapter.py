@@ -137,9 +137,22 @@ def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bo
     """Run one statement against a profile's state.db; first column of the first row or ""."""
     home = _profile_home(profile)
     db = os.path.join(home, "state.db") if home else ""
-    if not db or not os.path.exists(db):
+    if not db:
         return ""
     try:
+        from hermes_state_backend import resolve_database_settings
+        settings = resolve_database_settings(db)
+        if settings.backend == "postgres":
+            from hermes_state import SessionDB
+            with SessionDB(db, database_settings=settings) as database:
+                if commit:
+                    database._execute_write(lambda connection: connection.execute(sql, params))
+                    return ""
+                with database._read_ctx() as connection:
+                    row = connection.execute(sql, params).fetchone()
+                    return str(row[0]) if row else ""
+        if not os.path.exists(db):
+            return ""
         with contextlib.closing(sqlite3.connect(db, timeout=5)) as con:
             cur = con.execute(sql, params)
             row = None if commit else cur.fetchone()

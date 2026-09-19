@@ -1208,8 +1208,20 @@ class MatrixAdapter(BasePlatformAdapter):
             if (self._store_dir / "crypto_store.pickle").exists():  # pre-SQLite era
                 logger.info("Matrix: removing legacy crypto_store.pickle (migrated to SQLite)")
                 (self._store_dir / "crypto_store.pickle").unlink()
-            crypto_db = Database.create(
-                f"sqlite:///{self._crypto_db_path}", upgrade_table=PgCryptoStore.upgrade_table)
+            from hermes_state_backend import resolve_database_settings
+            settings = resolve_database_settings(self._crypto_db_path)
+            if settings.backend == "postgres":
+                from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+                from hermes_cli.postgres_util import connect, store_schema
+                schema = store_schema(settings.schema, "matrix_crypto")
+                connect(settings, "matrix_crypto").close()
+                parsed = urlsplit(settings.database_url)
+                query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+                query["options"] = f"-csearch_path={schema}"
+                crypto_url = urlunsplit(parsed._replace(query=urlencode(query)))
+            else:
+                crypto_url = f"sqlite:///{self._crypto_db_path}"
+            crypto_db = Database.create(crypto_url, upgrade_table=PgCryptoStore.upgrade_table)
             await crypto_db.start()
             self._crypto_db = crypto_db
             _acct_id = self._user_id or "hermes"
@@ -1246,7 +1258,8 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._verify_or_bootstrap_cross_signing(olm, client)
             client.crypto = olm
             logger.info(
-                "Matrix: E2EE enabled (store: %s%s)", str(self._crypto_db_path),
+                "Matrix: E2EE enabled (store: %s%s)",
+                "PostgreSQL" if settings.backend == "postgres" else str(self._crypto_db_path),
                 f", device_id={client.device_id}" if client.device_id else "")
         except Exception as exc:
             return await self._e2ee_setup_failed(phase, exc, api)

@@ -27,7 +27,7 @@ import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, th
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
-import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
+import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
@@ -48,9 +48,6 @@ import {
 import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
-
-const NOTICE_LEVELS: readonly NoticeLevel[] = ['error', 'info', 'success', 'warn']
-const isNoticeLevel = (value: unknown): value is NoticeLevel => NOTICE_LEVELS.includes(value as NoticeLevel)
 
 type VoiceSubmitMode = 'direct' | 'draft'
 
@@ -948,7 +945,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           id: p.id ?? undefined,
           key: p.key ?? undefined,
           kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
-          level: isNoticeLevel(p.level) ? p.level : 'info',
+          level: p.level,
           text: p.text,
           ttl_ms: p.ttl_ms ?? null
         })

@@ -12,6 +12,7 @@ import type {
   BillingCardInfo,
   BillingStateResult,
   ConfigSetResult,
+  NotificationLevel,
   SubscriptionPreviewResult,
   SubscriptionStateResult,
   SubscriptionUpgradeResult
@@ -47,7 +48,6 @@ export type StatusBarMode = 'bottom' | 'off' | 'top'
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
-export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
 
 // Credits/usage notice surfaced in the status bar. Shape is snake_case to
 // match the gateway WS wire (`notification.show` payload) and the existing
@@ -58,7 +58,7 @@ export interface Notice {
   id?: string
   key?: string
   kind?: 'sticky' | 'ttl'
-  level?: NoticeLevel
+  level?: NotificationLevel
   text: string
   ttl_ms?: null | number
 }

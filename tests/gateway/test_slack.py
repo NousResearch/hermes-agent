@@ -3019,6 +3019,85 @@ class TestReactions:
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
 
+    @staticmethod
+    def _thread_event(message_id, thread_id):
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.config import Platform
+
+        return MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                chat_type="group",
+                user_id="U_USER",
+                thread_id=thread_id,
+            ),
+            message_id=message_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_lifecycle_reacts_on_parent(self, adapter):
+        """A follow-up in a thread drives the parent's reaction: the channel only shows that one."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._track_reacting_message("", "111.222")
+        msg_event = self._thread_event("111.222", "100.000")
+
+        await adapter.on_processing_start(msg_event)
+
+        removes = adapter._app.client.reactions_remove.call_args_list
+        adds = adapter._app.client.reactions_add.call_args_list
+        # Stale finals from an earlier turn in this thread are retired before :eyes: goes on.
+        assert [c.kwargs["name"] for c in removes] == ["white_check_mark", "x"]
+        assert all(c.kwargs["timestamp"] == "100.000" for c in removes)
+        assert len(adds) == 1
+        assert adds[0].kwargs == {"channel": "C123", "timestamp": "100.000", "name": "eyes"}
+
+        from gateway.platforms.event import ProcessingOutcome
+
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
+        adds = adapter._app.client.reactions_add.call_args_list
+        assert adds[-1].kwargs == {
+            "channel": "C123", "timestamp": "100.000", "name": "white_check_mark"}
+        assert adapter._app.client.reactions_remove.call_args_list[-1].kwargs == {
+            "channel": "C123", "timestamp": "100.000", "name": "eyes"}
+        # Tracking stays keyed on the triggering message, not the parent.
+        assert "111.222" not in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_top_level_message_reacts_on_itself(self, adapter):
+        """Inbound sets thread_id to the message's own ts at top level: unchanged behaviour."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._track_reacting_message("", "111.222")
+
+        await adapter.on_processing_start(self._thread_event("111.222", "111.222"))
+
+        adds = adapter._app.client.reactions_add.call_args_list
+        assert len(adds) == 1
+        assert adds[0].kwargs == {"channel": "C123", "timestamp": "111.222", "name": "eyes"}
+        # No parent to clean up, so no speculative removals.
+        assert adapter._app.client.reactions_remove.call_args_list == []
+
+    @pytest.mark.asyncio
+    async def test_thread_parent_reactions_can_be_disabled(self, adapter):
+        """``reactions_thread_parent: false`` keeps the reaction on the triggering reply."""
+        adapter.config.extra.update({"reactions_thread_parent": "false"})
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._track_reacting_message("", "111.222")
+
+        await adapter.on_processing_start(self._thread_event("111.222", "100.000"))
+
+        adds = adapter._app.client.reactions_add.call_args_list
+        assert len(adds) == 1
+        assert adds[0].kwargs == {"channel": "C123", "timestamp": "111.222", "name": "eyes"}
+        assert adapter._app.client.reactions_remove.call_args_list == []
+
 
 # ---------------------------------------------------------------------------
 # TestThreadReplyHandling

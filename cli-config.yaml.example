@@ -1385,6 +1385,10 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#       # Processing reactions (:eyes: -> :white_check_mark:) on a thread reply land
+#       # on the thread's parent message, which is the only reaction the channel
+#       # shows. Set false to react on the reply itself instead.
+#       reactions_thread_parent: true
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

@@ -3112,14 +3112,34 @@ class SlackAdapter(BasePlatformAdapter):
         configured = _extra_or_secret(self.config.extra, "reactions", "SLACK_REACTIONS", "true")
         return str(configured).lower() not in {"false", "0", "no"}
 
+    def _reactions_on_thread_parent(self) -> bool:
+        """Whether the lifecycle reacts on the thread parent for thread replies
+        (scoped ``SLACK_REACTIONS_THREAD_PARENT`` → ``extra.reactions_thread_parent`` → on)."""
+        configured = _extra_or_secret(
+            self.config.extra, "reactions_thread_parent", "SLACK_REACTIONS_THREAD_PARENT", "true")
+        return str(configured).lower() not in {"false", "0", "no"}
+
+    def _reaction_ts(self, event: MessageEvent, message_id: str) -> str:
+        """Where the lifecycle reaction goes: the thread parent for a thread reply, else the
+        message itself. A reply's reaction is only visible inside the open thread, so a
+        follow-up would leave the channel showing the parent's reaction from turn one.
+        ``source.thread_id`` is the parent ts for a real reply and the message's own ts for a
+        top-level message, so this is a no-op outside threads."""
+        if not self._reactions_on_thread_parent():
+            return message_id
+        return str(getattr(event.source, "thread_id", "") or "") or message_id
+
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:
-        """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked."""
+        """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked.
+        Tracking stays keyed on the triggering message id; ``ts`` is where to react."""
         if not self._reactions_enabled():
             return None
-        ts = getattr(event, "message_id", None)
+        message_id = getattr(event, "message_id", None)
         team_id = str(getattr(event.source, "scope_id", "") or "")
-        marker = self._workspace_message_marker(team_id, ts) if ts else None
-        return (ts, team_id, marker) if ts and marker in self._reacting_message_ids else None
+        marker = self._workspace_message_marker(team_id, message_id) if message_id else None
+        if not message_id or marker not in self._reacting_message_ids:
+            return None
+        return (self._reaction_ts(event, message_id), team_id, marker)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
@@ -3128,8 +3148,15 @@ class SlackAdapter(BasePlatformAdapter):
             return
         ts, team_id, _marker = target
         channel_id = getattr(event.source, "chat_id", None)
-        if channel_id:
-            await self._react(channel_id, ts, "eyes", team_id, remove=False)
+        if not channel_id:
+            return
+        if ts != getattr(event, "message_id", None):
+            # Reacting on a thread parent that can still carry this bot's final reaction from an
+            # earlier turn in the thread: retire it so the parent shows one live state, not a
+            # pile. reactions.remove only clears the bot's own reaction, so human ticks survive.
+            for stale in ("white_check_mark", "x"):
+                await self._react(channel_id, ts, stale, team_id, remove=True)
+        await self._react(channel_id, ts, "eyes", team_id, remove=False)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""

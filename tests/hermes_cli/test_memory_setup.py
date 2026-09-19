@@ -121,3 +121,53 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert "Memory tool:        enabled ✓" in captured
     assert "Memory injection:   enabled ✓" in captured
     assert "User profile:       disabled ✗" in captured
+
+
+def _config_less_provider():
+    """A provider that stores nothing itself: its non-secret answers live under ``memory.<name>``."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(get_config_schema=lambda: [
+        {"key": "project", "description": "Project identifier"},
+        {"key": "api_key", "description": "API key", "secret": True, "env_var": "FAKE_API_KEY"},
+    ])
+
+
+def _run_generic_setup(monkeypatch, tmp_path, run):
+    """Drive one setup flow against a provider without save_config; return the saved config.yaml dict."""
+    from unittest.mock import MagicMock
+
+    provider = _config_less_provider()
+    saved = {}
+    prompts = iter(["proj-1", "sk-secret"])
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("fake", "local", provider)])
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(memory_setup, "_prompt", lambda *args, **kwargs: next(prompts))
+    monkeypatch.setattr(memory_setup, "_install_dependencies", MagicMock())
+    monkeypatch.setattr(memory_setup, "_write_env_vars", lambda writes, *a, **k: saved.setdefault("env", dict(writes)))
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.setdefault("config", cfg))
+    run()
+    return saved
+
+
+def test_cmd_setup_persists_non_secret_answers_for_a_provider_without_save_config(tmp_path, monkeypatch):
+    """First-time setup: the ``memory.<name>`` block did not exist yet, so the answers went into a dict
+    nothing referenced — config.yaml was saved without them while the summary said "Provider config saved"."""
+    from types import SimpleNamespace
+
+    saved = _run_generic_setup(monkeypatch, tmp_path, lambda: memory_setup.cmd_setup(SimpleNamespace()))
+
+    assert saved["config"]["memory"]["provider"] == "fake"
+    assert saved["config"]["memory"]["fake"] == {"project": "proj-1"}, "the non-secret answer must reach config.yaml"
+    assert saved["env"] == {"FAKE_API_KEY": "sk-secret"}, "the secret still goes to .env, never config.yaml"
+
+
+def test_cmd_setup_provider_runs_the_same_schema_prompts(tmp_path, monkeypatch):
+    """``hermes memory setup <name>`` used to activate without asking a single schema question."""
+    saved = _run_generic_setup(monkeypatch, tmp_path, lambda: memory_setup.cmd_setup_provider("fake"))
+
+    assert saved["config"]["memory"]["provider"] == "fake"
+    assert saved["config"]["memory"]["fake"] == {"project": "proj-1"}
+    assert saved["env"] == {"FAKE_API_KEY": "sk-secret"}

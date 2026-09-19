@@ -13,7 +13,9 @@ drift). Regenerate with:
 
 from __future__ import annotations
 
-from gateway.relay.auth import make_token, make_upgrade_token
+import pytest
+
+from gateway.relay.auth import is_usable_secret, make_token, make_upgrade_token
 
 # A fixed 256-bit hex secret used for the frozen connector vector below.
 _SECRET = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
@@ -28,3 +30,13 @@ def test_upgrade_token_is_make_token_of_gateway_id():
 
 def test_python_make_token_matches_connector_byte_for_byte():
     assert make_token("gw-instance-1", _SECRET, 0) == _CONN_TOKEN
+
+
+@pytest.mark.parametrize(
+    "value,usable",
+    [(_SECRET, True), ("x", True), (" x ", True),
+     ("", False), ("   ", False), ("\t\n", False),
+     (None, False), (b"bytes", False), (123, False)],
+)
+def test_is_usable_secret_classifies_configured_secrets(value, usable):
+    assert is_usable_secret(value) is usable

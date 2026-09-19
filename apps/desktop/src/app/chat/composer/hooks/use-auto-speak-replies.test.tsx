@@ -130,3 +130,102 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
     expect(playSpeechText).toHaveBeenCalledTimes(1)
   })
 })
+
+// #89896 — one turn can update the transcript twice: the stream ends, and then
+// hydration rewrites the live row to its durable id while the rows around it
+// settle, which shifts the assistant-role ordinal. The spoken anchor is keyed on
+// `{id, ordinal}`, so it misses on both counts and the turn reads as new a second
+// time. The same text arriving again for the same turn is that replay.
+describe('useAutoSpeakReplies — a turn that settles twice (#89896)', () => {
+  afterEach(() => {
+    cleanup()
+    clearSpokenRepliesForTests()
+    $autoSpeakReplies.set(false)
+    setVoicePlaybackState({ ...IDLE_STATE })
+    vi.clearAllMocks()
+  })
+
+  it('speaks the turn once when its row id and ordinal both move before playback goes idle', async () => {
+    $autoSpeakReplies.set(true)
+
+    const $messages = atom<ChatMessage[]>([])
+
+    const pendingReply = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+      const spoken = resolveSpokenReply(SESSION_ID, messages)
+
+      if (!last || last.id === spoken?.id) {
+        return null
+      }
+
+      return { id: last.id, pending: Boolean(last.pending), text: chatMessageText(last) }
+    }
+
+    const markSpoken = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+      if (last) {
+        markAssistantIdSpoken(SESSION_ID, messages, last.id)
+      }
+    }
+
+    let releasePlayback: (() => void) | null = null
+
+    vi.mocked(playSpeechText).mockImplementation(async () => {
+      setVoicePlaybackState({
+        audioElement: null,
+        messageId: 'assistant-stream-1',
+        sequence: 0,
+        source: 'read-aloud',
+        status: 'preparing'
+      })
+
+      // Holds the clip "playing" while the transcript settles underneath it.
+      await new Promise<void>(resolve => {
+        releasePlayback = resolve
+      })
+
+      return true
+    })
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    act(() => {
+      $messages.set([assistantMessage('assistant-stream-1', 'hello there')])
+    })
+
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
+
+    // The turn settles: a row joins ahead of the reply and the live row is
+    // rewritten to its durable id. Same text, new id, new ordinal.
+    await act(async () => {
+      $messages.set([
+        assistantMessage('tool-activity-1', 'ran a command'),
+        assistantMessage('durable-42', 'hello there')
+      ])
+      releasePlayback?.()
+      setVoicePlaybackState({ ...IDLE_STATE })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(playSpeechText).toHaveBeenCalledTimes(1)
+  })
+})

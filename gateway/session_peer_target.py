@@ -105,7 +105,7 @@ def _authorize_output_admission(adapter, authority, shared, conn, token, dispatc
     It must check its exact owner/evidence/current readiness on these already
     fenced connections, without acquiring a grant store, committing, or doing
     external work. Only literal True confirms consent; exceptions refuse NEW.
-    The pre-preparation provider must still be installed. Accepted replay never
+    The consent-capture provider must still be installed. Accepted replay never
     reaches this seam. No provider is needed for the old four/five-right grants.
     """
     rights = {'artifact.read', 'artifact.ack'} & set(claims['permissions'])

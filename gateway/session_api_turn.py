@@ -99,8 +99,9 @@ def admit_api_turn(adapter, **kwargs):
         from gateway.session_api import declared_api_session
         sid = declared_api_session(authority.db, declared_key) or sid
     authority._require_admission_open()
-    # Pin the concrete Output consumer before preparation can yield/reenter.
-    output_authorizer = getattr(adapter, '_room_output_admission', None)
+    # The trusted Output ingress pins its consumer when it captures consent,
+    # not here: replacement between capture and API entry must also refuse NEW.
+    output_authorizer = kwargs.get('_room_output_authorizer')
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
     if settings.get('room_dispatch') is not None:
         # Refuse unsupported targets before creating any hidden conversation.

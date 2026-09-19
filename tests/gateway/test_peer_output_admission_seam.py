@@ -15,6 +15,7 @@ async def admission(target, issued):
     return dict(user_message=value.prompt, conversation_history=[], session_id=session_id,
                 request_id='seam-request', room_dispatch=value.as_mapping(),
                 room_execution_policy=issued['catalog']['execution_policy'],
+                _room_output_authorizer=getattr(target.adapter, '_room_output_admission', None),
                 _room_grant_token=issued['grant'])
 
 
@@ -78,6 +79,7 @@ async def test_new_admission_holds_both_stores_and_replay_does_not_reauthorize(t
 
     if output:
         target.adapter._room_output_admission = MethodType(consumer, target.adapter)
+        kwargs['_room_output_authorizer'] = target.adapter._room_output_admission
     first = admit_api_turn(target.adapter, **kwargs)
     assert seen == ([True] if output else [])
     target.adapter._room_output_admission = None

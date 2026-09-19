@@ -1,0 +1,1178 @@
+/**
+ * blobatar — motion layer. See docs/motion-spec.md.
+ *
+ * Import once, anywhere:
+ *
+ *   import "blobatar/motion.css";
+ *
+ * Only blobatars rendered with `animate` set carry these classes, so importing
+ * this without using `animate` costs the stylesheet and nothing else.
+ *
+ * Layers: hover reaction, breathe, bob, blink, saccades, expression.
+ */
+
+@property --mo-amp {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+/**
+ * Expression — the pose channels. See docs/expression-spec.md.
+ *
+ * Registration is what makes the morph exist. An unregistered custom property
+ * flips discretely, so `happy` would snap; registered as `<number>` these
+ * interpolate, and the whole transition between any two expressions is what a
+ * transition on these ten values does. There are no per-expression keyframes
+ * and no `.mo-happy` selectors anywhere in this file, by design — the poses
+ * themselves live once, in `src/expression.ts`.
+ *
+ * Each initial value is the identity, which is what makes `idle` free: the
+ * renderer emits no declarations at all for it, and clearing an expression
+ * transitions back toward these rather than snapping.
+ *
+ * Thirteen near-identical registrations look expensive and are not — repetition
+ * this exact is close to free under gzip, which is the same measurement the wrap
+ * layer's written-out chains are built on.
+ *
+ * The one channel missing here, `heat`, is not absent by oversight: colour is
+ * resolved in TypeScript
+ * and arrives as a finished pair of `<color>`s, because a hot endpoint held in a
+ * custom property vanishes the instant an expression is cleared and snaps the
+ * fill while the rest of the pose is still easing. See `heatTint`.
+ */
+@property --mo-esx {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+@property --mo-esy {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+@property --mo-tilt {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --mo-edy {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --mo-edx {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+/**
+ * The right eye's differentials, and the reason they are differentials.
+ *
+ * A pose has one set of eye channels and two eyes to spend it on, and the
+ * obvious way to break that symmetry — per-eye values in each eye's inline
+ * `style` — is forbidden: that markup is inside `parts.inner`, nothing in
+ * `parts.inner` may vary with the expression, and the morph does not survive it
+ * being tried (see `makeParts`).
+ *
+ * So the asymmetry is carried by an inherited property the whole blobatar shares,
+ * and each eye picks its own share of it out of the one thing that *does* differ
+ * per eye and never varies with the pose: `--mo-wrap`'s sign. See `--mo-sel` on
+ * `.mo-eye`.
+ *
+ * An initial of 0 is what makes them free: a symmetric pose leaves them alone,
+ * `poseVars` skips every channel at its identity, and the twelve-year-old
+ * blobatars that never asked for an asymmetric face emit not one extra byte.
+ */
+@property --mo-esx2 {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --mo-esy2 {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --mo-tilt2 {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+/**
+ * The right eye's vertical offset — the differential with a moving counterpart.
+ *
+ * Read through `--mo-ph` on `.mo-eye` rather than added to `translate` directly,
+ * because `--mo-rock` swings the same distance symmetrically and the two have to
+ * be one term or the static pose and the loop's extreme drift apart. See there.
+ */
+@property --mo-edy2 {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+/**
+ * How much of the seeded eye lean the pose overrides, 0–1.
+ *
+ * The lean lives in the path's own coordinates — `superellipse` bakes rotation
+ * into what it emits — so this cannot un-draw it. It subtracts the same angle on
+ * `.mo-eye`'s `rotate` instead, one layer above the shape, which lands on the
+ * same orientation `bakePose` reaches by leaving the lean out of `rot` in the
+ * first place.
+ *
+ * A `<number>` rather than a switch precisely so it interpolates: the seeded
+ * lean eases away over the morph with everything else, and eases back when the
+ * expression clears. An initial of 0 keeps every unposed blobatar leaning exactly
+ * as its seed drew it, and costs the poses that do not want it nothing.
+ */
+@property --mo-lock {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+/**
+ * Tremor amplitude, and the shape of the answer to "how does a held state
+ * shake?"
+ *
+ * An expression is set and held — no timers, no self-termination, and no notion
+ * of firing again — so a shake cannot be a one-shot. It is an *amplitude* on a
+ * loop that always runs, exactly like `--mo-amp` and every idle layer above:
+ * `@keyframes mo-shake` resolves to the identity at 0, so a blobatar that is not
+ * angry is running an animation between two poses that are the same pose. There
+ * is nothing to start, nothing to restart, and re-selecting the same expression
+ * needs no replay because the tremor never stopped.
+ *
+ * It also interpolates, which is what makes a shake that *arrives* rather than
+ * switching on: `mad` reaches full amplitude over the same 300ms the rest of the
+ * pose takes.
+ *
+ * In Blink. This is the one channel that is both transitioned and read from
+ * inside a keyframe, and Gecko substitutes a keyframe's `var()` from the
+ * transition's endpoint — so in Firefox the tremor is expected to switch on at
+ * full strength rather than arrive, which is the very thing the sentence above
+ * claims it does not do. Deduced from the mechanism documented on `.mo-eye`,
+ * not measured. It stays here because a tremor that starts abruptly is still a
+ * tremor in the right place; the same substitution on a geometry channel is what
+ * forced the wrapper element into existence.
+ */
+@property --mo-shake {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+/**
+ * Seesaw amplitude, and `--mo-shake`'s argument generalised past a tremor.
+ *
+ * Same construction, for the same reason: an expression is held, so a repeating
+ * motion cannot be a one-shot and has to be an amplitude on a loop that always
+ * runs. At 0 the whole seesaw collapses into the pose's own static stagger — not
+ * merely into "no movement", which is the difference between this and a channel
+ * that would have to be switched on.
+ *
+ * `--mo-rockp` is the loop's phase, −1 to +1, and it is the only property in
+ * this file that a keyframe *writes* for a base declaration to read. That is the
+ * fix the `.mo-eye` comment prescribes for Gecko rather than a new idea: the
+ * position is computed in a plain declaration, and the keyframe carries nothing
+ * but a number that is never transitioned.
+ *
+ * **Its initial value is 1, not 0.** The phase runs 1 → −1 → 1, so 1 is frame
+ * zero of the loop and is exactly the pose `bakePose` emits. That is what makes
+ * `animation: none` — reduced motion — leave a `thinking` blobatar holding one
+ * frame of the seesaw rather than a face with its eyes halfway between meanings.
+ */
+@property --mo-rock {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --mo-rockp {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+@property --mo-bdy {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+/**
+ * Every transform on the three body layers is about the middle of the frame,
+ * and none of them would be without this.
+ *
+ * SVG's UA stylesheet sets `transform-origin: 0 0`, not CSS's `50% 50%` — so
+ * the hover scale, the breathe, and the expression's body channels were all
+ * pivoting on the top-left corner of the viewBox. A 4% hover scale about (0,0)
+ * moves the blobatar 2 units down-right as it grows instead of growing in place,
+ * and the breathe drifted diagonally rather than pulsing. Both read as "close
+ * enough" in isolation and neither is what was designed; the divergence only
+ * became measurable when `bakePose` — which is explicit about scaling around
+ * (50, 50) — gave the composition something exact to be compared against.
+ *
+ * `transform-box` is stated rather than assumed. Its initial value is
+ * `view-box` in current browsers, but it was `border-box` until CSS Transforms
+ * 2 settled it, and a `<g>` has no border box at all — which is the other way
+ * to end up pivoting on (0, 0).
+ *
+ * `.mo-eye` is not in this list: it needs each eye's *own* center, so it
+ * declares `fill-box` for itself.
+ */
+.mo-root,
+.mo-breathe,
+.mo-bob {
+  transform-box: view-box;
+  transform-origin: center;
+}
+
+/**
+ * Hover controls amplitude, not playback. Every keyframe below resolves to the
+ * identity transform at `--mo-amp: 0`, so an unhovered blobatar oscillates
+ * between two poses that are the same pose — the loop never starts or stops,
+ * and therefore never restarts from zero or freezes mid-squash.
+ *
+ * The animations run continuously rather than pausing when idle. Firefox
+ * re-resolves a paused effect but will not interpolate one, so a paused idle
+ * layer jump-cuts there on hover-out. One code path, running everywhere, beats
+ * two behaviors split on `@supports`.
+ *
+ * Two things transition here, on deliberately different clocks.
+ *
+ * `--mo-amp` eases over 400ms: that is the idle layers fading up, and it should
+ * feel like the creature waking rather than switching on.
+ *
+ * `transform` is the hover reaction (§4.1) — the element the pointer arrives at
+ * responding immediately. It is a transition and not a keyframe animation
+ * because a pointer sweeping across a grid retargets constantly, and keyframes
+ * restart from zero on every re-entry.
+ *
+ * Exit is faster than enter, which is the usual asymmetry: on the way in the
+ * user is deciding, on the way out the system is just getting out of the way.
+ * The enter duration lives in the `:hover` rule and the exit duration in the
+ * base rule, which is what makes the two directions differ at all.
+ */
+.mo-root {
+  --mo-amp: 0;
+
+  /*
+   * The morph, and a deliberate inversion of the rule three paragraphs up.
+   *
+   * Hover exits faster than it enters, because on the way out the system is just
+   * getting out of the way. An expression is the opposite: it is a message the
+   * consumer sent, and yanking it off the face in 160ms reads as a glitch rather
+   * than as a creature settling. So entering an expression is quick and
+   * returning to idle is slower — 300ms against 400ms.
+   *
+   * The asymmetry works the same way the hover one does: a transition takes the
+   * duration declared in the state it is heading *to*. `.mo-expr` is present on
+   * any non-idle expression, so adopting one reads 420ms out of that rule and
+   * clearing it reads 560ms out of this one.
+   *
+   * Declared here rather than on the `<svg>`, where the properties are actually
+   * set: these are inherited, so a change upstream changes this element's
+   * computed value, and that is a transitionable change like any other.
+   */
+  --mo-morph: calc(400ms * var(--mo-rate, 1));
+  --mo-morph-ease: ease-in-out;
+
+  /*
+   * The pose channels and their two parallel lists, hoisted into properties of
+   * their own.
+   *
+   * Transition lists match up by index, so thirteen channels means thirteen
+   * durations and thirteen easings — stated once here and referenced from the `:hover` rule, which
+   * used to restate the whole duration list to change one entry. Substitution
+   * happens on this element, so `.mo-expr`'s shorter `--mo-morph` still reaches
+   * them.
+   *
+   * `--mo-heat` is deliberately absent: colour is resolved in TypeScript and
+   * arrives as a finished `--mo-head`/`--mo-eye`, transitioned by `fill` on the
+   * two groups below rather than composed here. `--mo-rockp` is absent for the
+   * opposite reason — it is a loop's phase, not a pose channel, and a transition
+   * on it would fight the animation that owns it.
+   */
+  --mo-tp: --mo-esx, --mo-esy, --mo-tilt, --mo-edy, --mo-edx, --mo-esx2,
+    --mo-esy2, --mo-tilt2, --mo-edy2, --mo-lock, --mo-shake, --mo-rock,
+    --mo-bdy;
+  --mo-md: var(--mo-morph), var(--mo-morph), var(--mo-morph), var(--mo-morph),
+    var(--mo-morph), var(--mo-morph), var(--mo-morph), var(--mo-morph),
+    var(--mo-morph), var(--mo-morph), var(--mo-morph), var(--mo-morph),
+    var(--mo-morph);
+  --mo-me: var(--mo-morph-ease), var(--mo-morph-ease), var(--mo-morph-ease),
+    var(--mo-morph-ease), var(--mo-morph-ease), var(--mo-morph-ease),
+    var(--mo-morph-ease), var(--mo-morph-ease), var(--mo-morph-ease),
+    var(--mo-morph-ease), var(--mo-morph-ease), var(--mo-morph-ease),
+    var(--mo-morph-ease);
+
+  transition-property: --mo-amp, transform, var(--mo-tp);
+  transition-duration:
+    calc(400ms * var(--mo-rate, 1)), calc(160ms * var(--mo-rate, 1)),
+    var(--mo-md);
+  transition-timing-function:
+    ease-out, cubic-bezier(0.23, 1, 0.32, 1), var(--mo-me);
+
+  /*
+   * The tremor. Runs on every animated blobatar and is invisible on almost all of
+   * them, which is the same bargain `--mo-amp` makes: at `--mo-shake: 0` every
+   * keyframe below is `0 0`, so the loop oscillates between two identical poses
+   * and never has to be started, stopped, or replayed.
+   *
+   * `translate` is free here — `transform` is the hover lift's — so this
+   * composes with everything already on the element and needs no new node.
+   */
+  animation: mo-shake calc(112ms * var(--mo-rate, 1)) linear infinite;
+}
+
+/**
+ * Colour, for the poses that move it.
+ *
+ * The fills are presentation attributes, which CSS cannot read and which any
+ * rule at all outranks, so the two groups restate `fill` from custom properties
+ * the renderer emits. On a blobatar wearing no expression those properties hold
+ * exactly the colours already in the markup, and this changes nothing; on a hot
+ * pose they hold the tinted pair and `transition: fill` carries the difference.
+ *
+ * The mix itself is not here. It is resolved in TypeScript and arrives finished
+ * — see `heatTint` — because the alternative shape, one registered `--mo-heat`
+ * and a `color-mix()` against a hot endpoint, pops on the way out: clearing the
+ * expression deletes the endpoint in the same frame the heat starts easing back,
+ * so the fill snaps while the rest of the pose takes 400ms. A plain colour
+ * transition is symmetric in both directions for nothing.
+ *
+ * The attribute stays in the markup and is not dead weight: it is what an app
+ * that forgot `import "blobatar/motion.css"` renders, and it is what the static
+ * path — which has no stylesheet at all — has always used.
+ *
+ * The body is selected structurally rather than through a class of its own,
+ * which is the one place in this file that is worth justifying. A `mo-body`
+ * class costs bytes twice — in the markup of every animated blobatar, and in the
+ * renderer that has to decide whether to emit it, which is core code every
+ * static consumer pays for as well. `.mo-bob` is emitted by exactly one style
+ * and has exactly two children, so "the group that is not the eyes" is not a
+ * guess about the DOM; it is the whole of it.
+ */
+.mo-bob > g:not(.mo-eyes) {
+  fill: var(--mo-head);
+  transition: fill var(--mo-morph) var(--mo-morph-ease);
+}
+
+.mo-eyes {
+  fill: var(--mo-eye);
+  transition: fill var(--mo-morph) var(--mo-morph-ease);
+}
+
+/**
+ * A held tremor, not a burst — four stops around an irregular loop.
+ *
+ * Irregular on purpose. Four points on a circle at an even radius reads as a
+ * mechanical orbit; uneven offsets read as vibration. 112ms is fast enough to
+ * blur into a buzz at 32px and still resolve as movement at 400px.
+ *
+ * Every offset carries `--mo-shake`, so this resolves to `0 0` at amplitude
+ * zero — the same guarantee the blink's closed pose and the wrap layer need, and
+ * for the same reason: a blobatar must never be stranded mid-effect.
+ */
+@keyframes mo-shake {
+  0%,
+  100% {
+    translate: calc(0.62px * var(--mo-shake)) calc(-0.34px * var(--mo-shake));
+  }
+  25% {
+    translate: calc(-0.7px * var(--mo-shake)) calc(0.22px * var(--mo-shake));
+  }
+  50% {
+    translate: calc(0.38px * var(--mo-shake)) calc(0.66px * var(--mo-shake));
+  }
+  75% {
+    translate: calc(-0.44px * var(--mo-shake)) calc(-0.6px * var(--mo-shake));
+  }
+}
+
+/**
+ * Entering an expression: quicker than leaving, and paced for the travel.
+ *
+ * **Duration is a function of amplitude, and the amplitude changed.** 240ms was
+ * right for a pose that squashed an eye to 0.6; the exaggeration pass squashes
+ * it to 0.26, which is roughly double the distance in the same time, and the
+ * morph went back to reading as a cut. Not because it was front-loaded this
+ * time — it was simply too fast to watch. That pass landed on 420ms in and
+ * 560ms back, and 420ms is what the table below was measured at.
+ *
+ * **Now 300ms in, 400ms back.** The longer pair was judged in Chrome, where the
+ * eye scale was the one channel not actually moving — half the travel on screen
+ * was missing, and a duration set against that reads long once the whole pose
+ * arrives. Watch it before changing it again: this is a taste dial and the gate
+ * deliberately has no opinion about it, only about the shape of the curve.
+ *
+ * The curve is not the obvious hard ease-out, and the reason is that the pose
+ * channels do not all move the same distance. `bdy` travels a couple of units;
+ * `esy` travels 70% of the eye. Under `cubic-bezier(0.2, 0.8, 0.2, 1)` — the
+ * first choice here — 53% of every channel's travel landed in the first three
+ * frames and 87% inside 100ms, then crawled through an invisible tail. On a
+ * small channel that is a settle. On the eyes it is a cut: the squash is over
+ * before the eye appears to have left, which reads as no transition at all
+ * rather than as a fast one.
+ *
+ * Measured on a 400px blobatar, `idle → happy`, as a fraction of the eye's travel
+ * at each fifth of the duration:
+ *
+ *   cubic-bezier(.2,.8,.2,1)   @240ms    53%  87%  95%  98%  100%
+ *   cubic-bezier(.3,.4,.2,1)   @240ms    25%  71%  90%  96%  100%
+ *   cubic-bezier(.45,.05,.5,1) @420ms     8%  36%  72%  93%  100%
+ *
+ * The last spreads the movement across the duration it claims to take while
+ * still leaving immediately — there is no dead start, which an ease-in-out
+ * would give and which would make a triggered expression feel late.
+ *
+ * Rerun `scripts/probe-compose.ts` after touching this. Check C bounds the
+ * *shape* of the curve at fractions of whatever duration is set here, so it
+ * catches a front-loaded curve and a dead start without pinning the speed —
+ * duration is a taste dial and the gate deliberately does not own it.
+ */
+.mo-root.mo-expr {
+  --mo-morph: calc(300ms * var(--mo-rate, 1));
+  --mo-morph-ease: cubic-bezier(0.45, 0.05, 0.5, 1);
+}
+
+.mo-root:hover {
+  --mo-amp: 1;
+  transform: translateY(-1.5px) scale(1.04);
+  transition-duration:
+    calc(400ms * var(--mo-rate, 1)), calc(220ms * var(--mo-rate, 1)),
+    var(--mo-md);
+}
+
+/**
+ * `animate="always"` — pinned amplitude, hover ignored for the idle layers.
+ *
+ * It deliberately does *not* disable transitions: the hover reaction still
+ * applies, because an always-animating blobatar is usually the single large one
+ * on a profile header, which is exactly where a pointer response is wanted.
+ * There is no start-up ramp to suppress either — transitions do not run on an
+ * element's first style resolution.
+ */
+.mo-root.mo-always {
+  --mo-amp: 1;
+}
+
+/**
+ * Breathe.
+ *
+ * Non-uniform on purpose. A uniform scale reads as a zoom; a slight
+ * squash-and-stretch reads as something soft holding air — the cheapest way to
+ * get that quality without touching path data, which would put path
+ * interpolation on the main thread every frame.
+ *
+ * Scales about the viewport center (50, 50) rather than the body's own center,
+ * which `layout()` jitters by up to 1.5 units. At a 2.2% scale that is a 0.03
+ * unit error, and not worth chasing — the `fill-box` the eyes need costs a
+ * per-element box calculation and buys 0.03 units here.
+ *
+ * That (50, 50) is not free, though. It comes from the shared
+ * `transform-box`/`transform-origin` rule near the top of this file, without
+ * which SVG's own `transform-origin: 0 0` puts the pivot on the corner of the
+ * frame and the breathe drifts diagonally instead of pulsing.
+ */
+.mo-breathe {
+  /*
+   * No expression channel rides here any more. This element used to carry the
+   * pose's body scale on its free `scale` property; the deforming body channels
+   * were removed because the silhouette is the identity in this style and
+   * squashing it per-expression trades that away for the least legible signal in
+   * the set. See `Pose` in `src/expression.ts`.
+   */
+  animation-name: mo-breathe;
+  animation-duration: calc(2800ms * var(--mo-rate, 1));
+  animation-delay: calc(var(--mo-phase, 0ms) * var(--mo-rate, 1));
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+  animation-timing-function: ease-in-out;
+}
+
+@keyframes mo-breathe {
+  to {
+    transform: scaleX(calc(1 + 0.022 * var(--mo-amp)))
+      scaleY(calc(1 - 0.018 * var(--mo-amp)));
+  }
+}
+
+/**
+ * Bob.
+ *
+ * 3400ms against breathe's 2800ms, deliberately not a multiple: the two drift
+ * in and out of phase instead of locking into one obvious pulse. Their own
+ * offsets are seeded independently, so no two blobatars share a drift either.
+ *
+ * `px` on an SVG element is one unit of the local user coordinate system, so
+ * this is 1.1 viewBox units at any rendered size.
+ */
+.mo-bob {
+  /*
+   * The expression's vertical offset — the one body channel left, and the only
+   * one that never deformed the silhouette.
+   *
+   * It takes the free `translate` property and *adds* to bob rather than
+   * multiplying. Getting that operator backwards is silent and severe: an offset
+   * scaled by `--mo-amp` would vanish on every unhovered blobatar, which is most
+   * of a grid.
+   */
+  translate: 0 calc(var(--mo-bdy) * 1px);
+  animation-name: mo-bob;
+  animation-duration: calc(3400ms * var(--mo-rate, 1));
+  animation-delay: calc(var(--mo-bob-phase, 0ms) * var(--mo-rate, 1));
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+  animation-timing-function: ease-in-out;
+}
+
+@keyframes mo-bob {
+  from {
+    transform: translateY(0px);
+  }
+  to {
+    transform: translateY(calc(-1.1px * var(--mo-amp)));
+  }
+}
+
+/**
+ * The eye, in two elements: the pose on the wrapper, the idle loops on the
+ * shape underneath it.
+ *
+ * **The split is not tidiness. It is what makes the morph run outside Chrome.**
+ * Both layers used to share one element, and with `transform`, `scale`, `rotate`
+ * and `translate` all spoken for, the pose's eye scale had to ride inside
+ * `@keyframes mo-blink` and its tilt inside `@keyframes mo-wrap`. Gecko
+ * substitutes a keyframe's `var()` from the transition's *endpoint* rather than
+ * from its current value, so in Firefox those channels jumped to the final pose
+ * on the first frame and sat there while everything else eased — `esx`, `esy`
+ * and `tilt` snapping, `edx`, `edy`, `bdy` and the colour morphing, which is a
+ * far more confusing failure than nothing moving at all. Measured, idle → `mad`
+ * on the hero: `--mo-esx` walked 1 → 1.85 across 420ms while the rendered eye
+ * box went 29.3×58.2 → 39.3×24.1 in one frame and then held. The same
+ * declaration outside a keyframe interpolates there correctly, which is the
+ * whole of the fix and the whole reason for the extra `<g>`.
+ *
+ * So: everything the transition drives is a plain declaration here.
+ *
+ * This comment used to add "and every keyframe below reads only `--mo-amp` and
+ * the seeded `--mo-look-*`, none of which is ever transitioned". That was not
+ * true. Two transitioned values are read from keyframes and always were:
+ * `--mo-amp`, which every keyframe in this file reads and which `.mo-root`
+ * transitions over 400ms on hover, and `--mo-shake`, which is a pose channel in
+ * `--mo-tp` and is read by `@keyframes mo-shake`.
+ *
+ * What is true is narrower, and it is the part that matters: **no keyframe reads
+ * a channel that positions anything.** Those two are amplitude scalars on
+ * ambient loops, so Gecko substituting them from the endpoint makes a loop reach
+ * full strength on the first frame instead of easing into it — the hover ramp
+ * and `mad`'s tremor arrive abruptly. Unpleasant, and nothing like the failure
+ * above, where the same substitution left the eye drawn at a size it had not
+ * morphed to while everything around it eased.
+ *
+ * That consequence is deduced from the mechanism, not measured — the probe that
+ * caught the original never looked at the amplitude channels. If it is ever
+ * worth fixing, the fix is the one already used here: take the amplitude out of
+ * the keyframes and multiply it in a plain declaration.
+ *
+ * **The two elements take their origin from different boxes, and that asymmetry
+ * is load-bearing.** The shape below uses `fill-box`, whose box is its own path
+ * data — fixed, whatever is done to it. The wrapper cannot: a `<g>`'s fill box
+ * is its children's *rendered* geometry, so it moves when the shape inside it
+ * moves. That is the whole of a bug that shipped: `mo-blink` collapses the shape
+ * to ~12% of its height, Gecko recomputes the wrapper's fill box around the
+ * shrunken child, and the pose's anisotropic scale — 1.72 × 0.30 on `happy` —
+ * multiplies the resulting origin shift into ~30 viewBox units of travel, out
+ * and back, every blink. Measured on `mad`, the left eye left the frame for the
+ * length of the blink. Blink resolves that box without the child's transform and
+ * never showed it.
+ *
+ * It hid behind an expression because an idle wrapper's transform is the
+ * identity, and an identity does not care where its origin is — so it read as a
+ * morph bug and was nothing of the kind. The origin is therefore pinned in
+ * `view-box` units to the eye's own centre, emitted per eye by the renderer,
+ * where nothing an animation does can move it.
+ *
+ * `transform-box: fill-box` is still not optional on the shape. Without it,
+ * `transform-origin` resolves against the SVG viewport, so both eyes scale about
+ * the middle of the blobatar and slide toward each other instead of closing.
+ */
+.mo-eye {
+  transform-box: view-box;
+  /*
+   * Which eye this is, as a number, and this eye's own three channels.
+   *
+   * `--mo-wrap` is -1 on the left eye and +1 on the right, it is constant per
+   * eye, and it is the only per-eye value in the markup that is allowed to
+   * exist — nothing in `parts.inner` may vary with the expression. Mapping it to
+   * 0/1 turns it into a selector: multiply the right eye's differential by it
+   * and the left eye gets nothing while the right gets all of it.
+   *
+   * That is the whole mechanism for per-eye asymmetry. Both endpoints ship as
+   * inherited registered `<number>`s, so both still interpolate and the morph
+   * carries an asymmetric pose exactly as it carries a symmetric one; the markup
+   * never moves. `bakePose` adds the same differential to the same eye, which is
+   * what keeps the static and animated paths agreeing.
+   *
+   * Derived here rather than emitted per eye because this stylesheet is paid
+   * once per app and markup is paid per blobatar — the same trade that settled
+   * every other composition question in this file. They are inherited, so the
+   * shape underneath reads the same values without restating them.
+   */
+  --mo-sel: calc((var(--mo-wrap, 1) + 1) / 2);
+  --mo-x: calc(var(--mo-esx) + var(--mo-esx2) * var(--mo-sel));
+  --mo-y: calc(var(--mo-esy) + var(--mo-esy2) * var(--mo-sel));
+  /* Added before the mirroring, not after: `--mo-t` is multiplied by
+     `--mo-wrap` below, so a differential added here leans one eye harder,
+     while one added outside would flip sign per side and stay symmetric. */
+  --mo-t: calc(var(--mo-tilt) + var(--mo-tilt2) * var(--mo-sel));
+  /*
+   * This eye's share of `--mo-edy2`, and the whole of how a static differential
+   * and a symmetric seesaw are the same term.
+   *
+   * The static share is `--mo-sel`: all of the offset on the right eye, none on
+   * the left, exactly like `esx2` and `tilt2`. The moving share is
+   * `(1 + wrap · phase) / 2`, which is what a swing about the *pair's* centre
+   * looks like expressed per eye — the two eyes take opposite signs, so they
+   * trade heights and the mean never moves. `mo-bob` already owns the pair
+   * moving together, and two loops on that axis would beat against each other.
+   *
+   * Those are not two behaviours blended for convenience. At phase +1 the second
+   * expression **is** the first — `wrap` is ±1, so `(1 + wrap) / 2` is 0 on the
+   * left eye and 1 on the right, which is `--mo-sel` — and that identity is what
+   * makes the loop's extreme and `bakePose`'s output the same geometry with no
+   * corrective term on either side. `--mo-rock` interpolates between them, so a
+   * pose that does not rock is left with precisely the static differential and
+   * an expression easing in reaches its swing over the same morph as everything
+   * else.
+   */
+  --mo-ph: calc(
+    var(--mo-sel) * (1 - var(--mo-rock)) + var(--mo-rock) *
+      ((1 + var(--mo-wrap, 1) * var(--mo-rockp)) / 2)
+  );
+  /*
+   * The expression's eye offset.
+   *
+   * It belongs on each eye rather than on the `.mo-eyes` group because that
+   * group's `transform` is reserved for the pointer-driven gaze layer (§4.5) and
+   * its `translate` is the saccade's. Two eyes moving by the same amount is the
+   * pair moving, so nothing is lost. `px` is a user unit here, `fill-box`
+   * notwithstanding — that only governs origins and percentages.
+   *
+   * Convergence rides `--mo-wrap`'s sign, so a positive `edx` moves each eye
+   * away from the face's midline — the same mirroring `bakePose` applies to the
+   * static path, which is what keeps the two renderings of one pose identical.
+   */
+  translate: calc(var(--mo-edx) * var(--mo-wrap, 1) * 1px)
+    calc((var(--mo-edy) + var(--mo-edy2) * var(--mo-ph)) * 1px);
+  /*
+   * The pose's tilt, mirrored per side, less however much of the seeded lean the
+   * pose claims. It used to be a term added to every stop of `@keyframes
+   * mo-wrap`; the saccade's own tilt stays there and this one composes with it
+   * from the element above.
+   *
+   * The `--mo-lock` term is what makes an absolute brow possible. The lean is
+   * already in the path's coordinates and cannot be taken out of them, so it is
+   * cancelled here, outside the scale bracket below — which leaves that bracket
+   * still working in the capsule's own drawn frame, exactly as it must. The two
+   * rotations collapse to `R(tilt · wrap)` at `--mo-lock: 1`, which is precisely
+   * the `rot` `bakePose` emits for the same pose.
+   */
+  rotate: calc(
+    (var(--mo-t) * var(--mo-wrap, 1) - var(--mo-lean, 0) * var(--mo-lock)) * 1deg
+  );
+  /*
+   * The pose's eye scale, bracketed by the eye's own lean — and it must be.
+   * `superellipse` bakes rotation into the emitted coordinates, so a leaned
+   * capsule reaches the DOM already tilted and this element's local axes are the
+   * viewport's, not the capsule's. A bare `scaleY` therefore squashes along
+   * screen-Y and shears the capsule rather than closing it across its own width.
+   * The seeded lean is a median 5.9° and reaches 12°, so this is most blobatars,
+   * not a corner:
+   *
+   *   rotate(lean) · scale · rotate(-lean)
+   *
+   * is the same scale expressed in the capsule's frame, and it is what makes the
+   * animated path agree with `bakePose`, which scales `rx`/`ry` *before*
+   * `superellipse` rotates them.
+   *
+   * The three individual properties above resolve in a fixed order —
+   * `translate`, then `rotate`, then `scale`, then `transform` — which is
+   * exactly `bakePose`'s: offset the centre, lean the capsule, scale it in its
+   * own frame. `scripts/probe-compose.ts` check A measures the two against each
+   * other at every pose.
+   */
+  transform: rotate(calc(var(--mo-lean, 0) * 1deg)) scaleX(var(--mo-x))
+    scaleY(var(--mo-y)) rotate(calc(var(--mo-lean, 0) * -1deg));
+
+  /*
+   * The seesaw, and the third loop in this file that runs on every blobatar and
+   * is invisible on almost all of them.
+   *
+   * It writes a phase and positions nothing, which is the entire reason it is
+   * allowed to be a keyframe at all: `--mo-rock` and `--mo-edy2` are transitioned
+   * and are read from the plain declarations above, where Gecko interpolates
+   * them correctly. Firefox substituting `--mo-rockp` from an endpoint would do
+   * nothing here — it is never transitioned, and its two endpoints are the two
+   * ends of the swing.
+   *
+   * Unlike blink and wrap this takes no seeded phase. Two blobatars thinking side
+   * by side in unison is not the crowd-versus-mechanism problem the ambient
+   * layers have: a loading indicator is a mechanism, it is saying so on purpose,
+   * and a grid of them syncopated would read as a fault.
+   *
+   * It runs on every animated blobatar rather than on `.mo-expr` alone, and that
+   * costs two registered-property loops per blobatar that resolve to nothing on
+   * every pose but one. The gate is affordable and wrong: removing `.mo-expr`
+   * stops the loop, `--mo-rockp` snaps back to its initial 1, and the shared
+   * half of the offset jumps by up to `edy2 · rock` in the same frame the pose
+   * begins easing out — a hop at the front of a 560ms morph. Always-running has
+   * nothing to start, nothing to stop and nothing to snap, which is the argument
+   * `--mo-shake` already made and the reason that channel is built the same way.
+   * The touch-device query below is where the cost is actually clawed back.
+   *
+   * `animation-name` and not the shorthand, because `.mo-eye`'s `transform`,
+   * `translate` and `rotate` are all base declarations and the shorthand would
+   * reset none of them — but it would reset `animation-timing-function` for a
+   * reader who adds a second animation here later and does not notice.
+   */
+  animation-name: mo-rock;
+  animation-duration: calc(900ms * var(--mo-rate, 1));
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
+}
+
+/**
+ * The phase, and nothing else. At `--mo-rock: 0` — every pose in the library but
+ * `thinking` — `--mo-ph` discards it entirely, so this animates a number no
+ * declaration is reading and the eye never moves. That is `mo-shake`'s bargain
+ * exactly: nothing to start, nothing to stop, and re-selecting the same
+ * expression needs no replay because the loop never stopped.
+ *
+ * 1 → −1 → 1 rather than 0 → 1 → 0, so the *stagger* reverses instead of
+ * appearing and vanishing. Frame zero is the extreme, which is what `bakePose`
+ * emits and what the initial value of `--mo-rockp` restores under reduced
+ * motion.
+ */
+@keyframes mo-rock {
+  0%,
+  100% {
+    --mo-rockp: 1;
+  }
+  50% {
+    --mo-rockp: -1;
+  }
+}
+
+/**
+ * Blink and wrap — the eye's ambient half.
+ *
+ * A face that blinks reads as alive at a fraction of the cost of everything
+ * else here — it is the layer to keep if only one survives.
+ *
+ * There is no CSS mechanism for a short event on a long period: keyframe
+ * percentages are static and only the duration can read a custom property. So
+ * the animation runs for the whole seeded interval and the blink is a 2.8%
+ * window at the end of it. The consequence is that the blink's real duration
+ * scales with the interval — ~98ms at a 3.5s period, ~182ms at 6.5s. That drift
+ * is a feature: a slower blinker reads as slightly sleepier.
+ *
+ * `--mo-rate` is the demo's slow-motion multiplier. Timing problems in ambient
+ * motion are close to invisible at full speed.
+ *
+ * Selected structurally rather than through a class of its own, for the reason
+ * the body group is: a class costs bytes in the markup of every animated blobatar,
+ * and `.mo-eye` is emitted by exactly one style and holds exactly one shape.
+ *
+ * Two animations on one element, and they must not be merged. Blink runs on its
+ * own seeded period; wrap has to stay locked to the saccade on `.mo-eyes`, so it
+ * reads the same duration and phase variables that group does. They stay
+ * frame-exact because they are literally the same expression, not because their
+ * periods happen to be close. They claim different properties too — `transform`
+ * versus `rotate`/`scale` — so neither overwrites the other.
+ */
+.mo-eye > * {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation-name: mo-blink, mo-wrap;
+  animation-duration:
+    calc(var(--mo-blink, 4800ms) * var(--mo-rate, 1)),
+    calc(var(--mo-saccade, 5600ms) * var(--mo-rate, 1));
+  animation-delay:
+    calc(var(--mo-blink-phase, 0ms) * var(--mo-rate, 1)),
+    calc(var(--mo-saccade-phase, 0ms) * var(--mo-rate, 1));
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+/**
+ * The closed pose carries `--mo-amp` rather than being a constant, which is
+ * what lets a blink caught by hover-out re-open instead of leaving the blobatar
+ * with its eyes shut — roughly a 3% chance per hover-out otherwise, rare enough
+ * to miss in testing and common enough to ship.
+ *
+ * At `--mo-amp: 0` the closed scale resolves to 1, so the whole animation
+ * flattens into "hold still" without ever stopping.
+ *
+ * **Every scale here is bracketed by the eye's own lean, and it must be.**
+ * `superellipse` bakes rotation into the emitted coordinates, so a leaned
+ * capsule reaches the DOM already tilted and this element's local axes are the
+ * viewport's, not the capsule's. A bare `scaleY` therefore closes the eye along
+ * screen-Y and shears it, rather than closing it across its own width. The seeded
+ * lean is a median 5.9° and reaches 12°, so this is most blobatars, not a corner:
+ *
+ *   rotate(lean) · scale · rotate(-lean)
+ *
+ * is the same scale expressed in the capsule's frame. The pose's own scale is
+ * bracketed identically one element up, so the two compose as
+ * `R · S_pose · R⁻¹ · R · B · R⁻¹ = R · (S_pose · B) · R⁻¹` — the blink still
+ * multiplies the pose rather than replacing it, which is what makes a squinting
+ * creature blink correctly: it closes from where it already is, not from wide
+ * open. Blink had the shear too, from the beginning — it is subtle at blink
+ * amplitudes and unmissable at `mad`'s `esy: 0.26`, which is how expressions
+ * surfaced it. One bracket, on each element, fixes both.
+ *
+ * No pose channel appears here any more. `--mo-x` and `--mo-y` moved to
+ * `.mo-eye`'s plain `transform` because a keyframe is where a transitioned
+ * `var()` stops interpolating in Gecko — see `.mo-eye`.
+ *
+ * The three stops keep an identical function list so they interpolate
+ * componentwise instead of decomposing into matrices — the same reason
+ * `.mo-bob` writes out a `translateY(0px)` it does not need.
+ */
+@keyframes mo-blink {
+  0%,
+  97.2% {
+    transform: rotate(calc(var(--mo-lean, 0) * 1deg)) scaleY(1)
+      rotate(calc(var(--mo-lean, 0) * -1deg));
+    animation-timing-function: ease-in;
+  }
+  98.6% {
+    transform: rotate(calc(var(--mo-lean, 0) * 1deg))
+      scaleY(calc(1 - 0.92 * var(--mo-amp)))
+      rotate(calc(var(--mo-lean, 0) * -1deg));
+    animation-timing-function: ease-out;
+  }
+  100% {
+    transform: rotate(calc(var(--mo-lean, 0) * 1deg)) scaleY(1)
+      rotate(calc(var(--mo-lean, 0) * -1deg));
+  }
+}
+
+/**
+ * Saccades — the eyes looking around.
+ *
+ * Real eyes do not drift. They snap between fixations in well under a tenth of
+ * a second and then hold for a second or more, so the keyframes are long holds
+ * separated by 1.5% jump windows (~90ms at a 6s period) with linear timing.
+ * Easing this like breathe would give floating eyeballs, which is unsettling in
+ * a way that is hard to name and easy to feel.
+ *
+ * Uses the `translate` property rather than `transform`, leaving `transform`
+ * free on this element for the pointer-driven gaze layer (§4.5) to claim later
+ * without the two fighting over one property.
+ *
+ * **If that layer ever puts a scale or a rotation here, it needs an explicit
+ * `transform-origin` first.** This group is a `<g>` whose box contains both
+ * blinking eyes, so under `transform-box: fill-box` its origin would follow them
+ * as they close — the bug `.mo-eye` documents, one level up and twice as wide.
+ * A translate is immune, which is the only reason this element is safe today.
+ *
+ * The eyes may cross outside the body silhouette on a hard glance. Nothing
+ * clips them, and that is deliberate: an eye riding past the edge reads as a
+ * face turning on a round head rather than as a mistake.
+ */
+.mo-eyes {
+  animation-name: mo-saccade;
+  animation-duration: calc(var(--mo-saccade, 5600ms) * var(--mo-rate, 1));
+  animation-delay: calc(var(--mo-saccade-phase, 0ms) * var(--mo-rate, 1));
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+/**
+ * Six fixations around the compass, returning to center.
+ *
+ * Each stop is an independent direction rather than a scaled copy of one
+ * vector — that is the difference between eyes that rove and eyes that slide
+ * back and forth on a rail. The order is deliberately not a clock sweep:
+ * center, up-left, right, down, up-right, left. A sequence that walks the
+ * compass in order reads as a mechanism.
+ *
+ * The fractions multiply this blobatar's own `--mo-look-x/y`, whose signs are
+ * seeded, so the whole pattern mirrors horizontally, vertically, or both. One
+ * shared `@keyframes` therefore yields four orientations, each at its own
+ * period and phase.
+ */
+@keyframes mo-saccade {
+  0%,
+  15% {
+    translate: 0 0;
+  }
+  16.5%,
+  31% {
+    translate: calc(-0.8px * var(--mo-look-x, 1.4) * var(--mo-amp))
+      calc(-0.9px * var(--mo-look-y, 1.1) * var(--mo-amp));
+  }
+  32.5%,
+  47% {
+    translate: calc(1px * var(--mo-look-x, 1.4) * var(--mo-amp))
+      calc(0.1px * var(--mo-look-y, 1.1) * var(--mo-amp));
+  }
+  48.5%,
+  63% {
+    translate: calc(-0.15px * var(--mo-look-x, 1.4) * var(--mo-amp))
+      calc(0.85px * var(--mo-look-y, 1.1) * var(--mo-amp));
+  }
+  64.5%,
+  79% {
+    translate: calc(0.75px * var(--mo-look-x, 1.4) * var(--mo-amp))
+      calc(-0.8px * var(--mo-look-y, 1.1) * var(--mo-amp));
+  }
+  80.5%,
+  98.5% {
+    translate: calc(-1px * var(--mo-look-x, 1.4) * var(--mo-amp))
+      calc(-0.15px * var(--mo-look-y, 1.1) * var(--mo-amp));
+  }
+  100% {
+    translate: 0 0;
+  }
+}
+
+/**
+ * Wrap — the eyes reading as marks on a sphere rather than stickers on a disc.
+ *
+ * Rides the saccade's windows exactly: same period, same phase, same jump
+ * fractions, so the shape change lands on the same frame as the move. A wrap
+ * that lagged the translate by even one window would read as the eyes deforming
+ * *after* they arrive, which is worse than no wrap at all.
+ *
+ * Three cues, in descending order of how much work they do.
+ *
+ * 1. **Foreshortening.** A glance sideways compresses both eyes on X, a glance
+ *    up or down compresses both on Y. This is most of the effect. It reads
+ *    `--mo-look-m*`, the *unsigned* magnitude, because how far a feature
+ *    foreshortens depends on how far the face turned, not which way it turned.
+ *
+ * 2. **Differential.** The eye leading into the turn sits nearer the limb and
+ *    compresses harder than the trailing one. Signed, so it reads the real
+ *    glance direction against this eye's own `--mo-wrap` side. Its coefficient
+ *    is under half the shared one at every stop, which is what guarantees the
+ *    pair never scales past 1 — an eye *growing* on a glance is the tell that
+ *    breaks the illusion instantly.
+ *
+ * 3. **Tilt.** Only on diagonals, and in *opposite* directions per eye. This is
+ *    the part worth being pedantic about: a shared roll is not a sphere, it is a
+ *    head tilting, and a head that snaps six times in six seconds reads as a
+ *    nervous bird. Features off the centre meridian converge toward the pole, so
+ *    the term is the product x·y — which vanishes on the pure horizontals and
+ *    verticals, where a real face shows no tilt either.
+ *
+ * Peaks across the whole seed space are 7.0% on X, 4.6% on Y, and 2.4°, against
+ * a static per-blobatar lean capped at 12°. That ceiling is the constraint, not a
+ * coincidence: lean carries identity, and an animated tilt approaching it stops
+ * decorating the blobatar and starts overwriting who it is.
+ *
+ * Every term carries `--mo-amp`, so hover-out resolves to scale 1 / rotate 0
+ * rather than stranding an eye mid-squash — the same guarantee the blink's
+ * closed pose needs, for the same reason. The expression's own tilt used to be
+ * added to every stop here and now sits on `.mo-eye` as a plain `rotate`, where
+ * a transition can reach it; these six stops are the glance and nothing else.
+ *
+ * The expressions are written out per stop rather than factored into shared
+ * variables or animated coefficients. Both of those read better and both measure
+ * *worse*: hoisting the chains onto `.mo-eye` cost 11 gzipped bytes and the
+ * registered-coefficient form cost 27, because six identical chains are close to
+ * free under gzip while six unique short names are not. Measure before
+ * factoring here.
+ */
+@keyframes mo-wrap {
+  0%,
+  15% {
+    scale: 1 1;
+    rotate: 0deg;
+  }
+  16.5%,
+  31% {
+    scale: calc(
+        1 - 0.0176 * var(--mo-look-mx, 1.4) * var(--mo-amp) + 0.008 *
+          var(--mo-look-x, 1.4) * var(--mo-wrap, 1) * var(--mo-amp)
+      )
+      calc(1 - 0.027 * var(--mo-look-my, 1.1) * var(--mo-amp));
+    rotate: calc(
+      0.648deg * var(--mo-look-x, 1.4) * var(--mo-look-y, 1.1) *
+        var(--mo-wrap, 1) * var(--mo-amp)
+    );
+  }
+  32.5%,
+  47% {
+    scale: calc(
+        1 - 0.022 * var(--mo-look-mx, 1.4) * var(--mo-amp) - 0.01 *
+          var(--mo-look-x, 1.4) * var(--mo-wrap, 1) * var(--mo-amp)
+      )
+      calc(1 - 0.003 * var(--mo-look-my, 1.1) * var(--mo-amp));
+    rotate: calc(
+      0.09deg * var(--mo-look-x, 1.4) * var(--mo-look-y, 1.1) *
+        var(--mo-wrap, 1) * var(--mo-amp)
+    );
+  }
+  48.5%,
+  63% {
+    scale: calc(
+        1 - 0.0033 * var(--mo-look-mx, 1.4) * var(--mo-amp) + 0.0015 *
+          var(--mo-look-x, 1.4) * var(--mo-wrap, 1) * var(--mo-amp)
+      )
+      calc(1 - 0.0255 * var(--mo-look-my, 1.1) * var(--mo-amp));
+    rotate: calc(
+      -0.115deg * var(--mo-look-x, 1.4) * var(--mo-look-y, 1.1) *
+        var(--mo-wrap, 1) * var(--mo-amp)
+    );
+  }
+  64.5%,
+  79% {
+    scale: calc(
+        1 - 0.0165 * var(--mo-look-mx, 1.4) * var(--mo-amp) - 0.0075 *
+          var(--mo-look-x, 1.4) * var(--mo-wrap, 1) * var(--mo-amp)
+      )
+      calc(1 - 0.024 * var(--mo-look-my, 1.1) * var(--mo-amp));
+    rotate: calc(
+      -0.54deg * var(--mo-look-x, 1.4) * var(--mo-look-y, 1.1) *
+        var(--mo-wrap, 1) * var(--mo-amp)
+    );
+  }
+  80.5%,
+  98.5% {
+    scale: calc(
+        1 - 0.022 * var(--mo-look-mx, 1.4) * var(--mo-amp) + 0.01 *
+          var(--mo-look-x, 1.4) * var(--mo-wrap, 1) * var(--mo-amp)
+      )
+      calc(1 - 0.0045 * var(--mo-look-my, 1.1) * var(--mo-amp));
+    rotate: calc(
+      0.135deg * var(--mo-look-x, 1.4) * var(--mo-look-y, 1.1) *
+        var(--mo-wrap, 1) * var(--mo-amp)
+    );
+  }
+  100% {
+    scale: 1 1;
+    rotate: 0deg;
+  }
+}
+
+/**
+ * Touch devices latch hover on tap and hold it until the next tap elsewhere, so
+ * a tapped blobatar would sit there breathing. Amplitude is the only gate, so
+ * defeating the hover rule is the whole fix — `animate="always"` is not
+ * hover-triggered and deliberately survives.
+ */
+@media not ((hover: hover) and (pointer: fine)) {
+  .mo-root:hover {
+    --mo-amp: 0;
+    /* The hover reaction latches too, and a tapped blobatar left sitting at
+       1.04× is more obviously wrong than one left breathing. */
+    transform: none;
+  }
+  .mo-root.mo-always {
+    --mo-amp: 1;
+  }
+
+  /**
+   * …and, having established that amplitude is pinned at zero here, stop
+   * paying for the loops that amplitude scales.
+   *
+   * The rule three hundred lines up — that the idle layers run continuously
+   * rather than pausing, because Firefox will re-resolve a paused effect but
+   * not interpolate one, and so jump-cuts on hover-out — is a statement about
+   * hover-out. Under this query there is no hover-out: the rule above forces
+   * `--mo-amp: 0` through a tap and back, so nothing ever interpolates and
+   * there is no transition to protect. The loops resolve to the identity pose
+   * on every frame, forever, and the only thing they produce is work.
+   *
+   * That work is not small at scale, which is the case this library invites —
+   * a grid meant to read as a crowd. Eight effects per blobatar, most of them
+   * driving registered custom properties, which are style-recalculated on the
+   * main thread rather than composited. Sixty blobatars on a landing page came
+   * to roughly 480 live animations and 6.7s of style and layout in a Lighthouse
+   * trace; pausing them took it to 1.9s and moved Total Blocking Time by an
+   * order of magnitude on a mid-range phone.
+   *
+   * `animation-play-state`, not `animation: none`. Paused effects keep their
+   * resolved styles, so the pose a blobatar holds is the one it already had;
+   * removing the animations would drop back to the base declarations and, for
+   * the eye layers, lose the pose entirely. `.mo-always` is excluded because it
+   * is the one mode whose amplitude survives this query.
+   *
+   * The descendant is `*` rather than the four layer classes by name: it is a
+   * third of the bytes, it cannot fall out of date when a layer is added, and
+   * everything it can reach inside `.mo-root` is this file's own.
+   */
+  .mo-root:not(.mo-always),
+  .mo-root:not(.mo-always) * {
+    animation-play-state: paused;
+  }
+
+  /*
+   * …except the seesaw, which is the one loop here that is not ambient.
+   *
+   * Everything the rule above stops is gated on `--mo-amp`, which this query has
+   * already pinned to zero — so pausing it stops nothing that was moving.
+   * `mo-rock` is gated on `--mo-rock` instead, deliberately (a loading indicator
+   * that only animates on hover is not a loading indicator), and pausing it
+   * freezes a `thinking` blobatar mid-swing on every phone. That is the whole
+   * feature not working on half the devices that will see it.
+   *
+   * Scoped to `.mo-expr` rather than to `.mo-eye` alone so the crowd case keeps
+   * paying nothing: sixty idle blobatars in a grid stay completely still, and only
+   * a blobatar actually wearing an expression runs the two loops back. `.mo-eye`
+   * carries no other animation, so this un-pauses exactly one thing.
+   */
+  .mo-root.mo-expr:not(.mo-always) .mo-eye {
+    animation-play-state: running;
+  }
+}
+
+/**
+ * Slow motion, for reviewing timing. Put it on any ancestor — it is read
+ * through `var(--mo-rate, 1)`, never declared on `.mo-root`, so a blobatar's own
+ * rules cannot shadow it.
+ */
+.mo-slow {
+  --mo-rate: 5;
+}
+
+/**
+ * Fully static, not gentler. "Reduce, don't remove" applies to motion that aids
+ * comprehension; the idle loop is decorative, so removing it costs nothing.
+ *
+ * The expression is a different matter and survives at full strength. It is not
+ * ambient — it is a message the consumer chose to send, and a reduced-motion
+ * user who gets no expression has lost information rather than been spared some
+ * decoration. So reduced motion removes the *morph*, not the pose: `transition:
+ * none` below is what makes an expression change snap instead of ease.
+ *
+ * This used to be twice its size, and the split that fixed Firefox is what
+ * collapsed it. Every ambient value now lives in a keyframe and every pose value
+ * in a base declaration, so `animation: none` removes exactly the first set and
+ * touches none of the second — where the old rule had to wipe `transform`,
+ * `translate`, `rotate` and `scale` off every layer and then restate the pose
+ * from the same var references, a duplicate that existed only because the two
+ * kinds of value shared elements.
+ *
+ * `--mo-shake` needs no line for the same reason: it is a tremor, it lives in a
+ * keyframe, and the reset deletes it outright. Colour is the opposite — it is
+ * part of the message, so the two fill rules above keep their `fill` and only
+ * need the *transition* on it killed, which `.mo-eyes` gets from the list below
+ * and the body group gets from its own line.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .mo-root,
+  .mo-breathe,
+  .mo-bob,
+  .mo-eyes,
+  .mo-eye,
+  .mo-eye > * {
+    animation: none;
+    transition: none;
+  }
+
+  .mo-bob > g:not(.mo-eyes) {
+    transition: none;
+  }
+}

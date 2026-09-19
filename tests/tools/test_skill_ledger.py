@@ -558,3 +558,63 @@ def test_backup_fill_ignores_tar_path_traversal(ledger_env):
     )
     # Malicious members are not.
     assert not any(p.endswith("evil.md") or p.endswith("outside.md") for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Categorized package prefix strip (issue #106673)
+# ---------------------------------------------------------------------------
+
+
+def test_fill_from_backup_categorized_skill_no_nested_before(ledger_env):
+    """Tar members keyed as category/name/... must ledger at the live
+    package root, never dest_root joined with the full categorized prefix
+    again (``…/plan/software-development/plan/SKILL.md``)."""
+    from tools import skill_ledger
+
+    plan_dir = ledger_env["skills"] / "software-development" / "plan"
+    plan_dir.mkdir(parents=True)
+    skill_md = plan_dir / "SKILL.md"
+    extra = plan_dir / "references" / "notes.md"
+    extra.parent.mkdir()
+    skill_body = VALID_SKILL_CONTENT.replace("name: my-skill", "name: plan")
+    extra_body = "planning notes"
+    skill_md.write_text(skill_body, encoding="utf-8")
+    extra.write_text(extra_body, encoding="utf-8")
+
+    _write_skills_tarball(
+        ledger_env["home"],
+        {
+            "software-development/plan/SKILL.md": skill_body,
+            "software-development/plan/references/notes.md": extra_body,
+        },
+    )
+
+    existing = skill_ledger.snapshot_paths(plan_dir)
+    filled = skill_ledger.fill_snapshot_from_curator_backup(
+        plan_dir, existing, skill="plan"
+    )
+
+    before_paths = [i["path"] for i in filled]
+    assert len(before_paths) == len(set(before_paths))
+    nested = "software-development/plan/software-development/plan"
+    assert not any(
+        p.replace("\\", "/").endswith(nested + "/SKILL.md")
+        or nested in p.replace("\\", "/")
+        for p in before_paths
+    ), f"fabricated nested before path(s): {before_paths}"
+
+    assert str(skill_md) in before_paths
+    assert str(extra) in before_paths
+    by_path = {i["path"]: i["sha256"] for i in filled}
+    assert by_path[str(skill_md)] == skill_ledger._store_blob(skill_body.encode("utf-8"))
+    assert by_path[str(extra)] == skill_ledger._store_blob(extra_body.encode("utf-8"))
+
+    # Fail-open CONTROL: no backup dir → existing snapshot unchanged.
+    import shutil
+
+    shutil.rmtree(ledger_env["skills"] / ".curator_backups")
+    control_existing = skill_ledger.snapshot_paths(plan_dir)
+    control = skill_ledger.fill_snapshot_from_curator_backup(
+        plan_dir, control_existing, skill="plan"
+    )
+    assert control == control_existing

@@ -878,6 +878,8 @@ a scan or an approval prompt, so when `distribution.yaml` owns the file a scanne
 
 ### Securing API Keys
 
+For dashboard authentication behind a Cloudflare tunnel, see [Dashboard Authentication Behind a Cloudflare Tunnel](dashboard-cloudflare-access.md) — it covers using Cloudflare Access as the dashboard's OIDC identity provider so remote logins use your real IdP instead of a separate dashboard password.
+
 ```bash
 # Set proper permissions on the .env file
 chmod 600 ~/.hermes/.env

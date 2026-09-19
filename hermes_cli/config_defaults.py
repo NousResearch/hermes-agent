@@ -543,6 +543,14 @@ DEFAULT_CONFIG = {
         # threshold_tokens: absolute token cap — compression triggers at the lower of the ratio
         # threshold and this count. Clamped to the model's context length.
         "threshold_tokens": None,
+        # threshold_tokens_by_model: per-model overrides for the cap above, keyed by a
+        # case-insensitive substring of the model id (longest match wins; a
+        # "<provider>:<substr>" key scopes the cap to one route, same as model_thresholds).
+        # Unlike the ratio overrides, an absolute per-model cap survives the sub-512K
+        # floor. Empty = threshold_tokens applies to every model. A value may instead be
+        # {cap: <tokens>, mode: "warn"}: warn entries post a notice when the session
+        # crosses the line but never lower the trigger.
+        "threshold_tokens_by_model": {},
         # "progress_notices": False,    # opt-in (#52995): when True, routine compression
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked
@@ -634,10 +642,11 @@ DEFAULT_CONFIG = {
         # (active=0, compacted=1) — still session_search-able. False = legacy rotating-compaction
         # path.
         "in_place": True,
-        # Per-model threshold overrides: keys substring-match the model name (longest wins), values
-        # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
-        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
-        # global value). The <512K floor (0.75) still applies raise-only on top.
+        # Per-model threshold overrides: keys case-insensitively substring-match the model name
+        # (longest wins), values replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a
+        # key with "<provider>:" to scope it to one route ({"openai-codex:astra": 0.85} leaves
+        # Astra on OpenRouter/Nous at the global value). The <512K floor (0.75) still applies
+        # raise-only on top.
         "model_thresholds": {},
         # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
         # up front, before the first reply. Time-based complement to `threshold`; skipped when

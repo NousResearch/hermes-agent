@@ -40,7 +40,7 @@ function StreamingCaret() {
   return (
     <span
       aria-hidden
-      className="inline-block w-[0.5em] h-[1em] ml-0.5 align-[-0.15em] bg-foreground/50 animate-pulse"
+      className="inline-block w-[0.5em] h-[1em] ms-0.5 align-[-0.15em] bg-foreground/50 animate-pulse"
     />
   );
 }
@@ -205,7 +205,7 @@ function Block({
       const last = block.items.length - 1;
       return (
         <Tag
-          className={`space-y-0.5 ${block.ordered ? "list-decimal" : "list-disc"} pl-5 text-sm`}
+          className={`space-y-0.5 ${block.ordered ? "list-decimal" : "list-disc"} ps-5 text-sm`}
         >
           {block.items.map((item, i) => (
             <li key={i}>

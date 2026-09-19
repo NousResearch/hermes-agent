@@ -7494,6 +7494,16 @@ function isMediaCapturePermission(permission, details) {
     return true
   }
 
+  // macOS 27+ requires Local Network permission for LAN gateway connections.
+  // Chromium routes this through the permission request handler; without an
+  // explicit grant the default is deny, causing ERR_ADDRESS_UNREACHABLE for
+  // every LAN address (Safari/curl are unaffected because they hold the
+  // system-level permission).  The Info.plist already carries
+  // NSLocalNetworkUsageDescription so the OS prompt fires on first use.
+  if ((permission as string) === 'local-network') {
+    return true
+  }
+
   if (permission !== 'media') {
     return false
   }
@@ -7548,13 +7558,15 @@ function installMediaPermissions() {
   // Synchronous check handler: Chromium consults this for getUserMedia on
   // Windows in addition to (or instead of) the request handler. Without it,
   // the check defaults to false and capture is denied before the request
-  // handler ever runs.
+  // handler ever runs.  Also handles 'local-network' for macOS 27+ LAN
+  // access (see isMediaCapturePermission above).
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
     return (
       permission === 'media' ||
       (permission as string) === 'automatic-fullscreen' ||
       permission === ('audioCapture' as any) /* todo: is this needed? */ ||
-      permission === ('videoCapture' as any)
+      permission === ('videoCapture' as any) ||
+      (permission as string) === 'local-network'
     )
   })
 }

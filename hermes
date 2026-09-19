@@ -6,6 +6,31 @@ This wrapper should behave like the installed `hermes` command, including
 subcommands such as `gateway`, `cron`, and `doctor`.
 """
 
+import os
+import sys
+
+
+def _ensure_supported_python() -> None:
+    """Keep direct source-tree launches on Hermes' supported interpreter."""
+    if sys.version_info >= (3, 11):
+        return
+
+    managed_python = os.path.join(os.path.dirname(__file__), "venv", "bin", "python")
+    if os.path.isfile(managed_python) and os.access(managed_python, os.X_OK):
+        os.execv(managed_python, [managed_python, __file__, *sys.argv[1:]])
+
+    version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    print(
+        "Hermes requires Python 3.11 or newer (and below 3.14); "
+        f"detected Python {version}. Install Hermes with its managed runtime "
+        "or run it with Python 3.11+.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+_ensure_supported_python()
+
 if __name__ == "__main__":
     from hermes_cli.main import main
     main()

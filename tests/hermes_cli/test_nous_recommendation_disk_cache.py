@@ -64,20 +64,20 @@ def test_process_restarts_reuse_fresh_disk_but_force_and_expiry_fetch(tmp_path, 
     assert len(requests) == 2
 
     path = home / "cache" / "nous_recommended_cache.json"
-    disk = json.loads(path.read_text())
+    disk = json.loads(path.read_text(encoding="utf-8"))
     disk[base]["ts"] = time.time() - 3600
-    path.write_text(json.dumps(disk))
+    path.write_text(json.dumps(disk), encoding="utf-8")
     state["version"] = 3
     assert fetch_in_new_process(home, base) != second
     assert len(requests) == 3
 
     # A failed refresh retains the last good payload without making it fresh on disk.
-    disk = json.loads(path.read_text())
+    disk = json.loads(path.read_text(encoding="utf-8"))
     disk[base]["ts"] = time.time() - 3600
-    path.write_text(json.dumps(disk))
+    path.write_text(json.dumps(disk), encoding="utf-8")
     state["status"] = 503
     assert fetch_in_new_process(home, base) == disk[base]["data"]
-    assert json.loads(path.read_text())[base]["ts"] == disk[base]["ts"]
+    assert json.loads(path.read_text(encoding="utf-8"))[base]["ts"] == disk[base]["ts"]
 
 
 def test_disk_cache_is_scoped_to_home_and_portal(tmp_path, portal):

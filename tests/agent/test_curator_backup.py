@@ -52,6 +52,188 @@ def _write_skill(skills_dir: Path, name: str, body: str = "body") -> Path:
 
 
 
+def test_snapshot_skips_absolute_symlink_and_records_manifest(backup_env, tmp_path):
+    """An absolute symlink (e.g. the installed cua-driver link) records an absolute
+    linkname that rollback's extraction filter refuses (#109331). The snapshot must
+    omit the member and record it in the manifest so every successful snapshot is
+    restorable by ``curator rollback`` on the same installation."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    external = tmp_path / "external-driver"
+    external.mkdir()
+    (skills / "cua-driver").symlink_to(external)  # absolute target
+
+    snap = cb.snapshot_skills(reason="manual")
+    assert snap is not None
+
+    with tarfile.open(snap / "skills.tar.gz", "r:gz") as tf:
+        names = tf.getnames()
+    assert "alpha/SKILL.md" in names
+    assert "cua-driver" not in names
+
+    manifest = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["skipped_symlinks"] == [{"path": "cua-driver", "target": str(external), "reason": "posix-abs"}]
+
+
+def test_snapshot_with_absolute_symlink_round_trips_through_rollback(backup_env, tmp_path):
+    """End-to-end regression: a snapshot created on an installation whose live skills
+    tree contains an absolute symlink must pass rollback validation unchanged, and the
+    skipped link must be rebuilt from the manifest so the restore loses nothing."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    external = tmp_path / "external-driver"
+    external.mkdir()
+    (skills / "cua-driver").symlink_to(external)
+
+    snap = cb.snapshot_skills(reason="manual")
+    assert snap is not None
+
+    _write_skill(skills, "gamma")  # diverge the live tree after the snapshot
+    ok, msg, _ = cb.rollback(backup_id=snap.name)
+    assert ok, msg
+
+    assert (skills / "alpha" / "SKILL.md").exists()
+    assert not (skills / "gamma").exists()
+    # skipped at backup time, rebuilt at rollback time — same-machine target is still valid
+    assert (skills / "cua-driver").is_symlink()
+    assert os.readlink(skills / "cua-driver") == str(external)
+    assert "rebuilt 1 skipped symlink" in msg
+
+
+def test_snapshot_skips_escaping_relative_symlink(backup_env, tmp_path):
+    """A relative target that resolves above the skills root (``alpha/escape -> ../../outside``)
+    passes the old absolute-only check but is refused by tarfile's "data" filter at extract time
+    (LinkOutsideDestinationError) — the snapshot must skip it too (#109331)."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    (tmp_path / "outside").mkdir()
+    (skills / "alpha" / "escape").symlink_to("../../outside")
+
+    snap = cb.snapshot_skills(reason="manual")
+    assert snap is not None
+
+    with tarfile.open(snap / "skills.tar.gz", "r:gz") as tf:
+        names = tf.getnames()
+    assert "alpha/SKILL.md" in names
+    assert "alpha/escape" not in names
+
+    manifest = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["skipped_symlinks"] == [{"path": "alpha/escape", "target": "../../outside", "reason": "relative-escape"}]
+
+
+def test_snapshot_with_escaping_relative_symlink_round_trips_through_rollback(backup_env, tmp_path):
+    """Nested escaping-relative-link round trip: snapshot + rollback over a tree containing
+    ``alpha/escape -> ../../outside`` must succeed and rebuild the link (on Python < 3.12 the
+    extract falls back unfiltered, so the rebuild is what keeps the two paths consistent)."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    (tmp_path / "outside").mkdir()
+    (skills / "alpha" / "escape").symlink_to("../../outside")
+
+    snap = cb.snapshot_skills(reason="manual")
+    assert snap is not None
+
+    _write_skill(skills, "gamma")
+    ok, msg, _ = cb.rollback(backup_id=snap.name)
+    assert ok, msg
+
+    assert (skills / "alpha" / "SKILL.md").exists()
+    assert (skills / "alpha" / "escape").is_symlink()
+    assert os.readlink(skills / "alpha" / "escape") == "../../outside"
+
+
+def test_rollback_to_safety_snapshot_restores_skipped_symlinks(backup_env, tmp_path):
+    """The pre-rollback safety snapshot is the documented undo handle: rolling back to it
+    (undoing a rollback) must also rebuild the skipped symlinks it recorded — otherwise undo
+    silently loses the links a second time (#109331)."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    external = tmp_path / "external-driver"
+    external.mkdir()
+    (skills / "cua-driver").symlink_to(external)
+
+    snap = cb.snapshot_skills(reason="manual")
+    assert snap is not None
+    _write_skill(skills, "gamma")  # diverge, then roll back (creating the safety snapshot)
+    ok, msg, _ = cb.rollback(backup_id=snap.name)
+    assert ok, msg
+    assert not (skills / "gamma").exists()
+
+    safety = cb.list_backups()[0]  # newest snapshot = the pre-rollback safety snapshot of the gamma tree
+    assert safety["reason"] == f"pre-rollback to {snap.name}"
+
+    ok, msg, _ = cb.rollback(backup_id=safety["id"])  # undo: back to the diverged tree
+    assert ok, msg
+    assert (skills / "gamma" / "SKILL.md").exists()
+    assert (skills / "cua-driver").is_symlink()
+    assert os.readlink(skills / "cua-driver") == str(external)
+
+
+def test_snapshot_keeps_relative_symlink_member(backup_env):
+    """Only unrestorable link targets are skipped; in-tree relative symlinks — including ones
+    that hop up a level but stay inside the tree — are legitimate members and keep being archived."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    _write_skill(skills, "beta")
+    (skills / "rel-link").symlink_to("alpha")  # relative target at the archive root
+    (skills / "alpha" / "up-link").symlink_to("../beta")  # hops up one level, still in-tree
+
+    snap = cb.snapshot_skills(reason="manual")
+    assert snap is not None
+
+    with tarfile.open(snap / "skills.tar.gz", "r:gz") as tf:
+        names = tf.getnames()
+    assert "rel-link" in names
+    assert "alpha/up-link" in names
+
+    manifest = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert "skipped_symlinks" not in manifest
+
+
+@pytest.mark.parametrize("linkname, expected", [
+    ("/opt/driver", "posix-abs"),
+    ("//double/slash", "posix-abs"),
+    ("\\\\server\\share\\drv", "win-abs"),      # UNC
+    ("\\\\?\\C:\\drv", "win-abs"),               # device path
+    ("\\rooted-no-drive", "win-abs"),            # rooted, resolves against the current drive
+    ("C:\\Users\\x\\drv", "win-abs"),            # drive-absolute
+    ("C:drv", "drive-relative"),                 # drive-relative: anchored to the drive's CWD
+    ("C:", "drive-relative"),
+    ("z:", "drive-relative"),                    # lower-case drive letter
+    ("alpha", "relative"),
+    ("../beta", "relative"),                     # escape decision happens per-member, not here
+    ("foo:bar", "relative"),                     # colon after a non-drive character is a plain name
+])
+def test_link_target_kind_classifies_windows_targets_without_the_filesystem(linkname, expected):
+    """Pure-string classification, independent of the host platform: tar member names are
+    POSIX-style and Windows targets keep their native spelling, so both must classify
+    identically on every OS (#109331)."""
+    from agent import curator_backup
+    assert curator_backup._link_target_kind(linkname) == expected
+
+
+def test_unrestorable_symlink_resolves_targets_per_member():
+    """The escape check mirrors tarfile's "data" filter: a relative linkname is resolved against
+    the member's own directory, so the same target can be safe for one member and escaping for
+    a deeper one."""
+    from agent import curator_backup
+    assert curator_backup._unrestorable_symlink("escape", "../outside") == "relative-escape"       # root member, up one
+    assert curator_backup._unrestorable_symlink("alpha/escape", "../../outside") == "relative-escape"
+    assert curator_backup._unrestorable_symlink("alpha/escape", "../../../outside") == "relative-escape"
+    assert curator_backup._unrestorable_symlink("alpha/up-link", "../beta") is None                # hops up, stays in-tree
+    assert curator_backup._unrestorable_symlink("rel-link", "alpha") is None                       # plain in-tree target
+    assert curator_backup._unrestorable_symlink("deep/a/b/link", "../../../../x") == "relative-escape"
+    assert curator_backup._unrestorable_symlink("deep/a/b/link", "../../../in") is None            # exactly back to root
+    assert curator_backup._unrestorable_symlink("cua-driver", "C:drv") == "drive-relative"
+    assert curator_backup._unrestorable_symlink("cua-driver", "/abs") == "posix-abs"
+
+
 def test_snapshot_uniquifies_when_same_second(backup_env, monkeypatch):
     """Two snapshots in the same wallclock second must not clobber each
     other. The module appends a counter to the second snapshot's id."""

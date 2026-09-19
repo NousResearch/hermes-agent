@@ -147,6 +147,19 @@ Replies are sent via SMTP with proper email threading:
 - **Message-ID** generated with the agent's domain
 - Responses are sent as plain text (UTF-8)
 
+### Session isolation
+
+By default every message from a given sender shares one Hermes session, and outbound replies thread onto that sender's most recent mail. Enable per-subject isolation when one person runs several topics in parallel (a new subject starts a fresh session; `Re:` / `Fw:` / `Fwd:` and common CJK prefixes stay in the same thread):
+
+```yaml
+platforms:
+  email:
+    extra:
+      session_by_subject: true
+```
+
+Or set `EMAIL_SESSION_BY_SUBJECT=true`. The SMTP `To:` header remains the sender address; isolation uses the existing `thread_id` session-key slot. Empty subjects keep the sender-only session.
+
 ### File Attachments
 
 The agent can send file attachments in replies. Include `MEDIA:/path/to/file` in the response and the file is attached to the outgoing email.

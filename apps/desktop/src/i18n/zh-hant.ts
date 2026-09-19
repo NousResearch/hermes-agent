@@ -3816,6 +3816,7 @@ export const zhHant = defineLocale({
       turnStatsCached: n => `${n} 快取`,
       turnStatsHit: n => `${n} 命中`,
       turnStatsCalls: n => `${n} 次呼叫`,
+      turnStatsCost: n => `${n} 估算`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '複製',

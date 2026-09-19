@@ -3114,6 +3114,7 @@ export const ar = defineLocale({
       turnStatsCached: n => `${n} مخبأ`,
       turnStatsHit: n => `${n} إصابة`,
       turnStatsCalls: n => `${n} استدعاءات`,
+      turnStatsCost: n => `${n} تقديري`,
       today: time => `اليوم ${time}`,
       yesterday: time => `أمس ${time}`,
       copy: 'نسخ',

@@ -3844,6 +3844,7 @@ export const ru = defineLocale({
       turnStatsCached: n => `${n} кэш`,
       turnStatsHit: n => `${n} попаданий`,
       turnStatsCalls: n => `${n} вызовов`,
+      turnStatsCost: n => `${n} оцен.`,
       today: time => `Сегодня, ${time}`,
       yesterday: time => `Вчера, ${time}`,
       copy: 'Копировать',

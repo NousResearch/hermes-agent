@@ -3626,6 +3626,7 @@ export const ja = defineLocale({
       turnStatsCached: n => `${n} キャッシュ`,
       turnStatsHit: n => `${n} ヒット`,
       turnStatsCalls: n => `${n} 回呼び出し`,
+      turnStatsCost: n => `${n} 推定`,
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,
       copy: 'コピー',

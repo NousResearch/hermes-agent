@@ -4568,6 +4568,7 @@ export const zh = defineLocale({
       turnStatsCached: n => `${n} 缓存`,
       turnStatsHit: n => `${n} 命中`,
       turnStatsCalls: n => `${n} 次调用`,
+      turnStatsCost: n => `${n} 估算`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '复制',

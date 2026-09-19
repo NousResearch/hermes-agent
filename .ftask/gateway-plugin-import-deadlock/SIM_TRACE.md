@@ -25,7 +25,7 @@ scenarios:
     observed: |
       
     verdict: pass
-code_diff_hash: 3b9cb3ff82960f7c78469bc8b73ecd9e0239daff404c20ee36d3deb19332d631
+code_diff_hash: 7cd1c375b4425e2bb687ce9add9f708b85c7a5817307ea7f31e00c6de3a68c4f
 ---
 
 # Simulation trace — gateway-plugin-import-deadlock
@@ -46,35 +46,35 @@ Verdict legend:
 ## Captured runs (ftask --capture audit trail; do NOT hand-edit — re-run --capture to refresh)
 
 - scenario_id: 1
-  at: 2026-09-19T04:44:25.590Z
+  at: 2026-09-19T04:47:48.736Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_is_not_backgrounded_for_gateway"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 432
+  duration_ms: 398
   stdout_tail: |
     .                                                                        [100%]
-    1 passed in 0.22s
+    1 passed in 0.16s
   stderr_tail: |
     (empty)
 
 - scenario_id: 2
-  at: 2026-09-19T04:44:27.616Z
+  at: 2026-09-19T04:47:50.710Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_runs_for_plain_chat"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 400
+  duration_ms: 345
   stdout_tail: |
     .                                                                        [100%]
-    1 passed in 0.22s
+    1 passed in 0.17s
   stderr_tail: |
     (empty)
 
 - scenario_id: 3
-  at: 2026-09-19T04:44:29.561Z
+  at: 2026-09-19T04:47:52.654Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_skipped_for_tui_launch"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 331
+  duration_ms: 324
   stdout_tail: |
     .                                                                        [100%]
     1 passed in 0.16s

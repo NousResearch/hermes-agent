@@ -1675,10 +1675,15 @@ Subcommands:
 | `list` | List recent sessions. |
 | `browse` | Interactive session picker with search and resume. Each row shows a lifecycle status tag (`done` / `intr` / `err` / `empty`, derived from the session's final message) and its message count. Press `d` on a highlighted row (while the search filter is empty) to delete that session after a y/N confirmation; while a filter is active, `d` types into the search instead. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
+| `import [--from claude\|codex] [path]` | Import a conversation started in Claude Code (`~/.claude/projects`) or Codex CLI (`~/.codex/sessions`) into the Hermes session store so it can be resumed with `hermes --resume <id>`. The foreign files are only read, never modified. |
 | `delete <session-id>` | Delete one session. |
 | `prune` | Delete sessions matching filters: time bounds `--older-than`/`--newer-than`/`--before`/`--after` (durations like `5h`/`2d`, bare days, or ISO timestamps); attributes `--source`, `--title`, `--model`, `--provider`, `--branch`, `--end-reason`, `--user`, `--chat-id`, `--chat-type`, `--cwd`; numeric bounds `--min/--max-messages`, `--min/--max-tokens`, `--min/--max-cost`, `--min/--max-tool-calls`; plus `--include-archived`, `--dry-run`, `--yes`. Default: older than 90 days. |
 | `archive` | Bulk-archive (soft-hide, no deletion) sessions matching the same filters as `prune`. Requires at least one filter. |
+| `clean-markers` | Permanently clear stale tool-call marker content left by sessions from before #78148 — a bare bracketed marker (e.g. `[memory]`) persisted as an assistant turn's content instead of real text. Already repaired in memory on every session load, so running this is optional; it rewrites the affected rows once, in place. `--dry-run` reports the row count without writing; `--no-backup` skips the timestamped `state.db` backup. |
 | `stats` | Show session-store statistics. |
+| `pin <session-id>...` | Set the durable "keep" flag on one or more sessions (IDs or unique prefixes). Pinned sessions are exempt from the `sessions.auto_archive` stale sweep and always appear in listings; the same flag drives the Desktop sidebar's Pinned section. |
+| `unpin <session-id>...` | Remove the pin (durable keep flag) from session(s). |
+| `pinned [--json]` | List pinned sessions; `--json` emits machine-readable output (for backup/restore scripting). |
 | `rename <session-id> <title>` | Set or change a session title. |
 | `optimize` | Reclaim disk space: merge FTS5 index segments + VACUUM. Non-destructive — no session data changes. |
 | `optimize-storage` | Migrate the full-text search index to the compact v23 external-content layout; on large databases this reclaims a large fraction of `state.db`. |

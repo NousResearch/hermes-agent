@@ -182,6 +182,50 @@ def _is_plugin_id(raw: str) -> bool:
     return bool(parts) and all(part not in {os.curdir, os.pardir} for part in parts)
 
 
+def _installed_manifest_match(raw: str) -> Path | None:
+    """Resolve a user plugin by manifest name when its directory is path-derived.
+
+    Plugin installs may use a filesystem-safe directory such as
+    ``mia_topic_router`` while exposing ``mia-coordinator`` as the public
+    manifest name.  Read manifests only; discovery/import is still handled by
+    the normal doctor runtime after resolution.
+    """
+    user_root = get_hermes_home() / "plugins"
+    if not user_root.is_dir():
+        return None
+    try:
+        import yaml
+
+        matches: list[Path] = []
+        for candidate in sorted(user_root.iterdir(), key=lambda item: item.name):
+            if not candidate.is_dir():
+                continue
+            manifest_file = next(
+                (candidate / name for name in _MANIFEST_NAMES if (candidate / name).is_file()),
+                None,
+            )
+            if manifest_file is None:
+                continue
+            try:
+                data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            if isinstance(data, dict) and raw in {str(data.get("name") or ""), str(data.get("key") or "")}:
+                matches.append(candidate)
+        if len(matches) == 1:
+            return matches[0].resolve()
+        if len(matches) > 1:
+            raise FileNotFoundError(
+                f"Plugin {raw!r} matched multiple installed manifests: "
+                + ", ".join(str(path) for path in matches)
+            )
+    except FileNotFoundError:
+        raise
+    except Exception:
+        return None
+    return None
+
+
 def resolve_plugin_path(target: str | os.PathLike[str] | None = None) -> Path:
     """Resolve an explicit path or an installed/bundled plugin id."""
     raw = os.fspath(target or ".")
@@ -203,6 +247,10 @@ def resolve_plugin_path(target: str | os.PathLike[str] | None = None) -> Path:
     for candidate in candidates:
         if _holds_plugin(candidate):
             return candidate.resolve()
+    if _is_plugin_id(raw):
+        manifest_match = _installed_manifest_match(raw)
+        if manifest_match is not None:
+            return manifest_match
     if direct_is_dir:
         raise FileNotFoundError(
             f"{direct.resolve()} holds no plugin manifest "

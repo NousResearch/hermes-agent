@@ -256,6 +256,8 @@ def _marker_only_restart_obsolete() -> bool:
     Discharging here strands nobody: the same row is still accounted at update time by
     ``update_inventory.report_unaccounted_runtimes``, which prints it and exits 1 when the restart
     phase never touched it — this marker only stops re-warning about it on every later startup.
+    Alternatively, if a matching receipt exists for expected_sha, owed runtimes recovered from
+    that receipt are reconciled against the fleet.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -290,6 +292,17 @@ def _marker_only_restart_obsolete() -> bool:
                 if not isinstance(profile, str) or not profile.strip() or profile == "unknown":
                     return False
                 owed.add(("gateway", profile))
+        else:
+            # Issue #115638: Marker written without an inventory= line (updater crash
+            # mid-cleanup or legacy breadcrumb). Attempt recovery of owed runtimes from
+            # the latest update receipt if it was targeting the same expected_sha.
+            from hermes_cli.update_receipt import read_latest_receipt
+            receipt = read_latest_receipt() or {}
+            post_sha = (receipt.get("post_update") or {}).get("sha")
+            if post_sha and post_sha == expected_sha:
+                receipt_owed = _receipt_owed_gateways(receipt, [])
+                if receipt_owed is not None and receipt_owed:
+                    owed = receipt_owed
     except (OSError, UnicodeError, ValueError):
         return False
     if owed is not None and not owed:
@@ -1688,7 +1701,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # Restart a managed dashboard via systemd or stop stale manual ones (raw-killing
     # a systemd-owned PID reads as clean stop and leaves the Cloudflare origin dead).
     # Failed Node refresh leaves it untouched; already-restarted units aren't redone.
-    _finish_dashboard_update_cleanup(node_failures, already_restarted_units=set(restart.restarted_services))
+    with _best_effort('Dashboard cleanup during update failed: %s'):
+        _finish_dashboard_update_cleanup(node_failures, already_restarted_units=set(restart.restarted_services))
 
     # Success-path twin of the abort-recovery probe: the restart phase only touches
     # units, so a unit-less `hermes serve` keeps stale sys.modules. Runs AFTER

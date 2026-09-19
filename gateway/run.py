@@ -2189,6 +2189,7 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
     # See #72016.
     "_session_stall_notified",
+    "_session_stall_recovery_latched",
     # Transcript-lag streak counter (#114266); a fresh conversation starts with no lag history.
     "_transcript_lag_streaks",
     # Sidecar notes staged but never consumed (turn aborted before run_sync) must not leak into a
@@ -3510,6 +3511,8 @@ class GatewayRunner(
         # paths, busy-ack debounce timestamps and the monotonic run-generation counter (#28686, NEVER reset)
         # live on SessionState too. See gateway.session_stall.
         self._session_stall_notified: Dict[str, bool] = {}
+        # Recovery-nudge latch: independent of user-notice delivery so flood-wait cannot re-inject.
+        self._session_stall_recovery_latched: Dict[str, bool] = {}
         # Consecutive "persisted transcript lagged live cached history" turns per session key; see
         # run_turn_runner._load_turn_history (#114266). Cleared on /new.
         self._transcript_lag_streaks: Dict[str, int] = {}

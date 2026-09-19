@@ -383,6 +383,7 @@ class TestAzureFoundryModelApiMode:
         assert azure_foundry_model_api_mode("gpt-5.4") == "codex_responses"
         assert azure_foundry_model_api_mode("gpt-5-codex") == "codex_responses"
         assert azure_foundry_model_api_mode("gpt-5.3-codex") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6-astra") == "codex_responses"
         # gpt-5-mini exceptions are Copilot-specific; Azure deploys the whole
         # gpt-5 family on Responses API uniformly.
         assert azure_foundry_model_api_mode("gpt-5-mini") == "codex_responses"

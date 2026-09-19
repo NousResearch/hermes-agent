@@ -41,7 +41,7 @@ def test_scan_plugin_walks_dir_and_skips_tests(tmp_path):
     (tmp_path / "sub").mkdir(); (tmp_path / "sub" / "m.py").write_text("import hermes_cli.kanban_db as k\nk.connect()\n")
     (tmp_path / "tests").mkdir(); (tmp_path / "tests" / "t.py").write_text("from tools.web_tools import prefers_gateway\n")
     hits = pc.scan_plugin(tmp_path, MANIFEST)
-    assert sorted(h.file for h in hits) == ["__init__.py", "sub/m.py"]
+    assert sorted(Path(h.file).as_posix() for h in hits) == ["__init__.py", "sub/m.py"]
 
 
 def _manifest(name, path, source="user"):

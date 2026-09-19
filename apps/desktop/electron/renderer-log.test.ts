@@ -2,50 +2,84 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { attachRendererConsoleCapture, formatRendererBoundaryReport, formatRendererConsoleLine } from './renderer-log'
 
+type ConsoleMessageEvent = {
+  level?: unknown
+  message?: unknown
+  sourceId?: unknown
+  lineNumber?: unknown
+}
+
+type ConsoleMessageHandler = (event: ConsoleMessageEvent) => void
+
+function createWindowHarness() {
+  let handler: ConsoleMessageHandler | undefined
+
+  const win = {
+    webContents: {
+      on: (_event: 'console-message', listener: ConsoleMessageHandler) => {
+        handler = listener
+      }
+    }
+  }
+
+  return { win, getHandler: () => handler }
+}
+
 describe('formatRendererConsoleLine', () => {
-  it('formats the canonical Electron 36+ details shape at error level', () => {
+  it('formats the canonical Electron console-message event at error level', () => {
     const line = formatRendererConsoleLine('hud', {
-      level: 3,
+      level: 'error',
       message: 'Minified React error #310',
-      sourceUrl: 'file:///app/index.js',
+      sourceId: 'file:///app/index.js',
       lineNumber: 13
     })
 
     expect(line).toBe('[renderer console:hud] Minified React error #310 (file:///app/index.js:13)')
   })
 
-  it('formats the deprecated positional shape at error level', () => {
-    const line = formatRendererConsoleLine('main', 3, 'boom', 7, 'file:///app/vendor.js')
-
-    expect(line).toBe('[renderer console:main] boom (file:///app/vendor.js:7)')
+  it('drops a canonical non-error string level', () => {
+    expect(
+      formatRendererConsoleLine('main', { level: 'info', message: 'x', sourceId: 's', lineNumber: 1 })
+    ).toBeNull()
   })
 
-  it('drops non-error levels in both shapes', () => {
-    expect(formatRendererConsoleLine('main', { level: 1, message: 'x', sourceUrl: 's', lineNumber: 1 })).toBeNull()
-    expect(formatRendererConsoleLine('main', 2, 'warn', 1, 's')).toBeNull()
+  it('drops malformed event objects', () => {
+    expect(formatRendererConsoleLine('main', {})).toBeNull()
   })
 })
 
 describe('attachRendererConsoleCapture', () => {
-  it('logs error-level messages and skips the rest', () => {
+  it('registers a single-argument listener, logs errors, and skips the rest', () => {
     const log = vi.fn()
-    let handler: ((...args: unknown[]) => void) | undefined
+    const capture = createWindowHarness()
 
-    const win = {
-      webContents: {
-        on: (_event: string, listener: (...args: unknown[]) => void) => {
-          handler = listener
-        }
-      }
-    }
+    attachRendererConsoleCapture(capture.win, 'quick-entry', log)
 
-    attachRendererConsoleCapture(win, 'quick-entry', log)
+    const handler = capture.getHandler()
+    expect(handler).toHaveLength(1)
 
-    handler?.({}, { level: 3, message: 'crash', sourceUrl: 'src', lineNumber: 2 })
-    handler?.({}, { level: 0, message: 'debug', sourceUrl: 'src', lineNumber: 3 })
+    handler?.({ level: 'error', message: 'crash', sourceId: 'src', lineNumber: 2 })
+    handler?.({ level: 'debug', message: 'debug', sourceId: 'src', lineNumber: 3 })
 
     expect(log).toHaveBeenCalledTimes(1)
     expect(log).toHaveBeenCalledWith('[renderer console:quick-entry] crash (src:2)')
+  })
+
+  it('reports signature drift once across renderer windows', () => {
+    const log = vi.fn()
+    const firstCapture = createWindowHarness()
+    const secondCapture = createWindowHarness()
+
+    attachRendererConsoleCapture(firstCapture.win, 'main', log)
+    attachRendererConsoleCapture(secondCapture.win, 'hud', log)
+
+    firstCapture.getHandler()?.({})
+    secondCapture.getHandler()?.({})
+
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith(
+      '[renderer console] Electron console-message signature drift detected; renderer errors may not be captured'
+    )
   })
 })
 

@@ -129,6 +129,28 @@ def _check_mcp_security(should_fix: bool, f: Finding) -> None:
         check_ok("No suspicious MCP stdio commands")
 
 
+@doctor_check("Approvals mode check skipped", "({e})")
+def _check_approvals_mode(should_fix: bool, f: Finding) -> None:
+    """Warn when dangerous-command approvals are disabled (approvals.mode=off).
+
+    The effective mode is resolved through the terminal guard's own reader
+    (``tools.approval_context._get_approval_mode``), not a raw config read:
+    YAML 1.1 parses a bare ``mode: off`` as boolean ``False``, and only the
+    guard's normalizer maps that back to ``"off"`` — a raw read would silently
+    miss the exact case this check exists to surface.
+    """
+    from tools.approval_context import _get_approval_mode
+    mode = _get_approval_mode()
+    if mode == "off":
+        check_warn(
+            "Approvals are disabled (approvals.mode=off)",
+            "dangerous commands run without confirmation — restore with /approvals manual",
+        )
+        f.manual_issues.append("Approvals are off: run /approvals manual to re-enable confirmation prompts.")
+    else:
+        check_ok(f"Approval mode: {mode}")
+
+
 @doctor_check()
 def _check_env_file(should_fix: bool, f: Finding) -> None:
     """Managed scope plus ~/.hermes/.env presence and provider credentials."""

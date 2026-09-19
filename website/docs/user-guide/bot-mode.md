@@ -146,6 +146,10 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **Rooms show the same identity as the roster.** Transcript rows, the “X is thinking…” line and Activity rows resolve each member's title and avatar by its owning connection and profile — re-titling a Bot or changing its picture updates every room it sits in, remote members keep their own titles, and two same-named Bots on different connections never borrow each other's avatar. When two members would still read identically, Activity appends the connection label (`Reviewer · Mac Mini`).
 - **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
 
+### Relaying into a group from another session (`hermes group`)
+
+Any agent session — a Discord thread, the CLI, a Desktop chat — can push a request into a gateway-hosted group **on your behalf** and report the deliberation back: `hermes group send <group> "…" --as "Pax via Discord" --wait`. The relaying agent is not a member; the message lands as a user message with the relay recorded as who sent it, the members deliberate headlessly in the gateway's hosted-room worker, and `--wait` streams their replies until the room settles. Run it in the background and the completion notification carries the replies into the originating session. See [`hermes group`](../reference/cli-commands.md#hermes-group).
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

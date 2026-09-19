@@ -298,7 +298,7 @@ def _mint_document_id(session_id: str) -> str:
 # initialize() kwargs copied verbatim (str, stripped) onto ``self._<name>``.
 _SESSION_KWARGS = (
     "platform", "user_id", "user_name", "chat_id", "chat_name", "chat_type",
-    "thread_id", "agent_identity", "agent_workspace",
+    "thread_id", "agent_identity", "agent_workspace", "session_title",
 )
 # Retain metadata keys, each stamped from the attribute of the same name when set.
 _METADATA_ATTRS = (
@@ -993,6 +993,10 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._retain_source:
             metadata["source"] = self._retain_source
         metadata.update({name: value for name in _METADATA_ATTRS if (value := getattr(self, f"_{name}"))})
+        # Core already passes session_title (#86824); retain used to drop it.
+        title = str(getattr(self, "_session_title", "") or "").strip()
+        if title:
+            metadata["title"] = title
         return metadata
 
     def _build_retain_kwargs(self, content: str, *, context: str | None = None,

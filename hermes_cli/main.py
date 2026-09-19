@@ -2864,6 +2864,12 @@ def _prepare_agent_startup(args) -> None:
     # See #7994.
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+    # -z: run_oneshot() turns on both approval overrides, but it runs after
+    # this, too late for the freeze above and for the hook registration
+    # below (#86526). Set them here as well.
+    if getattr(args, "oneshot", None):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        os.environ["HERMES_ACCEPT_HOOKS"] = "1"
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)

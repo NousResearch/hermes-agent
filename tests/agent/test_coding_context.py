@@ -112,6 +112,37 @@ class TestWorkspaceBlock:
         assert "untracked" in block
         assert "clean" not in block.split("Status:")[1].splitlines()[0]
 
+    def test_windows_crlf_tracked_file_reports_clean(self, tmp_path, monkeypatch):
+        """The hardened snapshot preserves Git for Windows' CRLF normalization."""
+        from hermes_cli import _subprocess_compat
+
+        env = {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+            "HOME": str(tmp_path),
+        }
+        (tmp_path / "main.py").write_bytes(b"print('hi')\r\n")
+        for args in (
+            ["init", "-q", "-b", "main"],
+            ["add", "-A"],
+            ["commit", "-q", "-m", "init commit"],
+        ):
+            subprocess.run(
+                [shutil.which("git"), "-c", "core.autocrlf=true", "-C", str(tmp_path), *args],
+                check=True,
+                env=env,
+            )
+        tracked = tmp_path / "main.py"
+        stat = tracked.stat()
+        os.utime(tracked, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+
+        monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: 0)
+        block = cc.build_coding_workspace_block(tmp_path)
+
+        status = block.split("Status:", 1)[1].splitlines()[0]
+        assert status.strip() == "clean"
+
 
 # ── project facts (verify-loop detection) ───────────────────────────────────
 

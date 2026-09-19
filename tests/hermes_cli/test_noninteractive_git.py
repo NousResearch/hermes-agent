@@ -97,6 +97,24 @@ class TestNoninteractiveGitEnv:
         assert values["sequence.editor"] == "true"
         assert values["diff.external"] == ""
 
+    def test_windows_crlf_override_is_opt_in(self):
+        default_env = noninteractive_git_env({"HERMES_SENTINEL": "preserved"})
+        windows_env = noninteractive_git_env(
+            {"HERMES_SENTINEL": "preserved"}, preserve_windows_crlf=True
+        )
+
+        default_values = {
+            default_env[f"GIT_CONFIG_KEY_{idx}"]: default_env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(default_env["GIT_CONFIG_COUNT"]))
+        }
+        windows_values = {
+            windows_env[f"GIT_CONFIG_KEY_{idx}"]: windows_env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(windows_env["GIT_CONFIG_COUNT"]))
+        }
+        assert default_env["HERMES_SENTINEL"] == windows_env["HERMES_SENTINEL"] == "preserved"
+        assert "core.autocrlf" not in default_values
+        assert windows_values == {**default_values, "core.autocrlf": "true"}
+
     @pytest.mark.real_safe_directory
     def test_safe_directory_preserves_git_ordering_and_reset_markers(self, tmp_path, monkeypatch):
         """The user's effective trust policy is replayed verbatim, resets included.

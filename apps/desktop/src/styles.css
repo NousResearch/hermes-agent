@@ -246,6 +246,8 @@
        without a renumber. Local stacking inside a component (a sticky header
        over its own scroll area) stays on plain `z-10`/`z-20`; these rungs are
        only for surfaces that float over the app. */
+    --z-narrow-overlay-backdrop: 80;
+    --z-narrow-overlay: 90;
     --z-modal-backdrop: 120;
     --z-modal: 130;
     /* A select/dropdown/popover opened from inside a modal, portaled to body. */

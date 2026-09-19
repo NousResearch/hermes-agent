@@ -167,7 +167,7 @@ def test_desktop_headless_serve_keeps_packaged_renderer(main_mod, monkeypatch):
 
 def test_dashboard_keeps_caller_managed_web_dist(main_mod, monkeypatch, tmp_path):
     """Only Electron-packaged renderer paths are removed from dashboards."""
-    custom_dist = tmp_path / "custom-dashboard"
+    custom_dist = tmp_path / "app.asar-cache" / "dist"
     monkeypatch.setenv("HERMES_DESKTOP", "1")
     monkeypatch.setenv("HERMES_WEB_DIST", str(custom_dist))
 

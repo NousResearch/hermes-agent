@@ -238,6 +238,8 @@ TOOL_CATEGORIES = {
                  post_setup="kittentts"),
             _row("Piper", "local · free", "Local neural TTS, 44 languages (voices ~20-90MB)", tts_provider="piper",
                  post_setup="piper"),
+            _row("LuxTTS", "local · free", "48 kHz voice cloning, CPU/CUDA/MPS (reference consent required)",
+                 tts_provider="luxtts", post_setup="luxtts"),
             _row("DeepInfra TTS", "paid", "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com", [_DEEPINFRA_KEY],
                  tts_provider="deepinfra"),
         ],

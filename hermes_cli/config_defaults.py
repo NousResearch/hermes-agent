@@ -1016,10 +1016,11 @@ DEFAULT_CONFIG = {
     # Text-to-speech. Each provider accepts an optional `max_text_length:` override for the
     # per-request input-character cap; omit to use the provider's documented limit (OpenAI 4096, xAI
     # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,
-    # NeuTTS/KittenTTS 2000).
+    # NeuTTS/KittenTTS/LuxTTS 2000).
     "tts": {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
-        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local) |
+        # "luxtts" (local voice cloning)
         "provider": "edge",
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -1074,6 +1075,18 @@ DEFAULT_CONFIG = {
             # (~/.hermes/cache/piper-voices/), use_cuda, length_scale (2.0 = twice as slow),
             # noise_scale, noise_w_scale, volume, normalize_audio.
             "voice": "en_US-lessac-medium",
+        },
+        "luxtts": {
+            "model": "YatharthS/LuxTTS",
+            "ref_audio": "",  # required 3–10s reference recording
+            "consent_confirmed": False,  # affirm ownership/permission before voice cloning
+            "device": "auto",  # auto, cpu, cuda, or mps; unavailable accelerators fall back to cpu
+            "threads": 2,  # CPU only
+            "ref_duration": 5,
+            "num_steps": 4,
+            "t_shift": 0.9,
+            "speed": 1.0,
+            "return_smooth": False,
         },
         "deepinfra": {
             "model": "",  # empty = first tts-tagged model from the live catalog

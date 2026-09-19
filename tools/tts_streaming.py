@@ -102,6 +102,7 @@ class StreamingTTSProvider(ABC):
     sample_rate: int = 24000
     channels: int = 1
     sample_width: int = 2  # bytes/sample (int16)
+    prefetch_concurrency: int = 3
 
     def __init__(self, tts_config: Dict, section: Dict):
         self.tts_config = tts_config
@@ -168,6 +169,36 @@ def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:
             logger.warning("%s exceeded %d bytes for one sentence; truncating", label, _STREAM_SENTENCE_BYTE_CAP)
             return
         yield chunk
+
+
+@register("luxtts")
+class LuxTTSStreamer(StreamingTTSProvider):
+    """Sentence-level LuxTTS: complete 48 kHz waveform per sentence, then bounded PCM chunks."""
+
+    sample_rate = 48000
+    # LuxTTS generates a complete waveform and serializes access to one shared model.
+    # Keep only the sentence being synthesized in flight so barge-in can discard the rest.
+    prefetch_concurrency = 1
+
+    @staticmethod
+    def available() -> bool:
+        from tools.tts_tool import _check_luxtts_available
+        return _check_luxtts_available()
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        # Validate consent/path without loading weights; an invalid setup stays out of the
+        # gateway streaming lane and doctor/setup never trigger a model download.
+        from tools.tts_tool_local import _luxtts_config
+        _luxtts_config(tts_config)
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        import numpy as np
+        from tools.tts_tool_local import _generate_luxtts_waveform
+        waveform = np.asarray(_generate_luxtts_waveform(text, self.tts_config), dtype=np.float32).squeeze()
+        pcm = (np.clip(np.nan_to_num(waveform), -1.0, 1.0) * 32767.0).astype("<i2", copy=False).tobytes()
+        chunks = (pcm[i:i + 65536] for i in range(0, len(pcm), 65536))
+        yield from _capped(chunks, "LuxTTS sentence")
 
 
 @register("elevenlabs")

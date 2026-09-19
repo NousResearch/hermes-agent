@@ -1,7 +1,7 @@
-"""Local on-device TTS engines for ``tools.tts_tool``: NeuTTS, Piper, KittenTTS.
+"""Local on-device TTS engines for ``tools.tts_tool``: NeuTTS, Piper, KittenTTS, LuxTTS.
 
-All three synthesize WAV natively; :func:`_finalize_wav_output` converts/renames to the requested
-container. Piper and KittenTTS keep loaded models in small LRU caches registered in
+All four synthesize WAV natively; :func:`_finalize_wav_output` converts/renames to the requested
+container. Piper, KittenTTS and LuxTTS keep loaded models in caches registered in
 ``_LOCAL_TTS_MODEL_CACHES`` so warm/release can pre-load or drop them. ``_import_piper`` /
 ``_import_kittentts`` are resolved through the origin module at call time (test monkeypatches).
 """
@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
@@ -21,6 +23,8 @@ logger = logging.getLogger("tools.tts_tool")
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
+DEFAULT_LUXTTS_MODEL = "YatharthS/LuxTTS"
+LUXTTS_SAMPLE_RATE = 48000
 _NEUTTS_SAMPLES = Path(__file__).parent / "neutts_samples"
 
 # --- Bounded model caches ---
@@ -33,8 +37,11 @@ _TTS_MODEL_CACHE_MAX = 3
 # (+cuda flag); KittenTTS on model name.
 _piper_voice_cache: Dict[str, Any] = {}
 _kittentts_model_cache: Dict[str, Any] = {}
+_luxtts_runtime_cache: Dict[str, Any] = {}
+_luxtts_cache_lock = threading.Lock()
 _LOCAL_TTS_MODEL_CACHES: Dict[str, Dict[str, Any]] = {
-    "piper": _piper_voice_cache, "kittentts": _kittentts_model_cache}
+    "piper": _piper_voice_cache, "kittentts": _kittentts_model_cache,
+    "luxtts": _luxtts_runtime_cache}
 
 
 def _tts_cache_get_or_load(cache: Dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
@@ -192,3 +199,125 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
     wav_path = _wav_sidecar_path(output_path)
     sf.write(wav_path, audio, 24000)
     return _finalize_wav_output(wav_path, output_path)
+
+
+# --- LuxTTS (local 48 kHz voice cloning) ---
+@dataclass
+class _LuxTTSRuntime:
+    model: Any
+    encoded_prompt: Any
+    lock: threading.Lock
+    device: str
+
+
+def _resolve_luxtts_device(requested: str) -> str:
+    """Resolve auto/cuda/mps/cpu without pretending an unavailable accelerator works."""
+    torch = _origin()._import_torch()
+    requested = str(requested or "auto").strip().lower()
+    if requested not in {"auto", "cpu", "cuda", "mps"}:
+        raise ValueError("tts.luxtts.device must be one of: auto, cpu, cuda, mps")
+    cuda_ready = bool(getattr(getattr(torch, "cuda", None), "is_available", lambda: False)())
+    mps_ready = bool(getattr(getattr(getattr(torch, "backends", None), "mps", None),
+                             "is_available", lambda: False)())
+    if requested == "auto":
+        return "cuda" if cuda_ready else "mps" if mps_ready else "cpu"
+    if requested == "cuda" and not cuda_ready:
+        logger.warning("[LuxTTS] CUDA requested but unavailable; falling back to CPU")
+        return "cpu"
+    if requested == "mps" and not mps_ready:
+        logger.warning("[LuxTTS] MPS requested but unavailable; falling back to CPU")
+        return "cpu"
+    return requested
+
+
+def _luxtts_config(tts_config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = _section(tts_config, "luxtts")
+    raw_ref_audio = str(cfg.get("ref_audio") or "").strip()
+    if cfg.get("consent_confirmed") is not True:
+        raise ValueError(
+            "LuxTTS voice cloning requires tts.luxtts.consent_confirmed: true; "
+            "only clone a voice you own or have permission to use")
+    if not raw_ref_audio:
+        raise ValueError("tts.luxtts.ref_audio must point to a consented reference recording")
+    ref_audio = Path(raw_ref_audio).expanduser()
+    if not ref_audio.is_file():
+        raise ValueError(f"LuxTTS reference audio not found: {ref_audio}")
+    return {**cfg, "ref_audio": str(ref_audio.resolve())}
+
+
+def _load_luxtts_runtime_for_config(tts_config: Dict[str, Any]) -> Tuple[_LuxTTSRuntime, Dict[str, Any]]:
+    """Load one model + encoded reference prompt; synthesis and warm-up share this exact cache key."""
+    cfg = _luxtts_config(tts_config)
+    model_name = str(cfg.get("model") or DEFAULT_LUXTTS_MODEL)
+    device = _resolve_luxtts_device(str(cfg.get("device") or "auto"))
+    threads = int(cfg.get("threads", 2))
+    ref_duration = float(cfg.get("ref_duration", 5))
+    rms = float(cfg.get("rms", 0.01))
+    cache_key = f"{model_name}::{device}::threads={threads}::{cfg['ref_audio']}::{ref_duration}::{rms}"
+
+    def _load() -> _LuxTTSRuntime:
+        LuxTTS = _origin()._import_luxtts()
+        kwargs = {"device": device}
+        if device == "cpu":
+            kwargs["threads"] = threads
+        logger.info("[LuxTTS] Loading %s on %s", model_name, device)
+        model = LuxTTS(model_name, **kwargs)
+        encoded = model.encode_prompt(cfg["ref_audio"], duration=ref_duration, rms=rms)
+        logger.info("[LuxTTS] Model and reference prompt loaded")
+        return _LuxTTSRuntime(model=model, encoded_prompt=encoded, lock=threading.Lock(), device=device)
+
+    # LuxTTS is much larger than Piper/KittenTTS. Keep exactly one runtime and serialize misses:
+    # sentence prefetch uses several threads and must never race into duplicate model loads.
+    with _luxtts_cache_lock:
+        runtime = _luxtts_runtime_cache.get(cache_key)
+        if runtime is None:
+            runtime = _load()
+            _luxtts_runtime_cache.clear()
+            _luxtts_runtime_cache[cache_key] = runtime
+    return runtime, cfg
+
+
+def _release_luxtts_runtime_cache() -> int:
+    """Wait for an in-flight load, then drop the resident LuxTTS runtime."""
+    with _luxtts_cache_lock:
+        released = len(_luxtts_runtime_cache)
+        _luxtts_runtime_cache.clear()
+    return released
+
+
+def _generate_luxtts_waveform(text: str, tts_config: Dict[str, Any]):
+    runtime, cfg = _load_luxtts_runtime_for_config(tts_config)
+    with runtime.lock:
+        waveform = runtime.model.generate_speech(
+            text, runtime.encoded_prompt,
+            num_steps=int(cfg.get("num_steps", 4)),
+            t_shift=float(cfg.get("t_shift", 0.9)),
+            speed=float(cfg.get("speed", tts_config.get("speed", 1.0))),
+            return_smooth=bool(cfg.get("return_smooth", False)))
+    if hasattr(waveform, "detach"):
+        waveform = waveform.detach()
+    if hasattr(waveform, "cpu"):
+        waveform = waveform.cpu()
+    if hasattr(waveform, "numpy"):
+        waveform = waveform.numpy()
+    return waveform.squeeze() if hasattr(waveform, "squeeze") else waveform
+
+
+def _generate_luxtts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    import soundfile as sf
+    wav_path = _wav_sidecar_path(output_path)
+    sf.write(wav_path, _generate_luxtts_waveform(text, tts_config), LUXTTS_SAMPLE_RATE)
+    return _finalize_wav_output(wav_path, output_path)
+
+
+def _release_luxtts_accelerator_cache() -> None:
+    """Release allocator-held accelerator blocks after the last speech lease ends."""
+    try:
+        torch = _origin()._import_torch()
+        if getattr(getattr(torch, "cuda", None), "is_available", lambda: False)():
+            torch.cuda.empty_cache()
+        mps_empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
+        if callable(mps_empty_cache):
+            mps_empty_cache()
+    except (ImportError, RuntimeError):
+        pass

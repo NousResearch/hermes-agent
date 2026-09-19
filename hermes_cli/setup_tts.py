@@ -70,6 +70,20 @@ def _install_kittentts_deps() -> bool:
         "kittentts", ["-U", wheel_url, "soundfile", "--quiet"], f"uv pip install -U '{wheel_url}' soundfile")
 
 
+_LUXTTS_URL = "git+https://github.com/ysharma3501/LuxTTS.git@28ae6a61151684fffc9d1a7aa15eafa02286fe0b"
+_LINACODEC_URL = "git+https://github.com/ysharma3501/LinaCodec.git@c0ae7c7285e121475c27592cfbb600624b714290"
+_PIPER_PHONEMIZE_INDEX = "https://k2-fsa.github.io/icefall/piper_phonemize.html"
+
+
+def _install_luxtts_deps() -> bool:
+    """Install pinned sources; model weights still download only on first warm/use."""
+    _setup._info(None, "Installing LuxTTS local voice-cloning dependencies...",
+                 "The model downloads only after LuxTTS is configured and speech output is enabled.", None)
+    args = ["-U", _LINACODEC_URL, _LUXTTS_URL, "soundfile", "--find-links", _PIPER_PHONEMIZE_INDEX, "--quiet"]
+    manual = f"uv pip install -U '{_LINACODEC_URL}' '{_LUXTTS_URL}' soundfile --find-links '{_PIPER_PHONEMIZE_INDEX}'"
+    return _pip_install_tts_package("LuxTTS", args, manual)
+
+
 def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are stored locally, so TTS/STT setup can skip the
     API-key prompt for users who logged in via ``hermes model`` -> xAI Grok OAuth."""
@@ -115,7 +129,8 @@ _TTS_PROVIDER_CHOICES = [
     ("mistral", "Mistral Voxtral TTS (multilingual, native Opus, needs API key)"),
     ("gemini", "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)"),
     ("neutts", "NeuTTS (local on-device, free, ~300MB model download)"),
-    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)")]
+    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)"),
+    ("luxtts", "LuxTTS (local 48 kHz voice cloning, CPU/CUDA/MPS)")]
 # Short label = menu label minus its parenthetical ("Edge TTS", "Mistral Voxtral TTS", ...).
 _TTS_PROVIDER_LABELS = {key: label.split(" (")[0] for key, label in _TTS_PROVIDER_CHOICES}
 # provider -> (env vars that satisfy it, env var to save, prompt, success line, pre-prompt hint)
@@ -140,7 +155,11 @@ _TTS_LOCAL_PROVIDERS = {
     "kittentts": ("kittentts", "KittenTTS",
                   ("KittenTTS is lightweight (~25-80MB, CPU-only, no API key required).",
                    "Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo"),
-                  "Install KittenTTS now?", _install_kittentts_deps)}
+                  "Install KittenTTS now?", _install_kittentts_deps),
+    "luxtts": ("zipvoice", "LuxTTS",
+                ("LuxTTS clones a voice from a local reference recording.",
+                 "Model weights download on first warm/use, never during setup or doctor."),
+                "Install LuxTTS dependencies now?", _install_luxtts_deps)}
 
 
 def _tts_api_key_step(selected: str) -> str:
@@ -177,6 +196,22 @@ def _tts_local_install_step(selected: str) -> str:
         _setup.print_warning(f"{name} installation incomplete. Falling back to Edge TTS.")
         return "edge"
     return selected
+
+
+def _tts_luxtts_config_step(config: dict) -> str:
+    """Collect the explicit reference path and voice-owner consent required by LuxTTS."""
+    print()
+    ref_audio = (_setup.prompt("LuxTTS reference audio path (3–10 seconds, WAV or MP3)") or "").strip()
+    if not ref_audio:
+        _setup.print_warning("A reference recording is required. Falling back to Edge TTS.")
+        return "edge"
+    if not _setup.prompt_yes_no(
+            "Do you own this voice or have explicit permission to clone and use it?", False):
+        _setup.print_warning("Voice-owner consent was not confirmed. Falling back to Edge TTS.")
+        return "edge"
+    section = config.setdefault("tts", {}).setdefault("luxtts", {})
+    section.update(ref_audio=ref_audio, consent_confirmed=True)
+    return "luxtts"
 
 
 def _xai_oauth_path():
@@ -250,6 +285,8 @@ def _setup_tts_provider(config: dict):
                                  "until removed from ~/.hermes/.env.")
     elif selected in _TTS_LOCAL_PROVIDERS:
         selected = _tts_local_install_step(selected)
+        if selected == "luxtts":
+            selected = _tts_luxtts_config_step(config)
     elif selected in _TTS_API_KEY_PROVIDERS:
         selected = _tts_api_key_step(selected)
     elif selected == "xai":

@@ -2314,6 +2314,21 @@ def _session_auth_user_id(session: dict | None) -> str | None:
     return _transport_auth_user_id(session.get("transport"))
 
 
+def _load_prefill_messages() -> list:
+    """Ephemeral prefill messages for TUI/Desktop-built agents.
+
+    Desktop/TUI agents are built in ``_make_agent`` and never run the CLI's
+    ``CLIAgentSetupMixin``, so the CLI-side resolution does not apply to them.
+    The resolver and the file loader are shared with the CLI and the gateway
+    (``hermes_cli.prefill_messages``) so the three surfaces cannot drift; only
+    the config read is local, because this backend reads the active profile's
+    config through :func:`_load_cfg`.
+    """
+    from hermes_cli.prefill_messages import load_configured_prefill_messages
+
+    return load_configured_prefill_messages(_load_cfg())
+
+
 def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
@@ -2361,6 +2376,7 @@ def _make_agent(
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
+        prefill_messages=_load_prefill_messages() or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),

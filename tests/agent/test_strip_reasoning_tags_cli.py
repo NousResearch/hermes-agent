@@ -70,3 +70,29 @@ class TestToolCallStripping:
             assert out.rstrip().endswith("Done.")
             assert "<tool_call>" not in out
 
+
+
+class TestGlmOrphanClosePrefix:
+    """GLM-5.x via Ollama cloud drops the OPEN reasoning tag (chat template swallows it),
+    leaking `reasoning prose` + orphan close tag + answer into visible content."""
+
+    class _Agent:
+        def __init__(self, model):
+            self.model = model
+            self.provider = ""
+
+    def test_glm_leaked_reasoning_prefix_dropped(self):
+        ct = chr(60) + chr(47) + "think" + chr(62)
+        agent = self._Agent("glm-5.3")
+        assert strip_think_blocks(agent, "planning" + ct + "Answer.") == "Answer."
+
+    def test_non_glm_keeps_conservative_behavior(self):
+        ct = chr(60) + chr(47) + "think" + chr(62)
+        agent = self._Agent("kimi-k2.6")
+        assert strip_think_blocks(agent, "planning" + ct + "Answer.") == "planningAnswer."
+
+    def test_glm_prefix_bounded_to_2kb(self):
+        ct = chr(60) + chr(47) + "think" + chr(62)
+        agent = self._Agent("glm-5.3")
+        long_leak = "z" * 2100
+        assert strip_think_blocks(agent, long_leak + ct + "Answer.") == long_leak + "Answer."

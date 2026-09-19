@@ -45,7 +45,7 @@ _TOOL_CALL_BLOCK_PATTERNS = tuple(
     for name in _TOOL_CALL_TAG_NAMES
 )
 
-# Named <function name=...> blocks; boundary- and name-gated (see _THINK_STRIP_PATTERNS note).
+# Named <function name=...> blocks; boundary- and name-gated (see the _THINK_STRIP_HEAD_PATTERNS note).
 _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
     r'<function\b[^>]*\bname\s*=[^>]*>'
@@ -56,6 +56,19 @@ _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
 )
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
     rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE
+)
+
+# Reasoning-prefix orphan close (GLM-5.x via Ollama cloud, observed 2026-08): the model
+# emits reasoning inline in content but the chat template swallows the opening tag, so
+# the stream is reasoning prose, then a stray reasoning close tag, then the answer.
+# Pair-strip and the unterminated-open pass never match (no open tag), so the reasoning
+# prose survives as a visible content prefix. Drop everything from start-of-string
+# through the orphan close tag. Bounded to 2KB (non-greedy) so body prose is never
+# eaten; applied only to GLM models (see strip_think_blocks) because a leading-position
+# heuristic alone cannot distinguish a real leak from prose that mentions a close tag.
+_REASONING_PREFIX_ORPHAN_CLOSE_PATTERN = re.compile(
+    rf'^[\s\S]{{0,2048}}?</(?:{"|".join(THINK_TAG_NAMES)})>\s*',
+    re.IGNORECASE,
 )
 _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
     rf'</(?:{_NS_PREFIX}(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function))>\s*', re.IGNORECASE
@@ -618,15 +631,18 @@ def _flatten_content_text(content: Any) -> str:
     return str(content)
 
 
-# Order matters: closed pairs first (case-insensitive so mixed-case tags don't fall through to the
-# unterminated pass and eat trailing content), then tool-call XML blocks, the boundary+name-gated
-# <function> block, the unterminated reasoning block, stray orphan reasoning tags, and finally stray
-# tool-call CLOSERS only (bare/unterminated <function> is kept: a truncated streaming tail may still
-# be valuable, matching OpenClaw's asymmetry).
-_THINK_STRIP_PATTERNS = (
+# Order matters: closed pairs first (case-insensitive so mixed-case tags don't fall through to
+# the unterminated pass and eat trailing content), then tool-call XML blocks, the boundary+name-gated
+# <function> block, and the unterminated reasoning block.  Stray orphan reasoning tags and stray
+# tool-call CLOSERS run LAST (bare/unterminated <function> is kept: a truncated streaming tail may
+# still be valuable, matching OpenClaw's asymmetry).  The GLM orphan-close prefix pass (see
+# strip_think_blocks) must observe the same boundary: it runs between the two tuples.
+_THINK_STRIP_HEAD_PATTERNS = (
     *_REASONING_BLOCK_PATTERNS, *_TOOL_CALL_BLOCK_PATTERNS, _NAMED_FUNCTION_BLOCK_PATTERN,
-    _UNTERMINATED_REASONING_BLOCK_PATTERN, _ORPHAN_REASONING_TAG_PATTERN,
-    _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN,
+    _UNTERMINATED_REASONING_BLOCK_PATTERN,
+)
+_THINK_STRIP_TAIL_PATTERNS = (
+    _ORPHAN_REASONING_TAG_PATTERN, _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN,
 )
 
 
@@ -634,9 +650,21 @@ def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text: closed tag
     pairs, unterminated open tags at a block boundary (mirrors ``gateway/stream_consumer.py``),
     stray orphan tags (all case-insensitive variants), and standalone tool-call XML blocks some
-    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
+    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive.
+    GLM models additionally drop a leading reasoning prefix ended by an orphan close tag."""
     content = _flatten_content_text(content) if content else ""
-    for pattern in _THINK_STRIP_PATTERNS if content else ():
+    for pattern in _THINK_STRIP_HEAD_PATTERNS if content else ():
+        content = pattern.sub('', content)
+    # GLM-5.x via Ollama cloud can emit reasoning with the opening tag swallowed by
+    # the chat template: reasoning prose, then a stray reasoning close tag, then the
+    # visible answer. After pair- and unterminated-strip the close tag is a pure
+    # orphan, so everything from the head through it is reasoning, not reply.
+    # Position alone cannot separate a leak from prose mentioning a close tag - hence
+    # the model gate; other models keep the conservative orphan-tag-only behavior.
+    if content and ("glm" in (getattr(agent, "model", "") or "").lower() or
+                    "glm" in (getattr(agent, "provider", "") or "").lower()):
+        content = _REASONING_PREFIX_ORPHAN_CLOSE_PATTERN.sub('', content, count=1)
+    for pattern in _THINK_STRIP_TAIL_PATTERNS if content else ():
         content = pattern.sub('', content)
     return content
 

@@ -118,6 +118,14 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
   }
 }
 
+function hasDisplayableClarifyArgs(fromArgs: ClarifyArgs): boolean {
+  if (typeof fromArgs.question === 'string' && fromArgs.question.length > 0) {
+    return true
+  }
+
+  return Boolean(fromArgs.questions?.length)
+}
+
 interface ClarifyBatchResponse {
   id?: string
   question?: string
@@ -384,12 +392,23 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // settled card. Latch submit so that gap doesn't demote; Stop also clears
   // the request and must still collapse an unanswered card.
   const [answered, setAnswered] = useState(false)
+  // A live request that is later cleared (Stop) must still demote, even when
+  // tool args remain displayable. Args-only paint is only for the race before
+  // `clarify.request` arrives — not a dead panel after the request is gone.
+  const hadRequest = useRef(false)
+
+  if (request) {
+    hadRequest.current = true
+  }
+
+  const displayableArgs = hasDisplayableClarifyArgs(fromArgs)
 
   // Stopped mid-prompt with no result — don't leave a dead interactive panel.
   // `session.info` reports running=false while clarify is blocking, so the
   // running flag alone would remount the question as a tool row. Keep the
-  // card while a request is open or this instance already submitted.
-  if (!messageRunning && !request && !answered) {
+  // card while a request is open, this instance already submitted, or tool
+  // args already have question text and no request has ever arrived.
+  if (!messageRunning && !request && !answered && (!displayableArgs || hadRequest.current)) {
     return <ToolFallback {...props} />
   }
 
@@ -1042,12 +1061,16 @@ function ClarifyToolBatchPending({
     [staged]
   )
 
-  const answeredCount = questions.filter(q => stagedAnswer(q) !== null).length
-  const allStaged = answeredCount === questions.length
+  const answeredCount = ready ? questions.filter(q => stagedAnswer(q) !== null).length : 0
+  const allStaged = ready && answeredCount === questions.length
 
   const confirmAll = useCallback(async () => {
-    if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
+    if (!ready || !request || !gateway) {
+      notifyError(
+        new Error(request && ready ? copy.gatewayDisconnected : copy.notReady),
+        copy.sendFailed,
+        request && ready ? { action: reconnectAction() } : {}
+      )
 
       return
     }
@@ -1085,7 +1108,7 @@ function ClarifyToolBatchPending({
       notifyError(error, copy.sendFailed)
       setSubmitting(false)
     }
-  }, [copy, gateway, onAnswered, questions, request, stagedAnswer])
+  }, [copy, gateway, onAnswered, questions, ready, request, stagedAnswer])
 
   const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
     setStaged(current => {
@@ -1106,7 +1129,7 @@ function ClarifyToolBatchPending({
   }, [])
 
   const cancelAll = useCallback(async () => {
-    if (!request) {
+    if (!ready || !request) {
       return
     }
 
@@ -1115,7 +1138,7 @@ function ClarifyToolBatchPending({
 
     // A response with no `answers` is the cancel-all (the plain Esc path).
     respondToServerRequest(request.requestId, {})
-  }, [gateway, onAnswered, request])
+  }, [gateway, onAnswered, ready, request])
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -1159,7 +1182,7 @@ function ClarifyToolBatchPending({
           </span>
           <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
-        {questions.map(question => (
+        {questions.map((question, index) => (
           <BatchQuestionBlock
             disabled={disabled}
             key={question.qid}

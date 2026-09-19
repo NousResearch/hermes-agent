@@ -1,7 +1,12 @@
 import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
-import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
+import {
+  filterSessionModelHopRows,
+  providerIndexAfterClearingFilter,
+  sessionModelHopRows,
+  sessionModelHopSelection
+} from '../components/modelPicker.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
 
@@ -48,5 +53,37 @@ describe('ModelPicker provider filtering', () => {
     ]
 
     expect(providerIndexAfterClearingFilter(rows, p)).toBe(0)
+  })
+})
+
+describe('ModelPicker session-only model hop', () => {
+  it('flattens authenticated provider models into one searchable catalog', () => {
+    const rows = sessionModelHopRows([
+      { authenticated: true, models: ['claude-sonnet', 'claude-opus'], name: 'Anthropic', slug: 'anthropic' },
+      { authenticated: false, models: ['gpt-5'], name: 'OpenAI', slug: 'openai' },
+      { models: ['kimi-k2'], name: 'Kimi', slug: 'kimi' }
+    ])
+
+    expect(rows).toEqual([
+      { model: 'claude-sonnet', providerName: 'Anthropic', providerSlug: 'anthropic' },
+      { model: 'claude-opus', providerName: 'Anthropic', providerSlug: 'anthropic' },
+      { model: 'kimi-k2', providerName: 'Kimi', providerSlug: 'kimi' }
+    ])
+  })
+
+  it('keeps the hop selection session-scoped, including its provider identity', () => {
+    expect(sessionModelHopSelection({ model: 'claude-sonnet', providerName: 'Anthropic', providerSlug: 'anthropic' })).toBe(
+      'claude-sonnet --provider anthropic --tui-session'
+    )
+  })
+
+  it('filters the flat catalog by model alias or provider identity', () => {
+    const rows = sessionModelHopRows([
+      { models: ['k3'], name: 'Kimi Coding', slug: 'kimi-coding' },
+      { models: ['gpt-5'], name: 'OpenAI', slug: 'openai' }
+    ])
+
+    expect(filterSessionModelHopRows(rows, 'kimi').map(row => row.model)).toEqual(['k3'])
+    expect(filterSessionModelHopRows(rows, 'openai').map(row => row.model)).toEqual(['gpt-5'])
   })
 })

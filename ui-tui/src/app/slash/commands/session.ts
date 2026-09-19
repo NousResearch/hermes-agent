@@ -137,6 +137,14 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: { refresh: true } })
       }
 
+      if (arg.trim() === '--session') {
+        if (!ctx.sid) {
+          return ctx.transcript.sys('error: /model --session requires an active session')
+        }
+
+        return patchOverlayState({ modelPicker: { sessionOnly: true } })
+      }
+
       const switchModel = (confirmExpensiveModel = false) =>
         ctx.gateway
           .rpc<ConfigSetResponse>('config.set', {

@@ -262,6 +262,7 @@ export function FloatingOverlays({
 
   if (overlay.modelPicker) {
     const initialRefresh = typeof overlay.modelPicker === 'object' && overlay.modelPicker.refresh === true
+    const sessionOnly = typeof overlay.modelPicker === 'object' && overlay.modelPicker.sessionOnly === true
 
     widgets.push({
       id: 'model-picker',
@@ -274,6 +275,7 @@ export function FloatingOverlays({
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
             sessionId={sid}
+            sessionOnly={sessionOnly}
             t={theme}
           />
         </FloatBox>

@@ -128,7 +128,7 @@ def _transcribe_openai(
         model_name = DEFAULT_STT_MODEL
 
     def _run(client):
-        from openai import BadRequestError
+        from openai import APIStatusError
 
         def _create_transcription(path: str):
             create_kwargs: Dict[str, Any] = {
@@ -148,8 +148,16 @@ def _transcribe_openai(
         with tempfile.TemporaryDirectory(prefix="hermes-stt-") as work_dir:
             try:
                 transcription = _create_transcription(file_path)
-            except BadRequestError as exc:
-                if not any(k in str(exc).lower() for k in ("unsupported", "corrupted", "invalid file")):
+            except APIStatusError as exc:
+                message = str(exc).lower()
+                # 400s with a container hint mean the audio container was rejected. Some
+                # OpenAI-compatible endpoints (e.g. the gapgpt case in #81644) instead reject
+                # unsupported containers with a 5xx, which never reached this retry path. 5xx is
+                # otherwise ambiguous, but the transcode is cheap and the retry is a single
+                # attempt, so escalate to it whenever the provider hints at a bad container OR
+                # returned a 5xx.
+                is_server_error = (exc.status_code or 0) >= 500
+                if not is_server_error and not any(k in message for k in ("unsupported", "corrupted", "invalid file")):
                     raise
                 # Newer models reject containers whisper-1 accepted (Ogg/Opus voice notes): transcode, retry once.
                 converted_path, transcode_error = _transcode_audio_for_stt(file_path, work_dir)

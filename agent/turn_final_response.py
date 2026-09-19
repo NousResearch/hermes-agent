@@ -43,6 +43,21 @@ class FinalResponseVerdict:
     result: Optional[Dict[str, Any]] = None
 
 
+def _is_plausible_reasoning_promotion(reasoning: str) -> bool:
+    """Return whether parser-recovered reasoning is safe to present as an answer.
+
+    This deliberately avoids judging language, script, or prose quality: valid answers can
+    be multilingual, terse, or contain code. It only rejects unmistakably corrupted text so
+    the existing empty-response ladder can request a visible response instead.
+    """
+    candidate = reasoning.strip()
+    if not candidate or "\ufffd" in candidate:
+        return False
+    if any(not char.isprintable() and not char.isspace() for char in candidate):
+        return False
+    return any(char.isalnum() for char in candidate)
+
+
 def finish_text_response(
     agent: Any, *, assistant_message: Any, response: Any, finish_reason: Any, messages: Any,
     api_messages: Any, conversation_history: Any, api_call_count: Any, user_message: Any,
@@ -91,8 +106,9 @@ def finish_text_response(
         and not assistant_message.tool_calls
         and (_content is None or (isinstance(_content, str) and not _content.strip()))
     ):
-        _promoted = agent._extract_reasoning(assistant_message) or None
-        if _promoted:
+        _candidate = agent._extract_reasoning(assistant_message) or None
+        if _candidate and _is_plausible_reasoning_promotion(_candidate):
+            _promoted = _candidate
             # WARNING, not INFO: a model that keeps ending turns this way is stalled
             # (planning monologue, zero tool calls) while the turn reports "complete".
             logger.warning(
@@ -100,6 +116,12 @@ def finish_text_response(
                 "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
                 len(_promoted), agent.model, agent.provider, api_call_count,
                 sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
+            )
+        elif _candidate:
+            logger.warning(
+                "Reasoning-only clean stop contains implausible reasoning — "
+                "using empty-response recovery (model=%s provider=%s)",
+                agent.model, agent.provider,
             )
     final_response = _promoted or assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence

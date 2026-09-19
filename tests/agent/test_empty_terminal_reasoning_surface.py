@@ -99,6 +99,50 @@ def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
     assert row["api_content"] == "The answer is 42 because of the calculation above."
 
 
+def test_degenerate_reasoning_clean_stop_uses_empty_response_recovery(tmp_path, monkeypatch):
+    """Corrupted reasoning must not be promoted as an answer on a clean stop."""
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    reasoning="garbled \ufffd \u0442\u0435\u043a\u0441\u0442 \u4e71\u7801\x00",
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+            model="test-model",
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="Recovered answer.",
+                    reasoning=None,
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+            model="test-model",
+        ),
+    ]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+
+    result = agent.run_conversation("what is the answer?")
+
+    assert result["final_response"] == "Recovered answer."
+    assert result["api_calls"] == 2
+    assert all("\ufffd" not in (row.get("api_content") or "") for row in result["messages"])
+
+
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
     """No reasoning anywhere → behavior unchanged from main: the '(empty)'
     terminal (possibly rewritten by the downstream turn-completion explainer)

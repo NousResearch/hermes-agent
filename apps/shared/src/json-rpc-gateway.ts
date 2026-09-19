@@ -416,6 +416,7 @@ export class JsonRpcGatewayClient {
     if (!this.sharedSessionInputs && ['prompt.submit', 'session.redirect', 'session.steer'].includes(method)) {
       params = { ...params }
       delete params.submission_ref
+      delete params.input_visibility
     }
 
     return this.channel.request<T>(

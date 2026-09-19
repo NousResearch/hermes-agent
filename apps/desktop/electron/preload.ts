@@ -182,33 +182,39 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   // macOS native screenshot gesture; captures require a main-issued request.
-  screenshot: process.platform === 'darwin' ? {
-    getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
-    setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
-    openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
-    capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
-    onStatus: callback => {
-      const listener = (_event, status) => callback(status)
-      ipcRenderer.on('hermes:screenshot:status', listener)
+  screenshot:
+    process.platform === 'darwin'
+      ? {
+          getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
+          setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
+          openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
+          capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
+          onStatus: callback => {
+            const listener = (_event, status) => callback(status)
+            ipcRenderer.on('hermes:screenshot:status', listener)
 
-      return () => ipcRenderer.removeListener('hermes:screenshot:status', listener)
-    },
-    onRequest: callback => {
-      const channel = 'hermes:screenshot:request'
-      const listener = (_event, requestId) => callback(requestId)
-      if (ipcRenderer.listenerCount(channel) === 0) {
-        ipcRenderer.send('hermes:screenshot:subscribe', true)
-      }
-      ipcRenderer.on(channel, listener)
+            return () => ipcRenderer.removeListener('hermes:screenshot:status', listener)
+          },
+          onRequest: callback => {
+            const channel = 'hermes:screenshot:request'
+            const listener = (_event, requestId) => callback(requestId)
 
-      return () => {
-        ipcRenderer.removeListener(channel, listener)
-        if (ipcRenderer.listenerCount(channel) === 0) {
-          ipcRenderer.send('hermes:screenshot:subscribe', false)
+            if (ipcRenderer.listenerCount(channel) === 0) {
+              ipcRenderer.send('hermes:screenshot:subscribe', true)
+            }
+
+            ipcRenderer.on(channel, listener)
+
+            return () => {
+              ipcRenderer.removeListener(channel, listener)
+
+              if (ipcRenderer.listenerCount(channel) === 0) {
+                ipcRenderer.send('hermes:screenshot:subscribe', false)
+              }
+            }
+          }
         }
-      }
-    }
-  } : undefined,
+      : undefined,
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
   // shortcut + the persisted preference; the quick window only captures text
   // and hands it back, and the primary renderer submits it through the normal

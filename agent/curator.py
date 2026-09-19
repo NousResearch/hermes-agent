@@ -619,11 +619,12 @@ def _by_name(report: List[Dict[str, Any]]) -> Dict[Any, Dict[str, Any]]:
     return {r.get("name"): r for r in report if isinstance(r, dict)}
 
 
-def _build_rename_summary(*, before_names: Set[str], after_report: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], model_final: str) -> str:
+def _build_rename_summary(*, before_names: Set[str], after_report: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], model_final: str, after_names: Optional[Set[str]] = None) -> str:
     """The "where did my skills go?" lines appended to the user-visible ``final_summary``; "" when nothing was archived.
     Capped at 10 entries so a big consolidation doesn't flood agent.log (full list is in REPORT.md); the pin hint
     appears only when a consolidation produced an umbrella."""
-    after_names = set(_by_name(after_report))
+    if after_names is None:
+        after_names = set(_by_name(after_report))
     if not before_names - after_names:
         return ""
     diff = _diff_and_classify(before_names, after_names, tool_calls, model_final)
@@ -668,6 +669,7 @@ def _write_file(path: Path, label: str, render: Any) -> None:
 def _write_run_report(
     *, started_at: datetime, elapsed_seconds: float, auto_counts: Dict[str, int], auto_summary: str,
     before_report: List[Dict[str, Any]], before_names: Set[str], after_report: List[Dict[str, Any]], llm_meta: Dict[str, Any],
+    after_names: Optional[Set[str]] = None,
 ) -> Optional[Path]:
     """Write run.json + REPORT.md under logs/curator/{YYYYMMDD-HHMMSS}[-N]/ (N disambiguates a crash-rerun in the same
     second). Returns the report dir, or None if it couldn't be created (reporting is best-effort)."""
@@ -683,7 +685,7 @@ def _write_run_report(
         return None
     tool_calls = llm_meta.get("tool_calls", []) or []
     after_by_name, before_by_name = _by_name(after_report), _by_name(before_report)
-    diff = _diff_and_classify(before_names, set(after_by_name), tool_calls, llm_meta.get("final", "") or "")
+    diff = _diff_and_classify(before_names, set(after_by_name) if after_names is None else after_names, tool_calls, llm_meta.get("final", "") or "")
     states = ((n, (before_by_name.get(n) or {}).get("state"), (after_by_name.get(n) or {}).get("state")) for n in sorted(diff.after_names & before_names))
     transitions = [{"name": n, "from": b, "to": a} for n, b, a in states if b and a and b != a]
     tc_counts: Dict[str, int] = dict(Counter(tc.get("name", "unknown") for tc in tool_calls))
@@ -765,7 +767,7 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     lines = [
         f"# Curator run — {p.get('started_at', '')}\n",
         f"Model: `{p.get('model') or '(not resolved)'}` via `{p.get('provider') or '(not resolved)'}`  ·  Duration: {dur_label}  ·  "
-        f"Agent-created skills: {counts.get('before', 0)} → {counts.get('after', 0)} ({counts.get('delta', 0):+d})\n",
+        f"On-disk skills: {counts.get('before', 0)} → {counts.get('after', 0)} ({counts.get('delta', 0):+d})\n",
         *([f"> ⚠ LLM pass error: `{error}`\n"] if error else []),
         "## Auto-transitions (pure, no LLM)\n", f"- checked: {auto.get('checked', 0)}", f"- marked stale: {auto.get('marked_stale', 0)}",
         f"- archived (no LLM, pure time-based staleness): {auto.get('archived', 0)}", f"- reactivated: {auto.get('reactivated', 0)}", "",
@@ -847,6 +849,21 @@ def _safe_curated_report() -> List[Dict[str, Any]]:
     return []
 
 
+def _snapshot_skill_names() -> Set[str]:
+    """Inventory local and configured shared skills independently of usage rows."""
+    from agent.skill_utils import get_external_skills_dirs, is_excluded_skill_path
+
+    names: Set[str] = set()
+    for root in (get_hermes_home() / "skills", *get_external_skills_dirs()):
+        if root.is_dir():
+            names.update(
+                skill_md.parent.name
+                for skill_md in root.rglob("SKILL.md")
+                if skill_md.is_file() and not is_excluded_skill_path(skill_md, root=root)
+            )
+    return names
+
+
 def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_names: Set[str]) -> tuple:
     """The LLM half of a run: fork (unless no candidates), then append the rename map (`old-name → umbrella`) so users
     needn't dig into REPORT.md. Returns ``(final_summary, llm_meta)``; never raises."""
@@ -872,6 +889,7 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
     try:  # best-effort: never block the run on formatting
         rename_lines = _build_rename_summary(
             before_names=before_names, after_report=skill_usage.curated_report(),
+            after_names=_snapshot_skill_names(),
             tool_calls=llm_meta.get("tool_calls", []) or [], model_final=llm_meta.get("final", "") or "",
         )
         if rename_lines:
@@ -893,6 +911,9 @@ def run_curator_review(
     recorded in ``state.last_report_path`` so users can read what WOULD have happened."""
     consolidate = get_consolidate() if consolidate is None else consolidate
     start = datetime.now(timezone.utc)
+    # The run includes deterministic archives as well as LLM mutations.
+    before_names = _snapshot_skill_names()
+    before_report = _safe_curated_report()
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
@@ -920,9 +941,6 @@ def run_curator_review(
     save_state(state)
 
     def _llm_pass():
-        # Snapshot skill state BEFORE the LLM pass so the report can diff.
-        before_report = _safe_curated_report()
-        before_names = set(_by_name(before_report))
         if consolidate:
             final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names)
         else:
@@ -936,6 +954,7 @@ def run_curator_review(
             report_path = _write_run_report(
                 started_at=start, elapsed_seconds=elapsed, auto_counts=counts, auto_summary=auto_summary,
                 before_report=before_report, before_names=before_names, after_report=_safe_curated_report(), llm_meta=llm_meta,
+                after_names=_snapshot_skill_names(),
             )
             if report_path is not None:
                 state2["last_report_path"] = str(report_path)

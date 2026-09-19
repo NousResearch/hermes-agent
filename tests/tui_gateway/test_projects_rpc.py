@@ -281,12 +281,19 @@ def test_get_unknown_returns_error():
     assert "error" in resp
 
 
-def test_delete_removes_project(tmp_path):
+@pytest.mark.parametrize("delete_active", [True, False])
+def test_delete_preserves_only_surviving_active_project(tmp_path, delete_active):
     pid = _call("projects.create", {"name": "Doomed", "folders": [str(tmp_path)]})["project"]["id"]
+    survivor = _call("projects.create", {"name": "Survivor"})["project"]["id"]
+    active = pid if delete_active else survivor
+    _call("projects.set_active", {"id": active})
+
     payload = _call("projects.delete", {"id": pid})
 
     assert all(p["id"] != pid for p in payload["projects"])
-    assert "projects.delete" in server._methods
+    assert payload["active_id"] == (None if delete_active else survivor)
+    # A fresh RPC connection must see the same selection after deletion.
+    assert _call("projects.list")["active_id"] == payload["active_id"]
 
 
 def test_discover_repos_is_registered_long_handler():

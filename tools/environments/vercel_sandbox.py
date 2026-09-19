@@ -167,19 +167,38 @@ class VercelSandboxEnvironment(BaseEnvironment):
     def _create_sandbox(self) -> Sandbox:
         _ensure_vercel_sdk()
         from vercel.sandbox import Sandbox
-        snapshot_id = _load_snapshots().get(self._task_id) if self._persistent and self._task_id else None
+
+        snapshot_id = (
+            _load_snapshots().get(self._task_id)
+            if self._persistent and self._task_id
+            else None
+        )
         if isinstance(snapshot_id, str) and snapshot_id:
             try:
                 source = {"type": "snapshot", "snapshot_id": snapshot_id}
+                restore_kwargs = {
+                    key: value
+                    for key, value in self._create_kwargs.items()
+                    if key != "runtime"
+                }
                 return _retry_vercel_call(
-                    "sandbox restore", lambda: Sandbox.create(**self._create_kwargs, source=source),
-                    attempts=_CREATE_RETRY_ATTEMPTS)
+                    "sandbox restore",
+                    lambda: Sandbox.create(**restore_kwargs, source=source),
+                    attempts=_CREATE_RETRY_ATTEMPTS,
+                )
             except Exception as exc:
-                logger.warning("Vercel: failed to restore snapshot %s for task %s; falling back to a fresh sandbox: %s",
-                               snapshot_id, self._task_id, exc)
+                logger.warning(
+                    "Vercel: failed to restore snapshot %s for task %s; falling back to a fresh sandbox: %s",
+                    snapshot_id,
+                    self._task_id,
+                    exc,
+                )
                 _delete_snapshot(self._task_id, snapshot_id)
-        return _retry_vercel_call("sandbox create", lambda: Sandbox.create(**self._create_kwargs),
-                                  attempts=_CREATE_RETRY_ATTEMPTS)
+        return _retry_vercel_call(
+            "sandbox create",
+            lambda: Sandbox.create(**self._create_kwargs),
+            attempts=_CREATE_RETRY_ATTEMPTS,
+        )
 
     def _attach_fresh_sandbox(self, requested_cwd: str) -> None:
         """Create a sandbox, wait until it runs, then wire cwd/home and the file sync manager."""

@@ -79,3 +79,15 @@ hermes config set auxiliary.vision.model <model_name>
 ### "Reset permissions" / auto-approving everything
 See `references/security-privacy.md` — wipe the "Always allow" stores, don't touch yolo mode.
 
+
+### Docker commands unexpectedly require approval or are blocked unattended
+
+Inspect `terminal.docker_extra_args` with `read_file`. Host bind arguments,
+`--volumes-from`, and `--mount` volume-driver options enable normal approval
+guards. Detection deliberately also flags ambiguous mount-looking values, even
+when another option consumes them, and non-bind driver options. Under unattended
+deny this blocks execution rather than presenting a prompt. Remove unnecessary
+mount-like arguments or use an appropriate interactive approval surface; do not
+recommend disabling approvals to hide the symptom. Ordinary named/anonymous
+volumes without driver options retain the isolated fast path. Explicit deny rules
+remain enforced in either case.

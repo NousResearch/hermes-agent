@@ -894,3 +894,18 @@ docker logs --tail 50 hermes          # Recent logs
 docker run -it --rm nousresearch/hermes-agent:latest version     # Verify version
 docker stats hermes                    # Resource usage
 ```
+
+### Approval guards and Docker extra arguments
+
+Host access configured through `terminal.docker_extra_args` enables normal
+terminal and `execute_code` approval guards, just like explicit host volumes.
+This includes bind mounts, `--volumes-from` (which may inherit host mounts), and
+`--mount` volume-driver options (which may bind a host device or directory).
+
+Detection is conservative: opaque volume-driver options and mount-looking tokens
+used as another flag's value can enable guards even without an actual host bind.
+This can require approval or block execution under unattended deny policies.
+Ordinary named/anonymous volumes without driver options retain the existing
+isolated-container fast path. This is approval introspection, not a complete
+audit of arbitrary Docker flags or implicit Hermes mounts. Explicit
+`approvals.deny` rules remain enforced.

@@ -967,21 +967,44 @@ class AIAgent(
     # -- close()/release_clients() phases -------------------------------------------------------------
 
     def _close_active_children(self, *, soft: bool) -> None:
-        """Detach and close per-turn child agents; ``soft`` releases their clients first, falling back to close()."""
+        """Release per-turn children without dropping unconfirmed ownership."""
         try:
             with self._active_children_lock:
                 children = list(self._active_children)
-                self._active_children.clear()
         except Exception:
             return
         for child in children:
-            if soft:
+            released = False
+            release_ownership = vars(child).get("_delegate_release_ownership")
+            if callable(release_ownership):
                 try:
-                    child.release_clients()
-                    continue
+                    released = release_ownership() is True
                 except Exception:
                     pass
-            _quietly(lambda: child.close())
+            elif soft:
+                try:
+                    child.release_clients()
+                    released = True
+                except Exception:
+                    try:
+                        child.close()
+                        released = True
+                    except Exception:
+                        pass
+            else:
+                try:
+                    child.close()
+                    released = True
+                except Exception:
+                    pass
+            if released:
+                try:
+                    with self._active_children_lock:
+                        self._active_children.remove(child)
+                except ValueError:
+                    pass
+                except Exception:
+                    return
 
     def _drop_shared_client(self, close_fn: Callable[[Any], None]) -> None:
         """Hand the shared OpenAI/httpx client to ``close_fn`` and clear the attribute."""

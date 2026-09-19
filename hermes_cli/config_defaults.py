@@ -1316,6 +1316,35 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # Optional subscription-backed Gemini lane for bounded, output-only
+        # leaf work. It is inert until enabled and scoped to the active profile;
+        # the normal delegation provider remains the fallback authority.
+        "gemini_routing": {
+            "enabled": False,
+            "profiles": [],
+            "default_route": "gemini",
+            "default_data_classification": "restricted",
+            "command": "agy",
+            "model": "gemini-3.8-flash-low",
+            "effort": "low",
+            "timeout_seconds": 120,
+            "max_input_bytes": 262_144,
+            "max_output_bytes": 131_072,
+            "fallback_to_delegation_model": True,
+            "receipt_db": "routing/gemini-routing.sqlite3",
+            "retention": {"raw_days": 30, "aggregate_days": 180},
+            "extra_args": [],
+            "review": {
+                "enabled": False,
+                "timezone": "America/Los_Angeles",
+                "sample_size": 5,
+                "not_before_local": "00:15",
+                "review_provider": "openai-codex",
+                "review_model": "gpt-5.6-sol",
+                "alert_target": "slack:C0AEMP1AG0H",
+                "alert_workspace_id": "",
+            },
+        },
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

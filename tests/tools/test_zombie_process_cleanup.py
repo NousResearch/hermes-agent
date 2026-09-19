@@ -11,6 +11,8 @@ import subprocess
 import sys
 import threading
 
+import pytest
+
 
 
 def _spawn_sleep(seconds: float = 60) -> subprocess.Popen:
@@ -206,6 +208,83 @@ class TestAgentCloseMethod:
             child_1.close.assert_called_once()
             child_2.close.assert_called_once()
             assert agent._active_children == []
+
+    def test_soft_release_retains_child_when_teardown_is_unconfirmed(self):
+        """A failed child release/close must preserve parent ownership for retry."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-soft-release-retains-child"
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            child = MagicMock()
+            child.release_clients.side_effect = RuntimeError("release unconfirmed")
+            child.close.side_effect = [RuntimeError("close unconfirmed"), None]
+            agent._active_children = [child]
+
+            agent.release_clients()
+
+            assert agent._active_children == [child]
+
+            agent.release_clients()
+
+            assert agent._active_children == []
+            assert child.close.call_count == 2
+
+    def test_hard_close_retains_child_when_teardown_is_unconfirmed(self):
+        """Hard close must not orphan a child whose close did not settle."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-hard-close-retains-child"
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            child = MagicMock()
+            child.close.side_effect = [RuntimeError("close unconfirmed"), None]
+            agent._active_children = [child]
+
+            agent.close()
+
+            assert agent._active_children == [child]
+
+            agent.close()
+
+            assert agent._active_children == []
+            assert child.close.call_count == 2
+
+    @pytest.mark.parametrize("method_name", ["release_clients", "close"])
+    def test_agent_cleanup_uses_retained_delegate_ownership_callback(self, method_name):
+        """Parent retries the complete delegate graph instead of only the child."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = f"test-retained-graph-{method_name}"
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            child = MagicMock()
+            cleanup = MagicMock(side_effect=[False, True])
+            child._delegate_release_ownership = cleanup
+            agent._active_children = [child]
+
+            getattr(agent, method_name)()
+
+            assert agent._active_children == [child]
+            child.release_clients.assert_not_called()
+            child.close.assert_not_called()
+
+            getattr(agent, method_name)()
+
+            assert agent._active_children == []
+            assert cleanup.call_count == 2
 
     def test_close_ends_owned_session_row(self):
         """close() finalizes the agent's owned SQLite session row."""
@@ -520,7 +599,9 @@ class TestDelegationCleanup:
             )
 
             assert child_started.is_set()
-            assert result["status"] == "timeout"
+            assert result["status"] == "error"
+            assert result["exit_reason"] == "cancellation_unconfirmed"
+            assert result["error"] == "delegation cancellation could not be confirmed"
             assert relay_runtime.SESSION_COORDINATOR.has_active_turn(
                 profile_key=str(profile_home),
                 session_id=child.session_id,

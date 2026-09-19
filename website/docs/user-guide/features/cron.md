@@ -905,6 +905,12 @@ It picks `no_agent=True` automatically when the message content is fully determi
 
 See the [Script-Only Cron Jobs guide](../../guides/cron-script-only.md) for worked examples.
 
+### Gemini daily review
+
+The optional Gemini daily review uses a no-agent cron job for postdeployment assurance. Passing batches leave empty stdout and make no Slack call. A sampled-task or pipeline failure is sent as one failure-only aggregate alert by the review script itself, so the job must use local delivery to avoid a second wrapped message.
+
+The routing feature and review job are disabled by default. See [Gemini delegation routing](./gemini-delegation-routing.md) for the exact schedule, receipt, privacy, and separate-approval boundaries. Documentation alone does not install or run the job.
+
 ## Chaining jobs with `context_from`
 
 Cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent output prepended as context at runtime.

@@ -4,6 +4,7 @@ timeout/failure handling, result-entry assembly and cleanup (``_ChildRun``)."""
 from __future__ import annotations
 
 import logging
+import contextlib
 import contextvars
 import json
 import os
@@ -24,6 +25,8 @@ from tools.delegate_tool_results import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+_CHILD_CANCELLATION_SETTLE_SECONDS = 1.0
+
 def _num(value: Any, default: int = 0) -> int:
     """int() for counters that may be mocks/None on test doubles."""
     return int(value) if isinstance(value, (int, float)) else default
@@ -33,10 +36,13 @@ def _str_or_none(value: Any) -> Optional[str]:
 
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> Dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""
-    return {
+    entry = {
         "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": 0,
         "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None),
     }
+    from tools.delegate_tool_gemini import merge_child_route_metadata
+    merge_child_route_metadata(entry, child)
+    return entry
 
 def _append_missed_steer(entry: Dict[str, Any], late_steer: Optional[str]) -> None:
     """Record steer text that won the race with the child's failure/timeout."""
@@ -590,6 +596,8 @@ def _build_result_entry(
         entry["missed_steer"] = _missed_steer
         _miss_note = ("[steer did not land — the subagent finished before it could " f"be delivered: {_missed_steer}]")
         entry["summary"] = f"{summary}\n\n{_miss_note}" if summary else _miss_note
+    from tools.delegate_tool_gemini import merge_child_route_metadata
+    merge_child_route_metadata(entry, child, result)
     return entry
 
 
@@ -663,6 +671,8 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    child_future: Any = None
+    defer_final_cleanup: bool = False
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -765,6 +775,7 @@ class _ChildRun:
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+        self.child_future = future
         # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.
         # Without the second, a worker wedged after its final answer holds a finite (-Q / Bot Chat
         # one-shot) turn — and its session lease — forever, since that runtime has no gateway
@@ -787,6 +798,17 @@ class _ChildRun:
 
         _late_pending_steer = self.close_steering()
         _signal_child_stop(child)
+        if child is not None and not future.done():
+            try:
+                future.result(timeout=_CHILD_CANCELLATION_SETTLE_SECONDS)
+            except FuturesTimeoutError:
+                pass
+            except Exception:
+                # A completed exceptional future is still quiescent. Its
+                # details remain subordinate to the original failure path.
+                pass
+        cancellation_unconfirmed = child is not None and not future.done()
+        self.defer_final_cleanup = cancellation_unconfirmed
         is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
         # What actually ended the wait: the stale threshold pre-empts a longer configured cap.
         timeout_cause = stale_after if stale_after is not None else child_timeout
@@ -794,11 +816,11 @@ class _ChildRun:
         logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}", duration)
         child_api_calls = 0
         with _quiet(None):
-            child_api_calls = int(child.get_activity_summary().get("api_call_count", 0) or 0)
+            child_api_calls = int(getattr(child, "get_activity_summary")().get("api_call_count", 0) or 0)
         # A timeout BEFORE any API call is a black box without a diagnostic dump.
         before_first_call = is_timeout and child_api_calls == 0
         diagnostic_path: Optional[str] = None
-        if before_first_call:
+        if before_first_call and not cancellation_unconfirmed:
             diagnostic_path = _dump_subagent_timeout_diagnostic(
                 child=child, task_index=task_index,
                 # A stale verdict or a configured cap; ``or 0.0`` guards the type checker.
@@ -826,9 +848,12 @@ class _ChildRun:
             )
         if diagnostic_path:
             _err += f" Diagnostic: {diagnostic_path}"
-        status = "timeout" if is_timeout else "error"
+        status = "error" if cancellation_unconfirmed else "timeout" if is_timeout else "error"
+        exit_reason = "cancellation_unconfirmed" if cancellation_unconfirmed else status
+        if cancellation_unconfirmed:
+            _err = "delegation cancellation could not be confirmed"
         _error_entry = {
-            "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": status,
+            "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": exit_reason,
             "api_calls": child_api_calls, "duration_seconds": duration,
             "timeout_seconds": timeout_cause if is_timeout else None,
             "timed_out_after_seconds": duration if is_timeout else None,
@@ -836,10 +861,10 @@ class _ChildRun:
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
         }
+        from tools.delegate_tool_gemini import merge_child_route_metadata
+        merge_child_route_metadata(_error_entry, child)
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
-        close_deferred = is_timeout and not future.done()
-        if close_deferred:
-            _defer_close_after_timeout(child, future)
+        close_deferred = cancellation_unconfirmed
         return None, _error_entry, close_deferred
 
     def append_sibling_write_reminder(self, entry: Dict[str, Any]) -> None:
@@ -919,48 +944,114 @@ class _ChildRun:
         _safe_progress(self.child_progress_cb, "subagent.complete", **complete_kwargs)
 
     def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, close_deferred: bool) -> None:
-        """Finally-path teardown (idempotent, never raises). Order matters: stop heartbeat → drop registry entry →
-        release credential lease → restore the parent's process-global tool names → detach from the parent's
-        interrupt list → close the child (unless a timed-out worker still owns it) → pop the child's Relay scope if
-        no turn is active."""
+        """Release child ownership only after every resource confirms cleanup.
+
+        Failed or deferred cleanup retains the child on the parent with a
+        retry callback. Parent release_clients() and a Future completion may
+        race that callback, so one lock serializes the whole transition.
+        """
         child = self.child
         heartbeat.stop()
-
-        # Safe even if the child was never registered (ID missing on test doubles).
-        if self.subagent_id:
-            _unregister_subagent(self.subagent_id, agent=child)
-
-        if child_pool is not None and leased_cred_id is not None:
-            with _quiet("Failed to release credential lease: %s"):
-                child_pool.release_lease(leased_cred_id)
-
-        # Restore the parent's tool names so the process-global is correct for
-        # any subsequent execute_code calls or other consumers.
         import model_tools
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
 
-        _detach_child(self.parent_agent, child)
+        cleanup_completed = {
+            "child": False, "tui": False, "lease": False,
+            "relay": False, "parent": False,
+        }
+        cleanup_lock = threading.Lock()
 
-        # Close tool resources (terminal sandboxes, browser daemons, background
-        # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
-        if not close_deferred:
-            _close_child(child, "Failed to close child agent after delegation")
-        # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
-        # cap while it runs); dispose them here so they never squat the cap after the child is gone.
-        with _quiet("Failed to dispose child execute_code kernels: %s"):
-            from tools.code_kernel import shutdown_kernels_for_delegated_child
-            shutdown_kernels_for_delegated_child(str(getattr(child, "session_id", "") or ""))
+        def retain_child_with_parent() -> None:
+            active_children = getattr(self.parent_agent, "_active_children", None)
+            if active_children is None:
+                return
+            lock = getattr(self.parent_agent, "_active_children_lock", None)
+            lock_context = lock if lock is not None else contextlib.nullcontext()
+            with lock_context:
+                if child not in active_children:
+                    active_children.append(child)
 
-        # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that
-        # boundary starts, but must not pop a scope while a timed-out child worker is still unwinding.
-        with _quiet("Failed to close child Relay session after delegation"):
-            from agent import relay_runtime
-            runtime = relay_runtime.get_runtime(create=False)
-            child_session_id = str(getattr(child, "session_id", "") or "")
-            child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(
-                profile_key=relay_runtime.current_profile_key(), session_id=child_session_id,
-            )
-            if runtime is not None and child_session_id and not child_turn_is_active:
-                runtime.unregister_subagent({"child_session_id": child_session_id})
+        def release_locked() -> bool:
+            if not cleanup_completed["child"]:
+                try:
+                    close_child = getattr(child, "close", None)
+                    if callable(close_child):
+                        close_child()
+                except Exception:
+                    logger.debug("Failed to close child agent after delegation")
+                    return False
+                # The child's execute_code kernels live exactly as long as the
+                # child; dispose them only after child.close() confirms the
+                # still-running worker no longer owns those resources.
+                with _quiet("Failed to dispose child execute_code kernels: %s"):
+                    from tools.code_kernel import shutdown_kernels_for_delegated_child
+                    shutdown_kernels_for_delegated_child(str(getattr(child, "session_id", "") or ""))
+                cleanup_completed["child"] = True
+
+            if self.subagent_id and not cleanup_completed["tui"]:
+                try:
+                    _unregister_subagent(self.subagent_id, agent=child)
+                except Exception:
+                    logger.debug("Failed to unregister child agent after delegation")
+                    return False
+            cleanup_completed["tui"] = True
+
+            if child_pool is not None and leased_cred_id is not None and not cleanup_completed["lease"]:
+                try:
+                    child_pool.release_lease(leased_cred_id)
+                except Exception as exc:
+                    logger.debug("Failed to release credential lease: %s", exc)
+                    return False
+            cleanup_completed["lease"] = True
+
+            if not cleanup_completed["relay"]:
+                try:
+                    from agent import relay_runtime
+                    runtime = relay_runtime.get_runtime(create=False)
+                    child_session_id = str(getattr(child, "session_id", "") or "")
+                    child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(
+                        profile_key=relay_runtime.current_profile_key(), session_id=child_session_id,
+                    )
+                    if runtime is not None and child_session_id and not child_turn_is_active:
+                        runtime.unregister_subagent({"child_session_id": child_session_id})
+                except Exception:
+                    logger.debug("Failed to close child Relay session after delegation")
+                    return False
+                cleanup_completed["relay"] = True
+
+            if not cleanup_completed["parent"]:
+                try:
+                    _with_children_lock(self.parent_agent, "remove", child)
+                except ValueError:
+                    pass
+                except (AttributeError, UnboundLocalError) as exc:
+                    logger.debug("Could not remove child from active_children: %s", exc)
+                    return False
+                cleanup_completed["parent"] = True
+            try:
+                setattr(child, "_delegate_release_ownership", None)
+            except Exception:
+                pass
+            return True
+
+        def release_child_ownership() -> bool:
+            with cleanup_lock:
+                if close_deferred and self.child_future is not None and not self.child_future.done():
+                    retain_child_with_parent()
+                    return False
+                confirmed = release_locked()
+                if not confirmed:
+                    retain_child_with_parent()
+                return confirmed
+
+        try:
+            setattr(child, "_delegate_release_ownership", release_child_ownership)
+        except Exception:
+            pass
+        if close_deferred and self.child_future is not None:
+            retain_child_with_parent()
+            self.child_future.add_done_callback(lambda _future: release_child_ownership())
+        else:
+            release_child_ownership()

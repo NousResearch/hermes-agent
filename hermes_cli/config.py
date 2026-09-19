@@ -1140,6 +1140,120 @@ def _issue(issues: List["ConfigIssue"], severity: str, message: str, hint: str) 
     issues.append(ConfigIssue(severity, message, hint))
 
 
+def _validate_gemini_routing(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """Validate the optional output-only Antigravity route before runtime use."""
+    delegation = config.get("delegation")
+    if not (isinstance(delegation, dict) and "gemini_routing" in delegation):
+        return
+    routing = delegation["gemini_routing"]
+    prefix = "delegation.gemini_routing"
+
+    def routing_error(field: str, expected: str) -> None:
+        suffix = f".{field}" if field else ""
+        _issue(
+            issues, "error", f"{prefix}{suffix} {expected}",
+            f"Fix {prefix}{suffix} in config.yaml",
+        )
+
+    if not isinstance(routing, dict):
+        routing_error("", "must be a mapping")
+        return
+    if type(routing.get("enabled")) is not bool:
+        routing_error("enabled", "must be a boolean")
+    profiles = routing.get("profiles")
+    if not isinstance(profiles, list):
+        routing_error("profiles", "must be a list of profile names")
+    else:
+        for index, profile_name in enumerate(profiles):
+            if not isinstance(profile_name, str) or not profile_name.strip():
+                routing_error(f"profiles[{index}]", "must be a non-empty string")
+
+    enum_fields = {
+        "default_route": {"auto", "gemini", "sol"},
+        "default_data_classification": {"standard", "restricted"},
+        "output_contract": {"text", "json"},
+        "effort": {"ultra", "max", "xhigh", "high", "medium", "low", "minimal", "none"},
+    }
+    for field, allowed in enum_fields.items():
+        if field in routing:
+            value = routing[field]
+            if not isinstance(value, str) or value not in allowed:
+                routing_error(field, f"must be one of {sorted(allowed)}")
+    for field in ("command", "model"):
+        value = routing.get(field)
+        if not isinstance(value, str) or not value.strip():
+            routing_error(field, "must be a non-empty string")
+    for field in ("timeout_seconds", "max_input_bytes", "max_output_bytes"):
+        value = routing.get(field)
+        if type(value) is not int or value <= 0:
+            routing_error(field, "must be a positive integer")
+    if type(routing.get("fallback_to_delegation_model")) is not bool:
+        routing_error("fallback_to_delegation_model", "must be a boolean")
+
+    receipt_db = routing.get("receipt_db")
+    if not isinstance(receipt_db, str) or not receipt_db.strip():
+        routing_error("receipt_db", "must be a non-empty relative path")
+    else:
+        receipt_path = Path(receipt_db)
+        if receipt_path.is_absolute() or ".." in receipt_path.parts:
+            routing_error("receipt_db", "must stay within HERMES_HOME as a relative path")
+
+    if "extra_args" in routing:
+        from agent.gemini_routing_contract import validate_antigravity_extra_args
+        try:
+            validate_antigravity_extra_args(routing["extra_args"])
+        except ValueError:
+            routing_error(
+                "extra_args",
+                "must be a list of strings that does not override the pinned worker contract",
+            )
+
+    retention = routing.get("retention")
+    if not isinstance(retention, dict):
+        routing_error("retention", "must be a mapping")
+    else:
+        for field in ("raw_days", "aggregate_days"):
+            value = retention.get(field)
+            if type(value) is not int or value <= 0:
+                routing_error(f"retention.{field}", "must be a positive integer")
+
+    review = routing.get("review")
+    if not isinstance(review, dict):
+        routing_error("review", "must be a mapping")
+        return
+    if type(review.get("enabled")) is not bool:
+        routing_error("review.enabled", "must be a boolean")
+    if type(review.get("sample_size")) is not int or review.get("sample_size") != 5:
+        routing_error("review.sample_size", "must be exactly 5")
+    if review.get("timezone") != "America/Los_Angeles":
+        routing_error("review.timezone", "must be America/Los_Angeles")
+    for field in (
+        "timezone", "not_before_local", "review_provider", "review_model", "alert_target",
+    ):
+        value = review.get(field)
+        if not isinstance(value, str) or not value.strip():
+            routing_error(f"review.{field}", "must be a non-empty string")
+    if review.get("review_provider") != "openai-codex":
+        routing_error("review.review_provider", "must be openai-codex")
+    if review.get("review_model") != "gpt-5.6-sol":
+        routing_error("review.review_model", "must be gpt-5.6-sol")
+    not_before = review.get("not_before_local")
+    if isinstance(not_before, str) and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", not_before):
+        routing_error("review.not_before_local", "must use 24-hour HH:MM format")
+    if review.get("enabled") is True:
+        from agent.gemini_routing_contract import parse_exact_slack_target
+        try:
+            parse_exact_slack_target(review.get("alert_target"))
+        except ValueError:
+            routing_error("review.alert_target", "must identify one exact Slack channel")
+        workspace_id = review.get("alert_workspace_id")
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            routing_error(
+                "review.alert_workspace_id",
+                "must pin the approved Slack workspace when review is enabled",
+            )
+
+
 def _require_fields(
     issues: List["ConfigIssue"], entry: Dict[str, Any], label: str,
     fields: Tuple[Tuple[str, str], ...], suffix: str = "") -> None:
@@ -1292,6 +1406,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             return [config_load_issue(exc)]
 
     issues: List[ConfigIssue] = []
+    _validate_gemini_routing(config, issues)
     _validate_voice(config, issues)
     _validate_timezone(config, issues)
     cp = config.get("custom_providers")

@@ -362,14 +362,23 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
             continue
         try:
             child = child_by_index.get(entry.get("task_index", -1))
-            invoke_hook(
-                "subagent_stop", parent_session_id=getattr(parent_agent, "session_id", None),
-                parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
-                child_session_id=getattr(child, "session_id", None), child_role=child_role,
-                child_summary=entry.get("summary"), child_status=entry.get("status"),
-                tool_call_history=_subagent_stop_tool_call_history(entry.get("tool_trace")),
-                duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
-            )
+            hook_kwargs = {
+                "parent_session_id": getattr(parent_agent, "session_id", None),
+                "parent_turn_id": getattr(parent_agent, "_current_turn_id", "") or "",
+                "child_session_id": getattr(child, "session_id", None),
+                "child_role": child_role,
+                "child_summary": entry.get("summary"),
+                "child_status": entry.get("status"),
+                "tool_call_history": _subagent_stop_tool_call_history(entry.get("tool_trace")),
+                "duration_ms": int((entry.get("duration_seconds") or 0) * 1000),
+            }
+            for key in (
+                "worker_route", "worker_provider", "worker_model_requested",
+                "route_receipt_id", "fallback_used", "gemini_error_code",
+            ):
+                if key in entry:
+                    hook_kwargs[key] = entry[key]
+            invoke_hook("subagent_stop", **hook_kwargs)
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)
     return children_cost_total

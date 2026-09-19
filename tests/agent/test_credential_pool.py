@@ -1552,6 +1552,47 @@ def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, m
     assert pool.entries() == []
 
 
+def test_load_pool_copilot_raw_degradation_warns_once(tmp_path, monkeypatch, caplog):
+    """Copilot token exchange degraded to RAW token warning is emitted once per token (#114740)."""
+    import logging
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    from agent.credential_pool import _reset_copilot_raw_degradation_warned, load_pool
+    _reset_copilot_raw_degradation_warned()
+
+    current_token = ["gho_raw_initial"]
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: (current_token[0], "gh auth token"),
+    )
+    # Exchange degrades to raw token (no enterprise url, returns raw token)
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda token: (token, None),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+        # First pool load emits warning
+        load_pool("copilot")
+        warnings = [r.message for r in caplog.records if "Copilot token exchange degraded to RAW token" in r.message]
+        assert len(warnings) == 1
+
+        # Subsequent pool load with same token must not emit duplicate warning
+        caplog.clear()
+        load_pool("copilot")
+        warnings = [r.message for r in caplog.records if "Copilot token exchange degraded to RAW token" in r.message]
+        assert len(warnings) == 0
+
+        # Changing the token produces a warning for the new token
+        current_token[0] = "gho_raw_different_token"
+        caplog.clear()
+        load_pool("copilot")
+        warnings = [r.message for r in caplog.records if "Copilot token exchange degraded to RAW token" in r.message]
+        assert len(warnings) == 1
+
+
+
 
 
 def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):

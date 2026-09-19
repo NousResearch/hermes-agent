@@ -2306,6 +2306,28 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     })
 
 
+# Warn once per token per process when Copilot exchange degrades to raw token (#114740).
+_COPILOT_RAW_DEGRADATION_WARNED: Set[str] = set()
+
+
+def _warn_copilot_raw_degradation_once(token: str) -> None:
+    """WARN once per token per process when Copilot exchange degrades to raw token (#114740)."""
+    fingerprint = fingerprint_secret_value(token) or "unknown"
+    if fingerprint in _COPILOT_RAW_DEGRADATION_WARNED:
+        return
+    _COPILOT_RAW_DEGRADATION_WARNED.add(fingerprint)
+    logger.warning(
+        "Copilot token exchange degraded to RAW token (exchange "
+        "unavailable); enterprise-only models may 400 with "
+        "model_not_available_for_integrator until exchange recovers."
+    )
+
+
+def _reset_copilot_raw_degradation_warned() -> None:
+    """Clear the degradation warning cache (for test isolation)."""
+    _COPILOT_RAW_DEGRADATION_WARNED.clear()
+
+
 def _seed_copilot_singleton(seed: _Seeder) -> None:
     # Copilot tokens are resolved dynamically via `gh auth token` or env vars
     # (COPILOT_GITHUB_TOKEN / GH_TOKEN); they don't live in the auth store.
@@ -2335,13 +2357,9 @@ def _seed_copilot_singleton(seed: _Seeder) -> None:
         # get_copilot_api_token falls back to the RAW token when the exchange
         # fails; the Copilot API then routes it to the fallback
         # "copilot-language-server" integrator whose allowlist omits
-        # enterprise-only models -> HTTP 400 on every turn. Surface it.
+        # enterprise-only models -> HTTP 400 on every turn. Surface it once.
         if api_token == token and not enterprise_base_url:
-            logger.warning(
-                "Copilot token exchange degraded to RAW token (exchange "
-                "unavailable); enterprise-only models may 400 with "
-                "model_not_available_for_integrator until exchange recovers."
-            )
+            _warn_copilot_raw_degradation_once(token)
         pconfig = PROVIDER_REGISTRY.get(seed.provider)
         seed.upsert(source_name, {
             "auth_type": AUTH_TYPE_API_KEY,

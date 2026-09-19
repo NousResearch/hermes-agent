@@ -2108,6 +2108,15 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
             return _try_anthropic()
+        if provider_id == "copilot":
+            # Explicit-config gate: ambient gh-CLI credentials must not silently become aux fallback (#114740).
+            with contextlib.suppress(ImportError):
+                from hermes_cli.auth import is_provider_explicitly_configured
+                if not is_provider_explicitly_configured("copilot"):
+                    continue
+        model = _get_aux_model_for_provider(provider_id) or None
+        if model is None:
+            continue  # skip provider if we don't know a valid aux model
         pool_present, entry = _select_pool_entry(provider_id)
         if pool_present:
             api_key = _pool_runtime_api_key(entry)
@@ -2130,9 +2139,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if isinstance(runtime.get("api_key"), str) and runtime["api_key"]:
                 api_key = runtime["api_key"]
             via = " (session endpoint)"
-        model = _get_aux_model_for_provider(provider_id) or None
-        if model is None:
-            continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
         # Native Gemini, else OpenAI-wire + Anthropic rewrap.
         base_url = _to_openai_base_url(raw_base_url)

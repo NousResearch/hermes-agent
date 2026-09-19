@@ -181,7 +181,7 @@ describe('click-to-edit user message', () => {
     expect((await screen.findByRole('textbox', { name: 'Edit message' })).textContent).toBe(editedText)
   })
 
-  it('still cancels an untouched inline edit when focus leaves the composer', async () => {
+  it('keeps an untouched inline edit open when focus leaves the composer (#115462)', async () => {
     const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
@@ -189,7 +189,22 @@ describe('click-to-edit user message', () => {
 
     await moveFocusOutside(editor)
 
-    expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeFalsy()
+    // Blur alone must never cancel the composer — clean or dirty. The edit
+    // closes only on explicit collapse (outside pointerdown / Escape).
+    expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
+  })
+
+  it('closes an untouched inline edit on Escape (explicit collapse, #115462)', async () => {
+    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+
+    fireEvent.keyDown(editor, { key: 'Escape' })
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeFalsy()
+    })
   })
 
   it('opens the edit composer with the stock runtime', async () => {

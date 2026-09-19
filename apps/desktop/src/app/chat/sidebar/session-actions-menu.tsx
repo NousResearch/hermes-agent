@@ -45,11 +45,13 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { $sessionTiles, closeAllOpenSessionTiles, openSessionTile } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+
+import { SplitSubmenu } from './split-submenu'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -220,6 +222,12 @@ function useSessionActions({
   // Already showing as a tab somewhere (a tile, or loaded in main — main IS
   // a tab): offering "Open in new tab" again is noise.
   const alreadyTabbed = sessionId === selectedStoredSessionId || tiles.some(tile => tile.storedSessionId === sessionId)
+
+  // Main is never mirrored into a second tile — unlike "Open in new tab",
+  // a session already open as a TILE elsewhere still offers a split: picking
+  // one re-docks it (openSessionTile moves an existing tile) instead of
+  // duplicating transcript/runtime state.
+  const isMainSession = sessionId === selectedStoredSessionId
 
   const spec = (partial: Omit<ActionItemSpec, 'onSelect'> & { onSelect: () => void }): ActionItemSpec => partial
 
@@ -463,7 +471,10 @@ function useSessionActions({
   const renderItems = (kit: MenuKit) => (
     <>
       {openItems.map(item => renderActionItem(kit, item))}
-      {openItems.length > 0 && <kit.Separator />}
+      {surface === 'row' && !isMainSession && (
+        <SplitSubmenu disabled={!sessionId} kit={kit} label={r.openInSplit} onSplit={dir => openSessionTile(sessionId, dir)} />
+      )}
+      {(openItems.length > 0 || (surface === 'row' && !isMainSession)) && <kit.Separator />}
       {identityItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>

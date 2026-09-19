@@ -252,7 +252,10 @@ export class JsonRpcGatewayClient {
         void this.fetchReplay()
       }
 
-      const onError = () => {
+      // Every rejection below names its failure class. The boot overlay renders this message verbatim, and
+      // a bare connectErrorMessage collapses "server refused the token", "TLS/DNS/refused before open" and
+      // "nothing answered" into one sentence nobody can act on (#41566).
+      const onError = (event: Event) => {
         if (settled || this.socket !== socket) {
           return
         }
@@ -260,7 +263,10 @@ export class JsonRpcGatewayClient {
         settled = true
         cleanup()
         this.setState('error')
-        reject(new Error(this.options.connectErrorMessage))
+        const detail = (event as { message?: unknown }).message
+        reject(
+          this.connectFailure(`WebSocket error before open${typeof detail === 'string' && detail ? `: ${detail}` : ''}`)
+        )
       }
 
       // A server that closes during the handshake (auth gate, 4401/4403)
@@ -270,7 +276,7 @@ export class JsonRpcGatewayClient {
       // and moved the generation to 'closed'; the branch below only runs
       // when `onSocketClose` intercepted that transition and left the
       // half-open socket bound.
-      const onClose = () => {
+      const onClose = (event: Event) => {
         if (settled) {
           return
         }
@@ -283,7 +289,12 @@ export class JsonRpcGatewayClient {
           this.setState('error')
         }
 
-        reject(new Error(this.options.connectErrorMessage))
+        const { code, reason } = event as { code?: unknown; reason?: unknown }
+        reject(
+          this.connectFailure(
+            `WebSocket closed during handshake: code ${typeof code === 'number' ? code : 'unknown'}${typeof reason === 'string' && reason ? ` ${reason}` : ''}`
+          )
+        )
       }
 
       socket.addEventListener('open', onOpen, { once: true })
@@ -312,10 +323,14 @@ export class JsonRpcGatewayClient {
             this.setState('error')
           }
 
-          reject(new Error(this.options.connectErrorMessage))
+          reject(this.connectFailure(`no WebSocket open within ${this.options.connectTimeoutMs} ms`))
         }, this.options.connectTimeoutMs)
       }
     })
+  }
+
+  private connectFailure(detail: string): Error {
+    return new Error(`${this.options.connectErrorMessage} (${detail})`)
   }
 
   close(): void {

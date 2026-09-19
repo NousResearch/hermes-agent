@@ -61,28 +61,6 @@ describe('a row in the card', () => {
 })
 
 describe('credentials under a row', () => {
-  it('shows ordinary setup values but masks explicit and unspecified secrets', () => {
-    const onEnvChange = vi.fn()
-
-    renderRow({
-      envFields: [
-        { name: 'SERVER_URL', prompt: 'MCP Server URL', secret: false },
-        { name: 'CLIENT_SECRET', prompt: 'Client secret', secret: true },
-        { name: 'LEGACY_KEY', prompt: 'Legacy key' }
-      ],
-      envOpen: true,
-      onEnvChange
-    })
-
-    const url = screen.getByLabelText('MCP Server URL')
-
-    expect(url.getAttribute('type')).toBe('text')
-    expect(screen.getByLabelText('Client secret').getAttribute('type')).toBe('password')
-    expect(screen.getByLabelText('Legacy key').getAttribute('type')).toBe('password')
-    fireEvent.change(url, { target: { value: 'https://automation.example.test/mcp-server/http' } })
-    expect(onEnvChange).toHaveBeenCalledWith('SERVER_URL', 'https://automation.example.test/mcp-server/http')
-  })
-
   const envFields = [{ name: 'LINEAR_API_KEY', prompt: 'API key', required: true }]
 
   it('stay out of the way until the row asks for them', () => {

@@ -1631,14 +1631,13 @@ function McpCatalog({
                         </span>
                         <Input
                           className="h-7 text-xs"
-                          onChange={event => {
-                            const value = event.currentTarget.value
+                          onChange={event =>
                             setEnvDrafts(prev => ({
                               ...prev,
-                              [entry.name]: { ...prev[entry.name], [env.name]: value }
+                              [entry.name]: { ...prev[entry.name], [env.name]: event.currentTarget.value }
                             }))
-                          }}
-                          type={env.secret === false ? 'text' : 'password'}
+                          }
+                          type="password"
                           value={draft[env.name] ?? ''}
                         />
                       </label>

@@ -350,7 +350,7 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
         "auth_type": getattr(auth, "type", "none"),
         # Env vars the user must supply (names + prompts only, never values).
         "required_env": [
-            {"name": e.name, "prompt": e.prompt, "required": e.required, "secret": e.secret}
+            {"name": e.name, "prompt": e.prompt, "required": e.required}
             for e in getattr(auth, "env", []) or []
         ],
         # Transport details surfaced on purpose: the trust model asks users to
@@ -442,7 +442,8 @@ async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = Fa
 
 @router.post("/api/mcp/catalog/install")
 async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[str] = None):
-    """Install a catalog MCP; only secret fields are written to .env."""
+    """Install a catalog MCP into config.yaml (declared env vars go to .env
+    first; git-bootstrap entries run via the background CLI action path)."""
     from hermes_cli import mcp_catalog
     from hermes_cli.config import validate_env_var_name_for_write
 
@@ -469,13 +470,11 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     effective_profile = body.profile or profile
-    secret_keys = {spec.name for spec in entry.auth.env if spec.secret}
-    ordinary = {key: value for key, value in body.env.items() if key not in secret_keys}
     if body.env:
         def _write_env():
             with _profile_scope(effective_profile):
                 for k, v in body.env.items():
-                    if v and k in secret_keys:
+                    if v:
                         save_env_value(k, v)
 
         await asyncio.to_thread(_write_env)
@@ -485,9 +484,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if entry.install is not None:
         action = _mcp_install_action_name(name)
         try:
-            _spawn_hermes_action(
-                _profile_cli_args(effective_profile) + ["mcp", "install", name], action,
-                env_overrides=ordinary or None)
+            _spawn_hermes_action(_profile_cli_args(effective_profile) + ["mcp", "install", name], action)
         except HTTPException:
             raise
         except Exception as exc:
@@ -497,8 +494,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     # No git step — install synchronously; install_entry goes through the
     # call-time config/env resolvers so the profile scope covers it.
     try:
-        await scoped_to_thread(effective_profile, lambda: mcp_catalog.install_entry(
-            entry, enable=body.enable, env_values=body.env))
+        await scoped_to_thread(effective_profile, lambda: mcp_catalog.install_entry(entry, enable=body.enable))
     except HTTPException:
         raise
     except Exception as exc:

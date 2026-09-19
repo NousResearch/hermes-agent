@@ -28,7 +28,6 @@ export interface ConnectorCardField {
   name: string
   prompt?: string
   required?: boolean
-  secret?: boolean
 }
 
 export interface ConnectorRowProps {
@@ -119,7 +118,7 @@ export function ConnectorRow({
               <Input
                 className="h-7 text-xs"
                 onChange={event => onEnvChange?.(env.name, event.currentTarget.value)}
-                type={env.secret === false ? 'text' : 'password'}
+                type="password"
                 value={envDraft[env.name] ?? ''}
               />
             </label>

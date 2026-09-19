@@ -142,6 +142,9 @@ class DispatchResult:
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
+    skipped_update: bool = False
+    """True while a live in-place updater owns the shared update marker.  No
+    recovery or claim writes run, so quiesced tasks cannot respawn mid-swap."""
     memory_pressure: Optional[str] = None
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
@@ -453,6 +456,9 @@ def _terminate_reclaimed_worker(
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "tree_termination_attempted": False,
+        "tree_signal_succeeded": False,
+        "tree_terminated": False,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -474,6 +480,14 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    if signal_fn is None:
+        info["tree_termination_attempted"] = True
+        from agent.deadline import kill_process_tree
+
+        def kill(target, sig):
+            succeeded = kill_process_tree(target, sig=sig)
+            info["tree_signal_succeeded"] = bool(info["tree_signal_succeeded"] or succeeded)
+            return succeeded
     try:
         kill(int(pid), signal.SIGTERM)
     except ProcessLookupError:
@@ -486,12 +500,14 @@ def _terminate_reclaimed_worker(
 
     if _poll_worker_exit(pid, started_at):
         info["terminated"] = True
+        info["tree_terminated"] = bool(info["tree_signal_succeeded"])
         return info
     if _worker_alive(pid, started_at):
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
     info["terminated"] = not _worker_alive(pid, started_at)
+    info["tree_terminated"] = bool(info["tree_signal_succeeded"] and info["terminated"])
     return info
 
 
@@ -940,6 +956,8 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     for row in rows:
         outcome = row["outcome"] or ""
         if outcome == "rate_limited":
+            continue
+        if outcome == "reclaimed" and _kb._json_dict(row["metadata"]).get("update_handoff_neutral"):
             continue
         if outcome == "crashed" and (
             _kb._json_dict(row["metadata"]).get("protocol_violation")
@@ -1929,6 +1947,10 @@ def dispatch_once(
     resolved DB path so unrelated boards tick in parallel.
     """
     def _locked_tick() -> DispatchResult:
+        from hermes_cli.kanban_update_coordination import update_dispatch_paused
+
+        if update_dispatch_paused():
+            return DispatchResult(skipped_update=True)
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,

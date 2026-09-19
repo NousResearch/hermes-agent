@@ -27,6 +27,7 @@ from hermes_cli.update_lock import (
     UpdateLock,
     describe_holder,
     read_live_update,
+    read_update_marker_state,
     update_marker_path,
 )
 
@@ -142,6 +143,40 @@ def test_stale_marker_is_removed_on_read(marker):
 
 def test_absent_marker_reports_no_live_update(marker):
     assert read_live_update(path=marker) is None
+
+
+def test_dispatch_marker_state_stays_unknown_when_owner_probe_fails(marker, monkeypatch):
+    marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+
+    from gateway import status
+
+    monkeypatch.setattr(status, "_pid_exists", lambda _pid: (_ for _ in ()).throw(OSError("busy")))
+
+    assert read_update_marker_state(path=marker) == "unknown"
+    assert marker.exists()
+
+
+def test_dispatch_marker_state_stays_unknown_while_marker_is_partial(marker):
+    marker.write_text("", encoding="utf-8")
+
+    assert read_update_marker_state(path=marker) == "unknown"
+    assert marker.exists()
+
+
+def test_dispatch_marker_state_ages_partial_marker_out_without_removing_it(marker):
+    marker.write_text("12345", encoding="utf-8")
+    stale_time = time.time() - UPDATE_MARKER_MAX_AGE_SECONDS - 60
+    os.utime(marker, (stale_time, stale_time))
+
+    assert read_update_marker_state(path=marker) == "absent"
+    assert marker.exists(), "dispatch authorization never removes a replacement-prone marker path"
+
+
+def test_dispatch_marker_reader_does_not_remove_proven_stale_marker(marker):
+    marker.write_text(f"{DEAD_PID}\n{int(time.time())}\n", encoding="utf-8")
+
+    assert read_update_marker_state(path=marker) == "absent"
+    assert marker.exists(), "dispatch authorization never removes a replacement-prone marker path"
 
 
 def test_context_manager_releases_even_on_exception(marker):

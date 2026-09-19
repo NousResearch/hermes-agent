@@ -1209,6 +1209,33 @@ def compute_error_backoff(
             # past, which the parser clamps to 0.0) carries no usable wait —
             # treat it as absent so we never hot-loop the provider.
             _retry_after = None
+    if _retry_after is not None and is_rate_limited:
+        # A rate-limit Retry-After says when the SERVER's throttle window
+        # reopens. It says nothing about whether the credential seat we rode
+        # still has quota. Once the pool has marked that seat exhausted with
+        # nothing to rotate to, those are different clocks — a weekly-capped
+        # sub can send Retry-After: 600 with a day-plus until its real reset,
+        # so honoring it sleeps the full cap only to wake on the same dead seat
+        # and burns the caller's whole budget before the fallback chain is
+        # reached. Fall through to jitter instead, unless the pool's own
+        # next_available_at lands inside the wait we were about to serve
+        # anyway. Unknown recovery fails toward the chain, never toward a blind
+        # sleep. Scoped to rate limits: a 5xx/overload Retry-After is about the
+        # server's capacity, not the seat's quota, and stays honored.
+        from agent.agent_runtime_helpers import pool_seat_exhaustion_state
+
+        _seat_exhausted, _seat_recovery_s = pool_seat_exhaustion_state(agent)
+        if _seat_exhausted and not (
+            _seat_recovery_s is not None and _seat_recovery_s <= _retry_after
+        ):
+            logger.info(
+                "Declining server Retry-After=%ss on an exhausted seat (pool "
+                "reports no available entry; recovery=%ss) — falling through "
+                "to fallback chain",
+                _retry_after,
+                "unknown" if _seat_recovery_s is None else f"{_seat_recovery_s:.0f}",
+            )
+            _retry_after = None
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload

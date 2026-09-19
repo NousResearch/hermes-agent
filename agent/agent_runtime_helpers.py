@@ -654,6 +654,47 @@ def sync_credential_pool_entry_id(agent) -> None:
         agent._credential_pool_entry_id = None
 
 
+def pool_seat_exhaustion_state(agent) -> tuple[bool, Optional[float]]:
+    """Report whether the agent's credential pool has benched every seat.
+
+    Returns ``(seat_exhausted, seat_recovery_seconds)``: True when a pool is
+    bound, scoped to the provider the agent is actually on, and reports NO
+    available entry — the pool having already declared "the seat this request
+    rode is exhausted and I have nothing to rotate to". The second element is
+    seconds until the earliest seat re-enters rotation, from
+    ``next_available_at()``, or ``None`` for "no wait information" (the pool's
+    documented contract) — NOT "available now".
+
+    Feeds ``compute_error_backoff`` so a rate-limit ``Retry-After`` is not
+    honored on a seat the pool has already benched past that window. Uses the
+    same ``credential_pool_matches_provider`` boundary as every other pool
+    consumer, so a pool belonging to the PRIMARY provider is never read while a
+    fallback provider is active. Fails closed to ``(False, None)`` — "no
+    exhaustion known", preserving the existing honor behavior — so a pool that
+    raises can never turn the honor policy off.
+    """
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None:
+        return False, None
+    try:
+        pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+        if pool_provider and not credential_pool_matches_provider(
+            pool,
+            (getattr(agent, "provider", "") or "").strip().lower(),
+            base_url=getattr(agent, "base_url", None),
+        ):
+            return False, None
+        if pool.has_available():
+            return False, None
+        next_at = pool.next_available_at()
+        if next_at is None:
+            return True, None
+        return True, max(0.0, float(next_at) - time.time())
+    except Exception:
+        logger.debug("pool seat-exhaustion probe failed", exc_info=True)
+        return False, None
+
+
 _STATUS_TO_FAILOVER_REASON = {
     402: FailoverReason.billing, 429: FailoverReason.rate_limit, 401: FailoverReason.auth,
     403: FailoverReason.auth,

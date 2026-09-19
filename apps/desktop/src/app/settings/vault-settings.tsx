@@ -185,9 +185,14 @@ export function VaultSettings() {
   const [unlockTarget, setUnlockTarget] = useState<null | VaultSource>(null)
   const [masterPassword, setMasterPassword] = useState('')
   const [unlockError, setUnlockError] = useState<null | string>(null)
+  const [connectOpen, setConnectOpen] = useState(false)
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [connectError, setConnectError] = useState<null | string>(null)
   // Secrets never become mutation variables (react-query retains those after settle); they live
   // in refs the mutationFn consumes and wipes.
   const pendingMasterPassword = useRef('')
+  const pendingBitwardenApiKey = useRef({ clientId: '', clientSecret: '' })
   const pendingSecret = useRef<null | Record<string, string>>(null)
 
   const { data: sourcesData } = useQuery({
@@ -249,6 +254,43 @@ export function VaultSettings() {
       setMasterPassword('')
       setUnlockError(err instanceof Error ? err.message : String(err))
     }
+  })
+
+  // Bitwarden's API-key login credentials must not become react-query mutation variables, which
+  // may outlive a completed request. They exist only in this dialog/ref and the host child process.
+  const closeConnect = useCallback(() => {
+    setConnectOpen(false)
+    setClientId('')
+    setClientSecret('')
+    pendingBitwardenApiKey.current = { clientId: '', clientSecret: '' }
+    setConnectError(null)
+  }, [])
+
+  const connectBitwarden = useMutation({
+    mutationFn: () => {
+      const credentials = pendingBitwardenApiKey.current
+      pendingBitwardenApiKey.current = { clientId: '', clientSecret: '' }
+
+      return requestGateway<{ authenticated: boolean }>('vault.authenticate', {
+        name: 'bitwarden', client_id: credentials.clientId, client_secret: credentials.clientSecret
+      })
+    },
+    onSuccess: () => {
+      notify({ kind: 'success', message: v.sources.connected('Bitwarden') })
+      closeConnect()
+      invalidateVault()
+    },
+    onError: err => {
+      setClientId('')
+      setClientSecret('')
+      setConnectError(err instanceof Error ? err.message : String(err))
+    }
+  })
+
+  const signOutBitwarden = useMutation({
+    mutationFn: () => requestGateway<{ signed_out: boolean }>('vault.signout', { name: 'bitwarden' }),
+    onSuccess: invalidateVault,
+    onError: err => notifyError(err, v.sources.toggleFailed)
   })
 
   const { data, error, isPending } = useQuery({
@@ -488,6 +530,23 @@ export function VaultSettings() {
                     {v.sources.unlock}
                   </Button>
                 ))}
+              {source.name === 'bitwarden' && source.enabled && source.installed && (
+                <>
+                  <Button className="gap-1.5" onClick={() => setConnectOpen(true)} size="sm" type="button" variant="outline">
+                    <KeyRound className="size-3.5" />
+                    {v.sources.connect}
+                  </Button>
+                  <Button
+                    disabled={signOutBitwarden.isPending}
+                    onClick={() => signOutBitwarden.mutate()}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    {v.sources.signOut}
+                  </Button>
+                </>
+              )}
               {source.installed && (
                 <Switch
                   aria-label={source.display_name}
@@ -563,6 +622,44 @@ export function VaultSettings() {
               </Button>
               <Button disabled={unlockSource.isPending || !masterPassword} type="submit">
                 {unlockSource.isPending ? v.sources.unlocking : v.sources.unlock}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bitwarden API-key credentials are sent to the selected host's gateway only. */}
+      <Dialog onOpenChange={open => !open && closeConnect()} open={connectOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle icon={KeyRound}>{v.sources.connectTitle}</DialogTitle>
+            <DialogDescription>{v.sources.connectDescription}</DialogDescription>
+          </DialogHeader>
+          <form
+            className="grid gap-3"
+            onSubmit={event => {
+              event.preventDefault()
+              if (clientId && clientSecret) {
+                pendingBitwardenApiKey.current = { clientId, clientSecret }
+                setClientId('')
+                setClientSecret('')
+                connectBitwarden.mutate()
+              }
+            }}
+          >
+            <Field htmlFor="bitwarden-client-id" label={v.sources.clientIdLabel}>
+              <Input autoComplete="off" autoFocus disabled={connectBitwarden.isPending} id="bitwarden-client-id"
+                onChange={event => setClientId(event.target.value)} value={clientId} />
+            </Field>
+            <Field htmlFor="bitwarden-client-secret" label={v.sources.clientSecretLabel}>
+              <Input autoComplete="off" disabled={connectBitwarden.isPending} id="bitwarden-client-secret"
+                onChange={event => setClientSecret(event.target.value)} type="password" value={clientSecret} />
+            </Field>
+            {connectError && <p className="text-xs text-destructive">{connectError}</p>}
+            <DialogFooter>
+              <Button onClick={closeConnect} type="button" variant="ghost">{t.common.cancel}</Button>
+              <Button disabled={connectBitwarden.isPending || !clientId || !clientSecret} type="submit">
+                {connectBitwarden.isPending ? v.sources.connecting : v.sources.connect}
               </Button>
             </DialogFooter>
           </form>

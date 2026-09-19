@@ -239,6 +239,30 @@ describe('VaultSettings', () => {
     expect(screen.getByRole('button', { name: 'Lock' })).toBeTruthy()
   })
 
+  it('connects Bitwarden on the selected host without retaining its API-key credentials', async () => {
+    const sources = [{
+      name: 'bitwarden', display_name: 'Bitwarden', enabled: true, needs_unlock: true, unlocked: false, installed: true
+    }]
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') return { sources }
+      if (method === 'vault.list') return { items: [] }
+      if (method === 'vault.authenticate') return { authenticated: true }
+      return {}
+    })
+    renderVault()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect account' }))
+    fireEvent.change(screen.getByLabelText('API key ID'), { target: { value: 'user.client' } })
+    fireEvent.change(screen.getByLabelText('API key secret'), { target: { value: 'client-secret-7' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect account' }).closest('form')!.querySelector('button[type=submit]')!)
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.authenticate', {
+      name: 'bitwarden', client_id: 'user.client', client_secret: 'client-secret-7'
+    }))
+    await waitFor(() => expect(screen.queryByLabelText('API key secret')).toBeNull())
+    expect(JSON.stringify(queryClient.getMutationCache().getAll().map(m => m.state.variables))).not.toContain('client-secret-7')
+  })
+
   it('refreshes password-manager detection when the page is reopened', async () => {
     let installed = false
     requestGateway.mockImplementation(async (method: string) => {

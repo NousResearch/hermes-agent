@@ -626,6 +626,14 @@ export interface Translations {
         unlockTitle: (name: string) => string
         unlockDescription: string
         masterPasswordPlaceholder: string
+        connect: string
+        connecting: string
+        connectTitle: string
+        connectDescription: string
+        clientIdLabel: string
+        clientSecretLabel: string
+        signOut: string
+        connected: (name: string) => string
       }
     }
     notifications: {

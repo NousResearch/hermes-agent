@@ -11,6 +11,7 @@ The Desktop's Settings → Credential Vault panel. Contracts:
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -151,3 +152,23 @@ def test_remove_is_idempotent(home):
 def test_remove_requires_id(home):
     err = _error(srv._methods["vault.remove"](1, {}))
     assert err["code"] == 5095
+
+
+def test_host_bitwarden_authentication_does_not_echo_api_key_material(home):
+    class Backend:
+        name = "bitwarden"
+        received = None
+
+        def authenticate(self, client_id, client_secret):
+            self.received = (client_id, client_secret)
+
+    backend = Backend()
+    with patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+        out = _result(srv._methods["vault.authenticate"](1, {
+            "name": "bitwarden", "client_id": "user.client", "client_secret": "client-secret-7",
+        }))
+
+    assert out == {"name": "bitwarden", "authenticated": True}
+    assert backend.received == ("user.client", "client-secret-7")
+    assert "user.client" not in json.dumps(out)
+    assert "client-secret-7" not in json.dumps(out)

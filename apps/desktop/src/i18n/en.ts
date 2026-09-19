@@ -691,7 +691,16 @@ export const en: Translations = {
         unlockTitle: name => `Unlock ${name}`,
         unlockDescription:
           'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
-        masterPasswordPlaceholder: 'Master password'
+        masterPasswordPlaceholder: 'Master password',
+        connect: 'Connect account',
+        connecting: 'Connecting…',
+        connectTitle: 'Connect Bitwarden on this host',
+        connectDescription:
+          'This sends your Bitwarden API key directly to the selected Hermes host for the bw CLI. It is not added to chat, logs, or agent context.',
+        clientIdLabel: 'API key ID',
+        clientSecretLabel: 'API key secret',
+        signOut: 'Sign out',
+        connected: name => `${name} is connected on this host.`
       }
     },
     notifications: {

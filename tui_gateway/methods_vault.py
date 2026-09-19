@@ -128,6 +128,45 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"name": name, "unlocked": True})
 
 
+@method("vault.authenticate")
+def _(rid, params: dict) -> dict:
+    """Authenticate the selected host's Bitwarden CLI with child-only API-key environment variables."""
+    from agent.vault_backends import enabled_backends
+
+    name = str(params.get("name") or "")
+    client_id = str(params.get("client_id") or "")
+    client_secret = str(params.get("client_secret") or "")
+    backend = next((b for b in enabled_backends() if b.name == name and hasattr(b, "authenticate")), None)
+    if backend is None:
+        return _err(rid, 5095, f"{name} does not support host-side authentication")
+    if not client_id or not client_secret:
+        return _err(rid, 5095, "Bitwarden API key ID and secret are required")
+    try:
+        backend.authenticate(client_id, client_secret)  # type: ignore[attr-defined]
+    except Exception as e:
+        message = str(e).replace(client_id, "[REDACTED]").replace(client_secret, "[REDACTED]")
+        return _err(rid, 5095, message)
+    finally:
+        del client_id, client_secret
+    return _ok(rid, {"name": name, "authenticated": True})
+
+
+@method("vault.signout")
+def _(rid, params: dict) -> dict:
+    """Sign out an external manager on this profile's host and discard its session token."""
+    from agent.vault_backends import enabled_backends
+
+    name = str(params.get("name") or "")
+    backend = next((b for b in enabled_backends() if b.name == name and hasattr(b, "sign_out")), None)
+    if backend is None:
+        return _err(rid, 5095, f"{name} does not support host-side sign-out")
+    try:
+        backend.sign_out()  # type: ignore[attr-defined]
+    except Exception as e:
+        return _err(rid, 5095, str(e))
+    return _ok(rid, {"name": name, "signed_out": True})
+
+
 @method("vault.lock")
 def _(rid, params: dict) -> dict:
     """Forget a manager's session token (or every one when ``name`` is omitted)."""

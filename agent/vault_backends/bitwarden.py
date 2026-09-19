@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 
 from agent.secret_sources.base import run_cli, scrub_ansi
 from agent.vault_backends import unlock as _unlock
-from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
+from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env, run_with_secret_envs
 from agent.vault_store import VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,30 @@ class BitwardenLoginBackend(LoginBackend):
 
     def is_unlocked(self) -> bool:
         return _unlock.is_unlocked(self.name)
+
+    def authenticate(self, client_id: str, client_secret: str) -> None:
+        """Log the host's ``bw`` CLI in without putting API credentials in argv or disk.
+
+        ``bw login --apikey`` consumes both values from its documented environment variables.
+        They are deliberately scoped to the child process; the resulting Bitwarden login state is
+        owned by the host CLI, while Hermes keeps no durable copy of either credential.
+        """
+        _unlock.lock(self.name)
+        proc = run_with_secret_envs(
+            [str(self._bw()), "login", "--apikey", "--nointeraction"], env=self._env(None),
+            secrets={"BW_CLIENTID": client_id, "BW_CLIENTSECRET": client_secret}, timeout=_TIMEOUT, label="bw login")
+        if proc.returncode != 0:
+            err = scrub_ansi(proc.stderr or "").strip()[:200]
+            raise RuntimeError(f"Bitwarden login failed: {err or 'authentication was rejected'}")
+
+    def sign_out(self) -> None:
+        """Forget both Hermes' memory token and the host CLI's authenticated account."""
+        _unlock.lock(self.name)
+        proc = run_cli([str(self._bw()), "logout", "--nointeraction"], env=self._env(None), timeout=_TIMEOUT,
+                       label="bw", timeout_message="bw logout timed out", stdin=subprocess.DEVNULL)
+        if proc.returncode != 0:
+            err = scrub_ansi(proc.stderr or "").strip()[:200]
+            raise RuntimeError(f"Bitwarden sign-out failed: {err or 'command was rejected'}")
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is

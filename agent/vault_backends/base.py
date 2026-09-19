@@ -88,6 +88,21 @@ def run_with_secret_env(argv: Sequence[str], *, env: Dict[str, str], secret_env:
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
 
+def run_with_secret_envs(argv: Sequence[str], *, env: Dict[str, str], secrets: Dict[str, str], timeout: float,
+                         label: str) -> subprocess.CompletedProcess:
+    """Run a CLI with multiple secrets present only in its child environment."""
+    child_env = dict(env)
+    child_env.update(secrets)
+    try:
+        return subprocess.run(  # noqa: S603 — argv list, no shell
+            list(argv), env=child_env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{label} timed out after {timeout:.0f}s") from exc
+    except OSError as exc:
+        raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
+
+
 def _cfg() -> Dict:
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("vault") or {}

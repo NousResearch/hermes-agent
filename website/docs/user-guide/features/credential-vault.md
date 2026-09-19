@@ -52,6 +52,14 @@ Sites that ask for a code after the password are handled the same way:
 
 ## Already using 1Password or Bitwarden?
 
+### Connect Bitwarden on a hosted Hermes profile
+
+When Desktop is attached to a remote or NousPortal-hosted Hermes profile, **Credential Vault → Password managers → Bitwarden → Connect account** authenticates the `bw` CLI on that selected host. Enter a Bitwarden API key ID and secret only after confirming the profile shown in Desktop is the intended host.
+
+The two values travel over the profile's gateway directly to the host-side `bw login --apikey` process. Hermes supplies them through that child process's environment only: they are not placed in chat, model context, command arguments, logs, diagnostics, or Hermes configuration. Bitwarden retains its own CLI login state on the host; Hermes retains no API-key copy. Then unlock Bitwarden with the master-password prompt before fills, as usual.
+
+Use **Sign out** to remove the selected host's Bitwarden CLI login and its in-memory Hermes session token. To rotate credentials or re-authorize, sign out and connect again; revoke an API key in Bitwarden when it should no longer authorize any host.
+
 Nothing to enable. If the `op` or `bw` command-line tool is installed and signed
 in, Hermes picks it up automatically and its website logins become fillable
 alongside the local ones. The first time the agent needs one of those logins it

@@ -21,7 +21,7 @@ import pytest
 from agent.vault_backends import unlock as unlock_mod
 from agent.vault_backends.bitwarden import BitwardenLoginBackend
 
-# A stand-in `bw` that mimics the three commands the backend uses and the real CLI's password contract
+# A stand-in `bw` that mimics the commands the backend uses and the real CLI's password contract
 # (bw 2026.x rejects a piped password: "Master password is required"; it reads --passwordenv <VAR>).
 # It records argv + stdin + the named env var so the test can prove where the master password travelled.
 # (No env passthrough: the backend's allowlisted child env is part of what is under test.)
@@ -32,7 +32,15 @@ argv = sys.argv[1:]
 stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
 pw_env = argv[argv.index("--passwordenv") + 1] if "--passwordenv" in argv else None
 log.write(json.dumps({"argv": argv, "stdin": stdin, "BW_SESSION": os.environ.get("BW_SESSION"),
-                      "pw": os.environ.get(pw_env) if pw_env else None}) + "\n")
+                      "pw": os.environ.get(pw_env) if pw_env else None,
+                      "client_id": os.environ.get("BW_CLIENTID"),
+                      "client_secret": os.environ.get("BW_CLIENTSECRET")}) + "\n")
+if argv[:2] == ["login", "--apikey"]:
+    if os.environ.get("BW_CLIENTID") != "user.client" or os.environ.get("BW_CLIENTSECRET") != "client-secret-7":
+        sys.stderr.write("Invalid API key.\n"); sys.exit(1)
+    print("You are logged in!"); sys.exit(0)
+if argv[:2] == ["logout", "--nointeraction"]:
+    print("You have logged out."); sys.exit(0)
 if argv[:2] == ["unlock", "--raw"]:
     if pw_env is None:
         sys.stderr.write("Master password is required. Try again in interactive mode or provide a password file or environment variable.\n"); sys.exit(1)
@@ -71,6 +79,36 @@ def _enabled(exe):
     the sibling's own binding — patch both so the fake is the only backend anywhere."""
     backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
     return patch("agent.vault_backends.base.enabled_backends", return_value=[backend]), backend
+
+
+def test_bitwarden_api_key_login_uses_child_environment_only(fake_bw):
+    exe, log = fake_bw
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
+
+    backend.authenticate("user.client", "client-secret-7")
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    login = next(c for c in calls if c["argv"][:2] == ["login", "--apikey"])
+    assert login["argv"] == ["login", "--apikey", "--nointeraction"]
+    assert login["stdin"] == ""
+    assert login["client_id"] == "user.client"
+    assert login["client_secret"] == "client-secret-7"
+    assert "user.client" not in " ".join(login["argv"])
+    assert "client-secret-7" not in " ".join(login["argv"])
+    assert "BW_CLIENTID" not in os.environ
+    assert "BW_CLIENTSECRET" not in os.environ
+
+
+def test_bitwarden_sign_out_forgets_the_host_cli_and_memory_session(fake_bw):
+    exe, log = fake_bw
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
+    backend.unlock("correct horse")
+
+    backend.sign_out()
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert any(c["argv"] == ["logout", "--nointeraction"] for c in calls)
+    assert not backend.is_unlocked()
 
 
 def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypatch):

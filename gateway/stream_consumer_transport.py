@@ -303,11 +303,31 @@ class StreamTransportMixin:
             self._message_id = "__no_edit__"
             self._message_created_ts = None
 
+    async def _wait_for_flood_pause(self) -> bool:
+        """Wait out a bounded refusal; keep its deadline to recognise continued refusal.
+
+        Cancellation propagates. The gateway grants this wait on top of its own join budget
+        (see ``flood_pause_remaining``), so a cancel arriving here is a real abort — a session
+        reset or shutdown — and swallowing it would defeat a timeout this module does not own."""
+        remaining = self._flood_pause_until - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        return self._run_still_current()
+
     async def _send_or_edit(
-        self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
+        self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
+        wait_for_flood: bool = True) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
         send; a transport returns None to fall through to the next."""
+        if self._flood_pause_until:
+            # ``wait_for_flood`` is False on the cancellation path: teardown takes the edit it can
+            # get now, never sitting out a ban the caller has already stopped waiting for.
+            if time.monotonic() < self._flood_pause_until and (not finalize or not wait_for_flood):
+                return False
+            # A reset during the wait also invalidates later finalize passes.
+            if not await self._wait_for_flood_pause():
+                return False
         text = self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
@@ -479,8 +499,20 @@ class StreamTransportMixin:
         result = await self._edit_message(message_id=self._message_id, content=text,
                                           finalize=finalize)
         if not result.success:
-            return await self._on_edit_failure(result, text, finalize=finalize,
-                                               is_turn_final=is_turn_final)
+            await self._on_edit_failure(result, text, finalize=finalize,
+                                        is_turn_final=is_turn_final)
+            if not (finalize and is_turn_final and self._edit_supported
+                    and self._flood_pause_until > time.monotonic()):
+                return False
+            # A fallback send would hit the same ban. Retry this finalize edit
+            # once, bypassing fresh-final so it cannot turn into a second send.
+            if not await self._wait_for_flood_pause():
+                return False
+            result = await self._edit_message(message_id=self._message_id, content=text,
+                                              finalize=True)
+            if not result.success:
+                return await self._on_edit_failure(result, text, finalize=True,
+                                                   is_turn_final=True, final_flood_retry=True)
         self._already_sent = True
         self._track_preview_ids_from_result(result)
         # Oversized edit split across continuations: message_id is now the LAST
@@ -496,6 +528,7 @@ class StreamTransportMixin:
         else:
             self._last_sent_text = text
         self._flood_strikes = 0
+        self._flood_pause_until = 0.0
         return True
 
     def _enter_fallback_mode(self, prefix: str) -> None:
@@ -506,6 +539,7 @@ class StreamTransportMixin:
         self._already_sent = True
 
     async def _on_edit_failure(self, result, text: str, *, finalize: bool, is_turn_final: bool,
+                               final_flood_retry: bool = False,
                                ) -> bool:
         """Classify a failed edit: partial overflow, flood backoff, or fallback mode.  Always
         False; the caller's finalize path may still deliver the tail."""
@@ -555,19 +589,37 @@ class StreamTransportMixin:
                 self._notify_new_message()
             return False
 
-        # Flood control: adaptive backoff (double the interval); disable edits only
-        # after _MAX_FLOOD_STRIKES in a row.
         immediate_final_fallback = False
         if self._is_flood_error(result):
-            self._flood_strikes += 1
-            self._current_edit_interval = min(self._current_edit_interval * 2, 10.0)
-            logger.debug("Flood control on edit (strike %d/%d), backoff interval → %.1fs",
-                         self._flood_strikes, self._MAX_FLOOD_STRIKES, self._current_edit_interval)
             immediate_final_fallback = (
-                turn_final and getattr(self.adapter, "FALLBACK_ON_FINAL_EDIT_FLOOD", False) is True)
-            if self._flood_strikes < self._MAX_FLOOD_STRIKES and not immediate_final_fallback:
-                self._last_edit_time = time.monotonic()  # honor the new interval
-                return False
+                turn_final and (final_flood_retry
+                               or getattr(self.adapter, "FALLBACK_ON_FINAL_EDIT_FLOOD", False) is True))
+            try:
+                wait = float(getattr(result, "retry_after", None) or 0.0)
+            except (TypeError, ValueError):
+                wait = 0.0
+            now = time.monotonic()
+            if 0 < wait <= self.cfg.flood_pause_cap_seconds and not immediate_final_fallback:
+                # The first refusal costs no strike. Only continued refusal after
+                # complying with the last deadline counts toward abandoning edits.
+                if self._flood_pause_until and now >= self._flood_pause_until:
+                    self._flood_strikes += 1
+                # A turn-final still gets its single edit retry: a fallback send
+                # would hit the same ban even when preview strikes are exhausted.
+                if self._flood_strikes < self._MAX_FLOOD_STRIKES or turn_final:
+                    self._flood_pause_until = now + wait
+                    logger.debug("Flood control on edit; pausing %.1fs (strikes=%d/%d)",
+                                 wait, self._flood_strikes, self._MAX_FLOOD_STRIKES)
+                    return False
+            else:
+                # No usable bounded wait: preserve the legacy strike + doubling path.
+                self._flood_strikes += 1
+                self._current_edit_interval = min(self._current_edit_interval * 2, 10.0)
+                logger.debug("Flood control on edit (strike %d/%d), backoff interval → %.1fs",
+                             self._flood_strikes, self._MAX_FLOOD_STRIKES, self._current_edit_interval)
+                if self._flood_strikes < self._MAX_FLOOD_STRIKES and not immediate_final_fallback:
+                    self._last_edit_time = now  # honor the new interval
+                    return False
             if immediate_final_fallback:
                 logger.debug("Turn-final edit hit flood control; entering fallback immediately")
 

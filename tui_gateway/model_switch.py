@@ -352,12 +352,24 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
     except Exception:
         return
     try:
-        tokens = _set_session_context(sid, cwd=_session_cwd(session))
-        try:
-            new_agent = _rebuild_session_agent(sid, session, session_id=session["session_key"],
-                                               platform_override=_session_source(session))
-        finally:
-            _clear_session_context(tokens)
+        def rebuild():
+            return _rebuild_session_agent(
+                sid, session, session_id=session["session_key"],
+                platform_override=_session_source(session))
+
+        from gateway.session_context import get_session_env
+        if get_session_env("HERMES_SESSION_KEY", "") == session["session_key"]:
+            # Turn preparation already owns this scope. clear_session_vars() is deliberately
+            # non-nestable, so opening and clearing another scope would erase the outer routing
+            # context from the remainder of the first post-capability-change turn.
+            new_agent = rebuild()
+        else:
+            tokens = _set_session_context(
+                session["session_key"], cwd=_session_cwd(session), ui_session_id=sid)
+            try:
+                new_agent = rebuild()
+            finally:
+                _clear_session_context(tokens)
         new_agent._session_title_hint = "Bot Chat"
         _emit("notice", sid, {"message": "Capabilities updated — this bot's tools and prompt were refreshed."})
     except Exception as e:

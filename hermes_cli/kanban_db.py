@@ -1364,6 +1364,17 @@ def create_task(
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+                if task_status == "blocked":
+                    # initial_status='blocked' parks the card for human ops (R3
+                    # gate). Emit the ``blocked`` event so _has_sticky_block()
+                    # sees the hold from birth and recompute_ready() cannot
+                    # auto-promote it before the operator unblocks/promotes.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial_status=blocked (parks for human ops)", "initial": True},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

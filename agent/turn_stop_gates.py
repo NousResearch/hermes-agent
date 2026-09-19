@@ -32,6 +32,45 @@ class StopGateVerdict:
     pending_verification_response_previewed: Any
 
 
+def _qualify_candidate_claim(agent, final_response: Any, final_msg: Dict[str, Any]) -> Any:
+    """If verify-on-stop is on, stamp an unverified-claim footer on the candidate.
+
+    Runs before the nudge so the interim answer the user sees (and the budget
+    fallback the finalizer may later promote) cannot stand as a bare
+    \"tests passed\" self-report. Multimodal content lists get the footer on
+    the first text part so delivery and the stored row stay identical.
+    """
+    try:
+        from agent.verification_stop import (
+            qualify_unverified_claim,
+            verify_on_stop_enabled,
+        )
+
+        if not verify_on_stop_enabled():
+            return final_response
+        changed_paths = getattr(agent, "_turn_file_mutation_paths", set())
+        qualified = qualify_unverified_claim(
+            final_response,
+            session_id=getattr(agent, "session_id", None),
+            changed_paths=changed_paths,
+        )
+        if qualified is final_response or qualified == final_response:
+            return final_response
+        final_response = qualified
+        # Keep the interim row aligned with what the user is about to see.
+        content = final_msg.get("content")
+        if isinstance(content, str) or isinstance(content, list):
+            final_msg["content"] = qualify_unverified_claim(
+                content,
+                session_id=getattr(agent, "session_id", None),
+                changed_paths=changed_paths,
+            )
+        return final_response
+    except Exception:
+        logger.debug("verification claim qualify failed", exc_info=True)
+        return final_response
+
+
 def _verify_on_stop_nudge(agent) -> Optional[str]:
     try:
         from agent.verification_stop import (
@@ -112,7 +151,7 @@ def apply_stop_gates(
     holds. Hook lookups are imported lazily from their origin modules (tests patch them
     there)."""
 
-    def _continue(nudge: str, flag: str) -> StopGateVerdict:
+    def _continue(nudge: str, flag: str, candidate: Any) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
         append_message(messages, {"role": "user", "content": nudge, flag: True})
         agent._session_messages = messages
@@ -121,11 +160,15 @@ def apply_stop_gates(
         # candidate is reused (#61631).
         return StopGateVerdict(
             continue_turn=True, final_response=None,
-            pending_verification_response=final_response,
+            pending_verification_response=candidate,
             pending_verification_response_previewed=agent._interim_content_was_streamed(
-                final_response or ""
+                candidate or ""
             ),
         )
+
+    # Qualify before any continue path so interim delivery + pending fallback
+    # carry the claim footer when the model over-claims without ledger proof.
+    final_response = _qualify_candidate_claim(agent, final_response, final_msg)
 
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:
@@ -134,7 +177,7 @@ def apply_stop_gates(
         _append_interim_answer(
             agent, final_msg, messages, conversation_history, "verify-on-stop interim flush failed"
         )
-        verdict = _continue(_verify_nudge, "_verification_stop_synthetic")
+        verdict = _continue(_verify_nudge, "_verification_stop_synthetic", final_response)
         # Internal nudge: stay silent on the terminal, debug-log only.
         logger.debug("verification stop-loop nudge issued (attempt %d)", agent._verification_stop_nudges)
         return verdict
@@ -147,7 +190,7 @@ def apply_stop_gates(
         _append_interim_answer(
             agent, final_msg, messages, conversation_history, "pre_verify interim flush failed"
         )
-        verdict = _continue(_verify_nudge2, "_pre_verify_synthetic")
+        verdict = _continue(_verify_nudge2, "_pre_verify_synthetic", final_response)
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)
         return verdict
 
@@ -157,7 +200,7 @@ def apply_stop_gates(
         final_msg["finish_reason"] = "kanban_terminal_required"
         final_msg["_kanban_stop_synthetic"] = True
         append_message(messages, final_msg)
-        verdict = _continue(_kanban_nudge, "_kanban_stop_synthetic")
+        verdict = _continue(_kanban_nudge, "_kanban_stop_synthetic", final_response)
         logger.info(
             "kanban stop-loop nudge issued (attempt %d) task=%s",
             agent._kanban_stop_nudges,

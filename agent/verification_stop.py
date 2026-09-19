@@ -1,10 +1,16 @@
 """Turn-end verification guard for coding edits. Policy-only: it never runs
 checks itself, it turns the passive verification ledger into a bounded follow-up
-when the model tries to finish right after editing code without fresh evidence."""
+when the model tries to finish right after editing code without fresh evidence.
+
+When the model still claims tests/checks passed after that budget is exhausted
+(or on the interim candidate), ``qualify_unverified_claim`` appends a footer so
+the over-claim cannot stand as the delivered answer. Default remains off
+(``verify_on_stop``)."""
 
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -225,4 +231,161 @@ def build_verify_on_stop_nudge(
     )
 
 
-__all__ = ["build_verify_on_stop_nudge", "verify_on_stop_enabled"]
+# ---------------------------------------------------------------------------
+# Claim gate: do not let "tests passed" stand without ledger evidence.
+# ---------------------------------------------------------------------------
+
+UNVERIFIED_CLAIM_FOOTER_MARK = "⚠️ Verification status:"
+
+# Fenced blocks often paste CI/"status: done" tool output — strip before claim match.
+_FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+
+_SUCCESS_CLAIM_RE = re.compile(
+    r"(?is)(?:"
+    r"\btests?\s+passed\b"
+    r"|\ball\s+tests\s+pass(?:ed)?\b"
+    r"|\b(?:test\s+)?suite\s+(?:is\s+)?green\b"
+    r"|\bchecks?\s+passed\b"
+    r"|\bci\s+(?:is\s+)?green\b"
+    r"|\bverification\s+passed\b"
+    r"|\bfully\s+verified\b"
+    r"|\bverified\s+in\s+(?:prod|production)\b"
+    # Bare "status: done" only at line start (avoids quoted tool-output paste).
+    r"|(?:^|\n)\s*status\s*:\s*done\b"
+    r"|\bimplemented\s+and\s+verified\b"
+    r"|\bi(?:'ve| have)?\s+verified\b"
+    r"|\bwork\s+is\s+(?:fully\s+)?verified\b"
+    r")"
+)
+
+_ALREADY_LABELED_RE = re.compile(
+    r"(?is)(?:"
+    r"\bnot\s+verified\b"
+    r"|\bunverified\b"
+    r"|\bcould\s+not\s+verify\b"
+    r"|\bcannot\s+verify\b"
+    r"|\bcan'?t\s+verify\b"
+    r"|\bverification\s+is\s+not\s+possible\b"
+    r"|\bno\s+(?:fresh\s+)?passing\s+verification\b"
+    r"|\bdid\s+not\s+(?:run|execute)\s+(?:the\s+)?tests\b"
+    r"|\btests?\s+(?:were\s+)?not\s+run\b"
+    r"|\bconcrete\s+blocker\b"
+    r"|"
+    + re.escape(UNVERIFIED_CLAIM_FOOTER_MARK)
+    + r")"
+)
+
+
+def _claim_scan_text(text: str) -> str:
+    """Prose-only view of assistant text for claim detection (drop fenced dumps)."""
+    return _FENCED_BLOCK_RE.sub(" ", text or "")
+
+
+def claims_verification_success(text: str | None) -> bool:
+    """True when the assistant text asserts tests/checks/verification passed."""
+    if not text:
+        return False
+    return bool(_SUCCESS_CLAIM_RE.search(_claim_scan_text(text)))
+
+
+def already_labels_unverified(text: str | None) -> bool:
+    """True when the text already admits the work is unverified or blocked."""
+    if not text:
+        return False
+    return bool(_ALREADY_LABELED_RE.search(text))
+
+
+def _append_text_part(content: Any, footer: str) -> Any:
+    """Append ``footer`` to a string or the first text part of a multimodal list."""
+    if isinstance(content, str):
+        return content.rstrip() + "\n\n" + footer
+    if isinstance(content, list):
+        out = list(content)
+        for i, part in enumerate(out):
+            if isinstance(part, dict) and part.get("type") in (None, "text") and isinstance(part.get("text"), str):
+                updated = dict(part)
+                updated["text"] = part["text"].rstrip() + "\n\n" + footer
+                out[i] = updated
+                return out
+            if isinstance(part, str):
+                out[i] = part.rstrip() + "\n\n" + footer
+                return out
+    return content
+
+
+def qualify_unverified_claim(
+    text: Any,
+    *,
+    session_id: str | None,
+    changed_paths: Iterable[str],
+) -> Any:
+    """Append a footer when a success-claim is not backed by the ledger.
+
+    No-ops when there is no claim, the agent already labeled a blocker, there
+    are no verifiable code edits, the ledger is ``passed``, or the footer is
+    already present. Accepts plain strings or multimodal content lists; for
+    lists the footer lands on the first text part so delivery and transcript
+    stay aligned. Never invents a workspace or upgrades a targeted check into
+    ``repo green``.
+    """
+    if text is None:
+        return text
+
+    if isinstance(text, str):
+        scan = text
+        if not scan.strip():
+            return text
+        if UNVERIFIED_CLAIM_FOOTER_MARK in scan:
+            return text
+        if not claims_verification_success(scan):
+            return text
+        if already_labels_unverified(scan):
+            return text
+    elif isinstance(text, list):
+        # Concatenate text parts for claim detection only.
+        pieces: list[str] = []
+        for part in text:
+            if isinstance(part, str):
+                pieces.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                pieces.append(part["text"])
+        scan = "\n".join(pieces)
+        if not scan.strip():
+            return text
+        if UNVERIFIED_CLAIM_FOOTER_MARK in scan:
+            return text
+        if not claims_verification_success(scan):
+            return text
+        if already_labels_unverified(scan):
+            return text
+    else:
+        return text
+
+    paths = sorted({str(p) for p in changed_paths if p and not _is_non_code_path(p)})
+    if not paths:
+        return text
+
+    snapshot = _verification_snapshot(session_id=session_id, changed_paths=paths)
+    if snapshot is None:
+        return text
+    status, _facts = snapshot
+    if str(status.get("status") or "unverified") == "passed":
+        return text
+
+    state = str(status.get("status") or "unverified")
+    footer = (
+        f"{UNVERIFIED_CLAIM_FOOTER_MARK} {state}. "
+        "This turn edited code without fresh passing verification evidence. "
+        "Wording above that says tests or checks passed is not backed by the ledger."
+    )
+    return _append_text_part(text, footer)
+
+
+__all__ = [
+    "UNVERIFIED_CLAIM_FOOTER_MARK",
+    "already_labels_unverified",
+    "build_verify_on_stop_nudge",
+    "claims_verification_success",
+    "qualify_unverified_claim",
+    "verify_on_stop_enabled",
+]

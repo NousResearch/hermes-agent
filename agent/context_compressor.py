@@ -4396,8 +4396,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         self, messages: List[Dict[str, Any]], head_end: int, token_budget: int | None = None,
     ) -> int:
         """Walk backward accumulating tokens until the budget; return the tail start index.
-        Optional rows are bounded by a 1.5x soft ceiling. Required last-user/last-assistant anchors and
-        their atomic tool groups may exceed it; tool groups are never split."""
+        Optional rows are bounded by a 1.5x soft ceiling. Required last-user/last-assistant (and
+        multi-user) anchors and their atomic tool groups may exceed it; tool groups are never split."""
         if token_budget is None:
             token_budget = self.tail_token_budget
         n = len(messages)
@@ -4409,27 +4409,20 @@ Write only the summary body. Do not include any preamble or prefix."""
         compressible_tail_cap = max(3, available_tail - 2)
         min_tail = min(min_tail_floor, compressible_tail_cap, available_tail) if available_tail > 1 else 0
         soft_ceiling = int(token_budget * 1.5)
-        cut_idx, accumulated = self._walk_tail_budget(messages, head_end, soft_ceiling, min_tail, cut_at_break=False)
-        # Preserve the continuity floor when the configured ceiling cannot fit even the fixed wire
-        # overhead of that many empty rows; no token-respecting count floor exists in that case.
-        floor_can_fit_ceiling = soft_ceiling >= min_tail * _estimate_msg_budget_tokens({})
-        fallback_cut = n - min_tail
-        bounded_cut, bounded_accumulated = self._walk_tail_budget(
-            messages, head_end, soft_ceiling, 0, cut_at_break=False,
-        )
-        floor_exceeds_ceiling = floor_can_fit_ceiling and fallback_cut < bounded_cut
-        if floor_exceeds_ceiling:
-            # The count floor is opportunistic: oversized optional rows must not make it an
-            # unbounded override of the token ceiling. Required user/assistant anchors and
-            # atomic tool groups are applied below and may still necessarily exceed it.
-            cut_idx, accumulated = bounded_cut, bounded_accumulated
+        # The count floor is opportunistic: oversized optional rows must not ride it past the token
+        # ceiling (#108647), so the walk runs floorless whenever the ceiling can hold at least the wire
+        # overhead of that many empty rows. Only when it cannot does the continuity floor win — no
+        # token-respecting floor exists then. Required user/assistant anchors and atomic tool groups
+        # are applied below and may still necessarily exceed the ceiling.
+        walk_floor = 0 if soft_ceiling >= min_tail * _estimate_msg_budget_tokens({}) else min_tail
+        cut_idx, accumulated = self._walk_tail_budget(messages, head_end, soft_ceiling, walk_floor, cut_at_break=False)
         # Whole transcript fits soft_ceiling: re-cut with the raw budget so a worthwhile middle
         # exists (else #40803 loop).
         if cut_idx <= head_end and 0 < accumulated <= soft_ceiling:
             cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True)
 
-        if not floor_exceeds_ceiling:
-            cut_idx = min(cut_idx, fallback_cut)
+        fallback_cut = n - min_tail
+        cut_idx = min(cut_idx, n - walk_floor)
         # Small conversations: force a cut after the head so compression still removes something.
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)

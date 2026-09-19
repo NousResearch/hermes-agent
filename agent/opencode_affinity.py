@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
+_SENSITIVE_HEADER_NAMES = frozenset({OPENCODE_SESSION_HEADER, "authorization"})
 
 
 def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool:
@@ -47,31 +48,28 @@ def opencode_session_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    *,
+    cache_scope: Optional[str] = None,
+    use_ambient: bool = True,
 ) -> dict[str, str]:
-    """Return ``{"x-opencode-session": <key>}`` for OpenCode targets, else ``{}``."""
+    """Return the OpenCode affinity header from an explicit safe scope.
+
+    ``cache_scope`` is preferred because it survives physical-session rotation;
+    ``session_id`` is the opaque physical fallback. Ambient affinity is retained
+    only for legacy callers and can be disabled at isolation boundaries.
+    """
     if not is_opencode_target(provider, base_url):
         return {}
-    try:
-        from agent.portal_tags import get_affinity_scope, get_conversation_context
-        from agent.transports.codex import _cache_scope_from_session_id
+    explicit_scope = str(cache_scope or "").strip()
+    physical_id = str(session_id or "").strip()
+    key = explicit_scope or physical_id
+    if not key and use_ambient:
+        try:
+            from agent.portal_tags import get_affinity_scope, get_conversation_context
 
-        key = _cache_scope_from_session_id(
-            # Top-level session_id → OpenRouter's sticky routing key. Per their prompt-caching docs it is
-            # used directly as the routing key instead of hashing the opening messages, and it activates
-            # stickiness on the first successful request rather than only after a cache hit. Resolve it from
-            # the declared routing scope first (set only by a host that names its own conversation, #96811),
-            # then the ambient conversation contextvar, with the explicit argument as fallback. The gap this
-            # closes is the auxiliary call sites — compression, title generation, vision, web_extract,
-            # session_search, MoA slots — which funnel through ``agent.auxiliary_client``. That module has
-            # no session handle and passes no ``session_id``, so those calls sent NO sticky key at all and
-            # each routed independently of the conversation it belonged to (#70820). Mirrors the Nous Portal
-            # profile, which resolves the same way (f2f4df064d). The ambient value is the session-lineage
-            # ROOT, so it also stays stable for installs that opt out of the default ``compression.in_place:
-            # true`` and across delegate-subagent trees.
-            get_affinity_scope() or get_conversation_context() or session_id
-        )
-    except Exception:
-        key = str(session_id or "")
+            key = str(get_affinity_scope() or get_conversation_context() or "").strip()
+        except Exception:
+            key = ""
     return {OPENCODE_SESSION_HEADER: key} if key else {}
 
 
@@ -80,17 +78,31 @@ def merge_opencode_session_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    *,
+    cache_scope: Optional[str] = None,
+    use_ambient: bool = True,
 ) -> dict[str, Any]:
-    """Merge the affinity header into ``kwargs["extra_headers"]`` (in place).
+    """Merge OpenCode affinity into ``kwargs["extra_headers"]`` in place.
 
-    Existing per-request headers win, so a caller-pinned value is preserved.
-    Non-OpenCode targets are left untouched.
+    For OpenCode targets, caller-supplied session and authorisation headers are
+    removed case-insensitively. Non-sensitive headers survive, then the computed
+    explicit affinity header is applied last. A missing safe scope never forwards
+    a caller-provided sensitive value.
     """
-    headers = opencode_session_headers(provider, base_url, session_id)
-    if headers:
-        existing = kwargs.get("extra_headers")
-        merged = dict(existing) if isinstance(existing, dict) else {}
-        for key, value in headers.items():
-            merged.setdefault(key, value)
+    if not is_opencode_target(provider, base_url):
+        return kwargs
+    existing = kwargs.get("extra_headers")
+    merged = {
+        key: value for key, value in (existing.items() if isinstance(existing, dict) else ())
+        if str(key).lower() not in _SENSITIVE_HEADER_NAMES
+    }
+    headers = opencode_session_headers(
+        provider, base_url, session_id,
+        cache_scope=cache_scope, use_ambient=use_ambient,
+    )
+    merged.update(headers)
+    if merged:
         kwargs["extra_headers"] = merged
+    else:
+        kwargs.pop("extra_headers", None)
     return kwargs

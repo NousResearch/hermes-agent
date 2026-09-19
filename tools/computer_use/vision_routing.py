@@ -78,13 +78,8 @@ def should_route_capture_to_aux_vision(provider: str, model: str, cfg: Optional[
     """True iff the screenshot should be pre-analysed via aux vision; False keeps the multimodal envelope. *provider* is
     the lower-case canonical id, *model* the slug sent to the provider, *cfg* the loaded ``config.yaml`` dict (or None).
     Steps follow the module docstring's decision order."""
-    # auto: an explicitly configured auxiliary.vision backend is the DE-FACTO choice — the user named a
-    # dedicated vision model, so that's what they want images to go through, even when the main model has
-    # native vision (maintainer decision, 2026-08-28, reversing #29135's fallback-only posture: config that
-    # only takes effect when the main model gets worse is a trap, not a setting). Native vision remains the
-    # default for unconfigured installs, and the fallback when the aux backend is unset.
-    if _explicit_aux_vision_override(cfg):
-        return True
+    # Explicit auxiliary vision selection is fallback-only in auto: it must not
+    # override a capable main model whose provider accepts multimodal tool results.
     user_declared = _lookup_user_declared_supports_vision(provider, model, cfg)
     if isinstance(user_declared, bool):  # True → multimodal, False → aux
         return not user_declared

@@ -1459,20 +1459,24 @@ class GatewayInboundMixin:
             "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
             _img_mode, len(image_paths),
         )
-        # Vision enrichment runs before AIAgent.run_conversation(), so bind this session's resolved
-        # runtime explicitly rather than consulting process-global compatibility mirrors.
-        vision_runtime = None
+        # Vision enrichment runs before AIAgent.run_conversation(), so bind an explicit
+        # task-local runtime rather than consulting process-global compatibility mirrors.
+        vision_runtime = {}
         try:
             turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
                 source=source, session_key=session_key,
             )
-            vision_runtime = {**(runtime_kwargs or {}), "model": turn_model}
+            vision_runtime = {
+                k: v
+                for k, v in {**(runtime_kwargs or {}), "model": turn_model}.items()
+                if k in {"provider", "model", "requested_provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id", "cache_scope"}
+            }
         except Exception:
             logger.debug("vision enrichment: session runtime resolution failed", exc_info=True)
 
         from agent.auxiliary_client import scoped_runtime_main
 
-        with scoped_runtime_main(vision_runtime):
+        with scoped_runtime_main(vision_runtime or {}):
             return await self._enrich_message_with_vision(message_text, image_paths)
 
     async def _echo_stt_transcripts(

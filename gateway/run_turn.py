@@ -2367,15 +2367,50 @@ class GatewayTurnMixin:
             self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
-            # Enrich the prompt with image descriptions (same as the main flow).
+            # Route background images through the same normal-turn policy.
             enriched_prompt = prompt
             image_paths = [
                 path for i, path in enumerate(media_urls)
                 if (media_types[i] if i < len(media_types) else "").startswith("image/")
             ]
+            bg_runtime = {
+                "session_id": str(task_id),
+                "cache_scope": str(task_id),
+            }
             if image_paths:
                 try:
-                    enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
+                    from agent.image_routing import build_native_content_parts, decide_image_input_mode
+                    from agent.auxiliary_client import scoped_runtime_main
+                    from hermes_cli.config import load_config
+
+                    user_config = _load_gateway_config()
+                    with scoped_runtime_main({
+                        "provider": runtime_kwargs.get("provider"),
+                        "model": model,
+                        "requested_provider": runtime_kwargs.get("requested_provider"),
+                        "base_url": runtime_kwargs.get("base_url"),
+                        "api_mode": runtime_kwargs.get("api_mode"),
+                        "auth_mode": runtime_kwargs.get("auth_mode"),
+                        **bg_runtime,
+                    }):
+                        img_mode = decide_image_input_mode(
+                            runtime_kwargs.get("provider", ""),
+                            model,
+                            user_config,
+                            requested_provider=runtime_kwargs.get("requested_provider", ""),
+                        )
+                    if img_mode == "native":
+                        parts, skipped = build_native_content_parts(prompt, image_paths)
+                        if skipped:
+                            logger.warning("Background task native image attach skipped %d path(s): %s", len(skipped), skipped)
+                        if any(p.get("type") == "image_url" for p in parts):
+                            enriched_prompt = parts
+                        else:
+                            with scoped_runtime_main(bg_runtime):
+                                enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
+                    else:
+                        with scoped_runtime_main(bg_runtime):
+                            enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
                 except Exception as e:
                     logger.warning("Background task vision enrichment failed: %s", e)
 

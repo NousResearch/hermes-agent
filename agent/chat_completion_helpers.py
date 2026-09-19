@@ -1451,6 +1451,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
+        cache_scope=_prompt_cache_scope_for_agent(agent),
+        use_ambient=False,
     )
 
 

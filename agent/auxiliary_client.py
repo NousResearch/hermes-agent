@@ -2684,9 +2684,14 @@ def reset_runtime_main(token: contextvars.Token) -> None:
 
 @contextlib.contextmanager
 def scoped_runtime_main(main_runtime: Optional[Dict[str, Any]]):
-    """Temporarily bind an explicit runtime without touching legacy mirrors."""
-    runtime = _normalize_main_runtime(main_runtime)
-    token = _RUNTIME_MAIN_CONTEXT.set(runtime or None)
+    """Temporarily bind an explicit runtime without touching legacy mirrors.
+
+    ``None`` and ``{}`` are authoritative empty scopes here; callers that need
+    ambient legacy resolution must snapshot it explicitly before entering this
+    boundary.
+    """
+    runtime = _normalize_main_runtime({} if main_runtime is None else main_runtime)
+    token = _RUNTIME_MAIN_CONTEXT.set(dict(runtime))
     try:
         yield runtime
     finally:
@@ -6450,6 +6455,8 @@ def _build_call_kwargs(
     max_tokens: Optional[int] = None, tools: Optional[list] = None, timeout: float = 30.0,
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout}
@@ -6500,10 +6507,18 @@ def _build_call_kwargs(
             or _endpoint_speaks_anthropic_messages(raw_base) or _is_anthropic_compat_endpoint(provider_norm, raw_base)
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
-    # OpenCode relay session affinity — same key as the main turn so compression/title/vision
-    # calls stay on the conversation's warm backend.
+    # OpenCode relay session affinity — same logical scope as the main turn so
+    # compression/title/vision calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_opencode_session_headers
-    return merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    runtime = _normalize_main_runtime(main_runtime)
+    if extra_headers:
+        kwargs["extra_headers"] = dict(extra_headers)
+    return merge_opencode_session_headers(
+        kwargs, provider, base_url,
+        runtime.get("session_id") or None,
+        cache_scope=runtime.get("cache_scope") or None,
+        use_ambient=False,
+    )
 
 
 def _validate_llm_response(

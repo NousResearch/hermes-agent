@@ -15,14 +15,7 @@ const COPY_FLASH_MS = 1500
  *  session), and the ruled outcomes of the transfer itself. Anything the
  *  backend does not name lands on `error`, which carries its own message. */
 export type FreeTierSignInFailure =
-  | 'busy'
-  | 'error'
-  | 'rejected'
-  | 'retired'
-  | 'superseded'
-  | 'timed_out'
-  | 'unavailable'
-  | 'unreachable'
+  'busy' | 'error' | 'rejected' | 'retired' | 'superseded' | 'timed_out' | 'unavailable' | 'unreachable'
 
 export type FreeTierSignInState =
   | { status: 'already_signed_in' }
@@ -94,7 +87,12 @@ const set = (state: FreeTierSignInState) => $freeTierSignIn.set(state)
 
 const fail = (kind: FreeTierSignInFailure, message: null | string = null, retryAfter = 0) => {
   clearTimers()
-  set({ kind, message: message?.trim() || null, retryAfter: Math.max(0, Math.round(retryAfter) || 0), status: 'failed' })
+  set({
+    kind,
+    message: message?.trim() || null,
+    retryAfter: Math.max(0, Math.round(retryAfter) || 0),
+    status: 'failed'
+  })
 }
 
 /** Every entry point calls this — Settings › Billing, the statusbar chip, the

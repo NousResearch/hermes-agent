@@ -178,3 +178,35 @@ def test_pre_api_compression_timeout_is_typed_terminal():
         assert result["failed"] is True
         assert result["compression_exhausted"] is True
         assert result["turn_exit_reason"] == "context_compression_timeout"
+
+
+def test_auto_compression_cooldown_skips_facade_and_keeps_cached_prompt():
+    """A stalled automatic pass must not re-enter the worker on every turn."""
+    agent = _make_agent()
+    cached_prompt = "cached prompt kept byte-stable"
+    agent._cached_system_prompt = cached_prompt
+    agent._build_system_prompt = MagicMock(side_effect=AssertionError("must not rebuild"))
+    compression_calls = []
+
+    def _stalled(_agent, messages, _system_message, **_kwargs):
+        compression_calls.append(1)
+        agent.context_compressor.record_timeout_failure("stalled", failure_kind="stalled")
+        return messages, cached_prompt
+
+    messages = [{"role": "user", "content": "oversized"}]
+    with (
+        patch(
+            "agent.conversation_compression.resolve_context_compression_timeouts",
+            return_value=(0, 0),
+        ),
+        patch("agent.conversation_compression.compress_context", side_effect=_stalled),
+    ):
+        _, first_prompt = agent._compress_context(messages, "system")
+        _, second_prompt = agent._compress_context(messages, "system")
+        _, forced_prompt = agent._compress_context(messages, "system", force=True)
+
+    assert compression_calls == [1, 1]
+    assert first_prompt is cached_prompt
+    assert second_prompt is cached_prompt
+    assert forced_prompt is cached_prompt
+    agent._build_system_prompt.assert_not_called()

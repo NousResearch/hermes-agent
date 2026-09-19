@@ -219,10 +219,17 @@ class CompressionFacadeMixin:
         # thread-local state guarded by a per-agent lock so overlapping automatic/manual entrypoints cannot
         # clobber each other's outcome (#98741).
         from agent.conversation_compression import (
-            CompressionCommitFence, compress_context, reset_context_compression_timeout_outcome,
+            CompressionCommitFence, _automatic_compression_gate_blocks, compress_context,
+            reset_context_compression_timeout_outcome,
             resolve_context_compression_timeouts,
         )
         reset_context_compression_timeout_outcome(self)
+        # A stalled automatic compression arms the summary-failure cooldown. Honor it before
+        # creating a fence or dispatching a worker so an oversized session does not re-enter the
+        # preflight compression path on every turn. Manual /compress and provider-proven overflow
+        # recovery intentionally bypass this short-circuit and retain their existing retry behavior.
+        if not force and not bypass_cooldown and _automatic_compression_gate_blocks(self, False):
+            return messages, _timeout_fallback_prompt(self, system_message)
         from agent.portal_tags import (
             get_affinity_scope, get_conversation_context, reset_affinity_scope, reset_conversation_context,
             set_affinity_scope, set_conversation_context,

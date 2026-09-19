@@ -570,7 +570,6 @@ def is_discord_channel_obfuscated(channel) -> bool:
 from typing import Dict  # noqa: F401,E402
 from typing import TYPE_CHECKING  # noqa: F401,E402
 import asyncio  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
 
 class TextBatchAggregator:
     """Aggregates rapid-fire text events into single messages.

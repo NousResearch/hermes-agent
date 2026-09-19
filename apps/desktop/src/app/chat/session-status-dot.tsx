@@ -4,23 +4,23 @@ import { type Translations, useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sessionColorById, sessionColorFor } from '@/store/session-color'
-import { $sessionDotStateById, type SessionDotState } from '@/store/session-dot-state'
+import { $activeSubagentCountBySessionId, $sessionDotStateById, type SessionDotState } from '@/store/session-dot-state'
 import type { SessionInfo } from '@/types/hermes'
 
 // A pure lookup table: each state maps to its className, aria-label, and title.
 // No priority resolution here — $sessionDotStateById already picked one.
 // Label/title resolve from sidebar.row translations, keyed by name.
 type DotVariant = {
-  ariaLabel?: (r: Translations['sidebar']['row']) => string
+  ariaLabel?: (r: Translations['sidebar']['row'], activeSubagents: number) => string
   className: string
   role?: 'status'
-  title?: (r: Translations['sidebar']['row']) => string
+  title?: (r: Translations['sidebar']['row'], activeSubagents: number) => string
 }
 
 // Shared base for every active dot; idle is smaller and uses its own class.
 const DOT_BASE = 'size-1.5 rounded-full'
 
-// Three colors and one fill/hollow axis, none of it moving. Motion on a 6px
+// Semantic colors and one fill/hollow axis, none of it moving. Motion on a 6px
 // circle can only say "something is happening" — which the row's arc already
 // says, better — while costing a repaint per frame on every row at once. What
 // the dot is for is telling states APART, and that is a job for color and fill:
@@ -50,12 +50,19 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.sessionRunning
   },
-  // Hollow muted — a terminal(background=true) process outlived the turn. An
-  // outline reads as "still open" without claiming the model is working; a
-  // filled grey dot read as finished, the opposite of what this means.
+  // Violet — queued/running children. It owns the dot even while the parent
+  // turn is live; the row arc continues to describe that parent independently.
+  subagents: {
+    ariaLabel: (r, count) => r.activeSubagents(count),
+    className: `${DOT_BASE} bg-(--ui-purple)`,
+    role: 'status',
+    title: (r, count) => r.activeSubagents(count)
+  },
+  // Violet — background processes and subagents both mean work is ongoing.
+  // Their labels retain the distinction without using different visual marks.
   background: {
     ariaLabel: r => r.backgroundRunning,
-    className: `${DOT_BASE} border border-(--ui-text-tertiary)`,
+    className: `${DOT_BASE} bg-(--ui-purple)`,
     role: 'status',
     title: r => r.backgroundRunning
   },
@@ -69,10 +76,7 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.finishedUnread
   },
-  // Hollow grey, the faintest ink the app has — nothing has ever run here. It
-  // shares the outline with `background` because both mean "open, not
-  // producing", and sits a shade dimmer because a draft is the one state that
-  // has yet to do anything at all.
+  // Hollow grey, the faintest ink the app has — nothing has ever run here.
   draft: {
     ariaLabel: r => r.draftSession,
     className: `${DOT_BASE} border border-(--ui-text-quaternary)`,
@@ -137,6 +141,10 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
     storedSessionId ? (states[storedSessionId] ?? 'idle') : 'draft'
   )
 
+  const activeSubagents = useStoreSelector($activeSubagentCountBySessionId, counts =>
+    storedSessionId ? (counts[storedSessionId] ?? 0) : 0
+  )
+
   const variant = DOT_VARIANTS[dotState]
 
   return (
@@ -153,10 +161,10 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
         <span aria-hidden="true" className={variant.className} style={color ? { backgroundColor: color } : undefined} />
       ) : (
         <span
-          aria-label={variant.ariaLabel?.(r)}
+          aria-label={variant.ariaLabel?.(r, activeSubagents)}
           className={variant.className}
           role={variant.role}
-          title={variant.title?.(r)}
+          title={variant.title?.(r, activeSubagents)}
         />
       )}
     </span>

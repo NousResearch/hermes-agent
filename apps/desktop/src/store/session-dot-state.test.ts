@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
+import { $backgroundStatusBySession } from './composer-status'
 import {
   $cronSessions,
   $messagingSessions,
@@ -14,8 +15,10 @@ import {
   setSessions
 } from './session'
 import {
+  $activeSubagentCountBySessionId,
   $delegatingSessionIds,
   $sessionDotStateById,
+  $sessionLiveTurnStateById,
   $unreadSessionCount,
   hasLiveTurn,
   showsRunningArc,
@@ -23,7 +26,7 @@ import {
 } from './session-dot-state'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $unreadWriteGuard } from './session-unread-remote'
-import { $subagentsBySession, type SubagentProgress } from './subagents'
+import { $subagentsBySession, type SubagentProgress, upsertSubagent } from './subagents'
 
 describe('showsRunningArc', () => {
   it('keeps the arc when an authoritative turn goes quiet', () => {
@@ -60,8 +63,8 @@ describe('hasLiveTurn', () => {
 })
 
 describe('$delegatingSessionIds', () => {
-  const subagent = (status: SubagentProgress['status']): SubagentProgress => ({
-    id: 'sub-1',
+  const subagent = (status: SubagentProgress['status'], id = 'sub-1'): SubagentProgress => ({
+    id,
     parentId: null,
     goal: 'do a thing',
     status,
@@ -76,6 +79,7 @@ describe('$delegatingSessionIds', () => {
 
   afterEach(() => {
     clearAllSessionStates()
+    $backgroundStatusBySession.set({})
     $subagentsBySession.set({})
     $sessions.set([])
   })
@@ -99,6 +103,67 @@ describe('$delegatingSessionIds', () => {
     $subagentsBySession.set({ 'runtime-fresh': [subagent('queued')] })
 
     expect($delegatingSessionIds.get()).toContain('runtime-fresh')
+  })
+
+  it('keeps a violet subagent claim while any queued or running child remains', () => {
+    publishSessionState('runtime-1', { ...createClientSessionState('stored-1'), busy: false })
+    upsertSubagent('runtime-1', { goal: 'first', status: 'running', subagent_id: 'a', task_index: 0 })
+    upsertSubagent('runtime-1', { goal: 'second', status: 'queued', subagent_id: 'b', task_index: 1 })
+
+    expect($activeSubagentCountBySessionId.get()['stored-1']).toBe(2)
+    expect($sessionDotStateById.get()['stored-1']).toBe('subagents')
+
+    upsertSubagent('runtime-1', { status: 'completed', subagent_id: 'a', task_index: 0 }, false, 'subagent.complete')
+    expect($activeSubagentCountBySessionId.get()['stored-1']).toBe(1)
+    expect($sessionDotStateById.get()['stored-1']).toBe('subagents')
+
+    upsertSubagent('runtime-1', { status: 'error', subagent_id: 'b', task_index: 1 }, false, 'subagent.complete')
+    expect($activeSubagentCountBySessionId.get()['stored-1']).toBeUndefined()
+    expect($sessionDotStateById.get()['stored-1']).not.toBe('subagents')
+  })
+
+  it('publishes the active count under every stored lineage alias', () => {
+    setSessions([
+      storedRow('tip', {
+        _lineage_ids: ['root', 'middle', 'tip'],
+        _lineage_root_id: 'root'
+      })
+    ])
+    publishSessionState('runtime-1', { ...createClientSessionState('tip'), busy: false })
+    $subagentsBySession.set({ 'runtime-1': [subagent('running', 'child')] })
+
+    expect($activeSubagentCountBySessionId.get()).toMatchObject({ root: 1, middle: 1, tip: 1 })
+    expect($sessionDotStateById.get()).toMatchObject({ root: 'subagents', middle: 'subagents', tip: 'subagents' })
+  })
+
+  it('lets needs-input outrank subagents without hiding a concurrent parent turn', () => {
+    publishSessionState('runtime-1', { ...createClientSessionState('stored-1'), busy: true })
+    $subagentsBySession.set({ 'runtime-1': [subagent('running')] })
+
+    expect($sessionDotStateById.get()['stored-1']).toBe('subagents')
+    expect($sessionLiveTurnStateById.get()['stored-1']).toBe('working')
+    expect(showsRunningArc($sessionLiveTurnStateById.get()['stored-1'])).toBe(true)
+
+    publishSessionState('runtime-1', { ...createClientSessionState('stored-1'), busy: true, needsInput: true })
+
+    expect($sessionDotStateById.get()['stored-1']).toBe('needs-input')
+    expect($sessionLiveTurnStateById.get()['stored-1']).toBe('needs-input')
+    expect(showsRunningArc($sessionLiveTurnStateById.get()['stored-1'])).toBe(false)
+  })
+
+  it('restores the background terminal state after the last child finishes', () => {
+    publishSessionState('runtime-1', { ...createClientSessionState('stored-1'), busy: false })
+    $backgroundStatusBySession.set({
+      'runtime-1': [{ id: 'job-1', state: 'running', title: 'sleep', type: 'background' }]
+    })
+
+    expect($sessionDotStateById.get()['stored-1']).toBe('background')
+
+    upsertSubagent('runtime-1', { goal: 'child', status: 'running', subagent_id: 'a', task_index: 0 })
+    expect($sessionDotStateById.get()['stored-1']).toBe('subagents')
+
+    upsertSubagent('runtime-1', { status: 'completed', subagent_id: 'a', task_index: 0 }, false, 'subagent.complete')
+    expect($sessionDotStateById.get()['stored-1']).toBe('background')
   })
 })
 

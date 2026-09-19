@@ -25,8 +25,10 @@ use ``build_editable``, which does NOT call ``bdist_wheel`` — it calls
 """
 
 import os
+import shutil
 
 from setuptools import setup
+from setuptools.command.build_py import build_py as _build_py
 from setuptools.command.sdist import sdist
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -53,7 +55,24 @@ class _GuardedSdist(sdist):
         return super().run(*args, **kwargs)
 
 
-cmdclass = {"sdist": _GuardedSdist}
+class _HermesBuildPy(_build_py):
+    """Place non-Python WhatsApp bridge runtime assets beside packages."""
+
+    def run(self, *args, **kwargs):
+        result = super().run(*args, **kwargs)
+        source = os.path.join(_ROOT, "scripts", "whatsapp-bridge")
+        destination = os.path.join(self.build_lib, "scripts", "whatsapp-bridge")
+        os.makedirs(destination, exist_ok=True)
+        for name in os.listdir(source):
+            if name.endswith(".test.mjs"):
+                continue
+            asset = os.path.join(source, name)
+            if os.path.isfile(asset):
+                shutil.copy2(asset, os.path.join(destination, name))
+        return result
+
+
+cmdclass = {"build_py": _HermesBuildPy, "sdist": _GuardedSdist}
 
 # bdist_wheel is only available when the `wheel` package is installed.
 # setuptools.build_meta.build_wheel() calls it internally, so the guard

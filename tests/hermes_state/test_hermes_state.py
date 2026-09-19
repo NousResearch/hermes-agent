@@ -5264,6 +5264,48 @@ def test_child_inherits_parent_profile_only_within_its_key_namespace(db):
     assert db.get_session("keyless")["profile_name"] == "bot2"
 
 
+def test_delegate_child_does_not_inherit_gateway_routing_columns(db):
+    """#116322: gateway routing inheritance is compression-fork-only.
+
+    A delegate/subagent child (``model_config._delegate_from``) must not be
+    repointed at its parent's gateway peer: peer recovery could otherwise
+    route real user traffic into the subagent's session. Same ``_delegate_from``
+    exclusion the sibling queries on the routing columns already enforce.
+    """
+    db.create_session(
+        "p", source="telegram",
+        session_key="agent:main:telegram:dm:42",
+        chat_id="42", chat_type="dm", user_id="u1",
+    )
+    db.end_session("p", "compression")
+    db.create_session(
+        "delegate", source="subagent", parent_session_id="p",
+        model_config={"_delegate_from": "p"},
+    )
+    row = db.get_session("delegate")
+    assert row["source"] == "subagent"
+    for col in ("session_key", "chat_id", "chat_type", "user_id"):
+        assert row[col] is None, f"delegate child inherited {col}"
+
+
+def test_compression_fork_still_inherits_gateway_routing_columns(db):
+    """Compression forks keep inheriting routing (#59527): the delegate-child
+    exclusion must stay scoped to ``_delegate_from`` children, not narrow the
+    compression-fork recovery path."""
+    db.create_session(
+        "p", source="telegram",
+        session_key="agent:main:telegram:dm:42",
+        chat_id="42", chat_type="dm", user_id="u1",
+    )
+    db.end_session("p", "compression")
+    db.create_session("fork", source="telegram", parent_session_id="p")
+    row = db.get_session("fork")
+    assert row["session_key"] == "agent:main:telegram:dm:42"
+    assert row["chat_id"] == "42"
+    assert row["chat_type"] == "dm"
+    assert row["user_id"] == "u1"
+
+
 
 
 

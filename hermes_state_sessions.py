@@ -243,6 +243,10 @@ _INHERIT_PARENT_ROUTING_SQL = (
         "transport_profile",
     ))
     + "\n                     WHERE id = ? AND parent_session_id IS NOT NULL\n"
+    # Delegate/subagent children (``_delegate_from`` marker) never inherit: peer
+    # recovery could repoint real user traffic into the subagent's session
+    # (#116322) — the same exclusion the sibling routing queries enforce.
+    "                       AND " + _delegate_from_json("sessions.model_config") + " IS NULL\n"
     "                       AND EXISTS (\n"
     "                           SELECT 1 FROM sessions p\n"
     "                           WHERE p.id = sessions.parent_session_id\n"

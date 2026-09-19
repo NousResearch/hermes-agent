@@ -2,7 +2,11 @@
 
 ## Verdict
 
-**Do not adopt Jev as Hermes' compaction. Do adopt the retention rule it demonstrates.**
+**Do not adopt Jev, and do not adopt its retention rule either.** The recall gain is real but
+it is bought with 2.1× the retained context re-billed on every turn and with compactions that
+arrive ever more often (each one a prompt-cache break); our summary frees ~90% per event and
+then stays cache-warm for a long stretch. Programmatic tool-result removal as the primary
+compaction multiplies cache breaks; it is the wrong trade for Hermes.
 
 - The +32 pt recall win is entirely "keep user/assistant text verbatim, delete old tool
   output". Jev itself dropped 100% of 851 candidates at its default threshold and, at a
@@ -19,9 +23,9 @@
 - What it does buy: 1.4 s and < 1¢ per compaction vs 37 s and 6¢, and verbatim retention
   of everything not a tool result.
 
-Recommended follow-up (not this PR): change the compressor's retention posture to prune
-tool results first and summarise only the remainder, keeping assistant text verbatim within
-the tail budget. Zero external dependency, captures most of the measured gain.
+What the data does point at: the facts our summary loses (delegation ids, root causes,
+config keys, exact error strings) sat in assistant text. That is a summariser-retention
+target (anchor index / identifier capture), not a reason to change compaction cadence.
 
 Question asked: does https://github.com/tamaratran/fast-jev-compaction ("replace the
 compaction summary with Jev decisions: score every tool call/result, drop or truncate
@@ -89,14 +93,12 @@ Per-question paired comparison, jev vs current across 45 questions: 17 wins, 1 l
 
 ## What this suggests for the compressor
 
-The cheap win is not a new decision model but a retention rule the data supports: **keep
-user/assistant text verbatim and drop/truncate old tool results before anything is
-summarised.** We already have that layer (`_prune_old_tool_results`, phase 1); today it is
-followed by a summary that also rewrites assistant text, and that rewrite is where the
-recall goes. A "prune-only until the tail budget is reached, summarise only the remainder"
-posture would capture most of Jev's gain at zero extra cost. If a scoring model is wanted
-for the prune ranking, Jev is fast and cheap enough (1.5 s, < 1¢) but this data shows no
-signal over recency at equal budget; re-test before wiring it in.
+Nothing structural. Keeping text verbatim wins the closed-book exam but at 2.1× retained
+tokens per turn and a compaction cadence that tightens every cycle (prompt cache broken far
+more often); the summary's one-time 90% reduction is the better trade for a long-lived
+cached conversation. The actionable residue is summariser quality: the misses were exact
+identifiers in assistant text, which the anchor index is meant to capture — check its
+coverage on these three banks before touching anything else.
 
 ## Repeated compaction: how many cycles does Jev-only compaction survive?
 

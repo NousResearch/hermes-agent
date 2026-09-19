@@ -227,8 +227,8 @@ def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
 # ports. Avoids pytest-aiohttp's fixtures (extra dependency for one test file).
 # ---------------------------------------------------------------------------
 
-_aio_skip = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
-if not isinstance(getattr(_aio_skip, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
 from aiohttp import web  # noqa: E402
 
 from hermes_cli.proxy.server import create_app  # noqa: E402

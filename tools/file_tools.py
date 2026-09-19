@@ -714,6 +714,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
         content_before_redaction = result.content or ""
+        redacted = False
         if result.content:
             unredacted = result.content
             result.content = redact_sensitive_text(

@@ -103,6 +103,29 @@ def _sysctl_value(name: str) -> str:
         return ""
 
 
+# Module-level cache for the HuggingFace Hub cache-miss exception class.
+# This avoids re-importing the optional dependency on every call.
+_HUB_CACHE_MISS_ERROR: type | None = None
+
+
+def _hub_cache_miss_error() -> type:
+    """Return the exception type raised by ``huggingface_hub`` on a local cache miss.
+
+    The exception is ``huggingface_hub.errors.EntryNotFoundError``. If the
+    ``huggingface_hub`` package is not available we fall back to ``RuntimeError``,
+    which matches the broad catch used downstream.
+    """
+    global _HUB_CACHE_MISS_ERROR
+    if _HUB_CACHE_MISS_ERROR is not None:
+        return _HUB_CACHE_MISS_ERROR
+    try:
+        from huggingface_hub.errors import EntryNotFoundError
+        _HUB_CACHE_MISS_ERROR = EntryNotFoundError
+    except Exception:
+        _HUB_CACHE_MISS_ERROR = RuntimeError
+    return _HUB_CACHE_MISS_ERROR
+
+
 def _should_force_faster_whisper_cpu() -> bool:
     """Force CPU on Apple Silicon (incl. x86_64 under Rosetta), where ctranslate2's
     ``device="auto"`` can abort inside native code before Python can catch it."""

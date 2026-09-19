@@ -13,8 +13,8 @@ import os
 
 import pytest
 
-_aio_skip = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
-if not isinstance(getattr(_aio_skip, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 

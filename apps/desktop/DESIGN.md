@@ -263,6 +263,8 @@ restore minimized or fully hidden side groups without changing the selected tab.
 Lower panels keep local headers. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.
+A narrow drag strip stays above top-edge tabs, including when the tab list
+fills or overflows the row.
 
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.

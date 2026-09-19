@@ -446,7 +446,27 @@ def _probe_single_server(
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
-        server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
+        # A bare asyncio.wait_for() times out with an EMPTY-message TimeoutError and
+        # discards whatever the connect coroutine was raising at that instant — e.g.
+        # OAuthNonInteractiveError("OAuth callback timed out — no authorization code
+        # received...") from _wait_for_callback — so `hermes mcp login` renders a
+        # blank "Authentication failed: " (#103633). Race the connect against the
+        # timeout ourselves: on timeout, cancel and await the task so an exception
+        # the flow already produced wins; only a clean cancel falls back to a
+        # described TimeoutError.
+        connect_task = asyncio.ensure_future(_connect_server(name, config))
+        done, pending = await asyncio.wait({connect_task}, timeout=connect_timeout)
+        if pending:
+            connect_task.cancel()
+            try:
+                await connect_task
+            except asyncio.CancelledError:
+                pass
+            raise TimeoutError(
+                f"Connecting to MCP server '{name}' timed out after "
+                f"{float(connect_timeout):.0f}s"
+            )
+        server = connect_task.result()
         try:
             for t in server._tools:
                 desc = getattr(t, "description", "") or ""
@@ -894,8 +914,22 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
         except Exception:
             humanized = None
-        _error(f"Authentication failed: {redact_mcp_probe_text(humanized or exc)}")
+        # Never render an empty failure reason: str(TimeoutError()) == '' and the
+        # humanizer returns None for it, which printed a blank
+        # "Authentication failed: " (#103633).
+        failure_text = _auth_failure_text(humanized, exc)
+        _error(f"Authentication failed: {redact_mcp_probe_text(failure_text)}")
         return False
+
+
+def _auth_failure_text(humanized: Optional[str], exc: BaseException) -> str:
+    """Pick the failure text to show, never an empty string (#103633).
+
+    ``str(TimeoutError())`` is ``''`` and ``humanize_oauth_registration_error``
+    returns ``None`` for non-DCR errors, so ``humanized or exc`` rendered a
+    blank "Authentication failed: ". Fall back to the exception type name.
+    """
+    return humanized or str(exc) or type(exc).__name__
 
 
 def cmd_mcp_login(args):

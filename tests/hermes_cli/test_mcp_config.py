@@ -356,15 +356,17 @@ class TestMcpTest:
             captured["outer_timeout"] = timeout
             return asyncio.run(coro)
 
-        async def fake_wait_for(awaitable, timeout):
+        real_wait = asyncio.wait
+
+        async def fake_wait(fs, timeout):
             captured["inner_timeout"] = timeout
-            return await awaitable
+            return await real_wait(fs, timeout=timeout)
 
         monkeypatch.setattr(_mcp_loop, "_ensure_mcp_loop", lambda: None)
         monkeypatch.setattr(_mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
         monkeypatch.setattr(_mcp_discovery, "_connect_server", fake_connect)
         monkeypatch.setattr(_mcp_loop, "_run_on_mcp_loop", fake_run_on_mcp_loop)
-        monkeypatch.setattr(mcp_config.asyncio, "wait_for", fake_wait_for)
+        monkeypatch.setattr(mcp_config.asyncio, "wait", fake_wait)
 
         assert mcp_config._probe_single_server(
             "supabase", {"connect_timeout": 300}
@@ -372,6 +374,100 @@ class TestMcpTest:
         assert captured["inner_timeout"] == 300.0
         assert captured["outer_timeout"] == 310.0
         assert captured["shutdown"] is True
+
+    def test_probe_timeout_raises_described_error(self, monkeypatch):
+        """A connect timeout must raise a DESCRIBED TimeoutError, not a bare one.
+
+        Regression for #103633: `asyncio.wait_for` timed out with an
+        EMPTY-message TimeoutError, so `hermes mcp login` printed a blank
+        "Authentication failed: ".
+        """
+        import asyncio
+        from hermes_cli import mcp_config
+        from tools import mcp_tool_discovery as _mcp_discovery
+        from tools import mcp_tool_lifecycle as _mcp_lifecycle
+        from tools import mcp_tool_loop as _mcp_loop
+
+        async def hang_connect(name, config):
+            await asyncio.sleep(30)
+
+        def fake_run_on_mcp_loop(coro, timeout):
+            return asyncio.run(coro)
+
+        monkeypatch.setattr(_mcp_loop, "_ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(_mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
+        monkeypatch.setattr(_mcp_discovery, "_connect_server", hang_connect)
+        monkeypatch.setattr(_mcp_loop, "_run_on_mcp_loop", fake_run_on_mcp_loop)
+
+        with pytest.raises(TimeoutError) as excinfo:
+            mcp_config._probe_single_server(
+                "travelermd", {"url": "https://mcp.traveler.md/mcp"}, connect_timeout=0.2
+            )
+        assert str(excinfo.value)  # never an empty message
+        assert "travelermd" in str(excinfo.value)
+        assert "timed out" in str(excinfo.value)
+
+    def test_probe_timeout_surfaces_inner_oauth_error(self, monkeypatch):
+        """An exception the connect flow already raised at the timeout instant
+        must reach the caller instead of being replaced by a bare TimeoutError.
+
+        Regression for #103633: `_wait_for_callback` raises OAuthNonInteractiveError
+        ("OAuth callback timed out — ...") when its wait is cancelled; wrapping the
+        connect in asyncio.wait_for discarded it in favour of an empty TimeoutError.
+        """
+        import asyncio
+        from hermes_cli import mcp_config
+        from tools import mcp_tool_discovery as _mcp_discovery
+        from tools import mcp_tool_lifecycle as _mcp_lifecycle
+        from tools import mcp_tool_loop as _mcp_loop
+        from tools.mcp_oauth import OAuthNonInteractiveError
+
+        async def oauth_timeout_connect(name, config):
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise OAuthNonInteractiveError(
+                    "OAuth callback timed out — no authorization code received. "
+                    "Ensure you completed the browser authorization flow."
+                )
+
+        def fake_run_on_mcp_loop(coro, timeout):
+            return asyncio.run(coro)
+
+        monkeypatch.setattr(_mcp_loop, "_ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(_mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
+        monkeypatch.setattr(_mcp_discovery, "_connect_server", oauth_timeout_connect)
+        monkeypatch.setattr(_mcp_loop, "_run_on_mcp_loop", fake_run_on_mcp_loop)
+
+        with pytest.raises(OAuthNonInteractiveError) as excinfo:
+            mcp_config._probe_single_server(
+                "travelermd", {"url": "https://mcp.traveler.md/mcp"}, connect_timeout=0.2
+            )
+        assert "OAuth callback timed out" in str(excinfo.value)
+
+
+class TestAuthFailureText:
+    """The login failure line must never render an empty reason (#103633)."""
+
+    def test_humanized_message_wins(self):
+        from hermes_cli.mcp_config import _auth_failure_text
+
+        assert (
+            _auth_failure_text("register a client first", TimeoutError())
+            == "register a client first"
+        )
+
+    def test_exception_text_used_when_no_humanized(self):
+        from hermes_cli.mcp_config import _auth_failure_text
+
+        exc = RuntimeError("boom")
+        assert _auth_failure_text(None, exc) == "boom"
+
+    def test_bare_timeout_error_falls_back_to_type_name(self):
+        from hermes_cli.mcp_config import _auth_failure_text
+
+        assert str(TimeoutError()) == ""  # the trap itself
+        assert _auth_failure_text(None, TimeoutError()) == "TimeoutError"
 
 
 # ---------------------------------------------------------------------------

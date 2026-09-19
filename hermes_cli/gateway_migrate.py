@@ -110,6 +110,8 @@ class MigrationPlan:
         # gateways still have to be stopped/uninstalled before this fleet is complete.
         if self.standalone_secondaries:
             return False
+        if self.interrupted:
+            return False
         return self.multiplex_flag_on or bool(self.live_served and len(self.live_served) > 1)
 
     @property
@@ -447,9 +449,14 @@ def build_migration_plan() -> MigrationPlan:
     with contextlib.suppress(Exception):
         allowlist = getattr(_profile_gateway_config(default_home), "multiplex_profile_allowlist", None)
     profiles = [
-        ProfileGateway(name=name, home=home, pid=_live_gateway_pid(home), service=_installed_service(home))
+        ProfileGateway(name=name, home=home, pid=_live_gateway_pid(home), services=_installed_services(home))
         for name, home in _profile_homes(allowlist)
     ]
+    for p in profiles:
+        uid, runtime_home = _gateway_identity(p.home, p.pid, p.services)
+        p.uid = uid
+        p.runtime_home = runtime_home
+        p.run_as_user = _systemd_service_user(p.home, p.services)
     plan = MigrationPlan(
         default_home=default_home, profiles=profiles,
         multiplex_flag_on=_read_multiplex_flag(default_home),
@@ -708,23 +715,37 @@ def _restore_default_gateway(default_home: Path, default_rec: dict) -> None:
     )
     desired_pid = default_rec.get("pid")
     current_pid = _live_gateway_pid(default_home)
-    current_service = _installed_service(default_home)
+    current_services = _installed_services(default_home)
 
     def stop_current() -> None:
-        nonlocal current_pid, current_service
+        nonlocal current_pid, current_services
         if current_pid is not None:
             _stop_gateway_process(default_home)
             current_pid = None
-        if current_service is not None:
-            kind, system = current_service
-            _service_op(kind, system, "stop", default_home)
-            _service_op(kind, system, "uninstall", default_home)
-            current_service = None
+        if current_services:
+            for kind, system in current_services:
+                _service_op(kind, system, "stop", default_home)
+                _service_op(kind, system, "uninstall", default_home)
+            current_services = []
+
+    current_service = current_services[0] if current_services else None
 
     if desired_service is None and desired_pid is None:
         # Migration may have installed the secondary service manager on the default home.
         # A default that was absent before migration must be absent after rollback too.
         stop_current()
+        # Clear any multiplexed served-profiles record so secondaries starting after
+        # rollback are not refused by the stale "still served by multiplexer" check.
+        try:
+            _gateway_state_path = default_home / "gateway_state.json"
+            if _gateway_state_path.exists():
+                _state = json.loads(_gateway_state_path.read_text(encoding="utf-8"))
+                if _state.get("served_profiles") or _state.get("platforms"):
+                    _state["served_profiles"] = []
+                    _state["platforms"] = {k: v for k, v in _state.get("platforms", {}).items() if ":" not in k}
+                    _gateway_state_path.write_text(json.dumps(_state), encoding="utf-8")
+        except Exception:
+            pass
         return
 
     if desired_service is not None:
@@ -788,6 +809,12 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
     if plan.already_multiplexed:
         print("✓ Already multiplexed — nothing to do.")
         return True
+    target = plan.target_service_kind()
+    run_as_user = plan.target_run_as_user()
+    refusal = _preflight_apply(plan, target, run_as_user)
+    if refusal:
+        _print([f"✗ Migration refused — {refusal}.", "  No changes were made; re-run with --force or resolve the blocker before changing anything."])
+        return False
     manifest = {
         "version": 1, "migrated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "flag_was": plan.multiplex_flag_on,
@@ -796,18 +823,24 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
     }
     # The complete rollback record must exist before the first stop/uninstall/kill/config mutation.
     _write_manifest(plan.default_home, manifest)
-    for p in plan.standalone_secondaries:
-        if p.service is not None:
-            kind, system = p.service
-            _service_op(kind, system, "stop", p.home)
-            _service_op(kind, system, "uninstall", p.home)
-            print(f"  ✓ {p.name}: stopped and removed its {p.service_label()} service")
-        if p.pid is not None:
-            _stop_gateway_process(p.home)
-            print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
-    _write_multiplex_flag(plan.default_home, True)
-    print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
-    print(f"  ✓ {_restart_default(plan.default, plan.target_service_kind(), plan.default_home)}")
+    try:
+        for p in plan.standalone_secondaries:
+            for kind, system in p.services:
+                _service_op(kind, system, "stop", p.home)
+                _service_op(kind, system, "uninstall", p.home)
+            if p.services:
+                print(f"  ✓ {p.name}: stopped and removed its {p.service_label()} service")
+            if p.pid is not None:
+                _stop_gateway_process(p.home)
+                print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
+        _write_multiplex_flag(plan.default_home, True)
+        print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
+        print(f"  ✓ {_restart_default(plan.default, target, plan.default_home, run_as_user=run_as_user)}")
+    except Exception as exc:
+        print(f"  ✗ {exc}")
+        print("  Rolling back the partially-applied migration from the manifest...")
+        rollback_migration(plan.default_home)
+        return False
 
     expected = {p.name for p in plan.profiles}
     served = _wait_for_served(plan.default_home, expected, served_wait)
@@ -837,9 +870,9 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
     if default_rec.get("service") or default_rec.get("pid"):
         print("  ✓ default: restored the gateway recorded before migration")
     else:
-        print("  ✓ default: restored its pre-migration stopped state")
+        print(f"  ✓ default: restored its pre-migration stopped state")
     ok = True
-    for rec in secondaries:
+    for rec in manifest["secondaries"]:
         name, home = str(rec["profile"]), Path(str(rec["home"]))
         try:
             services = _recorded_services(rec)
@@ -861,11 +894,16 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
         except Exception as exc:
             ok = False
             print(f"  ✗ {name}: {exc}")
-    if ok:
-        _manifest_path(default_home).unlink(missing_ok=True)
     # The flag is already off, so the default must come back standalone even when a secondary
     # failed (otherwise config and the live process disagree). The restart is LAST: from inside
     # the gateway's cgroup a service-manager restart kills this process, so nothing after it runs.
+    default_uid, _ = _gateway_identity(default_home, default_rec.get("pid"), _recorded_services(default_rec))
+    default_gw = ProfileGateway(
+        name="default", home=default_home,
+        pid=default_rec.get("pid"),
+        services=_recorded_services(default_rec),
+        uid=default_uid,
+    )
     if default_gw.has_gateway:
         try:
             print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
@@ -879,6 +917,7 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
             print(f"  ✗ default: could not restart its standalone gateway ({exc})")
             print("    The default gateway is still multiplexing; stop it by hand (hermes gateway stop) and re-run.")
     if ok:
+        _manifest_path(default_home).unlink(missing_ok=True)
         print("✓ Rolled back to per-profile gateways.")
     else:
         print(incomplete)

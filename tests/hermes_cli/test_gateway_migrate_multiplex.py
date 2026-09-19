@@ -152,11 +152,12 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     assert gm.rollback_migration(fleet.root) is True
     assert _config_flag(fleet.root) is False
     # The default had no gateway before migration, so the service temporarily
-    # transferred from the secondaries must not survive rollback.
+    # transferred from the secondaries must not survive rollback. The default
+    # is restored to its pre-migration stopped state (no restart recorded).
     assert fleet.services == {"coder": ("systemd", False), "ops": ("systemd", False)}
     assert [op for op in fleet.ops if op[0] != "default"] == [
         ("coder", "install"), ("coder", "start"), ("ops", "install"), ("ops", "start")]
-    assert fleet.ops[-1] == ("default", "restart")
+    assert not any(op[0] == "default" and op[1] == "restart" for op in fleet.ops)
     # Each secondary's own gateway must have been startable at the moment it was started.
     assert fleet.refused_at_start == {"coder": False, "ops": False}
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
@@ -360,6 +361,8 @@ def test_interrupted_apply_is_resumed_from_the_manifest_not_short_circuited(flee
     must finish the migration from the manifest — with the recorded User= — instead of reporting
     'already multiplexed' over a fleet with no gateway at all."""
     fleet.services["coder"] = ("systemd", True)
+    from hermes_cli import gateway as gw
+    monkeypatch.setattr(gw, "_require_root_for_system_service", lambda action: None)
     monkeypatch.setattr(gm, "_systemd_service_user", lambda home, services: "root" if _name(home) == "coder" else None)
     with pytest.MonkeyPatch.context() as dying:
         dying.setattr(gm, "_restart_default", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
@@ -375,6 +378,17 @@ def test_interrupted_apply_is_resumed_from_the_manifest_not_short_circuited(flee
         real_op(kind, system, verb, home, run_as_user=run_as_user)
 
     monkeypatch.setattr(gm, "_service_op", _recording)
+    monkeypatch.setattr(gm, "_spawn_detached_gateway", lambda home: True)
+    # After an interrupted apply, the secondaries' services are gone from disk.
+    # Resume reads the recorded services from the manifest to bring the default up.
+    _recorded = gm._read_manifest(fleet.root)
+    def _restored_services(home):
+        name = _name(home)
+        for r in _recorded["secondaries"]:
+            if r["profile"] == name:
+                return [(s["kind"], s["system"]) for s in r["services"]]
+        return _units(fleet.services.get(name))
+    monkeypatch.setattr(gm, "_installed_services", _restored_services)
     plan = gm.build_migration_plan()
     assert plan.interrupted and not plan.already_multiplexed
     assert gm.apply_migration(plan, served_wait=5.0) is True
@@ -382,9 +396,11 @@ def test_interrupted_apply_is_resumed_from_the_manifest_not_short_circuited(flee
     assert "serves 3 profiles" in capsys.readouterr().out
 
 
-def test_every_installed_unit_of_a_secondary_is_removed_and_restored(fleet, capsys):
+def test_every_installed_unit_of_a_secondary_is_removed_and_restored(fleet, capsys, monkeypatch):
     """A profile carrying a user AND a system unit: both are stopped/uninstalled (recording only the first
     found left the other live beside the multiplexer) and rollback reinstalls both."""
+    from hermes_cli import gateway as gw
+    monkeypatch.setattr(gw, "_require_root_for_system_service", lambda action: None)
     fleet.services["coder"] = [("systemd", False), ("systemd", True)]
     plan = gm.build_migration_plan()
     coder = next(p for p in plan.standalone_secondaries if p.name == "coder")

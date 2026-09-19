@@ -6,7 +6,7 @@ import contextlib
 import json
 import logging
 import re
-from typing import Any, List
+from typing import Any, Dict, List
 
 # Log under the plugin package's own logger name (loader-path independent).
 logger = logging.getLogger(__name__.rpartition(".")[0])
@@ -28,6 +28,8 @@ _HINDSIGHT_GLYPH = "👁️"
 # (vectorize-io/hindsight#932).
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_PREFETCH_JSON_CHARS_PER_TOKEN = 4
+_MIN_PREFETCH_JSON_CHARS = 256
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -53,6 +55,51 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _serialize_prefetch_data(kind: str, content: List[str], *, max_chars: int) -> str:
+    """Serialize untrusted Hindsight text as bounded JSON reference data."""
+    payload: Dict[str, Any] = {
+        "source": "hindsight",
+        "kind": kind,
+        "content": [],
+    }
+    limit = max(_MIN_PREFETCH_JSON_CHARS, int(max_chars))
+
+    def _encode() -> str:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return encoded.replace("<", "\\u003c").replace(">", "\\u003e")
+
+    for raw_text in content:
+        if not raw_text:
+            continue
+        text = str(raw_text)
+        payload["content"].append(text)
+        if len(_encode()) <= limit:
+            continue
+        payload["content"].pop()
+
+        low = 0
+        high = len(text)
+        best = ""
+        while low <= high:
+            midpoint = (low + high) // 2
+            excerpt = text[:midpoint]
+            if midpoint < len(text):
+                excerpt += "…"
+            payload["content"].append(excerpt)
+            candidate = _encode()
+            payload["content"].pop()
+            if len(candidate) <= limit:
+                best = excerpt
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+        if best:
+            payload["content"].append(best)
+        break
+
+    return _encode() if payload["content"] else ""
 
 
 def _daemon_llm_provider(provider: str) -> str:

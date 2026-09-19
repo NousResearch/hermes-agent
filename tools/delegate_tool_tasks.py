@@ -121,6 +121,51 @@ def _coerce_task_schemas(
         task_schemas.append(coerced_schema)
     return task_schemas, None
 
+
+def _validate_launch_packet(
+    launch_packet: Any, task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]]
+) -> Optional[str]:
+    """Validate an opt-in caller contract before any child construction."""
+    if launch_packet is None:
+        return None
+    if not isinstance(launch_packet, dict):
+        return "launch_packet must be an object when provided."
+
+    expected_count = launch_packet.get("expect_tasks")
+    if expected_count is not None:
+        if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 1:
+            return "launch_packet.expect_tasks must be a positive integer."
+        if len(task_list) != expected_count:
+            return (
+                f"launch_packet expects exactly {expected_count} tasks, but received {len(task_list)}. "
+                "Correct the packet before spawning children."
+            )
+
+    required_keys = launch_packet.get("require_task_keys", [])
+    if not isinstance(required_keys, list) or any(not isinstance(key, str) or not key.strip() for key in required_keys):
+        return "launch_packet.require_task_keys must be an array of non-empty field names."
+    if len(set(required_keys)) != len(required_keys):
+        return "launch_packet.require_task_keys must not repeat field names."
+    for index, task in enumerate(task_list):
+        missing_keys = [key for key in required_keys if key not in task or task[key] is None]
+        if missing_keys:
+            return (
+                f"Task {index} is missing required launch_packet field(s): {', '.join(missing_keys)}. "
+                "Correct the packet before spawning children."
+            )
+
+    require_schema = launch_packet.get("require_output_schema", False)
+    if not isinstance(require_schema, bool):
+        return "launch_packet.require_output_schema must be a boolean."
+    if require_schema:
+        missing_schemas = [str(index) for index, schema in enumerate(task_schemas) if schema is None]
+        if missing_schemas:
+            return (
+                "launch_packet requires output_schema for every task; missing coerced schema for task(s): "
+                f"{', '.join(missing_schemas)}. Correct the packet before spawning children."
+            )
+    return None
+
 # Per-task image ceiling: enough for screenshots/mocks while keeping the child's first request small.
 _MAX_TASK_IMAGES = 8
 

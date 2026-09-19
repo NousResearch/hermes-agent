@@ -48,6 +48,7 @@ from tools.delegate_tool_registry import (  # noqa: F401
 )
 from tools.delegate_tool_tasks import (  # noqa: F401
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
+    _validate_launch_packet,
 )
 from tools.delegate_tool_toolsets import (  # noqa: F401
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
@@ -417,7 +418,8 @@ def _build_children(
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
-    output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
+    output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None,
+    launch_packet: Optional[Dict[str, Any]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -478,6 +480,8 @@ def delegate_task(
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
+    if not err:
+        err = _validate_launch_packet(launch_packet, task_list, task_schemas)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
     if err:
@@ -664,6 +668,22 @@ DELEGATE_TASK_SCHEMA = {
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "launch_packet": _p(
+                "object",
+                "Optional fail-closed contract for this delegation packet. When omitted, existing task behavior is "
+                "unchanged. Use expect_tasks for an exact count, require_task_keys for fields every task must carry, "
+                "and require_output_schema to require a valid output schema for every task before children spawn.",
+                properties={
+                    "expect_tasks": _p("integer", "Exact number of task entries required before spawning.", minimum=1),
+                    "require_task_keys": _p(
+                        "array", "Task field names that every entry must provide.",
+                        items={"type": "string", "minLength": 1}, uniqueItems=True,
+                    ),
+                    "require_output_schema": _p(
+                        "boolean", "Require every task to provide a valid output_schema before spawning.",
+                    ),
+                },
+            ),
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
             "action": _p(
@@ -716,7 +736,8 @@ registry.register(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
-        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        images=args.get("images"), launch_packet=args.get("launch_packet"), action=args.get("action"),
+        subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

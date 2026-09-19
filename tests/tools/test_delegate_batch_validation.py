@@ -42,8 +42,10 @@ def _make_mock_parent(depth=0):
     return parent
 
 
-def _call(tasks):
-    return json.loads(delegate_task(tasks=tasks, parent_agent=_make_mock_parent()))
+def _call(tasks, launch_packet=None):
+    return json.loads(delegate_task(
+        tasks=tasks, launch_packet=launch_packet, parent_agent=_make_mock_parent()
+    ))
 
 
 GOOD_A = "Refactor the login handler to use the new session helper"
@@ -180,6 +182,80 @@ class TestValidBatchStillRuns(unittest.TestCase):
             }
             result = json.loads(delegate_task(goal="test", parent_agent=parent))
         self.assertNotIn("error", result)
+
+
+class TestLaunchPacketValidation(unittest.TestCase):
+    """Regression coverage for #113983's opt-in caller-side packet contract."""
+
+    def test_unvalidated_fan_out_is_rejected_before_children_spawn(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            result = _call(
+                [{"goal": GOOD_A}, {"goal": GOOD_B}],
+                launch_packet={
+                    "expect_tasks": 2,
+                    "require_task_keys": ["context"],
+                    "require_output_schema": True,
+                },
+            )
+        self.assertIn("error", result)
+        self.assertIn("context", result["error"])
+        mock_run.assert_not_called()
+
+    def test_packet_count_contract_rejects_before_children_spawn(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            result = _call(
+                [{"goal": GOOD_A}],
+                launch_packet={"expect_tasks": 2},
+            )
+        self.assertIn("expects exactly 2 tasks", result["error"])
+        mock_run.assert_not_called()
+
+    def test_output_schema_contract_rejects_before_children_spawn(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            result = _call(
+                [
+                    {"goal": GOOD_A, "context": "First contract entry"},
+                    {"goal": GOOD_B, "context": "Second contract entry"},
+                ],
+                launch_packet={"require_output_schema": True},
+            )
+        self.assertIn("requires output_schema", result["error"])
+        mock_run.assert_not_called()
+
+    def test_validated_fan_out_runs_after_contract_is_satisfied(self):
+        schema = {"type": "object", "properties": {"summary": {"type": "string"}}}
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [
+                {"task_index": 0, "status": "completed", "summary": "A done",
+                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
+                {"task_index": 1, "status": "completed", "summary": "B done",
+                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
+            ]
+            result = _call(
+                [
+                    {"goal": GOOD_A, "context": "First contract entry", "output_schema": schema},
+                    {"goal": GOOD_B, "context": "Second contract entry", "output_schema": schema},
+                ],
+                launch_packet={
+                    "expect_tasks": 2,
+                    "require_task_keys": ["context"],
+                    "require_output_schema": True,
+                },
+            )
+        self.assertNotIn("error", result)
+        self.assertEqual(mock_run.call_count, 2)
+
+    def test_launch_packet_omission_preserves_existing_batch_compatibility(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [
+                {"task_index": 0, "status": "completed", "summary": "A done",
+                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
+                {"task_index": 1, "status": "completed", "summary": "B done",
+                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
+            ]
+            result = _call([{"goal": GOOD_A}, {"goal": GOOD_B}])
+        self.assertNotIn("error", result)
+        self.assertEqual(mock_run.call_count, 2)
 
 
 if __name__ == "__main__":

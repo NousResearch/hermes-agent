@@ -1693,6 +1693,58 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
                    for r in caplog.records)
 
 
+class TestEmbeddedDaemonStartupFailure:
+    def test_stale_pg0_pid_failure_is_actionable(self, tmp_path, monkeypatch, caplog, capsys):
+        import logging
+
+        failure = RuntimeError(
+            "Failed to start embedded PostgreSQL after 5 attempts. "
+            "Last error: Error: Instance already running (pid: 1020)"
+        )
+        client = SimpleNamespace(
+            _manager=SimpleNamespace(is_running=lambda profile: False),
+            _ensure_started=lambda: (_ for _ in ()).throw(failure),
+        )
+        daemon_manager = SimpleNamespace(console=None)
+        monkeypatch.setitem(
+            sys.modules,
+            "hindsight_embed",
+            SimpleNamespace(daemon_embed_manager=daemon_manager),
+        )
+        monkeypatch.setitem(
+            sys.modules, "hindsight_embed.daemon_embed_manager", daemon_manager
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._load_simple_env", lambda path: {}
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._build_embedded_profile_env", lambda config: {}
+        )
+
+        provider = HindsightMemoryProvider()
+        provider._config = {"profile": "hermes"}
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+
+        with caplog.at_level(logging.WARNING):
+            provider._daemon_start_worker()
+
+        warning = next(
+            record.getMessage()
+            for record in caplog.records
+            if "stale pg0 PID" in record.getMessage()
+        )
+        assert "verify that no PostgreSQL process is running" in warning
+        assert "nothing is listening on port 5432" in warning
+        assert "vectorize-io/pg0#37" in warning
+        assert warning in capsys.readouterr().err
+        assert "Instance already running (pid: 1020)" in (
+            tmp_path / "logs" / "hindsight-embed.log"
+        ).read_text()
+
+
 
 class TestMultiplexBackgroundScope:
     """Under multiplex_profiles get_secret fails closed on an unscoped thread;

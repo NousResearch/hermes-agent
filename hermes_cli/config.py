@@ -3338,7 +3338,9 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     node: Any = DEFAULT_CONFIG.get(top)
     consumed = [top]
     for seg in segments[1:]:
-        if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict) or not node:
+        if not isinstance(node, dict) or not node:
+            return True, None
+        if seg in _PLATFORM_CONTAINER_KEYS and seg in node:
             return True, None
         if seg not in node:
             # ``gateway.discord.<field>``: the path minus its wrong prefix is itself a known key.
@@ -3530,6 +3532,12 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     ``display.platforms`` one — a silent no-op that looks like a duplicated key to the user.
     """
     segs = _split_key_path(key)
+    if len(segs) >= 3 and segs[0] == "gateway" and segs[1] == "platforms":
+        # #115212: ``gateway.platforms.<p>.<field>`` is a silent no-op — the gateway loader reads
+        # the top-level ``platforms.<p>.<field>`` block. Redirect so the write lands on the
+        # key the runtime actually reads.
+        canonical = ".".join(["platforms"] + segs[2:])
+        return canonical, f"  (note: 'gateway.platforms.*' is not a runtime-read path — saved as {canonical})"
     if len(segs) != 3 or segs[0] != "platforms":
         return key, None
     try:

@@ -1037,6 +1037,53 @@ def _config_readonly(what: str) -> dict:
         return {}
 
 
+def _get_external_skill_filters() -> tuple[list[str], list[str]]:
+    """``skills.external_include`` / ``skills.external_exclude`` glob patterns (profile config).
+
+    Fail-open: an unreadable config or a non-list value yields no filters, which keeps the
+    unfiltered index — the same thing an absent key does, so old configs are unaffected.
+    """
+    try:
+        cfg = _config_readonly("skills").get("skills") or {}
+        if not isinstance(cfg, dict):
+            return [], []
+        inc, exc = cfg.get("external_include") or [], cfg.get("external_exclude") or []
+        return ([str(x) for x in inc if isinstance(x, str) and x.strip()],
+                [str(x) for x in exc if isinstance(x, str) and x.strip()])
+    except Exception as e:
+        logger.debug("Could not read external skill filters from config: %s", e)
+        return [], []
+
+
+def _skill_matches_filter(rel_path: str, name: str, include: list[str], exclude: list[str]) -> bool:
+    """Whether an external skill passes the patterns; ``exclude`` always wins.
+
+    A pattern is matched case-sensitively against the skill's root-relative path, its
+    frontmatter name, every path prefix (so ``workflow/*`` keeps nested ``workflow/a/b``),
+    and — for patterns with no slash — the top-level directory. An empty *include* keeps
+    everything (backward compatible).
+    """
+    import fnmatch
+    rel = rel_path.replace("\\", "/").strip("/")
+    parts, targets = rel.split("/"), {rel, name}
+    targets.update("/".join(parts[:i]) for i in range(1, len(parts)))
+
+    def hit(pattern: str) -> bool:
+        pat = pattern.replace("\\", "/").strip("/")
+        if any(fnmatch.fnmatch(target, pat) for target in targets):
+            return True
+        if "/" not in pat and parts[0] == pat:  # bare name = "this category", e.g. "github"
+            return True
+        pp = pat.split("/")  # trailing-segment match: "vendor/*" also catches "workflow/vendor/*"
+        return len(pp) <= len(parts) and all(
+            fnmatch.fnmatch(seg, pseg) for seg, pseg in zip(parts[-len(pp):], pp)
+        )
+
+    if any(hit(pattern) for pattern in exclude):
+        return False
+    return not include or any(hit(pattern) for pattern in include)
+
+
 def _embedder_environment_hint() -> str:
     """Embedder-supplied environment description: HERMES_ENVIRONMENT_HINT (container ENV)
     wins over config.yaml ``agent.environment_hint``. Read once at prompt-build time."""
@@ -1247,6 +1294,8 @@ def build_skills_system_prompt(
     """Compact skill index for the system prompt.
 
     External dirs (``skills.external_dirs``) are read-only and lose name collisions to local skills.
+    ``skills.external_include``/``external_exclude`` globs narrow that tier only (exclude wins;
+    an empty ``include`` keeps everything) and are index-only: a filtered skill still loads by name.
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
@@ -1291,9 +1340,13 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
 
 def _collect_extra_skills(
     root: Path, skill_files, hides, claimed: set[str], skills_by_category: dict[str, list[tuple[str, str]]],
-    *, desc_prefix: str, log_fmt: str,
+    *, desc_prefix: str, log_fmt: str, skill_filter=None,
 ) -> None:
-    """Add visible skills from a project/external dir; names already in *claimed* are skipped."""
+    """Add visible skills from a project/external dir; names already in *claimed* are skipped.
+
+    ``skill_filter(rel_path, name)`` (external dirs only) drops the skill before it is claimed,
+    so a filtered skill does not shadow a same-named one added later.
+    """
     for skill_file in skill_files:
         try:
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
@@ -1301,6 +1354,15 @@ def _collect_extra_skills(
             fm_name = entry["frontmatter_name"] if entry else ""
             if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
                 continue
+            if skill_filter is not None:
+                try:
+                    rel = skill_file.relative_to(root).as_posix()
+                    if rel.endswith("/SKILL.md"):
+                        rel = rel[:-len("/SKILL.md")]
+                except Exception:
+                    rel = skill_file.parent.name
+                if not skill_filter(rel, fm_name):
+                    continue
             claimed.add(fm_name)
             skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{entry['description']}".strip()))
         except Exception as e:
@@ -1386,11 +1448,15 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
+    # External filters join the key: profiles sharing one skills root differ only by these patterns,
+    # so without them the first profile's filtered index would be served to the next one.
+    _ext_inc, _ext_exc = _get_external_skill_filters()
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        tuple(sorted(_ext_inc)), tuple(sorted(_ext_exc)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1441,10 +1507,14 @@ def _build_skills_system_prompt_inner(
             logger.debug("Could not write skills prompt snapshot: %s", e)
 
     # External skill directories: scanned directly (read-only, small); names already indexed are skipped.
+    # ``skills.external_include``/``external_exclude`` (profile config) narrow this tier only.
+    _ext_filter = ((lambda rel, name: _skill_matches_filter(rel, name, _ext_inc, _ext_exc))
+                   if (_ext_inc or _ext_exc) else None)
     seen_skill_names: set[str] = {name for cat in skills_by_category.values() for name, _ in cat}
     for ext_dir in (d for d in external_dirs if d.exists()):
         _collect_extra_skills(ext_dir, iter_skill_index_files(ext_dir, "SKILL.md"), hides, seen_skill_names,
-                              skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s")
+                              skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s",
+                              skill_filter=_ext_filter)
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 

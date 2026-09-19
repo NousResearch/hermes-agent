@@ -357,7 +357,9 @@ def get_external_skills_dirs() -> List[Path]:
         if p.is_dir():
             result.append(p)
         else:
-            logger.debug("External skills dir does not exist, skipping: %s", p)
+            # Warning, not debug: a glob or a typo here is otherwise silent, and the index just
+            # stays over-broad (globs are not expanded — only literal directories are scanned).
+            logger.warning("External skills dir does not exist, skipping (globs are not expanded): %s", p)
     if cache_key is not None:
         _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
     return result

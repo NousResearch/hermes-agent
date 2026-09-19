@@ -1,6 +1,6 @@
 name: hermes-jev
 repo: https://github.com/keeltrace/hermes-jev
-sha: 4feea5ef45aeb301622f18175ed4cf2e068b99bd
+sha: 92bd505f48338ec60bd31eb5fa0175d63afbaee1
 subdir: ""
 description: Asynchronous Jev decision nervous system with adaptive routing, receipt-backed verification, confidence-gated challenges, typed decisions, and context governance.
 maintainer: keeltrace
@@ -8,7 +8,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.21"
 docs_url: https://github.com/keeltrace/hermes-jev#readme
-version: "0.2.1.1"
+version: "0.2.1.2"
 capabilities:
   provides_tools:
   - jev_decide

@@ -29,6 +29,7 @@ from agent.vault_login_classifier import (  # noqa: E402
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
+    classify_otp_controls,
     classify_login_control,
     select_password_fill,
 )
@@ -171,6 +172,58 @@ class TestClassifier:
         for token in ("username", "email", "tel", "current-password"):
             res = classify_login_control(_ctrl(autocomplete=token))
             assert res is not None and res.score == 100 and res.token == token
+
+    def test_td_synnex_spanish_verification_control_is_otp(self):
+        controls = [LoginControl.from_dict({
+            "index": 0, "name": "code", "type": "text", "maxLength": 6,
+            "nearbyText": "Código de verificación",
+            "pageText": "TD SYNNEX | Verificación de identidad",
+        })]
+        result = classify_otp_controls(controls)
+        assert len(result) == 1
+        assert result[0].control.name == "code" and result[0].score == 65
+
+    def test_unique_bare_code_requires_an_mfa_page_and_plausible_length(self):
+        challenge = _ctrl(name="code", page_text="Identity verification", max_length=6)
+        assert len(classify_otp_controls([challenge])) == 1
+        assert classify_otp_controls([_ctrl(name="code", page_text="Redeem discount", max_length=6)]) == []
+        assert classify_otp_controls([_ctrl(name="code", page_text="Sign in to checkout", max_length=6)]) == []
+        assert classify_otp_controls([_ctrl(name="code", page_text="Identity verification", max_length=40)]) == []
+        assert classify_otp_controls([challenge, _ctrl(index=1, name="code", page_text="Identity verification")]) == []
+
+    def test_nearby_text_requires_specific_mfa_page_and_rejects_security_codes(self):
+        verification = _ctrl(
+            name="code", nearby_text="Código de verificación",
+            page_text="Sign in", max_length=6,
+        )
+        assert classify_otp_controls([verification]) == []
+        assert classify_otp_controls([_ctrl(
+            name="cvc", label="Security code", nearby_text="Código de seguridad",
+            page_text="Identity verification", max_length=3,
+        )]) == []
+        assert classify_otp_controls([_ctrl(
+            name="promo", nearby_text="Code de sécurité",
+            page_text="Vérification de l'identité", max_length=6,
+        )]) == []
+
+    def test_nearby_text_is_unique_or_an_all_single_digit_group(self):
+        shared = {
+            "nearby_text": "Código de verificación",
+            "page_text": "Verificación de identidad",
+        }
+        ambiguous = [
+            _ctrl(index=0, name="account", max_length=6, **shared),
+            _ctrl(index=1, name="code", max_length=6, **shared),
+        ]
+        assert classify_otp_controls(ambiguous) == []
+
+        boxes = [_ctrl(index=index, max_length=1, **shared) for index in range(6)]
+        assert [item.control.index for item in classify_otp_controls(boxes)] == list(range(6))
+
+    def test_normalized_verification_code_name_is_live_fallback(self):
+        challenge = _ctrl(name="verification_code", page_text="Enter verification code", max_length=6)
+        result = classify_otp_controls([challenge])
+        assert len(result) == 1 and result[0].score == 70
 
     def test_new_password_autocomplete_excluded(self):
         assert classify_login_control(
@@ -858,11 +911,12 @@ class TestTwoFactor:
         # the real widget
         assert [f["value"] for f in build_otp_fills([ctl(i + 4, maxlen=1) for i in range(6)], "246810")] == list("246810")
 
-    def test_no_code_field_points_at_passkey_or_device_approval(self):
+    def test_unclassified_text_field_does_not_infer_passkey_or_device_approval(self):
         from tools import browser_vault_tool
 
         fake_eval = lambda t, e: {"success": True, "result": json.dumps([{"index": 0, "type": "text", "name": "q", "label": "Search", "autocomplete": ""}]) if "querySelectorAll" in e else "https://acme.test/approve"}
         with patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
-        assert out["error_type"] == "no_code_field" and "device" in out["error"]
+        assert out["error_type"] == "no_code_field"
+        assert "visible text control" in out["error"] and "passkey" not in out["error"]

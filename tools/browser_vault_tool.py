@@ -343,11 +343,19 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
-    otp_controls = classify_otp_controls([LoginControl.from_dict(r) for r in (raw_controls or []) if isinstance(r, dict)])
+    inspected_controls = [LoginControl.from_dict(r) for r in (raw_controls or []) if isinstance(r, dict)]
+    otp_controls = classify_otp_controls(inspected_controls)
     if not otp_controls:
+        has_visible_text_control = any(control.type in ("text", "tel", "number", "password", "")
+                                       for control in inspected_controls)
+        if has_visible_text_control:
+            error = ("A visible text control is present, but Hermes could not safely identify it as a one-time-code field. "
+                     "Do not enter a secret into an unclassified control; inspect the page label and retry after the page settles.")
+        else:
+            error = ("No one-time-code field is visible on the current page. If the site wants a passkey, hardware key or "
+                     "an approval tap in an app, tell the user to complete it on their device and wait for the page to move on.")
         return json.dumps({"success": False, "error_type": "no_code_field",
-                           "error": ("No one-time-code field on the current page. If the site wants a passkey, hardware key or "
-                                     "an approval tap in an app, tell the user to complete it on their device and wait for the page to move on.")})
+                           "error": error})
 
     code: Optional[str] = None
     source = "user"

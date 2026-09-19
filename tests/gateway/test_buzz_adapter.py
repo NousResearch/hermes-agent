@@ -2585,8 +2585,8 @@ class TestThreadAnchoring:
         for i in range(a._THREAD_ROOT_CACHE + 50):
             a._record_thread_root(f"id{i}", self._event(f"id{i}"))
         assert len(a._thread_roots) == a._THREAD_ROOT_CACHE
-        assert "id0" not in a._thread_roots
-        assert f"id{a._THREAD_ROOT_CACHE + 49}" in a._thread_roots
+        assert (CHANNEL, "id0") not in a._thread_roots
+        assert (CHANNEL, f"id{a._THREAD_ROOT_CACHE + 49}") in a._thread_roots
 
     @pytest.mark.asyncio
     async def test_send_anchors_to_root_not_trigger(self):

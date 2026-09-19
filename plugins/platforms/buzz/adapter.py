@@ -566,7 +566,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._member_cache: Dict[str, Tuple[float, List[str]]] = {}  # (monotonic, pubkeys)
         self._profile_name_cache: Dict[str, Tuple[float, str]] = {}
         # inbound event_id -> thread root (None when top-level), so send() joins the user's thread instead of nesting.
-        self._thread_roots: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._thread_roots: "OrderedDict[Tuple[str, str], Optional[str]]" = OrderedDict()
 
     @property
     def name(self) -> str:
@@ -816,18 +816,19 @@ class BuzzAdapter(BasePlatformAdapter):
         # Anchor: metadata.thread_id, then metadata.reply_to_message_id (stream/progress sends), then reply_to.
         meta = metadata or {}
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        args += self._reply_args(meta.get("thread_id") or meta.get("reply_to_message_id") or reply_to)
+        args += self._reply_args(meta.get("thread_id") or meta.get("reply_to_message_id") or reply_to, chat_id)
         mention_pubkeys = await self._mention_pubkeys_for(chat_id, content)
         code, out, err = await self._run_message_send(args, content, mention_pubkeys)
         result = self._send_result(chat_id, code, out, err)
         if result.success:
             # Record event_meta so a thread reply to this send matches even if the echo never arrives.
             self._remember_event_meta(str(chat_id), result.message_id, self._self_pubkey, content)
+            self._remember_sent_root(chat_id, result.message_id, args)
         return result
 
-    def _reply_args(self, anchor: Optional[str]) -> List[str]:
+    def _reply_args(self, anchor: Optional[str], chat_id: Optional[str] = None) -> List[str]:
         """``--reply-to`` CLI args for *anchor*, honoring ``reply_to_mode``."""
-        reply_target = self._resolve_reply_anchor(anchor)
+        reply_target = self._resolve_reply_anchor(anchor, chat_id)
         return ["--reply-to", str(reply_target)] if reply_target and self._reply_to_mode != "off" else []
 
     def _send_result(self, chat_id: str, code: int, out: str, err: str, *, redact_path: Optional[Path] = None) -> SendResult:
@@ -915,9 +916,12 @@ class BuzzAdapter(BasePlatformAdapter):
             # Never leak host filesystem paths into chat-visible errors.
             return SendResult(success=False, error="Media file not found")
         args = ["messages", "send", "--channel", str(chat_id), "--file", str(local), "--content", "-"]
-        args += self._reply_args((metadata or {}).get("thread_id") or reply_to)
+        args += self._reply_args((metadata or {}).get("thread_id") or reply_to, chat_id)
         code, out, err = await self._run_message_send(args, caption or "")
-        return self._send_result(chat_id, code, out, err, redact_path=local)
+        result = self._send_result(chat_id, code, out, err, redact_path=local)
+        if result.success:
+            self._remember_sent_root(chat_id, result.message_id, args)
+        return result
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -1311,6 +1315,7 @@ class BuzzAdapter(BasePlatformAdapter):
             # History is never dispatched but feeds event_meta (post-restart replies to us must match) and latches DMs.
             # See #75826.
             self._remember_event(state, event)
+            self._record_thread_root(str(event.get("id") or ""), event, channel_id)
             self._maybe_latch_dm(channel_id, state, event)
         self._trim_seen(state)
 
@@ -1502,6 +1507,7 @@ class BuzzAdapter(BasePlatformAdapter):
             return
         # Cache before any early return so self-echo and concurrent-author traffic can still be reply parents.
         self._remember_event(state, event)
+        self._record_thread_root(event_id, event, channel_id)
         # See #75826.
         if pubkey == self._self_pubkey:
             return
@@ -1524,8 +1530,7 @@ class BuzzAdapter(BasePlatformAdapter):
         # Strip a leading @mention (DMs often open with one too) so "@Chip /whoami" is recognized as a command.
         dispatch_text = self._strip_mention(content)
         # NIP-10 root scopes the session; remember it so our reply joins the SAME thread instead of nesting.
-        thread_id = self._extract_thread_root(event)
-        self._record_thread_root(event_id, event)
+        thread_id = self._resolve_reply_anchor(self._extract_thread_root(event), channel_id)
         # Attachment fetch spends credentials: only the gateway's explicit ``True`` permits it (else fail closed).
         # The message still dispatches so GatewayRunner can apply denial/pairing.
         chat_type = "dm" if is_dm else "group"
@@ -1665,19 +1670,45 @@ class BuzzAdapter(BasePlatformAdapter):
         # A lone "reply" e-tag started a thread off <reply>; that parent IS the root.
         return root or reply
 
-    def _record_thread_root(self, event_id: str, event: dict) -> None:
-        """Cache the thread root for an inbound message id."""
+    def _remember_sent_root(self, chat_id: str, event_id: Optional[str], args: List[str]) -> None:
+        """Record only the anchor actually published after a validated receipt."""
+        tags = ([["e", args[args.index("--reply-to") + 1], "", "root"]]
+                if "--reply-to" in args else [])
+        self._record_thread_root(event_id or "", {"tags": tags}, chat_id)
+
+    def _record_thread_root(self, event_id: str, event: dict, chat_id: Optional[str] = None) -> None:
+        """Cache bounded, channel-scoped ancestry; seed ordering is immaterial."""
         if not event_id:
             return
+        if chat_id is None:
+            chat_id = next((str(t[1]) for t in event.get("tags", [])
+                            if isinstance(t, list) and len(t) > 1 and t[0] == "h"), "")
         roots = self._thread_roots
-        roots[event_id] = self._extract_thread_root(event)
-        roots.move_to_end(event_id)
+        key = (str(chat_id), str(event_id))
+        roots[key] = self._extract_thread_root(event)
+        roots.move_to_end(key)
         while len(roots) > self._THREAD_ROOT_CACHE:
             roots.popitem(last=False)
 
-    def _resolve_reply_anchor(self, anchor: Optional[str]) -> Optional[str]:
-        """Thread root when the trigger was inside a thread (reply joins it), else the anchor unchanged."""
-        return (self._thread_roots.get(str(anchor)) or anchor) if anchor else anchor
+    def _resolve_reply_anchor(self, anchor: Optional[str], chat_id: Optional[str] = None) -> Optional[str]:
+        """Follow known ancestry, including newest-first seeds, with cycle protection."""
+        if not anchor:
+            return anchor
+        root = str(anchor)
+        if chat_id is None:
+            # Legacy direct helper callers can resolve only an unambiguous channel.
+            channels = {channel for channel, event_id in self._thread_roots if event_id == root}
+            if len(channels) != 1:
+                return anchor
+            chat_id = channels.pop()
+        visited = set()
+        while root not in visited:
+            visited.add(root)
+            parent = self._thread_roots.get((str(chat_id), root))
+            if not parent:
+                break
+            root = str(parent)
+        return root
 
     def _remember_event(self, state: dict, event: dict) -> None:
         """Record author + content snippet for later NIP-10 parent lookup."""

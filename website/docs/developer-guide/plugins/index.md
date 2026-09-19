@@ -1241,7 +1241,7 @@ def register(ctx):
 
 ### Dispatch tools from slash commands
 
-Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `file_edit`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.
+Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `write_file`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.
 
 ```python
 def register(ctx):
@@ -1266,7 +1266,7 @@ def register(ctx):
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `name` | `str` | Tool name as registered in the tool registry (e.g. `"delegate_task"`, `"file_edit"`) |
+| `name` | `str` | Tool name as registered in the tool registry (e.g. `"delegate_task"`, `"write_file"`) |
 | `args` | `dict` | Tool arguments, same shape the model would send |
 | `parent_agent` | `Agent \| None` | Optional override. When omitted, resolves from the current CLI agent (or degrades gracefully in gateway mode) |
 

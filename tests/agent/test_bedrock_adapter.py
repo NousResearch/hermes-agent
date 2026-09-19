@@ -255,6 +255,70 @@ class TestConvertMessagesToConverse:
         # Empty string should get a space placeholder
         assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
+    # -- input_image / Anthropic-native image parts ------------------------
+    # Only ``image_url`` had a branch, so the other two shapes fell through and
+    # were dropped: the model was asked to describe an image it never received.
+    # Bedrock frequently serves Claude models, so all three reach this converter.
+
+    @pytest.mark.parametrize("image_url", [
+        "data:image/png;base64,iVBORw0KGgo=",              # bare string (Responses)
+        {"url": "data:image/png;base64,iVBORw0KGgo="},     # defensive dict form
+    ])
+    def test_input_image_data_url_becomes_image_block(self, image_url):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([{"type": "input_image", "image_url": image_url}])
+        images = [b for b in blocks if "image" in b]
+        assert len(images) == 1
+        assert images[0]["image"]["format"] == "png"
+        # RAW bytes, not the base64 string: boto3 encodes on the wire, so a
+        # string here double-encodes and Bedrock rejects it. Ref: #33317.
+        assert images[0]["image"]["source"]["bytes"] == b"\x89PNG\r\n\x1a\n"
+
+    def test_input_image_remote_url_becomes_text_reference(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([
+            {"type": "input_image", "image_url": "https://example.com/y.png"}])
+        assert blocks == [{"text": "[Image: https://example.com/y.png]"}]
+
+    def test_input_image_with_null_url_is_skipped_not_fatal(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([{"type": "input_image", "image_url": None}])
+        # Nothing usable, so the caller's placeholder stands in; no raise.
+        assert blocks == [{"text": "(empty)"}]
+
+    def test_anthropic_image_base64_source_becomes_image_block(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([{
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/gif", "data": "iVBORw0KGgo="},
+        }])
+        images = [b for b in blocks if "image" in b]
+        assert len(images) == 1
+        assert images[0]["image"]["format"] == "gif"
+        assert images[0]["image"]["source"]["bytes"] == b"\x89PNG\r\n\x1a\n"
+
+    def test_anthropic_image_without_media_type_defaults_to_jpeg(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([{
+            "type": "image", "source": {"type": "base64", "data": "iVBORw0KGgo="}}])
+        assert [b for b in blocks if "image" in b][0]["image"]["format"] == "jpeg"
+
+    def test_anthropic_image_url_source_becomes_text_reference(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([{
+            "type": "image", "source": {"type": "url", "url": "https://example.com/y.png"}}])
+        assert blocks == [{"text": "[Image: https://example.com/y.png]"}]
+
+    def test_existing_image_url_path_is_unchanged(self):
+        """Control: the one shape that already worked must be untouched."""
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([{
+            "type": "image_url",
+            "image_url": {"url": "data:image/jpeg;base64,iVBORw0KGgo="}}])
+        images = [b for b in blocks if "image" in b]
+        assert len(images) == 1
+        assert images[0]["image"]["format"] == "jpeg"
+
 
 # ---------------------------------------------------------------------------
 # Response normalization: Converse → OpenAI

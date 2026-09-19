@@ -5,6 +5,33 @@ export interface PoolRetireEntry {
   activeTurn?: boolean
   lastActiveAt?: null | number
   process?: unknown
+  /** A pooled descriptor entry (registry/remote) has no child but IS a live backend. */
+  connectionPromise?: null | Promise<unknown>
+}
+
+/**
+ * Whether a stale pool entry has a backend whose admission fence can be
+ * addressed at all — a local child at its own port, a descriptor at the backend
+ * behind its resolved connection. An entry whose connect never reached a backend
+ * has no fence to ask and stays reclaimable on staleness alone.
+ */
+function fenceable(entry: PoolRetireEntry): boolean {
+  return Boolean(entry.process || entry.connectionPromise)
+}
+
+/**
+ * Whether tearing this entry down stops a backend process, which is what makes
+ * a work proof mandatory before the teardown.
+ *
+ * A local child is ours. A remote `serve` this app spawned over SSH is ours too
+ * — its teardown kills the remote child — so a descriptor entry MUST be passed
+ * `ownedRemote` from the caller that knows it. A plain remote descriptor is only
+ * a local handle: dropping it kills nothing, and the fence behind
+ * ``/api/health/retirement`` is irreversible, so fencing a backend we never stop
+ * would strand it.
+ */
+export function teardownStopsBackend(entry: PoolRetireEntry, ownedRemote: boolean): boolean {
+  return Boolean(entry.process) || ownedRemote
 }
 
 export interface PoolRetirerDeps<E extends PoolRetireEntry> {
@@ -53,7 +80,10 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
   async function retire(key: string, entry: E, needed: () => boolean): Promise<boolean> {
     const eligible = () => !disposed && deps.pool.get(key) === entry && entry.activeTurn !== true && needed()
 
-    if (!entry.process || !eligible()) {
+    // Both pool shapes route through one admission authority: a local child
+    // proves work at its own port, a descriptor entry at the backend behind
+    // its resolved connection. Nothing is torn down on staleness alone.
+    if (!fenceable(entry) || !eligible()) {
       return false
     }
 

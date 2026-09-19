@@ -100,6 +100,11 @@ def _write_output(output, text, summary) -> None:
 
 def _cmd_repair(args):
     from hermes_state import DEFAULT_DB_PATH as db_path, SessionDB
+    from hermes_state_backend import resolve_database_settings
+    if resolve_database_settings(db_path).backend == "postgres":
+        print("PostgreSQL is selected. Use PostgreSQL administration tools for database repair; "
+              "'hermes sessions repair' only repairs SQLite files.")
+        return 1
     from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
@@ -856,6 +861,17 @@ def _print_size_change(db, before_mb, prefix=""):
 
 
 def _cmd_optimize(db, args):
+    if db.backend == "postgres":
+        print("Optimizing PostgreSQL session search index…")
+        try:
+            db.optimize_fts()
+            size_mb = db.logical_size_bytes() / (1024 * 1024)
+        except Exception as exc:
+            print(f"Error: optimization failed: {exc}")
+            return 1
+        print("PostgreSQL search index optimized.")
+        print(f"Database size: {size_mb:.1f} MB")
+        return
     before_mb = _size_mb(db.db_path)
     print("Optimizing session store (FTS merge + VACUUM)…")
     try:
@@ -979,7 +995,9 @@ def _cmd_stats(db, args):
     for src in ("cli", "telegram", "discord", "whatsapp", "slack"):
         if (c := db.session_count(source=src)) > 0:
             print(f"  {src}: {c} sessions")
-    if db.db_path.exists():
+    if db.backend == "postgres":
+        print(f"Database size: {db.logical_size_bytes() / (1024 * 1024):.1f} MB")
+    elif db.db_path.exists():
         print(f"Database size: {_size_mb(db.db_path):.1f} MB")
 
 

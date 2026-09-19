@@ -12,6 +12,7 @@ so a test's ``monkeypatch.setattr(<owning module>, "_helper", ...)`` keeps worki
 import contextlib
 import copy
 import functools
+import hashlib
 from hermes_cli.web_read_coalescing import coalesced_read
 import inspect
 import json
@@ -40,6 +41,7 @@ from hermes_cli.web_server_profiles import (
 )
 from hermes_cli.web_server_sessions import _open_session_db_at_path
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_state_backend import resolve_database_settings
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
@@ -262,10 +264,10 @@ def _read_profile_db(name: str, home, errors: Optional[List[Dict[str, str]]],
     performs a ONE-TIME writable open when the store predates a schema addition — read-only
     opens skip column reconciliation and would otherwise fail here on every refresh."""
     db_path = Path(home) / "state.db"
-    if not db_path.exists():
-        return None
     db = None
     try:
+        if not db_path.exists() and resolve_database_settings(db_path).backend == "sqlite":
+            return None
         db = _open_session_db_at_path(db_path, read_only=True)
         return fn(db)
     except Exception as exc:
@@ -307,7 +309,15 @@ def _stat_fingerprint(path: Path):
 
 
 def _sidebar_db_fingerprint(db_path: Path):
-    """Track SQLite content changes through the main DB and its WAL."""
+    """Track the serving database's content changes, including remote writes."""
+    settings = resolve_database_settings(db_path)
+    if settings.backend == "postgres":
+        from hermes_state import SessionDB
+
+        with SessionDB(db_path=db_path, read_only=True, database_settings=settings) as db:
+            revision = db.get_change_revision()
+        database_id = hashlib.sha256(settings.database_url.encode()).hexdigest()
+        return ("postgres", database_id, settings.schema, revision)
     return (_stat_fingerprint(db_path), _stat_fingerprint(Path(f"{db_path}-wal")))
 
 
@@ -517,9 +527,15 @@ def get_profiles_sessions_sidebar(
             continue
         scanned.append((name, home))
         db_path = Path(home) / "state.db"
-        if not db_path.exists():
+        try:
+            if not db_path.exists() and resolve_database_settings(db_path).backend == "sqlite":
+                continue
+            fingerprint = _sidebar_db_fingerprint(db_path)
+        except Exception as exc:
+            _warn_profile_read_error(name, exc)
+            errors.append({"profile": name, "error": str(exc)})
             continue
-        profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
+        profile_cache_key = (str(db_path), fingerprint, cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
                              tuple(messaging_exclude_list))
         slices = _sidebar_profile_cache_get(profile_cache_key)

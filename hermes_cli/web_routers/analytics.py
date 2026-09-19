@@ -73,7 +73,8 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
 
 
 def _rows(db, sql: str, cutoff: float) -> List[Dict[str, Any]]:
-    return [dict(r) for r in db._conn.execute(sql, (cutoff,)).fetchall()]
+    with db._read_ctx() as conn:
+        return [dict(r) for r in conn.execute(sql, (cutoff,)).fetchall()]
 
 
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
@@ -82,8 +83,10 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
-        daily = _rows(db, """
-            SELECT date(started_at, 'unixepoch') as day,
+        day_sql = ("to_char(to_timestamp(started_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+                   if db.backend == "postgres" else "date(started_at, 'unixepoch')")
+        daily = _rows(db, f"""
+            SELECT {day_sql} as day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,

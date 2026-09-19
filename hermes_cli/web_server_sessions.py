@@ -44,7 +44,10 @@ def _session_latest_descendant(session_id: str, db):
         return None, []
 
     conn = getattr(db, "_conn", None)
-    if conn is not None:
+    if getattr(db, "backend", None) == "postgres":
+        with db._read_ctx() as conn:
+            rows = [dict(row) for row in conn.execute(_DESCENDANTS_SQL, (sid,)).fetchall()]
+    elif conn is not None:
         keys = ("id", "parent_session_id", "started_at")
         rows = [dict(zip(keys, row)) for row in conn.execute(_DESCENDANTS_SQL, (sid,)).fetchall()]
     else:
@@ -111,14 +114,16 @@ def _is_stale_schema_error(exc: BaseException) -> bool:
 def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     """Open a SessionDB at an explicit path with an explicit access mode.
 
-    Read-only opens bootstrap a missing/zero-byte store once and heal a stale or
+    SQLite read-only opens bootstrap a missing/zero-byte store once and heal a stale or
     malformed schema through ONE writable open before reopening read-only; the
     healthy read path never takes a write lock.  Tables outside SCHEMA_SQL
     (telemetry ``tel_*``, FTS shadow tables) are outside both probe and heal.
+    PostgreSQL read-only opens never initialize or reconcile schema.
     """
     import sqlite3
 
     from hermes_state import SessionDB, is_malformed_schema_error
+    from hermes_state_backend import resolve_database_settings
     from hermes_state_registry import acquire, release_or_close
 
     # Read-only file/sidecar preflight (port of kilocode#12508): repair-or-refuse BEFORE the first
@@ -126,6 +131,9 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     # database" from deep inside _init_schema.
     if not read_only:
         return acquire(db_path)
+    settings = resolve_database_settings(db_path)
+    if settings.backend == "postgres":
+        return SessionDB(db_path=db_path, read_only=True, database_settings=settings)
 
     def _needs_bootstrap() -> bool:
         try:

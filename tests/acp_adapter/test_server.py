@@ -791,3 +791,82 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+# ---------------------------------------------------------------------------
+# disabled_toolsets filter the ACP tool surface (real get_tool_definitions)
+# ---------------------------------------------------------------------------
+
+
+class TestDisabledToolsetsFilterToolSurface:
+    """Config-disabled toolsets must be absent from ACP-generated definitions.
+
+    These run the real ``get_tool_definitions`` (no patching) so they cover
+    the actual filtering behavior, not just which kwargs were forwarded.
+    """
+
+    @staticmethod
+    def _listed_names(listing: str) -> set:
+        return {
+            line.strip().split(":", 1)[0]
+            for line in listing.splitlines()[1:]
+        }
+
+    def test_cmd_tools_strips_configured_disabled_toolsets(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent._memory_manager = None
+
+        state.agent.disabled_toolsets = None
+        baseline = agent._cmd_tools("", state)
+        assert baseline.startswith("Available tools"), baseline
+        assert "execute_code" in self._listed_names(baseline)
+
+        state.agent.disabled_toolsets = ["code_execution"]
+        filtered = agent._cmd_tools("", state)
+        assert filtered.startswith("Available tools"), filtered
+        assert "execute_code" not in self._listed_names(filtered)
+
+    def test_cmd_tools_hides_memory_provider_tools_when_memory_disabled(self, agent, mock_manager):
+        """Disabling the memory toolset must also withhold external provider tools.
+
+        ``get_tool_definitions`` drops the built-in ``memory`` tool, but
+        ``inject_memory_provider_tools`` re-adds provider schemas unless the
+        view it is handed also carries ``disabled_toolsets``.
+        """
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent._memory_manager = SimpleNamespace(
+            providers=[SimpleNamespace(name="holo")],
+            get_all_tool_schemas=lambda: [
+                {"name": "fact_store", "description": "d", "parameters": {}}
+            ],
+        )
+
+        state.agent.disabled_toolsets = None
+        assert "fact_store" in self._listed_names(agent._cmd_tools("", state))
+
+        state.agent.disabled_toolsets = ["memory"]
+        assert "fact_store" not in self._listed_names(agent._cmd_tools("", state))
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_rebuild_strips_configured_disabled_toolsets(
+        self, agent, mock_manager
+    ):
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = ["code_execution"]
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+        state.agent._memory_manager = None
+
+        server = McpServerStdio(name="srv", command="/bin/test", args=[], env=[])
+
+        with patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=[]) as register:
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert register.called, "MCP registration was not intercepted"
+        assert state.agent.valid_tool_names, "tool surface rebuild produced no tools"
+        assert "execute_code" not in state.agent.valid_tool_names

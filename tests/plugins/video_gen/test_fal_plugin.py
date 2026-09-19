@@ -205,6 +205,23 @@ def test_wan_30_audio_toggle_uses_family_key_and_start_image_url():
     assert _build_payload(FAL_FAMILIES["veo3.1"], image_url=None, **kw)["generate_audio"] is True
 
 
+def test_boreal_single_endpoint_serves_both_modalities():
+    """Creatify Boreal is one endpoint: `image_url` alone flips it to i2v. The payload
+    keeps only schema-declared keys — int duration, 2k alias, negative_prompt — and
+    never sends seed/generate_audio; i2v drops aspect_ratio so the image's ratio wins."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload, _normalize_family_key
+
+    meta = FAL_FAMILIES["boreal"]
+    assert meta["text_endpoint"] == meta["image_endpoint"] == "creatify/boreal"
+    assert _normalize_family_key("creatify/boreal") == "boreal"
+    t2v = _build_payload(meta, prompt="x", image_url=None, duration=25, aspect_ratio="9:16", resolution="4K",
+                         negative_prompt="blurry", audio=True, seed=3)
+    assert t2v == {"prompt": "x", "aspect_ratio": "9:16", "resolution": "2k", "duration": 20, "negative_prompt": "blurry"}
+    i2v = _build_payload(meta, prompt="x", image_url="https://i.png", duration=5, aspect_ratio="16:9", resolution="720p",
+                         negative_prompt=None, audio=None, seed=None)
+    assert i2v == {"prompt": "x", "image_url": "https://i.png", "resolution": "720p", "duration": 5}
+
+
 def test_gemini_omni_flash_v11_is_dual_modality():
     """v1.1 (Aug 2026) added a text-to-video endpoint; both modalities
     must route to the versioned v1.1 endpoints."""

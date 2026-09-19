@@ -608,6 +608,15 @@ def recover_after_classification(
         and not _retry.reasoning_mandatory_retry_attempted
     ):
         _retry.reasoning_mandatory_retry_attempted = True
+        sent = getattr(agent, "_wire_reasoning_config", None)
+        if isinstance(sent, dict) and sent.get("enabled") is not False and sent.get("effort") not in (None, "none"):
+            # The rejected request carried an ENABLED config: the route refuses that reasoning
+            # level (#100536: ``reasoning.effort: max`` on a Responses relay). Dropping a disable
+            # would resend the identical request; omit the reasoning fields instead (route default).
+            agent._reasoning_effort_rejected = True
+            _vlines(agent, f"⚠️  {agent.model} rejects reasoning effort {sent['effort']} — using the route's default for this session, retrying...")
+            logger.warning("%sReasoning-effort recovery: dropping reasoning config for %s", agent.log_prefix, agent.model)
+            return True, recovered_with_pool
         agent._reasoning_disable_rejected = True
         try:
             from hermes_cli.models_reasoning_caps import refresh_reasoning_caps_async

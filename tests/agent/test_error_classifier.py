@@ -893,12 +893,16 @@ class TestClassifyApiError:
 
     def test_reasoning_field_rejection_is_reasoning_mandatory(self):
         """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'
-        unsupported; use ...", #114460) or forward ("Unrecognized request argument supplied:
-        reasoning_effort") — takes the drop-the-disable rung, not the format_error abort; a
-        model-id segment (kimi-k2-thinking) stays route gating."""
+        unsupported; use ...", #114460), forward ("Unrecognized request argument supplied:
+        reasoning_effort"), or an enum rejection whose only field name sits in the structured
+        'param' tail (commandcode.ai, #115277) — takes the drop-the-disable rung, not the
+        format_error abort; a model-id segment (kimi-k2-thinking) stays route gating."""
         for msg in (
             "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
             "Unrecognized request argument supplied: reasoning_effort",
+            "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
+            "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
+            "'param': 'reasoning_effort'}}",
         ):
             result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
             assert result.reason == FailoverReason.reasoning_mandatory, msg
@@ -908,6 +912,28 @@ class TestClassifyApiError:
             provider="custom", model="kimi-k2-thinking",
         )
         assert gated.reason != FailoverReason.reasoning_mandatory
+
+    def test_structured_invalid_reasoning_effort_400_never_compresses(self):
+        """A custom Responses relay rejects an unsupported ``reasoning.effort`` with a message-less
+        structured 400 (``param`` + ``error_code: invalid_reasoning_effort``, #100536). No wording rule
+        can match it; before, the empty message fell to the large-session overflow heuristic and the
+        loop compressed a tiny conversation. Now it is a reasoning-field rejection with
+        ``should_compress`` off on every session size; a genuine context-window 400 still compresses."""
+        body = {"error": {"param": "reasoning.effort", "error_code": "invalid_reasoning_effort", "retryable": False}}
+        for approx_tokens, num_messages in ((77, 3), (90000, 100)):
+            result = classify_api_error(
+                MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body),
+                provider="custom", model="m", approx_tokens=approx_tokens, context_length=200000,
+                num_messages=num_messages,
+            )
+            assert result.reason == FailoverReason.reasoning_mandatory, approx_tokens
+            assert result.should_compress is False
+        overflow = classify_api_error(
+            MockAPIError("This model's maximum context length is 128000 tokens. Please reduce the length "
+                         "of the messages.", status_code=400),
+            provider="custom", model="m", approx_tokens=77, num_messages=3,
+        )
+        assert overflow.reason == FailoverReason.context_overflow and overflow.should_compress is True
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 

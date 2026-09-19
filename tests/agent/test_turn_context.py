@@ -214,6 +214,22 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_cli_interrupt_notice_is_api_only_and_consumed_once():
+    agent = _FakeAgent()
+    agent._gateway_turn_context_notes = "[System note: Your previous turn was interrupted (explicit stop requested).]"
+
+    ctx = _build(agent, user_message="continue")
+
+    assert ctx.messages[-1]["content"] == "continue"
+    assert ctx.messages[-1]["api_content"] == (
+        "continue\n\n[System note: Your previous turn was interrupted (explicit stop requested).]"
+    )
+    assert agent._gateway_turn_context_notes == ""
+
+    next_ctx = _build(agent, user_message="continue again")
+    assert "api_content" not in next_ctx.messages[-1]
+
+
 def test_preflight_timeout_stops_turn_before_provider_boundary():
     """An unchanged payload above the model window must not escape turn construction (a request that
     still fits its window is sent uncompressed instead — see test_preflight_compression_timeout_fail_closed)."""

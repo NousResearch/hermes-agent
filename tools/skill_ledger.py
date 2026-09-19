@@ -368,15 +368,41 @@ def get_entry(entry_id: str) -> Optional[Dict[str, Any]]:
     return next((r for r in list_entries() if r.get("id") == entry_id), None) if entry_id else None
 
 
+def _configured_skill_roots() -> List[Path]:
+    """Roots a rollback may write into: HERMES_HOME plus every configured skill root
+    (``skills.external_dirs``, ``skills.create_dir``, and the trusted project skills dirs).
+
+    Read from CONFIG on every call, never from the entry: the anti-tamper property is that a
+    hand-edited ledger cannot widen the set, only the operator's own skills config can (the
+    project side is managed by ``hermes skills trust`` and read back through
+    ``get_project_skills_dirs``). Create-dir and external roots are in because the tool itself
+    CAPTURES mutations there; refusing them at rollback would mint entries that are permanently
+    unrecoverable.
+    """
+    roots = [get_hermes_home()]
+    try:
+        from agent.skill_utils import (
+            get_external_skills_dirs, get_project_skills_dirs, get_skill_create_dir)
+        roots.extend(get_external_skills_dirs())
+        roots.extend(get_project_skills_dirs())
+        create_dir = get_skill_create_dir()
+        if create_dir is not None:
+            roots.append(create_dir)
+    except Exception:  # pragma: no cover — a config read failure narrows, never widens
+        logger.debug("skill_ledger: configured skill-root lookup failed", exc_info=True)
+    return roots
+
+
 def _validate_entry_paths(entry: Dict[str, Any]) -> Optional[str]:
-    """Every entry path must be under HERMES_HOME — a hand-edited ledger must not
-    become a write-anywhere primitive."""
-    home = get_hermes_home()
+    """Every entry path must be under HERMES_HOME or another configured skill root — a
+    hand-edited ledger must not become a write-anywhere primitive."""
+    roots = _configured_skill_roots()
     for section in ("before", "after"):
         for item in entry.get(section) or []:
             p = Path(str(item.get("path", "")))
-            if not _is_within(home, p):
-                return f"entry references a path outside {home}: {p}"
+            if not any(_is_within(root, p) for root in roots):
+                return (f"entry references a path outside {roots[0]} and outside every "
+                        f"configured skill root: {p}")
     return None
 
 

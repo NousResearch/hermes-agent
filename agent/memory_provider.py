@@ -15,6 +15,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.memory_sync_snapshot import CompletedTurnSnapshot
+
 logger = logging.getLogger(__name__)
 
 
@@ -79,6 +81,10 @@ class MemoryProvider(ABC):
     # PRE_COMPRESS_CHECKPOINT_API_VERSION; 1 = best-effort legacy.
     pre_compress_checkpoint_api_version = 1
 
+    # Opt in to CompletedTurnSnapshot (or None for unsupported context) in the
+    # messages argument. Version 0 retains the legacy full-history list.
+    sync_turn_snapshot_version = 0
+
     @property
     @abstractmethod
     def name(self) -> str:
@@ -123,11 +129,24 @@ class MemoryProvider(ABC):
 
     def sync_turn(
         self, user_content: str, assistant_content: str, *,
-        session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,
+        session_id: str = "", messages: Optional[List[Dict[str, Any]] | CompletedTurnSnapshot] = None,
         turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far.
-        ``turn_author`` (``{"id", "name", "is_bot"}``) is who wrote the user side; the manager sends it only to signatures that accept it."""
+        """Persist a completed turn (non-blocking).
+
+        By default, ``messages`` is the OpenAI-style list so far. Providers setting
+        ``sync_turn_snapshot_version = 1`` receive an immutable
+        ``agent.memory_sync_snapshot.CompletedTurnSnapshot`` made before enqueue,
+        or None for unsupported/oversized/incomplete context. It contains only the
+        current completed text turn (128 messages, 64k content per message, 1M
+        serialized characters), full nested tool calls and unchanged persistence
+        markers. Decode with ``messages()``. The session/profile binding records
+        enqueue-time provenance; it does not certify persistence. Verify exact DB
+        rows and boundaries before using evidence, including delayed historical turns.
+        Ordinary user/assistant capture must continue when context is None.
+        ``turn_author`` (``{"id", "name", "is_bot"}``) identifies who wrote the user side;
+        the manager sends it only to signatures that accept it.
+        """
 
     @abstractmethod
     def get_tool_schemas(self) -> List[Dict[str, Any]]:

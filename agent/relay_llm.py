@@ -267,7 +267,7 @@ class ManagedLlmStream(Iterator[Any]):
     """Synchronous view of one Relay-managed provider stream, driven from the worker thread."""
 
     final_response: Any = None
-    output_modified = _closed = _provider_completed = False
+    output_modified = _closed = _provider_completed = _delivered_unmatched = False
     _loop: asyncio.AbstractEventLoop | None = None
     _stream = _raw_stream_resource = None
     _runtime_lease: relay_runtime.RelayOperationLease | None = None
@@ -403,8 +403,20 @@ class ManagedLlmStream(Iterator[Any]):
                 self._prefetched_chunks.append(next(self))
 
     def _recoverable_relay_failure(self, exc: BaseException) -> bool:
-        """Relay post-processing failed after the provider already succeeded."""
+        """Relay post-processing failed after the provider already succeeded.
+
+        Not recoverable once Relay delivered output with no provider-source match:
+        that chunk's source stays in ``_raw_chunks``, so a raw replay would emit
+        already-represented content a second time (and unredacted, if the Relay
+        transformation was the point)."""
         recoverable = isinstance(exc, Exception) and self._provider_completed and self._callback_error is None
+        if recoverable and self._delivered_unmatched:
+            logger.warning(
+                "NeMo Relay stream post-processing failed after transformed output; "
+                "propagating rather than replaying provider chunks",
+                exc_info=True,
+            )
+            return False
         if recoverable:
             logger.warning(
                 "NeMo Relay stream post-processing failed after provider success; preserving the provider result",
@@ -463,6 +475,7 @@ class ManagedLlmStream(Iterator[Any]):
                 del self._raw_chunks[: index + 1]
                 return raw
         self.output_modified = True
+        self._delivered_unmatched = True
         return self._chunk_adapter(chunk)
 
     def close(self) -> None:

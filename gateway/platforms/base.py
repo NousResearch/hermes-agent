@@ -2568,6 +2568,17 @@ class BasePlatformAdapter(ABC):
     # Surfaces needing an explicit finalize edit (DingTalk AI Cards): the consumer never skips it.
     REQUIRES_EDIT_FINALIZE: bool = False
 
+    # When the platform's voice messages inherently render the spoken text alongside the audio
+    # (Carbon Voice runs server-side STT and shows the transcript inline), the auto-TTS dispatch
+    # must suppress the follow-up text bubble — otherwise the recipient sees the agent's reply
+    # duplicated as both the voice memo's transcript and a separate text post. Subclasses opt in by
+    # setting this to True; default False keeps every existing adapter on the audio + separate text
+    # behavior. Suppression fires only when the spoken text covers the COMPLETE response
+    # (``prepare_tts_text`` strips formatting, so a formatted/normalized reply still gets the text
+    # bubble). See ``_play_tts_file`` for where this is consumed. Telegram uses its native caption
+    # field for the same effect via the ``caption=`` path and does not need this flag.
+    voice_out_carries_text: bool = False
+
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Create a fresh thread under ``parent_chat_id`` for a CLI→platform session handoff; its id
         as str, or None when unsupported/failed (the watcher then uses ``parent_chat_id``
@@ -4011,15 +4022,28 @@ class BasePlatformAdapter(ABC):
     async def _play_tts_file(
         self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
         metadata: Dict[str, Any], record_delivery: Callable) -> bool:
-        """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
-        along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
+        """Play one synthesized TTS file. Returns True when the reply text was carried by the voice
+        message itself — so the follow-up text send is skipped. That happens when the ORIGINAL reply
+        rode along as a Telegram caption (first file, ≤1024 chars), or when the adapter declares
+        ``voice_out_carries_text`` and the spoken text covers the complete response (first file)."""
         caption = None
         if first and self.platform == Platform.TELEGRAM and text_content and text_content[:1024] == text_content:
             caption = text_content
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
         record_delivery(tts_result)
-        return bool(caption and getattr(tts_result, "success", False))
+        if not getattr(tts_result, "success", False):
+            return False
+        if caption:
+            return True
+        # Adapters whose voice bubbles re-render the spoken text inline (Carbon Voice server-side
+        # STT) suppress the duplicate text bubble — but only when the transcript IS the whole reply.
+        # ``prepare_tts_text`` strips formatting and normalizes, so a formatted reply is not covered
+        # and keeps its text bubble. Evaluated on the first file; the guard is a property of the
+        # whole response, and one True suppresses the single follow-up text send.
+        return bool(
+            first and getattr(self, "voice_out_carries_text", False)
+            and text_content and self.prepare_tts_text(text_content) == text_content)
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,

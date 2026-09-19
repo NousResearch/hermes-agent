@@ -6231,7 +6231,10 @@ def _refuse_from_inside_gateway(verb: str, reason: str) -> None:
         print_error(
             f"Refusing to {verb} the gateway from inside the gateway process.\n"
             f"This command was blocked to prevent {reason}.\n"
-            f"Use `hermes gateway {verb}` from a shell outside the running gateway."
+            f"Use `hermes gateway {verb}` from a separate shell outside the running gateway.\n"
+            "If a legacy installation or an explicit `--force` launch left a duplicate "
+            "foreground gateway, stop only that conflicting process or service from another "
+            "shell; see the multi-profile gateway recovery guide for platform-specific steps."
         )
         sys.exit(1)
 

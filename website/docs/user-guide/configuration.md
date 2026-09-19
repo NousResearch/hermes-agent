@@ -1859,6 +1859,22 @@ agent:
 
 **Cost note:** both providers bill fast requests at a multiplier on standard rates (Anthropic: $10 / $50 per MTok in/out on Opus 4.8 and Opus 5), stacking with prompt-cache pricing. `auto`/`cold` bound that premium to the window only. Fast params are only sent to the first-party endpoint that supports them (`api.openai.com` / Codex subscription, `api.anthropic.com`, `api.x.ai`); OpenRouter, Nous Portal, Copilot, Azure, Bedrock, and custom `base_url` routes never receive them in any mode. Only the per-request parameter changes between requests — the system prompt, tools, and messages stay byte-identical, so the prompt cache survives the window boundary.
 
+### Fast tiers behind a gateway or proxy
+
+The first-party-only rule is deliberate: a fast-tier parameter is a billing instruction, and Hermes only sends it to the endpoint whose price list it knows. If you run an OpenAI-compatible gateway, router, or proxy that exposes its own priority tier (its own `service_tier` value, or a differently named field), request it through that provider's `extra_body` instead of `agent.service_tier`. `extra_body` on a [named custom provider](../integrations/providers.md#named-custom-providers) is merged into **every** chat-completions request routed to that endpoint, survives gateway turns and `/fast` changes, and is dropped again when you `/model` away from the provider:
+
+```yaml
+providers:
+  my-gateway:
+    api: https://gateway.example.com/v1
+    key_env: MY_GATEWAY_KEY
+    default_model: fast-lane-model
+    extra_body:
+      service_tier: priority     # whatever tier value your gateway documents
+```
+
+Differences from `agent.service_tier`: the tier is always on for that provider (no `auto`/`cold` window), `/fast` does not toggle it, and Hermes does not validate the value — the gateway decides what it accepts and what it bills.
+
 ## Tool-Use Enforcement
 
 Some models occasionally describe intended actions as text instead of making tool calls ("I would run the tests..." instead of actually calling the terminal). Tool-use enforcement injects system prompt guidance that steers the model back to actually calling tools.

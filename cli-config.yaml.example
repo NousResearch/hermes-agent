@@ -161,6 +161,15 @@ model:
 #     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
 #     # (the bundled meta-ai provider covers this — a named custom provider is
 #     # only needed for a non-default Meta-compatible endpoint)
+# Fast/priority tier behind an OpenAI-compatible gateway or proxy: agent.service_tier
+# (`/fast`) only reaches first-party endpoints; ask a gateway for its own tier via
+# extra_body, which is merged into every request routed to that provider.
+# providers:
+#   my-gateway:
+#     base_url: https://gateway.example.com/v1
+#     api_key: ${MY_GATEWAY_KEY}
+#     extra_body:
+#       service_tier: priority   # whatever tier value your gateway documents
 # providers:
 #   router:
 #     base_url: https://api.router.com/v1

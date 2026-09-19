@@ -1032,6 +1032,9 @@ DEFAULT_CONFIG = {
             # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova,
             # onyx, sage, shimmer, verse
             "voice": "alloy",
+            # Raw PCM rate for streaming playback. OpenAI emits 24 kHz; a compatible endpoint that
+            # reports its rate (X-Audio-Sample-Rate header) overrides this automatically.
+            "pcm_sample_rate": 24000,
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",

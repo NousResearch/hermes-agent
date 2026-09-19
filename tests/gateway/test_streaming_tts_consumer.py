@@ -529,9 +529,11 @@ class TestFallbackSafety:
             consumer.finish()
 
             completed = await consumer.wait_complete(timeout=5.0)
-            # Pre-audio failure: should NOT report completed (fall back)
+            # Pre-audio failure: should NOT report completed (fall back); the adapter handle is
+            # only opened on the first PCM chunk (#76466), so nothing was begun or aborted.
             assert completed is False
-            assert adapter.abort_count >= 1
+            assert consumer.suppress_whole_file is False
+            assert adapter.begin_count == 0
 
         _run_test(run)
 
@@ -785,3 +787,28 @@ class TestGatewayOuterFinalisationNoNameError:
         # This is trivially true with a holder, but was NOT true when
         # the consumer was a run_sync local.
         _ = holder[0]
+
+
+class TestEndpointReportedRate:
+    """Issue #76466: the adapter handle opens with the rate the provider learned from the
+    endpoint's response, not the construction-time default."""
+
+    def test_begin_uses_rate_learned_on_first_chunk(self):
+        class _Learns(FakeStreamer):
+            def stream(self, text):
+                self.sample_rate = 44100
+                yield from super().stream(text)
+
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            consumer = _make_consumer(adapter, "chat1", loop, _Learns(chunks_per_clause=2))
+            assert consumer._audio_format.sample_rate == 24000  # provisional
+            consumer.start()
+            consumer.on_delta("A sentence. ")
+            consumer.finish()
+            assert await consumer.wait_complete(timeout=5.0) is True
+            assert adapter.begin_count == 1
+            assert adapter.handle.audio_format.sample_rate == 44100
+            assert len(adapter.written_chunks) == 2
+
+        _run_test(run)

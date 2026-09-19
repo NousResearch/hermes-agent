@@ -269,6 +269,65 @@ describe('ClarifyCard', () => {
       })
     })
 
+    // ── Options carry A/B/C… letters and a type-your-own row, like the chat card ──
+    it('labels options A, B, C and letters the type-your-own row next', async () => {
+      ;(await getGatewayMock()).mockReturnValue({ request: vi.fn() } as never)
+      const clarification = makeSingleClarification({
+        params: { answers: null, choices: ['TypeScript', 'Python', 'Rust'], multi_select: false, question: 'Which language?', questions: null }
+      })
+
+      render(<ClarifyCard clarification={clarification} />)
+
+      for (const letter of ['A', 'B', 'C', 'D']) {
+        expect(screen.getByText(letter)).toBeTruthy()
+      }
+
+      expect(screen.getByPlaceholderText('Other — type your own…')).toBeTruthy()
+    })
+
+    it('a single-choice question can be answered with typed text', async () => {
+      const gw = { request: vi.fn().mockResolvedValue({ status: 'ok' }) }
+      ;(await getGatewayMock()).mockReturnValue(gw as never)
+
+      const clarification = makeSingleClarification({
+        params: { answers: null, choices: ['TypeScript', 'Python'], multi_select: false, question: 'Which language?', questions: null }
+      })
+
+      render(<ClarifyCard clarification={clarification} />)
+
+      fireEvent.change(screen.getByPlaceholderText('Other — type your own…'), { target: { value: 'Go, actually' } })
+      fireEvent.click(screen.getByText('Submit'))
+
+      await waitFor(() => {
+        expect(gw.request).toHaveBeenCalledWith('request.answer', {
+          id: 'req-clarify-1',
+          result: { answer: 'Go, actually' },
+          profile: 'test-profile'
+        })
+      })
+    })
+
+    it('a picked choice and typed text are mutually exclusive', async () => {
+      ;(await getGatewayMock()).mockReturnValue({ request: vi.fn() } as never)
+      const clarification = makeSingleClarification({
+        params: { answers: null, choices: ['TypeScript', 'Python'], multi_select: false, question: 'Which language?', questions: null }
+      })
+
+      render(<ClarifyCard clarification={clarification} />)
+
+      const other = screen.getByPlaceholderText('Other — type your own…') as HTMLInputElement
+
+      // Typing clears the pick…
+      fireEvent.click(screen.getByText('TypeScript'))
+      fireEvent.change(other, { target: { value: 'Elixir' } })
+      expect(screen.getByText('TypeScript').closest('button')!.className).not.toContain('bg-accent/55')
+
+      // …and picking clears the typed answer.
+      fireEvent.click(screen.getByText('Python'))
+      expect(other.value).toBe('')
+      expect(screen.getByText('Python').closest('button')!.className).toContain('bg-accent/55')
+    })
+
     // ── Defect 3 regression: multi_select with Other free-text ──
     it('multi_select: includes Other free-text option', async () => {
       ;(await getGatewayMock()).mockReturnValue({ request: vi.fn() } as never)
@@ -279,7 +338,7 @@ describe('ClarifyCard', () => {
       render(<ClarifyCard clarification={clarification} />)
       expect(screen.getByText('Red')).toBeTruthy()
       expect(screen.getByText('Blue')).toBeTruthy()
-      expect(screen.getByText('Other…')).toBeTruthy()
+      expect(screen.getByPlaceholderText('Other — type your own…')).toBeTruthy()
     })
   })
 
@@ -392,12 +451,9 @@ describe('ClarifyCard', () => {
       })
 
       render(<ClarifyCard clarification={clarification} />)
-      // multi_select question has Other option
+      // Both questions offer the type-your-own row — single-select included.
       expect(screen.getByText('Red')).toBeTruthy()
-      expect(screen.getByText('Other…')).toBeTruthy()
-      // single question does NOT have Other
-      expect(screen.getByText('A')).toBeTruthy()
-      expect(screen.getByText('B')).toBeTruthy()
+      expect(screen.getAllByPlaceholderText('Other — type your own…')).toHaveLength(2)
     })
 
     // ── Defect 3 regression: batch multi_select selects two options independently ──
@@ -441,7 +497,7 @@ describe('ClarifyCard', () => {
           question: null,
           questions: [
             { multi_select: true, qid: 'q-ms', question: 'Pick colors?', choices: ['Red', 'Blue', 'Green'] },
-            { multi_select: false, qid: 'q-single', question: 'Pick one?', choices: ['A', 'B'] }
+            { multi_select: false, qid: 'q-single', question: 'Pick one?', choices: ['Alpha', 'Beta'] }
           ]
         }
       })
@@ -449,7 +505,7 @@ describe('ClarifyCard', () => {
       render(<ClarifyCard clarification={clarification} />)
       fireEvent.click(screen.getByText('Red'))
       fireEvent.click(screen.getByText('Green'))
-      fireEvent.click(screen.getByText('A'))
+      fireEvent.click(screen.getByText('Alpha'))
       fireEvent.click(screen.getByText('Submit answers'))
 
       await waitFor(() => {

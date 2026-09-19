@@ -15,7 +15,44 @@ interface ClarifyCardProps {
   onResolved?: () => void
 }
 
-const OTHER_LABEL = 'Other…'
+const OTHER_PLACEHOLDER = 'Other — type your own…'
+
+/** A/B/C… option letters, the same convention as the chat's clarify card. The trailing
+ *  "Other" row takes the letter after the last choice (choices A–C → Other is D). */
+const letterFor = (index: number): string => String.fromCharCode(65 + index)
+
+/** One lettered option row. The letter matches the chat card, so keyboard muscle memory
+ *  (and any answer text that quotes "option B") lines up across surfaces. */
+function OptionRow({
+  char,
+  children,
+  onSelect,
+  selected
+}: {
+  char: string
+  children: React.ReactNode
+  onSelect: () => void
+  selected: boolean
+}) {
+  return (
+    <button
+      className={`flex w-full items-start gap-2 rounded px-2 py-1 text-left text-[0.68rem] transition-colors ${
+        selected ? 'bg-accent/55 text-foreground' : 'text-muted-foreground/70 hover:bg-(--chrome-action-hover) hover:text-foreground'
+      }`}
+      onClick={onSelect}
+      type="button"
+    >
+      <span
+        className={`mt-px grid size-4 shrink-0 place-items-center rounded-sm border text-[0.58rem] font-medium ${
+          selected ? 'border-transparent bg-foreground/20 text-foreground' : 'border-(--ui-stroke-tertiary) text-muted-foreground/70'
+        }`}
+      >
+        {char}
+      </span>
+      <span className="min-w-0 flex-1">{children}</span>
+    </button>
+  )
+}
 
 function resolveClarifyStatus(result: { status: string }, onResolved?: () => void): 'answered' | 'expired' | 'error' {
   if (result.status === 'ok') {
@@ -52,19 +89,18 @@ function SingleClarifyCard({
   const { params } = clarification
   const hasChoices = params.choices && params.choices.length > 0
   const isMultiSelect = params.multi_select === true
-  const effectiveChoices = useMemo(() => {
-    if (!hasChoices) {return []}
+  const effectiveChoices = useMemo(() => params.choices ?? [], [params.choices])
 
-    return isMultiSelect ? [...(params.choices ?? []), OTHER_LABEL] : (params.choices ?? [])
-  }, [hasChoices, isMultiSelect, params.choices])
-
+  // Picking a choice and typing are mutually exclusive answers, exactly like the chat card:
+  // the answer is a picked choice, else the typed text.
+  const trimmedOther = otherText.trim()
   const selectedAnswer = isMultiSelect
     ? selectedChoices.length > 0
-      ? JSON.stringify(selectedChoices.filter(c => c !== OTHER_LABEL))
+      ? JSON.stringify(selectedChoices)
       : null
     : (selectedChoices[0] ?? null)
 
-  const pendingAnswer = selectedAnswer ?? (isMultiSelect && otherText ? otherText.trim() : null) ?? (freeText || null)
+  const pendingAnswer = selectedAnswer ?? (trimmedOther || null) ?? (freeText || null)
 
   const isScopeValid = useCallback(() => {
     return $gateway.get() === pinnedGateway.current
@@ -149,6 +185,7 @@ function SingleClarifyCard({
 
   const handleSelectChoice = (choice: string) => {
     setFreeText('')
+    setOtherText('')
     if (isMultiSelect) {
       setSelectedChoices(prev =>
         prev.includes(choice) ? prev.filter(c => c !== choice) : [...prev, choice]
@@ -169,30 +206,43 @@ function SingleClarifyCard({
       </div>
       {hasChoices && (
         <div className="flex flex-col gap-px px-3 pb-2">
-          {effectiveChoices.map(choice => (
-            <button
-              className={`rounded px-2 py-1 text-left text-[0.68rem] transition-colors ${
-                selectedChoices.includes(choice)
-                  ? 'bg-accent/55 text-foreground'
-                  : 'text-muted-foreground/70 hover:bg-(--chrome-action-hover) hover:text-foreground'
-              }`}
+          {effectiveChoices.map((choice, index) => (
+            <OptionRow
+              char={letterFor(index)}
               key={choice}
-              onClick={() => handleSelectChoice(choice)}
-              type="button"
+              onSelect={() => handleSelectChoice(choice)}
+              selected={selectedChoices.includes(choice)}
             >
               {choice}
-            </button>
+            </OptionRow>
           ))}
-        </div>
-      )}
-      {hasChoices && isMultiSelect && selectedChoices.includes(OTHER_LABEL) && (
-        <div className="px-3 pb-2">
-          <input
-            className="w-full rounded border border-(--ui-stroke-tertiary) bg-transparent px-2 py-1 text-[0.68rem] text-foreground outline-none focus:border-ring"
-            onChange={e => setOtherText(e.target.value)}
-            placeholder="Type your answer…"
-            value={otherText}
-          />
+          {/* The chat card always offers a type-your-own row (D after A–C, or the next
+              letter); without it a single-choice question could only be answered with
+              the offered options. */}
+          <label
+            className={`flex w-full items-center gap-2 rounded px-2 py-1 text-[0.68rem] transition-colors ${
+              trimmedOther
+                ? 'bg-accent/55 text-foreground'
+                : 'text-muted-foreground/70 hover:bg-(--chrome-action-hover) hover:text-foreground'
+            }`}
+          >
+            <span
+              className={`grid size-4 shrink-0 place-items-center rounded-sm border text-[0.58rem] font-medium ${
+                trimmedOther ? 'border-transparent bg-foreground/20 text-foreground' : 'border-(--ui-stroke-tertiary) text-muted-foreground/70'
+              }`}
+            >
+              {letterFor(effectiveChoices.length)}
+            </span>
+            <input
+              className="min-w-0 flex-1 bg-transparent text-[0.68rem] text-foreground outline-none placeholder:text-muted-foreground/50"
+              onChange={e => {
+                setOtherText(e.target.value)
+                if (e.target.value) {setSelectedChoices([])}
+              }}
+              placeholder={OTHER_PLACEHOLDER}
+              value={otherText}
+            />
+          </label>
         </div>
       )}
       {!hasChoices && (
@@ -247,9 +297,7 @@ function BatchClarifyCard({
   const stagedAnswer = useCallback((qid: string, question: { multi_select: boolean; choices: string[] | null }): string | null => {
     const selected = stagedAnswers[qid] ?? []
     if (selected.length > 0) {
-      const filtered = selected.filter(c => c !== OTHER_LABEL)
-
-      return question.multi_select ? JSON.stringify(filtered) : (filtered[0] ?? null)
+      return question.multi_select ? JSON.stringify(selected) : (selected[0] ?? null)
     }
 
     const draft = stagedDrafts[qid]?.trim()
@@ -381,17 +429,27 @@ function BatchClarifyCard({
           const isLocked = lockedQids.has(q.qid)
           const hasChoices = q.choices && q.choices.length > 0
           const isMultiSelect = q.multi_select === true
-          const effectiveChoices = isMultiSelect && hasChoices ? [...(q.choices ?? []), OTHER_LABEL] : q.choices
+          const effectiveChoices = q.choices ?? []
           const selected = stagedAnswers[q.qid] ?? []
+          const draft = stagedDrafts[q.qid] ?? ''
+
+          const clearDraft = () =>
+            setStagedDrafts(prev => {
+              if (!(q.qid in prev)) {return prev}
+              const next = { ...prev }
+              delete next[q.qid]
+
+              return next
+            })
 
           return (
             <div className="rounded bg-foreground/3 px-2 py-1.5" key={q.qid}>
               <p className="text-[0.68rem] text-foreground/80">{q.question}</p>
               {hasChoices && (
                 <div className="mt-1 flex flex-wrap gap-1">
-                  {effectiveChoices!.map(choice => (
+                  {effectiveChoices.map((choice, index) => (
                     <button
-                      className={`rounded px-1.5 py-0.5 text-[0.62rem] transition-colors ${
+                      className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.62rem] transition-colors ${
                         selected.includes(choice)
                           ? 'bg-accent/55 text-foreground'
                           : 'text-muted-foreground/60 hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -400,6 +458,8 @@ function BatchClarifyCard({
                       key={choice}
                       onClick={() => {
                         if (isLocked) {return}
+                        // A picked choice and a typed answer are mutually exclusive.
+                        clearDraft()
 
                         if (isMultiSelect) {
                           setStagedAnswers(prev => {
@@ -416,19 +476,31 @@ function BatchClarifyCard({
                       }}
                       type="button"
                     >
+                      <span className="text-[0.55rem] font-medium opacity-70">{letterFor(index)}</span>
                       {choice}
                     </button>
                   ))}
                 </div>
               )}
-              {isMultiSelect && hasChoices && selected.includes(OTHER_LABEL) && (
-                <input
-                  className="mt-1 w-full rounded border border-(--ui-stroke-tertiary) bg-transparent px-1.5 py-0.5 text-[0.62rem] text-foreground outline-none focus:border-ring"
-                  disabled={isLocked}
-                  onChange={e => setStagedDrafts(prev => ({ ...prev, [q.qid]: e.target.value }))}
-                  placeholder="Type your answer…"
-                  value={stagedDrafts[q.qid] ?? ''}
-                />
+              {hasChoices && (
+                <label className="mt-1 flex items-center gap-1.5 text-[0.62rem] text-muted-foreground/60">
+                  <span className="grid size-3.5 shrink-0 place-items-center rounded-sm border border-(--ui-stroke-tertiary) text-[0.5rem] font-medium">
+                    {letterFor(effectiveChoices.length)}
+                  </span>
+                  <input
+                    className="min-w-0 flex-1 rounded border border-(--ui-stroke-tertiary) bg-transparent px-1.5 py-0.5 text-[0.62rem] text-foreground outline-none focus:border-ring placeholder:text-muted-foreground/50"
+                    disabled={isLocked}
+                    onChange={e => {
+                      const value = e.target.value
+                      setStagedDrafts(prev => ({ ...prev, [q.qid]: value }))
+                      if (value) {
+                        setStagedAnswers(prev => ({ ...prev, [q.qid]: [] }))
+                      }
+                    }}
+                    placeholder={OTHER_PLACEHOLDER}
+                    value={draft}
+                  />
+                </label>
               )}
               {!hasChoices && (
                 <input

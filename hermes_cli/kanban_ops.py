@@ -143,7 +143,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
     if res.skipped_nonspawnable:
         print(
-            f"Skipped (non-spawnable assignee — terminal lane, OK): "
+            f"Skipped (assignee does not resolve to a profile — no worker can be spawned "
+            f"for these; `hermes kanban assign <task_id> <profile>` to route them): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
     for tid, reason in res.respawn_guarded:
@@ -203,6 +204,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     # the per-task breaker auto-blocks quietly, so the operator needs a signal.
     HEALTH_WINDOW = 6  # ticks (default 30s at interval=5)
     health_state = {"bad_ticks": 0, "last_warn_at": 0}
+    warned_unresolved: set = set()
 
     def _ready_queue_nonempty() -> bool:
         """Is there a ready+assigned+unclaimed task the dispatcher would spawn for?
@@ -212,6 +214,14 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 return kbd.has_spawnable_ready(conn)
         except Exception:
             return False
+
+    def _unresolved_ready_cards() -> list:
+        """Ready cards the dispatcher can never spawn for (unresolvable assignee)."""
+        try:
+            with kbc.connect_closing() as conn:
+                return kbd.unresolved_assignee_ready(conn)
+        except Exception:
+            return []
 
     def _on_tick(res):
         ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
@@ -234,6 +244,13 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                     file=sys.stderr, flush=True,
                 )
                 health_state["last_warn_at"] = now
+        # Separate signal, because the counter above cannot see this one: an
+        # unresolvable assignee is reported by ``has_spawnable_ready`` as
+        # "correctly idle", so it never increments bad_ticks and the stall would
+        # be completely silent. Name the cards instead.
+        notice = kbd.unresolved_assignee_notice(_unresolved_ready_cards(), seen=warned_unresolved)
+        if notice:
+            print(f"[{_fmt_ts(int(time.time()))}] WARN {notice}", file=sys.stderr, flush=True)
         if not verbose:
             return
         did_work = (

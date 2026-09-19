@@ -26,7 +26,7 @@ To be a kanban worker lane, an integration must provide three things:
 
 ### 1. An assignee string
 
-The dispatcher matches `task.assignee` against either a Hermes profile name (the default lane shape) or a registered non-spawnable identifier (the plugin lane shape — see [Adding an external CLI worker lane](#adding-an-external-cli-worker-lane) below). Tasks whose assignee doesn't resolve are left on `ready` with a `skipped_nonspawnable` event so a board operator can fix them; they are not silently dropped or executed by an arbitrary fallback.
+An assignee must resolve to a live Hermes profile (the default lane shape) or to a registered non-spawnable identifier (the plugin lane shape — see [Adding an external CLI worker lane](#adding-an-external-cli-worker-lane) below). A leading `@` is stripped before that check: notifications render the assignee as `@name`, and a display convention that is not valid input is a trap — an agent reading its own notification and passing `@default` back into `kanban_create` used to store the mention verbatim and park the card forever. When an assignee still resolves to nothing, `kanban_create` returns a `warning` (and `hermes kanban create` prints one to stderr) naming the known profiles; the card is left on `ready`, records a `skipped_nonspawnable` event naming the assignee, and is listed by the dispatcher's health notice. It is never silently dropped and never executed by an arbitrary fallback.
 
 ### 2. A spawn mechanism
 

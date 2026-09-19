@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -115,10 +116,15 @@ class DispatchResult:
     tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
     acting on the fallback rule rather than explicit assignments."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
-    """Ready task ids whose assignee names a control-plane lane (e.g. a Claude
-    Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
-    on multi-lane setups, NOT operator-actionable; tracked apart so health
-    telemetry can tell "stuck" from "correctly idle"."""
+    """Ready task ids whose assignee names something other than a live Hermes
+    profile — a control-plane lane that pulls via ``claim_task`` (``orion-cc``),
+    or a name that simply does not exist. Steady-state for multi-lane setups, but
+    NOT unconditionally benign: for a card the operator did not intend as an
+    external lane this is a permanent stall, so each one also gets a
+    ``skipped_nonspawnable`` event naming the assignee and is reported by
+    ``unresolved_assignee_notice``. Creation and assignment of such a value are
+    rejected outright (`_validate_assignee_resolvable`), so reaching this bucket
+    means the row predates that guard or was written by an external tool."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
@@ -1385,13 +1391,25 @@ def _record_task_failure(
         if infrastructure or not (force_trip or failures >= effective_limit):
             if release_claim:
                 # Spawn path: restore the claimed source phase + clear claim.
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (retry_status, failures, error, task_id),
                 )
+                if cur.rowcount != 1:
+                    # The task left ``running`` before this write: it reached a
+                    # terminal success (the iteration-budget path races
+                    # ``kanban_complete``, which the caller cannot see), was
+                    # blocked, or was reclaimed. The counter/claim UPDATE above is
+                    # already a no-op, so make the whole record one — a
+                    # ``timed_out``/``crashed`` event appended here is what the
+                    # notifier renders as "timed out; dispatcher will retry",
+                    # stamping a false retry onto a card that finished and will
+                    # never be retried. ``enforce_max_runtime`` guards its twin
+                    # path the same way (``cur.rowcount == 1``).
+                    return False
             else:
                 conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
@@ -1716,6 +1734,132 @@ def dispatch_profile_allowlist_summary() -> str:
             "profile, or the config could not be read — omit the key to allow any)")
 
 
+SKIPPED_NONSPAWNABLE = "skipped_nonspawnable"
+
+
+def _record_skipped_nonspawnable(conn: sqlite3.Connection, task_id: str, assignee: str) -> None:
+    """Emit the ``skipped_nonspawnable`` event the worker-lane contract promises.
+
+    Without it an unresolvable assignee is invisible: the card sits in ``ready``
+    looking healthy, no worker ever claims it, and ``has_spawnable_ready``
+    classifies the queue as "correctly idle" so health telemetry stays silent
+    about a board that can never make progress.
+
+    Deduped on the recorded assignee so a queue stuck for hours does not grow one
+    event per tick, while a reassignment to a different unresolvable value
+    re-arms it. Called only for non-dry-run ticks.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? ORDER BY id DESC LIMIT 1",
+        (task_id, SKIPPED_NONSPAWNABLE),
+    ).fetchone()
+    if row is not None:
+        try:
+            previous = json.loads(row["payload"] or "{}") or {}
+        except (TypeError, ValueError):
+            previous = {}
+        if previous.get("assignee") == assignee:
+            return
+    with _kb.write_txn(conn):
+        _kb._append_event(conn, task_id, SKIPPED_NONSPAWNABLE, {
+            "assignee": assignee,
+            "reason": "assignee_does_not_resolve_to_a_profile",
+        })
+
+
+MAX_UNRESOLVED_ASSIGNEES_NAMED = 5
+
+
+def unresolved_assignee_notice(cards, *, seen: set) -> Optional[str]:
+    """Operator notice for cards the dispatcher can never spawn for; ``None`` when
+    there is nothing new to report.
+
+    *cards* are ``(task_id, assignee)`` pairs or ``(board_slug, task_id,
+    assignee)`` triples. *seen* carries the signatures already reported and is
+    updated in place, so a deliberately non-Hermes lane (``orion-cc``, pulled by
+    a terminal via ``claim_task``) is reported once and stays quiet afterwards,
+    while a genuinely new unresolvable card is always named.
+
+    This exists because the "stuck" health signal cannot see this failure:
+    ``has_spawnable_ready`` reports an unresolvable assignee as "correctly idle",
+    so a permanently stalled queue trips no counter. Naming the cards is the
+    difference between a two-hour detour into profile health and a one-line fix.
+    """
+    fresh = [entry for entry in (cards or []) if repr(entry) not in seen]
+    if not fresh:
+        return None
+    seen.update(repr(entry) for entry in fresh)
+    def _label(entry) -> str:
+        task_id, assignee = entry[-2], entry[-1]
+        return f"{assignee!r} ({task_id})"
+
+    listed = ", ".join(_label(entry) for entry in fresh[:MAX_UNRESOLVED_ASSIGNEES_NAMED])
+    if len(fresh) > MAX_UNRESOLVED_ASSIGNEES_NAMED:
+        listed += f", +{len(fresh) - MAX_UNRESOLVED_ASSIGNEES_NAMED} more"
+    return (
+        f"kanban dispatcher: {len(fresh)} ready card(s) name an assignee that does not "
+        f"resolve to a Hermes profile, so no worker can be spawned for them and they will "
+        f"sit in 'ready' indefinitely: {listed}. This is NOT a profile-health problem — "
+        f"venv, PATH and credentials are irrelevant here. Fix each with "
+        f"`hermes kanban assign <task_id> <profile>` (see `hermes kanban assignees`), or "
+        f"confirm the assignee belongs to an external worker lane that pulls tasks itself."
+    )
+
+
+def assignee_advisory(assignee: Optional[str], *, task_id: str = "") -> Optional[str]:
+    """Creation-time advisory for an assignee the dispatcher cannot route; ``None``
+    when the name resolves (or ``profile_exists`` cannot be imported).
+
+    Deliberately a warning rather than an error. A name that resolves to no local
+    profile may legitimately belong to an external worker lane that pulls tasks
+    itself, and a creator may be about to create the profile; refusing the write
+    would fight both. What must not survive is the *silent* version — a card that
+    looks healthy in ``ready`` and is never picked up, while the dispatcher's
+    health telemetry reads the queue as "correctly idle".
+    """
+    if not assignee:
+        return None
+    profile_exists = _profile_exists_fn()
+    if profile_exists is None or profile_exists(assignee):
+        return None
+    from hermes_cli.profiles import list_profile_names
+
+    known = ", ".join(list_profile_names()) or "(none)"
+    card = f" {task_id}." if task_id else " this card."
+    return (
+        f"assignee {assignee!r} does not resolve to a Hermes profile, so no worker will "
+        f"be spawned for{card} It will sit in 'ready'. Known profiles: {known}. Fix with "
+        f"`hermes kanban assign <task_id> <profile>`, or ignore this if the assignee "
+        f"belongs to an external worker lane that pulls tasks itself."
+    )
+
+
+def unresolved_assignee_ready(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """``(task_id, assignee)`` for ready+assigned+unclaimed tasks whose assignee
+    does not resolve to a live Hermes profile.
+
+    These are the cards the dispatcher can never spawn for — and the ones health
+    telemetry reports as "correctly idle", so a permanently stalled queue is
+    indistinguishable from an idle one unless a caller names them.
+
+    Identity-agnostic by construction: there is no registry of external lanes,
+    so a deliberate non-Hermes lane (``orion-cc``, pulled by a terminal via
+    ``claim_task``) appears here too. Callers must word the finding as *"does not
+    resolve to a profile"*, never as *"broken"*.
+    """
+    profile_exists = _profile_exists_fn()
+    if profile_exists is None:
+        return []
+    rows = conn.execute(
+        "SELECT id, assignee FROM tasks "
+        "WHERE status = ? AND claim_lock IS NULL "
+        "  AND assignee IS NOT NULL AND trim(assignee) <> '' "
+        "ORDER BY id",
+        ("ready",),
+    ).fetchall()
+    return [(row["id"], row["assignee"]) for row in rows if not profile_exists(row["assignee"])]
+
+
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
@@ -1849,33 +1993,63 @@ def count_running_tasks(conn: sqlite3.Connection) -> int:
         return 0
 
 
-def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
-    """Total ``running`` tasks across every board EXCEPT ``board``.
+def _own_board_db_path(slug: str) -> Path:
+    """``slug``'s OWN ``kanban.db``, ignoring ``HERMES_KANBAN_DB``.
 
-    Caps bound the HOST, but each board's tick only sees its own DB; without
-    this a derived cap of N gets multiplied by the number of active boards.
-    Boards are matched by resolved DB path, so ``HERMES_KANBAN_DB`` (pins every
-    board to one file) yields 0. Fails open per board.
+    The dispatcher pins that env var to *the worker's own* board, and the pin
+    outranks the ``board=`` slug in :func:`kanban_db.kanban_db_path` — so
+    resolving a board list through the ordinary resolver maps every slug onto the
+    caller's own file. Enumerating OTHER boards must not go through the pin.
+    """
+    return _kb._board_own_db_path(slug)
+
+
+def _other_board_db_paths(board: Optional[str] = None) -> list[Path]:
+    """Own DB path of every live board EXCEPT the one ``board`` resolves to.
+
+    The excluded board is the file the CALLER's ``conn`` is on — the pin-aware
+    resolution of ``board`` — because that DB is already counted board-locally by
+    ``count_running_tasks(conn)``. Raises if board enumeration itself fails, so
+    each caller keeps its own fail-open default.
     """
     try:
         current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
     except Exception:
         current_path = None
-    try:
-        boards = _kb.list_boards(include_archived=False)
-    except Exception:
-        return 0
-    total = 0
-    for meta in boards:
+    paths: list[Path] = []
+    for meta in _kb.list_boards(include_archived=False):
         slug = meta.get("slug") or _kb.DEFAULT_BOARD
         try:
-            path = _kb.kanban_db_path(board=slug).expanduser()
-            resolved = str(path.resolve())
-            if current_path is not None and resolved == current_path:
+            path = _own_board_db_path(slug).expanduser()
+            if current_path is not None and str(path.resolve()) == current_path:
                 continue
             if not path.exists():
                 continue
-            other = _kbc.connect(board=slug)
+            paths.append(path)
+        except Exception:
+            continue
+    return paths
+
+
+def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
+    """Total ``running`` tasks across every board EXCEPT ``board``.
+
+    Caps bound the HOST, but each board's tick only sees its own DB; without
+    this a derived cap of N gets multiplied by the number of active boards.
+    Boards are enumerated by their OWN DB path (:func:`_own_board_db_path`), not
+    through the pin-aware resolver: inside a dispatcher-spawned worker
+    ``HERMES_KANBAN_DB`` pins every slug to that worker's board, so a pin-aware
+    walk would exclude every board and report 0 — the host load reads as empty
+    from exactly the process that dispatches. Fails open per board.
+    """
+    try:
+        others = _other_board_db_paths(board)
+    except Exception:
+        return 0
+    total = 0
+    for path in others:
+        try:
+            other = _kbc.connect(db_path=path)
             try:
                 total += count_running_tasks(other)
             finally:
@@ -1884,6 +2058,57 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
         except Exception:
             continue
     return total
+
+
+def count_running_tasks_by_assignee(conn: sqlite3.Connection) -> dict[str, int]:
+    """``assignee -> running`` counts on the tasks visible to ``conn``.
+
+    Only non-NULL assignees appear: an unassigned running row belongs to no
+    profile, so it cannot push one past its cap. Fails open to ``{}``.
+    """
+    try:
+        return {
+            row["assignee"]: int(row["n"])
+            for row in conn.execute(
+                "SELECT assignee, COUNT(*) AS n FROM tasks "
+                "WHERE status = 'running' AND assignee IS NOT NULL "
+                "GROUP BY assignee"
+            )
+        }
+    except Exception:
+        return {}
+
+
+def count_running_tasks_other_boards_by_assignee(
+    board: Optional[str] = None,
+) -> dict[str, int]:
+    """``assignee -> running`` counts across every board EXCEPT ``board``.
+
+    The per-profile cap bounds a PROFILE's local model / API quota / browser
+    pool, which no single board owns: seeded board-locally, N active boards
+    each running N workers read as "under cap" and multiply the fan-out the
+    cap exists to prevent. Boards are enumerated by their OWN DB path
+    (:func:`_own_board_db_path`), not through the pin-aware resolver — under a
+    worker's ``HERMES_KANBAN_DB`` pin every slug resolves to that worker's own
+    file and the walk returns ``{}``. Fails open per board.
+    """
+    try:
+        others = _other_board_db_paths(board)
+    except Exception:
+        return {}
+    totals: dict[str, int] = {}
+    for path in others:
+        try:
+            other = _kbc.connect(db_path=path)
+            try:
+                for name, count in count_running_tasks_by_assignee(other).items():
+                    totals[name] = totals.get(name, 0) + count
+            finally:
+                with contextlib.suppress(Exception):
+                    other.close()
+        except Exception:
+            continue
+    return totals
 
 
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
@@ -2001,9 +2226,14 @@ def _dispatch_lane_task(
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
+    # A card parked here is not silent, though: the event below is the only trace
+    # that it is unroutable, and it is what ``unresolved_assignee_ready`` and the
+    # dispatcher's health notice point at.
     profile_exists = _profile_exists_fn()
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
+        if not dry_run:
+            _record_skipped_nonspawnable(conn, task_id, assignee)
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
@@ -2316,12 +2546,11 @@ def _dispatch_once_locked(
     ) else None
     per_profile_running: dict[str, int] = {}
     if per_profile_cap is not None:
-        for prow in conn.execute(
-            "SELECT assignee, COUNT(*) AS n FROM tasks "
-            "WHERE status = 'running' AND assignee IS NOT NULL "
-            "GROUP BY assignee"
-        ):
-            per_profile_running[prow["assignee"]] = int(prow["n"])
+        # Board-local seed, then ADD every other board's in-flight workers for
+        # the same assignee: the cap bounds the profile, not the board.
+        per_profile_running = count_running_tasks_by_assignee(conn)
+        for name, count in count_running_tasks_other_boards_by_assignee(board).items():
+            per_profile_running[name] = per_profile_running.get(name, 0) + count
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold

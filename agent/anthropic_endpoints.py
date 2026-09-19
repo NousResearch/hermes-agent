@@ -52,6 +52,17 @@ _KIMI_FAMILY_MODEL_PREFIXES = (
 # exact-match so unrelated names sharing the prefix don't match.
 _KIMI_FAMILY_EXACT_SLUGS = frozenset({"k3"})
 
+# Kimi Coding serves K3 under the bare ``k3`` slug only; the ``kimi-k3`` / ``kimi-k3-cot``
+# display ids are rejected by the /coding endpoint with 401 "model id does not exist" (#105650).
+# The Kimi/Moonshot chat endpoints still serve the ``kimi-k3`` name, so translation is scoped
+# to the coding endpoint (see _is_kimi_coding_endpoint), not the provider.
+_KIMI_CODING_MODEL_ALIASES = {"kimi-k3": "k3", "kimi-k3-cot": "k3"}
+
+
+def _kimi_coding_wire_model(model: str) -> str:
+    """Coding-endpoint wire id for ``model``: display aliases map to the bare ``k3`` slug."""
+    return _KIMI_CODING_MODEL_ALIASES.get(model.strip().lower(), model)
+
 
 def _model_name_is_kimi_family(model: str | None) -> bool:
     if not isinstance(model, str):

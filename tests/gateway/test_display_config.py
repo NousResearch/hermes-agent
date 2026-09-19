@@ -69,6 +69,15 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
+    def test_full_tool_commands_defaults_off_and_supports_platform_override(self):
+        """Full terminal commands are opt-in and can be enabled for one platform."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "full_tool_commands") is False
+        config = {"display": {"platforms": {"matrix": {"full_tool_commands": True}}}}
+        assert resolve_display_setting(config, "matrix", "full_tool_commands") is True
+        assert resolve_display_setting(config, "telegram", "full_tool_commands") is False
+
 
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides
@@ -344,5 +353,4 @@ class TestLiveStatusSetting:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "slack", "live_status") == "full"
-
 

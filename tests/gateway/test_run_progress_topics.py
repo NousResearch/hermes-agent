@@ -361,6 +361,21 @@ class LongPreviewAgent:
         }
 
 
+class NativeLongCommandAgent:
+    """Emit a long terminal command through the ID-bearing native callback."""
+
+    LONG_CMD = LongPreviewAgent.LONG_CMD
+
+    def __init__(self, **kwargs):
+        self.tool_start_callback = kwargs.get("tool_start_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.tool_start_callback("call-terminal", "terminal", {"command": self.LONG_CMD})
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class UrlPreviewAgent:
     URL = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
 
@@ -725,7 +740,7 @@ def _extract_progress_preview(content: str) -> str | None:
     return None
 
 
-def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
+def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0, full_tool_commands=False):
     """Shared setup for long-preview truncation tests.
 
     Returns (adapter, result) after running the agent with LongPreviewAgent.
@@ -746,7 +761,12 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     # Write config.yaml so _run_agent picks up tool_preview_length
-    config = {"display": {"tool_preview_length": preview_length}}
+    config = {
+        "display": {
+            "tool_preview_length": preview_length,
+            "full_tool_commands": full_tool_commands,
+        }
+    }
     (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
     adapter = ProgressCaptureAdapter()
@@ -761,6 +781,9 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
         chat_type="dm",
         thread_id=None,
     )
+
+    if full_tool_commands:
+        assert runner._run_agent_display_settings(source).full_tool_commands is True
 
     result = asyncio.get_event_loop().run_until_complete(
         runner._run_agent(
@@ -788,6 +811,78 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120
     assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
+
+
+def test_full_tool_commands_keeps_complete_terminal_command(monkeypatch, tmp_path):
+    """The opt-in command setting bypasses the compact preview cap for terminal only."""
+    adapter, result = _run_long_preview_helper(
+        monkeypatch, tmp_path, preview_length=40, full_tool_commands=True,
+    )
+
+    assert result["final_response"] == "done"
+    content = "\n".join(call["content"] for call in adapter.sent)
+    assert LongPreviewAgent.LONG_CMD in content
+    assert "..." not in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grouping", ["accumulate", "separate"])
+async def test_full_tool_commands_splits_one_oversized_progress_line(
+    monkeypatch, tmp_path, grouping
+):
+    """A single full command must be split before it reaches a small platform limit."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        LongPreviewAgent,
+        session_id="sess-full-command-overflow",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "tool_progress_grouping": grouping,
+                "full_tool_commands": True,
+            }
+        },
+        adapter_cls=SmallLimitProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.oversized_sends == []
+    assert adapter.oversized_edits == []
+    content = "\n".join(
+        [call["content"] for call in adapter.sent]
+        + [call["content"] for call in adapter.edits]
+    )
+    assert "hermes-agent/.worktrees/hermes-d8860339" in content
+    assert "pytest tests/gateway/test_run_progress_topics.py" in content
+
+
+@pytest.mark.asyncio
+async def test_slack_native_full_tool_commands_preserves_terminal_command(monkeypatch, tmp_path):
+    """Slack native task cards must use the same opt-in full-command setting."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        NativeLongCommandAgent,
+        session_id="sess-native-full-command",
+        config_data={
+            "display": {
+                "platforms": {
+                    "slack": {"full_tool_commands": True}
+                }
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=NativeTaskCardAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates
+    title = adapter.native_updates[-1]["tasks"][0]["title"]
+    assert NativeLongCommandAgent.LONG_CMD in title
+    assert "..." not in title
 
 
 def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_path):

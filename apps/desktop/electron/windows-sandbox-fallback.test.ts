@@ -179,6 +179,34 @@ test('marker transitions after a successful boot', () => {
   })
 })
 
+test('a `running` leftover is a mid-session abort, not boot evidence (#112961)', () => {
+  // The prior run reached a usable window, then died without before-quit
+  // (main-process abort, kill, power loss). No fallback, no strike counted,
+  // but the next launch is told.
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'running', version: '1.2.3' },
+    argv: [],
+    env: {}
+  })
+
+  assert.equal(decision.enable, false)
+  assert.equal(decision.priorSteadyAbort, true)
+  assert.deepEqual(decision.nextMarker, { state: 'booting' })
+
+  // Steady-state evidence must not trigger boot-trouble repair either.
+  assert.equal(shouldAttemptAclRepair({ state: 'running' }), false)
+  assert.equal(parseSandboxMarker({ state: 'running' })?.state, 'running')
+})
+
+test('reveal records `running` so a later abort leaves a trace; quit keeps `ok`', () => {
+  assert.deepEqual(markerAfterSuccessfulBoot({ fallbackActive: false, steady: true, appVersion: '1.2.3' }), {
+    state: 'running',
+    version: '1.2.3'
+  })
+  assert.deepEqual(markerAfterSuccessfulBoot({ fallbackActive: false }), { state: 'ok' })
+})
+
 test('shouldAttemptAclRepair only fires on evidence of trouble', () => {
   assert.equal(shouldAttemptAclRepair(null), false)
   assert.equal(shouldAttemptAclRepair({ state: 'ok' }), false)

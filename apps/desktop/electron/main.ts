@@ -632,6 +632,11 @@ let windowsSandboxFallbackActive = false
 let windowsSandboxFallbackSticky = false
 let windowsSandboxFallbackReason: SandboxFallbackReason = 'boot-loop'
 let windowsNoSandboxRelaunchAttempted = false
+// #112961: the prior run reached a usable window and then died without
+// before-quit (main-process abort, kill, power loss). Logged at reveal, once
+// desktop.log is writable — console output alone is discarded on Start Menu
+// launches.
+let priorSteadyAbortDetected = false
 
 if (IS_WINDOWS) {
   const windowsUserData = app.getPath('userData')
@@ -662,6 +667,7 @@ if (IS_WINDOWS) {
 
   windowsSandboxFallbackActive = sandboxDecision.enable
   windowsSandboxFallbackSticky = sandboxDecision.nextMarker.state === 'fallback'
+  priorSteadyAbortDetected = sandboxDecision.priorSteadyAbort === true
 
   if (sandboxDecision.nextMarker.state === 'fallback' && sandboxDecision.nextMarker.reason) {
     windowsSandboxFallbackReason = sandboxDecision.nextMarker.reason
@@ -14708,6 +14714,8 @@ function createWindow() {
       // Keep sticky `fallback` when we launched with --no-sandbox so the next
       // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
       // records the app version so the next update re-probes the sandbox.
+      // `steady` records `running`: a later main-process abort then leaves a
+      // leftover the next launch can tell apart from a clean quit (#112961).
       if (IS_WINDOWS) {
         try {
           writeSandboxMarker(
@@ -14715,11 +14723,17 @@ function createWindow() {
             markerAfterSuccessfulBoot({
               fallbackActive: windowsSandboxFallbackSticky,
               reason: windowsSandboxFallbackReason,
-              appVersion: app.getVersion()
+              appVersion: app.getVersion(),
+              steady: true
             })
           )
         } catch (error) {
           rememberLog(`[sandbox] marker update after main-window reveal failed: ${error?.message || error}`)
+        }
+
+        if (priorSteadyAbortDetected) {
+          priorSteadyAbortDetected = false
+          rememberLog('[main] previous run reached a usable window but never quit cleanly (main-process abort, kill, or power loss)')
         }
       }
     }

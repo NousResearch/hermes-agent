@@ -166,6 +166,29 @@ def test_resume_reanchors_instead_of_instant_fire():
     assert mgr.due_prompt() is None
 
 
+def test_update_preserves_identity_and_only_reanchors_for_a_new_interval(monkeypatch):
+    now = iter((100.0, 200.0))
+    monkeypatch.setattr("hermes_cli.heartbeat.time.time", lambda: next(now))
+    mgr = HeartbeatManager(session_id="hb-update-sid")
+    state = mgr.set("original", 60)
+    state.fire_count = 3
+    state.last_fired_at = 90.0
+    created_at = state.created_at
+
+    message_only = mgr.update("reworded", 60)
+    assert message_only is not None
+    assert (message_only.prompt, message_only.created_at, message_only.fire_count, message_only.last_fired_at) == (
+        "reworded", created_at, 3, 90.0
+    )
+
+    interval_changed = mgr.update("reworded again", 120)
+    assert interval_changed is not None
+    assert (interval_changed.prompt, interval_changed.interval_seconds, interval_changed.created_at, interval_changed.fire_count) == (
+        "reworded again", 120, created_at, 3
+    )
+    assert interval_changed.last_fired_at == 200.0
+
+
 # ──────────────────────────────────────────────────────────────────────
 # compression migration
 # ──────────────────────────────────────────────────────────────────────

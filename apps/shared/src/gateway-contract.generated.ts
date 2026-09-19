@@ -890,10 +890,12 @@ export interface SessionControlParams {
   action: string
   args?: SessionControlArgs | null
 }
-/** ``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``. */
+/** Action-specific input: subgoals use ``text``/``index``; heartbeat updates use ``prompt``/``interval``. */
 export interface SessionControlArgs {
   text?: string | null
   index?: number | null
+  prompt?: string | null
+  interval?: string | null
 }
 export interface SessionControlResult {
   control: SessionControlSnapshot

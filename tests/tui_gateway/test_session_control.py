@@ -333,6 +333,32 @@ class TestManagerOnlyMutations:
         assert cleared["result"]["dispatch"]["output"] == "✓ Heartbeat cleared."
         assert cleared["result"]["control"]["heartbeat"] is None
 
+    def test_heartbeat_update_preserves_counters_and_reanchors_only_a_changed_interval(self, server, session, monkeypatch):
+        sid, key, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        _save_heartbeat(key, prompt="original", interval_seconds=600, created_at=10.0, last_fired_at=20.0, fire_count=4)
+
+        message_only = _call(
+            server, "session.control", session_id=sid, action="heartbeat.update", args={"prompt": "reworded", "interval": "10m"}
+        )
+        heartbeat = message_only["result"]["control"]["heartbeat"]
+        assert heartbeat["prompt"] == "reworded"
+        assert (heartbeat["created_at"], heartbeat["fire_count"], heartbeat["last_fired_at"]) == (10.0, 4, 20.0)
+
+        changed_interval = _call(
+            server, "session.control", session_id=sid, action="heartbeat.update", args={"prompt": "reworded", "interval": "15m"}
+        )
+        heartbeat = changed_interval["result"]["control"]["heartbeat"]
+        assert (heartbeat["created_at"], heartbeat["fire_count"], heartbeat["interval_seconds"]) == (10.0, 4, 900)
+        assert heartbeat["last_fired_at"] > 20.0
+
+    @pytest.mark.parametrize("args", ({}, {"prompt": ""}, {"prompt": "updated", "interval": "5s"}, {"prompt": "updated", "interval": "nonsense"}))
+    def test_heartbeat_update_rejects_invalid_prompt_or_interval(self, server, session, monkeypatch, args):
+        sid, key, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        _save_heartbeat(key)
+        assert _error(_call(server, "session.control", session_id=sid, action="heartbeat.update", args=args))["code"] == 4004
+
 
 class TestErrorsAndEvents:
     @pytest.mark.parametrize(

@@ -24655,7 +24655,7 @@
       },
       "SessionControlArgs": {
         "additionalProperties": false,
-        "description": "``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``.",
+        "description": "Action-specific input: subgoals use ``text``/``index``; heartbeat updates use ``prompt``/``interval``.",
         "properties": {
           "text": {
             "anyOf": [
@@ -24680,6 +24680,30 @@
             ],
             "default": null,
             "title": "Index"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Interval"
           }
         },
         "title": "SessionControlArgs",

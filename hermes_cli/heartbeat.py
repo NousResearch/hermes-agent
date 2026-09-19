@@ -208,6 +208,28 @@ class HeartbeatManager:
         # Re-anchor so resuming doesn't instantly fire a stale tick.
         return self._set_status("active", reanchor=True)
 
+    def update(self, prompt: str, interval_seconds: int) -> Optional[HeartbeatState]:
+        """Edit a heartbeat without resetting its identity or fire history.
+
+        A cadence change re-anchors exactly like ``resume`` so an old schedule cannot
+        immediately fire after the edit. Rewording alone leaves the schedule intact.
+        """
+        if not self._state:
+            return None
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("heartbeat prompt is empty")
+        interval_seconds = int(interval_seconds)
+        if interval_seconds < MIN_INTERVAL_SECONDS:
+            raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
+        interval_changed = interval_seconds != self._state.interval_seconds
+        self._state.prompt = prompt
+        self._state.interval_seconds = interval_seconds
+        if interval_changed:
+            self._state.last_fired_at = time.time()
+        save_heartbeat(self.session_id, self._state)
+        return self._state
+
     def clear(self) -> bool:
         cleared = self._set_status("cleared") is not None
         self._state = None

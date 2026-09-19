@@ -185,7 +185,7 @@ _TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "f
 def _strip_reasoning_tags(text: str) -> str:
     """Strip reasoning blocks (closed, unterminated, orphan-close) and leaked tool-call XML from display text.
 
-    Keep in sync with ``run_agent._strip_think_blocks`` and the stream consumer's think-tag sets.
+    Keep in sync with ``agent.agent_runtime_helpers.strip_think_blocks`` and the stream consumer's think-tag sets.
 
     Also strips tool-call XML blocks some open models leak into visible content (``<tool_call>``,
     ``<function_calls>``, Gemma-style ``<function name="…">…</function>``). Ported from

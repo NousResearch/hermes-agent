@@ -54,11 +54,6 @@ class TestToolCallStripping:
             assert out.strip() == "Waiting."
 
 
-
-
-
-
-
     def test_empty_string(self):
         assert _strip_reasoning_tags("") == ""
 

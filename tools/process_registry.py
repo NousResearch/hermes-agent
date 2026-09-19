@@ -34,6 +34,7 @@ from hermes_cli.config import get_hermes_home
 from tools.process_registry_notifications import format_process_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
+from tools.process_registry_soft_timeout import ProcessSoftTimeoutMixin
 
 logger = logging.getLogger(__name__)
 
@@ -526,6 +527,13 @@ class ProcessSession:
     _watch_cooldown_until: float = field(default=0.0, repr=False)
     _watch_strike_candidate: bool = field(default=False, repr=False)
     _watch_consecutive_strikes: int = field(default=0, repr=False)
+    # Soft timeout (#110427): the budget window this task runs under. `soft_deadline` 0 =
+    # not armed / gate disabled; crossing it queues a notification and leaves the process
+    # running. Nothing in this dataclass kills — see tools.process_registry_soft_timeout.
+    soft_armed: bool = False
+    soft_budget: float = 0.0
+    soft_deadline: float = 0.0                  # epoch seconds of the next threshold notice
+    soft_hits: int = 0                          # threshold crossings notified so far
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
@@ -565,7 +573,7 @@ _CHECKPOINT_DEFAULTS = {
 }
 
 
-class ProcessRegistry(ProcessCheckpointMixin):
+class ProcessRegistry(ProcessCheckpointMixin, ProcessSoftTimeoutMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -580,6 +588,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self._lock = threading.Lock()
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
+        # Soft-timeout ticker (background tasks over their budget get a notify, never a
+        # kill — see tools.process_registry_soft_timeout). Lazily started on first spawn.
+        self._soft_ticker: Optional[threading.Thread] = None
+        self._soft_ticker_lock = threading.Lock()
         # Unified queue for all background events (distinguished by "type"); the CLI
         # process_loop and the gateway drain it after each agent turn to trigger new turns.
         import queue as _queue_mod
@@ -1009,6 +1021,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
             reader.start()
             self._running[session.id] = session
         self._write_checkpoint()
+        # Soft timeout (#110427): a long-running task over its budget notifies the agent
+        # instead of being killed. Arming here (rather than on the first tick) keeps the
+        # budget anchored to the spawn and lets the ticker pick the right cadence; the
+        # gate itself only notifies notify_on_complete sessions (see the mixin).
+        self.arm_soft_timeout(session)
+        self._ensure_soft_ticker()
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
         """PTY spawn for interactive CLI tools (Codex, Claude Code, REPLs).
@@ -2277,6 +2295,8 @@ PROCESS_SCHEMA = {
         "until exit or timeout (partial output on timeout). write vs "
         "submit: submit appends Enter — use it to answer prompts; write "
         "sends raw bytes, no newline. close: EOF stdin. kill: terminate. "
+        "continue: answer a soft-timeout notice — keep a long-running task going, "
+        "optionally with a fresh budget (`seconds`); nothing is killed either way. "
         "handoff (subagents only): transfer a running process you started to your parent agent, which then "
         "receives its completion; `data` = one sentence on its purpose. Subagent-owned processes are otherwise "
         "killed when the subagent finishes and their notifications never reach the parent."
@@ -2286,7 +2306,7 @@ PROCESS_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close", "handoff"]
+                "enum": ["list", "poll", "log", "wait", "kill", "continue", "write", "submit", "close", "handoff"]
             },
             "session_id": {
                 "type": "string",
@@ -2308,6 +2328,11 @@ PROCESS_SCHEMA = {
             "limit": {
                 "type": "integer",
                 "description": "Max log lines.",
+                "minimum": 1
+            },
+            "seconds": {
+                "type": "integer",
+                "description": "Fresh soft-timeout budget for 'continue'.",
                 "minimum": 1
             }
         },
@@ -2358,6 +2383,9 @@ _SESSION_ACTIONS = {
     "log": (lambda sid, a: process_registry.read_log(sid, offset=a.get("offset"), limit=a.get("limit", 200)), True),
     "wait": (lambda sid, a: process_registry.wait(sid, timeout=a.get("timeout")), True),
     "kill": (lambda sid, a: process_registry.kill_process(sid), True),
+    # Soft timeout (#110427): the agent's "keep going" answer to a soft-timeout notice,
+    # optionally with a fresh budget. Never kills.
+    "continue": (lambda sid, a: process_registry.continue_soft_timeout(sid, a.get("seconds")), False),
     "write": (lambda sid, a: process_registry.write_stdin(sid, str(a.get("data", ""))), False),
     "submit": (lambda sid, a: process_registry.submit_stdin(sid, str(a.get("data", ""))), False),
     "close": (lambda sid, a: process_registry.close_stdin(sid), False),
@@ -2421,7 +2449,9 @@ def _handle_process(args, **kw):
         handler, redact = _SESSION_ACTIONS[action]
         result = handler(session_id, args)
         return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
-    return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
+    return tool_error(
+        f"Unknown process action: {action}. Use: "
+        + ", ".join([*_SESSION_ACTIONS, "list", "handoff"]))
 
 
 registry.register(

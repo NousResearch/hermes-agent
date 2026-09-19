@@ -22,4 +22,31 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
         help="Acknowledge a security advisory by ID and exit. After ack, the "
             "advisory will no longer trigger startup banners. Run `hermes "
             "doctor` first to see active advisories and their IDs.")
+    doctor_parser.add_argument(
+        "--upstream",
+        action="store_true",
+        help=(
+            "READONLY diagnostic of upstream reference, tracking, "
+            "ahead/behind, mutual paths, and update safety (UH10). "
+            "Combines with --json / --compact. Does not modify the "
+            "working tree or invoke any mutating git command."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Emit a pure JSON object describing upstream health. "
+            "Only effective with --upstream."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--compact",
+        action="store_true",
+        help=(
+            "Emit a single stable line summarizing upstream health. "
+            "Only effective with --upstream."
+        ),
+    )
+
     doctor_parser.set_defaults(func=cmd_doctor)

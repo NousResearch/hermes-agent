@@ -903,11 +903,23 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 
 ```bash
 hermes doctor [--fix]
+hermes doctor --ack <ADVISORY_ID>
+hermes doctor --upstream
+hermes doctor --upstream --json
+hermes doctor --upstream --compact
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--ack ADVISORY_ID` | Acknowledge a doctor advisory so future runs can suppress it where supported. |
+| `--upstream` | Run the upstream health diagnostic in READONLY mode. It does not fetch, run mutating Git operations, or modify the worktree. Without an output flag, it prints human-readable text. |
+| `--json` | With `--upstream`, print pure JSON output. Outside upstream diagnostics, this flag has no effect. |
+| `--compact` | With `--upstream`, print a stable one-line summary. Outside upstream diagnostics, this flag has no effect. |
+
+`--upstream` is incompatible with `--fix` and with `--ack`. `--json` and
+`--compact` only affect `--upstream` output; when both are supplied, JSON output
+takes precedence.
 
 The **API Connectivity** section includes an `IPv6 route` check: it opens one short (2 s) IPv6 TCP connection to a known dual-stack host. A route that is advertised but only times out (a blackholed IPv6 prefix) is reported as a warning naming the remedy, `network.force_ipv4: true`. Having no IPv6 route at all is healthy and reported as OK; the check is skipped when `force_ipv4` is already set.
 

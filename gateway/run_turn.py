@@ -2151,10 +2151,15 @@ class GatewayTurnMixin:
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
+            # The message this turn's answer actually answers owns the outbound delivery target:
+            # a successful busy redirect moved the running turn onto the redirecting message, and
+            # a queued chain's terminal reply answers the LAST message of the chain (#115001).
+            self._apply_turn_delivery_target(event, session_key, run_generation, agent_result)
+
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
             # send (bracketed by the adapter against this event) must be ledgered under that
-            # message's id or it collides with an earlier turn's row carrying the same text. Reply
-            # routing is untouched: the anchor still comes from this event.
+            # message's id or it collides with an earlier turn's row carrying the same text. The
+            # reply anchor moved with it, above.
             if isinstance(agent_result, dict):
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
                 if _terminal_inbound:
@@ -3819,16 +3824,18 @@ class GatewayTurnMixin:
         await _run_followup_processing_hook(
             _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
         merged = _preserve_queued_followup_history_offset(result, followup_result)
-        # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
-        # the adapter brackets against the event that OPENED the chain. Without this the terminal
-        # reply is recorded under the first message's id, so a first reply that was refused (flood
-        # control) has its outstanding row replaced and marked delivered by an identical-text
-        # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
-        # so only fill the key while it is still absent: the innermost turn wins.
+        # The TERMINAL turn of the chain owns the ledger identity AND the reply anchor for the outer
+        # final send, which the adapter brackets against the event that OPENED the chain. Without
+        # this the terminal reply is recorded under the first message's id, so a first reply that
+        # was refused (flood control) has its outstanding row replaced and marked delivered by an
+        # identical-text terminal reply, and is never redelivered — and it is quoted to the opening
+        # message instead of the one it answers (#115001). A deeper recursion has already set its
+        # own values, so only fill the keys while they are still absent: the innermost turn wins.
         if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
             merged = {
                 **merged,
                 "queued_terminal_inbound_id": next_inbound_id,
+                "queued_terminal_reply_anchor": next_message_id,
                 "queued_terminal_display_kind": next_display_kind,
                 "queued_terminal_notification_category": (
                     (pending_event.metadata or {}).get("notification_category", "result")

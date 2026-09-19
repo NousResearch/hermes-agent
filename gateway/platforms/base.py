@@ -154,6 +154,12 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
 
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics."""
+    # An explicit gateway delivery target wins over every derivation below: a successful busy
+    # redirect or a queued chain's terminal reply answers a DIFFERENT message than the one that
+    # opened the turn, and this is the single chokepoint every adapter's final send reads (#115001).
+    override = getattr(event, "reply_anchor_override", None)
+    if override is not None:
+        return override
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)

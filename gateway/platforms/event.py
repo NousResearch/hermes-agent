@@ -49,9 +49,16 @@ class MessageEvent:
     # (/queue) chain answers the LAST message of the chain, so its final send has to be ledgered
     # under that message's id. Keyed on the opening event's id instead, two chained turns carrying
     # the same text collide on one obligation id and the earlier turn's row is overwritten (a
-    # refused first reply then reads as delivered). Reply routing is unaffected: the reply anchor
-    # still comes from this event.
+    # refused first reply then reads as delivered). The reply anchor follows separately, through
+    # ``reply_anchor_override`` below.
     ledger_message_id: Optional[str] = None
+    # Gateway-owned outbound delivery target. A turn's final send is bracketed against the event
+    # that OPENED the turn, but the answer does not always answer that message: a successful busy
+    # redirect turns the running turn onto the redirecting message, and a queued chain's terminal
+    # reply answers the LAST message of the chain. The runner stamps the owning message's reply
+    # anchor here before the final send and ``_reply_anchor_for_event`` honours it over
+    # ``message_id``/``reply_to_message_id`` (#115001). None = derive from the event as before.
+    reply_anchor_override: Optional[str] = None
     # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
     # advances past it even if PTB's shutdown ACK times out.
     platform_update_id: Optional[int] = None

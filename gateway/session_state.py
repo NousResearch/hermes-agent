@@ -23,6 +23,10 @@ class TurnState:
     started_ts: float = 0.0  # 0.0 = not running
     lease: Any = None  # cross-process active-session slot lease
     busy_ack_ts: float = 0.0  # debounce; 0.0 = never acked
+    # A successful busy redirect re-anchors the RUNNING turn's outbound delivery to the message
+    # that redirected it: (owning run generation, reply anchor, raw inbound id). Turn-scoped and
+    # generation-guarded, so a displaced turn's redirect can never re-anchor a later turn (#115001).
+    redirect_delivery_target: Optional[Tuple[int, Optional[str], Optional[str]]] = None
     # Held turn-lease tokens keyed by acquiring run generation: release/rebind resolve the
     # token for their own generation, so a displaced turn's unwind frees only its own lease and
     # never a successor's (an evicted turn and its replacement may both hold one briefly).
@@ -32,6 +36,7 @@ class TurnState:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
         self.agent = self.lease = None
         self.started_ts = self.busy_ack_ts = 0.0
+        self.redirect_delivery_target = None
 
 
 @dataclass

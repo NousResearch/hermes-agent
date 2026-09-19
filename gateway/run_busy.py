@@ -600,8 +600,8 @@ class GatewayBusySessionMixin:
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
             and hasattr(running_agent, "redirect")
         ):
-            redirected = self._try_agent_verb(
-                running_agent, "redirect", (event.text or "").strip(), session_key, event=event
+            redirected = self._redirect_active_turn(
+                running_agent, (event.text or "").strip(), session_key, event
             )
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
@@ -625,6 +625,73 @@ class GatewayBusySessionMixin:
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False
+
+    def _redirect_active_turn(self, running_agent, text: str, session_key: str, event: MessageEvent) -> bool:
+        """``redirect()`` the running turn onto *event*, and re-anchor its delivery to that message.
+
+        A successful redirect makes the turn answer B, so B owns the turn's outbound reply/ledger
+        identity from here on (#115001). Every redirect entry point goes through this one place —
+        the interrupt-mode busy path and the priority running-session path — so the sibling path
+        cannot keep the stale anchor.
+        """
+        if not self._try_agent_verb(running_agent, "redirect", text, session_key, event=event):
+            return False
+        self._remember_redirect_delivery_target(session_key, event)
+        return True
+
+    def _remember_redirect_delivery_target(self, session_key: str, event: MessageEvent) -> None:
+        """Record that this session's running turn now answers *event* (see ``_redirect_active_turn``).
+
+        Stored for the OWNING run generation on turn-scoped state: the turn's finalizer is the only
+        consumer, and a later turn (or a /new //stop generation bump) can never pick it up.
+        """
+        try:
+            state = self._session_state(session_key)
+            state.turn.redirect_delivery_target = (
+                int(state.persistent.run_generation),
+                self._reply_anchor_for_event(event),
+                str(event.message_id) if getattr(event, "message_id", None) else None,
+            )
+        except Exception:
+            logger.debug("Could not record the redirect delivery target for %s", session_key, exc_info=True)
+
+    def _consume_redirect_delivery_target(self, session_key: str, run_generation: Optional[int]):
+        """Pop the redirect target recorded for *run_generation*; ``None`` when stale or absent."""
+        state = self._peek_session_state(session_key)
+        target = getattr(state.turn, "redirect_delivery_target", None) if state is not None else None
+        if not target:
+            return None
+        state.turn.redirect_delivery_target = None
+        generation, anchor, inbound_id = target
+        if run_generation is None or int(generation) != int(run_generation):
+            logger.info(
+                "Dropping a stale busy-redirect delivery target for %s — it belongs to generation %s, "
+                "not %s", session_key or "?", generation, run_generation,
+            )
+            return None
+        return anchor, inbound_id
+
+    def _apply_turn_delivery_target(
+        self, event: MessageEvent, session_key: str, run_generation: Optional[int], agent_result: Any,
+    ) -> None:
+        """Point this turn's outbound delivery at the message its answer actually answers.
+
+        The final send is bracketed by the adapter against the event that OPENED the turn, which is
+        not always the message being answered: a successful busy redirect moved the running turn
+        onto the redirecting message, and a queued chain's terminal reply answers the LAST message
+        of the chain. The chain wins — it is the later message. Both are generation-guarded (#115001).
+        """
+        redirect_target = self._consume_redirect_delivery_target(session_key, run_generation)
+        if redirect_target is not None:
+            anchor, inbound_id = redirect_target
+            if anchor is not None:
+                event.reply_anchor_override = anchor
+            if inbound_id:
+                event.ledger_message_id = inbound_id
+        if isinstance(agent_result, dict):
+            terminal_anchor = agent_result.get("queued_terminal_reply_anchor")
+            if terminal_anchor:
+                event.reply_anchor_override = str(terminal_anchor)
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""

@@ -1,0 +1,36 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: ticktick
+description: Find, create, and update TickTick tasks, projects, and habits.
+source: https://help.ticktick.com/articles/7438129581631995904
+
+# TickTick hosts this MCP. Auth is OAuth 2.1 with PKCE and dynamic client
+# registration. Hermes opens a browser on first connect. You can skip the
+# browser and paste a Bearer token from Settings > Account > API Token.
+transport:
+  type: http
+  url: https://mcp.ticktick.com
+
+auth:
+  type: oauth
+  # No provider. This is TickTick's own login, not Google or similar.
+
+# Leave default_enabled unset so install starts with every tool on.
+# If search and fetch show up, uncheck them. They are the generic OpenAI
+# connector pair. Use search_task and get_task_by_id instead.
+
+# Desktop composer pills.
+suggest:
+  keywords:
+    - ticktick
+  hosts:
+    - ticktick.com
+
+post_install: |
+  On first connect, Hermes opens a browser so you can sign in to TickTick.
+  After that, start a new Hermes session so the tools load.
+
+  You can change which tools are on any time with:
+    hermes mcp configure ticktick

@@ -304,6 +304,8 @@ export const ar = defineLocale({
       'session.slot.9': 'الانتقال إلى الجلسة الأخيرة 9',
       'session.focusSearch': 'البحث في الجلسات',
       'session.togglePin': 'تثبيت / إلغاء تثبيت الجلسة الحالية',
+      'conversation.scrollPageUp': 'تمرير المحادثة صفحة إلى الأعلى',
+      'conversation.scrollPageDown': 'تمرير المحادثة صفحة إلى الأسفل',
       'workspace.newWorktree': 'worktree جديد',
       'workspace.openFolder': 'فتح مجلد كمشروع',
       'composer.focus': 'التركيز على المحرّر',

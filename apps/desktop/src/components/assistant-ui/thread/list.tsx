@@ -27,6 +27,7 @@ import {
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
+  onThreadPageScrollRequest,
   planThreadScrollRestore,
   publishThreadAtBottom,
   resetPublishedThreadScroll,
@@ -1228,6 +1229,52 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       stopScroll()
     }
   })
+
+  // Page the focused transcript explicitly. Browser-default PageUp/PageDown
+  // targets whichever ancestor happens to own focus, which is unreliable in
+  // the nested desktop layout. Keep the movement here with the thread's sole
+  // scroll owner, and key the request so split/kept-alive threads stay put.
+  useEffect(
+    () =>
+      onThreadPageScrollRequest(direction => {
+        const el = scrollRef.current
+
+        if (!el) {
+          return
+        }
+
+        // A no-op PageDown at the bottom must not escape sticky follow: the
+        // browser will clamp the write and emit no scroll event to re-lock it.
+        if (direction > 0 && threadScrollStateFromMetrics(el).kind === 'bottom') {
+          return
+        }
+
+        cancelRestoreRef.current?.()
+        stopScroll()
+
+        // At the clamped top there will be no native scroll event to trigger
+        // the existing automatic "Show earlier" path. Treat PageUp there like
+        // an upward wheel notch before moving the viewport.
+        if (
+          direction < 0 &&
+          shouldAutoShowEarlier({
+            action: resolveShowEarlierAction(hiddenCount, olderAvailable),
+            isAtBottom,
+            loadSettled: loadSettledRef.current,
+            restorePending: restoreFromBottomRef.current != null,
+            scrollTop: el.scrollTop,
+            wheelDeltaY: direction
+          })
+        ) {
+          showEarlier()
+
+          return
+        }
+
+        el.scrollTop += direction * el.clientHeight
+      }, sessionKey ?? null),
+    [hiddenCount, isAtBottom, olderAvailable, scrollRef, sessionKey, showEarlier, stopScroll]
+  )
 
   // Scroll/wheel at the top edge pages older turns through the same showEarlier
   // path as the button. Wheel is required because browsers emit no `scroll`

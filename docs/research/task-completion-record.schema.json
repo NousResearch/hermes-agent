@@ -1,0 +1,386 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NousResearch/hermes-agent/blob/main/docs/research/task-completion-record.schema.json",
+  "title": "Hermes Task Completion Record",
+  "description": "Machine-auditable record for exact-object, state-typed completion claims. A record describes the strongest predicate actually evidenced; it must never promote a local artifact, adjacent object, stale head, or intended write into a stronger target-state claim.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_id",
+    "observed_at",
+    "authoritative_system",
+    "target",
+    "requested_predicate",
+    "observed",
+    "receipts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "authoritative_system": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[^/\\s]+/[^/\\s]+$"
+    },
+    "target": {
+      "$ref": "#/$defs/target"
+    },
+    "requested_predicate": {
+      "$ref": "#/$defs/predicate"
+    },
+    "observed": {
+      "$ref": "#/$defs/observedState"
+    },
+    "receipts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/receipt"
+      },
+      "minItems": 1
+    },
+    "graph_edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "default": []
+    },
+    "blocked_by": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/blocker"}
+      ],
+      "default": null
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "observed": {
+            "properties": {
+              "materialization": {"const": "target_present"}
+            },
+            "required": ["materialization"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "required": ["url", "object_id"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observed": {
+            "properties": {
+              "integrity": {"const": "exact_object_verified"}
+            },
+            "required": ["integrity"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "observed": {
+            "required": ["version"]
+          },
+          "receipts": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "binds_exact_object": {"const": true}
+              },
+              "required": ["binds_exact_object"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observed": {
+            "properties": {
+              "lineage": {"const": "blocked"}
+            },
+            "required": ["lineage"]
+          }
+        }
+      },
+      "then": {
+        "required": ["blocked_by"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observed": {
+            "properties": {
+              "lineage": {"const": "superseded"}
+            },
+            "required": ["lineage"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "graph_edges": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "type": {"const": "superseded_by"}
+              },
+              "required": ["type", "target"]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "predicate": {
+      "type": "string",
+      "enum": [
+        "prepared",
+        "locally_verified",
+        "submitted",
+        "exact_object_verified",
+        "accepted",
+        "merged",
+        "published",
+        "released",
+        "operationally_verified",
+        "blocked",
+        "superseded"
+      ]
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "local_artifact",
+            "file_blob",
+            "branch_ref",
+            "commit",
+            "pull_request",
+            "issue",
+            "issue_comment",
+            "review",
+            "workflow_run",
+            "release",
+            "deployment",
+            "service_endpoint",
+            "other"
+          ]
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "object_id": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "integer", "minimum": 1}
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "observedState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "materialization",
+        "integrity",
+        "governance",
+        "integration",
+        "operation",
+        "lineage"
+      ],
+      "properties": {
+        "materialization": {
+          "type": "string",
+          "enum": ["absent", "local_only", "target_present"]
+        },
+        "integrity": {
+          "type": "string",
+          "enum": ["unverified", "locally_verified", "read_back", "exact_object_verified"]
+        },
+        "governance": {
+          "type": "string",
+          "enum": ["unreviewed", "reviewed", "accepted", "rejected"]
+        },
+        "integration": {
+          "type": "string",
+          "enum": ["not_submitted", "open", "closed_unmerged", "merged", "released"]
+        },
+        "operation": {
+          "type": "string",
+          "enum": ["not_exercised", "hermetic_verified", "operationally_verified"]
+        },
+        "lineage": {
+          "type": "string",
+          "enum": ["active", "blocked", "superseded", "retracted", "abandoned"]
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact object version: commit SHA, blob digest, release digest, review ID, workflow run identity, or equivalent."
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "locator", "observed_at", "binds_exact_object"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "local_hash",
+            "command_exit",
+            "read_back",
+            "commit",
+            "pull_request",
+            "issue_comment",
+            "review",
+            "ci_run",
+            "merge_commit",
+            "release_digest",
+            "deployment",
+            "operational_test",
+            "authorization_failure",
+            "other"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "version": {
+          "type": "string"
+        },
+        "head_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{40}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "status": {
+          "type": "string"
+        },
+        "binds_exact_object": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "target"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "supports",
+            "contradicts",
+            "qualifies",
+            "refines",
+            "supersedes",
+            "superseded_by",
+            "derives_from",
+            "implements",
+            "tests",
+            "replicates",
+            "blocks",
+            "requires",
+            "part_of",
+            "credits",
+            "about",
+            "mentions"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": "string"
+        }
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "owner", "receipt"],
+      "properties": {
+        "class": {
+          "type": "string",
+          "enum": [
+            "authorization",
+            "external_dependency",
+            "missing_authority",
+            "target_unavailable",
+            "conflict",
+            "verification_failure",
+            "acceptance_rejection",
+            "other"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "receipt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -2229,6 +2229,12 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _on_invite(self, event: Any) -> None:
         """Auto-join rooms when invited, recording DM rooms in m.direct."""
         room_id = str(getattr(event, "room_id", ""))
+        # Skip invites addressed to someone else (bridged rooms carry other users'
+        # invites via state_key); fail-closed when the target is unresolved (#76292).
+        target = getattr(event, "state_key", "")
+        if self._user_id and target and target != self._user_id:
+            logger.debug("Matrix: ignoring invite to %s addressed to %s", room_id, target)
+            return
         is_direct = bool(getattr(getattr(event, "content", None), "is_direct", False))
         inviter = str(getattr(event, "sender", ""))
         # Only authorized inviters — otherwise any federated user could pull the bot into rooms.

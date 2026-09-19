@@ -312,6 +312,8 @@ def setup_terminal_backend(config: dict):
         discover_plugins()  # idempotent — plugin state may not be loaded yet
         from agent.terminal_env_registry import list_providers
         for provider in list_providers():
+            if provider.probe()[0] == "unavailable":
+                continue
             pname = provider.name.strip().lower()
             backends.append((pname, f"{provider.display_name} - {provider.description}"))
             plugin_backend_names.append(pname)

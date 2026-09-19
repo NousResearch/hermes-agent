@@ -9,7 +9,7 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 |---------|-------------|
 | `model` | `default`, `provider`, `base_url`, `api_key`, `context_length`, `aliases` |
 | `agent` | `max_turns` (90), `tool_use_enforcement`, `service_tier`, `verify_on_stop` |
-| `terminal` | `backend` (local/docker/ssh/modal/daytona/singularity), `cwd`, `timeout` (180) |
+| `terminal` | `backend` (local/docker/ssh/modal/daytona/singularity/apple_container), `cwd`, `timeout` (180) |
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
 | `display` | `skin`, `interface` (cli/tui), `language`, `show_reasoning`, `show_cost`, `pet` |
 | `approvals` | `mode` (smart/manual/off), `timeout`, `cron_mode` |
@@ -87,3 +87,22 @@ Auto-detect priority: local faster-whisper (`pip install faster-whisper`) → Gr
 | NeuTTS / Piper / KittenTTS (local) | None | Free |
 
 Voice commands: `/voice on` (voice-to-voice), `/voice tts` (always voice), `/voice off`.
+
+## Apple Container terminal backend
+
+On macOS 26+ Apple Silicon with Apple's `container` CLI installed and its system
+running, select Apple Container through `hermes setup` or Desktop's terminal-backend
+picker. Set `terminal.backend: apple_container` in the active profile's config.
+Use `apple_container_image` for a Bash/Python image, `apple_container_volumes` for
+explicit `HOST:CONTAINER[:ro]` directory mounts, and `apple_container_extra_args`
+for runtime flags. Empty extra args preserve default networking; `--network none`
+is an explicit offline choice, not a requirement. Start a new session after
+backend or network changes.
+
+Terminal, file tools and `execute_code` share the task's Linux filesystem.
+Persistent `/workspace` and `/root` are task storage; the host cwd is not mounted
+automatically. Desktop uploads attachments. Automatic skills/cache mounts and
+staged credential mounts are read-only. User mounts (including read-only mounts),
+mount-looking extra arguments and SSH forwarding enable normal approval guards;
+ambiguous arguments can block unattended execution. Explicit `approvals.deny`
+rules still apply.

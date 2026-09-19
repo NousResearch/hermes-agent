@@ -192,6 +192,24 @@ The proxy is intentionally minimal. Per request:
 No transformation. No logging of request bodies. No agent loop. The
 proxy is a credential-attaching pass-through.
 
+## Proxy support
+
+The upstream leg honours this machine's proxy policy: `HTTPS_PROXY` /
+`HTTP_PROXY` / `ALL_PROXY` (any casing) with `NO_PROXY`, else the macOS system
+proxy. It resolves that policy through the same shared helpers the gateway
+adapters use, so `NO_PROXY` behaves the same way here as everywhere else in
+Hermes — including port-qualified entries (`api.x.ai:443` decides an implicit
+`:443`) and IPv6 literals. SOCKS proxies need the optional `aiohttp-socks`
+extra, as elsewhere in Hermes.
+
+`gateway.trust_env: false` in `config.yaml` turns the environment/system proxy
+off for this leg too; there is no subscription-proxy-specific proxy setting.
+`NO_PROXY=*` bypasses the proxy entirely.
+
+The leg deliberately does **not** use aiohttp's `trust_env`, which would also
+apply netrc-derived credentials and could collide with the `Authorization`
+header the proxy attaches on your behalf.
+
 ## Future: more OAuth providers
 
 The adapter system is pluggable. Adding a new provider (e.g.

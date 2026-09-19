@@ -24,7 +24,12 @@ import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  catalogProviderMatches,
+  modelOptionsQueryKey,
+  requestModelOptions,
+  rowModelCapabilities
+} from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -492,7 +497,7 @@ export function ModelCatalogMenu({
 
                     const isCurrent = activeId !== null
                     const name = modelDisplayParts(family.id).name
-                    const caps = group.provider.capabilities?.[family.id]
+                    const caps = rowModelCapabilities(group.provider, family.id)
 
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote

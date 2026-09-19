@@ -1504,6 +1504,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'message.user': {
+        const text = ev.payload?.text
+
+        if (typeof text === 'string' && text.length) {
+          appendMessage({ role: 'user', text })
+        }
+
+        return
+      }
+
       case 'message.complete': {
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 

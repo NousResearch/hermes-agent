@@ -2053,7 +2053,15 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "interrupted"})
 
 
-def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str) -> dict:
+def _apply_correction(
+    rid,
+    sid: str,
+    session: dict,
+    verb: str,
+    text: str,
+    accepted_status: str,
+    render_user_message: bool,
+) -> dict:
     """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
     and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
     try:
@@ -2069,6 +2077,8 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
             # restart the pre-correction prompt.
             _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
+        if render_user_message:
+            _emit("message.user", sid, {"text": text})
     return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})
 
 
@@ -2082,6 +2092,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         session, err = _sess_nowait(params, rid)
         if err:
             return err
+        sid = str(params.get("session_id") or "")
         agent = session.get("agent")
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
@@ -2091,7 +2102,15 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
             return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
-        return _apply_correction(rid, session, verb, text, accepted_status)
+        return _apply_correction(
+            rid,
+            sid,
+            session,
+            verb,
+            text,
+            accepted_status,
+            params.get("render_user_message") is True,
+        )
 
 
 # Inject text into the next tool result without interrupting (AIAgent.steer(): no new user turn, no role

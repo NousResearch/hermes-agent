@@ -2887,6 +2887,7 @@ export interface SessionCorrectionParams {
   session_id: string
   profile?: string | null
   text: string
+  render_user_message?: boolean
 }
 export interface SessionCorrectionResult {
   status: CorrectionStatus
@@ -3867,6 +3868,10 @@ export interface ErrorPayload {
 /** ``tui_gateway/model_switch.py`` capability-refresh notice. */
 export interface NoticePayload {
   message: string
+}
+/** An externally accepted user correction mirrored into the transcript. */
+export interface UserMessagePayload {
+  text: string
 }
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
@@ -4931,6 +4936,8 @@ export interface BackendGatewayEventMap {
   'message.reaction': MessageReactionPayload
   /** A turn began streaming; no payload. */
   'message.start': Record<string, never>
+  /** A user correction accepted outside the attached TUI and rendered in its transcript. */
+  'message.user': UserMessagePayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload
   /** MoA phase transition (currently only ``aggregator``). */
@@ -5053,6 +5060,7 @@ export const GATEWAY_EVENT_TYPES = [
   'message.interim',
   'message.reaction',
   'message.start',
+  'message.user',
   'moa.aggregating',
   'moa.phase',
   'moa.progress',

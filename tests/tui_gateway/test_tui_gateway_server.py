@@ -12411,6 +12411,40 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
     assert "interrupt_called" not in calls  # must NOT interrupt
 
 
+def test_session_steer_can_render_externally_accepted_message(monkeypatch):
+    emitted = []
+
+    class _Agent:
+        def steer(self, text):
+            return True
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)),
+    )
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {
+                    "render_user_message": True,
+                    "session_id": "sid",
+                    "text": "message from Telegram",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response["result"]["status"] == "queued"
+    assert emitted == [
+        ("message.user", "sid", {"text": "message from Telegram"})
+    ]
+
+
 def test_session_steer_rejects_empty_text():
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(steer=lambda t: True)

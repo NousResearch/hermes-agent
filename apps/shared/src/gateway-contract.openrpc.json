@@ -24942,6 +24942,11 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "render_user_message": {
+            "default": false,
+            "title": "Render User Message",
+            "type": "boolean"
           }
         },
         "required": [
@@ -31704,6 +31709,21 @@
         "title": "UsageModel",
         "type": "object"
       },
+      "UserMessagePayload": {
+        "additionalProperties": false,
+        "description": "An externally accepted user correction mirrored into the transcript.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "UserMessagePayload",
+        "type": "object"
+      },
       "ValueResult": {
         "additionalProperties": false,
         "description": "The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges):\n``''`` means skipped / declined.",
@@ -34043,6 +34063,18 @@
           "schema": {
             "type": "object",
             "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "message.user",
+      "summary": "A user correction accepted outside the attached TUI and rendered in its transcript.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/UserMessagePayload"
           }
         }
       ]

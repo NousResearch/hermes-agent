@@ -185,6 +185,56 @@ class TestRefreshTools:
             assert server._registered_tool_names == ["mcp__restored_srv__live_tool"]
 
 
+class TestRefreshCoalescing:
+    """A burst of tools/list_changed must not queue one tools/list RPC per notification."""
+
+    @pytest.mark.asyncio
+    async def test_burst_of_notifications_coalesces_into_one_running_plus_one_followup(self):
+        server = MCPServerTask("storm_srv")
+        server._config = {}
+        server._registered_tool_names = []
+        server._tools = []
+        release = asyncio.Event()
+        calls = 0
+
+        async def list_tools():
+            nonlocal calls
+            calls += 1
+            await release.wait()  # hold the first refresh mid-RPC while the burst arrives
+            return SimpleNamespace(tools=[])
+
+        server.session = SimpleNamespace(list_tools=list_tools)
+        with patch("tools.registry.registry", ToolRegistry()):
+            first = server._schedule_tools_refresh()
+            await asyncio.sleep(0)  # let the first refresh reach list_tools
+            assert calls == 1
+            burst = [server._schedule_tools_refresh() for _ in range(50)]  # storm mid-RPC
+            # One task owns the whole burst; the 50 notifications piggyback on it.
+            assert all(t is first for t in burst)
+            assert len(server._pending_refresh_tasks) == 1
+            release.set()
+            await asyncio.gather(*server._pending_refresh_tasks, return_exceptions=True)
+        # The burst arrived DURING the first list: exactly one follow-up picks up what changed
+        # since; never 50.
+        assert calls == 2
+        assert not server._pending_refresh_tasks
+
+    @pytest.mark.asyncio
+    async def test_notification_after_refresh_finished_starts_a_fresh_one(self):
+        server = MCPServerTask("quiet_srv")
+        server._config = {}
+        server._registered_tool_names = []
+        server._tools = []
+        server.session = SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])))
+        with patch("tools.registry.registry", ToolRegistry()):
+            first = server._schedule_tools_refresh()
+            await asyncio.gather(first)
+            second = server._schedule_tools_refresh()
+            await asyncio.gather(second)
+        assert first is not second
+        assert server.session.list_tools.await_count == 2
+
+
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""
 

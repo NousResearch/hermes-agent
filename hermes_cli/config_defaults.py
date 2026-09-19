@@ -107,6 +107,10 @@ DEFAULT_CONFIG = {
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
+        # Continue partial output after a broken stream. False returns an incomplete
+        # turn instead of asking the model to continue (useful for batch evaluation).
+        # Does not change transport retries or genuine output-token-limit recovery.
+        "partial_stream_continuation": True,
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).

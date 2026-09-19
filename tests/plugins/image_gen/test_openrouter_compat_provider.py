@@ -121,6 +121,39 @@ class TestProviderClass:
         with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
             assert nous._resolve_model_chain() == ["openai/gpt-image-2"]
 
+    def test_configured_primary_and_fallback_models(self):
+        cfg = {
+            "model": "google/gemini-3.1-flash-image",
+            "fallback_models": ["openai/gpt-5.4-image-2"],
+        }
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert _openrouter()._resolve_model_chain() == [
+                "google/gemini-3.1-flash-image",
+                "openai/gpt-5.4-image-2",
+            ]
+
+    def test_scoped_fallback_models_override_top_level_fallbacks(self):
+        cfg = {
+            "model": "google/gemini-3.1-flash-image",
+            "fallback_models": ["top-level/fallback"],
+            "openrouter": {"fallback_models": ["openai/gpt-5.4-image-2"]},
+        }
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert _openrouter()._resolve_model_chain() == [
+                "google/gemini-3.1-flash-image",
+                "openai/gpt-5.4-image-2",
+            ]
+
+    def test_explicit_model_kwarg_still_bypasses_configured_fallback(self):
+        cfg = {
+            "model": "google/gemini-3.1-flash-image",
+            "fallback_models": ["openai/gpt-5.4-image-2"],
+        }
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+            assert _openrouter()._resolve_model_chain("some/explicit-model") == [
+                "some/explicit-model"
+            ]
+
     def test_explicit_model_kwarg_wins_over_config(self):
         cfg = {"model": "openai/gpt-image-2"}
         with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
@@ -560,6 +593,34 @@ class TestImageApiSurface:
         assert payload["aspect_ratio"] == "1:1"
         assert "messages" not in payload and "modalities" not in payload
         assert result["endpoint"] == "images/generations"
+
+    def test_configured_primary_retries_with_fallback(self, monkeypatch):
+        import requests as req_lib
+
+        monkeypatch.setattr(
+            "plugins.image_gen.openrouter._load_image_gen_config",
+            lambda: {
+                "model": "google/gemini-3.1-flash-image",
+                "fallback_models": ["openai/gpt-5.4-image-2"],
+            },
+        )
+        missing = MagicMock()
+        missing.status_code = 404
+        missing.json.return_value = {"error": {"message": "model unavailable"}}
+        missing.raise_for_status.side_effect = req_lib.HTTPError(response=missing)
+
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", side_effect=[missing, _mock_chat_response([_PNG_DATA_URI])]) as mock_post, \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+            result = _openrouter_image_api().generate(prompt="a red square")
+
+        assert result["success"] is True
+        assert result["model"] == "openai/gpt-5.4-image-2"
+        assert mock_post.call_count == 2
+        assert [call.kwargs["json"]["model"] for call in mock_post.call_args_list] == [
+            "google/gemini-3.1-flash-image",
+            "openai/gpt-5.4-image-2",
+        ]
 
     def test_chat_model_still_uses_chat_completions(self):
         """The new surface must not capture the existing default chain."""

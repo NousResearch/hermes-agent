@@ -267,3 +267,100 @@ def test_host_builds_the_session_agent_with_the_frame_login(monkeypatch):
     assert captured["auth_user_id"] == "basic:alice"
     assert session["auth_user_id"] == "basic:alice"
     assert server._session_auth_user_id(session) == "basic:alice"
+
+
+@pytest.mark.parametrize("muted", [False, True])
+@pytest.mark.parametrize("result_kind", ["complete", "error", "interrupted", "exception"])
+def test_terminal_observation_crosses_compute_boundary_once_without_diagnostic_text(
+        turn_env, monkeypatch, muted, result_kind):
+    from agent import notification_presentation
+    from tui_gateway.input_observation import adopt_inputs, new_input, project_inputs, snapshot
+    from tui_gateway.turn_observation import make_turn, turn_scope
+
+    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
+    monkeypatch.setattr(notification_presentation, "notification_config_snapshot", lambda: {
+        "display": {"suppress_warning_notifications": muted}})
+    sid = "observed-diagnostic"
+    seed = {"history_lock": threading.Lock()}
+    batch = new_input(seed, "diagnostic wake", "diagnostic-ref")
+    wire = make_turn(sid, seed, {"kind": "connection", "socket_id": "parent-socket"}).wire()
+    agent = _agent(["private diagnostic output"])
+    conversation = agent.run_conversation
+
+    def run_conversation(*args, **kwargs):
+        if result_kind == "exception":
+            raise RuntimeError("private worker exception")
+        result = conversation(*args, **kwargs)
+        if result_kind == "error":
+            result["error"] = "private worker error"
+        elif result_kind == "interrupted":
+            result["interrupted"] = True
+        return result
+
+    agent.run_conversation = run_conversation
+    child = _session(agent)
+    monkeypatch.setitem(server._sessions, sid, child)
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    try:
+        host.handle_frame({"type": "turn.start", "sid": sid, "request_id": "observed-turn",
+                           "text": "diagnostic wake", "turn_context": wire, "input_batch": batch,
+                           "display_metadata": {"notification_category": "diagnostic"}})
+        end = _wait(out, lambda frame: frame["type"] in {"turn.end", "turn.error"}, timeout=10)
+    finally:
+        host.close()
+    expected_status = "error" if result_kind == "exception" else result_kind
+    assert end["type"] == "turn.end"  # Even the inner worker exception returns normally here.
+    assert end.get("terminal_observation") == {"turn": wire, "status": expected_status}
+    assert child["_turn_observation"].terminal
+    child_outcomes = snapshot(child)["outcomes"]
+    assert len(child_outcomes) == 1 and child_outcomes[0]["status"] == expected_status
+    rpc_messages = [frame["message"] for frame in _frames(out) if frame["type"] == "rpc"]
+    message_frames = [message for message in rpc_messages
+                      if message.get("params", {}).get("type", "").startswith("message.")]
+    assert bool(message_frames) is not muted
+
+    parent_frames, drained = [], []
+    monkeypatch.setattr(server, "_session_info", lambda agent, session: {"submission_state": snapshot(session)})
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda rid, key, session: drained.append(snapshot(session)))
+
+    def parent_session():
+        parent = _session(_agent([]))
+        parent.update(running=True, transport=types.SimpleNamespace(write=lambda frame: parent_frames.append(frame) or True))
+        monkeypatch.setitem(server._sessions, sid, parent)
+        adopt_inputs(parent, batch)
+        observation = make_turn(sid, parent, wire=wire, inputs=batch)
+        parent["_turn_observation"] = observation
+        server._start_inflight_turn(parent, "diagnostic wake")
+        parent["inflight_turn"].update(turn=wire, input_batch=batch)
+        server._enqueue_prompt(parent, "parent-owned pending work", None)
+        return parent, observation, snapshot(parent)["queued"]
+
+    # Old children and mismatched evidence cannot lend success to the current turn.
+    for evidence in (None, {"turn": {**wire, "id": "another-execution"}, "status": "complete"},
+                     {"turn": {**wire, "source": {"kind": "unknown"}}, "status": "complete"}):
+        parent, observation, queued = parent_session()
+        with turn_scope(observation):
+            server._on_compute_host_turn_done("parent", sid, parent, {
+                "type": "turn.end", "terminal_observation": evidence})
+        assert not observation.terminal and snapshot(parent)["outcomes"] == []
+        assert snapshot(parent)["queued"] == queued == drained[-1]["queued"]
+
+    parent, observation, queued = parent_session()
+    parent_frames.clear()
+    for message in rpc_messages:
+        if message.get("params", {}).get("type") == "message.complete":
+            server._relay_compute_host_rpc(message)
+    with turn_scope(observation):
+        server._on_compute_host_turn_done("parent", sid, parent, end)
+        server._on_compute_host_turn_done("parent", sid, parent, end)
+    outcomes = snapshot(parent)["outcomes"]
+    assert observation.terminal and not observation.is_current()
+    assert len(outcomes) == 1
+    assert outcomes[0]["input"] == project_inputs(parent, batch)["inputs"][0]
+    assert outcomes[0]["turn"] == wire and outcomes[0]["status"] == expected_status
+    assert snapshot(parent)["queued"] == queued == drained[-1]["queued"]
+    assert parent["queued_prompt"]["text"] == "parent-owned pending work"
+    terminals = [frame for frame in parent_frames if frame["params"]["type"] == "message.complete"]
+    assert len(terminals) == (0 if muted else 1)
+    assert parent_frames[-1]["params"]["payload"]["submission_state"]["outcomes"] == outcomes

@@ -110,14 +110,13 @@ def reply_submission(response, batch, disposition, turn=None):
 
 def record_outcome(session, batch, disposition, **details):
     owner = state(session)
-    revision = owner.changed()
     if disposition == "absorbed":
         inflight = session.get("inflight_turn") or {}
         if inflight.get("streaming") and inflight.get("turn"):
             details.setdefault("turn", inflight["turn"])
             details.setdefault("into_inputs", project_inputs(session, inflight.get("input_batch"))["inputs"])
     for occurrence in project_inputs(session, batch)["inputs"]:
-        record = {"revision": revision, "input": occurrence, "disposition": disposition, **deepcopy(details)}
+        record = {"revision": owner.changed(), "input": occurrence, "disposition": disposition, **deepcopy(details)}
         size = _size(record)
         owner.outcomes.append((record, size))
         owner.outcome_bytes += size

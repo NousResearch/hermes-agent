@@ -680,10 +680,14 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     from agent.notification_presentation import event_presentation_muted
-    if event_presentation_muted(event, sid):
-        return False
     from tui_gateway.turn_observation import emit_observed
-    return emit_observed(event, sid, payload, lambda kind, key, data: write_json(_event_frame(kind, key, data)))
+
+    def write_presented(kind, key, data):
+        if event_presentation_muted(kind, key):
+            return False
+        return write_json(_event_frame(kind, key, data))
+
+    return emit_observed(event, sid, payload, write_presented)
 
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402

@@ -275,9 +275,13 @@ class ComputeHost:
             session_info = server._session_info(session.get("agent"), session)
             with self._progress_lock:
                 self._progress_counter += 1
+            observation = session.get("_turn_observation")
+            terminal = (observation.terminal_evidence() if observation is not None
+                        and observation.wire() == frame.get("turn_context") else None)
             self._reply(
                 "turn.end", sid, request_id, **meta, interrupted=interrupted, ended_ns=now_ns(),
-                session_info=session_info, session_info_emitted=True)
+                session_info=session_info, session_info_emitted=True,
+                **({"terminal_observation": terminal} if terminal is not None else {}))
         except Exception as exc:
             with contextlib.suppress(Exception):
                 from tui_gateway import server

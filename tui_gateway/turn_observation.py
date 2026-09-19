@@ -32,6 +32,7 @@ class TurnObservation:
     inputs: dict | None = None
     gate: RLock = field(default_factory=RLock)
     terminal: bool = False
+    terminal_status: str | None = None
     registered: bool = False
 
     def wire(self) -> dict:
@@ -39,6 +40,12 @@ class TurnObservation:
         if self.socket_id:
             source["socket_id"] = self.socket_id
         return {"id": self.id, "source": source}
+
+    def terminal_evidence(self) -> dict | None:
+        """Text-free result for the trusted compute protocol, never inferred from worker exit."""
+        with self.gate:
+            return ({"turn": self.wire(), "status": self.terminal_status}
+                    if self.terminal else None)
 
     def is_current(self) -> bool:
         inflight = self.session.get("inflight_turn") or {}
@@ -104,6 +111,7 @@ def emit_observed(event, sid, payload, write):
                                status=payload.get("status", "complete"))
                 if isinstance(inflight := turn.session.get("inflight_turn"), dict):
                     inflight["streaming"] = False
+                turn.terminal_status = payload.get("status", "complete")
                 turn.terminal = True
         return write(event, sid, payload)
 

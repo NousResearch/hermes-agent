@@ -272,6 +272,16 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
 
 
 def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
+    from tui_gateway.turn_observation import current_turn, emit_observed
+    observation = current_turn()
+    evidence = frame.get("terminal_observation")
+    if (frame.get("type") == "turn.end" and observation is not None
+            and observation.sid == sid and observation.session is session
+            and isinstance(evidence, dict) and evidence.get("turn") == observation.wire()
+            and evidence.get("status") in {"complete", "error", "interrupted"}):
+        # The worker can catch an inner error and still return turn.end. Only its
+        # captured terminal settles our inputs; child queue state is not authority.
+        emit_observed("message.complete", sid, {"status": evidence["status"]}, lambda *_: False)
     with session["history_lock"]:
         _compute_host_adopt_frame_meta(session, frame)
         session["running"] = False

@@ -52,7 +52,7 @@ def _tick_admitted(
             drain()
         else:
             drain_in_background()
-        _sched._maybe_reap_dead_owners()
+        _sched._maybe_reap_dead_owners(adapters=adapters, loop=loop)
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:
             _sched._maybe_run_worktree_maintenance()

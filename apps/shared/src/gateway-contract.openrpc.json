@@ -17053,7 +17053,7 @@
       },
       "PetGenerateProgressPayload": {
         "additionalProperties": true,
-        "description": "``methods_session`` pet.generate: token-only init frame, then one per draft.",
+        "description": "``methods_session_pet`` pet.generate: token-only init frame, then one per draft.",
         "properties": {
           "token": {
             "title": "Token",
@@ -17249,7 +17249,7 @@
       },
       "PetHatchProgressPayload": {
         "additionalProperties": true,
-        "description": "``methods_session`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form.",
+        "description": "``methods_session_pet`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form.",
         "properties": {
           "event": {
             "title": "Event",

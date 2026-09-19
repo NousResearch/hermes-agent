@@ -654,7 +654,7 @@ class PetChangedPayload(OpenPayload):
 
 
 class PetGenerateProgressPayload(OpenPayload):
-    """``methods_session`` pet.generate: token-only init frame, then one per draft."""
+    """``methods_session_pet`` pet.generate: token-only init frame, then one per draft."""
 
     token: str
     count: int
@@ -663,7 +663,7 @@ class PetGenerateProgressPayload(OpenPayload):
 
 
 class PetHatchProgressPayload(OpenPayload):
-    """``methods_session`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form."""
+    """``methods_session_pet`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form."""
 
     event: str
     detail: str | None = None

@@ -7,7 +7,9 @@ linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export h
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import time
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -180,7 +182,30 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _search_metadata(frontmatter: Dict[str, Any]) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Extract immutable metadata used only by the skills_list search index."""
+    metadata = frontmatter.get("metadata")
+    hermes_meta = metadata.get("hermes", {}) if isinstance(metadata, dict) else {}
+    tags = _parse_tags(frontmatter.get("tags", []))
+    if isinstance(hermes_meta, dict):
+        tags.extend(_parse_tags(hermes_meta.get("tags", [])))
+    related = hermes_meta.get("related_skills", []) if isinstance(hermes_meta, dict) else []
+    if isinstance(related, str):
+        related = [related]
+    elif not isinstance(related, (list, tuple)):
+        related = []
+    related_text = tuple(
+        item_text
+        for item in related
+        if item is not None
+        and (item_text := str(item).strip())
+    )
+    return tuple(tags), related_text
+
+
+def _find_all_skills(
+    *, skip_disabled: bool = False, include_editorial: bool = False
+) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
     by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
@@ -212,9 +237,16 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not description:  # first non-heading body line (a null value stays null)
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
+                search_tags, search_related_skills = _search_metadata(frontmatter)
                 seen_names.add(name)
-                skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                skills.append({
+                    "name": name,
+                    "description": _truncate_description(description),
+                    "category": _get_category_from_path(skill_md),
+                    # Keep search-only metadata immutable inside the cache.
+                    "_search_tags": search_tags,
+                    "_search_related_skills": search_related_skills,
+                })
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
@@ -230,8 +262,87 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
-    """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
+_PUBLIC_SKILL_KEYS = ("name", "description", "category")
+
+
+def _public_skill_metadata(skill: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the stable public metadata shape without search-only fields."""
+    return {key: skill.get(key) for key in _PUBLIC_SKILL_KEYS}
+
+
+def _normalize_skill_search_text(value: Any) -> str:
+    """Normalize user queries and skill metadata for forgiving matching."""
+    text = str(value or "").lower()
+    # Treat punctuation such as hyphens/underscores/slashes as separators so
+    # queries like "system prompt" find "system-prompt-skill-governance".
+    return re.sub(r"[^0-9a-z가-힣]+", " ", text).strip()
+
+
+def _skill_search_blob(skill: Dict[str, Any]) -> str:
+    """Build a single searchable text blob from all indexable skill fields."""
+    parts: List[str] = [
+        skill.get("name") or "",
+        skill.get("description") or "",
+        skill.get("category") or "",
+    ]
+    for key in ("_search_tags", "_search_related_skills"):
+        value = skill.get(key)
+        if isinstance(value, (list, tuple)):
+            parts.extend(str(item) for item in value)
+        elif value:
+            parts.append(str(value))
+    return _normalize_skill_search_text(" ".join(parts))
+
+
+def _score_skill_for_query(skill: Dict[str, Any], query: str) -> int:
+    """Return a deterministic relevance score for ``skills_list(query=...)``."""
+    norm_query = _normalize_skill_search_text(query)
+    if not norm_query:
+        return 0
+    terms = [term for term in norm_query.split() if term]
+    if not terms:
+        return 0
+
+    name = _normalize_skill_search_text(skill.get("name"))
+    category = _normalize_skill_search_text(skill.get("category"))
+    desc = _normalize_skill_search_text(skill.get("description"))
+    blob = _skill_search_blob(skill)
+
+    score = 0
+    if norm_query == name:
+        score += 1000
+    if norm_query in name:
+        score += 500
+    if norm_query in category:
+        score += 120
+    if norm_query in desc:
+        score += 80
+
+    matched_terms = 0
+    for term in terms:
+        if term in blob:
+            matched_terms += 1
+            if term in name:
+                score += 80
+            elif term in category:
+                score += 40
+            else:
+                score += 15
+
+    if matched_terms == len(terms):
+        score += 200
+    elif matched_terms:
+        score += int(25 * matched_terms / math.sqrt(len(terms)))
+    return score
+
+
+def skills_list(
+    category: Optional[str] = None,
+    query: Optional[str] = None,
+    limit: Optional[int] = None,
+    task_id: str = None,
+) -> str:
+    """List or search skills using minimal public metadata."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
         all_skills = _find_all_skills()
@@ -242,6 +353,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 frontmatter = plugin_skill.pop("frontmatter", {})
                 if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
                     continue
+                search_tags, search_related_skills = _search_metadata(frontmatter)
+                plugin_skill["_search_tags"] = search_tags
+                plugin_skill["_search_related_skills"] = search_related_skills
                 all_skills.append(plugin_skill)
         except Exception:
             logger.debug("Plugin skill listing failed", exc_info=True)
@@ -250,12 +364,31 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                           "message": "No skills found in skills/ directory."})
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
-        all_skills = _sort_skills(all_skills)
-        categories = sorted({s.get("category") for s in all_skills if s.get("category")})
+        total_before_query = len(all_skills)
+        if query:
+            scored = [
+                (score, skill)
+                for skill in all_skills
+                if (score := _score_skill_for_query(skill, query)) > 0
+            ]
+            scored.sort(key=lambda item: (
+                -item[0], item[1].get("category") or "", item[1].get("name") or ""))
+            try:
+                effective_limit = 25 if limit is None else max(1, min(int(limit), 100))
+            except (TypeError, ValueError):
+                effective_limit = 25
+            all_skills = [skill for _score, skill in scored[:effective_limit]]
+        else:
+            all_skills = _sort_skills(all_skills)
+        categories = sorted({str(s.get("category")) for s in all_skills if s.get("category")})
         return _json({
-            "success": True, "skills": all_skills, "categories": categories,
+            "success": True, "skills": [_public_skill_metadata(s) for s in all_skills],
+            "categories": categories,
             "count": len(all_skills),
-            "hint": "Use skill_view(name) to see full content, tags, and linked files"})
+            "total_before_query": total_before_query if query else None,
+            "query": query or None,
+            "hint": "Use skill_view(name) to see full content, tags, and linked files. Use skills_list(query=...) to search the catalog when the system prompt lists skill names.",
+        })
     except Exception as e:
         return tool_error(str(e), success=False)
 
@@ -652,13 +785,21 @@ def skill_view(
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": "List or search available skills (name + description). Use query to find skills by task/domain/toolchain while the system prompt lists skill names, then skill_view(name) to load full content.",
     "parameters": {
         "type": "object",
         "properties": {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional search query matched against skill names, descriptions, categories, tags, and related skill metadata",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional max results for query searches (default 25, max 100)",
             }
         },
         "required": [],
@@ -686,7 +827,12 @@ SKILL_VIEW_SCHEMA = {
 
 registry.register(
     name="skills_list", toolset="skills", schema=SKILLS_LIST_SCHEMA,
-    handler=lambda args, **kw: skills_list(category=args.get("category"), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: skills_list(
+        category=args.get("category"),
+        query=args.get("query"),
+        limit=args.get("limit"),
+        task_id=kw.get("task_id"),
+    ),
     check_fn=check_skills_requirements, emoji="📚")
 
 

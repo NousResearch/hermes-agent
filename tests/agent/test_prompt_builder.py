@@ -336,6 +336,17 @@ class TestBuildSkillsSystemPrompt:
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
+    def test_prompt_mentions_catalog_search(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+        result = build_skills_system_prompt()
+        assert "python-debug" in result
+        assert "skills_list(query=...)" in result
+
 
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):

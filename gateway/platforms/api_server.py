@@ -2676,11 +2676,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """GET /v1/skills — deterministic JSON listing of installed skills (name, description,
         category), the same set ``/skills list`` shows."""
         try:
-            from tools.skills_tool import _find_all_skills, _sort_skills
+            from tools.skills_tool import _find_all_skills, _public_skill_metadata, _sort_skills
             skills = _sort_skills(
-                _find_all_skills(
-                    skip_disabled=False, include_editorial=True
-                )
+                [
+                    _public_skill_metadata(skill)
+                    for skill in _find_all_skills(
+                        skip_disabled=False, include_editorial=True
+                    )
+                ]
             )
         except Exception:
             logger.exception("GET /v1/skills failed")

@@ -528,9 +528,10 @@ class BuzzAdapter(BasePlatformAdapter):
             self.poll_interval = max(_MIN_POLL_INTERVAL, float(_pi_raw or extra.get("poll_interval", _DEFAULT_POLL_INTERVAL)))
         except (TypeError, ValueError):
             self.poll_interval = max(_MIN_POLL_INTERVAL, _DEFAULT_POLL_INTERVAL)
-        # Channel messages must @mention the agent unless disabled; DMs always dispatch.
-        _rm_cfg = _setting_or("BUZZ_REQUIRE_MENTION", extra, "require_mention", True)
-        self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
+        # Pin the transport-owning home, not a later conversation's routed scope.
+        from hermes_constants import get_hermes_home
+        self._mention_policy_home = get_hermes_home()
+        self.authorization_home = self._mention_policy_home
         self._reply_to_mode: str = _reply_to_mode(config, extra)
         # Inbound transport: "auto" (WebSocket with poll fallback), "websocket" (required), "poll".
         _transport_raw = _scoped_platform_setting("BUZZ_TRANSPORT", extra, "transport")
@@ -1511,13 +1512,37 @@ class BuzzAdapter(BasePlatformAdapter):
         reply_parent_id = _event_reply_parent_id(event)
         reply_meta = self._lookup_event_meta(state, reply_parent_id) if reply_parent_id else None
         reply_to_is_own = bool(reply_meta is not None and reply_meta[0] == self._self_pubkey)
-        # Channels dispatch only when addressed (@mention or p-tag) or replying to us (Signal/WhatsApp parity),
-        # unless require_mention is off. DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_addressed(event) and not reply_to_is_own:
+        # Resolve independent live policies at intake. Legacy positional replies
+        # use thread policy, matching their installed routing classification.
+        # The control exemption below still requires a structurally marked reply.
+        from plugins.platforms.buzz.settings import effective_runtime_policy
+        policy = effective_runtime_policy(
+            getattr(self, "_hermes_profile_name", None), home=self._mention_policy_home
+        )
+        is_thread = any(
+            isinstance(tag, (list, tuple)) and len(tag) >= 4
+            and tag[0] == "e" and tag[1] and tag[3] in ("root", "reply")
+            for tag in event.get("tags", [])
+        )
+        mention_required = policy["thread_require_mention" if self._extract_thread_root(event) else "require_mention"]
+        # Cached parent identity is routing evidence, never approval authority.
+        # Admit only this bounded control family through the mention gate; the
+        # normal gateway path still enforces sender/profile/slash policy and
+        # resolves live pending work by session (or returns stale feedback).
+        control_reply = (
+            is_thread and reply_to_is_own and bool(content.strip())
+            and content.lstrip().split(maxsplit=1)[0].lower() in {"/approve", "/deny"}
+        )
+        if not is_dm and mention_required and not self._is_addressed(event) and not control_reply:
             return
-        # Adapter-level allow-list (gateway also applies it centrally); empty = no filter.
-        if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
-            if pubkey in self._reaction_only_pubkeys and _p_tagged(event, self._self_pubkey) and self._is_mentioned(content):
+        # Ordinary sender access belongs to the live gateway authority, including
+        # denial/pairing forwarding. Keep the separate reaction-only transport mode
+        # (and its allowed-users overlap rule), never a startup intake allowlist.
+        if (pubkey in self._reaction_only_pubkeys
+                and self._allowed_pubkeys and pubkey not in self._allowed_pubkeys):
+            if (pubkey in self._reaction_only_pubkeys and _p_tagged(event, self._self_pubkey)
+                    and self._is_mentioned(content)
+                    and self._is_sender_authorized(pubkey, "dm" if is_dm else "group", channel_id) is True):
                 await self.send_reaction(channel_id, event_id, "👀")
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
@@ -1529,7 +1554,8 @@ class BuzzAdapter(BasePlatformAdapter):
         # Attachment fetch spends credentials: only the gateway's explicit ``True`` permits it (else fail closed).
         # The message still dispatches so GatewayRunner can apply denial/pairing.
         chat_type = "dm" if is_dm else "group"
-        fetch_allowed = bool(attachment_metadata) and self._is_sender_authorized(pubkey, chat_type, channel_id) is True
+        sender_authorized = self._is_sender_authorized(pubkey, chat_type, channel_id) is True
+        fetch_allowed = bool(attachment_metadata) and sender_authorized
         attachments = await self._cache_inbound_attachments(attachment_metadata) if fetch_allowed else []
         if rejected_attachments:
             dispatch_text = f"{dispatch_text}\n{self._attachment_rejection_note(rejected_attachments)}".strip()
@@ -1542,7 +1568,7 @@ class BuzzAdapter(BasePlatformAdapter):
             message_type = _ATTACHMENT_KIND_TYPES.get(next(iter(kinds)), MessageType.DOCUMENT) if len(kinds) == 1 else MessageType.DOCUMENT
         await self._dispatch_message(
             text=dispatch_text, chat_id=channel_id, chat_type=chat_type, user_id=pubkey,
-            user_name=await self._resolve_user_name(pubkey), message_id=event_id,
+            user_name=None if sender_authorized else pubkey, message_id=event_id,
             created_at=created_at, thread_id=thread_id, reply_to_message_id=reply_parent_id,
             reply_to_text=reply_meta[1] if reply_meta else None, reply_to_author_id=reply_meta[0] if reply_meta else None,
             reply_to_is_own_message=reply_to_is_own, media_urls=[attachment.path for attachment in attachments],
@@ -1761,7 +1787,7 @@ class BuzzAdapter(BasePlatformAdapter):
         return cleaned_text, media_urls, media_types, message_type
 
     async def _dispatch_message(
-        self, text: str, chat_id: str, chat_type: str, user_id: str, user_name: str,
+        self, text: str, chat_id: str, chat_type: str, user_id: str, user_name: Optional[str],
         message_id: str, created_at: int, thread_id: Optional[str] = None,
         reply_to_message_id: Optional[str] = None, reply_to_text: Optional[str] = None,
         reply_to_author_id: Optional[str] = None, reply_to_is_own_message: bool = False,
@@ -1771,6 +1797,11 @@ class BuzzAdapter(BasePlatformAdapter):
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
             return
+        if user_name is None:
+            # Attachment I/O may have suspended since intake authorization.
+            # Recheck before initiating a separate profile lookup.
+            user_name = (await self._resolve_user_name(user_id)
+                         if self._is_sender_authorized(user_id, chat_type, chat_id) is True else user_id)
         media_urls = list(media_urls or [])
         media_types = list(media_types or [])
         # Same-relay URL refs are localized in addition to the caller's imeta attachments (both explicit-True gated).
@@ -1797,6 +1828,9 @@ class BuzzAdapter(BasePlatformAdapter):
             reply_to_author_id=reply_to_author_id, reply_to_is_own_message=reply_to_is_own_message,
         )
         await self.handle_message(event)
+        # Denied/unknown senders still reach central denial/pairing, but must not emit "seen".
+        if self._is_sender_authorized(user_id, chat_type, chat_id) is not True:
+            return
         # "Seen" reaction: signals the message was received and is being processed.
         try:
             await self.send_reaction(chat_id, message_id, "👀")
@@ -1855,9 +1889,9 @@ _YAML_BRIDGE = (  # (extra key, env var, kind) for apply_yaml_bridge
     ("relay_url", "BUZZ_RELAY_URL", "str"), ("cli_path", "BUZZ_CLI_PATH", "str"),
     ("home_channel", "BUZZ_HOME_CHANNEL", "str"), ("transport", "BUZZ_TRANSPORT", "str"),
     ("poll_interval", "BUZZ_POLL_INTERVAL", "str"),
-    ("channels", "BUZZ_CHANNELS", "csv"), ("allowed_users", "BUZZ_ALLOWED_USERS", "csv"),
-    ("reaction_only_users", "BUZZ_REACTION_ONLY_USERS", "csv"), ("allow_all_users", "BUZZ_ALLOW_ALL_USERS", "lower"),
-    ("require_mention", "BUZZ_REQUIRE_MENTION", "lower"), ("reply_in_thread", "BUZZ_REPLY_IN_THREAD", "lower"),
+    ("channels", "BUZZ_CHANNELS", "csv"),
+    ("reaction_only_users", "BUZZ_REACTION_ONLY_USERS", "csv"),
+    ("reply_in_thread", "BUZZ_REPLY_IN_THREAD", "lower"),
     ("reply_to_mode", "BUZZ_REPLY_TO_MODE", "lower"),
 )
 
@@ -1986,7 +2020,10 @@ def interactive_setup() -> None:
 
 def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
+    from plugins.platforms.buzz.settings import effective_authorization_policy, normalize_user_ref
     ctx.register_platform(
+        authorization_config_fn=effective_authorization_policy,
+        authorization_user_normalizer=normalize_user_ref,
         name="buzz", label="Buzz", adapter_factory=lambda cfg: BuzzAdapter(cfg), check_fn=check_requirements,
         validate_config=validate_config, is_connected=is_connected, required_env=["BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"],
         install_hint="Requires the buzz CLI binary (https://github.com/block/buzz) on PATH or at BUZZ_CLI_PATH",

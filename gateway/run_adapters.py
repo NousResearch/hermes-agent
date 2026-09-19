@@ -242,6 +242,117 @@ class GatewayAdapterLifecycleMixin:
         self._ensure_reconnect_watcher_running()
         return True
 
+    async def _reconnect_platforms_after_resume(self) -> None:
+        """Queue stale adapters for immediate reconnect after a system resume.
+
+        Inspects every currently-connected adapter. Adapters that expose an
+        ``is_connected`` / ``is_alive`` style probe and report unhealthy, or
+        that raise when probed, are queued in ``_failed_platforms`` with
+        ``next_retry = now`` (zero backoff) so the reconnect watcher retries
+        them on its next tick. Healthy adapters are left alone.
+
+        On Windows we also treat websocket-like platforms (feishu, relay,
+        discord, slack, telegram) as stale after a suspend: their long-lived
+        TCP connection never survives a sleep/wake cycle even when the remote
+        side has not sent a RST yet, so the probe above can still report
+        "connected" while nothing is received (#100025 reported five platforms
+        connected with zero inbound). Queuing them removes that silent window.
+
+        Never raises.
+        """
+        try:
+            adapters_snapshot = dict(getattr(self, "adapters", {}) or {})
+        except Exception:
+            return
+        if not adapters_snapshot:
+            return
+
+        now = time.monotonic()
+        queued = 0
+        for platform, adapter in list(adapters_snapshot.items()):
+            try:
+                # Prefer an explicit liveness probe when the adapter exposes one;
+                # adapters name it differently, so try the known spellings.
+                probe = None
+                for name in ("is_connected", "is_alive", "is_healthy", "check_connection"):
+                    candidate = getattr(adapter, name, None)
+                    if callable(candidate):
+                        probe = candidate
+                        break
+
+                is_healthy: Optional[bool] = None
+                if probe is not None:
+                    try:
+                        result = probe()
+                        if asyncio.iscoroutine(result):
+                            result = await asyncio.wait_for(result, timeout=3.0)
+                        is_healthy = bool(result)
+                    except Exception:
+                        # Timeout or raise: treat as unhealthy rather than trusting it.
+                        is_healthy = False
+
+                force_stale = False
+                if os.name == "nt":
+                    # Post-suspend, a websocket/long-poll transport is stale by kind;
+                    # its probe cannot see the RST the remote side never sent.
+                    kind = getattr(getattr(adapter, "platform", None), "value", "") or str(platform)
+                    if kind.lower() in {"feishu", "relay", "discord", "slack", "telegram"}:
+                        force_stale = True
+
+                if not (is_healthy is False or force_stale):
+                    # No probe and not a known-stale kind: don't churn an adapter we
+                    # cannot prove is broken. The watcher still heals it when its next
+                    # operation raises and hits _handle_adapter_fatal_error.
+                    continue
+
+                plat = getattr(adapter, "platform", None) or platform
+                failed = getattr(self, "_failed_platforms", None)
+                if isinstance(failed, dict) and plat in failed:
+                    # Already queued: only reset the backoff so the watcher does not
+                    # wait minutes for a platform a wake can recover immediately.
+                    failed[plat]["next_retry"] = now
+                    continue
+                platform_config = self.config.platforms.get(plat)
+                if platform_config is None:
+                    logger.debug("Resume: no config for %s — cannot queue for reconnect", plat)
+                    continue
+
+                # Build the queue entry before touching the live map: the watcher
+                # re-creates the adapter from this config, and a failure to build it
+                # must leave the live adapter in place rather than stranded.
+                entry = self._reconnect_queue_entry(
+                    plat, adapter, platform_config, attempts=0, delay=0.0,
+                )
+                # Take it out of the live map first so no new inbound is routed to
+                # the stale transport while we tear it down; then close it, else the
+                # old websocket thread can race the new connect and leave the
+                # platform half-open.
+                self.adapters.pop(platform, None)
+                try:
+                    await asyncio.wait_for(adapter.disconnect(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Resume: disconnect for %s timed out after 5s — queuing anyway", plat)
+                except Exception as disc_exc:
+                    logger.debug("Resume: disconnect for %s raised: %s", plat, disc_exc)
+
+                self._failed_platforms[plat] = entry
+                queued += 1
+                logger.info("Resume: queued %s for immediate reconnect (stale after suspend)", plat)
+                self._update_platform_runtime_status(
+                    getattr(plat, "value", str(plat)), platform_state="retrying",
+                    error_message="reconnecting after system resume",
+                )
+            except Exception:
+                logger.debug("Resume sweep for %s failed", platform, exc_info=True)
+                continue
+
+        if queued:
+            logger.warning("System resume: queued %d platform(s) for immediate reconnect", queued)
+            # Keep the delivery router in sync with the new adapters map.
+            with suppress(Exception):
+                if hasattr(self, "delivery_router") and hasattr(self.delivery_router, "adapters"):
+                    self.delivery_router.adapters = self.adapters
+
     async def _handle_adapter_fatal_error_detached(self, adapter: BasePlatformAdapter) -> None:
         """Run the fatal handler; a platform left stranded (not reconnected, not queued, not
         intentionally disabled) exits the gateway with failure so the service manager restarts it."""

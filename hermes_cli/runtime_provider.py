@@ -278,7 +278,9 @@ _NO_ANTHROPIC_CREDENTIALS_MSG = ("No Anthropic credentials found. Run 'hermes au
 
 def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra: Any) -> Dict[str, Any]:
     """Build a resolved-runtime dict; ``extra`` carries source/requested_provider/provider-specific keys."""
-    if is_actual_route(provider, base_url):
+    # #115212: ``_maybe_apply_codex_app_server_runtime`` has already rewritten api_mode to
+    # ``codex_app_server`` — don't unconditionally overwrite it back to ``chat_completions``.
+    if is_actual_route(provider, base_url) and api_mode != "codex_app_server":
         api_mode = "chat_completions"
         base_url = normalize_actual_base_url(base_url)
     return {"provider": provider, "api_mode": api_mode, "base_url": base_url, "api_key": api_key, **extra}

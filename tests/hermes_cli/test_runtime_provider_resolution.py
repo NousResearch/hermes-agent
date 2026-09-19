@@ -1971,3 +1971,22 @@ def test_removed_keyless_free_provider_points_at_its_replacements(name):
     assert excinfo.value.code == "invalid_provider"
     message = str(excinfo.value)
     assert "opencode-zen" in message and "opencode-go" in message
+
+
+class TestRuntimePreservesCodexAppServer:
+    """#115169: ``_runtime()`` must not overwrite ``codex_app_server`` back to
+    ``chat_completions`` when the provider/base_url is an actual route."""
+
+    def test_runtime_preserves_codex_app_server_api_mode(self):
+        from hermes_cli.runtime_provider import _runtime
+        result = _runtime(
+            "openai-codex", "codex_app_server", "https://chatgpt.com/backend-api/codex", "sk-test"
+        )
+        assert result["api_mode"] == "codex_app_server"
+
+    def test_runtime_still_overrides_non_codex_actual_route(self):
+        from hermes_cli.runtime_provider import _runtime
+        result = _runtime(
+            "actual", "codex_responses", "https://api.actual.inc/v1", "sk-test"
+        )
+        assert result["api_mode"] == "chat_completions"

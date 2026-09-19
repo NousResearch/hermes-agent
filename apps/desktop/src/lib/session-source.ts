@@ -109,6 +109,20 @@ export function handoffOriginSource(
   return id
 }
 
+/** The platform id a sidebar row should badge with: an external messaging
+ * source is worth its mark even when the session is pinned among rows from
+ * other origins, but local ones (cli, desktop, tui, ...) are the app's own
+ * surfaces and carry no distinguishing signal. */
+export function sessionSourceBadgeId(source: null | string | undefined): string | null {
+  const id = normalizeSessionSource(source)
+
+  if (!id || LOCAL_SOURCE_IDS.has(id)) {
+    return null
+  }
+
+  return id
+}
+
 export function sessionSourceLabel(source: null | string | undefined): string | null {
   const id = normalizeSessionSource(source)
 

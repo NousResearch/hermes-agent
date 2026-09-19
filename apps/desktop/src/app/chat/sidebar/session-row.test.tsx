@@ -35,6 +35,7 @@ vi.mock('@/i18n', () => ({
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
+          sourceBadge: (platform: string) => `Source: ${platform}`,
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
           sessionActions: 'Session actions',
@@ -76,6 +77,7 @@ vi.mock('@/lib/chat-runtime', async importOriginal => {
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/lib/session-source', () => ({
   handoffOriginSource: (state?: string, platform?: string) => (state && platform ? platform : null),
+  sessionSourceBadgeId: (source?: null | string) => source,
   sessionSourceLabel: (source: string) => source
 }))
 vi.mock('@/lib/time', async importOriginal => {
@@ -408,6 +410,29 @@ describe('SidebarSessionRow', () => {
     // than text content, and confirm its tooltip trigger actually attaches to
     // it — proving the real forwardRef/...rest path works, not a mock that
     // fakes it.
+    const avatar = handoffAvatar(container)
+    expect(avatar).toBeTruthy()
+    expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()
+  })
+
+  // A pinned session that still lives on a messaging platform badges with its
+  // live source — without this the Pinned section renders rows from Telegram,
+  // CLI and Desktop identically.
+  it('wraps the platform avatar in a Tip for a session living on a messaging platform', () => {
+    const { container } = render(
+      <SidebarSessionRow
+        isPinned
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        onToggleUnread={noop}
+        session={makeSession({ source: 'telegram', title: 'Telegram thread' })}
+        unread={false}
+      />
+    )
+
     const avatar = handoffAvatar(container)
     expect(avatar).toBeTruthy()
     expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()

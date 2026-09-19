@@ -104,18 +104,18 @@ describe.each([
   it('retains hidden visibility across runtime recovery and reports failures without a fallback user turn', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
-    const requestGateway = vi.fn(async <T,>(method: string, params?: Record<string, unknown>): Promise<T> => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
-        return { session_id: 'recovered' } as T
+        return { session_id: 'recovered' } as never
       }
 
       if (params?.session_id === 'runtime') {
         throw new Error('session not found')
       }
 
-      return { status: 'streaming' } as T
+      return { status: 'streaming' } as never
     })
 
     const { result, updateSessionState } = mountHiddenInput(tile, requestGateway)

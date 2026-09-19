@@ -8,6 +8,8 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -26,6 +28,8 @@ if TYPE_CHECKING:
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
 
 _SCALAR_TYPES = (str, int, float, bool)
+
+_logger = logging.getLogger(__name__)
 
 # Subscription primary key predicate; every per-row statement below binds
 # ``(task_id, platform, chat_id, thread_id or "")`` against it.
@@ -434,6 +438,84 @@ def rewind_notify_cursor(
     with _kb.write_txn(conn):
         cur = _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), old_cursor, claimed_cursor)
     return cur.rowcount > 0
+
+
+def _resolve_notify_target() -> Optional[dict[str, Any]]:
+    """``add_notify_sub`` kwargs for the calling session, or None (CLI/cron/tests).
+    Gateway sessions: ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` ContextVars. TUI/desktop:
+    those are cleared but the subprocess inherits ``HERMES_SESSION_KEY`` -> ``platform="tui"``
+    for the TUI poller. ``HERMES_SESSION_ID`` is deliberately NOT a fallback: it is set for
+    every CLI/ACP invocation and would auto-subscribe every CLI run."""
+    from gateway.session_context import get_session_env as env
+    platform, chat_id = env("HERMES_SESSION_PLATFORM", ""), env("HERMES_SESSION_CHAT_ID", "")
+    if not platform or not chat_id:
+        session_key = env("HERMES_SESSION_KEY", "") or os.environ.get("HERMES_SESSION_KEY", "")
+        if not session_key:
+            return None
+        platform, chat_id = "tui", session_key
+    chat_type = env("HERMES_SESSION_CHAT_TYPE", "") or None
+    thread_id = env("HERMES_SESSION_THREAD_ID", "") or None
+    message_id = env("HERMES_SESSION_MESSAGE_ID", "") or ""
+    notifier_profile = env("HERMES_SESSION_PROFILE", "") or os.environ.get("HERMES_PROFILE")
+    if not notifier_profile:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            notifier_profile = get_active_profile_name() or "default"
+        except Exception:
+            notifier_profile = "default"
+    delivery_metadata: dict[str, Any] = {
+        k: v for k, v in (
+            ("thread_id", thread_id), ("chat_type", chat_type),
+            ("scope_id", env("HERMES_SESSION_SCOPE_ID", "")),
+            ("parent_chat_id", env("HERMES_SESSION_PARENT_CHAT_ID", "")),
+        ) if v}
+    if (platform.lower() == "telegram" and thread_id
+            and (chat_type or "").lower() in {"dm", "direct", "private"}):
+        delivery_metadata["telegram_dm_topic_reply_fallback"] = True
+        if str(thread_id) not in {"", "1"}:
+            delivery_metadata["direct_messages_topic_id"] = str(thread_id)
+        if message_id:
+            delivery_metadata["telegram_reply_to_message_id"] = str(message_id)
+    return dict(
+        platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=thread_id,
+        user_id=env("HERMES_SESSION_USER_ID", "") or None,
+        user_id_alt=env("HERMES_SESSION_USER_ID_ALT", "") or None,
+        notifier_profile=notifier_profile,
+        delivery_mode="notify+wake" if platform != "tui" else None,
+        delivery_metadata=delivery_metadata or None)
+
+
+def auto_subscribe_session(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Subscribe the calling session to a new task's completion/block events; True iff
+    a row exists for that session afterwards (surfaced as ``subscribed`` by both the
+    ``kanban_create`` tool and ``hermes kanban create`` so a caller can fall back to an
+    explicit ``kanban notify-subscribe``). Gated by ``kanban.auto_subscribe_on_create``
+    (default True). Failures are logged and swallowed: bookkeeping must never fail the
+    create that triggered it."""
+    from hermes_cli.config import cfg_get, load_config
+    try:
+        if not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
+            return False
+    except Exception:
+        pass  # unreadable config keeps the user-friendly default (True)
+    target = None
+    try:
+        target = _resolve_notify_target()
+        if target is None:
+            return False  # CLI / cron / test — no persistent channel
+        # Inheritance and explicit subscriptions already encode the delivery policy.
+        # Auto-subscribe must not turn a passive destination into an agent wake.
+        if any(sub["platform"] == target["platform"] and sub["chat_id"] == target["chat_id"]
+               and (sub["thread_id"] or "") == (target["thread_id"] or "")
+               for sub in list_notify_subs(conn, task_id)):
+            return True
+        add_notify_sub(conn, task_id=task_id, **target)
+        return True
+    except Exception as _exc:
+        _logger.warning(
+            "auto_subscribe_session failed: %r (platform=%r key_set=%r)",
+            _exc, target["platform"] if target else "", bool(target and target["chat_id"]))
+        return False
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

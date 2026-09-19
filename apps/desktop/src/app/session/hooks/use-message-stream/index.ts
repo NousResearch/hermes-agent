@@ -11,6 +11,7 @@ import {
   chatMessageText,
   completeOpenTimelineParts,
   type GatewayEventPayload,
+  hasUnresolvedToolResults,
   mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,
@@ -767,6 +768,11 @@ export function useMessageStream({
         // tool-call parts that never saw their completion event.
         nextMessages = sealOpenToolParts(nextMessages)
 
+        // Measured AFTER both sealing passes (`completeOpenTimelineParts` on
+        // the settling message, `sealOpenToolParts` on the rest) so it sees
+        // exactly the rows the renderer will label "Result unavailable".
+        const lostToolResults = hasUnresolvedToolResults(nextMessages)
+
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
@@ -799,7 +805,17 @@ export function useMessageStream({
           // locally, so the user-tail guard keeps applying there.
           (!unresolvedUserTail || !finalText) &&
           !(localVisibleText && !finalText) &&
-          (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
+          // `lostToolResults` overrides ONLY the ownership optimisation below,
+          // never the clobber guards above. Having streamed the turn normally
+          // makes re-reading stored history redundant — but not when a
+          // `tool.complete` went missing: the runtime persists the tool result
+          // row before it projects the event, so the result this window lacks
+          // is already on disk. Without the re-read the sealed row renders as
+          // "Result unavailable" for a step that actually returned output.
+          (lostToolResults ||
+            state.adoptedRunningTurn ||
+            !state.sawAssistantPayload ||
+            !finalText)
 
         return {
           ...state,

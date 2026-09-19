@@ -84,3 +84,71 @@ def test_served_named_profile_reports_running_without_default_pid_file(monkeypat
     beta = next(p for p in list_profiles() if p.name == "beta")
     assert beta.gateway_running is True
     assert _run_status().startswith("✓ Gateway is running via the default-profile multiplexer")
+
+
+def _run_status_lines():
+    from hermes_cli import gateway as gw
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        gw._gateway_command_inner(
+            SimpleNamespace(gateway_command="status", deep=False, full=False, system=False)
+        )
+    return buf.getvalue().splitlines()
+
+
+def _fake_hosted_wrapper_home(monkeypatch, tmp_path, *, updated_at):
+    """A default home whose runtime record is written by THIS (non-``gateway run``) process:
+    the #116416 in-process deployment shape. No PID file, no lock — only the fresh record."""
+    import json
+
+    import hermes_constants
+    import gateway.status as status
+
+    (tmp_path / "config.yaml").write_text("gateway:\n  multiplex_profiles: false\n")
+    (tmp_path / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "kind": "hermes-gateway", "gateway_state": "running",
+        "argv": ["hermes", "dashboard", "--host", "127.0.0.1", "--no-open"],
+        "start_time": status._get_process_start_time(os.getpid()),
+        "hermes_home": str(tmp_path),
+        "updated_at": updated_at,
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    # The hosting process is NOT a `gateway run` — the strict ladder must stay down.
+    monkeypatch.setattr(
+        status, "_read_process_cmdline", lambda pid: "hermes dashboard --host 127.0.0.1 --no-open"
+    )
+
+    from hermes_cli import gateway as gw
+
+    monkeypatch.setattr(
+        gw, "get_gateway_runtime_snapshot",
+        lambda system=False: SimpleNamespace(
+            manager="manual process", running=False, gateway_pids=(),
+            has_process_service_mismatch=False),
+    )
+    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda probe=None: None)
+
+
+def test_hosted_in_process_loop_reports_live(monkeypatch, tmp_path):
+    """#116416: a fresh-heartbeat runtime record written by a live NON-``gateway run`` process
+    (the loop embedded in a dashboard/wrapper) reports as live instead of "not running" —
+    a false "down" nudges operators into starting a second gateway that fights the live one."""
+    from datetime import datetime, timezone
+
+    _fake_hosted_wrapper_home(
+        monkeypatch, tmp_path, updated_at=datetime.now(timezone.utc).isoformat())
+
+    lines = _run_status_lines()
+    assert any(line.startswith("✓ Gateway messaging loop is live") for line in lines)
+    assert not any(line.startswith("✗ Gateway is not running") for line in lines)
+
+
+def test_stale_hosted_record_still_reports_stopped(monkeypatch, tmp_path):
+    """The display-only trust is bounded by the heartbeat TTL: an orphaned record whose writer
+    died keeps the honest "not running" verdict."""
+    _fake_hosted_wrapper_home(
+        monkeypatch, tmp_path, updated_at="2020-01-01T00:00:00+00:00")
+
+    assert _run_status_lines()[0].startswith("✗ Gateway is not running")

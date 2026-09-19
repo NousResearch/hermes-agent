@@ -163,6 +163,15 @@ _NATIVE_SLASH_COMMANDS: tuple = (
      (("question", str, _REQUIRED, "The side question to answer without interrupting", None),),
      "/btw {question}", "Side question dispatched~"),
 )
+# Text-taking slash commands also accept an optional file whose contents become the argument.
+# Discord's composer converts a >2000-char paste into a .txt attachment for Nitro users only, so
+# without this option a non-Nitro user simply cannot get a long brief into /goal, /queue, /plan…
+_DISCORD_SLASH_FILE_OPTION = "file"
+_DISCORD_SLASH_FILE_DESCRIPTION = (
+    "Optional text file (.txt/.md/...) whose contents are used as the text — for long input."
+)
+# Same budget as the inbound-document text injection in _collect_attachment_media().
+_DISCORD_SLASH_FILE_MAX_BYTES = 100 * 1024
 _DISCORD_SELECT_FIELD_LIMIT = 100
 # Discord caps a single select menu at 25 options; a View holds at most 5 rows.
 _DISCORD_SELECT_MAX_OPTIONS = 25
@@ -4315,8 +4324,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _run_simple_slash(
         self, interaction: discord.Interaction, command_text: str, followup_msg: str | None = None,
+        *, already_deferred: bool = False,
     ) -> None:
-        """Defer, dispatch the command string, then replace/delete the "thinking..." indicator."""
+        """Defer, dispatch the command string, then replace/delete the "thinking..." indicator.
+
+        ``already_deferred`` is for callers that had to ACK before doing slow work (reading a file
+        option) — deferring twice raises ``InteractionResponded``, not an expiry.
+        """
         # Log the invoker so ghost-command reports can be triaged post-mortem.
         try:
             _user = interaction.user
@@ -4329,9 +4343,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception:
             pass  # logging must never block command dispatch
         # Auth gate must precede defer() so the ephemeral rejection can still be sent.
-        if not await self._check_slash_authorization(interaction, command_text):
+        if not already_deferred and not await self._check_slash_authorization(interaction, command_text):
             return
-        deferred_response = await self._defer_unless_expired(
+        deferred_response = already_deferred or await self._defer_unless_expired(
             interaction,
             "[Discord] slash %s: interaction expired before defer. "
             "Executing command anyway, skipping interaction followup.", command_text,
@@ -4348,24 +4362,150 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
+    @staticmethod
+    def _slash_file_arg(args: tuple) -> Optional[str]:
+        """Name of the free-text argument a file attachment can fill, or None.
+
+        The first ``str`` argument that has no fixed choices: ``/goal args``, ``/queue prompt``,
+        ``/steer prompt``. Choice-bound (``/reasoning effort``) and non-text (``/insights days``)
+        arguments cannot come from a file, and a command with no text argument gains no option.
+        """
+        for arg_name, arg_type, _default, _desc, choices in args:
+            if arg_type is str and not choices:
+                return arg_name
+        return None
+
+    async def _read_slash_text_attachment(self, attachment: Any) -> str:
+        """Decode a slash-command file option to text, or raise ``ValueError`` with a user-facing
+        reason. Binary, oversized and undecodable uploads fail loudly: a silently truncated or
+        empty argument would set the wrong goal / queue the wrong prompt."""
+        filename = getattr(attachment, "filename", "") or "file"
+        ext = os.path.splitext(filename)[1].lower()
+        content_type = (getattr(attachment, "content_type", None) or "").split(";")[0].strip()
+        if ext not in _TEXT_INJECT_EXTENSIONS and not content_type.startswith("text/"):
+            raise ValueError(
+                f"`{filename}` is not a text file. Attach a text file (.txt, .md, .json, …) — "
+                "Discord turns a long paste into a `.txt` for you."
+            )
+        size = getattr(attachment, "size", None)
+        if size and int(size) > _DISCORD_SLASH_FILE_MAX_BYTES:
+            raise ValueError(
+                f"`{filename}` is {int(size)} bytes; the limit for a slash-command file is "
+                f"{_DISCORD_SLASH_FILE_MAX_BYTES} bytes."
+            )
+        raw_bytes = await self._cache_discord_document(attachment, ext)
+        if len(raw_bytes) > _DISCORD_SLASH_FILE_MAX_BYTES:
+            raise ValueError(
+                f"`{filename}` is {len(raw_bytes)} bytes; the limit for a slash-command file is "
+                f"{_DISCORD_SLASH_FILE_MAX_BYTES} bytes."
+            )
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"`{filename}` is not UTF-8 text, so it cannot be read as a command argument.") from exc
+        if not text.strip():
+            raise ValueError(f"`{filename}` is empty.")
+        return text
+
+    async def _resolve_slash_file_argument(
+        self, interaction: discord.Interaction, command_name: str, attachment: Any, typed: str,
+    ) -> Optional[str]:
+        """Merge the file option into the typed text; ``None`` means the handler must stop
+        (already answered with an ephemeral reason).
+
+        The interaction is deferred FIRST: downloading the attachment can outlive Discord's 3 s
+        initial-response deadline, after which the token is dead and the command silently fails.
+        """
+        # Authorize before touching the upload: an unauthorized invocation must not make the bot
+        # fetch attacker-supplied bytes. ``_run_simple_slash`` re-checks for the no-file path.
+        if not await self._check_slash_authorization(interaction, f"/{command_name}"):
+            return None
+        await self._defer_unless_expired(
+            interaction, "[Discord] slash /%s: interaction expired before the file option "
+            "could be read.", command_name,
+        )
+        try:
+            file_text = await self._read_slash_text_attachment(attachment)
+        except ValueError as exc:
+            await self._send_slash_error(interaction, str(exc))
+            return None
+        except Exception as exc:
+            logger.warning("[Discord] /%s: reading the file option failed: %s", command_name, exc, exc_info=True)
+            await self._send_slash_error(interaction, "Could not read that file. Please try again.")
+            return None
+        typed = (typed or "").strip()
+        # Typed text stays in front so a leading verb still parses: `/goal draft` + brief.
+        return f"{typed}\n{file_text}" if typed else file_text
+
+    async def _send_slash_error(self, interaction: discord.Interaction, message: str) -> None:
+        """Ephemeral error for a slash command, whether or not the interaction was deferred."""
+        try:
+            if getattr(getattr(interaction, "response", None), "is_done", None) and interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except Exception as e:
+            logger.debug("[Discord] Could not send slash error ephemeral: %s", e)
+
     def _slash_proxy(self, name: str, args: tuple, template: str, followup: Optional[str], *,
                      strip: bool = True, prefix: str = "slash_"):
         """Build a slash callback rendering ``template`` from its args via ``_run_simple_slash``;
-        the introspected signature is synthesised from ``args`` (see ``_NATIVE_SLASH_COMMANDS``)."""
+        the introspected signature is synthesised from ``args`` (see ``_NATIVE_SLASH_COMMANDS``).
+
+        A command with a free-text argument also gets an optional ``file`` attachment whose decoded
+        contents become that argument. Discord's composer only offers the "paste as a .txt file"
+        conversion above 2000 characters to Nitro subscribers, and an option field cannot be typed
+        past that either, so without this a non-Nitro user has no way to give ``/goal`` a long
+        brief (#116471).
+        """
+        file_arg = self._slash_file_arg(args)
+        # A required text argument becomes optional once a file can supply it; the handler
+        # rejects "neither typed nor attached" so the command still cannot run empty.
+        required_text = any(a[0] == file_arg and a[2] is _REQUIRED for a in args)
+
         async def _handler(interaction: discord.Interaction, **kwargs):
+            attachment = kwargs.pop(_DISCORD_SLASH_FILE_OPTION, None) if file_arg else None
+            used_file = False
+            if file_arg and attachment is not None:
+                merged = await self._resolve_slash_file_argument(
+                    interaction, name, attachment, kwargs.get(file_arg, ""),
+                )
+                if merged is None:
+                    return
+                kwargs[file_arg] = merged
+                used_file = True
+            elif file_arg and required_text and not str(kwargs.get(file_arg, "") or "").strip():
+                await self._send_slash_error(
+                    interaction, f"`/{name}` needs text — type it, or attach a text file.",
+                )
+                return
             text = template.format(**kwargs)
             call_args = (text.strip() if strip else text,) + (() if followup is None else (followup,))
-            await self._run_simple_slash(interaction, *call_args)
+            # Kwarg only on the file path, so the plain path's call signature is unchanged.
+            deferred_kw = {"already_deferred": True} if used_file else {}
+            await self._run_simple_slash(interaction, *call_args, **deferred_kw)
         _handler.__name__ = prefix + {"bg": "background"}.get(name, name).replace("-", "_")
         params = [inspect.Parameter("interaction", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=discord.Interaction)]
         for arg_name, arg_type, default, _desc, _choices in args:
+            if default is _REQUIRED and arg_name == file_arg:
+                default = ""
             params.append(inspect.Parameter(
                 arg_name, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=arg_type,
                 default=inspect.Parameter.empty if default is _REQUIRED else default,
             ))
+        if file_arg:
+            # ``= None`` is what makes the option optional to discord.py; ``Optional[...]`` would
+            # need a real class and this module tolerates ``discord`` being a stub.
+            params.append(inspect.Parameter(
+                _DISCORD_SLASH_FILE_OPTION, inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=discord.Attachment, default=None,
+            ))
         _handler.__signature__ = inspect.Signature(params)
         if args:
-            _handler = discord.app_commands.describe(**{a[0]: a[3] for a in args})(_handler)
+            descriptions = {a[0]: a[3] for a in args}
+            if file_arg:
+                descriptions[_DISCORD_SLASH_FILE_OPTION] = _DISCORD_SLASH_FILE_DESCRIPTION
+            _handler = discord.app_commands.describe(**descriptions)(_handler)
             choices = {a[0]: [discord.app_commands.Choice(name=lbl, value=val) for lbl, val in a[4]] for a in args if a[4]}
             if choices:
                 _handler = discord.app_commands.choices(**choices)(_handler)

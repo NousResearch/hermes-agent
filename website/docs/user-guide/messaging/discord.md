@@ -642,6 +642,30 @@ display:
       reasoning_style: subtext   # code | blockquote | subtext
 ```
 
+## Long text in a slash command: the `file` option
+
+Discord caps what you can type into a slash-command option, and its "your paste became a
+`.txt` file" conversion in the message composer is a **Nitro** feature — and does not apply to
+slash-command options at all. So a long brief could not be given to `/goal`, `/queue`, `/plan`,
+`/bg`, `/steer` … at all.
+
+Every slash command with a free-text argument therefore also takes an optional **`file`**
+attachment. Attach a text file and its contents become that argument:
+
+```text
+/goal file:sprint-brief.md
+/goal args:draft file:sprint-brief.md     ← typed text stays in front, so `draft` still parses
+```
+
+- Accepted: text files by extension (`.txt`, `.md`, `.json`, `.csv`, `.py`, …) or a `text/*`
+  MIME type. Anything else is refused with an ephemeral message — a binary file is never
+  half-decoded into a command.
+- Limit: 100 KB, checked from the attachment metadata before anything is downloaded.
+- Commands whose option is a fixed list (`/reasoning`, `/voice`) or a number (`/insights`) do
+  not get the option; a file cannot supply those.
+- The argument is still required in substance: with neither text typed nor a file attached,
+  `/queue` and friends refuse rather than running empty.
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:

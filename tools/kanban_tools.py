@@ -198,12 +198,42 @@ def _enforce_worker_task_ownership(tid: str) -> None:
             f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
 
 
+def _enforce_worker_run_binding(tid: str) -> None:
+    """A dispatcher-spawned worker must be able to name the run it writes on. (#116239)
+
+    ``_worker_run_id()`` returns None when HERMES_KANBAN_RUN_ID is absent, blank
+    or unparseable, and that None is threaded into the write paths as
+    ``expected_run_id=None`` — where kanban_db only appends the run-ownership
+    fence (``AND current_run_id = ?``) for a non-None value. An unbound worker
+    therefore writes unfenced: if its claim was reclaimed and the card
+    re-claimed by a live successor, its completion closes the card and ends the
+    successor's run — the opposite of what the fence exists for.
+
+    So when this process is a worker for ``tid`` (HERMES_KANBAN_TASK) and no
+    usable run id resolves, refuse instead of writing unfenced. Callers without
+    worker identity (CLI/operator, orchestrator, dispatcher) still pass None and
+    stay guarded by LiveClaimError / ``--force``.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != tid:
+        return
+    if _worker_run_id(tid) is not None:
+        return
+    raise _Reject(
+        f"worker has no run id for task {tid}: HERMES_KANBAN_RUN_ID is missing, blank or "
+        "unparseable, so this write cannot be fenced against the run that owns the card. "
+        "Refusing the write rather than writing unfenced, which could close a run owned "
+        "by a live successor. Restart the worker so the dispatcher can bind its run, or "
+        f"have an operator force the change: hermes kanban complete {tid} --force"
+    )
+
+
 def _worker_guard(tool_name: str, args: dict) -> str:
     """Worker mutation preamble, in order: delegate-child rejection, task id
-    resolution, task-scope ownership. Returns the task id."""
+    resolution, task-scope ownership, run binding. Returns the task id."""
     _reject_delegated_child_mutation(tool_name)
     tid = _require_task_id(args)
     _enforce_worker_task_ownership(tid)
+    _enforce_worker_run_binding(tid)
     return tid
 
 

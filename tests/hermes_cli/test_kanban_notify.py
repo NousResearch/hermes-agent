@@ -895,12 +895,16 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="worker1")
+        bound = kb.claim_task(conn, tid)
+        assert bound is not None
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
     finally:
         conn.close()
 
     import os
     os.environ["HERMES_KANBAN_TASK"] = tid
+    # A worker write must name the run it holds (#116239).
+    os.environ["HERMES_KANBAN_RUN_ID"] = str(bound.current_run_id)
     try:
         kt._handle_complete({
             "summary": "one real, one ghost",
@@ -908,6 +912,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+        os.environ.pop("HERMES_KANBAN_RUN_ID", None)
 
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True

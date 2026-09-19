@@ -64,9 +64,15 @@ def worker_env(monkeypatch, tmp_path):
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
         kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    # The dispatcher exports the worker's run id alongside HERMES_KANBAN_TASK
+    # (kanban_db_dispatch spawn env), so worker writes are fenced against the
+    # run that owns the card. Bind it here too — a worker that cannot name its
+    # run is refused by design (#116239).
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return tid
 
 
@@ -231,9 +237,13 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
             body="Must achieve X with verified evidence.", goal_mode=True
         )
         kb.claim_task(conn, goal_task_id)
+        run_id = kb.get_task(conn, goal_task_id).current_run_id
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    # Dispatcher-spawned workers carry the run they hold; a worker that cannot
+    # name its run is refused before the judge gate (#116239).
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
 
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
@@ -299,9 +309,13 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
             body="Must achieve X.", goal_mode=True,
         )
         kb.claim_task(conn, goal_task_id)
+        run_id = kb.get_task(conn, goal_task_id).current_run_id
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    # Workers are spawned with their run id next to the task id; a worker that
+    # cannot name its run is refused by the write guard (#116239).
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return goal_task_id
 
 
@@ -1269,3 +1283,151 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Run-ownership binding (#116239)
+# ---------------------------------------------------------------------------
+
+def _superseded_worker_board(monkeypatch, tmp_path):
+    """Board whose card was reclaimed from a stale worker and re-claimed by a
+    live successor. Returns ``(tid, stale_run_id, successor_run_id)``.
+
+    Only the bookkeeping matters here: the stale worker's old run is no longer
+    ``current_run_id``, so any write it makes lands on a run it does not own.
+    """
+    import time
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="a live successor owns this run", assignee="test-worker")
+        kb.claim_task(conn, tid, claimer="stale-host:stale-worker")
+        stale_run = kb.get_task(conn, tid).current_run_id
+        # The stale worker stopped heartbeating: its claim expires and the
+        # dispatcher reclaims the run...
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, tid),
+        )
+        assert kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None) == 1
+        # ...and hands the card to a successor that is running right now.
+        assert kb.claim_task(conn, tid, claimer="live-host:successor") is not None
+        successor_run = kb.get_task(conn, tid).current_run_id
+    assert successor_run and successor_run != stale_run
+    return tid, stale_run, successor_run
+
+
+def test_unbound_worker_cannot_complete_a_successors_run(monkeypatch, tmp_path):
+    """#116239 regression: a worker with no usable run id must fail closed.
+
+    ``complete_task(expected_run_id=None)`` drops the ``AND current_run_id = ?``
+    fence, so before this fix a stale worker whose ``HERMES_KANBAN_RUN_ID``
+    never reached its environment closed the card — ending the successor's run
+    that is still executing.
+    """
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    tid, _stale_run, successor_run = _superseded_worker_board(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+
+    payload = json.loads(kt._handle_complete({"task_id": tid, "result": "stale handoff"}))
+
+    assert payload.get("error"), f"the unbound write was accepted: {payload}"
+    with kbc.connect() as conn:
+        task = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+        assert task["status"] == "running", "an unbound stale worker closed the card"
+        assert task["current_run_id"] == successor_run
+        run = conn.execute(
+            "SELECT ended_at FROM task_runs WHERE id = ?", (successor_run,),
+        ).fetchone()
+        assert run is not None and run["ended_at"] is None, (
+            "the successor's run was ended by an unbound stale worker"
+        )
+
+
+def test_unbound_worker_cannot_block_a_successors_run(monkeypatch, tmp_path):
+    """Same fail-closed rule for the other lifecycle writes (``kanban_block``
+    takes the same ``expected_run_id`` fence as completion)."""
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    tid, _stale_run, successor_run = _superseded_worker_board(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+
+    payload = json.loads(kt._handle_block({"task_id": tid, "reason": "stale worker gives up"}))
+
+    assert payload.get("error"), f"the unbound write was accepted: {payload}"
+    with kbc.connect() as conn:
+        task = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+        assert task["status"] == "running", "an unbound stale worker blocked the card"
+        assert task["current_run_id"] == successor_run
+        run = conn.execute(
+            "SELECT ended_at FROM task_runs WHERE id = ?", (successor_run,),
+        ).fetchone()
+        assert run is not None and run["ended_at"] is None
+
+
+def test_worker_with_its_own_superseded_run_id_is_refused(monkeypatch, tmp_path):
+    """Control for #116239: a worker that still *does* carry its (now stale) run
+    id is already refused by the fence — that path must keep refusing."""
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    tid, stale_run, successor_run = _superseded_worker_board(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(stale_run))
+
+    payload = json.loads(kt._handle_complete({"task_id": tid, "result": "stale handoff"}))
+
+    assert payload.get("error"), f"a stale run id was accepted: {payload}"
+    with kbc.connect() as conn:
+        task = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+        assert task["status"] == "running"
+        assert task["current_run_id"] == successor_run
+        run = conn.execute(
+            "SELECT ended_at FROM task_runs WHERE id = ?", (successor_run,),
+        ).fetchone()
+        assert run is not None and run["ended_at"] is None
+
+
+def test_operator_without_worker_identity_is_not_affected(monkeypatch, tmp_path):
+    """The human/CLI path has no worker identity and no run to prove: with
+    ``HERMES_KANBAN_TASK`` unset it must stay exactly as it was — no new refusal
+    and no mention of ``HERMES_KANBAN_RUN_ID``."""
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    tid, _stale_run, _successor_run = _superseded_worker_board(monkeypatch, tmp_path)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+
+    payload = json.loads(kt._handle_complete({"task_id": tid, "result": "closed by an operator"}))
+
+    assert "HERMES_KANBAN_RUN_ID" not in payload.get("error", ""), payload
+    with kbc.connect() as conn:
+        status = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()["status"]
+    assert status == "done", f"the operator path stopped working: {payload}"

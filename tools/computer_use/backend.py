@@ -80,6 +80,9 @@ class CaptureResult:
     # Guidance appended to the summary by capture lanes that intentionally return no elements (e.g.
     # full-screen composited grabs) to point the model at an interactive lane.
     note: str = ""
+    # Wall time of the capture stage in milliseconds (monotonic clock). Metadata only: no pixels,
+    # no typed secrets. See #112639 (capture-first patch).
+    capture_duration_ms: float = 0.0
 
 
 @dataclass

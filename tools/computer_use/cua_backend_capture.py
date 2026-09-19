@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
@@ -43,6 +44,11 @@ _NO_DESKTOP_IMAGE_MSG = ("<get_desktop_state returned no image; the driver may p
 _FULL_SCREEN_NOTE = ("full-screen capture has no interactable elements; to act on what you see, call "
                      "capture(app='<AppName>') for that app's clickable element list, or capture(app='desktop') for "
                      "the desktop shell (wallpaper icons / taskbar) with elements")
+# get_window_state output selectors (cua-driver documents both): project the requested Hermes capture mode
+# into the driver's supported arguments so the backend skips producer work whose output the mode discards
+# (`ax` -> tree only, `vision` -> image only). `som` keeps both; a driver that doesn't advertise a selector
+# keeps the existing full request. Support is probed via supports_input_property(), never a version guess.
+_GWS_INCLUDE_PROJECTION = {"ax": "include_screenshot", "vision": "include_accessibility_tree"}
 
 def _linux_x11_active_window_id() -> Optional[int]:
     """Best-effort read of ``_NET_ACTIVE_WINDOW`` via xprop. Never raises."""
@@ -82,6 +88,16 @@ def _tree_and_title(out: Dict[str, Any]) -> Tuple[str, str]:
     """``(tree_markdown, window_title)`` from a get_window_state result."""
     tree = _split_tree_text(data if isinstance((data := out.get("data")), str) else "")[1]
     return tree, (match.group(1) if (match := re.search(r'AXWindow\s+"([^"]+)"', tree)) else "")
+
+def _structured_window_title(out: Dict[str, Any]) -> str:
+    """Window title from get_window_state metadata (present on image-only results where the driver omits
+    the AX tree); "" when the driver carries none."""
+    sc = out.get("structuredContent")
+    if isinstance(sc, dict):
+        for key in ("window_title", "title"):
+            if isinstance(sc.get(key), str) and sc[key]:
+                return sc[key]
+    return ""
 
 def _gws_is_empty(out: Dict[str, Any]) -> bool:
     """True when a get_window_state result carries neither a screenshot nor a parseable tree. Modern
@@ -227,38 +243,49 @@ class _CaptureMixin:
         # macOS list_windows returns the localized app name (e.g. "計算機"), so `app="Calculator"` legitimately misses.
         return self._match_windows_for_app(windows, app) or self._failed_capture(mode, _NO_APP_MATCH_MSG.format(app=app))
 
-    def _gws_args(self) -> Dict[str, Any]:
-        return {"pid": self._active_pid, "window_id": self._active_window_id, "session": self._session_id}
+    def _gws_args(self, mode: str = "som") -> Dict[str, Any]:
+        """get_window_state args for the active target. When the connected driver advertises the output
+        selectors, the requested representation is projected down: ``ax`` skips the screenshot grab,
+        ``vision`` skips the AX walk. ``som`` and older drivers keep the full request."""
+        args = {"pid": self._active_pid, "window_id": self._active_window_id, "session": self._session_id}
+        if (selector := _GWS_INCLUDE_PROJECTION.get(mode)) and self._session.supports_input_property(
+                "get_window_state", selector):
+            args[selector] = False
+        return args
 
     def _capture_vision(self) -> Tuple[Optional[str], Optional[str], List[UIElement], str]:
         """Pixels only, ``elements`` always empty: ``(png_b64, mime, [], window_title)``. Drivers advertising the
         cheaper standalone ``screenshot`` tool use it; current drivers folded PNG capture into ``get_window_state``
-        (tree DISCARDED here). Before discovery ran we still try ``screenshot`` first and fall back, so the path
-        self-heals on any driver version."""
+        (tree DISCARDED here — and skipped on the driver when it advertises ``include_accessibility_tree``).
+        Before discovery ran we still try ``screenshot`` first and fall back, so the path self-heals on any
+        driver version."""
         png_b64, image_mime_type, window_title = None, None, ""
         if self._session._has_tool("screenshot") or not self._session.capabilities_discovered:
             png_b64, image_mime_type = _image_from_tool_result(self._call_capture_tool("screenshot", {
                 "window_id": self._active_window_id, "format": "jpeg", "quality": 85, "session": self._session_id}))
         if not png_b64:
             # "Unknown tool: screenshot" or an empty image part -> get_window_state. The title is cheap
-            # and useful; `elements` stays empty by contract.
-            gws_out = self._call_capture_tool("get_window_state", self._gws_args())
-            (png_b64, image_mime_type), (_, window_title) = _image_from_tool_result(gws_out), _tree_and_title(gws_out)
+            # and useful; `elements` stays empty by contract. When the driver skipped the AX walk the title
+            # comes from the window metadata instead of the (omitted) tree.
+            gws_out = self._call_capture_tool("get_window_state", self._gws_args("vision"))
+            png_b64, image_mime_type = _image_from_tool_result(gws_out)
+            window_title = _tree_and_title(gws_out)[1] or _structured_window_title(gws_out)
         if not png_b64:
             cli_out = self._cli_refetch(
-                "get_window_state", self._gws_args(), 30.0, "vision screenshot",
+                "get_window_state", self._gws_args("vision"), 30.0, "vision screenshot",
                 "cua-driver vision capture returned no image over MCP (window_id=%s); re-fetching via CLI transport",
                 self._active_window_id) or {}
             if cli_out.get("images"):
                 png_b64, image_mime_type = cli_out["images"][0], "image/png"
         return png_b64, image_mime_type, [], window_title
 
-    def _capture_window_state(self) -> Tuple[Optional[str], Optional[str], List[UIElement], str]:
-        """AX tree + screenshot. Returns ``(png_b64, mime, elements, window_title)``."""
+    def _capture_window_state(self, mode: str = "som") -> Tuple[Optional[str], Optional[str], List[UIElement], str]:
+        """AX tree (+ screenshot, unless the driver skips the grab for ``ax`` mode).
+        Returns ``(png_b64, mime, elements, window_title)``."""
         # A flaky bridge can return a degenerate result (no screenshot AND no parseable tree) WITHOUT raising
         # — a silent 0x0 to the model. Distinct from the EAGAIN path handled in call_tool: here MCP "succeeded".
         gws_out = self._fetch_or_refetch(
-            "get_window_state", self._gws_args(), 30.0, "get_window_state", _gws_is_empty,
+            "get_window_state", self._gws_args(mode), 30.0, "get_window_state", _gws_is_empty,
             "cua-driver get_window_state returned an empty result over MCP (pid=%s window_id=%s); re-fetching via CLI "
             "transport", self._active_pid, self._active_window_id)
         tree, window_title = _tree_and_title(gws_out)
@@ -279,7 +306,16 @@ class _CaptureMixin:
                 window_id: Optional[int] = None) -> CaptureResult:
         """Capture the frontmost on-screen window or an exact known target: `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision). Only the structured
-        ``structuredContent.windows`` shape is supported."""
+        ``structuredContent.windows`` shape is supported. Records the capture-stage wall time on the
+        result (metadata only); the requested mode is already on it."""
+        started = time.monotonic()
+        result = self._capture_impl(mode, app=app, pid=pid, window_id=window_id)
+        result.capture_duration_ms = (time.monotonic() - started) * 1000.0
+        return result
+
+    def _capture_impl(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,
+                      window_id: Optional[int] = None) -> CaptureResult:
+        """capture() body; see capture() for the contract."""
         # Schema-filler ids (models zero-fill optional properties) must not read as a targeting request.
         pid, window_id = [None if _is_placeholder_id(v) else v for v in (pid, window_id)]
         exact_target = pid is not None or window_id is not None
@@ -297,7 +333,7 @@ class _CaptureMixin:
         if app or not self._last_app:
             self._last_app = app_name or app or ""
         png_b64, image_mime_type, elements, window_title = (
-            self._capture_vision() if mode == "vision" else self._capture_window_state())
+            self._capture_vision() if mode == "vision" else self._capture_window_state(mode))
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
         return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
                              window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type)

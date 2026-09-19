@@ -1695,6 +1695,91 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    def progress_cards_enabled(self) -> bool:
+        """Opt in to one native, quiet progress surface per agent turn."""
+        return (self.config.extra or {}).get("progress_cards") is True
+
+    async def send_progress_card(
+        self, chat_id: str, snapshot: dict, *, message_id: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Create once, then PATCH (not PUT) the same interactive card.
+
+        No retries on create: an ambiguous network failure may have delivered
+        the card. The turn owner supplies the single compact fallback.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        status = snapshot["status"]
+        # Runtime completion is not an independent audit of the user's goal.
+        # Unknown states must never look successful; colour is paired with text.
+        colour, label = {
+            "running": ("blue", "⏳ 处理中"),
+            "completed": ("green", "✓ 本轮已结束"),
+            "failed": ("red", "✕ 执行失败"),
+            "interrupted": ("grey", "■ 已停止"),
+            "cancelled": ("grey", "■ 已取消"),
+            "blocked": ("orange", "⚠ 遇到阻塞"),
+            "awaiting_confirmation": ("orange", "⚠ 需要你确认"),
+            "completed_with_warnings": ("orange", "⚠ 本轮结束 · 有异常记录"),
+        }.get(status, ("grey", "○ 状态未确认"))
+        rows = list(snapshot["details"])
+        omitted = snapshot.get("omitted", 0)
+        session_id = snapshot.get("session_id") or "unknown"
+        card = {
+            "schema": "2.0",
+            "config": {"update_multi": True},
+            "header": {"template": colour,
+                       "title": {"tag": "plain_text", "content": f"Hermes · {label}"}},
+            "body": {"elements": [{
+                "tag": "collapsible_panel", "expanded": False,
+                "header": {
+                    "title": {"tag": "plain_text", "content": "查看执行记录"},
+                    "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined"},
+                    "icon_position": "right", "icon_expanded_angle": -180,
+                },
+                "elements": [{"tag": "markdown", "content": ""}],
+            }]},
+        }
+        while True:
+            details = "\n\n".join(rows) or "暂无工具调用。"
+            if omitted:
+                details += f"\n\n受卡片大小限制，更早 {omitted} 条记录未在此卡展示。"
+            details += f"\n\n查看更早记录可让我按会话检索。Session: {session_id}"
+            card["body"]["elements"][0]["elements"][0]["content"] = details
+            payload = json.dumps(card, ensure_ascii=False)
+            # Account for the double-encoded transport envelope (including
+            # ASCII escaping used by some SDK versions), not just characters.
+            if len(json.dumps({"content": payload}).encode("utf-8")) < 24000:
+                break
+            if len(rows) > 1:
+                rows.pop(0)
+                omitted += 1
+            elif rows and len(rows[0]) > 100:
+                rows[0] = rows[0][:len(rows[0]) // 2] + "…"
+            else:
+                return SendResult(success=False, error="Progress card exceeds transport budget")
+        try:
+            if message_id:
+                from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+                body = PatchMessageRequestBody.builder().content(payload).build()
+                request = (PatchMessageRequest.builder().message_id(message_id)
+                           .request_body(body).build())
+                response = await self._run_blocking(self._client.im.v1.message.patch, request)
+            else:
+                response = await self._send_raw_message(
+                    chat_id=chat_id, msg_type="interactive", payload=payload,
+                    reply_to=reply_to, metadata=metadata,
+                )
+            result = self._finalize_send_result(response, "progress card failed")
+            if result.success and message_id:
+                result.message_id = message_id
+            return result
+        except Exception:
+            # Never echo transport payloads or credentials into the fallback.
+            logger.warning("[Feishu] Progress card transport failed")
+            return SendResult(success=False, error="Progress card transport failed")
+
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
         if not self._client:

@@ -1,0 +1,11 @@
+name: run-receipts
+version: 1.0.0
+description: "Tamper-evident per-run evidence records: every agent turn appends a hash-chained receipt to ~/.hermes/receipts/runs.ndjson — outcomes, timings, and sha256 digests of tool/API payloads (never raw content). Verify with `hermes receipts verify` or `/receipts`."
+author: "AIandI0x1"
+provides_hooks:
+  - on_session_start
+  - post_tool_call
+  - post_api_request
+  - api_request_error
+  - on_session_end
+  - on_session_finalize

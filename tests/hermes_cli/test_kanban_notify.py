@@ -782,6 +782,71 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         conn.close()
 
 
+def test_auto_subscribe_delivery_mode_config(kanban_home):
+    """``kanban.auto_subscribe_mode`` overrides the mode stamped onto
+    auto-created subscriptions; unset/invalid keeps the historical
+    split (#108913)."""
+    from hermes_cli import kanban_db_notify as kbn
+
+    # Unset: historical split — gateway platforms get notify+wake, TUI
+    # falls back to the DB default (None -> "notify").
+    assert kbn.auto_subscribe_delivery_mode("telegram") == "notify+wake"
+    assert kbn.auto_subscribe_delivery_mode("tui") is None
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_mode: wake\n"
+    )
+    assert kbn.auto_subscribe_delivery_mode("telegram") == "wake"
+    # An explicit valid value applies uniformly, TUI included.
+    assert kbn.auto_subscribe_delivery_mode("tui") == "wake"
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_mode: loud\n"
+    )
+    assert kbn.auto_subscribe_delivery_mode("telegram") == "notify+wake"
+    assert kbn.auto_subscribe_delivery_mode("tui") is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_auto_subscribe_mode_wake(kanban_home):
+    """``kanban.auto_subscribe_mode=wake`` must stamp `/kanban create`
+    subscriptions as wake-only (#108913)."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_mode: wake\n"
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="chat-wake",
+        chat_type="dm",
+        thread_id=None,
+        user_id="u1",
+    )
+    event = SimpleNamespace(
+        text='/kanban create "wake mode" --assignee alice',
+        source=source,
+        message_id="463",
+        reply_to_message_id=None,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert "subscribed" in out.lower()
+
+    conn = kbc.connect()
+    try:
+        subs = kbn.list_notify_subs(conn)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "wake"
+
+
 @pytest.mark.parametrize(
     "chat_type,thread_id,thread_sessions_per_user",
     [

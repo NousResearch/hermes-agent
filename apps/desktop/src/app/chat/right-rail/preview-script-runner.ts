@@ -36,3 +36,9 @@ export function activePreviewScriptRunner(): PreviewScriptRunner | null {
 
   return (tab && runners.get(tab.id)) || null
 }
+
+/** Every mounted guest-page runner. Idle cleanup is a renderer-wide invariant:
+ * a tab switch must not strand the pulse that another tab started. */
+export function previewScriptRunners(): readonly PreviewScriptRunner[] {
+  return [...runners.values()]
+}

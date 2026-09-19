@@ -102,6 +102,20 @@ INVISIBLE_CHARS = frozenset(
     "\u200b\u200c\u200d\u2060\u2062\u2063\u2064\ufeff"
     "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
+_ZWJ = "\u200d"
+_EMOJI_VARIATION_SELECTORS = frozenset("\ufe0e\ufe0f")
+# Emoji ZWJ sequences join two emoji presentation code points. Keep this deliberately
+# conservative: a joiner next to ordinary text remains an injection finding.
+_EMOJI_CODEPOINT_RANGES = (
+    (0x00A9, 0x00A9), (0x00AE, 0x00AE), (0x203C, 0x203C), (0x2049, 0x2049),
+    (0x2122, 0x2122), (0x2139, 0x2139), (0x2194, 0x2199), (0x21A9, 0x21AA),
+    (0x231A, 0x231B), (0x2328, 0x2328), (0x23CF, 0x23CF), (0x23E9, 0x23F3),
+    (0x23F8, 0x23FA), (0x24C2, 0x24C2), (0x25AA, 0x25AB), (0x25B6, 0x25B6),
+    (0x25C0, 0x25C0), (0x25FB, 0x25FE), (0x2600, 0x27BF), (0x2934, 0x2935),
+    (0x2B05, 0x2B07), (0x2B1B, 0x2B1C), (0x2B50, 0x2B50), (0x2B55, 0x2B55),
+    (0x3030, 0x3030), (0x303D, 0x303D), (0x3297, 0x3299), (0x1F000, 0x1FAFF),
+)
+
 # Compiled per scope at import; inclusion is cumulative (all ⊂ context ⊂ strict).
 _SCOPE_SETS = {"all": ("all", "context", "strict"), "context": ("context", "strict"), "strict": ("strict",)}
 
@@ -119,6 +133,28 @@ def _compile() -> dict[str, List[Tuple[re.Pattern, str]]]:
 _COMPILED = _compile()
 
 
+def _is_emoji_codepoint(char: str) -> bool:
+    codepoint = ord(char)
+    return not 0x1F1E6 <= codepoint <= 0x1F1FF and any(
+        first <= codepoint <= last for first, last in _EMOJI_CODEPOINT_RANGES
+    )
+
+
+def _is_emoji_zwj_sequence(content: str, index: int) -> bool:
+    """Return whether the joiner at *index* joins two emoji code points.
+
+    Variation selectors are part of emoji presentation, but are not the emoji
+    themselves, so skip them when examining either neighbour.
+    """
+    left = index - 1
+    while left >= 0 and content[left] in _EMOJI_VARIATION_SELECTORS:
+        left -= 1
+    right = index + 1
+    while right < len(content) and content[right] in _EMOJI_VARIATION_SELECTORS:
+        right += 1
+    return left >= 0 and right < len(content) and _is_emoji_codepoint(content[left]) and _is_emoji_codepoint(content[right])
+
+
 def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     """Matched pattern IDs in ``content`` for ``scope``; invisible codepoints are
     reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope."""
@@ -128,7 +164,14 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
     content = content[:MAX_SCAN_CHARS]
     # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
-    findings: List[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
+    invisible = set(content) & INVISIBLE_CHARS
+    if _ZWJ in invisible and all(
+        _is_emoji_zwj_sequence(content, index)
+        for index, char in enumerate(content)
+        if char == _ZWJ
+    ):
+        invisible.remove(_ZWJ)
+    findings: List[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in invisible]
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)

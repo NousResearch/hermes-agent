@@ -442,6 +442,27 @@ class TestBuildContextFilesPrompt:
         assert "Ruff for linting" in result
         assert "Project Context" in result
 
+    def test_loads_hermes_md_with_an_emoji_zwj_sequence(self, tmp_path):
+        (tmp_path / ".hermes.md").write_text("### \U0001f468\u200d\U0001f3eb Education", encoding="utf-8")
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "\U0001f468\u200d\U0001f3eb Education" in result
+        assert "[BLOCKED:" not in result
+
+    def test_loads_soul_md_with_an_emoji_zwj_sequence(self, tmp_path):
+        from hermes_cli.profile_distribution import DistributionManifest, write_manifest
+
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        (home / "SOUL.md").write_text("### \U0001f468\u200d\U0001f3eb Education", encoding="utf-8")
+        write_manifest(home, DistributionManifest(name="school-profile"))
+
+        result = build_context_files_prompt(cwd=str(tmp_path), home_override=home)
+
+        assert "\U0001f468\u200d\U0001f3eb Education" in result
+        assert "[BLOCKED:" not in result
+
     # --- AGENTS.md directory chain (port of grok-cli instructions.ts) ---
 
     def test_agents_md_chain_merges_root_to_cwd(self, tmp_path):

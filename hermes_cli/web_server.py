@@ -475,6 +475,20 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
+def _is_tailscale_host(hostname: str) -> bool:
+    """Return True if hostname is a Tailscale MagicDNS host (*.ts.net) or Tailscale CGNAT IP (100.64.0.0/10)."""
+    hl = hostname.lower()
+    if hl.endswith(".ts.net"):
+        return True
+    try:
+        parts = [int(p) for p in hl.split(".")]
+        if len(parts) == 4 and parts[0] == 100 and 64 <= parts[1] <= 127:
+            return True
+    except (ValueError, IndexError):
+        pass
+    return False
+
+
 def should_require_dashboard_auth(
     host: str,
     trusted_public_hosts: Optional[frozenset[str]] = None,
@@ -486,7 +500,7 @@ def should_require_dashboard_auth(
     """
     if trusted_public_hosts is None:
         trusted_public_hosts = _dashboard_public_hosts()
-    return should_require_auth(host) or any(h not in _LOOPBACK_HOST_VALUES for h in trusted_public_hosts)
+    return should_require_auth(host) or any(h not in _LOOPBACK_HOST_VALUES and not _is_tailscale_host(h) for h in trusted_public_hosts)
 
 
 def _desktop_loopback_auth_exempt(
@@ -568,7 +582,9 @@ def _is_accepted_host(
         return True
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        return host_only in _LOOPBACK_HOST_VALUES or _is_tailscale_host(host_only)
+    if _is_tailscale_host(bound_lc):
+        return _is_tailscale_host(host_only) or host_only in _LOOPBACK_HOST_VALUES
     return host_only == bound_lc
 
 

@@ -873,7 +873,7 @@ def _(rid, params: dict) -> dict:
         # background token writer starts; only close() unregisters.
         if ctx.owns_db and ctx.db is not None:
             with contextlib.suppress(Exception):
-                ctx.db.close()
+                _release_db(ctx.db)
 
 
 # ── cwd / workspace / live-session bookkeeping ───────────────────────

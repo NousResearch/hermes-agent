@@ -48,6 +48,16 @@ class TestHostHeaderValidator:
         assert not _is_accepted_host("localhost", "my-server.corp.net")
 
 
+    def test_tailscale_hosts_accepted_on_loopback(self):
+        """Tailscale MagicDNS (*.ts.net) and CGNAT IPs (100.64.0.0/10) are accepted on loopback."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        for host in ("hermes-wsl.tailb0a1f.ts.net", "hermes-wsl.tailb0a1f.ts.net:8443", "100.115.27.61", "100.115.27.61:9119"):
+            assert _is_accepted_host(host, "127.0.0.1")
+            assert _is_accepted_host(host, "localhost")
+        assert not _is_accepted_host("evil.ts.net.fake.com", "127.0.0.1")
+        assert not _is_accepted_host("100.10.0.1", "127.0.0.1")  # not in 100.64.0.0/10
+
     def test_trusted_public_host_is_exact_match_only(self):
         """A declared proxy host is accepted without weakening rebinding checks."""
         from hermes_cli.web_server import _is_accepted_host
@@ -182,6 +192,25 @@ class TestWebSocketHostOriginGuard:
             headers={
                 "Host": "localhost:9119",
                 "Origin": "http://localhost:9119",
+            },
+        ):
+            pass
+
+    def test_tailscale_websocket_host_and_origin_are_accepted(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "hermes-wsl.tailb0a1f.ts.net:8443",
+                "Origin": "https://hermes-wsl.tailb0a1f.ts.net:8443",
             },
         ):
             pass

@@ -307,7 +307,9 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 
     for pid in pids:
         _send(pid, _signal.SIGTERM)
-    deadline = _time.monotonic() + _POSIX_TERM_GRACE_SECONDS
+
+    deadline = _time.monotonic() + 10.0
+
     pending = [p for p in pids if p not in killed and p not in {f[0] for f in failed}]
     while pending and _time.monotonic() < deadline:
         _time.sleep(0.1)

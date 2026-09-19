@@ -61,12 +61,12 @@ export {
 } from './data-url-read-max'
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
-export * from './gateway-events'
 export {
   type ConnectionRequestPayload,
   type ModelOptionProvider,
   type ModelOptionsResult
 } from './gateway-contract.generated'
+export * from './gateway-events'
 export {
   applyDocumentLocale,
   type EndonymLocale,

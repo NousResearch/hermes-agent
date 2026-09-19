@@ -1,0 +1,8 @@
+name: agentops
+version: 0.1.0
+description: "Observe-only local AgentOps control-plane foundation."
+author: Hermes Agent
+kind: standalone
+platforms:
+  - macos
+  - linux

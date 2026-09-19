@@ -27,6 +27,18 @@ except Exception:  # pragma: no cover - handled at runtime
     yaml = None
 
 
+def _archive_copy_path(path: Path) -> Path:
+    """Use Windows extended paths for recursive extension archives, without data loss."""
+    if os.name != "nt":
+        return path
+    absolute = os.path.abspath(path)
+    if absolute.startswith("\\\\?\\"):
+        return Path(absolute)
+    if absolute.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + absolute[2:])
+    return Path("\\\\?\\" + absolute)
+
+
 ENTRY_DELIMITER = "\n§\n"
 DEFAULT_MEMORY_CHAR_LIMIT = 2200
 DEFAULT_USER_CHAR_LIMIT = 1375
@@ -2348,7 +2360,9 @@ class Migrator:
         if ext_dir.is_dir() and self.archive_dir:
             dest_ext = self.archive_dir / "extensions"
             if self.execute:
-                shutil.copytree(ext_dir, dest_ext, dirs_exist_ok=True)
+                shutil.copytree(
+                    _archive_copy_path(ext_dir), _archive_copy_path(dest_ext), dirs_exist_ok=True
+                )
             self.record("plugins-config", str(ext_dir), str(dest_ext), "archived",
                         "Extensions directory archived")
 

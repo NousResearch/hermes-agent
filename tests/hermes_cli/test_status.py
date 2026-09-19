@@ -253,3 +253,59 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+def _strip_ansi(text):
+    import re
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+def test_status_rows_wrap_to_the_terminal_with_hanging_indent(monkeypatch, capsys):
+    """Long values wrap at COLUMNS with the continuation aligned under the value (#109625)."""
+    from hermes_cli import status as status_mod
+
+    monkeypatch.setenv("COLUMNS", "40")
+    status_mod._row("xAI OAuth", False, "not logged in (run: hermes auth add xai-oauth) first second third")
+    out = capsys.readouterr().out.splitlines()
+    stripped = [_strip_ansi(line) for line in out]
+    assert all(len(line) <= 40 for line in stripped), stripped
+    # Continuation lines align under the value column, not the label.
+    assert stripped[0].startswith("  xAI OAuth")
+    assert stripped[1].startswith(" " * 18)
+    assert not stripped[1].startswith("  xAI OAuth")
+
+
+def test_status_kv_wraps_and_keeps_alignment(monkeypatch, capsys):
+    from hermes_cli import status as status_mod
+
+    monkeypatch.setenv("COLUMNS", "40")
+    status_mod._kv("Error:", "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.")
+    out = capsys.readouterr().out.splitlines()
+    assert all(len(line) <= 40 for line in out), out
+    assert out[0].startswith("  Error:")
+    assert out[1].startswith(" " * 16)
+
+
+def test_status_wrapping_survives_colored_values(monkeypatch, capsys):
+    """SGR escapes carry zero width and are never split across lines."""
+    from hermes_cli import status as status_mod
+
+    monkeypatch.setenv("COLUMNS", "40")
+    # A raw escape, not color(): colors disable themselves when stdout is captured.
+    value = "\x1b[2mstopped\x1b[0m " + " ".join(f"word{i}" for i in range(20))
+    status_mod._kv("Status:", value)
+    out = capsys.readouterr().out
+    stripped = [_strip_ansi(line) for line in out.splitlines()]
+    assert all(len(line) <= 40 for line in stripped), stripped
+    # Every escape that opened is still present somewhere in the output.
+    assert "\x1b[2m" in out and "\x1b[0m" in out
+
+
+def test_status_wrapping_disabled_when_terminal_is_wide(monkeypatch, capsys):
+    """A value shorter than the terminal prints exactly as before, single line."""
+    from hermes_cli import status as status_mod
+
+    monkeypatch.setenv("COLUMNS", "120")
+    status_mod._kv("Manager:", "systemd (user)")
+    out = capsys.readouterr().out
+    assert out == "  Manager:      systemd (user)\n"

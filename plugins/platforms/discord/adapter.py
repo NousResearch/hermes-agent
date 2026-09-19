@@ -5894,6 +5894,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Save stripped text now: create_thread() can clobber message.content (breaks /command detection).
         raw_content = message.content.strip()
         normalized_content = raw_content
+        explicitly_mentioned = self._self_is_explicitly_mentioned(message)
+        raw_mentioned_user_ids = self._raw_mentioned_user_ids(message)
         mention_prefix = False
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
@@ -6079,6 +6081,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            metadata={
+                "explicitly_mentioned": explicitly_mentioned,
+                "raw_mentioned_user_ids": raw_mentioned_user_ids,
+            },
         )
         if (
             getattr(getattr(message, "author", None), "bot", False)

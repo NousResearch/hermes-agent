@@ -52,12 +52,20 @@ def require_room_route(adapter, dispatch, *, connection=None):
     return b
 
 
+def _prepare(scope, *, cancelled=None):
+    from gateway.session_selected_route import prepare_selected_route, SelectedRouteUnavailable
+    try:
+        return prepare_selected_route(scope, cancelled=cancelled)
+    except Exception:
+        raise SelectedRouteUnavailable('selection_unavailable') from None
+
+
 @contextmanager
 def prepared_room_route(adapter, identity, request_identity, purpose, *, required=True, cancelled=None):
     from gateway.session_selected_route import prepare_selected_route, hold_selected_route
     scope = room_route_scope(adapter, identity, request_identity, purpose)
     with scope.runner._profile_scope_for_source(scope.source):
-        b = prepare_selected_route(scope, cancelled=cancelled)
+        b = _prepare(scope, cancelled=cancelled)
         try:
             with hold_selected_route(scope, b):
                 if required and not room_route_ready(adapter):
@@ -74,7 +82,7 @@ async def prepared_room_route_async(adapter, identity, request_identity, purpose
     scope = room_route_scope(adapter, identity, request_identity, purpose)
     cancelled = threading.Event()
     with scope.runner._profile_scope_for_source(scope.source):
-        task = asyncio.create_task(asyncio.to_thread(prepare_selected_route, scope, cancelled=cancelled.is_set))
+        task = asyncio.create_task(asyncio.to_thread(_prepare, scope, cancelled=cancelled.is_set))
         try:
             b = await asyncio.shield(task)
         except BaseException:
@@ -85,10 +93,9 @@ async def prepared_room_route_async(adapter, identity, request_identity, purpose
             task.add_done_callback(retire)
             raise
         try:
-            with hold_selected_route(scope, b):
-                if not room_route_ready(adapter):
-                    raise RuntimeStoreError('prepared_files_unsupported')
-                yield b
+            # Do not retain thread-owned locks across an asyncio suspension.
+            # /runs takes the hold only around its synchronous commit section.
+            yield b
         finally:
             b.close()
 

@@ -488,17 +488,15 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         from gateway.platforms.api_server_room_dispatch import _room_dispatch_error
         try:
             dispatch = HostedMemberDispatch.from_mapping(room_dispatch)
-            async with prepared_room_route_async(self, dispatch, request, 'admit'):
-                from gateway.session_api_turn import check_api_settings
-                check_api_settings(self, {'room_dispatch': room_dispatch,
-                    'room_execution_policy': body['_room_execution_policy']})
-                return await _handle_runs_body(self, request, body, gateway_session_key, _api_server=_api_server)
+            async with prepared_room_route_async(self, dispatch, request, 'admit') as binding:
+                return await _handle_runs_body(self, request, body, gateway_session_key,
+                    _api_server=_api_server, _room_binding=binding)
         except Exception as exc:
             return _room_dispatch_error(exc, _openai_error=_openai_error)
     return await _handle_runs_body(self, request, body, gateway_session_key, _api_server=_api_server)
 
 
-async def _handle_runs_body(self, request, body, gateway_session_key, *, _api_server):
+async def _handle_runs_body(self, request, body, gateway_session_key, *, _api_server, _room_binding=None):
     _openai_error = _api_server._openai_error
     room_dispatch, room_execution_policy = (
         v if isinstance(v, dict) else None for v in (
@@ -559,12 +557,7 @@ async def _handle_runs_body(self, request, body, gateway_session_key, *, _api_se
                 raise ValueError('room session identity conflicts with existing data')
         except Exception as exc:
             return _room_dispatch_error(exc, _openai_error=_openai_error)
-    # Enforce concurrency only for a genuinely new run.
-    limited = self._concurrency_limited_response()
-    if limited is not None:
-        return limited
     run_id = f"run_{uuid.uuid4().hex}"
-    self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).
     # An explicit or chained session owns its routing key and is never rebound to the header.
@@ -588,84 +581,102 @@ async def _handle_runs_body(self, request, body, gateway_session_key, *, _api_se
     session_history_delivery = not previous_response_id and not conversation_history
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
-    q = self._run_streams[run_id] = _RunStream()
-    created_at = self._run_streams_created[run_id] = time.time()
-    self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
-    initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
-    if idempotency_key:
-        outcome, record = self._run_idempotency_store.reserve(
-            idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
-            owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request), room_policy=room_execution_policy)
-        if outcome != "created":
-            _forget_run(
-                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners)
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
-        self._run_idempotency_ids.add(run_id)
-    launch = _RunLaunch(
-        self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
-        conversation_history, session_history_delivery,
-        agent_kwargs=dict(
-            ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
-            route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
-            **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
-        request_profile=_api_server._api_request_profile.get(),
-        browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
-    canonical_room_owner = getattr(request, '_hermes_canonical_room_owner', None)
-    if (getattr(self.gateway_runner, 'session_authority', None) is not None
-            or canonical_room_owner is not None
-            or (room_dispatch is not None and self.gateway_runner is not None)):
-        from gateway.session_api_turn import admit_api_turn
-        from gateway.session_authorities import active_authority
-        from hermes_state_runtime import RuntimeStoreError, _row
-        admission_authority = canonical_room_owner or active_authority(self.gateway_runner)
-        try:
-            with self._profile_scope(launch.request_profile):
-                launch.admission = admit_api_turn(self, user_message=launch.user_message,
-                    conversation_history=launch.conversation_history, active_run_id=run_id,
-                    run_owner_scope=self._run_owners[run_id],
-                    _room_grant_token=self._room_grant_token(request) if room_dispatch is not None else None,
-                    _room_authority=canonical_room_owner,
-                    turn_author=launch.turn_author,
-                    history_from_session=session_history_delivery,
-                    session_history_delivery='1' if session_history_delivery else '',
-                    bind_declared_conversation=_declared_selected,
-                    **launch.agent_kwargs)
-        except (RuntimeStoreError, sqlite3.Error) as exc:
-            # A post-commit fence-release error cannot erase accepted work. If
-            # the ledger cannot answer, retain the receipt for observation.
-            accepted = None
-            try:
-                if admission_authority is not None:
-                    with admission_authority.db._read_ctx() as conn:
-                        accepted = conn.execute(
-                            "SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?",
-                            (run_id,)).fetchone()
-            except sqlite3.Error:
-                return _json_error(_openai_error, 'storage_unavailable', code='storage_unavailable', status=503)
-            if accepted is not None:
-                from gateway.session_contract import SessionRef
-                launch.admission = (admission_authority,
-                    SessionRef(admission_authority.profile_id, accepted['target_session_id']), _row(accepted))
-            else:
+    from contextlib import nullcontext
+    from gateway.session_selected_route import hold_selected_route
+    guard = hold_selected_route(_room_binding._scope, _room_binding) if _room_binding is not None else nullcontext()
+    # No await from here through publication: asyncio siblings must not inherit
+    # a thread-reentrant lock's authority while this commit is in progress.
+    with guard:
+        if _room_binding is not None:
+            if _room_binding._scope.request_identity is not request:
+                from hermes_state_runtime import RuntimeStoreError
+                raise RuntimeStoreError('permission_denied')
+            from gateway.session_api_turn import check_api_settings
+            check_api_settings(self, {'room_dispatch': room_dispatch,
+                'room_execution_policy': room_execution_policy})
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
+        self._run_owners[run_id] = self._run_idempotency_scope(request)
+        q = self._run_streams[run_id] = _RunStream()
+        created_at = self._run_streams_created[run_id] = time.time()
+        self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
+        initial_status = self._set_run_status(
+            run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+        if idempotency_key:
+            outcome, record = self._run_idempotency_store.reserve(
+                idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
+                owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
+                retention_until=_room_retention_until(request), room_policy=room_execution_policy)
+            if outcome != "created":
                 _forget_run(
                     self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                    self._run_statuses, self._run_owners, self._run_idempotency_ids)
-                if idempotency_key:
-                    self._run_idempotency_store.forget(idempotency_scope, idempotency_key, run_id=run_id)
-                code = exc.reason if isinstance(exc, RuntimeStoreError) else 'storage_unavailable'
-                return _json_error(_openai_error, code, code=code, status=409 if isinstance(exc, RuntimeStoreError) else 503)
-    self._activate_admitted_request()
-    task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
-    with suppress(TypeError):
-        self._background_tasks.add(task)  # tracked for shutdown drain
-    if hasattr(task, "add_done_callback"):
-        task.add_done_callback(self._background_tasks.discard)
-    return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+                    self._run_statuses, self._run_owners)
+                return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+            self._run_idempotency_ids.add(run_id)
+        launch = _RunLaunch(
+            self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
+            conversation_history, session_history_delivery,
+            agent_kwargs=dict(
+                ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
+                route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
+                **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
+            request_profile=_api_server._api_request_profile.get(),
+            browser_control_principal=_api_server._api_request_browser_control_principal.get(),
+            browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+            turn_author=turn_author)
+        canonical_room_owner = getattr(request, '_hermes_canonical_room_owner', None)
+        if (getattr(self.gateway_runner, 'session_authority', None) is not None
+                or canonical_room_owner is not None
+                or (room_dispatch is not None and self.gateway_runner is not None)):
+            from gateway.session_api_turn import admit_api_turn
+            from gateway.session_authorities import active_authority
+            from hermes_state_runtime import RuntimeStoreError, _row
+            admission_authority = canonical_room_owner or active_authority(self.gateway_runner)
+            try:
+                with self._profile_scope(launch.request_profile):
+                    launch.admission = admit_api_turn(self, user_message=launch.user_message,
+                        conversation_history=launch.conversation_history, active_run_id=run_id,
+                        run_owner_scope=self._run_owners[run_id],
+                        _room_grant_token=self._room_grant_token(request) if room_dispatch is not None else None,
+                        _room_authority=canonical_room_owner,
+                    _room_selected_route=_room_binding, _room_request_identity=request,
+                        turn_author=launch.turn_author,
+                        history_from_session=session_history_delivery,
+                        session_history_delivery='1' if session_history_delivery else '',
+                        bind_declared_conversation=_declared_selected,
+                        **launch.agent_kwargs)
+            except (RuntimeStoreError, sqlite3.Error) as exc:
+                # A post-commit fence-release error cannot erase accepted work. If
+                # the ledger cannot answer, retain the receipt for observation.
+                accepted = None
+                try:
+                    if admission_authority is not None:
+                        with admission_authority.db._read_ctx() as conn:
+                            accepted = conn.execute(
+                                "SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?",
+                                (run_id,)).fetchone()
+                except sqlite3.Error:
+                    return _json_error(_openai_error, 'storage_unavailable', code='storage_unavailable', status=503)
+                if accepted is not None:
+                    from gateway.session_contract import SessionRef
+                    launch.admission = (admission_authority,
+                        SessionRef(admission_authority.profile_id, accepted['target_session_id']), _row(accepted))
+                else:
+                    _forget_run(
+                        self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+                        self._run_statuses, self._run_owners, self._run_idempotency_ids)
+                    if idempotency_key:
+                        self._run_idempotency_store.forget(idempotency_scope, idempotency_key, run_id=run_id)
+                    code = exc.reason if isinstance(exc, RuntimeStoreError) else 'storage_unavailable'
+                    return _json_error(_openai_error, code, code=code, status=409 if isinstance(exc, RuntimeStoreError) else 503)
+        self._activate_admitted_request()
+        task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
+        with suppress(TypeError):
+            self._background_tasks.add(task)  # tracked for shutdown drain
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+        return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 
 
 def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):

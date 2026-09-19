@@ -150,9 +150,16 @@ def admit_api_turn(adapter, **kwargs):
         # NEW-only: keep current catalog/policy and the final dual-store writer
         # fences. Route preparation will enter here before bind/capture.
         if bound_dispatch.attachment_manifest_digest is not None:
+            from gateway.hosted_room_peer import verify_room_grant
+            try:
+                verify_room_grant(adapter._room_grant_secret(), kwargs.get('_room_grant_token'),
+                    bound_dispatch, permission='attachment.stage')
+            except ValueError as exc:
+                raise RuntimeStoreError('permission_denied') from exc
             from gateway.session_peer_route import require_room_route
             b = require_room_route(adapter, bound_dispatch)
-            if b._scope.purpose != 'admit':
+            if (b._scope.purpose != 'admit' or kwargs.get('_room_selected_route') is not b
+                    or kwargs.get('_room_request_identity') is not b._scope.request_identity):
                 raise RuntimeStoreError('prepared_files_unsupported')
         check_api_settings(adapter, settings)
         from gateway.session_api import prospective_room_session

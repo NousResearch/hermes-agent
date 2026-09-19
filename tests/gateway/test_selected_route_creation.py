@@ -36,3 +36,18 @@ def test_held_canonical_creation_is_only_own_transition(selection, foreign):
             t.db._execute_write(lambda c: c.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (sid,)))
             assert not sr.peek_selected_route(scope, b).supports_prepared_files
     assert b._material is None
+
+
+def test_held_override_does_not_skip_unowned_session_store_lock(selection):
+    from gateway import session_selected_route as sr
+    from tests.gateway.test_selected_route import scoped
+    t = selection
+    t.runner._session_state(t.key).conversation.model_override = {'model': 'fixture', 'provider': 'anthropic'}
+    scope = scoped(t)
+    b = sr.prepare_selected_route(scope)
+    with sr.hold_selected_route(scope, b):
+        with sr.session_store_guard(t.runner):
+            acquired = t.runner.session_store._lock.acquire(blocking=False)
+            if acquired:
+                t.runner.session_store._lock.release()
+            assert acquired is False, 'only bypass a store lock actually owned by this hold'

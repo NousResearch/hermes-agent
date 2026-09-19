@@ -141,6 +141,12 @@ def _invite(operation, adapter, params):
             raise RuntimeStoreError('admission_conflict')
         if receipt['status'] != 'complete':
             raise RuntimeStoreError('room_invitation_pending')
+        from gateway.platforms.api_server_room_grants import _local_room_catalog
+        from gateway.hosted_room_peer import _catalog_digest
+        _, current_catalog = _local_room_catalog(adapter, 'default', expected['installation'])
+        previous_catalog = receipt['intent']['catalog']
+        if _catalog_digest(dict(current_catalog, attachments=previous_catalog['attachments'])) != previous_catalog['catalog_digest']:
+            raise RuntimeStoreError('admission_conflict')
         token = issue_room_grant(adapter._room_grant_secret(), **receipt['issue'])
         claims = decode_room_grant(adapter._room_grant_secret(), token, permission='status')
         if receipt.get('token_sha256') != claims['_token_sha256']:

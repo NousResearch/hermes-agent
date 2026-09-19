@@ -102,6 +102,8 @@ async def _normalize_room_dispatch(
         replay = room_replay(self, request, dispatch, _openai_error=_openai_error)
         if replay is not None:
             return body, replay
+        if dispatch.attachment_manifest_digest is not None:
+            verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission='attachment.stage')
         _, catalog_map = _local_room_catalog(self, active_profile, local_install)
         catalog = GatewayRoomCatalog.from_mapping(catalog_map)
         if not catalog.text:

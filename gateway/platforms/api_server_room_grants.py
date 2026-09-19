@@ -216,24 +216,29 @@ def _require_current_room_grant(self, claims):
             raise RoomGrantReauthorizationRequired("room grant is no longer current")
 
 
-def _issue_http_invitation(self, body, profile):
+def _http_invitation_owner(self, profile):
+    if not _canonical_room_peer(self, profile):
+        return None
+    from gateway.session_peer_target import root_target
+    owner, paths = root_target(self, profile)
+    return (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
+            self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
+
+
+def _issue_http_invitation(self, body, profile, frozen_owner):
     from contextlib import nullcontext
     from gateway.session_peer_input import peer_input_initialized
     from gateway.session_peer_route import prepared_room_route, invitation_identity
     from gateway import hosted_rooms
     from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
     from gateway.session_group_peers import invitation_preflight
-    
+
     target_install_id = hosted_rooms.local_authority_gateway_id()
     identity, (ttl, status_ttl) = invitation_preflight(body)
-    # Freeze the canonical binding before signing/reservation can block. A
-    # detached adapter must not switch to the unconfirmed standalone path.
-    binding = None
-    if _canonical_room_peer(self, profile):
-        from gateway.session_peer_target import root_target
-        owner, paths = root_target(self, profile)
-        binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
-                   self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
+    binding = _http_invitation_owner(self, profile)
+    if binding != frozen_owner:
+        from hermes_state_runtime import RuntimeStoreError
+        raise RuntimeStoreError('profile_mismatch')
     guard = (prepared_room_route(self, invitation_identity(identity, profile), object(), 'invite', required=False)
              if binding is not None and peer_input_initialized(self, profile) else nullcontext())
     with guard:
@@ -260,7 +265,7 @@ def _issue_http_invitation(self, body, profile):
             grant_state_db_paths,
             reserve_grant_state,
         )
-        
+
         reserve_grant_state(
             grant_state_db_paths(),
             claims=claims,
@@ -323,9 +328,13 @@ async def _handle_room_member_invitation(
         unavailable = _room_peer_unavailable(self, profile, _openai_error=_openai_error)
         if unavailable is not None:
             return unavailable
+        frozen_owner = _http_invitation_owner(self, profile)
         def issue():
             with self._profile_scope(profile):
-                return _issue_http_invitation(self, body, profile)
+                if self._check_auth(request) is not None:
+                    from hermes_state_runtime import RuntimeStoreError
+                    raise RuntimeStoreError('permission_denied')
+                return _issue_http_invitation(self, body, profile, frozen_owner)
         catalog, claims, token = await asyncio.to_thread(issue)
     except Exception as exc:
         return web.json_response(

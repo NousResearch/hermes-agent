@@ -21,7 +21,7 @@ def root_target(adapter, profile='default', *, connection=None):
             or getattr(runner, 'session_authorities', None) is None
             or Path(authority.profile_id).resolve() != home
             or getattr(runner, 'adapters', {}).get(Platform.API_SERVER) is not adapter
-            or adapter._session_db_cache_closed
+            or adapter._ensure_session_db() is not authority.db
             or Path(authority.db.db_path).resolve() != home / 'state.db'):
         raise RuntimeStoreError('canonical_room_peer_unsupported')
     paths = tuple(path.resolve() for path in grant_state_db_paths(home))

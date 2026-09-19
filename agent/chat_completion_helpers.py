@@ -1258,11 +1258,17 @@ def _reasoning_config_for_wire(agent):
         # The route rejects disables. Resend exactly what the session has
         # been sending — the user's own config — so the retry lands on the
         # same provider cache key as every prior request. Only a config that
-        # is itself a disable is dropped (omitted → route default), and that
-        # session has never sent anything else, so nothing warm is lost.
+        # is itself a disable changes, and that session has never sent
+        # anything else, so nothing warm is lost: a route that said the
+        # disable is *mandatory-on* gets the floor effort (closest to what
+        # the user asked for); a relay that does not know the field gets
+        # nothing (route default).
         if isinstance(cfg, dict) and (
             cfg.get("enabled") is False or cfg.get("effort") == "none"
         ):
+            if getattr(agent, "_reasoning_floor_required", False):
+                from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+                return {**cfg, "enabled": True, "effort": REASONING_FLOOR_EFFORT}
             return None
         return cfg
     if ephemeral_off:

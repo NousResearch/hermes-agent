@@ -609,13 +609,25 @@ def recover_after_classification(
     ):
         _retry.reasoning_mandatory_retry_attempted = True
         agent._reasoning_disable_rejected = True
+        # "Reasoning is mandatory ... cannot be disabled" understands the field and refuses only the
+        # OFF: step up to the floor effort (the closest the route allows to what the user asked for)
+        # rather than the route default. A relay that does not know the field at all keeps the
+        # drop (a floor would 400 the same way).
+        from agent.error_classifier import is_reasoning_required_rejection
+        agent._reasoning_floor_required = is_reasoning_required_rejection(str(api_error))
         try:
             from hermes_cli.models_reasoning_caps import refresh_reasoning_caps_async
             refresh_reasoning_caps_async(agent.provider)
         except Exception:
             pass
-        _vlines(agent, f"⚠️  {agent.model} rejects disabling reasoning — using the route's default for this session, retrying...")
-        logger.warning("%sReasoning-disable recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
+        if agent._reasoning_floor_required:
+            from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+            _vlines(agent, f"⚠️  {agent.model} cannot disable reasoning — using effort={REASONING_FLOOR_EFFORT} for this session, retrying...")
+            logger.warning("%sReasoning-disable recovery: stepping reasoning up to %s for %s",
+                           agent.log_prefix, REASONING_FLOOR_EFFORT, agent.model)
+        else:
+            _vlines(agent, f"⚠️  {agent.model} rejects disabling reasoning — using the route's default for this session, retrying...")
+            logger.warning("%sReasoning-disable recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
         return True, recovered_with_pool
 
     # Provider rejected the image bytes; shrinking can't help, so strip image parts.

@@ -208,6 +208,11 @@ export class JsonRpcRequestChannel {
     return this.options.requestTimeoutMs
   }
 
+  /** In-flight request() calls still awaiting a response. */
+  get pendingCount(): number {
+    return this.pending.size
+  }
+
   get connected(): boolean {
     return this.transport !== null
   }

@@ -11,6 +11,15 @@ export interface BackendOwnershipEntry extends BackendIdentity {
   parentPid?: number
   /** Start marker of that parent, so a reused PID is not mistaken for it. */
   parentStartMarker?: string
+  /**
+   * Monotonic claim sequence, assigned by `claim` from the persisted roster.
+   * PIDs carry no ordering, so without this the replacement sweep cannot tell
+   * which of two same-profile backends is the replacement and which is the
+   * replaced — and a superseded claim would happily kill its own successor.
+   * Absent on records written before this field existed; those sort oldest,
+   * which is exactly what they are relative to anything claimed since.
+   */
+  generation?: number
 }
 
 export interface BackendOwnershipStore {
@@ -79,6 +88,19 @@ function identitiesMatch(left: BackendIdentity, right: BackendIdentity): boolean
   )
 }
 
+/** Records predating `generation` sort oldest — see the field's doc comment. */
+function generationOf(entry: BackendOwnershipEntry): number {
+  return Number.isInteger(entry.generation) ? Number(entry.generation) : 0
+}
+
+/** Same Electron instance: PID alone is not enough, a reused PID is not it. */
+function sameParent(left: BackendOwnershipEntry, right: BackendOwnershipEntry): boolean {
+  return (
+    left.parentPid === right.parentPid &&
+    (left.parentStartMarker ?? null) === (right.parentStartMarker ?? null)
+  )
+}
+
 export function parseBackendOwnership(contents: unknown): BackendOwnershipEntry[] {
   return parseBackendOwnershipDetailed(contents).entries
 }
@@ -140,6 +162,10 @@ export function parseBackendOwnershipDetailed(contents: unknown): {
       entry.parentStartMarker = candidate.parentStartMarker
     }
 
+    if (Number.isInteger(candidate.generation) && Number(candidate.generation) >= 0) {
+      entry.generation = candidate.generation
+    }
+
     if (!entries.some(existing => identitiesMatch(existing, entry))) {
       entries.push(entry)
     }
@@ -162,6 +188,36 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
   const readDetailed = () => parseBackendOwnershipDetailed(deps.store.read())
   const read = () => readDetailed().entries
   const write = (entries: BackendOwnershipEntry[]) => deps.store.write(serializeBackendOwnership(entries))
+
+  /**
+   * Remove exactly `removed` from the roster as it stands RIGHT NOW.
+   *
+   * A sweep awaits identity probes and stops, and a concurrent claim can
+   * persist a new backend during those awaits. Writing back the survivor list
+   * computed from the pre-await snapshot silently erases that claim's record,
+   * leaving a live backend nothing will ever reap — the same class of loss as
+   * the corrupt-file rewrite in #89298, just through a narrower window. So the
+   * sweeps decide only what to REMOVE, and the removal is applied to a fresh
+   * read; anything that appeared meanwhile is carried through untouched.
+   */
+  const removeFromCurrentRoster = (removed: BackendOwnershipEntry[]): void => {
+    if (!removed.length) {
+      return
+    }
+
+    const { corrupt, entries } = readDetailed()
+
+    // The file turned unreadable mid-sweep: never rewrite over the evidence.
+    if (corrupt) {
+      return
+    }
+
+    const next = entries.filter(entry => !removed.some(dropped => identitiesMatch(dropped, entry)))
+
+    if (next.length !== entries.length) {
+      write(next)
+    }
+  }
 
   return {
     async claim(claim: BackendClaim): Promise<BackendOwnershipEntry> {
@@ -189,8 +245,14 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
       }
 
       try {
-        const entries = read().filter(candidate => candidate.pid !== entry.pid)
-        write([...entries, entry])
+        const existing = read()
+
+        // Stamp the claim's place in the replacement order. Read and write are
+        // synchronous and the main process is single-threaded, so concurrent
+        // claims serialize here and no two live records share a generation.
+        entry.generation = existing.reduce((highest, candidate) => Math.max(highest, generationOf(candidate)), 0) + 1
+
+        write([...existing.filter(candidate => candidate.pid !== entry.pid), entry])
       } catch (error) {
         try {
           await deps.stop(entry)
@@ -217,6 +279,135 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
       }
     },
 
+    /**
+     * Kill any OLDER backend this same app instance spawned for the same
+     * profile as `current`.
+     *
+     * Within one Desktop instance a profile owns exactly one backend — the
+     * pool comment states the invariant outright ("two children never share
+     * one profile's HERMES_HOME") — but nothing enforced it across the
+     * primary/pool/registry spawn paths. When the app replaces an
+     * unresponsive backend (renderer respawn, superseded connection attempt),
+     * the old child survives: reapOrphans deliberately spares it (its parent
+     * is alive, #87295) and the socket-liveness policy defers its close while
+     * a turn runs (#95327). A backend stuck on never-ending work therefore
+     * becomes immortal, contending with its replacement for the profile's
+     * state.db and starving it — the "backend accepts sockets but serves
+     * nothing" wedge (#79353's supervision gap).
+     *
+     * Scope is strictly SAME parent instance: entries whose parent identity
+     * differs (another live Desktop, or unknown) are left for reapOrphans'
+     * parent-liveness check — this method must never create a cross-instance
+     * kill path. Identity is verified through the same start-marker probe as
+     * reapOrphans, so a reused PID is never killed by mistake.
+     */
+    /**
+     * Post-claim invariant sweep: retire any replaced sibling of `current`,
+     * report the outcome through `log`, and NEVER throw — a failed sweep must
+     * not take down the healthy new backend's boot it runs inside of. This
+     * wrapper keeps the whole replacement policy (and its logging) behind
+     * this module's boundary so the claim call site stays a single line.
+     */
+    async retireReplacedSiblings(current: BackendOwnershipEntry, log: (message: string) => void): Promise<void> {
+      try {
+        const replaced = await this.reapReplacedSiblings(current)
+
+        if (replaced.length) {
+          log(
+            `Killed replaced backend sibling PID(s) ${replaced.join(', ')} for profile "${current.profile}": ` +
+              'a profile owns exactly one desktop backend per app instance.'
+          )
+        }
+      } catch (error) {
+        log(
+          `WARNING: could not reap replaced backend siblings for profile "${current.profile}": ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      }
+    },
+
+    async reapReplacedSiblings(current: BackendOwnershipEntry): Promise<number[]> {
+      if (!isCompleteIdentity(current)) {
+        throw new Error('Cannot reap replaced siblings without a complete process identity.')
+      }
+
+      if (!Number.isInteger(current.parentPid) || Number(current.parentPid) <= 0) {
+        return []
+      }
+
+      // Without a generation there is no replacement ORDER, only a set of
+      // same-profile PIDs — and "kill the other one" is as likely to kill the
+      // replacement as the replaced. Refuse rather than guess.
+      if (!Number.isInteger(current.generation)) {
+        return []
+      }
+
+      const { corrupt, entries } = readDetailed()
+
+      if (corrupt) {
+        // Same posture as reapOrphans: never rewrite over evidence.
+        return []
+      }
+
+      const isSibling = (entry: BackendOwnershipEntry): boolean =>
+        entry.profile === current.profile &&
+        entry.pid !== current.pid &&
+        !identitiesMatch(entry, current) &&
+        sameParent(entry, current)
+
+      // The ordering fence. A newer claim for this profile already exists, so
+      // `current` is the REPLACED backend, not the replacement: every sibling
+      // it can see is either its own successor or older than that successor,
+      // and killing any of them is the superseded process taking down live
+      // work. Retiring is the successor's job; it will reap this one.
+      if (entries.some(entry => isSibling(entry) && generationOf(entry) > generationOf(current))) {
+        return []
+      }
+
+      const removed: BackendOwnershipEntry[] = []
+      const reaped: number[] = []
+
+      for (const entry of entries) {
+        if (!isSibling(entry) || generationOf(entry) >= generationOf(current)) {
+          continue
+        }
+
+        let matches: boolean | undefined
+
+        try {
+          matches = await deps.matchesIdentity(entry)
+        } catch {
+          continue
+        }
+
+        // Recorded process is already gone — drop the stale record silently.
+        if (matches === false) {
+          removed.push(entry)
+
+          continue
+        }
+
+        // Unknown identity (probe unavailable): keep the record and do NOT
+        // kill — a reused PID must never die on a guess.
+        if (matches !== true) {
+          continue
+        }
+
+        try {
+          await deps.stop(entry)
+          removed.push(entry)
+          reaped.push(entry.pid)
+        } catch {
+          // Preserve failed ownership so a later startup can retry it.
+        }
+      }
+
+      removeFromCurrentRoster(removed)
+
+      return reaped
+    },
+
     async reapOrphans(): Promise<number[]> {
       const { corrupt, entries } = readDetailed()
 
@@ -234,18 +425,16 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
         return []
       }
 
-      const survivors: BackendOwnershipEntry[] = []
+      const removed: BackendOwnershipEntry[] = []
       const reaped: number[] = []
       const deadline = Date.now() + (deps.reapDeadlineMs ?? REAP_ORPHANS_DEADLINE_MS)
 
       for (let i = 0; i < entries.length; i += 1) {
-        // Budget exhausted: preserve the unprocessed records so a later launch
-        // can retry them. A slow identity probe must never stall boot — the
-        // renderer's backend-boot budget is 45s and the spawn itself needs
-        // most of it.
+        // Budget exhausted: the unprocessed records are simply never removed,
+        // so a later launch retries them. A slow identity probe must never
+        // stall boot — the renderer's backend-boot budget is 45s and the spawn
+        // itself needs most of it.
         if (Date.now() >= deadline) {
-          survivors.push(...entries.slice(i))
-
           break
         }
 
@@ -260,14 +449,10 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
         try {
           parentAlive = await deps.matchesParent(entry)
         } catch {
-          survivors.push(entry)
-
           continue
         }
 
         if (parentAlive === true) {
-          survivors.push(entry)
-
           continue
         }
 
@@ -276,31 +461,29 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
         try {
           matches = await deps.matchesIdentity(entry)
         } catch {
-          survivors.push(entry)
-
           continue
         }
 
         if (matches === false) {
+          removed.push(entry)
+
           continue
         }
 
         if (matches !== true) {
-          survivors.push(entry)
-
           continue
         }
 
         try {
           await deps.stop(entry)
+          removed.push(entry)
           reaped.push(entry.pid)
         } catch {
           // Preserve failed ownership so a later startup can retry it.
-          survivors.push(entry)
         }
       }
 
-      write(survivors)
+      removeFromCurrentRoster(removed)
 
       return reaped
     },

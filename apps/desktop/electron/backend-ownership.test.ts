@@ -65,9 +65,11 @@ test('claim persists the caller-supplied exact identity before resolving', async
   const store = memoryStore()
   const ownership = createOwnership(store)
   const claim = ownershipEntry()
+  // The claim's place in the replacement order is assigned here, not supplied.
+  const recorded = { ...claim, generation: 1 }
 
-  assert.deepEqual(await ownership.claim(claim), claim)
-  assert.deepEqual(parseBackendOwnership(store.value()), [claim])
+  assert.deepEqual(await ownership.claim(claim), recorded)
+  assert.deepEqual(parseBackendOwnership(store.value()), [recorded])
 })
 
 test('incomplete claims and persisted records are rejected', async () => {
@@ -111,7 +113,8 @@ test('failed persistence awaits asynchronous cleanup of the exact identity', asy
 
   await Promise.resolve()
   assert.equal(rejected, false)
-  assert.deepEqual(stop.mock.calls, [[claim]])
+  // Cleanup targets the identity as recorded, generation included.
+  assert.deepEqual(stop.mock.calls, [[{ ...claim, generation: 1 }]])
 
   cleanup.resolve()
   await assert.rejects(result, expected)
@@ -401,6 +404,263 @@ test('an empty or missing ownership file is NOT corrupt — reap sweeps normally
   const ownership = createOwnership(store)
 
   assert.deepEqual(await ownership.reapOrphans(), [])
-  // Empty roster: rewriting [] is harmless and keeps the legacy behavior.
-  assert.equal(writes.length, 1)
+  // A sweep that removes nothing now touches nothing: the write-back is
+  // scoped to the records it actually reaped, so it cannot clobber a claim
+  // that another spawn persisted while this sweep was probing.
+  assert.deepEqual(writes, [])
+})
+
+// ── reapReplacedSiblings ────────────────────────────────────────────────────
+
+function siblingEntry(overrides: Partial<ReturnType<typeof ownershipEntry>> & Record<string, unknown> = {}) {
+  return {
+    ...ownershipEntry(),
+    // Replacement order is explicit: the sweep retires strictly-older
+    // generations and refuses to act at all without one.
+    generation: 1,
+    parentPid: 900,
+    parentStartMarker: 'parent-os-900',
+    ...overrides
+  }
+}
+
+/** The claim that replaced everything else in the fixture. */
+function currentEntry(overrides: Partial<ReturnType<typeof ownershipEntry>> & Record<string, unknown> = {}) {
+  return siblingEntry({ generation: 2, ...overrides })
+}
+
+test('reapReplacedSiblings kills an older same-profile child of the same app instance', async () => {
+  const older = siblingEntry({ pid: 41, nonce: 'nonce-41', startMarker: 'os-start-41' })
+  const current = currentEntry()
+  const store = memoryStore(stored([older, current]))
+  const stop = vi.fn()
+  const ownership = createOwnership(store, { matchesIdentity: async () => true, stop })
+
+  assert.deepEqual(await ownership.reapReplacedSiblings(current), [41])
+  assert.equal(stop.mock.calls.length, 1)
+  assert.equal(stop.mock.calls[0][0].pid, 41)
+  // The replaced record is gone; the current claim survives.
+  assert.deepEqual(
+    parseBackendOwnership(store.value()).map(entry => entry.pid),
+    [current.pid]
+  )
+})
+
+test('reapReplacedSiblings never touches other profiles or other parent instances', async () => {
+  const otherProfile = siblingEntry({ pid: 50, nonce: 'nonce-50', startMarker: 'os-50', profile: 'picasso' })
+  const otherParent = siblingEntry({ pid: 51, nonce: 'nonce-51', startMarker: 'os-51', parentPid: 901 })
+
+  const otherParentMarker = siblingEntry({
+    pid: 52,
+    nonce: 'nonce-52',
+    startMarker: 'os-52',
+    parentStartMarker: 'parent-os-REUSED'
+  })
+
+  const current = currentEntry()
+  const store = memoryStore(stored([otherProfile, otherParent, otherParentMarker, current]))
+  const stop = vi.fn()
+  const ownership = createOwnership(store, { stop })
+
+  assert.deepEqual(await ownership.reapReplacedSiblings(current), [])
+  assert.equal(stop.mock.calls.length, 0)
+  assert.equal(parseBackendOwnership(store.value()).length, 4)
+})
+
+test('reapReplacedSiblings drops a dead sibling record without killing, and spares an unverifiable one', async () => {
+  const dead = siblingEntry({ pid: 41, nonce: 'nonce-41', startMarker: 'os-41' })
+  const unknown = siblingEntry({ pid: 43, nonce: 'nonce-43', startMarker: 'os-43' })
+  const current = currentEntry()
+  const store = memoryStore(stored([dead, unknown, current]))
+  const stop = vi.fn()
+
+  const ownership = createOwnership(store, {
+    matchesIdentity: async candidate => (candidate.pid === 41 ? false : candidate.pid === 43 ? undefined : true),
+    stop
+  })
+
+  assert.deepEqual(await ownership.reapReplacedSiblings(current), [])
+  assert.equal(stop.mock.calls.length, 0)
+  // Dead record dropped; unverifiable record and the current claim retained.
+  assert.deepEqual(
+    parseBackendOwnership(store.value())
+      .map(entry => entry.pid)
+      .sort(),
+    [43, current.pid].sort()
+  )
+})
+
+test('reapReplacedSiblings keeps the record when stop fails, and no-ops without a parent identity', async () => {
+  const older = siblingEntry({ pid: 41, nonce: 'nonce-41', startMarker: 'os-41' })
+  const current = currentEntry()
+  const store = memoryStore(stored([older, current]))
+
+  const ownership = createOwnership(store, {
+    matchesIdentity: async () => true,
+    stop: () => {
+      throw new Error('kill refused')
+    }
+  })
+
+  assert.deepEqual(await ownership.reapReplacedSiblings(current), [])
+  assert.equal(parseBackendOwnership(store.value()).length, 2)
+
+  // A claim with no parentPid cannot prove same-instance siblinghood → no-op.
+  const orphanCurrent = ownershipEntry({ pid: 60, nonce: 'nonce-60', startMarker: 'os-60' })
+  const store2 = memoryStore(stored([siblingEntry({ pid: 61, nonce: 'nonce-61', startMarker: 'os-61' }), orphanCurrent]))
+  const stop2 = vi.fn()
+  const ownership2 = createOwnership(store2, { stop: stop2 })
+
+  assert.deepEqual(await ownership2.reapReplacedSiblings(orphanCurrent), [])
+  assert.equal(stop2.mock.calls.length, 0)
+})
+
+// The ordering fence. PIDs carry no ordering, so a sweep that only knows
+// "same profile, different PID" is as likely to kill the replacement as the
+// replaced: a superseded startup finishing its sweep late would SIGTERM the
+// live backend that took its place, leaving the profile with none.
+test('reapReplacedSiblings refuses to retire a NEWER sibling from a superseded claim', async () => {
+  const superseded = siblingEntry({ generation: 2, nonce: 'nonce-superseded', pid: 70, startMarker: 'os-70' })
+  const replacement = siblingEntry({ generation: 3, nonce: 'nonce-replacement', pid: 71, startMarker: 'os-71' })
+  const store = memoryStore(stored([superseded, replacement]))
+  const stop = vi.fn()
+  const ownership = createOwnership(store, { matchesIdentity: async () => true, stop })
+
+  // The superseded claim sweeps last and must retire NOTHING: its successor
+  // outranks it, and reaping is the successor's job.
+  assert.deepEqual(await ownership.reapReplacedSiblings(superseded), [])
+  assert.equal(stop.mock.calls.length, 0)
+  assert.deepEqual(
+    parseBackendOwnership(store.value())
+      .map(entry => entry.pid)
+      .sort(),
+    [70, 71]
+  )
+
+  // Run the other way round and the replacement does reap the superseded one.
+  assert.deepEqual(await ownership.reapReplacedSiblings(replacement), [70])
+  assert.deepEqual(
+    parseBackendOwnership(store.value()).map(entry => entry.pid),
+    [71]
+  )
+})
+
+test('reapReplacedSiblings does nothing when the claim carries no generation', async () => {
+  const older = siblingEntry({ nonce: 'nonce-41', pid: 41, startMarker: 'os-41' })
+  const ungenerated = { ...siblingEntry({ nonce: 'nonce-80', pid: 80, startMarker: 'os-80' }), generation: undefined }
+  const store = memoryStore(stored([older, ungenerated]))
+  const stop = vi.fn()
+  const ownership = createOwnership(store, { matchesIdentity: async () => true, stop })
+
+  assert.deepEqual(await ownership.reapReplacedSiblings(ungenerated), [])
+  assert.equal(stop.mock.calls.length, 0)
+  assert.equal(parseBackendOwnership(store.value()).length, 2)
+})
+
+test('claim stamps a monotonically increasing generation', async () => {
+  const store = memoryStore()
+  const ownership = createOwnership(store)
+
+  const first = await ownership.claim(siblingEntry({ nonce: 'nonce-1', pid: 1, startMarker: 'os-1' }))
+  const second = await ownership.claim(siblingEntry({ nonce: 'nonce-2', pid: 2, startMarker: 'os-2' }))
+
+  assert.equal(typeof first.generation, 'number')
+  assert.equal(second.generation, Number(first.generation) + 1)
+  // The order is durable: it is what a later sweep reads back out of the file.
+  assert.deepEqual(
+    parseBackendOwnership(store.value()).map(entry => entry.generation),
+    [first.generation, second.generation]
+  )
+})
+
+// A sweep awaits identity probes and stops. Writing back survivors computed
+// from the PRE-await snapshot erases any claim persisted during that window —
+// a live backend with no ownership record, which nothing will ever reap.
+test('reapReplacedSiblings preserves a claim that lands mid-sweep', async () => {
+  const older = siblingEntry({ nonce: 'nonce-41', pid: 41, startMarker: 'os-41' })
+  const current = currentEntry()
+  const store = memoryStore(stored([older, current]))
+  const latecomer = siblingEntry({ generation: 9, nonce: 'nonce-99', pid: 99, profile: 'picasso', startMarker: 'os-99' })
+
+  const ownership = createOwnership(store, {
+    matchesIdentity: async () => {
+      // A concurrent claim persists while this sweep is awaiting its probe.
+      store.write(stored([...parseBackendOwnership(store.value()), latecomer]))
+
+      return true
+    }
+  })
+
+  assert.deepEqual(await ownership.reapReplacedSiblings(current), [41])
+  assert.deepEqual(
+    parseBackendOwnership(store.value())
+      .map(entry => entry.pid)
+      .sort((left, right) => left - right),
+    [current.pid, 99].sort((left, right) => left - right)
+  )
+})
+
+test('reapOrphans preserves a claim that lands mid-sweep', async () => {
+  const orphan = ownershipEntry({ nonce: 'nonce-45', pid: 45, startMarker: 'os-45' })
+  const store = memoryStore(stored([orphan]))
+  const latecomer = ownershipEntry({ nonce: 'nonce-46', pid: 46, startMarker: 'os-46' })
+
+  const ownership = createOwnership(store, {
+    matchesIdentity: async () => {
+      store.write(stored([...parseBackendOwnership(store.value()), latecomer]))
+
+      return true
+    }
+  })
+
+  assert.deepEqual(await ownership.reapOrphans(), [45])
+  // The orphan is gone; the record written during the sweep survived it.
+  assert.deepEqual(
+    parseBackendOwnership(store.value()).map(entry => entry.pid),
+    [46]
+  )
+})
+
+// ── retireReplacedSiblings (the one-line claim-site wrapper) ────────────────
+
+test('retireReplacedSiblings reaps and logs the kill through the supplied logger', async () => {
+  const older = siblingEntry({ pid: 41, nonce: 'nonce-41', startMarker: 'os-start-41' })
+  const current = currentEntry()
+  const store = memoryStore(stored([older, current]))
+  const log = vi.fn()
+  const ownership = createOwnership(store, { matchesIdentity: async () => true })
+
+  await ownership.retireReplacedSiblings(current, log)
+
+  assert.equal(log.mock.calls.length, 1)
+  // The log line is the production tripwire for this guard firing — its
+  // shape is load-bearing for operators grepping desktop.log.
+  assert.match(log.mock.calls[0][0], /Killed replaced backend sibling PID\(s\) 41 for profile "default"/)
+  assert.deepEqual(
+    parseBackendOwnership(store.value()).map(entry => entry.pid),
+    [current.pid]
+  )
+})
+
+test('retireReplacedSiblings stays silent when nothing was replaced', async () => {
+  const current = currentEntry()
+  const store = memoryStore(stored([current]))
+  const log = vi.fn()
+  const ownership = createOwnership(store)
+
+  await ownership.retireReplacedSiblings(current, log)
+
+  assert.equal(log.mock.calls.length, 0)
+})
+
+test('retireReplacedSiblings never throws — a failed sweep logs a warning instead of killing the boot', async () => {
+  const log = vi.fn()
+  const ownership = createOwnership(memoryStore())
+
+  // An incomplete identity makes reapReplacedSiblings throw synchronously;
+  // the wrapper must swallow it and surface a warning through the logger.
+  await ownership.retireReplacedSiblings({ ...siblingEntry(), startMarker: '' }, log)
+
+  assert.equal(log.mock.calls.length, 1)
+  assert.match(log.mock.calls[0][0], /WARNING: could not reap replaced backend siblings/)
 })

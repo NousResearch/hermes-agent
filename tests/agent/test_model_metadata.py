@@ -892,6 +892,127 @@ class TestFetchEndpointModelMetadata:
 
 
 # =========================================================================
+# Local standard-models-first (#114421)
+# =========================================================================
+
+class TestLocalStandardModelsFirst:
+    """An explicitly configured host:port/v1 must be read via the standard
+    OpenAI-compat path with auth FIRST; the server-type waterfall (whose LM
+    Studio leg sprays /api/v1/models at servers that are none of these) runs
+    only when the standard path fails or the server proves to be LM Studio."""
+
+    BASE = "http://192.168.1.50:8000/v1"  # RFC-1918 -> is_local_endpoint True
+
+    def _404(self):
+        not_found = MagicMock()
+        not_found.status_code = 404
+        not_found.raise_for_status.side_effect = RuntimeError("404")
+        return not_found
+
+    def _clear(self):
+        import agent.model_metadata as mm
+
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+        mm._endpoint_probe_path_cache.clear()
+        mm._endpoint_blackhole_cache.clear()
+
+    def test_local_custom_server_skips_waterfall(self):
+        """#114421: first request is the correct authed /v1/models; the only
+        other request is the single LM Studio marker GET (404 here) — no
+        /api/tags, /v1/props, /props or /version sniffing, no waterfall."""
+        import agent.model_metadata as mm
+
+        self._clear()
+
+        std = MagicMock()
+        std.status_code = 200
+        std.json.return_value = {"data": [{"id": "local/model", "context_length": 32768}]}
+        marker_404 = MagicMock()
+        marker_404.status_code = 404
+
+        def router(url, **kwargs):
+            assert "/api/tags" not in url, f"waterfall leak: {url}"
+            assert "/props" not in url, f"waterfall leak: {url}"
+            assert "/version" not in url, f"waterfall leak: {url}"
+            if url.endswith("/api/v1/models"):
+                return marker_404
+            return std
+
+        with patch("agent.model_metadata.requests.get", side_effect=router) as mock_get, patch(
+            "agent.model_metadata.detect_local_server_type"
+        ) as mock_detect:
+            result = mm.fetch_endpoint_model_metadata(self.BASE, api_key="test-key")
+
+        assert result["local/model"]["context_length"] == 32768
+        mock_detect.assert_not_called()
+        assert [c.args[0] for c in mock_get.call_args_list] == [
+            self.BASE + "/models",
+            "http://192.168.1.50:8000/api/v1/models",
+        ]
+        assert mock_get.call_args_list[0].kwargs["headers"] == {
+            "Authorization": "Bearer test-key"
+        }
+        assert mock_get.call_args_list[0].kwargs["stream"] is True
+
+    def test_local_lm_studio_still_prefers_native(self):
+        """LM Studio serves the standard path too, but only its native payload
+        carries loaded-instance contexts — one marker GET decides, then native
+        wins exactly as before."""
+        import agent.model_metadata as mm
+
+        self._clear()
+
+        std = MagicMock()
+        std.status_code = 200
+        std.json.return_value = {"data": [{"id": "local/model"}]}
+        native = MagicMock()
+        native.status_code = 200
+        native.json.return_value = {
+            "models": [
+                {
+                    "key": "local/model",
+                    "loaded_instances": [{"config": {"context_length": 131072}}],
+                }
+            ]
+        }
+
+        def router(url, **kwargs):
+            if url.endswith("/api/v1/models"):
+                return native
+            if url.endswith("/v1/models"):
+                return std
+            return self._404()
+
+        with patch("agent.model_metadata.requests.get", side_effect=router) as mock_get, patch(
+            "agent.model_metadata.detect_local_server_type", return_value="lm-studio"
+        ):
+            result = mm.fetch_endpoint_model_metadata(self.BASE, api_key="test-key")
+
+        assert result["local/model"]["context_length"] == 131072
+        assert any(
+            c.args[0].endswith("/api/v1/models") for c in mock_get.call_args_list
+        )
+
+    def test_local_empty_standard_path_falls_back_to_detect(self):
+        """Standard path empty (server down / nothing loaded) -> legacy detect
+        waterfall still runs, result {} as before."""
+        import agent.model_metadata as mm
+
+        self._clear()
+
+        with patch(
+            "agent.model_metadata.requests.get", return_value=self._404()
+        ), patch(
+            "agent.model_metadata.detect_local_server_type", return_value=None
+        ) as mock_detect:
+            result = mm.fetch_endpoint_model_metadata(self.BASE, api_key="test-key")
+
+        assert result == {}
+        mock_detect.assert_called_once()
+
+
+# =========================================================================
 # Nous Portal context-window resolution (provider="nous")
 # =========================================================================
 

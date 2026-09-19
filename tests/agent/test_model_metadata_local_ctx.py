@@ -652,13 +652,19 @@ class TestFetchEndpointModelMetadataLmStudio:
 
     def _make_resp(self, body):
         resp = MagicMock()
+        resp.status_code = 200
         resp.raise_for_status.return_value = None
         resp.json.return_value = body
         return resp
 
-    def test_uses_native_models_endpoint_only(self):
+    def test_lm_studio_prefers_native_after_standard_probe(self):
+        # #114421: the standard OpenAI-compat path is tried first with auth;
+        # LM Studio answers it, then one marker GET proves LM Studio and the
+        # native payload (loaded-instance contexts) wins exactly as before —
+        # the server-type waterfall never runs.
         from agent.model_metadata import fetch_endpoint_model_metadata
 
+        std_resp = self._make_resp({"data": [{"id": "qwen3.5-27b"}]})
         native_resp = self._make_resp(
             {
                 "models": [
@@ -674,17 +680,28 @@ class TestFetchEndpointModelMetadataLmStudio:
             }
         )
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
-             patch("agent.model_metadata.requests.get", return_value=native_resp) as mock_get:
+        def router(url, **kwargs):
+            if url.endswith("/api/v1/models"):
+                return native_resp
+            return std_resp
+
+        with patch("agent.model_metadata.detect_local_server_type") as mock_detect, \
+             patch("agent.model_metadata.requests.get", side_effect=router) as mock_get:
             result = fetch_endpoint_model_metadata(
                 "http://localhost:1234/v1",
                 api_key="lm-token",
                 force_refresh=True,
             )
 
-        assert mock_get.call_count == 1
-        assert mock_get.call_args[0][0] == "http://localhost:1234/api/v1/models"
-        assert mock_get.call_args.kwargs["headers"] == {
+        mock_detect.assert_not_called()
+        # The standard target is IPv4-resolved; marker and native keep the
+        # configured host (the marker probes the exact native URL).
+        assert [c[0][0] for c in mock_get.call_args_list] == [
+            "http://127.0.0.1:1234/v1/models",
+            "http://localhost:1234/api/v1/models",
+            "http://localhost:1234/api/v1/models",
+        ]
+        assert mock_get.call_args_list[0].kwargs["headers"] == {
             "Authorization": "Bearer lm-token"
         }
         assert result["lmstudio-community/Qwen3.5-27B-GGUF/Qwen3.5-27B-Q8_0.gguf"]["context_length"] == 131072

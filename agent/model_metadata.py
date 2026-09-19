@@ -1039,13 +1039,8 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     headers = _auth_headers(api_key)
     verify = _resolve_requests_verify(normalized)
     last_error: Optional[Exception] = None
-    if local:
-        try:
-            if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
-        except Exception as exc:
-            last_error = exc
-            _note_if_connect_timeout(exc, normalized)
+    std_cache: Dict[str, Dict[str, Any]] = {}
+    std_proven_non_lmstudio = False
     for candidate in candidates:
         # A connect timeout condemns the host, not the path.
         if _endpoint_blackholed(normalized):
@@ -1063,17 +1058,47 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
             payload = response.json()
             cache = _parse_models_payload(payload)
             if any(m.get("owned_by") == "llamacpp" for m in payload.get("data", []) if isinstance(m, dict)):
+                # Positive proof this is llama.cpp, not LM Studio: no marker GET needed.
+                std_proven_non_lmstudio = True
                 with contextlib.suppress(Exception):
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
                 _endpoint_disk_cache_put(normalized, cache)
-            return _remember_endpoint_models(memo_key, cache)
+            std_cache = cache
+            break
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
         finally:
             if response is not None:
                 response.close()
+    if local and std_cache and not std_proven_non_lmstudio:
+        # Standard OpenAI-compat path answered with auth, so the server-type
+        # waterfall never runs for it (#114421): its LM Studio leg sprayed
+        # /api/v1/models at servers that are none of these, once per fetch.
+        # LM Studio serves the standard path too, but only its native payload
+        # carries loaded-instance contexts — one marker GET decides, then the
+        # native payload wins exactly as before.
+        try:
+            marker_url = _lmstudio_server_root(normalized).rstrip("/") + "/api/v1/models"
+            marker = requests.get(marker_url, headers=headers, timeout=(5, 10), verify=verify)
+            if marker.status_code == 200:
+                try:
+                    return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return _remember_endpoint_models(memo_key, std_cache)
+    if local and not std_cache:
+        try:
+            if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
+                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
+        except Exception as exc:
+            last_error = exc
+            _note_if_connect_timeout(exc, normalized)
+    if std_cache:
+        return _remember_endpoint_models(memo_key, std_cache)
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
     return _remember_endpoint_models(memo_key, {})

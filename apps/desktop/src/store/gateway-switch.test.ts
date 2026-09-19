@@ -2,6 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sessionsLimit, resetSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
 import {
+  $activeProjectId,
+  $projects,
+  $projectScope,
+  $projectsRpcAvailable,
+  $projectTree,
+  $reposScanning,
+  ALL_PROJECTS,
+  enterProject
+} from '@/store/projects'
+import {
   $activeSessionId,
   $cronSessions,
   $currentBranch,
@@ -21,6 +31,7 @@ import {
   setSessions,
   setSessionsLoading
 } from '@/store/session'
+import { $removedSessionIds } from '@/store/session-removal'
 import { $stalledSessionIds } from '@/store/session-states'
 import {
   $transcriptTailBySessionId,
@@ -64,6 +75,13 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessionsLoading(false)
     setFreshDraftReady(false)
     $sessionsLimit.set(SIDEBAR_SESSIONS_PAGE_SIZE * 3)
+    $projects.set([{ id: 'p_old', label: 'old', repos: [], isNoProject: false } as never])
+    $projectTree.set([{ id: 'p_old', label: 'old', repos: [], sessionCount: 0 } as never])
+    $activeProjectId.set('p_old')
+    enterProject('p_old')
+    $projectsRpcAvailable.set(true)
+    $reposScanning.set(true)
+    $removedSessionIds.set(new Set(['s1']))
   })
 
   afterEach(() => {
@@ -128,6 +146,18 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     wipeSessionListsForGatewaySwitch()
 
     expect(invalidateProfileListFetches).toHaveBeenCalled()
+  })
+
+  it('clears per-profile project state so the next gateway repaints its own', () => {
+    wipeSessionListsForGatewaySwitch()
+
+    expect($projects.get()).toEqual([])
+    expect($projectTree.get()).toEqual([])
+    expect($activeProjectId.get()).toBeNull()
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+    expect($projectsRpcAvailable.get()).toBeNull()
+    expect($reposScanning.get()).toBe(false)
+    expect($removedSessionIds.get().size).toBe(0)
   })
 })
 

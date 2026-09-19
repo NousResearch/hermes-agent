@@ -4243,6 +4243,47 @@ class TestRunConversation:
             for m in replayed
         )
 
+    def test_invalid_stored_tool_call_names_are_coerced_on_the_wire(self, agent):
+        """A stored ``multi_tool_use.parallel`` / shell-command / empty function.name must reach the
+        provider as ``^[A-Za-z0-9_-]{1,64}$`` on every request, and the persisted history must keep
+        the original bytes (#51944)."""
+        self._setup_agent(agent)
+        long_name = 'gbrain query "x" 2>/dev/null | head -40; ' + "y" * 340
+        history = [
+            {"role": "user", "content": "do two things"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "multi_tool_use.parallel", "arguments": "{}"}},
+                {"id": "c2", "type": "function", "function": {"name": long_name, "arguments": "{}"}},
+                {"id": "c3", "type": "function", "function": {"name": "", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "name": "multi_tool_use.parallel", "content": "r1"},
+            {"role": "tool", "tool_call_id": "c2", "name": long_name, "content": "r2"},
+            {"role": "tool", "tool_call_id": "c3", "name": "", "content": "r3"},
+            {"role": "assistant", "content": "done"},
+        ]
+        requests = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            return _mock_response(content="ok", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("continue", conversation_history=history)
+
+        wire_names = [
+            tc["function"]["name"]
+            for m in requests[0]["messages"] if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        ]
+        assert wire_names == ["multi_tool_use_parallel", 'gbrain_query_x_2_dev_null_head_-40_yyyyyyyyyyyyyyyyyyyyyyyyyyyyy', "invalid_tool_call"]
+        assert all(len(n) <= 64 and n.replace("_", "").replace("-", "").isalnum() for n in wire_names)
+        assert [tc["function"]["name"] for tc in history[1]["tool_calls"]] == ["multi_tool_use.parallel", long_name, ""]
+
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
         agent.provider = "nous"

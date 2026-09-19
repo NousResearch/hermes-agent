@@ -5,8 +5,10 @@ provider-specific work lives in build_kwargs (max_tokens, reasoning, extra_body)
 """
 
 import json
+import re
 from typing import Any
 from urllib.parse import urlparse
+import uuid
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
@@ -358,6 +360,57 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
     return out_msg if strip_keys or copied_tool_calls is not None else None
 
 
+# DeepSeek emits tool calls as its own XML markup inside ``content`` instead of the
+# OpenAI ``tool_calls`` array; without the fallback below the agent prints the markup
+# as prose and halts at the prompt with nothing executed. The fullwidth bar (U+FF5C) is
+# what the models actually emit; ASCII '|' is accepted because relays transliterate it.
+_DSML_BLOCK_RE = re.compile(r'<[｜|]{2}DSML[｜|]{2}\s*calls>(.*?)</[｜|]{2}DSML[｜|]{2}\s*calls>', re.DOTALL)
+_DSML_INVOKE_RE = re.compile(r'<[｜|]{2}(?:DSML[｜|]{2}\s*)?invoke\s+name=[\"\']([^\"\']+)[\"\']\s*>(.*?)</[｜|]{2}(?:DSML[｜|]{2}\s*)?invoke>', re.DOTALL)
+_DSML_PARAM_RE = re.compile(r'<[｜|]{2}(?:DSML[｜|]{2}\s*)?parameter\s+name=[\"\']([^\"\']+)[\"\'](?:\s+string=[\"\']([^\"\']+)[\"\'])?\s*>(.*?)</[｜|]{2}(?:DSML[｜|]{2}\s*)?parameter>', re.DOTALL)
+# An OPENING marker with no matching close: the response was cut mid tool call. Only the
+# opening forms are listed — a closing tag can never start a truncated tail.
+_DSML_OPEN_RE = re.compile(r'<[｜|]{2}(?:DSML[｜|]{2}\s*calls>|(?:DSML[｜|]{2}\s*)?(?:invoke|parameter)\s)')
+
+
+def _parse_dsml_tool_calls(content: str) -> tuple[list[dict[str, Any]], str]:
+    if not ("DSML" in content or "invoke name=" in content):
+        return [], content
+    calls = []
+    for m in _DSML_INVOKE_RE.finditer(content):
+        name = m.group(1)
+        body = m.group(2)
+        args = {}
+        for pm in _DSML_PARAM_RE.finditer(body):
+            pname = pm.group(1)
+            is_str = pm.group(2)
+            pval = pm.group(3).strip()
+            if is_str == "false":
+                try:
+                    pval = json.loads(pval)
+                except Exception:
+                    pass
+            args[pname] = pval
+        calls.append({"name": name, "arguments": json.dumps(args)})
+
+    clean_content = _DSML_BLOCK_RE.sub("", content).strip()
+    if clean_content == content and calls:
+        clean_content = _DSML_INVOKE_RE.sub("", content).strip()
+    return calls, clean_content
+
+
+def _has_truncated_dsml(content: str) -> bool:
+    """``content`` ends inside an unterminated DSML block.
+
+    Counting openers against parsed calls is what distinguishes a genuine cut from prose
+    that merely quotes the markup: the residue after stripping every COMPLETE block still
+    carries an opening marker only when the provider stopped mid call.
+    """
+    if not ("DSML" in content or "invoke name=" in content):
+        return False
+    residue = _DSML_INVOKE_RE.sub("", _DSML_BLOCK_RE.sub("", content))
+    return bool(_DSML_OPEN_RE.search(residue))
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'."""
 
@@ -557,6 +610,27 @@ class ChatCompletionsTransport(ProviderTransport):
                 content = refusal
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
+
+        # DSML fallback: DeepSeek models emit raw XML tool calls in content instead of the
+        # OpenAI ``tool_calls`` array. Complete blocks become real tool calls; a block the
+        # provider cut off mid call is reported as ``length`` so the existing truncation
+        # recovery re-issues it, rather than surfacing dead markup as the final answer.
+        if not tool_calls and isinstance(content, str) and ("DSML" in content or "invoke name=" in content):
+            parsed_calls, clean_content = _parse_dsml_tool_calls(content)
+            if parsed_calls:
+                tool_calls = [
+                    ToolCall(
+                        id=f"call_{uuid.uuid4().hex[:12]}",
+                        name=c["name"],
+                        arguments=c["arguments"],
+                    )
+                    for c in parsed_calls
+                ]
+                content = clean_content or None
+                finish_reason = "tool_calls"
+            elif finish_reason != "content_filter" and _has_truncated_dsml(content):
+                # No complete call AND an unterminated block: the turn is unfinished, not done.
+                finish_reason = "length"
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,

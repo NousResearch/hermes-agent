@@ -26,7 +26,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_idle_proof_is_true_only_when_every_ledger_is_provably_empty():
     assert idle_proof(turn_probe=lambda: False, input_probe=lambda: 0) == {"idle": True, "reason": None}
-    assert idle_proof(turn_probe=lambda: True, input_probe=lambda: 0)["idle"] is False
+    assert idle_proof(turn_probe=lambda: True, input_probe=lambda: 0) == {
+        "idle": False, "reason": "turn_in_flight", "detail": None}
+    assert idle_proof(turn_probe=lambda: "session:abc", input_probe=lambda: 0)["detail"] == "session:abc"
     assert idle_proof(turn_probe=lambda: False, input_probe=lambda: 1) == {
         "idle": False, "reason": "awaiting_human_input"}
     # Fail closed: an indeterminate probe is never reported as idle.
@@ -46,7 +48,8 @@ def test_idle_proof_reads_the_real_cron_and_human_input_ledgers():
     with scheduler._running_lock:
         scheduler._running_job_ids.add("idle-proof-live-job")
     try:
-        assert idle_proof() == {"idle": False, "reason": "turn_in_flight"}
+        # The busy verdict names the ledger and the job, so a backend that will not retire is diagnosable.
+        assert idle_proof() == {"idle": False, "reason": "turn_in_flight", "detail": "cron:idle-proof-live-job"}
     finally:
         with scheduler._running_lock:
             scheduler._running_job_ids.discard("idle-proof-live-job")
@@ -186,7 +189,8 @@ def test_live_pooled_children_prove_idle_or_busy_over_the_desktop_probe(tmp_path
         verdicts = {name: _probe(port) for name, port in ports.items()}
         assert verdicts["resident-a"] == (200, {"ok": True, "idle": True, "reason": None}), verdicts
         assert verdicts["resident-b"] == (200, {"ok": True, "idle": True, "reason": None}), verdicts
-        assert verdicts["cron-busy"] == (200, {"ok": True, "idle": False, "reason": "turn_in_flight"}), verdicts
+        assert verdicts["cron-busy"] == (200, {
+            "ok": True, "idle": False, "reason": "turn_in_flight", "detail": "cron:live-idle-proof-job"}), verdicts
 
         status, body = _probe(ports["resident-a"], token=None)
         assert status == 401 and "idle" not in body

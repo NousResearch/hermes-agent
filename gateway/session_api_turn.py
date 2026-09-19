@@ -278,14 +278,18 @@ def prepare_api_execution(authority, ref, payload):
                              key: value for key, value in settings.items() if key != 'room_input_media'})))
         authority.db._execute_write(write)
     content = payload['text']
+    prepared = {}
     if data and settings.get('room_input_media') is not None:
-        from gateway.session_peer_input import peer_input_content
+        from gateway.session_peer_input import peer_input_content, peer_input_transcript
         content = peer_input_content(authority, ref, payload)
+        # Private, per-execution companion to verified model content. Never an
+        # accepted client field or a saved session setting.
+        prepared['files_persist_user_message'] = peer_input_transcript(payload)
     elif data and isinstance(content, list):
         from gateway.session_api_media import restore_api_images
         content = restore_api_images(content, data.get('media') or [])
-    return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
-            'content': content, 'turn_author': data.get('turn_author') if data else None}
+    return dict(prepared, adapter=adapter, settings=settings, history=data['history'] if data else None,
+                content=content, turn_author=data.get('turn_author') if data else None)
 
 
 def _api_observers(authority, session_id):

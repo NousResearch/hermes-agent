@@ -134,6 +134,18 @@ def check_peer_input(settings):
     return manifest, references
 
 
+def peer_input_transcript(payload):
+    """Project only frozen prompt + bounded labels, never retained paths/bytes.
+
+    Called after peer_input_content verifies the accepted payload and complete
+    retained batch. JSON quoting keeps control characters in basenames inert;
+    the manifest bounds the count and name length (no mutable catalog reads).
+    """
+    manifest, _ = check_peer_input(payload['api_turn_v1']['settings'])
+    labels = [f"[Attached {item['kind']}: {json.dumps(item['name'])}]" for item in manifest]
+    return payload['text'] + ('\n\n' + '\n'.join(labels) if labels else '')
+
+
 def peer_input_content(authority, ref, payload):
     from gateway.session_admission import admission_fingerprint
     from gateway.hosted_room_input_reclamation import copy_path, verified_identity

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
+    _compression_allow_main_fallback,
     _is_connection_error,
     aux_interrupt_protection,
     call_llm,
@@ -3670,7 +3671,14 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # A distinct summary model gets ONE main-model retry: a specific reason for known transient classes,
         # else a best-effort "failed" retry — losing N turns is worse than one extra summary attempt.
-        if self.summary_model and self.summary_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
+        # When auxiliary.compression.allow_main_fallback=false this retry is skipped: the configured
+        # summary model is allowed to fail closed instead of escalating to the main agent model.
+        if (
+            self.summary_model
+            and self.summary_model != self.model
+            and not getattr(self, "_summary_model_fallen_back", False)
+            and _compression_allow_main_fallback()
+        ):
             self._fallback_to_main_for_compression(e, kind.fallback_reason())
             # Retry immediately on the main model.
             return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)

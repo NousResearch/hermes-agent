@@ -708,7 +708,11 @@ DEFAULT_CONFIG = {
         "vision": _aux(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
         # are ignored. Compression: raise timeout for local models.
-        "compression": _aux(120),
+        # allow_main_fallback controls whether a failed compression summary may escalate to the
+        # main agent model (both the generic aux main-agent-model safety net and the compressor's
+        # one-shot main-model retry). Defaults to true (existing behavior). Set to false to keep
+        # compression strictly within the configured aux provider + fallback_chain.
+        "compression": {**_aux(120), "allow_main_fallback": True},
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like

@@ -272,7 +272,7 @@ def stage_tool_call_message(
     while messages and isinstance(messages[-1], dict) and messages[-1].get("_thinking_prefill"):
         messages.pop()
         _had_prefill = True
-    if _had_prefill:
+    if _had_prefill or getattr(agent, "_thinking_prefill_retries", 0):
         agent._thinking_prefill_retries = 0
         agent._empty_content_retries = 0
     # Re-arm the post-tool nudge so it can fire on a LATER tool round; a landed tool call

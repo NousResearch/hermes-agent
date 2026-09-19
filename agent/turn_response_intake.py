@@ -120,6 +120,9 @@ def normalize_model_response(
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
     assistant_message = normalize_response_for_agent(agent, response)
+    # A request-local recovery hint has now been consumed. Clear it before any
+    # response guard can continue; another empty response may queue a fresh hint.
+    agent._empty_response_retry_hint = None
     finish_reason = assistant_message.finish_reason
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ResponseIntakeVerdict:

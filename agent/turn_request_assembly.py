@@ -17,6 +17,7 @@ from agent.message_sanitization import _sanitize_messages_surrogates
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
+from agent.turn_empty_response import add_empty_response_retry_hint
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -115,7 +116,7 @@ def assemble_api_request(
         _apply_context_engine_selection, _canonicalize_api_tool_calls, _clone_message_for_send,
         _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
     api_messages, effective_system = build_api_messages(
         agent, messages, current_turn_user_idx=current_turn_user_idx,
@@ -182,6 +183,8 @@ def assemble_api_request(
     # they crash json.dumps() inside the OpenAI SDK and trigger the 3-retry cycle.
     _sanitize_messages_surrogates(api_messages)
 
+    _empty_retry_suffix = add_empty_response_retry_hint(agent, api_messages)
+
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
 
@@ -247,7 +250,7 @@ def assemble_api_request(
     _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
     agent._request_pressure_anchored = _anchored_pressure is not None
     if _anchored_pressure is not None:
-        request_pressure_tokens = _anchored_pressure
+        request_pressure_tokens = _anchored_pressure + estimate_tokens_rough(_empty_retry_suffix)
     else:
         # Rough fallback only: floor at the provider's last REAL prompt size (an anchored
         # figure is provider-exact and is never floored — on MoA turns that would re-add

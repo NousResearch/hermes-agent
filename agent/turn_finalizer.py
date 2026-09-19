@@ -452,6 +452,7 @@ def finalize_turn(
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
+    agent._empty_response_retry_hint = None
     final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,

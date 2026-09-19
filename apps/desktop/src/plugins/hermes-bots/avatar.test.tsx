@@ -20,6 +20,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { blobatarSvgMock } = vi.hoisted(() => ({ blobatarSvgMock: vi.fn() }))
 
+// The motion layer is real in this build (blobatar/react resolves), so the
+// animated path is BotFace's default. These tests pin the STATIC fallback
+// contract — force it per-test with useStaticAvatarFallback().
+const { staticFallbackRef } = vi.hoisted(() => ({ staticFallbackRef: { value: false } }))
+
+vi.mock('./avatar-motion', async importOriginal => {
+  const original = await importOriginal<typeof import('./avatar-motion')>()
+
+  return {
+    ...original,
+    blobatarMotionComponent: () => (staticFallbackRef.value ? null : original.blobatarMotionComponent())
+  }
+})
+
+export const useStaticAvatarFallback = (on: boolean) => {
+  staticFallbackRef.value = on
+}
+
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
 
@@ -61,6 +79,10 @@ const lastBlobCall = () => blobatarSvgMock.mock.calls.at(-1) as [string, BlobOpt
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // These tests pin the STATIC fallback contract (see the mock above); the
+  // animated path is covered in avatar-motion.test.ts against the real
+  // blobatar/react component.
+  staticFallbackRef.value = true
   blobatarSvgMock.mockReturnValue('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"></svg>')
 })
 

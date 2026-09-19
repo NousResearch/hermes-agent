@@ -368,7 +368,7 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
 }
 
 /** `cli.exec` reply, as the legacy delete path reads it. */
-interface CliExecResult {
+export interface CliExecResult {
   blocked?: boolean
   code?: number
   hint?: string

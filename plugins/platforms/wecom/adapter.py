@@ -62,6 +62,25 @@ REQUEST_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 
+# Subscription-lost / reconnect-gap redelivery. A send rejected with errcode 846609
+# (or failing while the websocket is down) was PROVABLY not delivered — WeCom rejected
+# it before enqueue — so the same payload is safe to retry after the reconnect that
+# ``_listen_loop`` performs with backoff [2, 5, ...]s. When the wait is exhausted the
+# send fails closed as ``send_path_degraded`` — the delivery ledger's runtime-redelivery
+# token (same contract Telegram uses) — so a final response is replayed with a visible
+# marker after the next reconnect instead of being lost. Timeouts are NEVER transient
+# here: the frame may already have been delivered and a blind retry duplicates it.
+REDELIVERY_WAIT_SECONDS = 15.0
+REDELIVERY_WAIT_POLL_SECONDS = 0.5
+REDELIVERY_MAX_RETRIES = 2
+REDELIVERY_RETRY_BACKOFF_SECONDS = 2.0  # per attempt; 846609 can precede the ws close by seconds
+TRANSIENT_SEND_ERROR_MARKERS = (
+    str(STREAM_NOT_SUBSCRIBED_ERRCODE),  # 846609 — subscription lost during a reconnect gap
+    "websocket is not connected",        # _require_ws while the socket is down
+    "connection interrupted",            # _fail_all on a websocket drop
+    "websocket closed",                  # _read_events on CLOSE/ERROR frames
+)
+
 DEDUP_MAX_SIZE = 1000
 
 
@@ -278,8 +297,33 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                     backoff_idx = 0
                     self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
+                    self._trigger_failed_obligation_redelivery()
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
+
+    def _trigger_failed_obligation_redelivery(self) -> None:
+        """WeCom self-heals its websocket inside ``_listen_loop`` — the gateway never swaps the
+        adapter object, so its ``_install_reconnected_adapter`` replay never fires for us. Kick
+        the delivery ledger's runtime sweep directly after a successful reconnect so final
+        responses that failed closed as ``send_path_degraded`` are replayed (best-effort:
+        ledger failures must never break the reconnect path)."""
+        redeliver = getattr(self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
+        if not callable(redeliver):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        coro = redeliver(Platform.WECOM, profile=getattr(self, "_owner_profile", None))
+        if not asyncio.iscoroutine(coro):
+            return
+        task = asyncio.ensure_future(coro)
+
+        def _log_failure(done: "asyncio.Task") -> None:
+            if not done.cancelled() and done.exception():
+                logger.debug("[%s] delivery-ledger redelivery after reconnect failed: %s", self.name, done.exception())
+
+        task.add_done_callback(_log_failure)
 
     async def _read_events(self) -> None:
         if not self._ws:
@@ -599,30 +643,111 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         force_proactive = bool(metadata.pop("force_proactive_send", False))
         return await self._enqueue_chat_send(chat_id, lambda: self._send_inner(chat_id, content, reply_to, force_proactive=force_proactive), is_control=is_control)
 
+    @staticmethod
+    def _is_transient_send_error(text: str) -> bool:
+        """True for errors that PROVE the message was not delivered (websocket down / 846609
+        subscription lost) and are therefore safe to retry after the reconnect. Timeouts are
+        deliberately absent: the frame may already have landed and a blind retry duplicates it."""
+        lowered = (text or "").lower()
+        return any(marker in lowered for marker in TRANSIENT_SEND_ERROR_MARKERS)
+
+    async def _wait_for_send_path(self) -> bool:
+        """Wait (bounded) for the websocket to come back after a transient send failure.
+        ``_listen_loop`` owns the reconnect with backoff [2, 5, ...]s; this only polls for the
+        socket. True once a live ws exists, False when the budget is exhausted."""
+        deadline = time.monotonic() + REDELIVERY_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            if self._ws and not self._ws.closed:
+                return True
+            await asyncio.sleep(REDELIVERY_WAIT_POLL_SECONDS)
+        return bool(self._ws and not self._ws.closed)
+
     async def _send_inner(self, chat_id: str, content: str, reply_to: Optional[str] = None, *, force_proactive: bool = False) -> SendResult:
-        """Send under the per-chat queue; force_proactive skips passive reply except in groups."""
-        try:
-            reply_req_id = None if force_proactive and chat_id not in self._group_chat_ids else self._cached_reply_req_id(chat_id, reply_to)
-            if reply_req_id:
-                try:
-                    response = await self._send_reply_markdown(reply_req_id, content)
-                except (asyncio.TimeoutError, RuntimeError) as passive_err:
-                    # req_id may be stale after a reconnect — proactive send needs none.
-                    logger.warning("[%s] Passive reply failed (%s), falling back to proactive send", self.name, passive_err)
+        """Send under the per-chat queue; force_proactive skips passive reply except in groups.
+
+        A send rejected while the subscription is lost (846609) or the websocket is down was
+        provably NOT delivered, so it waits out ``_listen_loop``'s reconnect and retries the
+        same payload (bounded). When the wait is exhausted the send fails closed as
+        ``send_path_degraded`` so the delivery ledger replays it after the next reconnect
+        instead of losing it. Group chats retry on the passive path only — WeCom blocks
+        ``APP_CMD_SEND`` there (errcode 600039)."""
+        reply_req_id = None if force_proactive and chat_id not in self._group_chat_ids else self._cached_reply_req_id(chat_id, reply_to)
+        if not reply_req_id and chat_id in self._group_chat_ids:
+            logger.warning("[%s] No cached req_id for group chat %s — cannot send (groups require passive reply via req_id)", self.name, chat_id)
+            return SendResult(success=False, error="No req_id available for group chat (passive reply required)")
+
+        transient_error: Optional[str] = None
+        for attempt in range(REDELIVERY_MAX_RETRIES + 1):
+            if attempt:
+                await asyncio.sleep(REDELIVERY_RETRY_BACKOFF_SECONDS * attempt)
+                if not await self._wait_for_send_path():
+                    transient_error = "websocket still down after the reconnect wait"
+                    break
+            transient_error = None
+            response: Optional[Dict[str, Any]] = None
+            try:
+                if reply_req_id:
+                    try:
+                        response = await self._send_reply_markdown(reply_req_id, content)
+                    except (asyncio.TimeoutError, RuntimeError) as passive_err:
+                        err_text = str(passive_err)
+                        if isinstance(passive_err, asyncio.TimeoutError) or not self._is_transient_send_error(err_text):
+                            # Timeouts: may have delivered — never retry. Permanent req_id staleness:
+                            # proactive send needs none, so fall back (original behaviour).
+                            logger.warning("[%s] Passive reply failed (%s), falling back to proactive send", self.name, passive_err)
+                            if chat_id in self._group_chat_ids:
+                                return SendResult(success=False, error="No req_id available for group chat (passive reply required)")
+                            response = await self._send_proactive_markdown(chat_id, content)
+                        else:
+                            # Subscription lost mid-send: provably undelivered — retry the SAME
+                            # payload after the reconnect instead of dropping it.
+                            transient_error = err_text
+                else:
                     response = await self._send_proactive_markdown(chat_id, content)
-            elif chat_id in self._group_chat_ids:
-                logger.warning("[%s] No cached req_id for group chat %s — cannot send (groups require passive reply via req_id)", self.name, chat_id)
-                return SendResult(success=False, error="No req_id available for group chat (passive reply required)")
-            else:
-                response = await self._send_proactive_markdown(chat_id, content)
-        except asyncio.TimeoutError:
-            return SendResult(success=False, error="Timeout sending message to WeCom")
-        except Exception as exc:
-            logger.error("[%s] Send failed: %s", self.name, exc)
-            return self._send_failure(str(exc), str(STREAM_NOT_SUBSCRIBED_ERRCODE) in str(exc))
-        if error := self._response_error(response):
-            return self._send_failure(error, response.get("errcode", 0) == STREAM_NOT_SUBSCRIBED_ERRCODE)
-        return SendResult(success=True, message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12], raw_response=response)
+            except asyncio.TimeoutError:
+                return SendResult(success=False, error="Timeout sending message to WeCom")
+            except Exception as exc:
+                if self._is_transient_send_error(str(exc)):
+                    transient_error = str(exc)
+                else:
+                    logger.error("[%s] Send failed: %s", self.name, exc)
+                    return SendResult(success=False, error=str(exc))
+
+            if transient_error is None and response is not None:
+                if error := self._response_error(response):
+                    if self._is_transient_send_error(error):
+                        transient_error = error
+                    else:
+                        return self._send_failure(error, response.get("errcode", 0) == STREAM_NOT_SUBSCRIBED_ERRCODE)
+
+            if transient_error is None and response is not None:
+                return SendResult(success=True, message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12], raw_response=response)
+
+            if transient_error is not None:
+                logger.warning(
+                    "[%s] send not delivered (attempt %d/%d) — reconnect gap: %s",
+                    self.name, attempt + 1, REDELIVERY_MAX_RETRIES + 1, transient_error,
+                )
+                if str(STREAM_NOT_SUBSCRIBED_ERRCODE) in transient_error:
+                    # Same stale-state purge the original failure path did: req_ids bound to the
+                    # dead subscription must not leak into the retry. The retry goes proactive
+                    # (chatid-based, survives the reconnect) for DMs; groups keep passive.
+                    asyncio.ensure_future(self._force_reconnect_on_stale_subscription(STREAM_NOT_SUBSCRIBED_ERRCODE))
+                    if chat_id not in self._group_chat_ids:
+                        reply_req_id = None
+
+        if transient_error is not None:
+            # Provably undelivered and the reconnect wait is exhausted: fail closed as
+            # ``send_path_degraded`` (the delivery ledger's runtime-redelivery token) so the
+            # obligation is replayed with a visible marker after the next reconnect instead
+            # of being lost. The original cause stays in the log above.
+            logger.error(
+                "[%s] send undeliverable after %d attempts (%s) — failing closed as "
+                "send_path_degraded for delivery-ledger redelivery",
+                self.name, REDELIVERY_MAX_RETRIES + 1, transient_error,
+            )
+            return SendResult(success=False, error="send_path_degraded", retryable=True)
+        return SendResult(success=False, error="send produced no response")
 
     def _send_failure(self, error: str, subscription_lost: bool) -> SendResult:
         """Failed SendResult; on 846609 schedule the stale-req_id purge so later sends recover."""

@@ -2048,7 +2048,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
-    { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.2.0" },
+    { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.4.0" },
     { name = "httplib2", marker = "extra == 'google'", specifier = "==0.32.0" },
     { name = "httplib2", marker = "extra == 'google-chat'", specifier = "==0.32.0" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
@@ -2166,16 +2166,16 @@ wheels = [
 
 [[package]]
 name = "honcho-ai"
-version = "2.2.0"
+version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f2/1d/322649dbc8e9b21726a3a3e9b6a4975f2d122ca4b2450612f9ff2a9023b6/honcho_ai-2.2.0.tar.gz", hash = "sha256:16e16825afac51f2fdd59670dd4a6e44d04a3fa2c8eb466b1767dcc96706b7a0", size = 49979, upload-time = "2026-07-02T17:04:33.13Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/f2/445e684deecfcda9a22d9e8803e152f8bc30e26d4b4fbf9d387dc7b29574/honcho_ai-2.4.0.tar.gz", hash = "sha256:474addb5974834ff6ab3303f6bd18ba2074c78e41a7ae160acffd94dd52131d3", size = 61940, upload-time = "2026-08-27T18:52:00.119Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/c6/66af5f7ba3d75796f4523eac1e069fbdc759c3f0b8adab9fb7ae04e15784/honcho_ai-2.2.0-py3-none-any.whl", hash = "sha256:32f098a4c8bcfe4288f0994ddab0bc52a68dc87069d0f2ce2c8758ee2a1761f2", size = 60305, upload-time = "2026-07-02T17:04:33.967Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/9b/0cf7480ccd1278f00e8cca2625bbe8ed67755fb0be89652dd604c09bd483/honcho_ai-2.4.0-py3-none-any.whl", hash = "sha256:a84312a7cbfebc7dafc4a3816877af8f0396a793d487407338da4b2b71921ffe", size = 72518, upload-time = "2026-08-27T18:51:59.099Z" },
 ]
 
 [[package]]

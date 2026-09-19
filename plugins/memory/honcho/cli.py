@@ -579,17 +579,17 @@ def _ensure_sdk_installed() -> bool:
     except ImportError:
         pass
     print("  honcho-ai is not installed.")
-    if not _yes(_prompt("Install it now? (honcho-ai==2.2.0)", default="y")):
-        print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
+    if not _yes(_prompt("Install it now? (honcho-ai==2.4.0)", default="y")):
+        print("  Skipping install. Run: pip install 'honcho-ai==2.4.0'\n")
         return False
     print("  Installing honcho-ai...", flush=True)
     from tools.lazy_deps import install_specs  # env-aware: sealed hosted venvs redirect to the data volume
-    result = install_specs(["honcho-ai==2.2.0"])
+    result = install_specs(["honcho-ai==2.4.0"])
     if result.ok:
         print("  Installed.\n")
         return True
     print(f"  Cannot install: {result.reason}\n" if result.blocked else
-          f"  Install failed:\n{(result.stderr or '').strip()}\n  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
+          f"  Install failed:\n{(result.stderr or '').strip()}\n  Run manually: uv pip install 'honcho-ai==2.4.0'\n")
     return False
 
 

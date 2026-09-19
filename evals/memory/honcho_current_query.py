@@ -1,6 +1,6 @@
-"""Honcho 2.2 SDK/local HTTP lifecycle probe; no hosted service or model inference.
+"""Honcho 2.4 SDK/local HTTP lifecycle probe; no hosted service or model inference.
 
-Run with isolated HOME/HERMES_HOME and honcho-ai==2.2.0 installed (or on PYTHONPATH):
+Run with isolated HOME/HERMES_HOME and honcho-ai==2.4.0 installed (or on PYTHONPATH):
   .venv/bin/python evals/memory/honcho_current_query.py --out /tmp/honcho-proof.json
 Prepared ongoing sessions bypass startup/migration. Message writes are disabled.
 The fixture proves query routing, ownership and caller waiting, not memory quality.

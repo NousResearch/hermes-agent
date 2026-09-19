@@ -4135,7 +4135,14 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _find_last_user_message_idx(self, messages: List[Dict[str, Any]], head_end: int) -> int:
         """Return the latest actionable user turn at or after *head_end*, or -1."""
-        return next(iter(self._real_user_indices_desc(messages, head_end)), -1)
+        # Early-exit generator: only the newest hit is needed, and this runs on every boundary
+        # computation — collecting every index (``_real_user_indices_desc``) costs a full scan.
+        return next(
+            (i for i in range(len(messages) - 1, head_end - 1, -1)
+             if self._is_actionable_user_turn(messages[i])
+             and not self._is_synthetic_compression_user_turn(messages[i])),
+            -1,
+        )
 
     def _find_last_assistant_message_idx(self, messages: List[Dict[str, Any]], head_end: int) -> int:
         """Last text-bearing non-summary assistant reply at/after *head_end* (else last non-summary assistant), or -1."""
@@ -4453,18 +4460,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         # (#80449). The N-user promise (#70250) is never relaxed.
         last_user_idx = self._find_last_user_message_idx(messages, head_end)
         user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
-        # getattr: plugin engines and __new__ doubles skip __init__.
-        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
-        _multi_user_guarantee = (
-            isinstance(_min_tail_users, int)
-            and not isinstance(_min_tail_users, bool)
-            and _min_tail_users > 1
-        )
         split_oversized_turn = False
+        # ``user_anchored_cut < cut_idx`` means the anchor found a real user turn strictly inside the
+        # compressible region (see ``_ensure_last_user_message_in_tail``), so ``last_user_idx`` is a
+        # valid index into that region from here on.
         if (
             allow_split_turn
-            and last_user_idx >= head_end
-            and last_user_idx < cut_idx
             and user_anchored_cut < cut_idx
             # A single oversized user message is indivisible and must stay verbatim in the tail; this
             # exception is only for aggregate turn growth after a normally sized opening request.
@@ -4474,32 +4475,35 @@ Write only the summary body. Do not include any preamble or prefix."""
             # Only split when there is real turn body to summarize: if the oversized weight is the
             # active turn's own newest group, the pre-anchor cut retains it anyway, so taking the
             # active request out of the tail buys no reclaim and loses the #10896 anchor.
-            and any(message.get("tool_calls") for message in messages[last_user_idx:cut_idx])
-            and sum(
-                _estimate_msg_budget_tokens(message) for message in messages[user_anchored_cut:]
-            ) > soft_ceiling
+            and any(messages[i].get("tool_calls") for i in range(last_user_idx, cut_idx))
+            # ...and only when the anchored region really is over the ceiling: a short transcript
+            # (whole session under the budget) anchors for free, so the exception must not fire.
+            # Measured with the walk's own accounting (#84371), not a second thought-charge rule.
+            and self._walk_tail_budget(
+                messages, user_anchored_cut, soft_ceiling, 0, cut_at_break=False
+            )[0] > user_anchored_cut
         ):
             split_oversized_turn = True
             if not self.quiet_mode:
-                logger.info(
+                logger.debug(
                     "Active turn exceeds protected-tail soft ceiling; keeping tool-group-aligned "
                     "mid-turn cut at index %d instead of anchoring user message %d (#80449)",
                     cut_idx, last_user_idx,
                 )
         else:
             cut_idx = user_anchored_cut
-        # An older visible assistant reply can precede the active user turn; when the active turn was
-        # deliberately split above, pulling back to it would undo the bounded exception. A latest
-        # assistant already inside the chosen tail is unchanged.
-        assistant_anchored_cut = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
-        if not split_oversized_turn or assistant_anchored_cut == cut_idx:
-            cut_idx = assistant_anchored_cut
+        # An older visible assistant reply can precede the active user turn; under the split above,
+        # pulling back to it would undo the bounded exception.
+        if not split_oversized_turn:
+            cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
 
         # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
         # the assistant anchor could re-trigger its forward turn-pair push. Runs even under the split: the
         # N-user promise (#70250) is a user-facing setting and must outrank the budget, so it pulls the cut
         # back to the Nth user turn — which is why the split only ever relaxes the single-user anchor.
-        if _multi_user_guarantee:
+        # getattr: plugin engines and __new__ doubles skip __init__.
+        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
+        if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
             cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
 
         # Floor guarantees progress (>= 1 message claimed); re-align FORWARD only so a raised cut

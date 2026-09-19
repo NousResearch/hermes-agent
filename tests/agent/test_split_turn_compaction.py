@@ -24,22 +24,29 @@ _ACTIVE_REQUEST = "Inspect every shard and preserve the active request exactly."
 _TOKEN_BUDGET = 250
 
 
-@pytest.fixture()
-def compressor() -> ContextCompressor:
+def _make_compressor(**overrides) -> ContextCompressor:
+    """Compressor with an explicit small tail budget so the ceiling is reachable in a short transcript."""
+    kwargs = {
+        "model": "test/model",
+        "threshold_percent": 0.85,
+        "protect_first_n": 0,
+        "protect_last_n": 3,
+        "quiet_mode": True,
+    }
+    kwargs.update(overrides)
     with patch(
         "agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
-        instance = ContextCompressor(
-            model="test/model",
-            threshold_percent=0.85,
-            protect_first_n=0,
-            protect_last_n=3,
-            quiet_mode=True,
-        )
+        instance = ContextCompressor(**kwargs)
         _ = instance.context_length
     instance.tail_token_budget = _TOKEN_BUDGET
     return instance
+
+
+@pytest.fixture()
+def compressor() -> ContextCompressor:
+    return _make_compressor()
 
 
 def _tool_group(index: int) -> list[dict]:
@@ -163,19 +170,7 @@ def test_n_user_tail_guarantee_outranks_the_split() -> None:
     The oversized-turn exception must not void it: with N > 1 the N-user tail
     anchor wins even when one turn alone exceeds the soft ceiling.
     """
-    with patch(
-        "agent.context_compressor.get_model_context_length",
-        return_value=100_000,
-    ):
-        compressor = ContextCompressor(
-            model="test/model",
-            threshold_percent=0.85,
-            protect_first_n=1,
-            protect_last_n=3,
-            quiet_mode=True,
-            min_tail_user_messages=3,
-        )
-    compressor.tail_token_budget = _TOKEN_BUDGET
+    compressor = _make_compressor(protect_first_n=1, min_tail_user_messages=3)
 
     user_turns = ["first request", "second request", _ACTIVE_REQUEST]
     messages = [
@@ -197,3 +192,27 @@ def test_n_user_tail_guarantee_outranks_the_split() -> None:
 
     tail = messages[cut:]
     assert [m["content"] for m in tail if m.get("role") == "user"] == user_turns
+
+
+def test_a_tail_that_fits_the_budget_still_anchors_the_active_request() -> None:
+    """The exception is for a turn that overflows the budget, not for one that fits.
+
+    With the whole transcript inside the tail budget, keeping the active request
+    verbatim costs nothing, so the anchor must still hold and the exception must
+    not fire just because the turn happens to be built from tool groups.
+    """
+    compressor = _make_compressor()
+    compressor.tail_token_budget = 10_000
+    messages = _oversized_active_turn()
+
+    cut = compressor._find_tail_cut_by_tokens(messages, compressor._protect_head_size(messages))
+
+    active_user_idx = next(
+        index
+        for index, message in enumerate(messages)
+        if message.get("content") == _ACTIVE_REQUEST
+    )
+    assert cut <= active_user_idx, "active request must stay inside the protected tail"
+    assert any(
+        m.get("content") == _ACTIVE_REQUEST for m in messages[cut:]
+    )

@@ -462,6 +462,22 @@ def refresh_codex_oauth_pure(
     next_refresh = refresh_payload.get("refresh_token")
     if _nonempty_str(next_refresh):
         updated["refresh_token"] = next_refresh.strip()
+    # Surface the fresh identity claims: consumers that materialise a standalone
+    # Codex CLI auth file need ``id_token`` (the CLI requires it at parse) and
+    # ``account_id``. Both ride on the refresh response but were previously
+    # dropped here, which broke every CLI-backed image pipeline.
+    # (Restored: fork commit ed29100180 lost this hunk in the 2026-09-19
+    # auth_codex.py conflict resolutions; the illustrator half survived, the
+    # surfacing half did not — re-added verbatim 2026-09-20.)
+    next_id_token = refresh_payload.get("id_token")
+    if _nonempty_str(next_id_token):
+        updated["id_token"] = str(next_id_token).strip()
+    next_account = refresh_payload.get("account_id")
+    if not _nonempty_str(next_account):
+        account = refresh_payload.get("account")
+        next_account = account.get("id") if isinstance(account, dict) else None
+    if _nonempty_str(next_account):
+        updated["account_id"] = str(next_account).strip()
     return updated
 
 
@@ -505,6 +521,10 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
         updated_tokens = {
             **tokens, "access_token": refreshed["access_token"],
             "refresh_token": refreshed["refresh_token"]}
+        for claim in ("id_token", "account_id"):
+            value = refreshed.get(claim)
+            if isinstance(value, str) and value.strip():
+                updated_tokens[claim] = value.strip()
         # Nested transaction: the per-path lock is reentrant, and it re-reads under the held lock.
         _save_codex_tokens(updated_tokens)
     return updated_tokens

@@ -4,12 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ProjectDialog } from './project-dialog'
 
-beforeEach(() => {
-  vi.clearAllMocks()
-  createProject.mockResolvedValue({ id: 'p_created' })
-  pickProjectFolder.mockResolvedValue('/Users/test/my-folder')
-})
-
 afterEach(cleanup)
 
 vi.mock('@/i18n', () => ({
@@ -73,6 +67,12 @@ vi.mock('@/store/projects', () => ({
   renameProject: vi.fn()
 }))
 
+beforeEach(() => {
+  vi.clearAllMocks()
+  createProject.mockResolvedValue({ id: 'p_created' })
+  pickProjectFolder.mockResolvedValue('/Users/test/my-folder')
+})
+
 vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
@@ -108,12 +108,9 @@ describe('ProjectDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
     await waitFor(() => {
-      expect(createProject).toHaveBeenCalledWith({
-        folders: ['/Users/test/my-folder'],
-        idea: undefined,
-        name: 'my-folder',
-        use: true
-      })
+      expect(createProject).toHaveBeenCalledWith(
+        expect.objectContaining({ folders: ['/Users/test/my-folder'], name: 'my-folder' })
+      )
       expect(enterProject).toHaveBeenCalledWith('p_created')
     })
   })

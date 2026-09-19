@@ -7,9 +7,9 @@ exclusively; colons are reserved for OpenRouter variant suffixes (``:free``, ``:
 from __future__ import annotations
 
 import logging
-from contextlib import suppress
 import os
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
 
@@ -1382,14 +1382,16 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         # A bare-custom session switching models stays on its endpoint (#45597). Arriving from
         # ANOTHER provider (the per-turn config sync adopting ``provider: custom``), the configured
         # custom endpoint wins: keeping the session's URL pairs the new model with the previous
-        # provider's host and key (#73680). No configured endpoint ⇒ keep the current one (an alias
-        # may still supply its own below).
-        st.api_key, st.base_url = st.current_api_key, st.current_base_url
+        # provider's host and key (#73680). The resolver raises with no endpoint and no key, and
+        # lands on the OpenRouter DEFAULT with a key but no ``model.base_url`` (#74143) — both mean
+        # "nothing configured": keep the current endpoint.
+        key, url = st.current_api_key, st.current_base_url
         if st.current_provider != "custom":
             with suppress(Exception):
                 st.resolve_runtime(requested="custom")
-            if not st.base_url:
-                st.api_key, st.base_url = st.current_api_key, st.current_base_url
+            if st.base_url and not _fell_back_to_openrouter_default(st):
+                key, url = st.api_key, st.base_url
+        st.api_key, st.base_url = key, url
         st.api_mode = determine_api_mode(st.target_provider, st.base_url)
     else:
         # A URL-bearing LOCAL direct alias (ollama, vllm — labels that resolve to `custom`)
@@ -1448,11 +1450,17 @@ def _creds_for_current_provider(st: _Switch) -> None:
         # key/endpoint rotation is not pinned to a stale session.
         if (
             st.current_provider in {"custom", "local"} and st.current_base_url
-            and (not st.base_url or base_url_host_matches(st.base_url, "openrouter.ai"))
-            and not base_url_host_matches(st.current_base_url, "openrouter.ai")
+            and (not st.base_url or _fell_back_to_openrouter_default(st))
         ):
             st.base_url, st.api_key = st.current_base_url, st.current_api_key
             st.api_mode = determine_api_mode(st.current_provider, st.base_url)
+
+
+def _fell_back_to_openrouter_default(st: _Switch) -> bool:
+    """The bare-``custom`` resolver ended on OpenRouter's default host while the session was
+    elsewhere: no trusted ``model.base_url`` existed, so the URL is one the user never picked."""
+    return (base_url_host_matches(st.base_url, "openrouter.ai")
+            and not base_url_host_matches(st.current_base_url, "openrouter.ai"))
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:

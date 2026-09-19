@@ -508,7 +508,8 @@ def test_switch_to_bare_custom_from_another_provider_resolves_the_configured_end
     home = tmp_path / "hermes-home"
     home.mkdir()
     (home / "config.yaml").write_text(
-        "model:\n  default: qwen3:8b\n  provider: custom\n  base_url: http://127.0.0.1:11434/v1\n"
+        "model:\n  default: qwen3:8b\n  provider: custom\n  base_url: http://127.0.0.1:11434/v1\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
@@ -527,8 +528,37 @@ def test_switch_to_bare_custom_from_another_provider_resolves_the_configured_end
     )
 
     assert result.success is True
+    assert result.target_provider == "custom"
     assert result.base_url == "http://127.0.0.1:11434/v1"
-    assert result.api_key != "sk-openrouter"
+    assert result.api_key == "no-key-required"
+
+
+def test_switch_to_bare_custom_with_no_configured_endpoint_keeps_the_current_one(monkeypatch, tmp_path):
+    """#74143 shape on the switched-provider path: with no ``model.base_url`` the bare-custom
+    resolver lands on OpenRouter's default whenever an OpenRouter key exists — a host the user
+    never picked. An Anthropic session must stay on its own endpoint instead."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  default: m\n  provider: anthropic\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="m2",
+        current_provider="anthropic",
+        current_model="m",
+        current_base_url="https://api.anthropic.com",
+        current_api_key="sk-ant",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert (result.base_url, result.api_key) == ("https://api.anthropic.com", "sk-ant")
 
 
 def test_is_aggregator_recognizes_named_custom_provider():

@@ -1,0 +1,28 @@
+name: microsoft365
+version: 0.2.0
+description: "Microsoft 365 Plugin — one bundled plugin connecting Hermes to the broader Microsoft ecosystem across Outlook, SharePoint, OneDrive, Calendar, Teams, Planner and To Do."
+author: NousResearch
+kind: backend
+python_dependencies:
+  - "msgraph-sdk>=1.62.0,<2"
+  - "azure-identity>=1.17.0,<2"
+provides_tools:
+  - microsoft365_preflight
+provides_hooks:
+  - pre_tool_call
+config_schema:
+  tenant_id: {type: str, required: true, description: "Microsoft Entra tenant ID"}
+  client_id: {type: str, required: true, description: "Microsoft Entra application/client ID"}
+  client_secret: {type: str, required: true, secret: true, description: "Microsoft Entra application secret for client-credentials (app-only) Graph auth"}
+  user_id: {type: str, default: me, description: "Target Graph user ID for app-only user resources; configure an actual ID, not /me. SharePoint-only selections do not require this field."}
+  capabilities:
+    type: dict
+    description: "Operation-level flags; service=true enables every operation for compatibility. Permissions are Microsoft Graph application roles, not delegated scopes."
+    properties:
+      outlook: {type: dict, description: "search, read, create_draft, send; application roles Mail.Read/Mail.ReadWrite/Mail.Send"}
+      sharepoint: {type: dict, description: "search, read, download_files, upload_files; application roles Sites.Read.All/Files.Read.All/Files.ReadWrite.All"}
+      onedrive: {type: dict, description: "search, read, download_files, upload_files; application roles Files.Read.All/Files.ReadWrite.All"}
+      calendar: {type: dict, description: "search, create_events, update_events; application roles Calendars.Read/Calendars.ReadWrite"}
+      teams: {type: dict, description: "list_teams, list_channels, search_messages, send_messages; application roles Team.ReadBasic.All/Channel.ReadBasic.All/Chat.Read.All/ChannelMessage.Read.All; send_messages has no app-only role"}
+      todo: {type: dict, description: "Microsoft To Do task lists and tasks: list_task_lists, search, read, create_tasks, update_tasks; application roles Tasks.Read.All/Tasks.ReadWrite.All"}
+      planner: {type: dict, description: "Microsoft Planner plans, buckets and tasks: list_plans, list_buckets, list_tasks, read, create_tasks, update_tasks; application roles are documented in references/graph-permissions.md"}

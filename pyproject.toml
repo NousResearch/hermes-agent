@@ -250,6 +250,7 @@ honcho = ["honcho-ai==2.2.0"]
 # can't break fresh installs.
 supermemory = ["supermemory==3.50.0"]
 mem0 = ["mem0ai==2.0.10"]
+microsoft365 = ["msgraph-sdk>=1.62.0,<2", "azure-identity>=1.17.0,<2"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the

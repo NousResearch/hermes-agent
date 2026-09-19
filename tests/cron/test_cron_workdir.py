@@ -362,7 +362,7 @@ def test_build_job_prompt_inline_script_receives_configured_workdir(monkeypatch,
     workdir.mkdir()
     observed: dict = {}
 
-    def run_script(script_path, workdir=None, cancel_event=None):
+    def run_script(script_path, workdir=None, cancel_event=None, job=None):
         observed["script_workdir"] = workdir
         return True, "collected data"
 

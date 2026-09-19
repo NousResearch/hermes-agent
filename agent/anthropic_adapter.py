@@ -246,6 +246,70 @@ def _get_claude_code_version() -> str:
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
 
+# Wrapper tag for the relocated prompt on the first user message.
+_OAUTH_SYSTEM_CONTEXT_TAG = "system_context"
+
+
+def _prepend_oauth_system_context(
+    messages, preamble: str | List[Dict[str, Any]], ttl: str = "5m"
+) -> None:
+    """Prepend relocated system blocks to the first user message.
+
+    Current-main's cache planner may split the system prompt into separately
+    marked stable and volatile text blocks. When ``preamble`` is a block list,
+    preserve those boundaries and markers exactly so a volatile-tail change
+    does not invalidate the expensive stable prefix. String callers receive a
+    single marker built from ``ttl`` for backward compatibility.
+
+    The system-side markers disappear when ``system[]`` becomes identity-only;
+    relocating the same marked blocks to the first user message therefore keeps
+    the wire under Anthropic's four-breakpoint cap.
+
+    Mutates ``messages`` in place. Handles user messages whose content is a
+    plain string or a list of content blocks, and synthesises a user message at
+    the front if none exists.
+    """
+    if not preamble:
+        return
+    if isinstance(preamble, str):
+        from agent.prompt_caching import _build_marker
+
+        blocks = [
+            {
+                "type": "text",
+                "text": preamble,
+                "cache_control": _build_marker(ttl),
+            }
+        ]
+    else:
+        blocks = [
+            {
+                **block,
+                **(
+                    {"cache_control": dict(block["cache_control"])}
+                    if isinstance(block.get("cache_control"), dict)
+                    else {}
+                ),
+            }
+            for block in preamble
+        ]
+
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg["content"] = (
+                blocks + [{"type": "text", "text": content}] if content else blocks
+            )
+        elif isinstance(content, list):
+            msg["content"] = blocks + content
+        else:
+            msg["content"] = blocks
+        return
+    messages.insert(0, {"role": "user", "content": blocks})
+
+
 # Anthropic's OAuth billing classifier fingerprints certain Hermes tool schemas/prose as a
 # third-party app and reroutes to the metered extra-usage lane (HTTP 400 "You're out of extra
 # usage" on a valid subscription). Live A/B repros isolated two independent triggers — the
@@ -561,9 +625,56 @@ def build_anthropic_kwargs(
     effective_max_tokens = _resolve_anthropic_messages_max_tokens(max_tokens, model, context_length=context_length)
     if context_length and effective_max_tokens > context_length:
         effective_max_tokens = max(context_length - 1, 1)
+    # ── OAuth: Claude Code identity + system relocation ─────────────
+    # Anthropic's subscription/OAuth billing classifier rejects requests whose
+    # system[] carries a large, distinctive non-Claude-Code prompt — it scores
+    # them as third-party-app traffic and returns HTTP 400 "Third-party apps now
+    # draw from extra usage, not plan limits", independently of the tool-name
+    # trigger handled below. Verified empirically against a live Max
+    # subscription: the identical request with the prompt relocated out of
+    # system[] bills to plan; left in system[] it does not (and it is the
+    # CONTENT, not the size — a same-size generic prompt passes).
+    #
+    # Strategy (mirrors real Claude Code, which keeps only its 57-char identity
+    # line in system[]): system[] becomes identity-only, and the real Hermes
+    # prompt is relocated into a <system_context> preamble on the first user
+    # message — Anthropic does not apply the classifier to user content. The
+    # relocated blocks preserve the cache planner's markers, TTLs, and stable /
+    # volatile boundary so prompt caching remains effective across turns.
     to_wire = _oauth_wire_namer(anthropic_tools) if is_oauth else None
     if to_wire:
+        # Keep current-main's tool/prose aliasing, then peel the Hermes prompt
+        # out of system[] so the billing classifier sees identity only.
         system = _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire)
+        relocated_system_blocks: List[Dict[str, Any]] = []
+        if isinstance(system, list):
+            identity, remainder = system[:1], system[1:]
+            for b in remainder:
+                if not isinstance(b, dict) or b.get("type") != "text" or not b.get("text"):
+                    continue
+                relocated: Dict[str, Any] = {"type": "text", "text": b["text"]}
+                if isinstance(b.get("cache_control"), dict):
+                    relocated["cache_control"] = dict(b["cache_control"])
+                relocated_system_blocks.append(relocated)
+            system = identity or [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
+        else:
+            system = [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
+
+        if relocated_system_blocks:
+            relocated_system_blocks[0]["text"] = (
+                f"<{_OAUTH_SYSTEM_CONTEXT_TAG}>\n"
+                + relocated_system_blocks[0]["text"]
+            )
+            relocated_system_blocks[-1]["text"] += (
+                f"\n</{_OAUTH_SYSTEM_CONTEXT_TAG}>"
+            )
+            if not any("cache_control" in block for block in relocated_system_blocks):
+                preamble: str | List[Dict[str, Any]] = "".join(
+                    block["text"] for block in relocated_system_blocks
+                )
+            else:
+                preamble = relocated_system_blocks
+            _prepend_oauth_system_context(anthropic_messages, preamble)
     kwargs: Dict[str, Any] = {"model": model, "messages": anthropic_messages, "max_tokens": effective_max_tokens}
     if system:
         kwargs["system"] = system

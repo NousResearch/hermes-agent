@@ -29,12 +29,16 @@ _SSH_MULTIPLEX = os.name != "nt"
 _load_hermes_env_vars = load_hermes_env_vars
 
 
-def _ensure_ssh_available() -> None:
-    """Fail fast with a clear error when the SSH client is unavailable."""
-    for tool in ("ssh", "scp"):
-        if not shutil.which(tool):
-            raise RuntimeError(f"{tool.upper()} is not installed or not in PATH. "
-                               "Install OpenSSH client: apt install openssh-client")
+def _ensure_ssh_available(*, require_scp: bool = True) -> None:
+    """Fail fast when clients required by the selected mode are unavailable."""
+    if not shutil.which("ssh"):
+        raise RuntimeError(
+            "SSH is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
+        )
+    if require_scp and not shutil.which("scp"):
+        raise RuntimeError(
+            "SCP is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
+        )
 
 
 def _sync_error(reason: str, subject: str, what: str = "the SSH connection") -> EnvironmentConnectionError:
@@ -57,9 +61,10 @@ class SSHEnvironment(BaseEnvironment):
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
-                 probe_only: bool = False):
+                 probe_only: bool = False, sync: bool = True):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
+        self.sync_enabled = sync
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
@@ -71,18 +76,20 @@ class SSHEnvironment(BaseEnvironment):
             socket_key = f"{socket_key}:probe:{self._session_id}"
         _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
-        _ensure_ssh_available()
+        _ensure_ssh_available(require_scp=self.sync_enabled)
         self._establish_connection()
         if probe_only:
             self._sync_manager = None
             return
         self._remote_home = self._detect_remote_home()
-        self._ensure_remote_dirs()
-        self._sync_manager = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
-            upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
-            bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
-        self._sync_manager.sync(force=True)
+        self._sync_manager = None
+        if self.sync_enabled:
+            self._ensure_remote_dirs()
+            self._sync_manager = FileSyncManager(
+                get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+                upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
+                bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
+            self._sync_manager.sync(force=True)
         self.init_session()
 
     def _control_socket_for(self, send_env: tuple[str, ...]) -> Path:

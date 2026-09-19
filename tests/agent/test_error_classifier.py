@@ -811,16 +811,34 @@ class TestClassifyApiError:
 
 
 
-    # ── Provider-specific: Anthropic thinking signature ──
+    # ── Provider-specific: Anthropic thinking signature & Gemini thought signature ──
 
+    def test_anthropic_thinking_signature_mismatch_classified(self):
+        e = MockAPIError(
+            "thinking block at index 1 cannot be modified",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-3-7-sonnet")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
 
+    def test_gemini_invalid_thought_signature_classified(self):
+        e = MockAPIError(
+            "Gemini HTTP 400 (INVALID_ARGUMENT): Invalid thought signature.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="gemini", model="gemini-3.8-flash")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
 
-
-
-
-
-
-
+    def test_gemini_corrupted_thought_signature_classified(self):
+        e = MockAPIError(
+            "HTTP 400: Corrupted thought signature",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openrouter", model="google/gemini-3.8-flash")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
     @pytest.mark.parametrize("error_code", ["Invalid_Encrypted_Content", "INVALID_ENCRYPTED_CONTENT"])
     def test_invalid_encrypted_content_code_is_case_insensitive_for_400(self, error_code):
         e = MockAPIError(

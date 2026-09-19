@@ -91,3 +91,75 @@ def test_strip_skips_messages_without_reasoning_details():
             m.pop("reasoning_details", None)
 
     assert api_messages == snapshot
+
+
+def test_recover_format_errors_strips_gemini_thought_signatures():
+    from unittest.mock import MagicMock
+    from agent.error_classifier import ClassifiedError, FailoverReason
+    from agent.turn_recovery import _recover_format_errors
+    from agent.turn_retry_state import TurnRetryState
+
+    agent = MagicMock()
+    agent.log_prefix = ""
+    retry_state = TurnRetryState()
+    classified = ClassifiedError(reason=FailoverReason.thinking_signature)
+
+    tc1 = {
+        "id": "call_1",
+        "function": {"name": "terminal", "arguments": "{}"},
+        "extra_content": {"google": {"thought_signature": "sig_1"}},
+    }
+    tc2 = {
+        "id": "call_2",
+        "function": {"name": "session_search", "arguments": "{}"},
+        "extra_content": {"google": {"thought_signature": "sig_2"}},
+    }
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [dict(tc1)]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
+    api_messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [dict(tc2)]},
+        {"role": "tool", "tool_call_id": "call_2", "content": "ok"},
+    ]
+
+    res = _recover_format_errors(
+        agent, Exception("Invalid thought signature"), classified, retry_state, messages, api_messages,
+    )
+
+    assert res is True
+    assert retry_state.thinking_sig_retry_attempted is True
+    assert "extra_content" not in api_messages[1]["tool_calls"][0]
+    assert "extra_content" not in messages[1]["tool_calls"][0]
+
+
+def test_recover_format_errors_anthropic_reasoning_details_leaves_canonical_intact():
+    from unittest.mock import MagicMock
+    from agent.error_classifier import ClassifiedError, FailoverReason
+    from agent.turn_recovery import _recover_format_errors
+    from agent.turn_retry_state import TurnRetryState
+
+    agent = MagicMock()
+    agent.log_prefix = ""
+    retry_state = TurnRetryState()
+    classified = ClassifiedError(reason=FailoverReason.thinking_signature)
+
+    rd = [{"type": "thinking", "signature": "sig_1"}]
+    messages = [
+        {"role": "assistant", "content": "hello", "reasoning_details": rd},
+    ]
+    api_messages = [
+        {"role": "assistant", "content": "hello", "reasoning_details": list(rd)},
+    ]
+
+    res = _recover_format_errors(
+        agent, Exception("thinking signature invalid"), classified, retry_state, messages, api_messages,
+    )
+
+    assert res is True
+    assert retry_state.thinking_sig_retry_attempted is True
+    assert "reasoning_details" not in api_messages[0]
+    # Canonical messages keeps its reasoning_details for Anthropic
+    assert messages[0].get("reasoning_details") is rd

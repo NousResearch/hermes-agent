@@ -42,9 +42,15 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
 
 
 def _desktop_stamp_path() -> Path:
-    """Path of the desktop build stamp under $HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "desktop-build-stamp.json"
+    """Path of the desktop build stamp under the shared Hermes root.
+
+    The stamp hashes the shared checkout's content, so it must live at the
+    profile-normalized root, not the active profile's home: a build under one
+    profile and the post-update verification under another (or the default)
+    must agree on one location (#105659).
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "desktop-build-stamp.json"
 
 
 def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Path]:

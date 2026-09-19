@@ -593,9 +593,72 @@ def _capture_digest(cap: CaptureResult) -> str:
     return hashlib.sha256((str(cap.image_mime_type or "") + ":").encode("utf-8")
                           + (cap.png_b64 or "").encode("ascii", "ignore")).hexdigest()
 
+# ── Phase 1A shadow semantic state (#112734) ──────────────────────────────────
+# Built on every capture purely as measurement: the delta is never inserted into the
+# prompt, never replaces the capture, never authorizes an action, and creates no
+# persistent semantic IDs. Per-session stores are bounded so a long GUI session cannot
+# grow them without limit. Any failure here must stay silent — measurement never breaks
+# the tool — so the whole observation is guarded.
+_SHADOW_STATE_MAX_SESSIONS = 64
+_shadow_state_prev: Dict[str, "GuiStateV0"] = {}
+_shadow_state_metrics: Dict[str, Dict[str, Any]] = {}
+
+
+def reset_shadow_state_for_tests() -> None:  # pragma: no cover — test seam
+    _shadow_state_prev.clear()
+    _shadow_state_metrics.clear()
+
+
+def _shadow_state_observe(cap: CaptureResult, session_id: Optional[str]) -> None:
+    """Build the shadow GuiStateV0 for this capture and diff it against the previous
+    one for the session, recording the section-J metrics (reconciliation latency,
+    changed-element ratio, delta vs full bytes, identity retention, ambiguity count)."""
+    if not cap.elements:
+        return  # vision-only captures carry no semantic content to reconcile
+    try:
+        import time as _time
+
+        from tools.computer_use.semantic_state import build_state
+        from tools.computer_use.state_diff import (
+            delta_bytes, diff_states, full_observation_bytes,
+        )
+
+        sid = _scoped_sid(session_id or "")
+        if sid not in _shadow_state_prev and len(_shadow_state_prev) >= _SHADOW_STATE_MAX_SESSIONS:
+            _shadow_state_prev.pop(next(iter(_shadow_state_prev)))
+        prev = _shadow_state_prev.get(sid)
+        revision = (prev.revision + 1) if prev else 1
+        target = f"{cap.app or ''}/{cap.window_title or ''}"
+        started = _time.perf_counter()
+        state = build_state(cap.elements, revision=revision, target=target,
+                            width=cap.width, height=cap.height, captured_at=_time.time())
+        delta = diff_states(prev, state) if prev else None
+        elapsed_ms = (_time.perf_counter() - started) * 1000.0
+        _shadow_state_prev[sid] = state
+        _shadow_state_metrics[sid] = {
+            "revision": revision,
+            "elements": len(state.elements),
+            "reconciliation_ms": elapsed_ms,
+            "changed_element_ratio": delta.changed_element_ratio if delta else 0.0,
+            "delta_bytes": delta_bytes(delta) if delta else 0,
+            "full_observation_bytes": full_observation_bytes(state),
+            "identity_retention": delta.identity_retention if delta else 1.0,
+            "ambiguous": len(delta.ambiguous) if delta else 0,
+            "mean_confidence": delta.mean_confidence if delta else 1.0,
+        }
+    except Exception:
+        logger.debug("shadow semantic-state observation failed", exc_info=True)
+
+
+def get_shadow_state_metrics(session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Last shadow measurement for a session (test/reporting seam; empty before any capture)."""
+    return dict(_shadow_state_metrics.get(_scoped_sid(session_id or ""), {}))
+
+
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
                       session_id: Optional[str] = None) -> Any:
     v = _capture_view(cap, max_elements)
+    _shadow_state_observe(cap, session_id)  # Phase 1A shadow measurement only; the response below is untouched
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
     if v.has_image and session_id and _screenshot_dedup_check(

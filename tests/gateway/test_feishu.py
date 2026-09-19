@@ -1272,6 +1272,71 @@ class TestAdapterBehavior(unittest.TestCase):
                 second = FeishuAdapter(PlatformConfig())
                 self.assertTrue(asyncio.run(second._is_duplicate("om_same")))
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_standalone_send_bypasses_public_send_hook_for_text(self):
+        """Explicit send_message delivery must bypass streaming send wrappers."""
+        from importlib import import_module
+
+        from gateway.config import PlatformConfig
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+        from tools.send_message_tool import _send_to_platform
+
+        discover_plugins()
+        sender = platform_registry.get("feishu").standalone_sender_fn
+        FeishuAdapter = import_module(sender.__module__).FeishuAdapter
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_raw"),
+                )
+
+        fake_client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(self, func, *args):
+            return func(*args)
+
+        async def _suppressed_send(self, *args, **kwargs):
+            captured["send_hook_called"] = True
+            return SimpleNamespace(success=True, message_id="om_suppressed")
+
+        with (
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch.object(
+                FeishuAdapter,
+                "_build_lark_client",
+                return_value=fake_client,
+            ),
+            patch.object(FeishuAdapter, "_run_blocking", _direct),
+            patch.object(FeishuAdapter, "send", _suppressed_send),
+        ):
+            result = asyncio.run(
+                _send_to_platform(
+                    "feishu",
+                    PlatformConfig(),
+                    "oc_chat",
+                    "hello from send_message",
+                )
+            )
+
+        self.assertEqual(
+            result,
+            {
+                "success": True,
+                "platform": "feishu",
+                "chat_id": "oc_chat",
+                "message_id": "om_raw",
+            },
+        )
+        self.assertNotIn("send_hook_called", captured)
+        self.assertEqual(captured["request"].request_body.receive_id, "oc_chat")
+
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_reply_uses_thread_flag(self):

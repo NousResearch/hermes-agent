@@ -78,9 +78,18 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(gm, "_service_op", _service_op)
     monkeypatch.setattr(gm, "_stop_gateway_process", lambda home: state.pids.pop(_name(home), None))
     monkeypatch.setattr(gm, "_host_supports_migration", lambda: None)
-    # The live identity probe is tested separately; this fixture models a verified running gateway.
-    from hermes_cli import gateway_multiplex_served
-    monkeypatch.setattr(gateway_multiplex_served, "live_default_gateway_pid", lambda: os.getpid())
+    # Part of the faked service layer: the real check asks systemd's questions (root, NSS user).
+    monkeypatch.setattr(gm, "_preflight_apply", lambda plan, target, run_as_user: None)
+    # Identity inputs are pinned too, or the verdict depends on the HOST: the fake pids 4101/4102 may
+    # name a real root-owned process in /proc on a CI runner (a spurious "UNIX privilege boundary"
+    # blocker), and the user-scope unit path lives under the real $HOME. The whole fleet runs as this
+    # user with no unit files on disk unless a test writes some (it repoints _SYSTEM_UNIT_DIR itself).
+    from hermes_cli import gateway as gw
+    from hermes_cli import gateway_migrate_guards as guards
+    monkeypatch.setattr(guards, "_pid_uid", lambda pid: root.stat().st_uid if pid in state.pids.values() else None)
+    _unit_path = gw.get_systemd_unit_path
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: _unit_path(system=True) if system
+                        else tmp_path / "user-units" / f"{gw.get_service_name()}.service")
     state.root = root
     return state
 
@@ -151,13 +160,10 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     fleet.ops.clear()
     assert gm.rollback_migration(fleet.root) is True
     assert _config_flag(fleet.root) is False
-    # The default had no gateway before migration, so the service temporarily
-    # transferred from the secondaries must not survive rollback. The default
-    # is restored to its pre-migration stopped state (no restart recorded).
-    assert fleet.services == {"coder": ("systemd", False), "ops": ("systemd", False)}
+    assert fleet.services == {"default": ("systemd", False), "coder": ("systemd", False), "ops": ("systemd", False)}
     assert [op for op in fleet.ops if op[0] != "default"] == [
         ("coder", "install"), ("coder", "start"), ("ops", "install"), ("ops", "start")]
-    assert not any(op[0] == "default" and op[1] == "restart" for op in fleet.ops)
+    assert fleet.ops[-1] == ("default", "restart")
     # Each secondary's own gateway must have been startable at the moment it was started.
     assert fleet.refused_at_start == {"coder": False, "ops": False}
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
@@ -168,15 +174,127 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
 
 
-def test_secondary_port_binder_uses_shared_listener_when_supported(fleet):
-    """A supported secondary port binder gets a prefixed shared-listener notice."""
+def test_migration_preserves_root_system_service_user_for_default_install(fleet, monkeypatch):
+    """A root-owned secondary system unit must be replaced with an explicit root unit."""
+    fleet.services["coder"] = ("systemd", True)
+    monkeypatch.setattr(
+        gm,
+        "_systemd_service_user",
+        lambda home, services: "root" if _name(home) == "coder" and ("systemd", True) in services else None,
+    )
+    plan = gm.build_migration_plan()
+    root_secondary = next(p for p in plan.standalone_secondaries if p.name == "coder")
+    assert root_secondary.run_as_user == "root"
+    installs = []
+
+    def _service_op(kind, system, verb, home, *, run_as_user=None):
+        if _name(home) == "default" and verb == "install":
+            installs.append((kind, system, run_as_user))
+        fleet.services.pop(_name(home), None) if verb == "uninstall" else None
+        if verb == "install":
+            fleet.services[_name(home)] = (kind, system)
+        if verb in ("start", "restart") and _name(home) == "default":
+            (fleet.root / "gateway_state.json").write_text(json.dumps({
+                "served_profiles": ["default", "coder", "ops"]}))
+
+    monkeypatch.setattr(gm, "_service_op", _service_op)
+    monkeypatch.setattr(gm, "_wait_for_served", lambda *args: ["default", "coder", "ops"])
+
+    assert gm.apply_migration(plan, served_wait=0.1) is True
+    assert installs == [("systemd", True, "root")]
+
+
+def test_rollback_with_failed_secondary_still_restarts_default_and_keeps_manifest(fleet, monkeypatch):
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=5.0) is True
+    fleet.ops.clear()
+    real_op = gm._service_op
+
+    def _flaky(kind, system, verb, home, *, run_as_user=None):
+        if verb == "start" and _name(home) == "coder":
+            raise RuntimeError("systemctl start failed")
+        real_op(kind, system, verb, home, run_as_user=run_as_user)
+
+    monkeypatch.setattr(gm, "_service_op", _flaky)
+    assert gm.rollback_migration(fleet.root) is False
+    # The flag is off, so the default must not be left multiplexing; the manifest stays for a re-run.
+    assert _config_flag(fleet.root) is False
+    assert fleet.ops[-1] == ("default", "restart")
+    assert ("ops", "start") in fleet.ops
+    assert (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def test_rollback_rerun_does_not_respawn_a_running_detached_secondary(fleet, monkeypatch):
+    # Manifest of a fleet with no service manager anywhere (detached gateways only).
+    gm._write_manifest(fleet.root, {"version": 1, "flag_was": False, "default": {"service": None}, "secondaries": [
+        {"profile": n, "home": str(fleet.root / "profiles" / n), "pid": 4100, "service": None} for n in ("coder", "ops")]})
+    fleet.services.clear()
+    fleet.pids = {"coder": 4101}  # coder came back up in an earlier, interrupted rollback; ops did not
+    spawned = []
+    monkeypatch.setattr(gm, "_spawn_detached_gateway", lambda home: spawned.append(_name(home)) or True)
+    assert gm.rollback_migration(fleet.root) is True
+    assert spawned == ["ops"]
+
+
+def test_malformed_manifest_is_refused_before_any_mutation(fleet, capsys):
+    (fleet.root / gm.MANIFEST_NAME).write_text(
+        json.dumps({"version": 1, "flag_was": False, "default": [], "secondaries": [{"home": "x"}]}), encoding="utf-8")
+    assert gm.rollback_migration(fleet.root) is False
+    assert _config_flag(fleet.root) is None and fleet.ops == []
+    assert "fix or delete the manifest" in capsys.readouterr().out
+    gm.cmd_migrate(SimpleNamespace(multiplex=False, standalone=True, dry_run=True, yes=True))
+    assert "fix or delete the manifest" in capsys.readouterr().out
+
+
+def test_rollback_plan_and_execution_agree_on_a_secondary_with_nothing_recorded(fleet, capsys):
+    gm._write_manifest(fleet.root, {"version": 1, "flag_was": False, "default": {"service": None}, "secondaries": [
+        {"profile": "coder", "home": str(fleet.root / "profiles/coder"), "pid": None, "service": None}]})
+    fleet.services.clear()
+    fleet.pids.clear()
+    plan = "\n".join(gm.format_rollback_plan(fleet.root, gm._read_manifest(fleet.root), dry_run=True))
+    assert gm.rollback_migration(fleet.root) is True
+    out = capsys.readouterr().out
+    # The plan must not promise an action the run never performs: both name the same outcome.
+    plan_line = next(line.split("coder: ", 1)[1] for line in plan.splitlines() if "coder: " in line)
+    assert plan_line in out and "restore" not in plan_line.split(";")[0]
+    assert fleet.ops == []
+
+
+def test_standalone_dry_run_prints_rollback_plan_without_mutation(fleet, capsys):
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=5.0) is True
+    capsys.readouterr()
+    fleet.ops.clear()
+    before = {
+        path: path.read_bytes()
+        for path in (
+            fleet.root / "config.yaml",
+            fleet.root / gm.MANIFEST_NAME,
+            fleet.root / "gateway_state.json",
+        )
+    }
+    services_before = dict(fleet.services)
+    pids_before = dict(fleet.pids)
+
+    gm.cmd_migrate(SimpleNamespace(multiplex=False, standalone=True, dry_run=True, yes=True))
+
+    out = capsys.readouterr().out
+    assert "Rollback plan (dry run" in out and "coder" in out and "ops" in out
+    assert all(path.read_bytes() == contents for path, contents in before.items())
+    assert fleet.services == services_before and fleet.pids == pids_before and fleet.ops == []
+
+
+def test_secondary_port_binder_is_notice_with_ingress_and_blocker_without(fleet, monkeypatch):
+    """The verdict follows the adapter's ``serves_profile_prefix`` declaration, not a hardcoded list."""
     (fleet.root / "profiles/ops/.env").write_text(
         "DISCORD_BOT_TOKEN=ops-discord-333333\nAPI_SERVER_KEY=ops-api-key-abcdef\n", encoding="utf-8")
     (fleet.root / "profiles/ops/config.yaml").write_text(
         "platforms:\n  api_server:\n    enabled: true\n    extra:\n      port: 9999\n", encoding="utf-8")
     plan = gm.build_migration_plan()
-    assert not plan.blocked
-    assert any("api_server" in notice and "/p/ops/" in notice for notice in plan.notices)
+    assert not plan.blocked, plan.blockers
+    assert any("api_server" in n and "/p/ops/" in n for n in plan.notices), plan.notices
+
+    monkeypatch.setattr(gm, "platform_serves_profile_prefix", lambda value: False)
+    plan = gm.build_migration_plan()
+    assert plan.blocked and "api_server" in plan.blockers[0] and "/p/ops/" in plan.blockers[0]
 
 
 def test_serves_profile_prefix_is_read_from_adapter_classes():
@@ -361,8 +479,6 @@ def test_interrupted_apply_is_resumed_from_the_manifest_not_short_circuited(flee
     must finish the migration from the manifest — with the recorded User= — instead of reporting
     'already multiplexed' over a fleet with no gateway at all."""
     fleet.services["coder"] = ("systemd", True)
-    from hermes_cli import gateway as gw
-    monkeypatch.setattr(gw, "_require_root_for_system_service", lambda action: None)
     monkeypatch.setattr(gm, "_systemd_service_user", lambda home, services: "root" if _name(home) == "coder" else None)
     with pytest.MonkeyPatch.context() as dying:
         dying.setattr(gm, "_restart_default", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
@@ -378,17 +494,6 @@ def test_interrupted_apply_is_resumed_from_the_manifest_not_short_circuited(flee
         real_op(kind, system, verb, home, run_as_user=run_as_user)
 
     monkeypatch.setattr(gm, "_service_op", _recording)
-    monkeypatch.setattr(gm, "_spawn_detached_gateway", lambda home: True)
-    # After an interrupted apply, the secondaries' services are gone from disk.
-    # Resume reads the recorded services from the manifest to bring the default up.
-    _recorded = gm._read_manifest(fleet.root)
-    def _restored_services(home):
-        name = _name(home)
-        for r in _recorded["secondaries"]:
-            if r["profile"] == name:
-                return [(s["kind"], s["system"]) for s in r["services"]]
-        return _units(fleet.services.get(name))
-    monkeypatch.setattr(gm, "_installed_services", _restored_services)
     plan = gm.build_migration_plan()
     assert plan.interrupted and not plan.already_multiplexed
     assert gm.apply_migration(plan, served_wait=5.0) is True
@@ -396,11 +501,9 @@ def test_interrupted_apply_is_resumed_from_the_manifest_not_short_circuited(flee
     assert "serves 3 profiles" in capsys.readouterr().out
 
 
-def test_every_installed_unit_of_a_secondary_is_removed_and_restored(fleet, capsys, monkeypatch):
+def test_every_installed_unit_of_a_secondary_is_removed_and_restored(fleet, capsys):
     """A profile carrying a user AND a system unit: both are stopped/uninstalled (recording only the first
     found left the other live beside the multiplexer) and rollback reinstalls both."""
-    from hermes_cli import gateway as gw
-    monkeypatch.setattr(gw, "_require_root_for_system_service", lambda action: None)
     fleet.services["coder"] = [("systemd", False), ("systemd", True)]
     plan = gm.build_migration_plan()
     coder = next(p for p in plan.standalone_secondaries if p.name == "coder")

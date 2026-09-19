@@ -230,6 +230,12 @@ To isolate the source:
 
 See [Security](../user-guide/security.md) for Hermes' documented execution controls and [Providers](../integrations/providers.md) for provider configuration.
 
+#### "Could not open a stream to `<host>` after N attempts (request X KB)"
+
+**Meaning:** every connect attempt to that endpoint failed before a single stream event arrived, so nothing was billed; the normal retry/fallback chain still runs afterwards. The line names the host actually contacted, how many attempts were made, and the serialized request size — the three things that separate an outage from a request-size limit.
+
+**Solution:** if the request is large (hundreds of KB — long coding sessions reach this once the context grows) and short new chats work, the endpoint or a proxy in front of it is likely rejecting bodies that size: raise its body limit, or run `/compress` to shrink the context. If the request is small, the endpoint is unreachable — check the `base_url`, then retry with `/retry`. `logs/agent.log` records the exception chain for each attempt.
+
 #### `/model` only shows one provider / can't switch providers
 
 **Cause:** `/model` (inside a chat session) can only switch between providers you've **already configured**. If you've only set up OpenRouter, that's all `/model` will show.
@@ -574,7 +580,7 @@ node --version
 npx --version
 
 # Test the server manually
-npx -y @modelcontextprotocol/server-filesystem /tmp
+npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/dir
 ```
 
 Verify your `~/.hermes/config.yaml` MCP configuration:

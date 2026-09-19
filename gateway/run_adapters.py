@@ -853,7 +853,7 @@ class GatewayAdapterLifecycleMixin:
             from hermes_cli.profiles import get_active_profile_name
         except Exception:
             return 0
-        active = get_active_profile_name() or "default"
+        active = get_active_profile_name() or "default"  # launch profile, pre-identity (adapter boot)
         connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)
@@ -1348,40 +1348,49 @@ class GatewayAdapterLifecycleMixin:
         """``scope_factory(profile_home)`` or a nullcontext when the profile home is unknown."""
         return scope_factory(profile_home) if profile_home is not None else contextlib.nullcontext()
 
-    def _stamp_event_profile(self, event, profile_name: str) -> None:
-        """Best-effort: pin the secondary's identity on an inbound event (stamps ``source.profile``
-        when none yet). A source that cannot resolve keeps today's fallback readers."""
-        source = getattr(event, "source", None)
+    def _canonicalize(self, source, *, transport_profile: Optional[str] = None,
+                      primary_home: Optional[Path] = None):
+        """Runner-side identity seam: the pinned :class:`RoutingIdentity` of *source*, resolving it
+        once when absent. ``transport_profile`` names a secondary's own bot (its handlers know it by
+        construction); ``None`` = the primary/shared bot. ``None`` result = rejected route under
+        multiplexing (the caller drops; the ingress gate warns once) or a source that cannot resolve
+        (bare test rigs) — the legacy readers then stay in force."""
         if source is None:
-            return
-        with suppress(Exception):
-            from gateway.session_identity import resolve_identity
-            resolve_identity(source, runner=self, transport_profile=profile_name)
-        with suppress(Exception):
-            if not source.profile:
-                source.profile = profile_name
+            return None
+        from gateway.session_identity import canonical_identity
+        try:
+            identity = canonical_identity(
+                source, runner=self, transport_profile=transport_profile, primary_home=primary_home)
+        except Exception:
+            logger.debug("identity resolution failed; legacy readers stay in force", exc_info=True)
+            return None
+        if transport_profile and not getattr(source, "profile", None):
+            with suppress(Exception):
+                source.profile = transport_profile  # a secondary's own event is at least its own
+        return identity
 
     def _make_profile_message_handler(self, profile_name: str):
-        """Message handler that stamps source.profile, then delegates under the profile scope
-        (auth runs BEFORE the agent-turn scope, so the profile's ``.env`` must be visible here)."""
+        """Message handler that canonicalizes the event's identity FIRST, then delegates under the
+        profile scope (auth runs BEFORE the agent-turn scope, so the profile's ``.env`` must be
+        visible here)."""
         from gateway.run import _async_profile_runtime_scope
         profile_home = self._profile_home_or_none(profile_name)
 
         async def _handler(event):
-            self._stamp_event_profile(event, profile_name)
+            self._canonicalize(getattr(event, "source", None), transport_profile=profile_name)
             async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
                 return await self._handle_message(event)
 
         return _handler
 
     def _make_profile_busy_session_handler(self, profile_name: str):
-        """Stamp an owning adapter's profile, then resolve busy policy under the profile scope
+        """Busy-path twin: canonicalize FIRST, then resolve busy policy under the profile scope
         (auth runs against the profile's own allowlist, same as the cold-path message handler)."""
         from gateway.run import _async_profile_runtime_scope
         profile_home = self._profile_home_or_none(profile_name)
 
         async def _handler(event, _session_key):
-            self._stamp_event_profile(event, profile_name)
+            self._canonicalize(event.source, transport_profile=profile_name)
             async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
                 return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
 
@@ -1421,27 +1430,13 @@ class GatewayAdapterLifecycleMixin:
         return _handler
 
     def _admit_primary_source(self, source, default_home: Path) -> Optional[Path]:
-        """Resolve the primary-adapter source's identity (transport home for authorization, routed
-        profile for the runtime) and return the runtime home to scope the turn under; ``None`` when
-        the route targets an unserved profile. Route ≠ admitting bot."""
-        from gateway.session_identity import IdentityUnresolved, resolve_identity
-        try:
-            return resolve_identity(source, runner=self, primary_home=default_home).runtime_home
-        except IdentityUnresolved:
-            return None
-
-    def _stamp_routed_profile(self, source, adapter_profile: Optional[str] = None) -> bool:
-        """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected.
-
-        ``adapter_profile`` owns the receiving bot: routes are scoped to it and it is the
-        fallback when none matches, so re-stamping a source never crosses a bot boundary.
-        """
-        from gateway.profile_routing import ProfileRouteRejected
-        try:
-            source.profile = self._profile_name_for_source(source, adapter_profile=adapter_profile) or adapter_profile
-        except ProfileRouteRejected:
-            return False
-        return True
+        """Canonicalize a primary-adapter source (transport home for authorization, routed profile
+        for the runtime) and return the runtime home to scope the turn under; ``None`` when the
+        route targets an unserved profile. Route ≠ admitting bot."""
+        identity = self._canonicalize(source, primary_home=default_home)
+        if identity is not None:
+            return identity.runtime_home
+        return None if getattr(source, "profile_route_rejected", False) is True else default_home
 
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
@@ -1483,8 +1478,7 @@ class GatewayAdapterLifecycleMixin:
         profile_home = self._profile_home_or_none(profile_name)
 
         async def _handler(event, source):
-            if getattr(source, "profile", None) is None:
-                source.profile = profile_name
+            self._canonicalize(source, transport_profile=profile_name)
             with self._scope_or_null(_profile_runtime_scope, profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
@@ -1496,8 +1490,10 @@ class GatewayAdapterLifecycleMixin:
         default_home = Path(get_hermes_home())
 
         async def _handler(event, source):
-            source._authorization_profile_home = default_home
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+            profile_home = self._admit_primary_source(source, default_home)
+            if profile_home is None:
+                return None  # rejected route: same disposition as the message ingress gate
+            with _profile_runtime_scope(profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler
@@ -1609,8 +1605,9 @@ class GatewayAdapterLifecycleMixin:
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
                 return self._is_user_authorized(source)
-            source._authorization_profile_home = transport_home
-            if not self._stamp_routed_profile(source):
+            # Canonicalize FIRST (callback sources never went through ``build_source``): the routed
+            # profile's pairing store is consulted, allowlists read under the transport home.
+            if self._canonicalize(source, primary_home=transport_home) is None:
                 return False  # fail-closed, like the ``_handle_message`` ingress gate
             return self._is_user_authorized_for_source(source)
         return check

@@ -363,7 +363,7 @@ If you maintain your Slack manifest by hand and just want the slash
 command list:
 
 ```bash
-hermes slack manifest --slashes-only > /tmp/slashes.json
+hermes slack manifest --slashes-only > ~/.hermes/cache/scratch/slashes.json
 ```
 
 Paste that array into the `features.slash_commands` key of your

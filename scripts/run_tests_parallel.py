@@ -58,6 +58,21 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+def _runner_scratch_root() -> str:
+    """Per-run temp roots live on DISK, never the system temp dir: a full-suite run writes
+    gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on many Linux hosts. /var/tmp is
+    the FHS disk-backed temp root and is used because the alternatives fail tests that assume
+    the root's shape: under the Hermes home conftest relocates the basetemp; under a dot-dir
+    (~/.cache) the hidden-dir search tests see every fixture as hidden; anything longer than
+    the old /tmp root pushes AF_UNIX test sockets past sun_path."""
+    if os.name == "nt" or not os.path.isdir("/var/tmp"):  # no-tmp: ok — probing the disk-backed FHS root
+        root = os.path.join(tempfile.gettempdir(), "hermes-pytest")
+    else:
+        root = "/var/tmp/hermes-pytest"  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
 
 # Default test discovery roots.
 _DEFAULT_ROOTS = ["tests"]
@@ -452,8 +467,11 @@ def _run_one_file_once(
     # One root for each subprocess removes the shared directory that the race
     # needs. The parent deletes the root after the attempt.
     env = os.environ.copy()
-    temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-")
+    temproot = tempfile.mkdtemp(prefix="r-", dir=_runner_scratch_root())
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
+    # Every tempfile.* call inside the test process lands in the same per-run root, so the
+    # parent's cleanup of ``temproot`` removes them too instead of leaving them in /tmp.
+    env["TMPDIR"] = temproot
 
     subproc_start = time.monotonic()
     # launch the pytest process

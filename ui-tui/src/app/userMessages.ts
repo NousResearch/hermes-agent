@@ -241,6 +241,10 @@ const TURN_CODE_COPY: Record<string, [string, string]> = {
     "Check the endpoint's certificate, then /retry."
   ],
   timeout: ['The model provider did not answer in time', 'Try /retry; if it keeps happening, switch with /model.'],
+  upstream_blocked: [
+    'A firewall/CDN in front of the model provider blocked the request',
+    "Set a User-Agent via the provider's extra_headers, or switch with /model."
+  ],
   upstream_rate_limit: ['The model provider is rate-limiting requests', 'Wait a moment, then /retry.']
 }
 

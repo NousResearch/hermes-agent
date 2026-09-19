@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import (
-    get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
+    get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
 from agent.model_metadata import CHARS_PER_TOKEN
@@ -261,24 +261,19 @@ SKILLS_GUIDANCE = (
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
 )
 
-# The PR-inspection command below reads $HERMES_HOME and resolves `hermes` from PATH at the
-# worker's own shell, rather than a value baked in at prompt-build time: HERMES_HOME differs
-# per profile/account, and a python-side resolution cached in this module-level constant would
-# go stale (worker envs vary; this module is imported once per process). The dispatcher itself
-# requires `hermes` resolvable on PATH to spawn a worker at all, so a worker's inherited PATH
-# already carries it.
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
-    "You have been assigned ONE task from the shared board. Your task id is in "
+    "You have been assigned ONE task from the shared board at `~/.hermes/kanban.db`. Your task id is in "
     "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. The `kanban_*` tools in your schema are your "
-    "primary coordination surface across terminal backends.\n"
+    "primary coordination surface — they write directly to the shared SQLite DB and work regardless of terminal "
+    "backend (local/docker/modal/ssh).\n"
     "\n"
     "## Lifecycle\n\n"
-    "1. **Orient.** Call `kanban_show()` first (no args — it defaults to your task). Treat its task body, parent "
-    "handoffs, comments, and `worker_context` as ground truth.\n"
-    "2. **Work inside the workspace.** The dispatcher starts terminal and file tools there. Do not pass the literal "
-    "environment-variable token `$HERMES_KANBAN_WORKSPACE` as a workdir or argument. Don't modify files outside it "
-    "unless the task explicitly asks. Use narrow `rg --files`/`git ls-files`. Never run a recursive `find` from a broad root.\n"
+    "1. **Orient.** Call `kanban_show()` first (no args — it defaults to your task). The response includes title, "
+    "body, parent-task handoffs (summary + metadata), any prior attempts on this task if you're a retry, the full "
+    "comment thread, and a pre-formatted `worker_context` you can treat as ground truth.\n"
+    "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before any file operations. The workspace is "
+    "yours for this run. Don't modify files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` every few minutes during long subprocesses "
     "(training, encoding, crawling). Skip heartbeats for short tasks. **If your task may run longer than 1 hour, you "
     "MUST call `kanban_heartbeat` at least once an hour** — the dispatcher reclaims tasks running past "
@@ -288,27 +283,7 @@ KANBAN_GUIDANCE = (
     "4. **Block on genuine ambiguity.** If you need a human decision you cannot infer (missing credentials, UX choice, "
     "paywalled source, peer output you need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. The "
     "user will unblock with context and the dispatcher will respawn you.\n"
-    "Prior `manual_reclaim`, `crashed`, `protocol_violation`, timeout, fallback, and retry records are "
-    "attempt-management evidence, not task blockers. Never block because an earlier worker crashed or was reclaimed; "
-    "re-read the current task and canonical external state, then work it.\n"
-    "A missing local file, missing task output, missing profile roster, or unstated hypothesis is not by itself a "
-    "human blocker. First call `kanban_show(task_id=...)` for every referenced card, inspect linked parent handoffs, "
-    "attachments, and the assigned workspace, and use the actual assigned profile rather than asking for the profile "
-    "roster. For worker-, decomposer-, or cron-created tasks, the producer has already fixed the scope: make the "
-    "role-owned decision. Only then block, with the exact absent id/path and concrete external capability required.\n"
-    "For GitHub PR intake, including PRs by Codex, Claude, or Hermes workers, use host Hermes: `env "
-    "HERMES_HOME=\"$HERMES_HOME\" hermes github-pr-feedback inspect-pr "
-    "--repository OWNER/REPO --pr-number N`; paginate issue comments, review comments, and reviews. For "
-    "governed exact-head review use `github-pr-feedback submit-review` with `--event APPROVE|REQUEST_CHANGES|COMMENT`; "
-    "do not use raw `gh pr view`, `gh api`, or curl. On protected routes, use governed JSON projection and direct "
-    "source-file reads.\n"
-    "`board-record-only`/`no-op` metadata tasks use Kanban as source of truth. Call `kanban_show` for each named ID "
-    "before filesystem tools; Never search the checkout for board records. If no work is found, complete with a "
-    "no-op receipt and report exact unavailable IDs.\n"
-    "A capability block requires a current failed command with literal argv and redacted stderr; a predicted failure "
-    "is not evidence.\n"
-    "5. **Finish with the review model encoded by the task graph.** Completion must include a non-empty factual `summary`. "
-    "Always include the structured handoff (`summary`, "
+    "5. **Finish with the review model encoded by the task graph.** Always include the structured handoff (`summary`, "
     "`metadata`) on the lifecycle transition itself; never put secrets, tokens, or raw PII in these durable fields. If "
     "`kanban_show()` lists child IDs, inspect those cards with `kanban_show(task_id=...)` before choosing the terminal "
     "action. When any pre-created review, QA, or release child depends on your task, call `kanban_complete`: your "
@@ -339,8 +314,10 @@ KANBAN_GUIDANCE = (
     "card body must carry the decisions it depends on, because workers cannot see sibling context.\n"
     "\n"
     "## Reference details that change outcomes\n\n"
-    "- **Workspace.** Use the dispatcher-selected directory. If a worktree is uninitialized, create only the task-id "
-    "branch from the main repo, then work there.\n"
+    "- **Workspace.** `cd $HERMES_KANBAN_WORKSPACE` first. For a `worktree` kind with no `.git`, `git worktree add "
+    "<path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo, then cd there. For a project-linked "
+    "task the workspace is a fresh `<repo>/.worktrees/<task-id>` and `$HERMES_KANBAN_BRANCH` a deterministic "
+    "`<project-slug>/<task-id>` — the main repo is two levels up, so run `git worktree add` from there.\n"
     "- **Deliverables.** Files a human wants go in `kanban_complete(artifacts=[<absolute paths>])` (top-level param; "
     "paths in `metadata` are NOT uploaded). Files must exist at completion.\n"
     "- **Attachments.** Attach real downloadable artifacts instead of pasting links in comments: `kanban_attach` "
@@ -360,6 +337,7 @@ KANBAN_GUIDANCE = (
     "will time out and the task will sit silently in `running` with no signal to the operator. Instead: "
     "`kanban_comment` the context, then `kanban_block(reason=...)` so the task surfaces on the board as needing "
     "input.\n"
+    "- Do not assign follow-up work to yourself. Assign it to the right specialist profile.\n"
     "- Do not call `delegate_task` as a board substitute. `delegate_task` is for short reasoning subtasks inside your "
     "own run; board tasks are for cross-agent handoffs that outlive one API loop."
 )
@@ -899,9 +877,11 @@ _WINDOWS_BASH_SHELL_HINT = (
     "MSYS-style paths like `/c/Users/<user>/...` work alongside native `C:\\Users\\<user>\\...` paths. PowerShell "
     "builtins (`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their POSIX equivalents (`ls`, "
     "`$FOO`, `grep`). Path arguments for NATIVE Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "
+    # no-tmp: ok — illustrates the MSYS path that FAILS for native Windows tools
     "path conversion is disabled here, so `git -C /c/Users/x` or `node /tmp/a.js` fails with 'cannot change to'/'not "
     "found' even though `cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style forward-slash native paths to "
-    "native tools, and prefer `$LOCALAPPDATA/Temp` over `/tmp` for scratch files a native tool must read. When "
+    # no-tmp: ok — tells the model what NOT to use
+    "native tools, and prefer `$LOCALAPPDATA/Temp` (or `$TMPDIR`, which Hermes points at its own scratch dir) for scratch files a native tool must read — never a bare `/tmp`. When "
     "answering prompts in a pty background process, use process(submit) — never process(write) with a bare trailing "
     "newline: Enter on a Windows PTY is a carriage return, and a lone `\\n"
     "` is not delivered as a line terminator, so the child's prompt silently never returns. When a CLI offers a "
@@ -1015,6 +995,13 @@ def _local_host_hints() -> list[str]:
     host_lines = [f"Host: {host}", f"User home directory: {os.path.expanduser('~')}"]
     try:
         host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
+    except OSError:
+        pass
+    # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
+    # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
+    try:
+        host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
+                          "and probes there, never under the system temp dir; entries are pruned after 72h)")
     except OSError:
         pass
     if not (sys.platform == "win32" and not is_wsl()):
@@ -1265,14 +1252,11 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
-    compact_all_categories: bool = False,
 ) -> str:
     """Compact skill index for the system prompt.
 
     External dirs (``skills.external_dirs``) are read-only and lose name collisions to local skills.
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
-    ``compact_all_categories`` (guarded prompt mode) demotes every category regardless of
-    ``compact_categories`` — still names-only, never hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
@@ -1290,8 +1274,7 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not external_dirs and not project_dirs:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs,
-            compact_all_categories=compact_all_categories)
+            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1353,17 +1336,13 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
-    *, compact_all_categories: bool = False,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list."""
     if not skills_by_category:
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = (
-        frozenset(skills_by_category) if compact_all_categories
-        else frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
-    )
+    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
     hidden_note = (
         "\n(Categories marked [names only] are outside the current coding "
         "context, so their descriptions are omitted — the skills work "
@@ -1384,6 +1363,13 @@ def _render_skills_index(
             if name not in seen:
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+    from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
+    if is_single_query_session():
+        return (
+            ONESHOT_SKILLS_LOAD_GUIDANCE
+            + "\n<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
+            + hidden_note
+        )
     return (
         "## Skills\n"
         "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
@@ -1407,10 +1393,15 @@ def _render_skills_index(
     )
 
 
+def _oneshot_prompt_variant() -> bool:
+    from agent.oneshot_footprint import is_single_query_session
+    return is_single_query_session()
+
+
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None, *, compact_all_categories: bool = False,
+    project_dirs: "list[Path] | None" = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
@@ -1420,7 +1411,8 @@ def _build_skills_system_prompt_inner(
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
-        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())), compact_all_categories,
+        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _oneshot_prompt_variant(),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1478,8 +1470,7 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools,
-                                  compact_all_categories=compact_all_categories)
+    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

@@ -543,6 +543,8 @@ delegate_task(
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
 
+**One-shot runs are capped separately.** `hermes chat -q` / `--oneshot` sessions may spawn at most `delegation.oneshot_max_children` subagents in total (default `2`, `0` = unlimited). A one-shot run has no later turn to receive results, and in benchmark trajectories most of its spawns were "independently review my own work" rather than parallel work — each such child re-pays a cold system prompt and re-reads the repo. Interactive and gateway sessions are unaffected.
+
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
@@ -656,7 +658,7 @@ delegation:
 
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
 
-Subagents compact at the same ratio trigger as their parent (`compression.threshold`, 0.50 × window by default). `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
+Subagents compact where their parent does — the lower of `compression.threshold` × window and the global `compression.threshold_tokens` cap (256K on a 1M model by default). `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
 
 `delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
 

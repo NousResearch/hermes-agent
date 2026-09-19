@@ -197,7 +197,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     runner._is_goal_continuation_event = MagicMock(return_value=False)
     runner._session_key_for_source = MagicMock(return_value="agent:main:telegram:group:-1001:12345")
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
-    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     turn_ctx = SimpleNamespace(
         source=_source(), session_id="sid", session_key="agent:main:telegram:group:-1001:12345",

@@ -79,6 +79,20 @@ def test_curator_defaults(curator_env):
     assert c.get_stale_after_days() == 14
     assert c.get_archive_after_days() == 30
 
+def test_bundled_skills_are_off_limits_unless_opted_in(curator_env, monkeypatch):
+    """Shipped skills vanishing after 30 idle days is opt-in: with no config the reader says off, and
+    the same reader flips with the key. Both loaders see the same answer (DEFAULT_CONFIG agrees)."""
+    import importlib
+    import tools.skill_usage as usage
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    importlib.reload(usage)  # the fixture pins _prune_builtins_enabled; reload restores the real reader
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"curator": {}})
+    assert usage._prune_builtins_enabled() is False
+    assert DEFAULT_CONFIG["curator"]["prune_builtins"] is False
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"curator": {"prune_builtins": True}})
+    assert usage._prune_builtins_enabled() is True
+
+
 
 
 
@@ -468,6 +482,33 @@ def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypat
     assert name not in u.read_suppressed_names()
 
 
+
+
+def test_preseeded_never_used_builtin_is_reanchored_not_staled(curator_env, monkeypatch):
+    """Telemetry records a bundled skill the moment it is seeded, months before the curator's first
+    sight; anchoring on that created_at marked 71 built-ins stale on one first run (#79295). First
+    sight re-anchors the clock (and reactivates a record the bug already staled); the skill then
+    ages normally and still goes stale after a full window of non-use."""
+    u, c = curator_env["usage"], curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled-helper")
+    (skills_dir / ".bundled_manifest").write_text("bundled-helper:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["bundled-helper"] = {**u._empty_record(), "created_at": super_old, "state": u.STATE_STALE}
+    u.save_usage(data)
+
+    t0 = datetime.now(timezone.utc)
+    counts = c.apply_automatic_transitions(now=t0)
+    assert (counts["marked_stale"], counts["archived"], counts["seeded"]) == (0, 0, 1)
+    rec = u.get_record("bundled-helper")
+    assert rec["state"] == "active" and rec["first_seen_at"] is not None
+    assert datetime.fromisoformat(rec["created_at"]) > datetime.fromisoformat(super_old)
+
+    # One-shot: 15 days of continued non-use (past stale_after_days=14) → stale, not deferred forever.
+    counts = c.apply_automatic_transitions(now=t0 + timedelta(days=15))
+    assert counts["marked_stale"] == 1 and u.get_record("bundled-helper")["state"] == "stale"
 
 
 def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
@@ -903,6 +944,44 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     assert meta.get("error") is None, meta.get("error")
     assert captured["kwargs"]["credential_pool"] is fake_pool
     assert captured["kwargs"]["request_overrides"] == fake_overrides
+
+
+def test_review_fork_receives_configured_reasoning(curator_env, monkeypatch):
+    """#85153 class: the curator's review fork is an ``AIAgent()`` built from config, so ``agent.reasoning_effort``
+    must reach it through the shared ``resolve_reasoning_config`` chokepoint (resolved against the review model)."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    captured = {}
+    cfg = {"model": {"provider": "openai-api", "default": "gpt-4o-mini"}, "agent": {"reasoning_effort": "none"}}
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            captured["kwargs"] = kwargs
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 0
+            self._skill_nudge_interval = 0
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {"provider": "openai-api", "api_key": "k", "base_url": "https://api.openai.com/v1",
+                          "api_mode": "codex_responses"},
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert captured["kwargs"]["reasoning_config"] == {"enabled": False}
 
 
 def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch):

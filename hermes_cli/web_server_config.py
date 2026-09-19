@@ -3,6 +3,7 @@
 
 import logging
 import os
+from dataclasses import replace
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from agent.model_metadata import is_local_endpoint
@@ -476,6 +477,17 @@ def _validated_main_model_selection(
         custom_providers=get_compatible_custom_providers(cfg))
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
+    if is_bare_custom and base_url.strip():
+        # The submitted endpoint IS the route this pick asked for; the credential step may have
+        # re-resolved the bare target onto an env/config endpoint (CUSTOM_BASE_URL, a stale
+        # model.base_url, the OPENROUTER_BASE_URL mirror). Restore the submitted endpoint AND the
+        # wire protocol it mandates: ``model.base_url`` and ``model.api_mode`` are persisted
+        # together, so a mode derived from the displaced host would route the submitted endpoint
+        # over the wrong wire.
+        from hermes_cli.providers import determine_api_mode
+        url = base_url.strip()
+        result = replace(result, base_url=url,
+                         api_mode=determine_api_mode(result.target_provider, url))
     return result
 
 

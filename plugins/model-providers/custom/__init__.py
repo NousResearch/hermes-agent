@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
+from utils import base_url_host_matches
 
 
 def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
@@ -43,8 +44,7 @@ class CustomProfile(ProviderProfile):
         return OPENAI_COMPAT_WIRE_EFFORTS
 
     def build_api_kwargs_extras(
-        self, *, reasoning_config: dict | None = None, ollama_num_ctx: int | None = None,
-        supports_reasoning: bool = True, **ctx: Any
+        self, *, reasoning_config: dict | None = None, ollama_num_ctx: int | None = None, **ctx: Any
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
@@ -53,20 +53,21 @@ class CustomProfile(ProviderProfile):
         # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
         # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->
         # top-level reasoning_effort clamped to the OpenAI-compat wire (GLM/ARK,
-        # vLLM and SGLang all top out at "max"; "ultra" verbatim 400s), except on a
-        # non-thinking Ollama model, which 400s on any reasoning_effort other than
-        # "none" -- the same non-thinking-Ollama predicate sanitize_request_kwargs()
-        # uses. Enabled without effort -> omit so the server default applies.
-        # Never emit think=True (Ollama-only flag).
-        is_ollama = _looks_like_ollama_endpoint(ctx.get("base_url"))
+        # vLLM and SGLang all top out at "max"; "ultra" verbatim 400s); enabled
+        # without effort -> omit so the server default applies. Never emit
+        # think=True (Ollama-only flag).
         if reasoning_config and isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort == "none" or reasoning_config.get("enabled", True) is False:
                 # See #14820.
                 top_level["reasoning_effort"] = "none"
-                if is_ollama:
+                if _looks_like_ollama_endpoint(ctx.get("base_url")):
                     extra_body["think"] = False
-            elif effort and not (is_ollama and not supports_reasoning):
+            elif effort and base_url_host_matches(str(ctx.get("base_url") or ""), "api.groq.com"):
+                # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as
+                # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
+                top_level["reasoning_effort"] = "default"
+            elif effort:
                 top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
         return extra_body, top_level
 
@@ -80,12 +81,7 @@ class CustomProfile(ProviderProfile):
 
 
 custom = CustomProfile(
-    name="custom",
-    # "ollama-launch" is the managed-local-server provider string (hermes_cli/secure_worker.py,
-    # hermes_cli/kanban_worker_routing.py) for a Hermes-launched Ollama instance -- it must
-    # resolve here too, or sanitize_request_kwargs()'s think/reasoning stripping never applies
-    # to it and a non-thinking model on that route still 400s on a stale think/reasoning override.
-    aliases=("ollama", "ollama-launch", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
+    name="custom", aliases=("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
     env_vars=(),  # No fixed key — custom endpoint
     base_url="",  # User-configured
     # An arbitrary client ceiling can exceed a local server's actual output limit.

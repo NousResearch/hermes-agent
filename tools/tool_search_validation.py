@@ -173,7 +173,11 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
-        if raw_args is None:
+        if raw_args is None or (isinstance(raw_args, str) and not raw_args.strip()):
+            # "" / whitespace is how some OpenAI-compatible gateways spell "no arguments" for a
+            # parameterless tool (#83937); the loop already treats an empty outer arguments string
+            # as {} (turn_tool_validation), and a missing required param still surfaces below via
+            # validate_deferred_call_args instead of an opaque JSON parse error.
             raw_args = {}
         if isinstance(raw_args, str):
             try:

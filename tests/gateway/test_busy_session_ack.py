@@ -540,7 +540,7 @@ class TestLongRunningNotificationOwnership:
             return SimpleNamespace(success=False)
 
         adapter.edit_message = AsyncMock(side_effect=_edit_then_restart)
-        runner._adapter_for_source = lambda source: adapter
+        runner._delivery_adapter_for = lambda source: adapter
         runner._agent_activity_summary = staticmethod(lambda agent: None)
         agent = MagicMock()
         runner._running_agents["sess"] = agent

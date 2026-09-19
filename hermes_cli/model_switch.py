@@ -1383,7 +1383,8 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         # ANOTHER provider (the per-turn config sync adopting ``provider: custom``) the configured
         # endpoint wins, or the new model is paired with the old provider's host and key (#73680).
         # With nothing configured the resolver either raises (st.* keep the session values) or
-        # lands on OpenRouter's default (#74143) — the session endpoint is kept in both cases.
+        # lands on OpenRouter's default or the ``OPENROUTER_BASE_URL`` mirror (#74143, #10622) —
+        # the session endpoint is kept in all three cases.
         key, url = st.current_api_key, st.current_base_url
         if st.current_provider != "custom":
             with suppress(Exception):
@@ -1457,10 +1458,48 @@ def _creds_for_current_provider(st: _Switch) -> None:
 
 
 def _fell_back_to_openrouter_default(st: _Switch) -> bool:
-    """The bare-``custom`` resolver ended on OpenRouter's default host while the session was
-    elsewhere: no trusted ``model.base_url`` existed, so the URL is one the user never picked."""
+    """The bare-``custom`` resolver ended on an OpenRouter endpoint that is not a custom endpoint
+    the user configured: the built-in default host, or the ``OPENROUTER_BASE_URL`` mirror — the
+    credential ladder's last rung (#10622), which ``provider: custom`` reaches only when no
+    ``CUSTOM_BASE_URL`` / trusted ``model.base_url`` exists."""
+    mirror = _openrouter_mirror_base_url()
+    if mirror and st.base_url.rstrip("/") == mirror and not _custom_endpoint_source():
+        return True
     return (base_url_host_matches(st.base_url, "openrouter.ai")
             and not base_url_host_matches(st.current_base_url, "openrouter.ai"))
+
+
+def _custom_endpoint_source() -> str:
+    """The endpoint the credential ladder prefers over its OpenRouter rung for bare ``custom``:
+    ``CUSTOM_BASE_URL``, else the config's ``model.base_url`` when that config backs bare custom.
+    Non-empty means a resolved URL matching the mirror came from a configured custom endpoint (two
+    env vars pointed at one proxy), so the mirror guard must not call it a fallback."""
+    from agent.secret_scope import get_secret_str
+    try:
+        env_url = (get_secret_str("CUSTOM_BASE_URL", "") or "").strip()
+        if env_url:
+            return env_url
+        from hermes_cli.runtime_provider import (
+            _config_base_url_trustworthy_for_bare_custom, _get_model_config)
+        model_cfg = _get_model_config() or {}
+        base = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
+        provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
+        base = (base or "").strip()
+        return base if base and _config_base_url_trustworthy_for_bare_custom(base, provider) else ""
+    except Exception:
+        return ""
+
+
+def _openrouter_mirror_base_url() -> str:
+    """``OPENROUTER_BASE_URL``, read the way the resolver reads it (env, or the profile's secret
+    scope). A guard read, not a credential fetch: a read that fails — unscoped under multiplexing —
+    must leave the mirror undetected so its caller keeps the session endpoint, rather than raising
+    out of ``switch_model`` where the resolver's own read of the same name is suppressed."""
+    from agent.secret_scope import get_secret_str
+    try:
+        return (get_secret_str("OPENROUTER_BASE_URL", "") or "").strip().rstrip("/")
+    except Exception:
+        return ""
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
@@ -1484,10 +1523,11 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
 
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
-    # would otherwise 400 on tools+reasoning).
+    # would otherwise 400 on tools+reasoning). ``codex_app_server`` is the resolver's
+    # ``model.openai_runtime`` opt-in, not a wire protocol the host can mandate: keep it.
     from hermes_cli.providers import is_actual_route
     mandated_mode = "chat_completions" if is_actual_route(st.target_provider, st.base_url) else host_mandated_api_mode(st.base_url)
-    if mandated_mode is not None:
+    if mandated_mode is not None and st.api_mode != "codex_app_server":
         st.api_mode = mandated_mode
     st.api_mode = st.api_mode or determine_api_mode(st.target_provider, st.base_url)
     return None
@@ -1569,11 +1609,22 @@ _PROVIDER_API_MODE_OVERRIDES: dict[str, Any] = {
     **dict.fromkeys(("nous", "nous-portal", "nousresearch"), _nous_api_mode)}
 
 
+def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Optional[str]:
+    """api_mode re-derived from the FINAL model for providers that serve several wire formats behind one
+    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot, Nous); None when the
+    provider's wire is fixed by its endpoint. A persisted api_mode from an earlier model of such a provider
+    is never authoritative — resume paths must call this instead of honoring the row (#96066)."""
+    from hermes_cli.models import opencode_provider_family
+    key = str(provider or "").strip().lower()
+    override = _PROVIDER_API_MODE_OVERRIDES.get(opencode_provider_family(key) or key)
+    return override(key, model, api_key) if override is not None else None
+
+
 def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     """COMMON PATH part 3: final api_mode / base_url shaping, metadata, warnings."""
-    override = _PROVIDER_API_MODE_OVERRIDES.get(st.target_provider)
-    if override is not None:
-        st.api_mode = override(st.target_provider, st.new_model, st.api_key)
+    derived = model_derived_api_mode(st.target_provider, st.new_model, st.api_key)
+    if derived is not None:
+        st.api_mode = derived
     if not st.api_mode:
         st.api_mode = determine_api_mode(st.target_provider, st.base_url, model=st.new_model)
 

@@ -14,8 +14,8 @@ import uuid
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _exhausted_until,
-    _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _codex_principal_identity,
+    _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
@@ -83,7 +83,8 @@ _PROVIDER_ALIASES = {
 
 def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
-    return _PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized) or normalized
+    return (_PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized)
+            or auth_mod._plugin_aliases().get(normalized) or normalized)
 
 
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
@@ -217,12 +218,25 @@ class _OAuthAddSpec:
 
     login: Callable[[Any], dict]
     token: Callable[[dict], str]
-    source: str
+    # Pool ``source`` string, or a callable deriving it from the login result when one provider
+    # offers several flows (Codex: device code vs browser PKCE).
+    source: str | Callable[[dict], str]
     fields: Callable[[dict, str], dict]
     activate_first: bool = False
     # OpenRouter's PKCE exchange mints a plain API key (no refresh pair), so its pool entry is an
     # ``api_key`` row that happens to come from a browser login.
     auth_type: str = AUTH_TYPE_OAUTH
+
+
+def _codex_login(args) -> dict:
+    from hermes_cli.auth_codex_browser import codex_oauth_login
+    return codex_oauth_login(args)
+
+
+def _codex_pool_source(creds: dict) -> str:
+    if creds.get("source") == "loopback_pkce":
+        return f"{SOURCE_MANUAL}:loopback_pkce"
+    return SOURCE_MANUAL_DEVICE_CODE
 
 
 _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
@@ -235,9 +249,9 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
             "expires_at_ms": creds.get("expires_at_ms"),
             "base_url": _provider_base_url(provider)}),
     "openai-codex": _OAuthAddSpec(
-        login=lambda args: auth_mod._codex_device_code_login(),
+        login=_codex_login,
         token=lambda creds: creds["tokens"]["access_token"],
-        source=SOURCE_MANUAL_DEVICE_CODE,
+        source=_codex_pool_source,
         fields=lambda creds, provider: {
             "refresh_token": creds["tokens"].get("refresh_token"),
             "base_url": creds.get("base_url"),
@@ -379,7 +393,11 @@ def auth_add_command(args) -> None:
         _unsuppress_provider_sources(provider)
 
     wanted_priority = getattr(args, "priority", None)
-    entry = _add_credential(args, provider, pool, requested_type)
+    try:
+        entry = _add_credential(args, provider, pool, requested_type)
+    except auth_mod.AuthError as exc:
+        # A denied / mismatched / timed-out OAuth login is a user-facing outcome, not a crash.
+        raise SystemExit(f"Login failed: {auth_mod.format_auth_error(exc)}") from exc
     if wanted_priority is not None:
         placed_pool = load_pool(provider)
         moved = placed_pool.move_entry(entry.id, int(wanted_priority))
@@ -405,15 +423,37 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
     # ``manual:*`` entries refresh from their own token pair, so they need no singleton shadow.
     entry = PooledCredential(
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=spec.auth_type, priority=0,
-        source=spec.source, access_token=token, **spec.fields(creds, provider))
-    first_credential = not pool.entries()
+        source=spec.source(creds) if callable(spec.source) else spec.source,
+        access_token=token, **spec.fields(creds, provider))
+    existing = pool.entries()
     entry = pool.add_entry(entry)
     # The first Codex/xAI credential becomes the active provider (as the old singleton save path
     # did implicitly); subsequent adds leave the active provider as-is.
-    if spec.activate_first and first_credential:
+    if spec.activate_first and not existing:
         auth_mod.mark_provider_active_if_unset(provider)
     print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+    if provider == "openai-codex":
+        _warn_same_codex_account(token, existing)
     return entry
+
+
+def _warn_same_codex_account(token: str, existing: list[PooledCredential]) -> None:
+    """Tell the user when a fresh Codex login is the same OpenAI account as a pooled credential.
+
+    Two logins of one account share a single token family upstream: the provider revokes the
+    older grant, so the second credential adds no quota and silently kills the first (#47096).
+    Only distinct accounts rotate independently — the pool cannot keep both alive.
+    """
+    identity = _codex_principal_identity(token)
+    if identity is None:
+        return
+    for position, sibling in enumerate(existing, start=1):
+        if _codex_principal_identity(sibling.access_token) == identity:
+            print(f'warning: this login is the same OpenAI account as openai-codex credential #{position} '
+                  f'("{sibling.label}"). Both logins share one token family, so OpenAI will revoke the older one '
+                  "and you gain no extra quota. Log into a different account instead, or keep just one "
+                  f"(`hermes auth remove openai-codex {position}`).", file=sys.stderr)
+            return
 
 
 def _report_priority(provider: str, pool, moved, requested: int, verb: str, prep: str) -> None:

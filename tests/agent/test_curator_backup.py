@@ -216,8 +216,8 @@ def test_real_run_takes_pre_snapshot(backup_env, monkeypatch):
         lambda now=None: {"checked": 1, "marked_stale": 0, "archived": 0, "reactivated": 0},
     )
 
-    curator.run_curator_review(synchronous=True)
-    # Pre-run snapshot should exist
+    # Only the consolidation pass rewrites content in place, so only it snapshots first.
+    curator.run_curator_review(synchronous=True, consolidate=True)
     rows = cb.list_backups()
     assert any(r.get("reason") == "pre-curator-run" for r in rows), (
         f"expected a pre-curator-run snapshot, got {[r.get('reason') for r in rows]}"
@@ -520,6 +520,56 @@ def test_snapshot_excludes_git_and_curator_backups_and_hub(backup_env):
         assert ".hub" not in parts, f".hub found in archive: {name}"
 
     assert "alpha/SKILL.md" in members
+
+
+def test_snapshot_and_rollback_leave_ledger_and_archive_alone(backup_env):
+    """The audit ledger and ``.archive/`` are never rolled into a snapshot (every archive step
+    gunzips the newest snapshot in full, and both grow without bound) and never rewound by a
+    rollback (an older copy of either loses entries / archived skills)."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha", body="v1")
+    (skills / ".curator_ledger.jsonl").write_text('{"id": "old"}\n', encoding="utf-8")
+    (skills / ".archive").mkdir()
+    _write_skill(skills / ".archive", "pruned", body="archived body")
+
+    snap_dir = cb.snapshot_skills(reason="snap-v1")
+    with tarfile.open(snap_dir / "skills.tar.gz", "r:gz") as tf:
+        members = tf.getnames()
+    assert "alpha/SKILL.md" in members
+    assert not any(Path(n).parts[0] in {".archive", ".curator_ledger.jsonl"} for n in members), members
+
+    # State moves on after the snapshot; rollback restores alpha but must not touch either.
+    (skills / ".curator_ledger.jsonl").write_text('{"id": "old"}\n{"id": "new"}\n', encoding="utf-8")
+    _write_skill(skills / ".archive", "pruned-later", body="archived later")
+    ok, msg, _ = cb.rollback(snap_dir.name)
+    assert ok, msg
+    assert (skills / ".curator_ledger.jsonl").read_text(encoding="utf-8").count("\n") == 2
+    assert (skills / ".archive" / "pruned-later" / "SKILL.md").exists()
+
+
+def test_snapshot_skips_nested_venv_and_rollback_carries_it_back(backup_env):
+    """A regeneratable dir inside a skill (venv, node_modules) is never tarred — one torch venv made
+    every snapshot 349 MB (#107539) — and rollback moves the live copy back rather than dropping it.
+    A plain FILE named ``venv`` is skill content and stays in."""
+    cb, skills = backup_env["cb"], backup_env["skills"]
+    _write_skill(skills, "alpha", body="v1")
+    (skills / "alpha" / "venv" / "lib").mkdir(parents=True)
+    (skills / "alpha" / "venv" / "lib" / "big.so").write_bytes(b"x" * 4096)
+    (skills / "alpha" / "scripts").mkdir()
+    (skills / "alpha" / "scripts" / "venv").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    snap_dir = cb.snapshot_skills(reason="snap-v1")
+    with tarfile.open(snap_dir / "skills.tar.gz", "r:gz") as tf:
+        members = set(tf.getnames())
+    assert "alpha/scripts/venv" in members
+    assert not any(n.startswith("alpha/venv") for n in members), members
+
+    _write_skill(skills, "alpha", body="v2")
+    ok, msg, _ = cb.rollback(snap_dir.name)
+    assert ok, msg
+    assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+    assert (skills / "alpha" / "venv" / "lib" / "big.so").exists(), "live venv carried back after rollback"
 
 
 def test_rollback_preserves_top_level_git(backup_env):

@@ -4,7 +4,6 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
-import os
 import sys
 
 from rich.markup import escape as _escape
@@ -213,35 +212,14 @@ def _resume_panel_colors() -> tuple:
         return tuple(default for _, default in _RESUME_SKIN_COLORS)
 
 
-def _remote_kanban_private_work(
-    provider: str | None,
-    fallback_model: list[dict] | None = None,
-) -> bool:
-    """Return whether this CLI is a protected-remote Kanban worker."""
-
-    if not str(os.environ.get("HERMES_KANBAN_TASK") or "").strip():
-        return False
-    from agent.llm_egress_runtime import provider_uses_egress_firewall
-
-    if provider_uses_egress_firewall(provider):
-        return True
-    return any(
-        isinstance(route, dict)
-        and provider_uses_egress_firewall(route.get("provider"))
-        for route in (fallback_model or [])
-    )
-
-
-def _remote_kanban_toolsets(_configured: list[str] | None) -> list[str]:
-    """Return the bounded capability set for protected-remote workers.
-
-    Kanban lifecycle tools are injected by ``model_tools`` from the task
-    environment. Keeping this list explicit prevents profile-loading drift
-    from exposing desktop, memory, delegation, and skill-management schemas
-    to a short-lived reviewer or repair worker.
-    """
-
-    return ["terminal", "file", "web"]
+def _retire_agent(cli) -> None:
+    """Drop ``cli.agent`` so the next turn rebuilds it, releasing its LLM clients first: the Codex
+    app-server child (and MCP descendants) belongs to the instance, so ``self.agent = None`` alone
+    orphans it for the CLI process lifetime (#72548). Session tool state is kept (soft release)."""
+    agent = cli.agent
+    if agent is not None and hasattr(agent, "release_clients"):
+        agent.release_clients()
+    cli.agent = None
 
 
 class CLIAgentSetupMixin:
@@ -356,7 +334,7 @@ class CLIAgentSetupMixin:
 
         # AIAgent/OpenAI client holds auth at init, so rebuild on key/routing/model change.
         if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
-            self.agent = None
+            _retire_agent(self)
             self._active_agent_route_signature = None
         return True
 
@@ -524,7 +502,7 @@ class CLIAgentSetupMixin:
         except Exception as exc:
             logger.debug("first-run config re-sync failed: %s", exc)
         # Force credential re-resolution + agent rebuild on next use.
-        self.agent = None
+        _retire_agent(self)
         self._active_agent_route_signature = None
         if self._runtime_credentials_ready():
             _cprint("  ✓ Provider configured — you're ready to chat.")
@@ -673,9 +651,6 @@ class CLIAgentSetupMixin:
                 _single_query_clarify_callback
                 if getattr(self, "_single_query_mode", False)
                 else self._clarify_callback)
-            enabled_toolsets = self.enabled_toolsets
-            if _remote_kanban_private_work(runtime.get("provider"), self._fallback_model):
-                enabled_toolsets = _remote_kanban_toolsets(self.enabled_toolsets)
             self.agent = AIAgent(
                 model=effective_model, api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"), provider=runtime.get("provider"),
@@ -684,7 +659,7 @@ class CLIAgentSetupMixin:
                 acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
-                enabled_toolsets=enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
+                enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose, quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,

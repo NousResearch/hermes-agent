@@ -53,14 +53,25 @@ def test_dispatcher_spawned_worker_signals_a_provider_outage_not_a_protocol_viol
     assert code == KANBAN_RATE_LIMIT_EXIT_CODE
 
 
-@pytest.mark.parametrize("reason", ["auth", "auth_permanent", "model_not_found", "ssl_cert_verification"])
+@pytest.mark.parametrize(
+    "reason", ["auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked"]
+)
 def test_dispatcher_spawned_worker_signals_a_terminal_provider_error(monkeypatch, reason):
-    """A revoked credential / missing model cannot be retried into working: the worker says so
-    with EX_CONFIG so the dispatcher parks the card after one spawn. A person's run keeps 1."""
+    """A revoked credential / missing model / WAF User-Agent block cannot be retried into working:
+    the worker says so with EX_CONFIG so the dispatcher parks the card after one spawn. A person's
+    run keeps 1."""
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
     assert _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason}) == KANBAN_TERMINAL_PROVIDER_EXIT_CODE
     monkeypatch.delenv("HERMES_KANBAN_TASK")
     assert _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason}) == 1
+
+
+def test_dispatcher_spawned_worker_keeps_a_plain_failure_at_one(monkeypatch):
+    """Control: a task-level failure (or an unknown reason) is neither transient nor terminal —
+    the worker exits 1 and the dispatcher counts it against ``kanban.failure_limit`` as before."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+    assert _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": "some_unknown_reason"}) == 1
+    assert _run_non_quiet(monkeypatch, {"failed": True}) == 1
 
 
 @pytest.mark.parametrize(

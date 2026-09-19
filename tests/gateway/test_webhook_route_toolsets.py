@@ -42,7 +42,7 @@ def _make_adapter(routes):
 
 def _make_runner(adapter):
     gr = object.__new__(GatewayRunner)
-    gr._adapter_for_source = lambda source: adapter
+    gr._delivery_adapter_for = lambda source: adapter
     return gr
 
 

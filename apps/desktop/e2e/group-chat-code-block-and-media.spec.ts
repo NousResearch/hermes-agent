@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
@@ -12,7 +13,7 @@ import { expect, test } from './test'
 // a plain path instead of an inline image/player (#93728). Group replies now
 // go through the same message renderer as the 1:1 chat.
 
-const SHOT_DIR = '/tmp/batchbots/panes-layout-cron-tile/shots'
+const SHOT_DIR = path.join(os.tmpdir(), 'batchbots/panes-layout-cron-tile/shots')
 // One unbroken 600+ char token: it cannot wrap, so it MUST overflow the
 // message column — the probe asserts that overflow exists before asserting
 // nothing clips it (a line that fits proves nothing about #91878).

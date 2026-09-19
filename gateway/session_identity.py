@@ -15,6 +15,8 @@ receiving bot's own profile — so nothing here changes the wire format or any h
 from __future__ import annotations
 
 import dataclasses
+import logging
+from contextlib import suppress
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +24,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from gateway.session import SessionSource
+
+logger = logging.getLogger(__name__)
 
 _IDENTITY_ATTR = "_identity"
 # Wire-invisible provenance copied alongside the identity when a source is duplicated.
@@ -53,6 +57,11 @@ class RoutingIdentity:
     # Receiving adapter; None for restored/synthetic sources (no live provenance → fail closed).
     # Provenance, not identity: two events from the same bot share one identity.
     transport: Optional[weakref.ref] = field(default=None, compare=False, hash=False)
+    # True when nothing named the receiving bot (no live adapter, no persisted transport_profile,
+    # no explicit hint) and ``transport_profile`` is the primary by default. A hand-built or
+    # pre-column source. Delivery may still fall back to the runtime profile's unique adapter for
+    # these; an identity whose transport is KNOWN (live or restored) never does.
+    transport_inferred: bool = field(default=False, compare=False, hash=False)
 
     @property
     def namespace(self) -> str:
@@ -82,6 +91,26 @@ def identity_of(source: Any) -> Optional[RoutingIdentity]:
     return identity if isinstance(identity, RoutingIdentity) else None
 
 
+def clear_identity(source: Any) -> None:
+    """Drop the pinned identity AND the routed runtime profile so the next :func:`canonical_identity`
+    re-routes from scratch — for sources a caller reuses across events whose routing may differ (a
+    guild's cached voice source is shared by every speaker, and ``profile_routes[].user_id`` routes
+    per speaker). ``source.profile`` is the previous event's routing *result*; left in place it
+    short-circuits the route and the new speaker runs as the old one."""
+    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home"):
+        with suppress(AttributeError):
+            delattr(source, attr)
+    with suppress(AttributeError):
+        source.profile = None
+
+
+def transport_profile_of(source: Any) -> Optional[str]:
+    """The receiving bot's profile to persist alongside a routing entry (``SessionEntry.transport_profile``);
+    None outside multiplexing or when nothing resolved the source (an unknown transport is never guessed)."""
+    identity = identity_of(source)
+    return identity.transport_profile if identity is not None and identity.multiplexed else None
+
+
 def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":
     """:func:`dataclasses.replace` that keeps the wire-invisible provenance (transport ref,
     authorization home, identity). A plain ``replace`` silently produces a source the runner
@@ -97,6 +126,66 @@ def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":
 def _name(value: Any) -> Optional[str]:
     text = value.strip() if isinstance(value, str) else ""
     return text or None
+
+
+def canonical_identity(
+    source: "SessionSource", *, runner: Any, adapter: Any = None,
+    transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
+) -> Optional[RoutingIdentity]:
+    """The identity already pinned on *source*, else :func:`resolve_identity` — the one call every
+    ingress path makes FIRST, before any key is derived. ``None`` = unresolved under multiplexing
+    (``source.profile_route_rejected`` is set): the caller drops the event and says so once; it
+    must never fall through to ``agent:main``."""
+    identity = identity_of(source)
+    if identity is not None:
+        return identity
+    try:
+        return resolve_identity(
+            source, runner=runner, adapter=adapter, transport_profile=transport_profile,
+            primary_home=primary_home)
+    except IdentityUnresolved as exc:
+        logger.debug("identity unresolved: %s", exc)
+        return None
+
+
+def restore_identity(
+    source: "SessionSource", *, runner: Any, transport_profile: Optional[str],
+) -> Optional[RoutingIdentity]:
+    """Pin the identity of a source rebuilt from durable state (``SessionEntry.origin``, a
+    ``sessions`` row, a cached copy) — no live adapter, so ``transport=None``: the restored row of the
+    transport matrix, where delivery goes through the persisted transport owner or fails closed.
+
+    *transport_profile* is what the routing index persisted at ingress (``SessionEntry.transport_profile``);
+    ``None`` = a row written before the column existed, whose transport is unknown → nothing is pinned
+    and the legacy heuristics (``_is_shared_bot_satellite``) keep deciding. Standalone gateways have
+    nothing to restore (one bot, one home).
+    """
+    transport_name = _name(transport_profile)
+    if transport_name is None:
+        return None
+    if not bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False)):
+        return None
+    existing = identity_of(source)
+    if existing is not None:
+        return existing
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import get_process_hermes_home
+
+    primary_profile = _name(getattr(runner, "_primary_profile_name", None)) or "default"
+    runtime_name = _name(getattr(source, "profile", None)) or primary_profile
+    authorization_home = (
+        Path(get_process_hermes_home()) if transport_name == primary_profile
+        else get_profile_dir(transport_name))
+    runtime_home = (
+        authorization_home if runtime_name == transport_name
+        else Path(runner._resolve_profile_home_for_source(source)))
+    source._authorization_profile_home = authorization_home
+    identity = RoutingIdentity(
+        transport_profile=transport_name, runtime_profile=runtime_name,
+        authorization_home=authorization_home, runtime_home=runtime_home,
+        multiplexed=True, transport=None)
+    setattr(source, _IDENTITY_ATTR, identity)
+    return identity
 
 
 def resolve_identity(
@@ -137,6 +226,7 @@ def resolve_identity(
             source._transport_adapter_ref = weakref.ref(adapter)
         _registered, owner_profile = runner._owning_profile(adapter, platform)
     transport_name = _name(transport_profile) or _name(owner_profile) or primary_profile
+    transport_inferred = adapter is None and _name(transport_profile) is None and _name(owner_profile) is None
     transport_ref = weakref.ref(adapter) if adapter is not None else None
 
     if not multiplexed:
@@ -178,6 +268,6 @@ def resolve_identity(
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
         authorization_home=authorization_home, runtime_home=runtime_home,
-        multiplexed=True, transport=transport_ref)
+        multiplexed=True, transport=transport_ref, transport_inferred=transport_inferred)
     setattr(source, _IDENTITY_ATTR, identity)
     return identity

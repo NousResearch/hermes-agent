@@ -3,7 +3,6 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
-from dataclasses import replace
 import hashlib
 import importlib
 import inspect  # noqa: F401  (split modules)
@@ -30,7 +29,8 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
-from agent.replay_cleanup import canonicalize_replay_history, sanitize_replay_history
+from agent.replay_cleanup import canonicalize_replay_history
+from agent.reasoning_effort import clamp_effort, route_supported_efforts
 from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
 from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
@@ -47,39 +47,7 @@ from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, b
 
 logger = logging.getLogger(__name__)
 
-_failed_conversation_root_leases: list[object] = []
-_failed_conversation_root_leases_lock = threading.Lock()
-_failed_conversation_root_lease_retry_timer = None
-
-
-def _remember_failed_conversation_root_lease(lease) -> None:
-    global _failed_conversation_root_lease_retry_timer
-    with _failed_conversation_root_leases_lock:
-        if all(existing is not lease for existing in _failed_conversation_root_leases):
-            _failed_conversation_root_leases.append(lease)
-        timer = _failed_conversation_root_lease_retry_timer
-        if timer is None or not timer.is_alive():
-            timer = threading.Timer(1.0, _retry_failed_conversation_root_leases)
-            timer.daemon = True
-            _failed_conversation_root_lease_retry_timer = timer
-            timer.start()
-
-
-def _retry_failed_conversation_root_leases() -> None:
-    global _failed_conversation_root_lease_retry_timer
-    with _failed_conversation_root_leases_lock:
-        pending = list(_failed_conversation_root_leases)
-        _failed_conversation_root_leases.clear()
-        _failed_conversation_root_lease_retry_timer = None
-    for lease in pending:
-        try:
-            lease.release()
-        except Exception:
-            _remember_failed_conversation_root_lease(lease)
-            logger.warning("Failed to retry TUI conversation root lease release", exc_info=True)
-
-_hermes_home = get_hermes_home()
-_HERMES_HOME_AT_IMPORT = _hermes_home
+_hermes_home = _HERMES_HOME_AT_IMPORT = get_hermes_home()
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
 
 
@@ -121,13 +89,6 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
-_pending: dict[str, tuple[str, threading.Event]] = {}
-_pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
-_answers: dict[str, str] = {}
-# Batch clarify accumulators: rid → {"qids": [...], "answers": {qid: answer}}. Written by
-# clarify.respond (per-question lock, update-in-place), read out by _block on resolution/timeout
-# so locked answers survive the deadline.
-_batch_clarify: dict[str, dict] = {}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -141,13 +102,6 @@ _cfg_sig: tuple | None = None
 _cfg_path = None
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
-
-
-def _session_prompt_submit_lock(session: dict):
-    """Return the per-session admission lock, including records created by older clients."""
-    history_lock = session.setdefault("history_lock", threading.Lock())
-    with history_lock:
-        return session.setdefault("prompt_submit_lock", threading.Lock())
 
 def _ws_orphan_setting(env_var: str, cfg_key: str, default: float) -> float:
     """``dashboard.<cfg_key>`` seconds; the env var is an internal override that wins when set."""
@@ -218,7 +172,6 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
-    "prompt.submit",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
 })
 
@@ -481,305 +434,6 @@ def _open_profile_session_db(profile_home):
         return acquire(db_path)
     except Exception as exc:
         raise RuntimeError(f"profile session store unavailable: {db_path}: {exc}") from exc
-
-
-def _conversation_worktree_metadata(binding) -> dict:
-    """Return the UI/prompt-safe projection of a certified binding."""
-    return {"root_session_id": str(binding.root_session_id), "path": str(binding.path),
-            "branch": str(binding.branch), "base_commit": str(binding.base_commit)}
-
-
-def _acquire_conversation_root_lease(binding, *, surface: str):
-    from agent.conversation_worktree import acquire_conversation_root_lease
-    return acquire_conversation_root_lease(root_session_id=str(binding.root_session_id),
-                                           worktree_path=Path(binding.path),
-                                           repo_common_dir=Path(binding.repo_common_dir), surface=surface)
-
-
-def _remove_failed_conversation_worktree(session: dict, binding, db) -> None:
-    """Release a seeded root and remove its checkout before surfacing metadata failure."""
-    lease = session.get("conversation_root_lease")
-    if lease is not None:
-        try:
-            lease.release()
-        except Exception:
-            _remember_failed_conversation_root_lease(lease)
-            logger.warning("Failed to release failed conversation root lease", exc_info=True)
-        else:
-            session.pop("conversation_root_lease", None)
-    try:
-        manager, _, owns_db = _conversation_worktree_manager(
-            profile_home=session.get("profile_home"),
-            db=db,
-            session_cwd=session.get("cwd"),
-        )
-        remover = getattr(manager, "remove_after_explicit_request", None)
-        if callable(remover):
-            result = remover(
-                str(binding.root_session_id),
-                active_session_bound=False,
-                retain_for_retry=True,
-            )
-            if not getattr(result, "removed", False):
-                logger.warning(
-                    "Failed to remove failed seeded conversation worktree %s",
-                    binding.root_session_id,
-                )
-        else:
-            logger.warning(
-                "Conversation worktree manager cannot remove failed seeded root %s",
-                binding.root_session_id,
-            )
-        if owns_db:
-            with contextlib.suppress(Exception):
-                db.close()
-    except Exception:
-        logger.warning(
-            "Failed to remove failed seeded conversation worktree %s",
-            binding.root_session_id,
-            exc_info=True,
-        )
-
-
-def _conversation_worktree_policy_for_session(policy, session_cwd: str | None):
-    """Use the session's repository when it differs from the configured default.
-
-    The desktop sends the selected project root as ``cwd``.  Conversation
-    isolation is lazy, so this is the last boundary where that project
-    identity must be carried into worktree creation.  Keep the configured
-    root for its repository to preserve existing bindings; give another
-    repository a deterministic child root so repositories can never share a
-    worktree namespace.
-    """
-    if not policy.enabled or not session_cwd or policy.source_worktree is None:
-        return policy
-    source = git_probe.repo_root(str(session_cwd))
-    if not source:
-        candidate = Path(session_cwd).expanduser().resolve()
-        while candidate != candidate.parent:
-            if (candidate / ".git").exists():
-                from agent.conversation_worktree import ConversationWorktreeError
-                raise ConversationWorktreeError(
-                    "selected session repository could not be identified", phase="identity"
-                )
-            candidate = candidate.parent
-        return policy
-    source_path = Path(source).resolve()
-    configured_path = policy.source_worktree.resolve()
-    if source_path == configured_path:
-        return policy
-
-    configured_common = git_probe.common_repo_root(str(configured_path))
-    selected_common = git_probe.common_repo_root(str(source_path))
-    if not configured_common or not selected_common:
-        from agent.conversation_worktree import ConversationWorktreeError
-        raise ConversationWorktreeError(
-            "selected session repository common identity could not be established",
-            phase="identity",
-        )
-    same_repository = Path(configured_common).resolve() == Path(selected_common).resolve()
-    if same_repository and source_path == configured_path:
-        return policy
-    if policy.worktree_root is None:
-        return policy
-
-    selected_common_path = Path(selected_common).resolve()
-    suffix = hashlib.sha256(str(selected_common_path).encode()).hexdigest()[:12]
-    namespace = f"{selected_common_path.name}-{suffix}"
-    configured_root = policy.worktree_root.resolve()
-    repository_worktrees = {configured_path, selected_common_path}
-    for common_path in (Path(configured_common).resolve(), selected_common_path):
-        listing = git_probe.run_git(str(common_path), "worktree", "list", "--porcelain")
-        repository_worktrees.update(
-            Path(line.removeprefix("worktree ")).resolve()
-            for line in listing.splitlines()
-            if line.startswith("worktree ")
-        )
-    if not any(configured_root.is_relative_to(worktree) for worktree in repository_worktrees):
-        worktree_root = policy.worktree_root / namespace
-    else:
-        # A conventional ``<repo>/.worktrees`` root is valid for its own
-        # repository, but cannot host a different repository's checkout. Keep
-        # alternate-project roots in the Hermes home, outside either repo.
-        worktree_root = get_hermes_home() / "conversation-worktrees" / namespace
-    logger.warning(
-        "conversation_worktree.project_source_override session_cwd=%s "
-        "configured_source=%s selected_source=%s worktree_root=%s",
-        session_cwd,
-        configured_path,
-        source_path,
-        worktree_root,
-    )
-    # Keep the selected checkout as the manager source so its HEAD becomes the
-    # immutable conversation base.  ``selected_common`` remains the durable
-    # repository namespace and ownership identity used above.
-    return replace(policy, source_worktree=source_path, worktree_root=worktree_root)
-
-
-def _conversation_worktree_manager(*, profile_home=None, db=None, session_cwd=None):
-    """Construct the policy-governed manager against the owning profile DB."""
-    owns_db = False
-    home_token = set_hermes_home_override(str(profile_home)) if profile_home else None
-    try:
-        from agent.conversation_worktree import ConversationWorktreeError, ConversationWorktreeManager
-        from agent.conversation_worktree_policy import resolve_conversation_worktree_policy
-        policy = resolve_conversation_worktree_policy(_load_cfg())
-        policy = _conversation_worktree_policy_for_session(policy, session_cwd)
-        if not policy.enabled:
-            return None, db, owns_db
-        if db is None:
-            if profile_home:
-                db = _open_profile_session_db(profile_home)
-                owns_db = True
-            else:
-                db = _get_db()
-        if db is None:
-            raise ConversationWorktreeError("state.db is unavailable", phase="state")
-        return ConversationWorktreeManager(policy, db), db, owns_db
-    except Exception:
-        if owns_db and db is not None:
-            with contextlib.suppress(Exception):
-                db.close()
-        raise
-    finally:
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
-
-
-def _bind_new_interactive_conversation_worktree(
-    root_session_id: str, *, profile_home=None, db=None, session_cwd=None
-):
-    """Create/recover one worktree for a brand-new interactive root only."""
-    manager = owned_db = None
-    owns_db = False
-    try:
-        manager, owned_db, owns_db = _conversation_worktree_manager(
-            profile_home=profile_home, db=db, session_cwd=session_cwd
-        )
-        return None if manager is None else manager.bind_new_root_session(
-            root_session_id, conversation_kind="interactive")
-    finally:
-        if owns_db and owned_db is not None:
-            with contextlib.suppress(Exception):
-                owned_db.close()
-
-
-def _resolve_existing_conversation_worktree(
-    root_session_id: str, *, profile_home=None, db=None, session_cwd=None
-):
-    """Resolve a ready binding without ever creating a worktree on resume."""
-    manager = owned_db = None
-    owns_db = False
-    try:
-        manager, owned_db, owns_db = _conversation_worktree_manager(
-            profile_home=profile_home, db=db, session_cwd=session_cwd
-        )
-        return None if manager is None else manager.resolve_existing_session(root_session_id)
-    finally:
-        if owns_db and owned_db is not None:
-            with contextlib.suppress(Exception):
-                owned_db.close()
-
-
-def _bind_conversation_worktree_for_new_root(
-    root_session_id: str, *, profile_home=None, db=None, session_cwd=None
-):
-    """Named seam for root boundaries; distinct from continuation lookup."""
-    kwargs = {"profile_home": profile_home, "db": db}
-    if session_cwd:
-        kwargs["session_cwd"] = session_cwd
-    return _bind_new_interactive_conversation_worktree(root_session_id, **kwargs)
-
-
-def _bind_conversation_worktree_on_submit(session: dict) -> None:
-    """Materialize a desktop/TUI draft's worktree when its first prompt makes it durable."""
-    if (session.get("conversation_worktree")
-            or session.get("conversation_worktree_historical")
-            or session.get("source") not in {"desktop", "tui"}):
-        return
-    key = str(session.get("session_key") or "")
-    if not key:
-        return
-    prior_cwd = session.get("cwd")
-    prior_explicit_cwd = bool(session.get("explicit_cwd"))
-    with _session_db(session) as db:
-        binding = _bind_conversation_worktree_for_new_root(
-            key,
-            profile_home=session.get("profile_home"),
-            db=db,
-            session_cwd=prior_cwd,
-        )
-        if binding is None:
-            return
-        metadata = _conversation_worktree_metadata(binding)
-        root_lease = _acquire_conversation_root_lease(
-            binding, surface=session.get("source") or "desktop")
-        session["conversation_worktree"] = metadata
-        session["conversation_root_lease"] = root_lease
-        session["cwd"] = metadata["path"]
-        session["explicit_cwd"] = True
-        _register_session_cwd(session)
-        if db is not None:
-            common_root = git_probe.common_repo_root(metadata["path"])
-            if not common_root:
-                common_root = str(binding.repo_common_dir)
-            try:
-                db.update_session_cwd(
-                    key, metadata["path"], metadata.get("branch", ""),
-                    common_root, replace_git_meta=True)
-            except Exception:
-                _remove_failed_conversation_worktree(session, binding, db)
-                # The checkout is gone; leave the live draft retryable instead of making its
-                # deleted binding truthy and routing the next submit into a dead directory.
-                session["conversation_worktree"] = {}
-                session["cwd"] = prior_cwd
-                session["explicit_cwd"] = prior_explicit_cwd
-                session.pop("conversation_root_lease", None)
-                _register_session_cwd(session)
-                raise
-
-
-def _resolve_conversation_worktree_for_resume(session_id: str, *, profile_home=None, db=None):
-    """Find the existing root binding, recovering a failed root claim when possible."""
-    current, seen = str(session_id or "").strip(), set()
-    while current and current not in seen:
-        seen.add(current)
-        try:
-            session_cwd = None
-            if db is not None and hasattr(db, "get_session"):
-                session_cwd = (db.get_session(current) or {}).get("cwd")
-            kwargs = {"profile_home": profile_home, "db": db}
-            if session_cwd:
-                kwargs["session_cwd"] = session_cwd
-            binding = _resolve_existing_conversation_worktree(current, **kwargs)
-        except Exception as exc:
-            from agent.conversation_worktree import ConversationWorktreeError
-
-            if not isinstance(exc, ConversationWorktreeError):
-                raise
-            record = db.get_conversation_worktree(current) if db is not None else None
-            if record is None or record.state != "creation_failed":
-                raise
-            manager, _, _ = _conversation_worktree_manager(
-                profile_home=profile_home, db=db, session_cwd=session_cwd
-            )
-            binding = manager.bind_new_root_session(current, conversation_kind="interactive")
-        if binding is not None:
-            return binding
-        if db is None or not hasattr(db, "get_session"):
-            return None
-        if db.is_explicit_fork_child(current):
-            return None
-        current = str((db.get_session(current) or {}).get("parent_session_id") or "").strip()
-    return None
-
-
-def _conversation_worktree_prompt_fragment(metadata: dict | None) -> str:
-    if not isinstance(metadata, dict) or not metadata.get("path"):
-        return ""
-    return ("This interactive conversation is isolated in a certified Git worktree. "
-            f"Use {metadata['path']} as its workspace (branch {metadata.get('branch') or 'unknown'}, "
-            f"base {metadata.get('base_commit') or 'unknown'}). Do not switch to the stable source checkout.")
 
 
 @contextlib.contextmanager
@@ -1567,41 +1221,15 @@ def _load_cfg_raw() -> dict:
     return {}
 
 
-def _expand_cfg(cfg: dict) -> dict:
-    """``${ENV_VAR}`` expansion (same as ``load_config_readonly``); non-dict results keep the input."""
-    from hermes_cli.config import _expand_env_vars
-    expanded = _expand_env_vars(cfg)
-    return expanded if isinstance(expanded, dict) else cfg
-
-
 def _load_cfg() -> dict:
-    """Behavioral config read: raw user file + managed overlay + ${VAR} expansion — ``load_config_readonly``
-    minus the DEFAULT_CONFIG merge (callers treat a missing key as "unset"; merging would break
-    ``_load_cfg() == {}`` sentinels). Never pass the result to ``_save_cfg`` (use ``_load_cfg_raw()``)."""
-    cfg = _apply_managed(_load_cfg_raw())
+    """Behavioral config read: the effective USER config (managed overlay, ``${VAR}`` expansion, model-key
+    canon) minus the DEFAULT_CONFIG merge — callers treat a missing key as "unset", so merging would break
+    ``_load_cfg() == {}`` sentinels. Fail-open to ``{}``. Never pass the result to ``_save_cfg`` (use
+    ``_load_cfg_raw()``)."""
     with contextlib.suppress(Exception):
-        cfg = _expand_cfg(cfg)
-    return cfg
-
-
-def _sync_agent_turn_limit_with_config(session: dict) -> None:
-    """Adopt config max-turn edits for an already-built Desktop/TUI agent."""
-    agent = session.get("agent")
-    if agent is None:
-        return
-    from tui_gateway.agent_callbacks import _cfg_max_turns
-
-    agent.max_iterations = _cfg_max_turns(_load_cfg(), 500)
-
-
-def _apply_managed(cfg: dict) -> dict:
-    """Overlay administrator-pinned managed-scope values (read-side only, fail-open): this backend builds
-    config independently of load_config, so managed skin/reasoning_effort/service_tier/provider_routing
-    would otherwise be silently ignored."""
-    with contextlib.suppress(Exception):
-        from hermes_cli import managed_scope
-        return managed_scope.apply_managed_overlay(cfg if isinstance(cfg, dict) else {})
-    return cfg
+        from hermes_cli.config_effective import load_user_config_effective
+        return load_user_config_effective(_active_config_path())
+    return {}
 
 
 def _save_cfg(cfg: dict):
@@ -2462,10 +2090,18 @@ def _session_info(agent, session: dict | None = None) -> dict:
         # Broadcast/resume callers need not be bound to this session's profile.
         with _profile_build_scope(sess.get("profile_home") or _hermes_home):
             provider = _runtime_model_config(agent).get("provider", provider)
+    model = pending_model or mirror.get("model", getattr(agent, "model", ""))
+    # The level the route's entry clamp actually sends (== reasoning_effort when verbatim), so the
+    # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a
+    # Hermes-internal step (#61634) as a wire level the route does not have.
+    reasoning_effort_wire = ""
+    if reasoning_effort and reasoning_effort != "none":
+        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
     info: dict = {
-        "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
+        "model": model,
         "provider": pending_provider or provider,
-        "reasoning_effort": reasoning_effort, "service_tier": service_tier, "fast": service_tier == "priority",
+        "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
+        "service_tier": service_tier, "fast": service_tier == "priority",
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
@@ -2638,12 +2274,36 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
     if resolution.used_fallback:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
+        # Same pre-agent switch the messaging gateway surfaces (#74349); _make_agent pops it onto the
+        # agent's one-shot notice so the TUI/Desktop user sees which provider actually answered.
+        from hermes_cli.fallback_config import pre_agent_fallback_notice
+        # requested_provider=None means resolve_runtime_provider read the persisted config provider.
+        primary_provider = requested_provider or (_load_cfg().get("model") or {}).get("provider")
+        resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
+            primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
         return resolution.selected_model, resolution.runtime
     if resolution.runtime.get("source") == "local-runtime":
         # Live supervisor beat any persisted loopback URL for this identity.
         overrides.pop("base_url", None)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
+    if any(overrides.values()):
+        _rederive_per_model_route(model, resolution.runtime)
     return model, resolution.runtime
+
+
+def _rederive_per_model_route(model: str, runtime: dict) -> None:
+    """A row's persisted api_mode/base_url were written for whichever model the session last ran. Providers
+    that pick the wire per model (OpenCode Zen/Go, Copilot, Nous) must re-derive both from the target model,
+    or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
+    other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
+    from hermes_cli.model_switch import model_derived_api_mode
+    from hermes_cli.models import normalize_opencode_base_url
+    provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
+    api_mode = model_derived_api_mode(provider, model)
+    if api_mode is None:
+        return
+    runtime["api_mode"] = api_mode
+    runtime["base_url"] = normalize_opencode_base_url(provider, api_mode, runtime.get("base_url"))
 
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:
@@ -2692,7 +2352,7 @@ def _make_agent(
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
-    conversation_worktree: dict | None = None):
+    cwd_override: str | None = None, auth_user_id: str | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2709,49 +2369,43 @@ def _make_agent(
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
-    if conversation_worktree is None:
-        with _sessions_lock:
-            session = _sessions.get(sid)
-            conversation_worktree = (session or {}).get("conversation_worktree")
-    else:
-        with _sessions_lock:
-            session = _sessions.get(sid)
-    worktree_note = _conversation_worktree_prompt_fragment(conversation_worktree)
-    if worktree_note:
-        system_prompt = "\n\n".join(part for part in (system_prompt, worktree_note) if part)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    fallback_notice = runtime.pop("_fallback_notice", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
-    from agent.runtime_cwd import set_session_cwd
-    cwd_token = set_session_cwd(conversation_worktree["path"]) if conversation_worktree else None
-    try:
-        agent = AIAgent(
-            model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
-            base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
-            acp_command=runtime.get("command"), acp_args=runtime.get("args"),
-            credential_pool=runtime.get("credential_pool"), quiet_mode=True,
-            verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
-            reasoning_config=(
-                reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-            service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-            enabled_toolsets=_load_enabled_toolsets(platform),
-            # OpenRouter provider_routing prefs (gateway + CLI parity).
-            providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
-            provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
-            provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
-            session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
-            checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
-            pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-            skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
-            user_id=_session_auth_user_id(session),
-            **_agent_cbs(sid))
-    finally:
-        if cwd_token is not None:
-            cwd_token.var.reset(cwd_token)
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    agent = AIAgent(
+        model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
+        requested_provider=runtime.get("requested_provider"),
+        base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
+        acp_command=runtime.get("command"), acp_args=runtime.get("args"),
+        credential_pool=runtime.get("credential_pool"), quiet_mode=True,
+        verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
+        reasoning_config=(
+            reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
+        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+        enabled_toolsets=_load_enabled_toolsets(platform),
+        # OpenRouter provider_routing prefs (gateway + CLI parity).
+        providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
+        provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
+        provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
+        cwd=cwd_override,
+        # The dashboard login identity reaches memory providers as the runtime user, like a gateway user id.
+        # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
+        user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
+        session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
+        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
+        skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    if fallback_notice:
+        # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
+        agent._pending_fallback_notice = fallback_notice
     return agent
 
 
@@ -2772,7 +2426,7 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
     try:
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
-            if row and row.get("cwd") and not (_sessions.get(sid) or {}).get("conversation_worktree"):
+            if row and row.get("cwd"):
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
@@ -2790,14 +2444,10 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
 def _init_session(
     sid: str, key: str, agent, history: list, cols: int = 80, cwd: str | None = None,
     session_db=None, source: str | None = None, profile_home: str | None = None,
-    explicit_cwd: bool = False, conversation_worktree=None, conversation_root_lease=None,
-    conversation_worktree_historical: bool = False):
+    explicit_cwd: bool = False):
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
-            "conversation_worktree": conversation_worktree or {},
-            "conversation_worktree_historical": bool(conversation_worktree_historical),
-            "conversation_root_lease": conversation_root_lease,
             "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
             "history_version": 0, "inflight_turn": None, "created_at": now, "last_active": now,
             "running": False, "attached_images": [], "image_counter": 0, "cwd": cwd or _completion_cwd(),
@@ -2866,8 +2516,7 @@ def _deferred_session_record(
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
         "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
         "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,
-        "history_lock": threading.Lock(), "prompt_submit_lock": threading.Lock(),
-        "history_version": 0, "image_counter": 0,
+        "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
         "inflight_turn": None, "last_active": now, "lazy": lazy, "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
@@ -2911,17 +2560,14 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
         # A PRIOR runtime for this stored id may still be sentinel-parked with a reap Timer armed; cancel +
         # finalize it quietly so the reap doesn't broadcast session.reclaimed (storm).
         _cancel_ws_orphan_reap(sid)
-    # The parked-runtime claim is itself teardown. It must acquire prompt admission before the resume lock,
-    # so do it after releasing the resume lock rather than inverting prompt.submit's lock order.
-    stale = _claim_parked_runtimes(session_key, keep_sid=sid, profile_home=profile_home)
+        stale = _claim_parked_runtimes(session_key, keep_sid=sid, profile_home=profile_home)
     _finalize_superseded_runtimes(stale)  # slow finalization stays OUTSIDE _session_resume_lock
     return None
 
 
 def _claim_parked_runtimes(session_key: str, *, keep_sid: str, profile_home=_ANY_PROFILE) -> list[tuple[str, dict]]:
     """Claim sentinel-parked stale runtimes of ``session_key`` for supersession: cancel their orphan-reap
-    Timer and pop them here; prompt admission and resume both remain serialized while each stale runtime is claimed.
-    The caller finalizes after release."""
+    Timer and pop them here (under the caller's _session_resume_lock); the caller finalizes after release."""
     stale: list[tuple[str, dict]] = []
     with _sessions_lock:
         candidates = [
@@ -2929,17 +2575,10 @@ def _claim_parked_runtimes(session_key: str, *, keep_sid: str, profile_home=_ANY
             if old_sid != keep_sid and not old.get("_finalized")
             and _session_lookup_key(old, fallback=old_sid) == session_key
             and _live_profile_matches(old, profile_home) and old.get("transport") is _detached_ws_transport]
-    for old_sid, old in candidates:
-        with _session_prompt_submit_lock(old), _session_resume_lock, _sessions_lock:
-            current = _sessions.get(old_sid)
-            if (current is not old or current.get("_finalized")
-                    or _session_lookup_key(current, fallback=old_sid) != session_key
-                    or not _live_profile_matches(current, profile_home)
-                    or current.get("transport") is not _detached_ws_transport):
-                continue
-            _cancel_ws_orphan_reap(old_sid)
-            if (popped := _pop_session_by_id(old_sid)) is not None:
-                stale.append((old_sid, popped))
+    for old_sid, _old in candidates:
+        _cancel_ws_orphan_reap(old_sid)
+        if (popped := _pop_session_by_id(old_sid)) is not None:
+            stale.append((old_sid, popped))
     return stale
 
 
@@ -2953,33 +2592,8 @@ def _finalize_superseded_runtimes(stale: list[tuple[str, dict]]) -> None:
             logger.exception("superseded runtime teardown failed sid=%s", old_sid)
 
 
-def _conversation_worktree_prewarm_pending(session: dict) -> bool:
-    """Whether an isolated desktop/TUI draft must bind its worktree before agent construction."""
-    if (session.get("source") not in {"desktop", "tui"}
-            or session.get("conversation_worktree")):
-        return False
-    home_token = None
-    try:
-        if profile_home := session.get("profile_home"):
-            home_token = set_hermes_home_override(str(profile_home))
-        from agent.conversation_worktree_policy import resolve_conversation_worktree_policy
-        return bool(resolve_conversation_worktree_policy(_load_cfg()).enabled)
-    except Exception:
-        # Do not prewarm an agent when policy resolution itself failed: construction
-        # would otherwise run outside the submit error surface and strand the draft.
-        logger.warning("conversation worktree prewarm policy check failed", exc_info=True)
-        return True
-    finally:
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
-
-
 def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     """Pre-warm a deferred session's agent off the response path (session.create + cold resume; _sess() also builds on demand)."""
-    session = _sessions.get(sid)
-    if session is not None and _conversation_worktree_prewarm_pending(session):
-        logger.debug("deferring agent prewarm for isolated session %s until worktree binding", sid)
-        return
 
     def _run():
         if (session := _sessions.get(sid)) is not None:
@@ -3055,7 +2669,10 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             session["agent_ready"].set()
             _emit("session.resume_progress", sid, {"message": message, "phase": "history", "status": "failed"})
             _emit("error", sid, {"message": message})
-            _close_session_by_id(sid, end_reason="resume_failed")
+            with _sessions_lock:
+                discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
+            if (lease := (discarded or {}).get("active_session_lease")) is not None:
+                lease.release()
         finally:
             if close_db and hasattr(db, "close"):
                 try:

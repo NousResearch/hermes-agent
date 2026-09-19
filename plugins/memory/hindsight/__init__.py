@@ -1085,7 +1085,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # Advance the watermark only after the delta is queued so a later retain
         # doesn't re-ship turns already handed to the writer.
         if update_mode == "append":
-            self._last_retained_turn_count = len(self._session_turns)
+            # The job above holds its own copy, and append retains (here and flush-on-switch) only
+            # ever read the un-retained tail — so drop shipped turns instead of pinning every turn
+            # of a never-ending session (#62950). Overwrite mode resends the whole session and
+            # must keep them all.
+            self._session_turns.clear()
+            self._last_retained_turn_count = 0
 
     def _enqueue_retain(self, job: Callable[[], None]) -> None:
         """Hand *job* to the (lazily started) writer and arm the atexit drain."""

@@ -1959,10 +1959,14 @@ def _get_usage(agent) -> dict:
             usage["cache_hit_pct"] = max(0, min(100, round(_cache_read / _prompt_total * 100)))
     with contextlib.suppress(Exception):  # a status-bar readout must never break usage reporting
         _lhist = list(getattr(agent, "_api_latency_history", []) or [])
+        _dhist = list(getattr(agent, "_api_decode_history", []) or [])
         _ohist = list(getattr(agent, "_api_output_history", []) or [])
-        if _n := min(len(_lhist), len(_ohist)):
+        if _n := min(len(_lhist), len(_dhist), len(_ohist)):
             _total_lat = sum(_lhist[-_n:])
-            _avg_vel = (sum(_ohist[-_n:]) / _total_lat) if _total_lat > 0 else None
+            # tokens/s over decode time only: a 100k-token prompt to a local model spends most of
+            # the call in prefill, which is not generation speed.
+            _total_decode = sum(_dhist[-_n:])
+            _avg_vel = (sum(_ohist[-_n:]) / _total_decode) if _total_decode > 0 else None
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)

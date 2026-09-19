@@ -2698,9 +2698,18 @@ class _StreamingCall(StreamingWaitMonitor):
         )
 
     def _fire_first_delta(self):
+        self._stamp_first_token()
         if not self.first_delta_fired["done"] and self.on_first_delta:
             self.first_delta_fired["done"] = True
             self._quiet(self.on_first_delta)
+
+    def _stamp_first_token(self) -> None:
+        """When the first text, reasoning or tool-call delta arrived: the end of prefill.
+        ``first_chunk_at`` is any SSE frame, and local servers (vLLM, llama.cpp) send an
+        empty role delta before prefill starts, so it cannot separate prefill from decode."""
+        diag = self.clients.diag
+        if isinstance(diag, dict) and diag.get("first_token_at") is None:
+            diag["first_token_at"] = time.time()
 
     def _emit_text(self, text: str) -> None:
         self._fire_first_delta()
@@ -3585,9 +3594,12 @@ class _StreamingCall(StreamingWaitMonitor):
             raise self.result["error"]
         if self.result["response"] is not None:
             _reset_stale_streak(self.agent)  # provider proved responsive: clear the breaker
-        # Propagate first-chunk timing for the ``post_api_request`` hook.
+        # Propagate first-chunk timing for the ``post_api_request`` hook, and the decode
+        # span (first token to stream end) for the status-bar tokens-per-second readout.
         if isinstance(self.clients.diag, dict) and self.clients.diag.get("first_chunk_at"):
             self.agent._last_api_first_chunk_at = float(self.clients.diag["first_chunk_at"])
+        if isinstance(self.clients.diag, dict) and self.clients.diag.get("first_token_at"):
+            self.agent._last_api_decode_seconds = max(0.0, time.time() - float(self.clients.diag["first_token_at"]))
         return self.result["response"]
 
 

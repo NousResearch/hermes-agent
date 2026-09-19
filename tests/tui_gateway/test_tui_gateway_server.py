@@ -20253,12 +20253,29 @@ def test_get_usage_perf_readouts_present():
         session_prompt_tokens = 27_873
         session_cache_read_tokens = 24_369
         _api_latency_history = deque([2.1, 4.3], maxlen=10)
+        _api_decode_history = deque([2.1, 4.3], maxlen=10)
         _api_output_history = deque([130, 190], maxlen=10)
 
     usage = server._get_usage(_PerfAgent())
     assert usage["cache_hit_pct"] == 87
     assert usage["avg_latency_s"] == 3.2
-    assert usage["avg_tps"] == 50.0  # true throughput sum(out)/sum(lat), not mean of ratios
+    assert usage["avg_tps"] == 50.0  # true throughput sum(out)/sum(decode), not mean of ratios
+
+
+def test_get_usage_tps_excludes_time_to_first_token():
+    """A local model spends most of a long-prompt call in prefill; tokens/s is decode speed,
+    so it divides by the first-token-to-end span while avg_latency_s keeps the whole call."""
+    from collections import deque
+
+    class _LongPromptAgent:
+        model = "x"
+        _api_latency_history = deque([12.0, 18.0], maxlen=10)
+        _api_decode_history = deque([2.0, 3.0], maxlen=10)
+        _api_output_history = deque([100, 150], maxlen=10)
+
+    usage = server._get_usage(_LongPromptAgent())
+    assert usage["avg_latency_s"] == 15.0
+    assert usage["avg_tps"] == 50.0
 
 
 def test_get_usage_perf_readouts_omitted_without_data():
@@ -20282,6 +20299,7 @@ def test_get_usage_perf_readouts_guard_negative_latency():
     class _WeirdAgent:
         model = "x"
         _api_latency_history = deque([-0.8], maxlen=10)
+        _api_decode_history = deque([-0.8], maxlen=10)
         _api_output_history = deque([100], maxlen=10)
 
     usage = server._get_usage(_WeirdAgent())

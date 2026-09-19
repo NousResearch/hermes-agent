@@ -35,6 +35,7 @@ class Usage(OpenModel):
     cache_read: int | None = None
     cache_write: int | None = None
     avg_latency_s: float | None = None
+    # Output tokens per second of decode time (first token to stream end), last ~10 calls.
     avg_tps: float | None = None
     active_subagents: int | None = None
     dev_credits_spent_micros: int | None = None

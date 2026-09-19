@@ -102,8 +102,10 @@ def build_api_request(
     )
 
     agent._reset_stream_delivery_tracking()
-    # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
+    # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request,
+    # and the per-attempt decode span so a non-streamed call never reuses the previous one.
     agent._last_api_first_chunk_at = None
+    agent._last_api_decode_seconds = None
     # api_messages was built for the primary; a fallback (DeepSeek / Kimi / MiMo) may
     # require reasoning_content — re-apply the echo-back pad (idempotent) and re-render
     # the prompt-cache decoration for the current provider.

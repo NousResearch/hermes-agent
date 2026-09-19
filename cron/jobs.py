@@ -2382,7 +2382,10 @@ def _record_run_outcome(
     delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
-    job["last_error"] = None if success else error
+    # Late import: a long-lived daemon can hold a stale sibling module (see cron/executions._connect),
+    # so the bound resolves against the CURRENT ledger module on every run outcome.
+    from cron.executions import clip_error_text
+    job["last_error"] = None if success else clip_error_text(error)
     if success:
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
         # the forward-failure stamp so it only describes CURRENT auto-fire health.

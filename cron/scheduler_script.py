@@ -320,6 +320,14 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     return [python_exe, str(path)], env_overlay, None
 
 
+def _script_failure(message: Optional[str]) -> tuple[bool, str]:
+    """Return one bounded script failure while leaving successful output untouched."""
+    from cron.executions import clip_error_text
+
+    text = str(message) if message is not None else "Script execution failed"
+    return False, clip_error_text(text) or ""
+
+
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
@@ -336,11 +344,11 @@ def _run_job_script(
     """
     path, err = _resolve_script_path(script_path)
     if path is None:
-        return False, err
+        return _script_failure(err)
     script_timeout = _get_script_timeout()
     argv, env_overlay, err = _script_argv(path)
     if argv is None:
-        return False, err
+        return _script_failure(err)
 
     try:
         from tools.environments.local import build_subprocess_env
@@ -376,7 +384,7 @@ def _run_job_script(
             if cancel_event is not None and cancel_event.is_set():
                 _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
-                return False, "Script cancelled because cron fire ownership was lost"
+                return _script_failure("Script cancelled because cron fire ownership was lost")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _terminate_cron_script_tree(proc)
@@ -387,7 +395,7 @@ def _run_job_script(
                 # / #59549). agent.deadline.kill_process_tree snapshots the descendant set via psutil BEFORE
                 # signalling, so own-session grandchildren are reached too — the unified deadline layer's
                 # tree-kill (#85147, d6a5cb9725).
-                return False, f"Script timed out after {script_timeout}s: {path}"
+                return _script_failure(f"Script timed out after {script_timeout}s: {path}")
             try:
                 stdout_raw, stderr_raw = proc.communicate(timeout=min(0.1, remaining))
                 break
@@ -412,10 +420,11 @@ def _run_job_script(
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
                 parts.append(f"stdout:\n{stdout}")
-            return False, "\n".join(parts)
+            # Redaction already ran, so the bounded copy remains the safe copy.
+            return _script_failure("\n".join(parts))
         return True, stdout
     except Exception as exc:
-        return False, f"Script execution failed: {exc}"
+        return _script_failure(f"Script execution failed: {exc}")
 
 
 def _start_heartbeat_thread(loop_fn, name: str, fail_log) -> Optional[threading.Thread]:

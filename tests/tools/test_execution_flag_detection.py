@@ -295,3 +295,127 @@ def test_max_accepted_separator_free_input_is_fast():
     # Loose bound: catches the O(n^2)/backtracking regression class without
     # flaking on CI scheduler stalls (see comment above).
     assert elapsed < 2.0, f"max accepted token took {elapsed:.3f}s"
+
+
+# ---- Interpreter exec-flag descriptions must name the actual flag (#102847) ------------
+# The block reason is the agent's only signal for what tripped the gate. When
+# `powershell -File script.ps1` reports "script execution via -e/-c flag" the
+# command contains no -e/-c at all, so the agent burns iterations hunting for a
+# nonexistent flag instead of routing around a deliberate approval gate.
+
+
+@pytest.mark.parametrize(
+    ("command", "flag"),
+    [
+        ("powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/Administrator/Desktop/x/repro.ps1", "-File"),
+        ("pwsh -f helper.ps1", "-f"),
+        ("python3 -c 'print(1)'", "-c"),
+        ("node -e 'console.log(1)'", "-e"),
+    ],
+)
+def test_exec_flag_block_reason_names_the_matched_flag(command, flag):
+    dangerous, _, description = detect_dangerous_command(command)
+    assert dangerous is True
+    assert flag in description, f"block reason {description!r} does not name the matched flag {flag!r}"
+
+
+def test_powershell_file_block_reason_does_not_claim_e_or_c():
+    """The reporter's exact repro: -File invocation flagged as `-e/-c` (#102847)."""
+    dangerous, key, description = detect_dangerous_command(
+        "powershell -NoProfile -ExecutionPolicy Bypass -File"
+        " C:/Users/Administrator/Desktop/hermes_issue/repro_hello.ps1"
+    )
+    assert dangerous is True
+    assert description == "script execution via -File/-f flag (PowerShell)"
+    assert key == description
+    assert "-e/-c" not in description
+
+
+def test_inline_code_flags_keep_the_legacy_e_or_c_reason():
+    """python -c / node -e / powershell -Command keep one legacy key so approvals
+    stored under it (and its legacy regex alias) still match."""
+    for command, expected in [
+        ("python -c 'print(1)'", "script execution via -e/-c flag"),
+        ("node -e '1'", "script execution via -e/-c flag"),
+        ("pwsh -Command 'Get-Process'", "script execution via -e/-c flag"),
+    ]:
+        dangerous, key, description = detect_dangerous_command(command)
+        assert dangerous is True
+        assert (key, description) == (expected, expected), (command, key, description)
+        # The legacy shared key resolves to the same approval set: an approval
+        # saved before the split keeps authorizing inline-code runs.
+        from tools.approval_detection import _approval_key_aliases
+
+        assert expected in _approval_key_aliases(description)
+
+
+def test_powershell_file_legacy_approval_key_compatibility():
+    """Approvals saved under the old shared key keep covering -File runs."""
+    from tools.approval_detection import _approval_key_aliases
+
+    aliases = _approval_key_aliases("script execution via -File/-f flag (PowerShell)")
+    assert "script execution via -e/-c flag" in aliases
+
+
+def test_powershell_file_historical_regex_approval_authorizes_new_findings():
+    """A persisted pre-migration approval stored under the exact historical
+    regex-derived key must still authorize a new `-File` finding through the
+    real consumer (`is_approved`), not just the intermediate alias set. The
+    alias map stores sets per key with no graph closure, so the -File key must
+    include the regex key directly (review feedback on #102955)."""
+    from tools.approval import is_approved, load_permanent
+    from tools.approval_detection import _approval_key_aliases
+
+    historical_regex_key = r"(python[23]?|perl|ruby|node)\s+-[ec]\s+"
+    aliases = _approval_key_aliases("script execution via -File/-f flag (PowerShell)")
+    assert historical_regex_key in aliases
+
+    load_permanent({historical_regex_key})
+    try:
+        assert is_approved("session", "script execution via -File/-f flag (PowerShell)")
+    finally:
+        from tools import approval as _approval
+
+        with _approval._lock:
+            _approval._permanent_approved.discard(historical_regex_key)
+
+
+def test_powershell_file_bypass_via_cmd_wrapper_is_gated():
+    """`cmd /c powershell -File ...` ran with no gate at all (#102847) — a silent
+    bypass of the approval the direct form triggers. The cmd /c payload is itself
+    a top-level shell segment for the *inner* interpreter scan."""
+    for command in [
+        "cmd /c powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/Administrator/Desktop/x/repro.ps1",
+        "cmd.exe /c powershell -File x.ps1",
+        "cmd /k pwsh -f x.ps1",
+        # git-bash/MSYS (the reporter's shell) escapes to //c.
+        "cmd //c powershell -File x.ps1",
+        # options/markers before the verb must not hide the payload.
+        "cmd /u /c powershell -File x.ps1",
+        # whole-payload quoted (the canonical `cmd /c "..."` idiom).
+        'cmd /c "powershell -File x.ps1"',
+        'cmd.exe /c "powershell -NoProfile -ExecutionPolicy Bypass -File C:/x/repro.ps1"',
+    ]:
+        dangerous, key, description = detect_dangerous_command(command)
+        assert dangerous is True, f"bypass via wrapper: {command!r}"
+        assert description == "script execution via -File/-f flag (PowerShell)", (command, description)
+
+
+def test_cmd_wrapper_does_not_gate_benign_payloads():
+    """cmd /c <benign> must NOT gain approval just because it is a wrapper."""
+    for command in [
+        "cmd /c echo hello",
+        "cmd /c dir",
+        "cmd /c npm install",
+        "cmd /c git status",
+        "cmd /?",
+        "cmd /u",
+        'cmd /c "echo hello"',
+        # The FIRST /c|/k owns the whole remainder; a later /c is payload
+        # DATA. `cmd /c echo /c powershell -File x.ps1` just prints text —
+        # gating it was a false positive (review feedback on #102955).
+        "cmd /c echo /c powershell -File x.ps1",
+        "cmd /c echo /k powershell -File x.ps1",
+        "cmd /c printf '%s' //c powershell -File x.ps1",
+    ]:
+        assert detect_dangerous_command(command) == (False, None, None), command

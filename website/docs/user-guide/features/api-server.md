@@ -114,6 +114,8 @@ All SSE streams (Chat Completions, Responses, `/api/sessions/{id}/chat/stream`, 
 - **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
+**Reasoning in streams**: Reasoning-capable providers keep thinking separate from assistant output. Chat Completions emits `choices[0].delta.reasoning_content`; Responses emits a `reasoning` output item with `response.reasoning_text.delta` events. The non-streaming Responses payload also preserves reasoning in `output[]`.
+
 ### POST /v1/responses
 
 OpenAI Responses API format. Supports server-side conversation state via `previous_response_id` — the server stores full conversation history (including tool calls and results) so multi-turn context is preserved without the client managing it.
@@ -250,7 +252,10 @@ Returns a machine-readable description of the API server's stable surface for ex
   "auth": {"type": "bearer", "required": true},
   "features": {
     "chat_completions": true,
+    "chat_completions_streaming": true,
     "responses_api": true,
+    "responses_streaming": true,
+    "reasoning_streaming": true,
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
@@ -260,6 +265,14 @@ Returns a machine-readable description of the API server's stable surface for ex
 ```
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
+
+Clients that render model thinking should check `features.reasoning_streaming`
+before subscribing to reasoning events. When it is `true`, consume the
+surface-specific reasoning channel (`reasoning.delta`,
+`choices[0].delta.reasoning_content`, or `response.reasoning_text.delta`)
+instead of the legacy synthetic `_thinking` tool-progress event. If the flag is
+absent or `false`, fall back to rendering assistant text without a live
+reasoning view.
 
 ## Browser-extension control
 
@@ -473,7 +486,7 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, `can
 
 ### GET /v1/runs/\{run_id\}/events
 
-Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
+Server-Sent Events stream of the run's tool-call progress, answer token deltas, reasoning deltas, and lifecycle events. Answer text uses `message.delta`; model thinking uses the separate `reasoning.delta` event. Designed for dashboards and thick clients that want to attach/detach without losing state.
 
 Tool lifecycle events carry `tool.started` (`tool`, `preview` of the arguments) and
 `tool.completed` (`tool`, `duration` in seconds, `error`, and a `preview` of the result). The
@@ -590,7 +603,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
-| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
+| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `reasoning.delta`, `assistant.delta`, `tool.started`, `tool.completed`, then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 

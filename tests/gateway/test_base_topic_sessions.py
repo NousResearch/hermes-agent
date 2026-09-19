@@ -112,12 +112,20 @@ class TestBasePlatformTopicSessions:
         event = _make_event("-1001", "17585")
         await adapter._process_message_background(event, build_session_key(event.source))
 
+        # The delivery ledger stamps a generated obligation id; drop it before
+        # comparing and assert only that it was present.
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0]["metadata"].pop("_delivery_obligation_id", None)
         assert adapter.sent == [
             {
                 "chat_id": "-1001",
                 "content": "ack",
                 "reply_to": None,
-                "metadata": {"thread_id": "17585", "notify": True},
+                "metadata": {
+                    "thread_id": "17585",
+                    "notify": True,
+                    "_turn_final": True,
+                },
             }
         ]
         assert typing_calls == [
@@ -191,12 +199,20 @@ class TestTelegramAutoTtsCaptionDelivery:
 
         adapter.play_tts.assert_awaited_once()
         assert adapter.play_tts.await_args.kwargs["caption"] is None
+        # The delivery ledger stamps a generated obligation id; drop it before
+        # comparing and assert only that it was present.
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0]["metadata"].pop("_delivery_obligation_id", None)
         assert adapter.sent == [
             {
                 "chat_id": "-1001",
                 "content": long_reply,
                 "reply_to": None,
-                "metadata": {"thread_id": "17585", "notify": True},
+                "metadata": {
+                    "thread_id": "17585",
+                    "notify": True,
+                    "_turn_final": True,
+                },
             }
         ]
 

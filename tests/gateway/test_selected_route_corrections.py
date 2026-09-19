@@ -226,7 +226,13 @@ def test_private_snapshots_release_without_retiring_successor(selection, monkeyp
                 with sr.hold_selected_route(scope, b):
                     with sr.consume_selected_route(scope, b): pass
             elif ending == 'superseded':
-                successor = sr.prepare_selected_route(scope); b.close()
+                material = b._material
+                successor = sr.prepare_selected_route(scope)
+                assert b._material is None and b._inputs is None
+                assert b._secret_snapshot is None and b._terminal_snapshot is None
+                assert material._effective_inputs is None
+                assert sr.peek_selected_route(scope, successor).supports_prepared_files
+                b.close()  # Repeated close cannot retire the replacement.
                 assert sr.peek_selected_route(scope, successor).supports_prepared_files
                 successor.close()
             else: b.close()
@@ -240,6 +246,51 @@ def test_private_snapshots_release_without_retiring_successor(selection, monkeyp
             return False
         assert not any(contains(v) for v in snapshots), 'closed binding retained a private secret snapshot'
     finally: reset_secret_scope(token)
+
+
+def test_replacement_releases_old_binding_after_active_hold(selection, monkeypatch):
+    from gateway import session_selected_route as sr
+    t = selection; t.boundary.fail = True
+    scope = scoped(t)
+    old = sr.prepare_selected_route(scope)
+    material = old._material
+    replacing, completed = Event(), Event()
+    close = old.close
+
+    def observed_close():
+        replacing.set()
+        close()
+
+    monkeypatch.setattr(old, 'close', observed_close)
+
+    def replace():
+        result = sr.prepare_selected_route(scope)
+        completed.set()
+        return result
+
+    with ThreadPoolExecutor(1) as pool:
+        with sr.hold_selected_route(scope, old):
+            future = pool.submit(copy_context().run, replace)
+            assert replacing.wait(10)
+            assert not completed.is_set()
+            assert sr.peek_selected_route(scope, old).supports_prepared_files
+        successor = future.result(10)
+    assert old._material is None and old._secret_snapshot is None
+    assert material._effective_inputs is None
+    assert sr.peek_selected_route(scope, successor).supports_prepared_files
+    successor.close()
+
+
+def test_reentrant_replacement_does_not_close_own_active_hold(selection):
+    from gateway import session_selected_route as sr
+    t = selection; t.boundary.fail = True
+    scope = scoped(t)
+    old = sr.prepare_selected_route(scope)
+    with sr.hold_selected_route(scope, old):
+        with pytest.raises(sr.SelectedRouteUnavailable, match='selection_in_use'):
+            sr.prepare_selected_route(scope)
+        assert old._material is not None
+        assert sr.peek_selected_route(scope, old).supports_prepared_files
 
 
 @pytest.mark.parametrize('writer', ['model', 'reset', 'adapter', 'persisted'])

@@ -11,6 +11,7 @@ from pathlib import Path
 import threading
 import time
 import sqlite3
+import weakref
 
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
@@ -184,6 +185,8 @@ class SelectionScope:
         self.session_key, self.session_id = session_key, session_id
         self.request_identity, self.purpose = request_identity, purpose
         self._generation = 0
+        self._replacement_lock = threading.RLock()
+        self._binding_ref = None
         self.revision = self._revision()
 
     def _revision(self, connection=None):
@@ -305,6 +308,11 @@ class PreparedSelectedRoute:
 
 def prepare_selected_route(scope, *, user_config=None, api_settings=None, cancelled=None):
     """Explicit off-loop operation. Caller must not hold SQL/spool/cache locks."""
+    previous = scope._binding_ref() if scope._binding_ref is not None else None
+    if previous is not None and previous._held_thread == threading.get_ident():
+        # Reject before scope/profile reads: this thread already owns the hold's
+        # non-reentrant store/SQL locks. Never replace an operation from within it.
+        raise SelectedRouteUnavailable('selection_in_use')
     if not scope.current():
         raise SelectedRouteUnavailable('owner_unavailable')
     # Use the runner's actual multiplex/standalone scope semantics, including
@@ -316,13 +324,19 @@ def prepare_selected_route(scope, *, user_config=None, api_settings=None, cancel
 def _prepare_scoped(scope, *, user_config, api_settings, cancelled):
     if not scope.current():
         raise SelectedRouteUnavailable('owner_unavailable')
-    # Authority-local issuance counter: only serial issuance, never credential work under this lock.
-    lock = publication_lock(scope.runner)
-    with lock:
-        generation = scope.authority.__dict__.get('_selected_route_generation', 0) + 1
-        scope.authority._selected_route_generation = generation
-        scope._generation = generation
-    b = PreparedSelectedRoute(scope, generation, time.monotonic() + MAX_ROUTE_AGE)
+    # Retire the displaced operation before issuing its replacement. Wait for
+    # its active hold without holding runner/cache/SQL locks (hold takes those
+    # after the binding lock). The weak link cannot extend credential lifetime.
+    with scope._replacement_lock:
+        previous = scope._binding_ref() if scope._binding_ref is not None else None
+        if previous is not None:
+            previous.close()
+        with publication_lock(scope.runner):
+            generation = scope.authority.__dict__.get('_selected_route_generation', 0) + 1
+            scope.authority._selected_route_generation = generation
+            scope._generation = generation
+        b = PreparedSelectedRoute(scope, generation, time.monotonic() + MAX_ROUTE_AGE)
+        scope._binding_ref = weakref.ref(b)
     material = None
     try:
         b._user_config, b._settings = _copy(user_config), _copy(api_settings or {})
@@ -349,6 +363,8 @@ def _prepare_scoped(scope, *, user_config, api_settings, cancelled):
             raise SelectedRouteUnavailable('selection_expired')
         material.files_supported = supports_files_runtime(material.runtime)
         with b._state_lock:
+            if b._state != 'PREPARING' or scope._generation != b.generation:
+                raise SelectedRouteUnavailable('selection_changed')
             b._material = material
             b._state = 'READY'
         return b

@@ -210,6 +210,7 @@ export interface Translations {
     revealExplorer: string
     revealFileManager: string
     revealInSidebar: string
+    openDefaultApp: string
     copyPath: string
     copyRelativePath: string
     download: string

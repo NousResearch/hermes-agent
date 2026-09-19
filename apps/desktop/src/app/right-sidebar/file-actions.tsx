@@ -24,6 +24,7 @@ import {
   executeFileDelete,
   executeFileRename,
   type FileActionTarget,
+  openFileInDefaultApp,
   requestFileDelete,
   revealFile,
   shouldOfferRemoteFileDownload,
@@ -76,6 +77,11 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
         {localFs && (
           <>
             <ContextMenuItem onSelect={() => void revealFile(path)}>{revealLabel}</ContextMenuItem>
+            {!isDirectory && (
+              <ContextMenuItem onSelect={() => void openFileInDefaultApp(path)}>
+                {m.openDefaultApp}
+              </ContextMenuItem>
+            )}
             <ContextMenuSeparator />
           </>
         )}

@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.files_live_context import files_error_display
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
@@ -95,7 +96,7 @@ def handle_api_error(
         logger.warning(
             "%sInterpreter is shutting down — abandoning turn "
             "during API call #%d (%s)",
-            agent.log_prefix, api_call_count, api_error,
+            agent.log_prefix, api_call_count, files_error_display(agent, api_error),
         )
         _shutdown_summary = "Turn abandoned: the process was shutting down before the model call could complete."
         return _verdict("return", {
@@ -121,7 +122,7 @@ def handle_api_error(
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
-        error_type=type(api_error).__name__, error_message=str(api_error), status_code=status_code,
+        error_type=type(api_error).__name__, error_message=str(files_error_display(agent, api_error)), status_code=status_code,
         retry_count=retry_count, max_retries=max_retries, retryable=classified.retryable,
         reason=classified.reason.value,
     )
@@ -151,7 +152,7 @@ def handle_api_error(
         return _verdict("return", abort_turn_on_interrupt(
             agent, messages, conversation_history, api_call_count,
             abort_message="Interrupt detected during error handling, aborting retries.",
-            interrupt_text=f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))}).",
+            interrupt_text=f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(files_error_display(agent, api_error)))}).",
         ))
 
     _ce = route_classified_error(

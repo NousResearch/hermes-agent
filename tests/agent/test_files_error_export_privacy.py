@@ -1,4 +1,4 @@
-"""Scope checkpoint: actual provider-error exports outside approved owners.
+"""Actual provider-error exports from a Files-expanded request.
 
 These are acceptance tests, not xfails. The SDK is inert; error classification,
 error hook, dump and returned terminal result are real. No retries/fallback or
@@ -17,6 +17,15 @@ from tests.agent.files_persistence_fixtures import inert_agent
 
 PRIVATE = '/private/provider-echoed-files.txt'
 SAFE = 'accepted prompt\n\n[Attached file: "a.txt"]'
+DATA = 'data:image/png;base64,cHJpdmF0ZS1maWxlcy1maXh0dXJl'
+
+
+def _isolate_recovery(agent):
+    # Exercise recovery decisions without touching accounts, clients or fallbacks.
+    agent._recover_with_credential_pool = lambda **kw: (False, kw['has_retried_429'])
+    agent._try_activate_fallback = lambda *a, **kw: False
+    agent._has_pending_fallback = lambda: False
+    agent._try_recover_primary_transport = lambda *a, **kw: False
 
 
 @pytest.mark.parametrize('surface', ['error_hook', 'result', 'logs'])
@@ -26,6 +35,7 @@ def test_files_provider_error_never_exports_automatic_input(tmp_path, monkeypatc
         agent, sent, sql = inert_agent(monkeypatch, db, 'error-owner')
         agent.logs_dir = tmp_path
         agent._api_max_retries = 1
+        _isolate_recovery(agent)
         events = []
         def hook(name, **kwargs):
             if name == 'api_request_error':
@@ -44,6 +54,10 @@ def test_files_provider_error_never_exports_automatic_input(tmp_path, monkeypatc
             result = agent.run_conversation(PRIVATE, persist_user_message=transcript)
         dumps = [json.loads(path.read_text()) for path in tmp_path.glob('request_dump_*.json')]
         assert len(sent) == 1
+        assert len(events) == 1
+        assert result['failure_reason'] == 'format_error'
+        assert result['failure_retryable'] is False
+        assert events[0]['reason'] == 'format_error' and events[0]['status_code'] == 400
         assert db.get_messages('error-owner')[0]['content'] == SAFE
         assert db.get_messages('error-owner')[0]['api_content'] is None
         assert dumps and all(d.get('files_payload_omitted') is True for d in dumps)

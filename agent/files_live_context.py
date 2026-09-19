@@ -12,6 +12,34 @@ from typing import Any
 import weakref
 
 
+FILES_ERROR_OMITTED = 'Provider error details omitted: request contains prepared Files content.'
+
+
+def files_error_display(agent: Any, value: Any, *, summarize: bool = False) -> Any:
+    """An export value only: never feed this back into classification/recovery.
+
+    Expansion is set by request assembly, not by cached entry presence. Test it
+    before formatting: an SDK exception/body can echo the entire private request.
+    """
+    if getattr(agent, '_files_request_expanded', False) is True:
+        return FILES_ERROR_OMITTED
+    return agent._summarize_api_error(value) if summarize else value
+
+
+def native_files_refusal(agent, messages):
+    """Native threads cannot consume the Files provider-copy binding yet."""
+    from agent.session_persistence import FilesUserTranscript
+    if not (isinstance(getattr(agent, '_persist_user_message_override', None), FilesUserTranscript)
+            or any(files_entry(agent, row) is not None for row in messages)):
+        return None
+    detail = 'Prepared Files input is not supported by codex_app_server; no native turn was started.'
+    return safe_files_result(agent, {
+        'final_response': detail, 'error': detail, 'messages': messages,
+        'api_calls': 0, 'completed': False, 'failed': True,
+        'failure_reason': 'prepared_files_unsupported', 'failure_retryable': False,
+    })
+
+
 def _freeze(value: Any) -> Any:
     if isinstance(value, dict):
         if any(type(k) is not str for k in value):

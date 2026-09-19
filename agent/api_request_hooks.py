@@ -170,6 +170,11 @@ class ApiRequestHooksMixin:
             from hermes_cli import lifecycle as _lifecycle
             if not _lifecycle.has_hook("api_request_error"):
                 return
+            from agent.files_live_context import files_error_display
+            omitted = getattr(self, "_files_request_expanded", False) is True
+            request = ({"files_payload_omitted": True} if omitted
+                       else self._api_request_payload_for_hook(api_kwargs))
+            error_message = files_error_display(self, error_message)
             ended_at = time.time()
             _lifecycle.invoke_hook(
                 "api_request_error",
@@ -192,5 +197,5 @@ class ApiRequestHooksMixin:
                 retryable=retryable,
                 reason=reason,
                 error={"type": error_type, "message": error_message},
-                request=self._api_request_payload_for_hook(api_kwargs),
+                request=request,
             )

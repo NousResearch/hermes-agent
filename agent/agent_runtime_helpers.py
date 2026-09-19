@@ -859,9 +859,10 @@ def recover_with_credential_pool(
         # healthy. Do not rotate/exhaust; let fallback switch models.
         upstream = (error_context or {}).get("upstream_provider") if error_context else None
         if upstream:
+            from agent.files_live_context import files_error_display
             _ra().logger.info(
                 "Upstream provider %s rate-limited via aggregator — skipping "
-                "credential rotation, deferring to fallback chain", upstream,
+                "credential rotation, deferring to fallback chain", files_error_display(agent, upstream),
             )
         else:
             _ra().logger.info(
@@ -975,7 +976,8 @@ def try_recover_primary_transport(
         time.sleep(wait_time)
         return True
     except Exception as e:
-        logger.warning("Primary transport recovery failed: %s", e)
+        from agent.files_live_context import files_error_display
+        logger.warning("Primary transport recovery failed: %s", files_error_display(agent, e))
         return False
 
 

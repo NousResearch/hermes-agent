@@ -20,6 +20,7 @@ from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STA
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason
+from agent.files_live_context import files_error_display
 from agent.message_sanitization import (
     _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
@@ -261,7 +262,7 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     try:
         _body = getattr(api_error, "body", None) or getattr(api_error, "response", None)
         if _body is not None:
-            _body_text = str(_body)[:200]
+            _body_text = str(files_error_display(agent, _body))[:200]
     except Exception:
         pass
     _plines(agent, "🔐 Nous 401 — Portal authentication failed.")
@@ -461,7 +462,7 @@ def _recover_format_errors(
             from tools.schema_sanitizer import strip_pattern_and_format
             _, _stripped = strip_pattern_and_format(agent.tools)
         except Exception as _strip_exc:  # pragma: no cover — defensive
-            logger.warning("%sllama.cpp grammar recovery: strip helper failed: %s", agent.log_prefix, _strip_exc)
+            logger.warning("%sllama.cpp grammar recovery: strip helper failed: %s", agent.log_prefix, files_error_display(agent, _strip_exc))
             _stripped = 0
         if _stripped:
             _vlines(agent, f"⚠️  llama.cpp rejected tool schema grammar — stripped {_stripped} pattern/format keyword(s), retrying...")
@@ -802,7 +803,7 @@ def nonretryable_client_error_result(
     agent._flush_status_buffer()
     # Summarize once: Cloudflare/proxy HTML pages and raw provider bodies must be
     # collapsed here or they leak verbatim via the ``error`` field.
-    _nonretryable_summary = agent._summarize_api_error(api_error)
+    _nonretryable_summary = files_error_display(agent, api_error, summarize=True)
     _plabel = provider_label_for(provider)
     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
     agent._emit_status(f"❌ {_label}: {_nonretryable_summary}")
@@ -850,7 +851,7 @@ def nonretryable_client_error_result(
             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
             "        for localhost, or add the server's cert to your trust store.",
         )
-    logger.error("%sNon-retryable client error: %s", agent.log_prefix, api_error)
+    logger.error("%sNon-retryable client error: %s", agent.log_prefix, files_error_display(agent, api_error))
     # Skip persistence on likely context-overflow (400 + large session): persisting the
     # failed message grows the session and repeats the failure.
     # Persisting the failed user message would make the session even larger, causing the same failure on the
@@ -920,7 +921,7 @@ def max_retries_exhausted_result(
     )
 
     agent._flush_status_buffer()
-    _final_summary = agent._summarize_api_error(api_error)
+    _final_summary = files_error_display(agent, api_error, summarize=True)
     _billing_guidance = ""
     _is_billing = classified.reason == FailoverReason.billing
     if _is_billing:
@@ -1038,7 +1039,7 @@ def log_api_error_attempt(
     retry+fallback exhausts. Returns ``(error_type, error_msg, provider, base_url, model)``."""
     error_type = type(api_error).__name__
     error_msg = str(api_error).lower()
-    _error_summary = agent._summarize_api_error(api_error)
+    _error_summary = files_error_display(agent, api_error, summarize=True)
     logger.warning(
         "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
         retry_count, max_retries, error_type, agent._client_log_context(), _error_summary,
@@ -1058,7 +1059,7 @@ def log_api_error_attempt(
         )
         if status_code and status_code < 500:
             _err_body = getattr(api_error, "body", None)
-            _err_body_str = str(_err_body)[:300] if _err_body else None
+            _err_body_str = str(files_error_display(agent, _err_body))[:300] if _err_body else None
             if _err_body_str:
                 _blines(agent, f"   📋 Details: {_err_body_str}")
         _blines(agent, f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
@@ -1212,7 +1213,7 @@ def compute_error_backoff(
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
         wait_time, retry_count, max_retries, agent._client_log_context(),
-        _backoff_policy or "default", api_error,
+        _backoff_policy or "default", files_error_display(agent, api_error),
     )
     return wait_time
 
@@ -1579,7 +1580,7 @@ def route_classified_error(
             False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
         )
         if not pool_may_recover:
-            agent._buffer_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
+            agent._buffer_status(files_error_display(agent, _eager_fallback_status(classified, _is_upstream, _is_transport_failure)))
             if agent._try_activate_fallback(reason=classified.reason):
                 return _fallback_break()
 

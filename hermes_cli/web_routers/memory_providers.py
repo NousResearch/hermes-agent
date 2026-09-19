@@ -254,7 +254,7 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
         def sources_for(field: ProviderField) -> tuple:
             return (host_block, raw) if field.scope == "host" else (raw,)
     else:
-        host, data = "", _read_flat_json(provider)
+        host, data = "", _read_memory_provider_existing_values(provider.name)
 
         def sources_for(field: ProviderField) -> tuple:
             return (data,)

@@ -2171,7 +2171,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
         tool_complete_callback=None, interim_assistant_callback=None, reasoning_callback=None,
-        status_callback=None, gateway_session_key: Optional[str] = None,
+        status_callback=None, notice_callback=None, gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
@@ -2232,6 +2232,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "interim_assistant_callback": interim_assistant_callback,
             "reasoning_callback": reasoning_callback,
             "status_callback": status_callback,
+            "notice_callback": notice_callback,
             "session_db": self._ensure_session_db(),
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
@@ -2332,9 +2333,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             from hermes_cli.profiles import profiles_to_serve
 
-            served = profiles_to_serve(
-                multiplex=multiplex,
-                profile_allowlist=getattr(cfg, "multiplex_profile_allowlist", None))
+            served = profiles_to_serve(multiplex=multiplex)
         except Exception:
             logger.exception("[%s] GET /v1/profiles failed", self.name)
             return _error_response("Failed to list profiles.", 500, code="profiles_failed")

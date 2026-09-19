@@ -30,7 +30,7 @@ async def _get(adapter: APIServerAdapter, headers=None):
 async def test_multiplex_lists_every_served_profile_with_its_prefix(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.profiles.profiles_to_serve",
-        lambda multiplex, profile_allowlist=None: [
+        lambda multiplex: [
             ("default", "/home/me/.hermes"),
             ("athena", "/home/me/.hermes/profiles/athena"),
             ("atlas", "/home/me/.hermes/profiles/atlas"),
@@ -52,7 +52,7 @@ async def test_multiplex_lists_every_served_profile_with_its_prefix(monkeypatch)
 async def test_single_profile_gateway_serves_its_profile_at_the_root(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.profiles.profiles_to_serve",
-        lambda multiplex, profile_allowlist=None: [("athena", "/x")],
+        lambda multiplex: [("athena", "/x")],
     )
     status, body = await _get(_adapter(multiplex=False))
     assert status == 200

@@ -266,10 +266,10 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     return _callback
 
 
-def _attach_live_stream_callbacks(
-    self, run_id: str, agent, loop: "asyncio.AbstractEventLoop", *, _api_server,
-) -> None:
-    """Project the agent's live reasoning, status, and notices onto the run SSE stream."""
+def _make_run_live_callbacks(
+    self, run_id: str, loop: "asyncio.AbstractEventLoop", *, _api_server,
+) -> tuple[Callable[..., None], Callable[..., None], Callable[..., None]]:
+    """Build constructor-time callbacks for live reasoning, status, and run notices."""
     redact_sensitive_text = _api_server.redact_sensitive_text
 
     def _emit(name: str, **fields: Any) -> None:
@@ -302,9 +302,7 @@ def _attach_live_stream_callbacks(
                 key=getattr(notice, "key", None),
             )
 
-    agent.reasoning_callback = _reasoning
-    agent.status_callback = _status
-    agent.notice_callback = _notice
+    return _reasoning, _status, _notice
 
 
 def _put_run_event(self, run_id: str, event: Dict[str, Any]) -> None:
@@ -919,11 +917,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
             return
+        reasoning_cb, status_cb, notice_cb = _make_run_live_callbacks(
+            self, run_id, loop, _api_server=_api_server)
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                interim_assistant_callback=_interim_cb, **run.agent_kwargs)
-        _attach_live_stream_callbacks(self, run_id, agent, loop, _api_server=_api_server)
+                interim_assistant_callback=_interim_cb, reasoning_callback=reasoning_cb,
+                status_callback=status_cb, notice_callback=notice_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage, served_runtime = await loop.run_in_executor(

@@ -41,8 +41,13 @@ async def _run(script) -> list[dict]:
             agent = _mock_agent()
 
             def _turn(**_kwargs):
-                progress = create.call_args.kwargs["tool_progress_callback"]
-                script(agent, progress)
+                callbacks = create.call_args.kwargs
+                live = MagicMock()
+                live.reasoning_callback = callbacks["reasoning_callback"]
+                live.status_callback = callbacks["status_callback"]
+                live.notice_callback = callbacks["notice_callback"]
+                progress = callbacks["tool_progress_callback"]
+                script(live, progress)
                 return {"final_response": "Done."}
 
             agent.run_conversation.side_effect = _turn

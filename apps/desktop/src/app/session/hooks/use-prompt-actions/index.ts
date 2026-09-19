@@ -59,7 +59,7 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   durableRowIdsForRebind,
-  finalizeInterruptedMessages,
+  finalizeUserInterruptedMessages,
   planEdit,
   planReload,
   planRestore,
@@ -681,7 +681,7 @@ export function usePromptActions({
 
     if (!sessionId) {
       releaseBusy()
-      setMessages(finalizeInterruptedMessages($messages.get()))
+      setMessages(finalizeUserInterruptedMessages($messages.get()))
 
       return
     }
@@ -692,7 +692,7 @@ export function usePromptActions({
 
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
-      const messages = finalizeInterruptedMessages(state.messages, streamId)
+      const messages = finalizeUserInterruptedMessages(state.messages, streamId)
 
       return {
         ...state,

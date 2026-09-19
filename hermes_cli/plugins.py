@@ -2044,6 +2044,30 @@ def resolve_plugin_command_result(result: Any) -> Any:
     return outcome.get("value")
 
 
+# Directive shapes a plugin command handler may return instead of text, mapped to the
+# field that must carry their payload. Same shapes ``command.dispatch`` produces, so
+# every surface that already understands directives (Desktop, TUI) acts on them.
+_PLUGIN_COMMAND_DIRECTIVES: Dict[str, str] = {
+    "send": "message", "skill": "message", "prefill": "message",
+}
+
+
+def plugin_command_dispatch(result: Any) -> Optional[Dict[str, Any]]:
+    """Return *result* when a plugin command handler returned a UI directive, else ``None``.
+
+    A handler may return ``{"type": "send", "message": ...}`` (or ``skill``/``prefill``)
+    instead of plain text — the surfaces that cannot act on it (CLI print, messaging
+    gateway reply) fall back to the same value's text. Unrecognised values stay plain
+    output.
+    """
+    if not isinstance(result, dict):
+        return None
+    kind = result.get("type")
+    field = _PLUGIN_COMMAND_DIRECTIVES.get(kind) if isinstance(kind, str) else None
+    payload = result.get(field) if field else None
+    return result if field and isinstance(payload, str) and payload.strip() else None
+
+
 def get_plugin_commands() -> Dict[str, dict]:
     """Plugin commands dict (name -> {handler, description, plugin}) after idempotent discovery."""
     return _ensure_plugins_discovered()._plugin_commands

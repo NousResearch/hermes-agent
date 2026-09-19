@@ -221,6 +221,65 @@ export function shouldReapplyFrozenThreadScrollOffset(
   return target.kind === 'bottom' ? after > before : after !== before
 }
 
+// ── Turn-end viewport anchor (#108941) ───────────────────────────────────────
+// Where the transcript lands when a turn ENDS. The stick-to-bottom lock parks
+// the view at the very end, so on a long turn — heavy tool activity, a long
+// answer — the answer's opening lines sit off-screen and the reader scrolls UP
+// to find where the answer begins. 'prompt' settles at the newest prompt's own
+// position instead, so the exchange reads top-down from the question; 'bottom'
+// is the landing every existing install already has.
+//
+// Presentation-only, so the renderer owns it (desktop AGENTS.md: state lives
+// with its authority) — no backend config key, no gateway mirror. The reader
+// always wins: the anchor only applies while the viewport is still parked at
+// the bottom, so scrolling up mid-turn keeps the reading position in either
+// mode (and the existing "N messages below" jump pill stays the way back).
+export type TurnAnchor = 'bottom' | 'prompt'
+
+/** Scope is in the key (desktop AGENTS.md): a reading preference is app-wide,
+ *  not per connection or profile, so no suffix. */
+export const TURN_ANCHOR_STORAGE_KEY = 'hermes.desktop.turnAnchor.v1'
+
+export function normalizeTurnAnchor(value: null | string | undefined): TurnAnchor {
+  return value === 'prompt' ? 'prompt' : 'bottom'
+}
+
+export const $turnAnchor = atom<TurnAnchor>(normalizeTurnAnchor(readKey(TURN_ANCHOR_STORAGE_KEY)))
+
+export function setTurnAnchor(anchor: TurnAnchor): void {
+  $turnAnchor.set(anchor)
+  // The default stores NOTHING: a user who never touched the setting keeps
+  // today's landing with no persisted state to migrate.
+  writeKey(TURN_ANCHOR_STORAGE_KEY, anchor === 'bottom' ? null : anchor)
+}
+
+export interface TurnEndAnchorMetrics {
+  anchor: TurnAnchor
+  /** The viewport was still parked at the bottom when the turn ended. */
+  atBottom: boolean
+  maxScrollTop: number
+  /** Viewport-relative top of the newest prompt's own (unpinned) position. */
+  promptTop: null | number
+  scrollTop: number
+  viewportTop: number
+}
+
+/**
+ * The scrollTop a just-finished turn settles on, or `null` to leave the
+ * viewport alone. Pure, so the three guards that matter — the default anchor,
+ * a reader who scrolled away mid-turn, and a transcript with no prompt to
+ * anchor to — are provable without a DOM.
+ */
+export function turnEndScrollTop(metrics: TurnEndAnchorMetrics): null | number {
+  if (metrics.anchor !== 'prompt' || !metrics.atBottom || metrics.promptTop === null) {
+    return null
+  }
+
+  const target = metrics.scrollTop + (metrics.promptTop - metrics.viewportTop)
+
+  return Math.min(Math.max(0, target), Math.max(0, metrics.maxScrollTop))
+}
+
 // Storage is scoped per profile with the same `.profile.<encoded>` suffix the
 // app's other persisted session state uses (session.ts profileNavigationKey),
 // so two profiles can never read or evict each other's reading positions.

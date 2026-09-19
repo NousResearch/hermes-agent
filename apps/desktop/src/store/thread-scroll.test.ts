@@ -1,21 +1,28 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { readKey } from '@/lib/storage'
+
 import {
   $threadJumpButtonVisibleBySession,
   $threadMessagesBelowBySession,
   $threadScrolledUpBySession,
+  $turnAnchor,
   onScrollToBottomRequest,
   publishThreadAtBottom,
   publishThreadMessagesBelow,
   requestScrollToBottom,
   resetPublishedThreadScroll,
   resetThreadScroll,
-  setThreadAtBottom
+  setThreadAtBottom,
+  setTurnAnchor,
+  TURN_ANCHOR_STORAGE_KEY,
+  turnEndScrollTop
 } from './thread-scroll'
 
 afterEach(() => {
   resetThreadScroll('session-a')
   resetThreadScroll('session-b')
+  setTurnAnchor('bottom')
 })
 
 describe('publishThreadAtBottom', () => {
@@ -128,5 +135,53 @@ describe('requestScrollToBottom', () => {
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledOnce()
     stopSecond()
+  })
+})
+
+// #108941 — where a finished turn leaves the viewport.
+describe('turnEndScrollTop', () => {
+  // Viewport 600 tall at the top of the screen; the newest prompt sits 1200px
+  // above it, in a transcript whose bottom is 4400.
+  const parkedAtBottom = {
+    anchor: 'prompt' as const,
+    atBottom: true,
+    maxScrollTop: 4400,
+    promptTop: -1200,
+    scrollTop: 4400,
+    viewportTop: 0
+  }
+
+  it('keeps the landed-at-the-end viewport under the default anchor', () => {
+    expect(turnEndScrollTop({ ...parkedAtBottom, anchor: 'bottom' })).toBeNull()
+  })
+
+  it('settles at the newest prompt, clamped to the scroll range', () => {
+    expect(turnEndScrollTop(parkedAtBottom)).toBe(3200)
+    // A transcript shorter than the target: land on its bottom, never past it.
+    expect(turnEndScrollTop({ ...parkedAtBottom, maxScrollTop: 1000 })).toBe(1000)
+    // Prompt already at the top of the view: nothing to do but stay.
+    expect(turnEndScrollTop({ ...parkedAtBottom, promptTop: 0 })).toBe(4400)
+  })
+
+  it('leaves a reader who scrolled away where they are', () => {
+    expect(turnEndScrollTop({ ...parkedAtBottom, atBottom: false, scrollTop: 900 })).toBeNull()
+    expect(turnEndScrollTop({ ...parkedAtBottom, promptTop: null })).toBeNull()
+  })
+})
+
+describe('turn anchor preference', () => {
+  it('defaults to the landing every existing install has, storing nothing', () => {
+    expect($turnAnchor.get()).toBe('bottom')
+    expect(readKey(TURN_ANCHOR_STORAGE_KEY)).toBeNull()
+  })
+
+  it('persists the settle-at-my-prompt choice', () => {
+    setTurnAnchor('prompt')
+
+    expect(readKey(TURN_ANCHOR_STORAGE_KEY)).toBe('prompt')
+
+    setTurnAnchor('bottom')
+
+    expect(readKey(TURN_ANCHOR_STORAGE_KEY)).toBeNull()
   })
 })

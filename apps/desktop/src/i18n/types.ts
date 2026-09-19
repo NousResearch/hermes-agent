@@ -620,6 +620,10 @@ export interface Translations {
       toolViewDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
+      turnAnchorTitle: string
+      turnAnchorDesc: string
+      turnAnchorBottom: string
+      turnAnchorPrompt: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
       sessionDensityTitle: string

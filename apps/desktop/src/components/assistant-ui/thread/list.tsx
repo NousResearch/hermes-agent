@@ -49,6 +49,7 @@ import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } 
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
 import { useTimelineReveal } from './use-timeline-reveal'
+import { useTurnEndAnchor } from './use-turn-end-anchor'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -754,6 +755,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       scrollToBottom()
     }
   })
+
+  // A finished turn settles where the reader's anchor preference says (#108941).
+  // The default keeps today's landing (the lock is already at the end), so this
+  // only moves the viewport for readers who asked to be settled at their prompt.
+  useTurnEndAnchor({ contentRef, isRunning, loadSettledRef, scrollRef, stopScroll })
 
   // Live scroll state of the CURRENT session, updated on every scroll event
   // AND on content height changes (ResizeObserver). The RO leg is what keeps

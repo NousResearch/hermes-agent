@@ -24,6 +24,7 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
+import { $turnAnchor, setTurnAnchor } from '@/store/thread-scroll'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
 import {
   $titlebarAppActionsSide,
@@ -416,6 +417,7 @@ export function AppearanceSettings() {
   const reactionsEnabled = useStore($reactionsEnabled)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
+  const turnAnchor = useStore($turnAnchor)
   const spentTips = useStore($spentTipCount)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
@@ -961,6 +963,24 @@ export function AppearanceSettings() {
             }
             description={a.reasoningCollapsedDesc}
             title={a.reasoningCollapsedTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTurnAnchor(id)
+                }}
+                options={[
+                  { id: 'bottom', label: a.turnAnchorBottom },
+                  { id: 'prompt', label: a.turnAnchorPrompt }
+                ]}
+                value={turnAnchor}
+              />
+            }
+            description={a.turnAnchorDesc}
+            title={a.turnAnchorTitle}
           />
 
           <ListRow

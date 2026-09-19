@@ -433,7 +433,9 @@ interface PendingClarifyLocation {
 function findPendingClarifyLocation(
   messages: ChatMessage[],
   payload: GatewayEventPayload,
-  toolName = 'clarify'
+  toolName = 'clarify',
+  allowSolePendingFallback = true,
+  before?: PendingClarifyLocation
 ): PendingClarifyLocation | null {
   const stableId = toolId(payload)
   const matchValues = toolPayloadMatchValues(payload)
@@ -444,6 +446,13 @@ function findPendingClarifyLocation(
     const message = messages[messageIndex]
 
     for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
+      if (
+        before &&
+        (messageIndex > before.messageIndex || (messageIndex === before.messageIndex && partIndex >= before.partIndex))
+      ) {
+        continue
+      }
+
       const part = message.parts[partIndex]
 
       if (part.type !== 'tool-call' || part.toolName !== toolName || part.result !== undefined) {
@@ -473,7 +482,7 @@ function findPendingClarifyLocation(
   // Older/sparse projections can lose the identifying args. One session can
   // only block on one clarify at a time, so a sole open clarify is still the
   // authoritative row even without a usable correlation value.
-  return pendingCount === 1 ? solePending : null
+  return allowSolePendingFallback && pendingCount === 1 ? solePending : null
 }
 
 function skippedClarifyResult(part: Extract<ChatMessagePart, { type: 'tool-call' }>): Record<string, unknown> {
@@ -530,6 +539,97 @@ export function settlePendingClarifyToolCall(
   next[location.messageIndex] = { ...message, parts, pending: keepMessageRunning }
 
   return { messages: next, streamId: message.id }
+}
+
+/** Remove one obsolete pending clarify projection without fabricating a Skip
+ * result. Strict matching protects a newer request; callers may allow the sole
+ * sparse open row only when the request store proves no clarify is current. */
+export function discardPendingClarifyToolCall(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload,
+  allowSolePendingFallback: boolean
+): ChatMessage[] {
+  const clarifyPayload = { ...payload, name: 'clarify' }
+  const stableId = toolId(clarifyPayload)
+  let settledLocation: PendingClarifyLocation | null = null
+
+  for (let messageIndex = messages.length - 1; messageIndex >= 0 && !settledLocation; messageIndex -= 1) {
+    const message = messages[messageIndex]
+
+    for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
+      const part = message.parts[partIndex]
+
+      if (
+        part.type === 'tool-call' &&
+        part.toolName === 'clarify' &&
+        part.result !== undefined &&
+        stableId &&
+        part.toolCallId === stableId
+      ) {
+        settledLocation = { messageIndex, partIndex }
+
+        break
+      }
+    }
+  }
+
+  const openLocation = findPendingClarifyLocation(
+    messages,
+    clarifyPayload,
+    'clarify',
+    allowSolePendingFallback,
+    settledLocation ?? undefined
+  )
+
+  if (!openLocation) {
+    return messages
+  }
+
+  const settledPart = settledLocation ? messages[settledLocation.messageIndex].parts[settledLocation.partIndex] : null
+
+  return messages.flatMap((message, messageIndex) => {
+    const parts = message.parts.flatMap((part, partIndex) => {
+      if (settledLocation?.messageIndex === messageIndex && settledLocation.partIndex === partIndex) {
+        return []
+      }
+
+      if (openLocation.messageIndex !== messageIndex || openLocation.partIndex !== partIndex) {
+        return [part]
+      }
+
+      if (part.type !== 'tool-call' || settledPart?.type !== 'tool-call') {
+        return []
+      }
+
+      return [
+        {
+          ...part,
+          completedAt: settledPart.completedAt,
+          isError: settledPart.isError,
+          result: settledPart.result
+        }
+      ]
+    })
+
+    return parts.length > 0 ? [{ ...message, parts }] : []
+  })
+}
+
+/** Remove every still-open clarify tool part when no request-store entry can
+ * authorize an answer. Settled clarification history and unrelated message
+ * parts remain intact. */
+export function discardOpenClarifyToolCalls(messages: ChatMessage[]): ChatMessage[] {
+  return messages.flatMap(message => {
+    const parts = message.parts.filter(
+      part => !(part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+    )
+
+    if (parts.length === message.parts.length) {
+      return [message]
+    }
+
+    return parts.length > 0 ? [{ ...message, parts }] : []
+  })
 }
 
 /** Remove ephemeral clarify liveness before writing the durable transcript-tail

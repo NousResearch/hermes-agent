@@ -628,6 +628,7 @@ function EditSoulDialog({
   const { t } = useI18n()
   const p = t.profiles
   const [content, setContent] = useState('')
+  const [missing, setMissing] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -639,9 +640,15 @@ function EditSoulDialog({
     let cancelled = false
     setLoading(true)
     setContent('')
+    setMissing(false)
 
     getProfileSoul(profileName, scope)
-      .then(soul => !cancelled && setContent(soul.content))
+      .then(soul => {
+        if (!cancelled) {
+          setContent(soul.content)
+          setMissing(soul.exists === false)
+        }
+      })
       .catch(err => !cancelled && notifyError(err, p.failedLoadSoul))
       .finally(() => !cancelled && setLoading(false))
 
@@ -674,6 +681,7 @@ function EditSoulDialog({
             {gatewayLabel && profileName ? p.fleet.onGateway(profileName, gatewayLabel) : profileName} · SOUL.md
           </DialogTitle>
         </DialogHeader>
+        {missing && <p className="text-xs text-muted-foreground">{p.soulMissing}</p>}
         <div className="h-80">
           {!loading && profileName && (
             <CodeEditor

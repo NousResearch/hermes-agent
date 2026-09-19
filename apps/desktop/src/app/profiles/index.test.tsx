@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { deleteProfile } from '@/hermes'
+import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/hermes'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
@@ -21,10 +21,11 @@ afterEach(cleanup)
 // Real i18n (useI18n falls back to English with no provider), so labels are the
 // actual strings — no brittle key snapshot to maintain here.
 
-// CodeEditor is CodeMirror; the detail pane's SOUL editor doesn't matter to
-// these behaviors, so stub it out of the jsdom render.
+// Keep editor changes and saves observable without CodeMirror's layout APIs.
 vi.mock('@/components/chat/code-editor', () => ({
-  CodeEditor: () => null
+  CodeEditor: ({ initialValue, onChange }: { initialValue: string; onChange: (value: string) => void }) => (
+    <textarea aria-label="SOUL.md" defaultValue={initialValue} onChange={event => onChange(event.target.value)} />
+  )
 }))
 
 vi.mock('@/hermes', () => ({
@@ -119,6 +120,39 @@ async function deleteTheNamedProfile() {
 }
 
 describe('ProfilesView', () => {
+  it('shows missing-file guidance only until SOUL.md is saved, not for empty files or read errors', async () => {
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
+    vi.mocked(getProfileSoul).mockResolvedValueOnce({ content: '', exists: false })
+    vi.mocked(updateProfileSoul).mockRejectedValueOnce(new Error('Read-only profile'))
+
+    await renderProfilesView()
+
+    const missing = /No SOUL\.md file exists for this profile/
+    expect(screen.getByText(missing)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('SOUL.md'), { target: { value: '# My instructions' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save SOUL.md' })))
+    expect(screen.getByText('Read-only profile')).toBeTruthy()
+    expect(screen.getByText(missing)).toBeTruthy()
+
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save SOUL.md' })))
+    expect(updateProfileSoul).toHaveBeenLastCalledWith('default', '# My instructions')
+    expect(screen.queryByText(missing)).toBeNull()
+
+    // An existing empty file is not a missing file. Selecting a row remounts
+    // the editor, so the previous profile's notice must not carry over.
+    const selectRow = (name: string) =>
+      screen.getAllByRole('button', { name }).find(button => !button.hasAttribute('aria-haspopup'))!
+
+    await act(async () => fireEvent.click(selectRow(NAMED_PROFILE)))
+    expect(getProfileSoul).toHaveBeenLastCalledWith(NAMED_PROFILE)
+    expect(screen.queryByText(missing)).toBeNull()
+
+    vi.mocked(getProfileSoul).mockRejectedValueOnce(new Error('Could not read SOUL.md'))
+    await act(async () => fireEvent.click(selectRow('default')))
+    expect(screen.getByText('Could not read SOUL.md')).toBeTruthy()
+    expect(screen.queryByText(missing)).toBeNull()
+  })
+
   it('opens the shared create dialog with the SOUL.md field (parity with the rail)', async () => {
     vi.mocked(refreshProfiles).mockResolvedValue([])
 

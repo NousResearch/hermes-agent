@@ -448,6 +448,101 @@ def auth_priority_command(args) -> None:
     _report_priority(provider, pool, moved, requested, "Set", "to")
 
 
+# Providers that duplicate the credential label into ``providers.<provider>.label`` as a legacy
+# mirror (written when their singleton-persistence path fires). Keep this narrow and explicit:
+# adding a provider here without an actual mirror in ``hermes_cli/auth_<provider>.py`` is a no-op
+# but adds noise to the audit surface. Search command that must return every provider listed here:
+#     grep -rn 'state\["label"\]\|providers\[.*\]\["label"\]' hermes_cli/auth_*.py
+_LEGACY_LABEL_MIRROR_PROVIDERS = frozenset({"nous", "openai-codex"})
+
+# Non-printable / control characters we reject in labels (they break ``hermes auth list`` output
+# and hide malicious tricks like embedded ANSI escapes or NULs). Space and printable text are fine.
+_LABEL_FORBIDDEN_CHARS = frozenset(chr(c) for c in list(range(0, 32)) + [127])
+
+
+def _validate_new_label(candidate: Any) -> str:
+    """Return the trimmed label or raise SystemExit with a user-facing reason."""
+    if candidate is None:
+        raise SystemExit(
+            "New label is required. "
+            "Usage: hermes auth rename <provider> <selector> <new_label>")
+    if not isinstance(candidate, str):
+        raise SystemExit(f"New label must be a string, got {type(candidate).__name__}.")
+    stripped = candidate.strip()
+    if not stripped:
+        raise SystemExit("New label cannot be empty or whitespace-only.")
+    for ch in stripped:
+        if ch in _LABEL_FORBIDDEN_CHARS:
+            raise SystemExit(
+                "New label cannot contain control characters, newlines, or NULs.")
+    return stripped
+
+
+def _mirror_legacy_label(provider: str, old_label: str, new_label: str) -> None:
+    """Keep ``providers.<provider>.label`` in sync for providers that still mirror the label.
+
+    Only overwrites when the current mirror value equals ``old_label``: if the user has
+    already diverged the mirror by hand, we leave it alone (the pool row is now the
+    source of truth). No-op for every provider not in ``_LEGACY_LABEL_MIRROR_PROVIDERS``.
+    """
+    if provider not in _LEGACY_LABEL_MIRROR_PROVIDERS:
+        return
+    store = auth_mod._load_auth_store()
+    providers = store.get("providers")
+    if not isinstance(providers, dict):
+        return
+    section = providers.get(provider)
+    if not isinstance(section, dict):
+        return
+    if section.get("label") != old_label:
+        return
+    section["label"] = new_label
+    auth_mod._save_auth_store(store)
+
+
+def auth_rename_command(args) -> None:
+    """`hermes auth rename <provider> <target> <new_label>`: rename one pooled credential's label.
+
+    Symmetric with ``auth remove`` and ``auth priority``: ``<target>`` accepts an index,
+    entry id, or exact current label (via ``pool.resolve_target``). Rejects empty,
+    whitespace-only, and control-char labels. Rejects a new label that already matches
+    another credential's label in the same provider (case-insensitive) to preserve
+    selector uniqueness. Mirrors the new label into ``providers.<provider>.label``
+    for the two providers (``nous``, ``openai-codex``) that still maintain that
+    legacy field — but only when the mirror value has not been manually diverged.
+    """
+    provider = _normalize_provider(getattr(args, "provider", ""))
+    target = getattr(args, "target", None)
+
+    pool = load_pool(provider)
+    index, matched, error = pool.resolve_target(target)
+    if matched is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+
+    new_label = _validate_new_label(getattr(args, "new_label", None))
+    old_label = matched.label
+
+    if new_label.lower() != old_label.lower():
+        collision = next(
+            (e for e in pool.entries()
+             if e.id != matched.id and e.label.strip().lower() == new_label.lower()),
+            None,
+        )
+        if collision is not None:
+            raise SystemExit(
+                f'Label "{new_label}" is already in use by {provider} credential '
+                f'id={collision.id}. Choose a different name.')
+
+    renamed = pool.rename_label(matched.id, new_label)
+    if renamed is None:
+        raise SystemExit(
+            f"Could not rename {provider} credential #{index}: entry disappeared "
+            "between resolution and write (pool may have been modified concurrently).")
+
+    _mirror_legacy_label(provider, old_label, new_label)
+    print(f'Renamed {provider} credential #{index}: "{old_label}" -> "{new_label}"')
+
+
 def _free_tier_lines() -> tuple[str, str]:
     """The two-line free-tier rendering shared by every auth display surface (R-USR-1)."""
     from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
@@ -821,7 +916,9 @@ def auth_upgrade_command(args) -> None:
 
 _AUTH_ACTIONS = {
     "add": auth_add_command, "list": auth_list_command, "remove": auth_remove_command,
-    "reset": auth_reset_command, "priority": auth_priority_command, "refresh": auth_refresh_command, "status": auth_status_command,
+    "reset": auth_reset_command, "priority": auth_priority_command,
+    "rename": auth_rename_command,
+    "refresh": auth_refresh_command, "status": auth_status_command,
     "logout": auth_logout_command, "upgrade": auth_upgrade_command,
     "spotify": auth_spotify_command}
 

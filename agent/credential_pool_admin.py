@@ -104,6 +104,25 @@ class CredentialPoolAdminMixin:
                 return None, None, f"No credential #{index}."
             return None, None, f'No credential matching "{raw}".'
 
+    def rename_label(self, credential_id: str, new_label: str) -> Optional[PooledCredential]:
+        """Change one pooled entry's label, persist under lock, return the mutated entry.
+
+        Returns None when ``credential_id`` is not in the pool. Callers are responsible
+        for validating the new label (non-empty, no control characters) and for
+        duplicate-in-provider checks — this method is a pure locked mutator, mirroring
+        the shape of ``set_priority``.
+        """
+        with self._lock:
+            entries = list(self._entries)
+            for i, entry in enumerate(entries):
+                if entry.id == credential_id:
+                    updated = replace(entry, label=new_label)
+                    entries[i] = updated
+                    self._entries = entries
+                    self._persist()
+                    return updated
+            return None
+
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         from agent.credential_pool import _next_priority
 

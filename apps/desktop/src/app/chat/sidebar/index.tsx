@@ -462,6 +462,7 @@ export function ChatSidebar({
   const newSessionKbd = newSessionCombo ? comboTokens(newSessionCombo) : []
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const [serverMatchesScope, setServerMatchesScope] = useState('')
   const [searchPending, setSearchPending] = useState(false)
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const [messagingLoadMorePending, setMessagingLoadMorePending] = useState<Record<string, boolean>>({})
@@ -660,10 +661,15 @@ export function ChatSidebar({
 
   // Full-text search across *all* sessions (not just the loaded page) so 699
   // sessions stay findable. Debounced; loaded sessions are matched instantly
-  // client-side and merged ahead of the server hits.
+  // client-side and merged ahead of the server hits. Server hits are scoped to
+  // the current profile scope: a concrete profile searches only its own state.db,
+  // and All Profiles searches everything.
+  const searchScope = showAllProfiles ? ALL_PROFILES : profileScope
+
   useEffect(() => {
     if (!trimmedQuery) {
       setServerMatches([])
+      setServerMatchesScope('')
       setSearchPending(false)
 
       return
@@ -671,13 +677,16 @@ export function ChatSidebar({
 
     let cancelled = false
 
+    setServerMatches([])
+    setServerMatchesScope(searchScope)
     setSearchPending(true)
 
     const id = window.setTimeout(() => {
-      void searchSessions(trimmedQuery)
+      void searchSessions(trimmedQuery, showAllProfiles ? undefined : profileScope)
         .then(res => {
           if (!cancelled) {
             setServerMatches(res.results)
+            setServerMatchesScope(searchScope)
           }
         })
         .catch(() => undefined)
@@ -692,13 +701,14 @@ export function ChatSidebar({
       cancelled = true
       window.clearTimeout(id)
     }
-  }, [trimmedQuery])
+  }, [trimmedQuery, searchScope, showAllProfiles, profileScope])
 
   const searchResults = useMemo(() => {
     if (!trimmedQuery) {
       return []
     }
 
+    const matchesForCurrentScope = serverMatchesScope === searchScope ? serverMatches : []
     const out = new Map<string, SessionInfo>()
 
     for (const s of sortedSessions) {
@@ -707,7 +717,7 @@ export function ChatSidebar({
       }
     }
 
-    for (const match of serverMatches) {
+    for (const match of matchesForCurrentScope) {
       if (out.has(match.session_id)) {
         continue
       }
@@ -717,7 +727,7 @@ export function ChatSidebar({
     }
 
     return [...out.values()]
-  }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
+  }, [trimmedQuery, sortedSessions, serverMatches, serverMatchesScope, searchScope, sessionByAnyId])
 
   const unpinnedAgentSessions = useMemo(
     () => sortedSessions.filter(s => !isPinnedSession(s)),

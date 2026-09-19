@@ -202,6 +202,16 @@ _COMPRESSION_TIMEOUT_FINAL_RESPONSE = (
     "dropped. Start a fresh session with /new, or check auxiliary.compression before retrying /compress."
 )
 
+# Terminal final_response for a turn ended because context compression hit its
+# host progress-aware timeout while the request was still oversized (#98722,
+# salvaged from #98741). Sending the unchanged request would only bounce off
+# the provider's overflow error and re-enter compression in the same turn.
+_COMPRESSION_TIMEOUT_FINAL_RESPONSE = (
+    "Context compression timed out without reducing this conversation. "
+    "No messages were dropped. Start a fresh session with /new, or check "
+    "auxiliary.compression before retrying /compress."
+)
+
 
 # Stable prefix ACP/TUI match on to treat the text as cancellation metadata, not assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("

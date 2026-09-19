@@ -746,6 +746,18 @@ def _fast_model_from_catalog(provider_id: str) -> str:
     return ""
 
 
+def _nous_policy_blocks(model_id: str) -> bool:
+    """True when the org's model policy does not admit *model_id*."""
+    try:
+        from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
+
+        allowed = nous_policy_allowed_ids()
+        return bool(allowed) and not restrict_to_nous_policy([model_id], allowed)
+    except Exception:
+        logger.debug("Nous policy check unavailable", exc_info=True)
+        return False
+
+
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) -> str:
     """Cheap auxiliary model for a provider.

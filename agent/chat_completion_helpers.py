@@ -3068,6 +3068,15 @@ class _StreamingCall(StreamingWaitMonitor):
                 "Stream ended with no finish_reason after delivering text with no tool calls; treating as a mid-stream drop.")
             return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj)
         effective_finish_reason = "length" if has_truncated_tool_args else (finish_reason or "stop")
+        if (finish_reason == "stop" and not mock_tool_calls and not has_truncated_tool_args
+                and full_content and full_reasoning
+                and full_content.strip() == full_reasoning.strip()):
+            # Reasoning echoed as visible content (#109664): the provider duplicated its
+            # internal thought into the answer channel. Persisting it would store leaked
+            # reasoning as the final answer, so treat the response as malformed instead.
+            raise EmptyStreamError(
+                "Provider returned reasoning text as visible content (content duplicates "
+                "reasoning_content) with no tool calls — treating as a malformed response.")
         provider_stream_error = _provider_stream_error_from_text(
             full_content or "", effective_finish_reason, response=getattr(stream, "response", None))
         if provider_stream_error is not None:

@@ -49,8 +49,8 @@ interface CatalogMeta {
 const PLUGINS_URL = "/docs/api/plugins.json";
 const META_URL = "/docs/api/plugins-meta.json";
 
-const CATALOG_README_URL =
-  "https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog";
+// Docs section describing the PR-based submission workflow.
+const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting-a-plugin-to-the-catalog";
 
 const TIER_CONFIG: Record<
   string,
@@ -597,6 +597,14 @@ export default function PluginCatalogPage() {
                 </span>
               )}
             </p>
+            {!catalogEmpty && (
+              <p className={styles.heroSub} style={{ fontSize: "0.9rem" }}>
+                Built a plugin?{" "}
+                <Link className={styles.heroLink} to={SUBMIT_PLUGIN_URL}>
+                  Submit it to the catalog →
+                </Link>
+              </p>
+            )}
             {meta.generatedAt && !catalogEmpty && (
               <p className={styles.heroMeta}>
                 {allPlugins.length} plugins across {Object.keys(categoryCounts).length} categories
@@ -737,14 +745,9 @@ export default function PluginCatalogPage() {
                 Submissions are open.
               </p>
               <div className={styles.emptyActions}>
-                <a
-                  className={styles.emptyCta}
-                  href={CATALOG_README_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  How to submit a plugin ↗
-                </a>
+                <Link className={styles.emptyCta} to={SUBMIT_PLUGIN_URL}>
+                  How to submit a plugin
+                </Link>
                 <Link className={styles.emptyCtaSecondary} to="/user-guide/features/plugin-catalog">
                   Read the catalog docs
                 </Link>

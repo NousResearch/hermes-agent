@@ -98,6 +98,21 @@
   color: #ffd700;
 }
 
+/* Inline "submit your plugin" link under the hero subtitle. */
+.heroLink {
+  color: #ffd700;
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 215, 0, 0.35);
+  transition: border-color 0.15s;
+}
+
+.heroLink:hover {
+  color: #ffd700;
+  text-decoration: none;
+  border-bottom-color: #ffd700;
+}
+
 .heroMeta {
   font-size: 0.85rem;
   color: var(--ifm-font-color-secondary, #9a968e);

@@ -118,6 +118,50 @@ def dispatch_group_peer(connection, method, params):
 
 
 def _invite(operation, adapter, params):
+    """Observe a completed native receipt before effectful NEW selection."""
+    from gateway.session_peer_target import target_policy, require_current_grant
+    from gateway.hosted_room_peer import _identifier, issue_room_grant, decode_room_grant
+    from gateway import hosted_rooms
+    owner, paths, policy = target_policy(adapter)
+    if owner is not operation.authority or paths != operation.paths:
+        raise RuntimeStoreError('profile_mismatch')
+    identity, (ttl, status_ttl) = invitation_preflight(params)
+    request_id = _identifier(params.get('request_id'), field='request_id')
+    key = _PREFIX + hashlib.sha256(request_id.encode()).hexdigest()
+    with owner.db.live_read_connection() as conn:
+        if conn is None:
+            raise RuntimeStoreError('runtime_draining')
+        old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    if old is not None:
+        receipt = json.loads(old[0])
+        expected = dict(identity, subject=operation.actor.subject, home=operation.profile_id,
+            epoch=operation.epoch, installation=hosted_rooms.local_authority_gateway_id(),
+            policy=policy, grant_id=params.get('grant_id'), ttl_seconds=ttl, status_ttl_seconds=status_ttl)
+        if any(receipt['intent'].get(k) != v for k, v in expected.items()):
+            raise RuntimeStoreError('admission_conflict')
+        if receipt['status'] != 'complete':
+            raise RuntimeStoreError('room_invitation_pending')
+        token = issue_room_grant(adapter._room_grant_secret(), **receipt['issue'])
+        claims = decode_room_grant(adapter._room_grant_secret(), token, permission='status')
+        if receipt.get('token_sha256') != claims['_token_sha256']:
+            raise RuntimeStoreError('room_reauthorization_required')
+        for path in paths:
+            with hosted_rooms._transaction(path) as conn:
+                require_current_grant(conn, claims)
+        operation.require_current()
+        return dict(grant=token, target_profile='default', catalog=receipt['intent']['catalog'],
+            endpoint=receipt['intent']['endpoint'], expires_at=claims['expires_at'],
+            status_expires_at=claims['status_expires_at'])
+    from gateway.session_peer_input import peer_input_initialized
+    if not peer_input_initialized(adapter):
+        return _issue_invitation(operation, adapter, params)
+    from gateway.session_peer_route import prepared_room_route, invitation_identity
+    with prepared_room_route(adapter, invitation_identity(identity, 'default'), operation, 'invite', required=False):
+        operation.require_current()
+        return _issue_invitation(operation, adapter, params)
+
+
+def _issue_invitation(operation, adapter, params):
     authority, actor = operation.authority, operation.actor
     run_store = adapter._run_idempotency_store
     from gateway import hosted_rooms

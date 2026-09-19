@@ -86,47 +86,49 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
         receipt.update(storage_source=storage_source, room_identity=room_identity)
 
     def write(conn):
-        _epoch(conn, authority.epoch)
-        saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                             (_BINDING_PREFIX + session_id,)).fetchone()
-        if saved is not None:
-            binding = json.loads(saved[0])
-            if binding.get('storage_source', 'api_server') != storage_source:
+        from gateway.session_selected_route import own_session_creation
+        with own_session_creation(authority, session_id, source, storage_source, conn):
+            _epoch(conn, authority.epoch)
+            saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                 (_BINDING_PREFIX + session_id,)).fetchone()
+            if saved is not None:
+                binding = json.loads(saved[0])
+                if binding.get('storage_source', 'api_server') != storage_source:
+                    raise RuntimeStoreError('permission_denied')
+                if declared_key and binding.get('declared_key') != declared_key:
+                    raise RuntimeStoreError('admission_conflict')
+                return
+            if declared_key:
+                existing_declared = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                    (_DECLARED_PREFIX + declared_key,)).fetchone()
+                if existing_declared and existing_declared[0] != session_id:
+                    raise RuntimeStoreError('admission_conflict')
+                conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
+                             (_DECLARED_PREFIX + declared_key, session_id))
+            row = conn.execute('SELECT source,session_key,title FROM sessions WHERE id=?', (session_id,)).fetchone()
+            if row is not None and row['source'] != storage_source:
                 raise RuntimeStoreError('permission_denied')
-            if declared_key and binding.get('declared_key') != declared_key:
+            if storage_source == 'bot_room':
+                if row is not None and row['title'] != title:
+                    raise RuntimeStoreError('admission_conflict')
+                if conn.execute('SELECT 1 FROM sessions WHERE title=? AND id!=?', (title, session_id)).fetchone():
+                    raise RuntimeStoreError('admission_conflict')
+            if row is not None and row['session_key'] not in (None, '', route):
                 raise RuntimeStoreError('admission_conflict')
-            return
-        if declared_key:
-            existing_declared = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                (_DECLARED_PREFIX + declared_key,)).fetchone()
-            if existing_declared and existing_declared[0] != session_id:
+            existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
+                                    (route,)).fetchone()
+            if existing is not None and json.loads(existing[0])['session_id'] != session_id:
                 raise RuntimeStoreError('admission_conflict')
-            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
-                         (_DECLARED_PREFIX + declared_key, session_id))
-        row = conn.execute('SELECT source,session_key,title FROM sessions WHERE id=?', (session_id,)).fetchone()
-        if row is not None and row['source'] != storage_source:
-            raise RuntimeStoreError('permission_denied')
-        if storage_source == 'bot_room':
-            if row is not None and row['title'] != title:
-                raise RuntimeStoreError('admission_conflict')
-            if conn.execute('SELECT 1 FROM sessions WHERE title=? AND id!=?', (title, session_id)).fetchone():
-                raise RuntimeStoreError('admission_conflict')
-        if row is not None and row['session_key'] not in (None, '', route):
-            raise RuntimeStoreError('admission_conflict')
-        existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
-                                (route,)).fetchone()
-        if existing is not None and json.loads(existing[0])['session_id'] != session_id:
-            raise RuntimeStoreError('admission_conflict')
-        conn.execute('''INSERT INTO sessions(id,source,title,hidden,started_at) VALUES(?,?,?,?,?)
-                        ON CONFLICT(id) DO NOTHING''', (session_id, storage_source, title,
-                                                       int(storage_source == 'bot_room'), now.timestamp()))
-        conn.execute('UPDATE sessions SET session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
-                     (route, session_id, source.user_id, 'dm', _json(source.to_dict()), session_id))
-        conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?) "
-                     'ON CONFLICT(scope,session_key) DO UPDATE SET entry_json=excluded.entry_json',
-                     (route, _json(entry.to_dict()), now.timestamp()))
-        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
-                     (_BINDING_PREFIX + session_id, _json(receipt)))
+            conn.execute('''INSERT INTO sessions(id,source,title,hidden,started_at) VALUES(?,?,?,?,?)
+                            ON CONFLICT(id) DO NOTHING''', (session_id, storage_source, title,
+                                                           int(storage_source == 'bot_room'), now.timestamp()))
+            conn.execute('UPDATE sessions SET session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
+                         (route, session_id, source.user_id, 'dm', _json(source.to_dict()), session_id))
+            conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?) "
+                         'ON CONFLICT(scope,session_key) DO UPDATE SET entry_json=excluded.entry_json',
+                         (route, _json(entry.to_dict()), now.timestamp()))
+            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
+                         (_BINDING_PREFIX + session_id, _json(receipt)))
     authority.db._execute_write(write)
     return restore_api_session(authority, session_id)
 
@@ -165,7 +167,8 @@ def restore_api_session(authority, session_id):
         if expected != session_id or row['title'] != 'Group: ' + identity[1] or not row['hidden']:
             raise RuntimeStoreError('admission_conflict')
     store = authority.runner.session_store
-    with store._lock:
+    from gateway.session_selected_route import session_store_guard
+    with session_store_guard(authority.runner):
         store._ensure_loaded_locked()
         current = store._entries.get(entry.session_key)
         if current is not None and current.session_id != session_id:

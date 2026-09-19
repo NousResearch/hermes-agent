@@ -106,12 +106,13 @@ async def _normalize_room_dispatch(
         catalog = GatewayRoomCatalog.from_mapping(catalog_map)
         if not catalog.text:
             raise ValueError("canonical_room_peer_unsupported")
-        if dispatch.attachment_manifest_digest is not None and not catalog.attachments:
-            raise ValueError("room attachments are unsupported")
+        # Files NEW is validated against its fresh held route by /runs, after
+        # this replay-first immutable normalization and before any mutation.
         policy = RoomExecutionPolicy.from_mapping(catalog.execution_policy.as_mapping())
         if not hmac.compare_digest(policy.policy_digest, dispatch.execution_policy_digest):
             raise ValueError("room execution policy changed")
-        if not hmac.compare_digest(catalog.catalog_digest, dispatch.capability_digest):
+        from gateway.session_peer_route import catalog_matches_dispatch
+        if dispatch.attachment_manifest_digest is None and not catalog_matches_dispatch(catalog_map, dispatch):
             raise ValueError("room capability catalog changed")
         from gateway.platforms.api_server_room_grants import _canonical_room_peer
         from gateway.session_api import hosted_session_id, prospective_room_session

@@ -45,7 +45,8 @@ def check_api_turn(authority, ref, payload):
         if set(data['settings']) - set(_SETTING_KEYS):
             raise RuntimeStoreError('invalid_params')
     settings = payload.get('api_turn_v1', {}).get('settings') or api_settings(authority, ref)
-    check_api_settings(adapter, settings)
+    from gateway.session_peer_route import current_room_route
+    check_api_settings(adapter, settings, admitted=current_room_route(adapter) is None)
     return adapter
 
 
@@ -53,7 +54,7 @@ def _valid_owner_scope(value):
     return isinstance(value, str) and _OWNER_SCOPE_RE.fullmatch(value) is not None
 
 
-def check_api_settings(adapter, settings):
+def check_api_settings(adapter, settings, *, admitted=False):
     dispatch = settings.get('room_dispatch')
     if dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
@@ -64,7 +65,10 @@ def check_api_settings(adapter, settings):
             raise RuntimeStoreError('permission_denied')
         _, catalog = _local_room_catalog(adapter, bound.target_profile, bound.target_install_id)
         current = GatewayRoomCatalog.from_mapping(catalog)
-        if (not current.text or current.catalog_digest != bound.capability_digest
+        from gateway.session_peer_route import catalog_matches_dispatch, require_room_route
+        if bound.attachment_manifest_digest is not None and not admitted:
+            require_room_route(adapter, bound)
+        if (not current.text or not catalog_matches_dispatch(catalog, bound, admitted=admitted)
                 or current.execution_policy.as_mapping() != settings.get('room_execution_policy')):
             raise RuntimeStoreError('permission_denied')
     return adapter
@@ -145,6 +149,11 @@ def admit_api_turn(adapter, **kwargs):
             return authority, SessionRef(authority.profile_id, sid), row
         # NEW-only: keep current catalog/policy and the final dual-store writer
         # fences. Route preparation will enter here before bind/capture.
+        if bound_dispatch.attachment_manifest_digest is not None:
+            from gateway.session_peer_route import require_room_route
+            b = require_room_route(adapter, bound_dispatch)
+            if b._scope.purpose != 'admit':
+                raise RuntimeStoreError('prepared_files_unsupported')
         check_api_settings(adapter, settings)
         from gateway.session_api import prospective_room_session
         prospective_room_session(authority, HostedMemberDispatch.from_mapping(settings['room_dispatch']))

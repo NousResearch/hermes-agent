@@ -481,6 +481,25 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
+    room_dispatch = body.get('hosted_room_dispatch') if isinstance(body, dict) else None
+    if room_dispatch and room_dispatch.get('attachment_manifest_digest') is not None:
+        from gateway.hosted_room_peer import HostedMemberDispatch
+        from gateway.session_peer_route import prepared_room_route_async
+        from gateway.platforms.api_server_room_dispatch import _room_dispatch_error
+        try:
+            dispatch = HostedMemberDispatch.from_mapping(room_dispatch)
+            async with prepared_room_route_async(self, dispatch, request, 'admit'):
+                from gateway.session_api_turn import check_api_settings
+                check_api_settings(self, {'room_dispatch': room_dispatch,
+                    'room_execution_policy': body['_room_execution_policy']})
+                return await _handle_runs_body(self, request, body, gateway_session_key, _api_server=_api_server)
+        except Exception as exc:
+            return _room_dispatch_error(exc, _openai_error=_openai_error)
+    return await _handle_runs_body(self, request, body, gateway_session_key, _api_server=_api_server)
+
+
+async def _handle_runs_body(self, request, body, gateway_session_key, *, _api_server):
+    _openai_error = _api_server._openai_error
     room_dispatch, room_execution_policy = (
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
@@ -529,7 +548,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         requested_provider=agent_overrides.get("requested_provider"), route=route)
     if selection_error:
         return _json_error(_openai_error, selection_error, status=400)
-    if room_dispatch is not None:
+    if room_dispatch is not None and room_dispatch.get('attachment_manifest_digest') is None:
         # NEW-only seam: selected-route preflight belongs before this first
         # mutation (phase2B), never in immutable normalization or replay.
         from gateway.hosted_room_peer import HostedMemberDispatch

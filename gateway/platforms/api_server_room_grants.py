@@ -1,5 +1,6 @@
 """RoomLink room-member grants and capability HTTP handlers."""
 
+import asyncio
 import time
 import uuid
 from typing import Any, Optional
@@ -215,6 +216,78 @@ def _require_current_room_grant(self, claims):
             raise RoomGrantReauthorizationRequired("room grant is no longer current")
 
 
+def _issue_http_invitation(self, body, profile):
+    from contextlib import nullcontext
+    from gateway.session_peer_input import peer_input_initialized
+    from gateway.session_peer_route import prepared_room_route, invitation_identity
+    from gateway import hosted_rooms
+    from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+    from gateway.session_group_peers import invitation_preflight
+    
+    target_install_id = hosted_rooms.local_authority_gateway_id()
+    identity, (ttl, status_ttl) = invitation_preflight(body)
+    # Freeze the canonical binding before signing/reservation can block. A
+    # detached adapter must not switch to the unconfirmed standalone path.
+    binding = None
+    if _canonical_room_peer(self, profile):
+        from gateway.session_peer_target import root_target
+        owner, paths = root_target(self, profile)
+        binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
+                   self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
+    guard = (prepared_room_route(self, invitation_identity(identity, profile), object(), 'invite', required=False)
+             if binding is not None and peer_input_initialized(self, profile) else nullcontext())
+    with guard:
+        execution_policy, catalog = _local_room_catalog(self, profile, target_install_id)
+        if not catalog['text'] or execution_policy['approval_mode'] == 'off':
+            raise ValueError('remote room execution requires an enabled approval policy')
+        permissions = _invitation_permissions(self, profile, catalog)
+        token = issue_room_grant(
+            self._room_grant_secret(),
+            grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
+            **identity,
+            permissions=permissions,
+            target_install_id=target_install_id,
+            target_profile=profile,
+            execution_policy_digest=execution_policy["policy_digest"],
+            issued_at=time.time(),
+            ttl_seconds=ttl,
+            status_ttl_seconds=status_ttl,
+        )
+        claims = decode_room_grant(
+            self._room_grant_secret(), token, permission="status"
+        )
+        from gateway.hosted_room_grant_state import (
+            grant_state_db_paths,
+            reserve_grant_state,
+        )
+        
+        reserve_grant_state(
+            grant_state_db_paths(),
+            claims=claims,
+            expires_at=float(claims.get("status_expires_at", claims["expires_at"])),
+        )
+        if binding is not None:
+            from gateway.session_peer_target import grant_fence, target_policy, require_current_grant
+            with grant_fence(self, profile) as (authority, shared):
+                def confirm(conn):
+                    owner, paths, current_policy = target_policy(self, profile, connection=conn)
+                    current_binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
+                                       self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
+                    if owner is not authority or current_binding != binding:
+                        raise ValueError('room target binding changed')
+                    if current_policy != execution_policy:
+                        raise ValueError('room execution policy changed')
+                    _, current_catalog = _local_room_catalog(
+                        self, profile, target_install_id, _connection=conn)
+                    if (current_catalog != catalog
+                            or _invitation_permissions(self, profile, current_catalog, _connection=conn) != permissions):
+                        raise ValueError('room capability catalog changed')
+                    require_current_grant(shared, claims)
+                    require_current_grant(conn, claims)
+                authority.db._execute_write(confirm)
+    return catalog, claims, token
+
+
 async def _handle_room_member_invitation(
     self,
     request: "web.Request",
@@ -246,72 +319,14 @@ async def _handle_room_member_invitation(
             status=400,
         )
     try:
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
-        from gateway.session_group_peers import invitation_preflight
-
         profile = _effective_room_profile(_api_request_profile)
         unavailable = _room_peer_unavailable(self, profile, _openai_error=_openai_error)
         if unavailable is not None:
             return unavailable
-        target_install_id = hosted_rooms.local_authority_gateway_id()
-        identity, (ttl, status_ttl) = invitation_preflight(body)
-        execution_policy, catalog = _local_room_catalog(self, profile, target_install_id)
-        if not catalog['text'] or execution_policy['approval_mode'] == 'off':
-            raise ValueError('remote room execution requires an enabled approval policy')
-        # Freeze the canonical binding before signing/reservation can block. A
-        # detached adapter must not switch to the unconfirmed standalone path.
-        binding = None
-        if _canonical_room_peer(self, profile):
-            from gateway.session_peer_target import root_target
-            owner, paths = root_target(self, profile)
-            binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
-                       self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
-        permissions = _invitation_permissions(self, profile, catalog)
-        token = issue_room_grant(
-            self._room_grant_secret(),
-            grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
-            **identity,
-            permissions=permissions,
-            target_install_id=target_install_id,
-            target_profile=profile,
-            execution_policy_digest=execution_policy["policy_digest"],
-            issued_at=time.time(),
-            ttl_seconds=ttl,
-            status_ttl_seconds=status_ttl,
-        )
-        claims = decode_room_grant(
-            self._room_grant_secret(), token, permission="status"
-        )
-        from gateway.hosted_room_grant_state import (
-            grant_state_db_paths,
-            reserve_grant_state,
-        )
-
-        reserve_grant_state(
-            grant_state_db_paths(),
-            claims=claims,
-            expires_at=float(claims.get("status_expires_at", claims["expires_at"])),
-        )
-        if binding is not None:
-            from gateway.session_peer_target import grant_fence, target_policy, require_current_grant
-            with grant_fence(self, profile) as (authority, shared):
-                def confirm(conn):
-                    owner, paths, current_policy = target_policy(self, profile, connection=conn)
-                    current_binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
-                                       self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
-                    if owner is not authority or current_binding != binding:
-                        raise ValueError('room target binding changed')
-                    if current_policy != execution_policy:
-                        raise ValueError('room execution policy changed')
-                    _, current_catalog = _local_room_catalog(
-                        self, profile, target_install_id, _connection=conn)
-                    if (current_catalog != catalog
-                            or _invitation_permissions(self, profile, current_catalog, _connection=conn) != permissions):
-                        raise ValueError('room capability catalog changed')
-                    require_current_grant(shared, claims)
-                    require_current_grant(conn, claims)
-                authority.db._execute_write(confirm)
+        def issue():
+            with self._profile_scope(profile):
+                return _issue_http_invitation(self, body, profile)
+        catalog, claims, token = await asyncio.to_thread(issue)
     except Exception as exc:
         return web.json_response(
             _openai_error(str(exc), code="invalid_room_invitation"),

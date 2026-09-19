@@ -21,7 +21,7 @@ def root_target(adapter, profile='default', *, connection=None):
             or getattr(runner, 'session_authorities', None) is None
             or Path(authority.profile_id).resolve() != home
             or getattr(runner, 'adapters', {}).get(Platform.API_SERVER) is not adapter
-            or adapter._ensure_session_db() is not authority.db
+            or adapter._session_db_cache_closed
             or Path(authority.db.db_path).resolve() != home / 'state.db'):
         raise RuntimeStoreError('canonical_room_peer_unsupported')
     paths = tuple(path.resolve() for path in grant_state_db_paths(home))
@@ -37,7 +37,9 @@ def root_target(adapter, profile='default', *, connection=None):
         raise RuntimeStoreError('canonical_room_peer_unsupported')
     authority._require_admission_open()
     if connection is None:
-        with authority.db._read_ctx() as conn:
+        with authority.db.live_read_connection() as conn:
+            if conn is None:
+                raise RuntimeStoreError('canonical_room_peer_unsupported')
             _epoch(conn, authority.epoch)
     else:
         _epoch(connection, authority.epoch)
@@ -89,7 +91,12 @@ def authorize_dispatch(adapter, authority, shared, conn, token, dispatch, policy
     # Policy has already been derived on the transaction's owning connection.
     _, catalog = _local_room_catalog(adapter, dispatch.target_profile, dispatch.target_install_id,
                                      _connection=conn)
-    if not catalog['text'] or catalog['catalog_digest'] != dispatch.capability_digest:
+    from gateway.session_peer_route import catalog_matches_dispatch, require_room_route
+    if dispatch.attachment_manifest_digest is not None:
+        if 'attachment.stage' not in claims['permissions']:
+            raise RuntimeStoreError('permission_denied')
+        require_room_route(adapter, dispatch, connection=conn)
+    if not catalog['text'] or not catalog_matches_dispatch(catalog, dispatch):
         raise RuntimeStoreError('room_capability_catalog_changed')
     require_current_grant(shared, claims)
     require_current_grant(conn, claims)

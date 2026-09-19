@@ -18,7 +18,7 @@ from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
     _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
-    _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    _SQL_IN_CHUNK, _id_chunks, is_automatic_end_reason, _placeholders as _session_ids_placeholders,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -87,6 +87,47 @@ _PREVIEW_COL_SQL = f"""COALESCE(
 def _where_sql(clauses: List[str], lead: str = "") -> str:
     """``WHERE a AND b`` (with *lead* prefix) or "" when there are no clauses."""
     return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
+
+
+# Compression lineage of a session in both directions, from two bound ids (the same id twice):
+# every row a resume must treat as one logical conversation. Membership is the compression
+# continuation edge (``parent.end_reason = 'compression'``), the rule ``get_compression_chain`` /
+# ``_COMPRESSION_LINEAGE_CTE`` walk. Shared so a column flip and a visibility restore cannot drift
+# apart (#115489).
+_LINEAGE_CTE_SQL = """
+            WITH RECURSIVE
+              ancestors(id) AS (
+                SELECT ?
+                UNION
+                SELECT parent.id
+                FROM ancestors a
+                JOIN sessions child ON child.id = a.id
+                JOIN sessions parent ON parent.id = child.parent_session_id
+                WHERE parent.end_reason = 'compression'
+              ),
+              descendants(id) AS (
+                SELECT ?
+                UNION
+                SELECT child.id
+                FROM descendants d
+                JOIN sessions parent ON parent.id = d.id
+                JOIN sessions child ON child.parent_session_id = parent.id
+                WHERE parent.end_reason = 'compression'
+              )
+"""
+_LINEAGE_IDS_SQL = "SELECT id FROM ancestors UNION SELECT id FROM descendants"
+
+# A middle segment of a chain: still closed by compression (its continuation follows) and carrying at
+# least one child row, so the descendants walk above would leave it. Hiding such a segment must stay
+# node-scoped: the row a listing resolves is the chain ROOT (``list_sessions_rich`` lists roots, and
+# ``_project_compression_tips`` shows the tail's content on that tile), so walking up from a finished
+# middle segment archives the root and takes a whole conversation out of every ``archived = 0``
+# listing — including one whose tip is open and still being written to (#115489).
+_COMPRESSION_CONTINUATION_SQL = """
+                SELECT 1 FROM sessions s
+                WHERE s.id = ? AND s.end_reason = 'compression'
+                  AND EXISTS (SELECT 1 FROM sessions c WHERE c.parent_session_id = s.id)
+                """
 
 
 def _session_filter_where(
@@ -468,7 +509,15 @@ class SessionSessionsMixin:
         """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
         children, skipping explicit fork/delegate provenance and children that predate the parent itself.
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
-        reopened and re-ended later still owns reset children from its earlier boundaries."""
+        reopened and re-ended later still owns reset children from its earlier boundaries.
+
+        A revive off an AUTOMATIC-cleanup end (``agent_close`` / ``*_orphan_reap`` / shutdown / evict)
+        also restores the conversation's visibility: that end means a runtime went away, not that the
+        conversation is over, so any archive that rode along with it — the idle sweep hides a whole
+        lineage, reapers archive the row they closed — is collateral. Deliberate archives carry no end
+        reason or a boundary reason and stay hidden (same taxonomy as
+        :meth:`unarchive_recoverable_session`). See #115489.
+        """
         def _do(conn):
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
@@ -481,9 +530,14 @@ class SessionSessionsMixin:
                 f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
                 (session_id, *_RESET_END_REASONS),
             )
+            ended_row = conn.execute(
+                "SELECT end_reason FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (session_id,),
             )
+            if ended_row is not None and is_automatic_end_reason(ended_row[0]):
+                self._restore_archived_lineage(conn, session_id)
         self._execute_write(_do)
 
     def promote_to_session_reset(self, session_id: str, reason: str = "session_reset") -> bool:
@@ -823,40 +877,54 @@ class SessionSessionsMixin:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
         forward to their tip, so updating only the tip would let the root resurrect it on refresh."""
         return self._write_rowcount(
-            f"""
-            WITH RECURSIVE
-              ancestors(id) AS (
-                SELECT ?
-                UNION
-                SELECT parent.id
-                FROM ancestors a
-                JOIN sessions child ON child.id = a.id
-                JOIN sessions parent ON parent.id = child.parent_session_id
-                WHERE parent.end_reason = 'compression'
-              ),
-              descendants(id) AS (
-                SELECT ?
-                UNION
-                SELECT child.id
-                FROM descendants d
-                JOIN sessions parent ON parent.id = d.id
-                JOIN sessions child ON child.parent_session_id = parent.id
-                WHERE parent.end_reason = 'compression'
-              ),
-              lineage(id) AS (
-                SELECT id FROM ancestors
-                UNION
-                SELECT id FROM descendants
-              )
+            f"""{_LINEAGE_CTE_SQL}
             UPDATE sessions
             SET {column} = ?
-            WHERE id IN (SELECT id FROM lineage)
+            WHERE id IN ({_LINEAGE_IDS_SQL})
             """,
             (session_id, session_id, value),
         ) > 0
 
+    def _restore_archived_lineage(self, conn: sqlite3.Connection, session_id: str) -> int:
+        """Clear ``archived`` across *session_id*'s lineage on an OPEN writer transaction, touching only
+        rows that are archived. Returns rows restored (0 when nothing is hidden).
+
+        The one-row probe keeps the recursive UPDATE off the hot transcript path: appending a message
+        is the proof that a conversation is alive, so it must also undo a soft-hide — but it must not
+        pay for the lineage walk on every row it writes. Lives inside the caller's transaction, so
+        visibility is restored with the write that proves liveness and never via a second lock
+        acquisition on that critical path. See #115489.
+        """
+        if conn.execute(
+            "SELECT 1 FROM sessions WHERE id = ? AND archived = 1", (session_id,)
+        ).fetchone() is None:
+            return 0
+        cursor = conn.execute(
+            f"""{_LINEAGE_CTE_SQL}
+            UPDATE sessions
+            SET archived = 0
+            WHERE archived = 1 AND id IN ({_LINEAGE_IDS_SQL})
+            """,
+            (session_id, session_id),
+        )
+        return int(cursor.rowcount or 0)
+
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
-        """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
+        """Soft-hide (or unhide) a conversation; messages are kept.
+
+        Hiding a chain TAIL also hides its compression ancestors, because listings resolve the chain
+        ROOT and project it onto the tip (``_project_compression_tips``): leaving the root un-hidden
+        would resurrect the conversation on the next refresh. Hiding a *middle* segment carrying a
+        continuation is instead node-scoped — nobody archives a conversation by archiving one of its
+        finished segments, and propagating such a hide upward is how a stale segment took a still-live
+        chat out of every ``archived = 0`` listing, the Desktop sidebar above all, while the gateway
+        kept answering on its open tip (#115489). Unhiding always spans the whole lineage: recovery
+        must be complete (``unarchive_recoverable_session``).
+        """
+        if archived and self._read_one(_COMPRESSION_CONTINUATION_SQL, (session_id,)) is not None:
+            return self._write_rowcount(
+                "UPDATE sessions SET archived = 1 WHERE id = ?", (session_id,)
+            ) > 0
         return self._set_lineage_column("archived", session_id, int(archived))
 
     # Accidental end reasons recovery treats as resumable (also interpolated into

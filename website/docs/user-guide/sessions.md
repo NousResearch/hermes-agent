@@ -589,6 +589,24 @@ archive your entire history. Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
 unarchived from the Desktop/Dashboard session list.
 
+Archiving a conversation covers its whole context-compression lineage: a long
+chat is stored as a chain of segments (each compaction closes one and opens the
+next), and listings resolve the oldest segment while showing the newest one's
+content. Hiding any *segment that is still followed by a continuation* is
+deliberately node-scoped, so archiving one stale segment can never take a live
+conversation out of your listings.
+
+Archiving is also not permanent in the face of activity. A conversation that is
+written to again — a new message on the chain, or resuming a session that was
+auto-closed (`agent_close`, `startup_orphan_reap`, `ws_orphan_reap`) — stops
+being archived, because those signals mean the chat is in use again. The idle
+`sessions.auto_archive` sweep additionally skips any conversation holding a live
+turn lease or compression lock, so a chat that is actively answering is never
+swept mid-turn. That is what makes a chat the sweep hid during a quiet
+window reappear on its own; a real user archive is only restored by an explicit
+unarchive (the CLI bulk filters and the Desktop/Dashboard list), or by resuming
+a session whose only end was an automatic cleanup.
+
 ### Session Statistics
 
 ```bash

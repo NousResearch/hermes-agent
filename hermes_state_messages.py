@@ -300,6 +300,10 @@ class SessionMessagesMixin:
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
+            # A message landing on a hidden chain means the conversation is alive again: restore it
+            # with the same transaction, so a chat swept while idle stops being invisible (the
+            # Desktop sidebar filters archived) the moment it starts answering again (#115489).
+            self._restore_archived_lineage(conn, session_id)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
@@ -360,6 +364,9 @@ class SessionMessagesMixin:
                 encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+            # Same liveness proof as append_message (branch seeds, restarts, batch flushes): a chain
+            # receiving rows is not archived (#115489).
+            self._restore_archived_lineage(conn, session_id)
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 

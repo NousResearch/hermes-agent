@@ -241,7 +241,10 @@ class SessionMaintenanceMixin:
         stale tip archives its chain via :meth:`set_session_archived`, so an old compressed-away
         root with a recent continuation is never matched.  The hidden canonical Bot Chat (same
         predicate as :meth:`set_session_pinned`) is exempt: only a deliberate archive may retire
-        it, since archiving releases its registry title to the next Bot open."""
+        it, since archiving releases its registry title to the next Bot open.  A tip protected by
+        a live turn lease or compression lock is skipped: the lease row is the proof a turn is
+        running, and archiving its lineage would hide a live chat from every ``archived = 0``
+        listing while the gateway keeps answering on it (#115489)."""
         if idle_days is None or idle_days < 0:
             return 0
         cutoff = time.time() - float(idle_days) * 86400.0
@@ -256,9 +259,13 @@ class SessionMaintenanceMixin:
               AND {_LAST_ACTIVE_SQL} < ?
             ORDER BY s.started_at ASC
             """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
+        archived = 0
         for row in rows:
+            if self._execute_write(lambda conn, sid=row[0]: self._write_guards_reject(conn, sid)):
+                continue
             self.set_session_archived(row[0], True)
-        return len(rows)
+            archived += 1
+        return archived
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,

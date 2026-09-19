@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger,
   host,
   Input,
+  isSubmitEnter,
   Select,
   SelectContent,
   SelectItem,
@@ -159,7 +160,7 @@ function BoardNameField({
       <Input
         autoFocus
         onChange={event => onChange(event.target.value)}
-        onKeyDown={event => event.key === 'Enter' && onEnter()}
+        onKeyDown={event => isSubmitEnter(event) && onEnter()}
         placeholder={k.boardNamePlaceholder}
         value={value}
       />

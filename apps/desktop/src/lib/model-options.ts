@@ -1,5 +1,6 @@
-import { getGlobalModelOptions, type HermesGateway, type ModelOptionsResponse } from '@/hermes'
-import type { ModelOptionProvider } from '@/types/hermes'
+import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+
+import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 
 type CatalogProviderIdentity = Pick<ModelOptionProvider, 'aliases' | 'name' | 'slug'>
 
@@ -15,6 +16,17 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
     provider.name === currentProvider ||
     (provider.aliases?.includes(currentProvider) ?? false)
   )
+}
+
+/** The catalog's option support for the current pick, or undefined while the
+ *  catalog is loading / doesn't say. Callers treat undefined as "assume
+ *  reasoning" so controls never flicker away during the fetch. */
+export function currentModelCapabilities(
+  options: ModelOptionsResult | null | undefined,
+  provider: string,
+  model: string
+): ModelCapabilities | undefined {
+  return options?.providers?.find(row => catalogProviderMatches(row, provider))?.capabilities?.[model]
 }
 
 // A picked (provider, model) pair is never retargeted from catalog membership.
@@ -52,7 +64,7 @@ export function modelOptionsQueryKey(
   return ['model-options', profileKey, sessionId || 'global', ...(ownerKey ? ['owner', ownerKey] : [])] as const
 }
 
-function hasSelectableModels(options: ModelOptionsResponse | null | undefined): boolean {
+function hasSelectableModels(options: ModelOptionsResult | null | undefined): boolean {
   return options?.providers?.some(provider => (provider.models?.length ?? 0) > 0) ?? false
 }
 
@@ -60,7 +72,7 @@ function restModelOptions(
   explicitOnly: boolean,
   refresh: boolean,
   profile?: null | string
-): Promise<ModelOptionsResponse> {
+): Promise<ModelOptionsResult> {
   const opts = { explicitOnly, ...(refresh ? { refresh: true } : {}) }
   const profileKey = (profile ?? '').trim()
 
@@ -74,7 +86,7 @@ export async function requestModelOptions({
   refresh = false,
   request,
   sessionId
-}: ModelOptionsRequest): Promise<ModelOptionsResponse> {
+}: ModelOptionsRequest): Promise<ModelOptionsResult> {
   const dispatch = request ?? (gateway ? gateway.request.bind(gateway) : null)
 
   if (dispatch) {
@@ -99,10 +111,10 @@ export async function requestModelOptions({
     }
 
     let gatewayError: unknown
-    let gatewayOptions: ModelOptionsResponse | undefined
+    let gatewayOptions: ModelOptionsResult | undefined
 
     try {
-      gatewayOptions = await dispatch<ModelOptionsResponse>('model.options', params)
+      gatewayOptions = await dispatch<ModelOptionsResult>('model.options', params)
     } catch (error) {
       gatewayError = error
     }

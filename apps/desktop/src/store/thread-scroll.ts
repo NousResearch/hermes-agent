@@ -9,58 +9,79 @@ import { $activeProfile, normalizeProfileKey } from '@/store/profile'
 // subtree, so ThreadMessageList mirrors it into these atoms for the composer,
 // status stack, and floating jump button — all of which render OUTSIDE the thread.
 //
-// `$threadScrolledUp` dims the composer / status stack; `$threadJumpButtonVisible`
-// shows the floating jump control. Both track `!isAtBottom` today, but stay
-// separate so their thresholds can diverge again without touching consumers.
-//
-// Keep-alive tabs stay mounted with a real layout box, so only the on-screen
-// pane may publish or reset this composer-facing mirror. Jump-to-bottom
-// requests are keyed by session so a click (or an input-request snap) cannot
-// scroll every mounted transcript.
-export const $threadScrolledUp = atom(false)
-export const $threadJumpButtonVisible = atom(false)
-export const $threadMessagesBelow = atom(0)
+// Each session owns its live chrome, including when two split panes are visible.
+// Hidden keep-alive panes may neither publish nor reset a visible pane's state.
+// Keep the flags separate so their thresholds can diverge without changing consumers.
+export const $threadScrolledUpBySession = atom<Record<string, boolean>>({})
+export const $threadJumpButtonVisibleBySession = atom<Record<string, boolean>>({})
+export const $threadMessagesBelowBySession = atom<Record<string, number>>({})
 
-export const publishThreadMessagesBelow = (count: number, publisher: { paneVisible: boolean }): void => {
-  if (publisher.paneVisible && $threadMessagesBelow.get() !== count) {
-    $threadMessagesBelow.set(count)
+export const publishThreadMessagesBelow = (
+  count: number,
+  publisher: { paneVisible: boolean; sessionId?: string | null }
+): void => {
+  if (publisher.paneVisible) {
+    setSessionValue($threadMessagesBelowBySession, publisher.sessionId, count, 0)
   }
 }
 
-// Skip no-op writes so subscribers don't churn on every scroll tick.
-const setter = (target: WritableAtom<boolean>) => (value: boolean) => {
-  if (target.get() !== value) {
-    target.set(value)
+// Skip no-op writes and remove default entries so scroll ticks don't churn subscribers.
+// Missing identities are not a shared bucket: callers use their existing surface id
+// until a runtime session exists.
+function setSessionValue<T extends boolean | number>(
+  target: WritableAtom<Record<string, T>>,
+  sessionId: string | null | undefined,
+  value: T,
+  empty: T
+): void {
+  if (!sessionId) {
+    return
   }
+
+  const current = target.get()
+
+  if ((current[sessionId] ?? empty) === value) {
+    return
+  }
+
+  const next = { ...current }
+
+  if (value === empty) {
+    delete next[sessionId]
+  } else {
+    next[sessionId] = value
+  }
+
+  target.set(next)
 }
 
-const setScrolledUp = setter($threadScrolledUp)
-const setJumpButtonVisible = setter($threadJumpButtonVisible)
-
-export const setThreadAtBottom = (isAtBottom: boolean) => {
-  setScrolledUp(!isAtBottom)
-  setJumpButtonVisible(!isAtBottom)
+export const setThreadAtBottom = (isAtBottom: boolean, sessionId: string | null = null) => {
+  setSessionValue($threadScrolledUpBySession, sessionId, !isAtBottom, false)
+  setSessionValue($threadJumpButtonVisibleBySession, sessionId, !isAtBottom, false)
 }
 
-export const resetThreadScroll = () => {
-  setThreadAtBottom(true)
-  $threadMessagesBelow.set(0)
+export const resetThreadScroll = (sessionId: string | null = null) => {
+  setThreadAtBottom(true, sessionId)
+  setSessionValue($threadMessagesBelowBySession, sessionId, 0, 0)
 }
 
-export const publishThreadAtBottom = (isAtBottom: boolean, publisher: { paneVisible: boolean }): void => {
+export const publishThreadAtBottom = (
+  isAtBottom: boolean,
+  publisher: { paneVisible: boolean; sessionId?: string | null }
+): void => {
   if (!publisher.paneVisible) {
     return
   }
 
-  setThreadAtBottom(isAtBottom)
+  setThreadAtBottom(isAtBottom, publisher.sessionId)
 }
 
-export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean }): void => {
+export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean; sessionId?: string | null }): void => {
   if (!publisher.paneVisible) {
     return
   }
 
-  resetThreadScroll()
+  resetThreadScroll(publisher.sessionId)
 }
 
 // Cross-component bridge: the jump button lives by the composer, the viewport's

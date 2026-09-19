@@ -42,11 +42,11 @@ function KanbanCount() {
   const k = useKanban()
   const slug = useValue($boardSlug)
 
-  // Socket-invalidated like the page (same cache). No idle poll: the plugin
-  // sleeps until it is opened or a task event arrives.
+  // Socket-invalidated like the page (same cache); slow socketless heartbeat.
   const { data: board } = useQuery({
     queryFn: () => fetchBoard(false),
-    queryKey: boardKey(slug, false)
+    queryKey: boardKey(slug, false),
+    refetchInterval: 60_000
   })
 
   if (!board) {

@@ -248,6 +248,7 @@ export default {
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
                   pinned: Boolean(room.pinned),
+                  sectionId: room.sectionId ?? null,
                   syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,
                   running: false
@@ -357,11 +358,10 @@ export default {
       })
     }
 
-    // Cheap reconciliation: re-hide only group-session ids already recorded
-    // in room state on load/reconnect. Profile-wide legacy title cleanup is
-    // demand-driven when that exact bot is opened; an idle Desktop must never
-    // enumerate every profile database. Deferred a tick so room storage above
-    // has landed; idempotent after that.
+    // Reconciliation sweep: hide every Bot Mode session we know about, on
+    // load and again on each reconnect (a swap can land on a gateway whose
+    // rows were created before the always-hidden policy). Deferred a tick so
+    // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
     ctx.register({
@@ -416,8 +416,8 @@ export default {
     // keeps the pane's spot, so re-registering re-adopts it where it was.
     // host.paneVisibility is feature-detected: older desktops without the SDK
     // export keep the always-registered behavior.
-    const registerRoutinesPane = () =>
-      ctx.register({
+    const registerRoutinesPane = (restoreDismissed: boolean) => {
+      const dispose = ctx.register({
         id: 'routines',
         area: 'panes',
         // The app's noun for these, so the tab agrees with the pane header and
@@ -441,14 +441,34 @@ export default {
         render: () => <RoutinesPane />
       })
 
+      // The pane's ✕ remembers a Close across launches, and nothing else ever
+      // shows this pane again — it only comes back by being registered here.
+      // Entering Bot Mode is the user asking for their bot's chrome, so a
+      // remembered Close is dropped and the pane returns the way it first
+      // arrived: as the collapsed right-edge tab (#102224). Only on ENTRY:
+      // the pane also re-registers whenever a bot chat regains the workspace
+      // inside one Bots session (a group room and back), and a ✕ from that
+      // same session must survive those.
+      if (restoreDismissed && typeof host.undismissPane === 'function') {
+        host.undismissPane(`${ID}:routines`)
+      }
+
+      return dispose
+    }
+
     if (typeof host.paneVisibility === 'function') {
       // The contribution-scoped pane id (`register` prefixes `${ID}:`).
       const $sidebarVisible = host.paneVisibility(`${ID}:pane`)
       let unregisterRoutines: null | (() => void) = null
+      // Armed by each Bots-tab entry, spent by the first registration after it.
+      let restoreDismissedOnRegister = true
 
       const syncRoutinesPane = () => {
         if (botChatOwnsWorkspace()) {
-          unregisterRoutines ??= registerRoutinesPane()
+          if (!unregisterRoutines) {
+            unregisterRoutines = registerRoutinesPane(restoreDismissedOnRegister)
+            restoreDismissedOnRegister = false
+          }
         } else if (unregisterRoutines) {
           // Clicking the Cronjobs tile moves focus onto the tile itself, which
           // drops bot-chat workspace ownership for a beat. While Bot Mode is
@@ -470,6 +490,8 @@ export default {
         $botsPaneVisible.set(Boolean(visible))
 
         if (visible) {
+          restoreDismissedOnRegister = true
+
           const group = $groupChatWorkspace.get()
           const selected = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
 
@@ -611,7 +633,7 @@ export default {
         })
       }
     } else {
-      registerRoutinesPane()
+      registerRoutinesPane(true)
     }
 
     // A bot's chat before it has spoken: core's splash is Hermes' wordmark and

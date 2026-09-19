@@ -175,26 +175,6 @@ async function defaultBranch(gitBin, cwd) {
   return ''
 }
 
-async function newWorktreeBase(gitBin, cwd) {
-  const defaultRef = await gitLine(gitBin, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd)
-
-  if (defaultRef && defaultRef.startsWith('origin/')) {
-    const branch = defaultRef.slice('origin/'.length)
-
-    try {
-      await runGit(gitBin, ['fetch', 'origin', branch], cwd)
-    } catch {
-      // Offline is fail-soft when the cached remote-tracking ref still exists.
-    }
-
-    if (await gitOk(gitBin, ['rev-parse', '--verify', '--quiet', `${defaultRef}^{commit}`], cwd)) {
-      return defaultRef
-    }
-  }
-
-  return 'HEAD'
-}
-
 // A brand-new project folder isn't a git repo — and a freshly-init'd one has no
 // commit to branch from — so `git worktree add` would fail. Make the dir a repo
 // with a root commit on the user's behalf so worktrees "just work". No-op for a
@@ -323,14 +303,12 @@ async function addWorktree(repoPath, options, gitBin) {
 
   const args = ['worktree', 'add', '-b', branch, dir]
 
-  const requestedBase = String(opts.base || '').trim()
-
-  if (requestedBase) {
+  if (opts.base) {
     // Remote-tracking branches may be stale or missing if the user hasn't
     // fetched recently. When the base is an `origin/…` ref, fetch just that
     // branch so `git worktree add -b new origin/main` works against the
     // latest remote commit. Local branches are used as-is.
-    const base = requestedBase
+    const base = String(opts.base)
 
     if (base.startsWith('origin/')) {
       const remoteBranch = base.slice('origin/'.length)
@@ -352,8 +330,6 @@ async function addWorktree(repoPath, options, gitBin) {
     }
 
     args.push(base)
-  } else {
-    args.push('--no-track', await newWorktreeBase(gitBin, root))
   }
 
   try {

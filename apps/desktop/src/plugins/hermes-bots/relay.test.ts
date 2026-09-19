@@ -456,7 +456,9 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
-  it('stays quiet with a single connection — there is no peer to relay to', async () => {
+  it('with a single connection it only clears that gateway’s remote roster — there is no peer to relay to', async () => {
+    // The one call is the clear: the gateway may still hold a roster pushed
+    // while a second machine was registered (see 'forgets a machine that left').
     hostMock.profileRoutes = vi.fn(async () => [route('a')])
 
     const calls = respondWith(() => ({}))
@@ -465,7 +467,32 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     startBotRelay()
     await vi.advanceTimersByTimeAsync(0)
 
+    expect(calls).toEqual([
+      expect.objectContaining({ connectionId: 'a', method: 'bot_relay.roster.sync', params: { agents: [] } })
+    ])
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls).toHaveLength(1)
+
+    stopBotRelay()
+  })
+
+  it('an empty route list before the registry loads does not spend the one roster clear', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [])
+
+    const calls = respondWith(() => ({}))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
     expect(calls).toHaveLength(0)
+
+    // The registry arrives with a single connection: it still gets its clear.
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls).toEqual([
+      expect.objectContaining({ connectionId: 'a', method: 'bot_relay.roster.sync', params: { agents: [] } })
+    ])
 
     stopBotRelay()
   })

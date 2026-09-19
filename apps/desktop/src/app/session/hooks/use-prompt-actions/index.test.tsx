@@ -243,8 +243,7 @@ function Harness({
     actions.steerPrompt,
     actions.submitText,
     activeSessionIdRef,
-    onReady,
-    actions
+    onReady
   ])
 
   return null
@@ -1918,9 +1917,6 @@ describe('usePromptActions desktop slash pickers', () => {
     )
 
     const result = handle!.submitText('/handoff telegram')
-    // Let the async slash handler reach its first gateway request before advancing
-    // the polling timers; otherwise fake timers can run ahead of the first delay.
-    await vi.advanceTimersByTimeAsync(0)
     await vi.advanceTimersByTimeAsync(61_000)
     await result
 
@@ -1928,7 +1924,7 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(calls).toContainEqual({
       method: 'handoff.fail',
       params: {
-        error: expect.stringContaining('Timed out'),
+        error: expect.stringContaining("couldn't reach your messaging connection"),
         session_id: RUNTIME_SESSION_ID
       }
     })

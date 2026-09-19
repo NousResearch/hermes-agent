@@ -73,7 +73,7 @@ export function useSortableBindings(id: string) {
 
   return {
     dragging: isDragging,
-    dragHandleProps: { ...attributes, ...listeners },
+    dragHandleProps,
     ref: setNodeRef,
     reorderable: true as const,
     style: {

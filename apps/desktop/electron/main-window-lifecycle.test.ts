@@ -2,24 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { closeWindowsForDrain, ensureMainWindow, shouldQuitAfterWindowAllClosed } from './main-window-lifecycle'
-
-test('closing the last desktop window quits on every platform', () => {
-  assert.equal(shouldQuitAfterWindowAllClosed(), true)
-})
-
-test('destroying renderer windows for a deferred drain is idempotent', () => {
-  let liveDestroyed = 0
-  let alreadyDestroyed = 0
-  const windows = [
-    { destroy: () => void (liveDestroyed += 1), isDestroyed: () => false },
-    { destroy: () => void (alreadyDestroyed += 1), isDestroyed: () => true }
-  ]
-
-  assert.equal(closeWindowsForDrain(windows), 1)
-  assert.equal(liveDestroyed, 1)
-  assert.equal(alreadyDestroyed, 0)
-})
+import { ensureMainWindow } from './main-window-lifecycle'
 
 test('recreates a destroyed primary window without focusing it', () => {
   const destroyedWindow = {

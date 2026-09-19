@@ -183,6 +183,12 @@ describe('findBarKeyAction', () => {
     expect(findBarKeyAction({ key: 'Enter' })).toBeNull()
   })
 
+  it('ignores Enter while an IME composition is active', () => {
+    expect(findBarKeyAction({ isComposing: true, key: 'Enter' }, { inInput: true })).toBeNull()
+    expect(findBarKeyAction({ key: 'Enter', keyCode: 229 }, { inInput: true })).toBeNull()
+    expect(findBarKeyAction({ key: 'Enter', nativeEvent: { isComposing: true } }, { inInput: true })).toBeNull()
+  })
+
   it('ignores a bare g so typing never triggers a step', () => {
     expect(findBarKeyAction({ key: 'g' })).toBeNull()
     expect(findBarKeyAction({ key: 'g' }, { inInput: true })).toBeNull()
@@ -656,7 +662,7 @@ describe('FindBar', () => {
     renderFindBar()
 
     const input = await screen.findByRole('searchbox', { name: /find in page/i })
-
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
     await waitFor(() => expect(document.activeElement).toBe(input))
   })
 
@@ -713,7 +719,7 @@ describe('FindBar', () => {
 
       await act(async () => resolveFind?.())
       expect(input.inert).toBe(false)
-
+      // eslint-disable-next-line no-restricted-globals -- the exclusion cycle must restore real focus
       expect(document.activeElement).toBe(input)
       expect(input.selectionStart).toBe(6)
     } finally {
@@ -987,19 +993,19 @@ describe('view.findInPage keybind gate', () => {
 
 describe('FindBar files pane positioning', () => {
   function mountAside(width = 240) {
-
+    // eslint-disable-next-line no-restricted-globals -- the component queries the live document for the aside
     const aside = document.createElement('aside')
     aside.setAttribute('aria-label', 'Right sidebar')
     // jsdom has no layout — stub the rect the component measures.
     aside.getBoundingClientRect = () => ({ left: window.innerWidth - width, width }) as DOMRect
-
+    // eslint-disable-next-line no-restricted-globals -- must land in the real DOM the component measures
     document.body.appendChild(aside)
 
     return aside
   }
 
   afterEach(() => {
-
+    // eslint-disable-next-line no-restricted-globals -- cleanup of the real DOM the component measures
     for (const aside of document.querySelectorAll('aside[aria-label="Right sidebar"]')) {
       aside.remove()
     }

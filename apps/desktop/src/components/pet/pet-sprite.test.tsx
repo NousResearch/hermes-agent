@@ -96,7 +96,7 @@ describe('PetSprite RAF scheduling', () => {
       clearRect: vi.fn(),
       drawImage,
       imageSmoothingEnabled: false
-    } as never)
+    } as unknown as CanvasRenderingContext2D)
   })
 
   afterEach(() => {
@@ -216,7 +216,7 @@ describe('PetSprite RAF scheduling', () => {
       imageSmoothingQuality: 'low'
     } as unknown as CanvasRenderingContext2D
 
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctxMock as never)
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctxMock)
 
     mount.render(<PetSprite info={INFO} />)
     act(() => raf.runNext(0))

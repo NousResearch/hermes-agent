@@ -61,15 +61,6 @@ async function resolveTerminalConnectionForSender(webContentsId, getTarget, ensu
   )
 }
 
-/** A second before-quit must still wait for an in-flight remote kill. */
-function sshQuitShouldBlock({ teardownDone, connectionCount, bootstrapPending, inFlight }) {
-  if (teardownDone) {
-    return false
-  }
-
-  return connectionCount > 0 || bootstrapPending > 0 || Boolean(inFlight)
-}
-
 async function teardownSshState(state, { cleanupRemote }) {
   // Remote process first, while the SSH channel can still exec kill.
   // Then drop the local forward and close the transport. Each step is
@@ -100,6 +91,5 @@ export {
   commitConnectionFailure,
   resolveTerminalConnection,
   resolveTerminalConnectionForSender,
-  sshQuitShouldBlock,
   teardownSshState
 }

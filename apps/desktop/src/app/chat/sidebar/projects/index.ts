@@ -17,6 +17,7 @@ export {
   overlayLivePreviews,
   projectOwnerBySessionId,
   reconcileEnteredProjectSessions,
+  sessionBucketId,
   sessionMatchesProjectFilter,
   sessionRecency,
   type SidebarProjectTree,

@@ -68,6 +68,7 @@ const {
   ensureGatewayForProfile,
   openGatewayForAgent,
   openGatewayForProfile,
+  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   retainGatewayForAgent,

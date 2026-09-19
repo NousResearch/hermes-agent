@@ -271,6 +271,7 @@ function isSchemeOrSlashRedirect(requestUrl: string, location: null | string): b
 export {
   destroyKeepaliveAgents,
   downloadAgentFor,
+  htmlResponseError,
   httpStatusError,
   isIdempotentMethod,
   isTransientTransportError,

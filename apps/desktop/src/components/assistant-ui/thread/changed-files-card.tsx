@@ -56,7 +56,7 @@ export const ChangedFilesCard: FC<{ parts: readonly unknown[] }> = ({ parts }) =
           {copy.reviewChanges}
         </button>
       </div>
-      <FadeScroll className="-mx-1.5 mt-1.5 flex flex-col px-1.5" maxHeight={MAX_ROWS_HEIGHT}>
+      <FadeScroll className="-mx-1.5 mt-1.5 flex flex-col overscroll-y-auto px-1.5" maxHeight={MAX_ROWS_HEIGHT}>
         {files.map(file => (
           <Tip key={file.path} label={displayPath(file.path)}>
             <button

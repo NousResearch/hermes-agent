@@ -113,9 +113,9 @@ describe('ModelMenuPanel MoA presets', () => {
     // Radix DropdownMenu portals its content to document.body, so assert
     // against the body (not content.container) to see the rendered items.
 
-
+    // eslint-disable-next-line no-restricted-globals
     expect(document.body.textContent).toContain('MoA presets')
-
+    // eslint-disable-next-line no-restricted-globals
     expect(document.body.textContent).not.toContain('Mixture of Agents')
   })
 

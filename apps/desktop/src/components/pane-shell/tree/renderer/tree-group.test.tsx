@@ -55,6 +55,8 @@ afterEach(() => {
   root = null
   container = null
   disposePane = null
+  globalThis.document.querySelectorAll('[data-titlebar-cluster]').forEach(element => element.remove())
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 

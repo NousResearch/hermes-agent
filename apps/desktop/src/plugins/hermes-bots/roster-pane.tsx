@@ -244,10 +244,8 @@ export function BotsPane() {
   useEscapeCancelsBotDrag()
 
   // The one name dialog serves both New section (optionally filing the bot
-  // whose menu opened it) and Rename.
-  const [sectionDialog, setSectionDialog] = useState<
-    null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
-  >(null)
+  // or group whose menu opened it) and Rename.
+  const [sectionDialog, setSectionDialog] = useState<SectionDialogState>(null)
 
   const [grouping, setGrouping] = useState<null | RosterRow>(null)
   const [query, setQuery] = useState('')
@@ -442,6 +440,7 @@ export function BotsPane() {
       key={`group:${row.name}`}
       members={row.members}
       onDisband={setDeletingGroup}
+      onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
       onOpen={openGroupChat}
       sortedGroupRows={sortedGroupRows}
     />
@@ -453,6 +452,7 @@ export function BotsPane() {
       userSections,
       roster,
       allMeta,
+      groupRooms,
       dragging,
       rosterSectionCollapsed,
       toggleRosterSection,
@@ -468,6 +468,7 @@ export function BotsPane() {
         b,
         activityToasts,
         activeSourceRoster,
+        roster,
         setCreateOpen,
         setGroupCreateOpen,
         setSectionDialog,

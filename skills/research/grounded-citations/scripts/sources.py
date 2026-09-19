@@ -51,6 +51,8 @@ SCHEMA_VERSION = 1
 _CITE_RE = re.compile(r"\[(\d{1,4})\](?![(:])")
 _SOURCES_HEADER_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?sources:?(?:\*\*)?\s*$", re.IGNORECASE)
 _SOURCE_LINE_RE = re.compile(r"^\s*\[(\d{1,4})\]\s*[-–:]?\s*(\S+)")
+_FOOTNOTE_LINE_RE = re.compile(r"^\s*\[\^\d+\]:\s*\S+")
+_EVIDENCE_QUOTE_RE = re.compile(r"^\s*>\s*\"")
 _URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>)\]}]+")
 _FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 # Explicit declaration that a claim comes from model knowledge, not a source.
@@ -333,6 +335,30 @@ def render_sources(
 # ---------------------------------------------------------------------------
 
 
+def _generated_sources_header(lines: list[str]) -> int:
+    """Index of the last Sources header that starts a generated block, else -1.
+
+    An author-written prose section may share the title, so a header only counts
+    when a source entry follows it and every other non-blank trailing line is a
+    source entry, footnote, or evidence quote.
+    """
+    header_idx = -1
+    for i, line in enumerate(lines):
+        if _SOURCES_HEADER_RE.match(line):
+            header_idx = i
+    if header_idx < 0:
+        return -1
+    trailing = [line for line in lines[header_idx + 1:] if line.strip()]
+    if not any(_SOURCE_LINE_RE.match(line) for line in trailing):
+        return -1
+    if all(
+        _SOURCE_LINE_RE.match(line) or _FOOTNOTE_LINE_RE.match(line) or _EVIDENCE_QUOTE_RE.match(line)
+        for line in trailing
+    ):
+        return header_idx
+    return -1
+
+
 def _split_draft(text: str) -> tuple[str, dict[int, str]]:
     """Split a draft into (prose, sources_block_map).
 
@@ -341,10 +367,7 @@ def _split_draft(text: str) -> tuple[str, dict[int, str]]:
     Fenced code blocks are dropped from prose.
     """
     lines = text.splitlines()
-    header_idx = -1
-    for i, line in enumerate(lines):
-        if _SOURCES_HEADER_RE.match(line):
-            header_idx = i
+    header_idx = _generated_sources_header(lines)
     listed: dict[int, str] = {}
     if header_idx >= 0:
         for line in lines[header_idx + 1:]:
@@ -374,10 +397,7 @@ def _strip_sources_block(text: str) -> str:
     idempotent instead of stacking duplicate blocks.
     """
     lines = text.splitlines()
-    header_idx = -1
-    for i, line in enumerate(lines):
-        if _SOURCES_HEADER_RE.match(line):
-            header_idx = i
+    header_idx = _generated_sources_header(lines)
     if header_idx < 0:
         return text
     return "\n".join(lines[:header_idx])
@@ -392,7 +412,7 @@ def _sentences(prose: str) -> list[str]:
             continue
         if stripped.startswith(">"):
             stripped = stripped.lstrip("> ").strip()
-        for part in re.split(r"(?<=[.!?])\s+", stripped):
+        for part in re.split(r"(?<=[.!?\]])\s+", stripped):
             part = part.strip()
             if len(part.split()) >= 4:
                 out.append(part)

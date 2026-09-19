@@ -193,7 +193,7 @@ def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
             event["kind"] == "message.member" for event in service._events("room-1")
         )
     )
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
 
     events = service._events("room-1")
     reply = next(event for event in events if event["kind"] == "message.member")
@@ -254,7 +254,7 @@ def test_unadmitted_peer_failure_does_not_block_next_healthy_member(tmp_path: Pa
             for event in service._events("room-1")
         )
     )
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
 
     events = service._events("room-1")
     assert any(

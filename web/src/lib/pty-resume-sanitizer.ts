@@ -16,11 +16,10 @@
  *    point, *and* a long blank-line run can each straddle a frame boundary,
  *    so all three need trailing-state buffering to survive reassembly.
  *
- * 3. **Erase codes are only pathological during the resume replay.** Once the
- *    replay has settled, `ESC[K` / `ESC[X` are exactly how a TUI clears stale
- *    glyphs for spinners, progress bars, and status lines. Stripping them
- *    forever corrupts normal interactive output, so suppression is bounded to
- *    a short window after connect (see PTY_RESUME_SANITIZE_WINDOW_MS).
+ * 3. **Erase-code stripping is optional and was only needed for inline-mode
+ *    replay.** In alt-screen mode (dashboard default) erase codes are normal
+ *    in-place redraws and must reach xterm. Dashboard ChatPage passes
+ *    `{ stripErase: false }`; burst collapse remains always on.
  */
 
 /** A blank-line run: CRLF (real PTY, cooked mode) or bare LF (raw-mode PTY). */
@@ -65,7 +64,11 @@ export function applyPtyFilters(input: string, stripErase = true): string {
 /** Stateful chunk processor that guards against cross-frame split sequences. */
 export class PtyResumeSanitizer {
   #pending = "";
-  #stripErase = true;
+  #stripErase: boolean;
+
+  constructor({ stripErase = true }: { stripErase?: boolean } = {}) {
+    this.#stripErase = stripErase;
+  }
 
   /**
    * Stop stripping erase codes while continuing to collapse blank-line bursts.

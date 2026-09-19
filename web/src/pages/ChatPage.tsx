@@ -47,13 +47,13 @@ import {
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RECONNECT_MAX_ATTEMPTS,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
-  PTY_RESUME_SANITIZE_WINDOW_MS,
   PTY_TICKET_TIMEOUT_MS,
   type PtyConnectionState,
   ptyReconnectDelayMs,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
 } from "@/lib/pty-reconnect";
+import { wheelScrollSequences } from "@/lib/pty-wheel-scroll";
 import {
   PTY_RESUME_LOADING_MAX_MS,
   PTY_RESUME_LOADING_MESSAGE,
@@ -599,9 +599,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // is false; enabling it gives users a single-action selection
       // path on top of the modifier-based bypass above.
       rightClickSelectsWord: true,
-      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
-      // history in xterm.js so the browser wheel can scroll it directly.
-      scrollback: 5000,
+      // Alt-screen TUI owns transcript scroll via an internal ScrollBox; the
+      // outer xterm is a display/input bridge only (wheel → Shift+Up/Down).
+      scrollback: 0,
       theme: terminalTheme,
     });
     termRef.current = term;
@@ -840,16 +840,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
+    // Route browser wheel into the inner TUI's transcript ScrollBox via
+    // Shift+Up/Down key sequences (see pty-wheel-scroll.ts).
     term.attachCustomWheelEventHandler((ev) => {
       const delta = ev.deltaY;
       if (!delta) {
         return false;
       }
 
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        return false;
+      }
+
+      const seqs = wheelScrollSequences(delta);
+      if (seqs.length) {
+        ws.send(seqs.join(""));
+      }
 
       ev.preventDefault();
       ev.stopPropagation();
@@ -1128,14 +1137,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
     let onScrollDisposable: { dispose(): void } | null = null;
-    let eraseSuppressionTimer: ReturnType<typeof setTimeout> | null = null;
     let resumeMaxTimer: ReturnType<typeof setTimeout> | null = null;
-    const clearEraseSuppressionTimer = () => {
-      if (eraseSuppressionTimer) {
-        clearTimeout(eraseSuppressionTimer);
-        eraseSuppressionTimer = null;
-      }
-    };
     const clearResumeLoadingTimers = () => {
       if (resumeMaxTimer) {
         clearTimeout(resumeMaxTimer);
@@ -1354,20 +1356,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
 
-    // Session resume: Ink's two-pass virtual scroll floods the PTY with
-    // erase codes and blank-line bursts while replaying a long session.
-    // Suppress them for a bounded window after connect, then let ordinary
-    // in-place redraws through untouched. See pty-resume-sanitizer.ts.
+    // Session resume: collapse pathological blank-line bursts from Ink's
+    // virtual scroll replay. Erase codes pass through (alt-screen mode).
     const decoder = new TextDecoder();
-    const sanitizer = new PtyResumeSanitizer();
+    const sanitizer = new PtyResumeSanitizer({ stripErase: false });
     const beginResumeReplay = () => {
       stickToBottomRef.current = true;
-      if (!eraseSuppressionTimer) {
-        eraseSuppressionTimer = setTimeout(() => {
-          eraseSuppressionTimer = null;
-          sanitizer.endEraseSuppression();
-        }, PTY_RESUME_SANITIZE_WINDOW_MS);
-      }
       if (!resumeMaxTimer) {
         setResumeHydrating(true);
         resumeMaxTimer = setTimeout(
@@ -1427,7 +1421,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // (writing an unterminated CSI would wedge xterm's parser); a buffered
       // newline run is emitted collapsed.
       if (effectiveResume) {
-        clearEraseSuppressionTimer();
         try {
           term.write(sanitizer.flush());
         } catch {
@@ -1576,7 +1569,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       unmounting = true;
       imageUploadDisposed = true;
       syncMetricsRef.current = null;
-      clearEraseSuppressionTimer();
       clearResumeLoadingTimers();
       setResumeHydrating(false);
       onDataDisposable?.dispose();

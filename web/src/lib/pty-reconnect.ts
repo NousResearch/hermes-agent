@@ -43,16 +43,6 @@ export function ptyReconnectDelayMs(attempt: number): number {
   })
 }
 
-// How long after a resumed socket opens we keep suppressing ANSI erase codes
-// (`ESC[K` / `ESC[X`) from the PTY stream. Ink's two-pass virtual scroll emits
-// them while replaying a long session; past that replay they are legitimate
-// in-place redraws (spinners, progress bars, status lines) and must reach
-// xterm or stale glyphs are left on screen. The replay of a 200+ message
-// session takes ~10-20s, so this is deliberately generous — over-running the
-// window only costs a few stale cells on a buffer that is about to be
-// repainted, while under-running it re-opens the blank-viewport bug.
-export const PTY_RESUME_SANITIZE_WINDOW_MS = 30000
-
 export interface PtyResumeReconnectInput {
   isActive: boolean
   visibilityState?: DocumentVisibilityState

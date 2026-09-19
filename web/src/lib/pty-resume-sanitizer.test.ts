@@ -215,4 +215,11 @@ describe("PtyResumeSanitizer — bounded erase suppression", () => {
     const spinner = "Loading 10%\r\x1b[KLoading 20%\r\x1b[KDone";
     expect(drain(s, [spinner])).toBe(spinner);
   });
+
+  it("preserves erase codes when constructed with stripErase false", () => {
+    const s = new PtyResumeSanitizer({ stripErase: false });
+    expect(s.isSuppressingErase).toBe(false);
+    expect(s.next("a\x1b[Kb\x1b[3Xc")).toBe("a\x1b[Kb\x1b[3Xc");
+    expect(drain(s, ["x" + CRLF.repeat(80) + "y"])).toBe("x\r\n\r\ny");
+  });
 });

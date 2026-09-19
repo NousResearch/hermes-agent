@@ -1,12 +1,14 @@
 """Invariants for external password-manager vault backends (1Password / Bitwarden).
 
-Two contracts that must never regress:
+Three contracts that must never regress:
 1. A locked manager never prompts where nobody can answer (cron/headless) and never leaks a
    value: browser_vault_list reports it under ``locked``, browser_vault_fill refuses.
 2. The unlock path hands the master password to the manager CLI through its documented
    non-interactive channel (bw: ``--passwordenv`` on the CHILD env only — never argv, never our
    process env), keeps just the session token in memory scoped to the profile, and a fill then
    routes by handle prefix through the real subprocess path. Locking forgets the token.
+3. A 1Password list result retains the vault ID needed by service-account ``item get`` calls while
+   legacy item-only handles remain usable through the normal metadata lookup path.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import pytest
 
 from agent.vault_backends import unlock as unlock_mod
 from agent.vault_backends.bitwarden import BitwardenLoginBackend
+from agent.vault_backends.onepassword import OnePasswordLoginBackend
 
 # A stand-in `bw` that mimics the three commands the backend uses and the real CLI's password contract
 # (bw 2026.x rejects a piped password: "Master password is required"; it reads --passwordenv <VAR>).
@@ -50,6 +53,29 @@ if argv[:2] == ["get", "password"]:
 sys.exit(2)
 '''
 
+# Service-account `op item get` requires the vault even when the item is identified by ID. The fake
+# accepts listing (which supplies both public IDs) but rejects every get that loses the vault identity.
+_FAKE_OP = r'''#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv[1:]
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "op.log"), "a") as log:
+    log.write(json.dumps({"argv": argv}) + "\n")
+if argv[:2] == ["item", "list"]:
+    print(json.dumps([{
+        "id": "item-public-id", "title": "Example", "created_at": "2026-01-01T00:00:00Z",
+        "additional_information": "jane@example.com", "vault": {"id": "vault-public-id"},
+        "urls": [{"href": "https://example.com/login"}],
+    }]))
+    sys.exit(0)
+if argv[:3] == ["item", "get", "item-public-id"]:
+    if "--vault" not in argv or argv[argv.index("--vault") + 1] != "vault-public-id":
+        sys.stderr.write("a vault query must be provided in case of service account\n")
+        sys.exit(1)
+    print("654321" if "--otp" in argv else "resolved-password-canary")
+    sys.exit(0)
+sys.exit(2)
+'''
+
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="fake bw is a shebang script; the backend under test is host-agnostic")
 
@@ -64,6 +90,14 @@ def fake_bw(tmp_path, monkeypatch):
     unlock_mod.lock()
     yield exe, log
     unlock_mod.lock()
+
+
+@pytest.fixture
+def fake_op(tmp_path):
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    return exe, tmp_path / "op.log"
 
 
 def _enabled(exe):
@@ -221,6 +255,30 @@ def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     # helpers: dedupe keeps first occurrence; app-only items keep their single origin
     assert _all_origins(["https://a.com/x", "https://a.com/y"]) == ["https://a.com"]
     assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)
+
+
+def test_onepassword_listed_handle_carries_vault_for_service_account_item_gets(fake_op):
+    """A list result must be independently resolvable by a service account. Both password-field and
+    OTP item-get paths carry the listed vault ID; the pre-vault handle remains accepted when metadata
+    lookup in the same fill recovers its vault. Handles and metadata expose no resolved field value."""
+    exe, log = fake_op
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    backend._service_token = "test-service-account-token"
+
+    [meta] = backend.list_items()
+    assert meta.id == "op:vault-public-id:item-public-id"
+    assert backend.get_meta(meta.id) == meta
+    assert backend.resolve_password(meta.id) == "resolved-password-canary"
+    assert backend.resolve_otp(meta.id) == "654321"
+
+    # Existing opaque item-only handles still route after get_meta performs the normal listing lookup.
+    assert backend.get_meta("op:item-public-id") == meta
+    assert backend.resolve_password("op:item-public-id") == "resolved-password-canary"
+
+    calls = [json.loads(line)["argv"] for line in log.read_text(encoding="utf-8").splitlines()]
+    gets = [argv for argv in calls if argv[:2] == ["item", "get"]]
+    assert gets and all("--vault" in argv and argv[argv.index("--vault") + 1] == "vault-public-id" for argv in gets)
+    assert "resolved-password-canary" not in json.dumps(meta.to_dict())
 
 
 def test_onepassword_backend_env_forwards_config_directory(monkeypatch):

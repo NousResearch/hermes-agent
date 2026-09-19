@@ -231,7 +231,7 @@ class GatewayTopicThreadsMixin:
 
     async def _get_telegram_topic_capabilities(self, source: SessionSource) -> dict:
         """Read Telegram private-topic capability flags via Bot API getMe."""
-        bot = getattr(self._adapter_for_source(source), "_bot", None)
+        bot = getattr(self._delivery_adapter_for(source), "_bot", None)
         if bot is None or not hasattr(bot, "get_me"):
             return {"checked": False}
         try:
@@ -252,7 +252,7 @@ class GatewayTopicThreadsMixin:
 
     async def _ensure_telegram_system_topic(self, source: SessionSource) -> None:
         """Create/pin the managed System topic after /topic activation when possible."""
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         create_topic = getattr(adapter, "_create_dm_topic", None) if adapter is not None and source.chat_id else None
         if not callable(create_topic):
             return
@@ -281,7 +281,7 @@ class GatewayTopicThreadsMixin:
 
     async def _send_telegram_topic_setup_image(self, source: SessionSource) -> None:
         """Send the bundled BotFather Threads Settings screenshot when available."""
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         image_path = Path(__file__).resolve().parent / "assets" / "telegram-botfather-threads-settings.jpg"
         if adapter is None or not source.chat_id or not hasattr(adapter, "send_image_file") or not image_path.exists():
             return
@@ -347,7 +347,7 @@ class GatewayTopicThreadsMixin:
             # Deterministic per-thread identity; the empty initial-name marker signals the caller
             # to rely on the connector-side no-clobber guard.
             return (str(prospective), "")
-        info_fn = getattr(self._adapter_for_source(source), "auto_thread_info_for_chat", None)
+        info_fn = getattr(self._delivery_adapter_for(source), "auto_thread_info_for_chat", None)
         if not callable(info_fn):
             return None
         with suppress(Exception):
@@ -363,7 +363,7 @@ class GatewayTopicThreadsMixin:
         known = self._relay_auto_thread_info(source)
         if known is not None:
             return known
-        wait_fn = getattr(self._adapter_for_source(source), "wait_for_auto_thread_info", None)
+        wait_fn = getattr(self._delivery_adapter_for(source), "wait_for_auto_thread_info", None)
         if not callable(wait_fn) or not source.chat_id:
             return None
         # 0 means the operator disabled the turn limit; the backstop still needs one.
@@ -388,7 +388,7 @@ class GatewayTopicThreadsMixin:
             relay_info = await self._await_relay_auto_thread_info(source)
             if relay_info is None:
                 return
-        adapter = self._adapter_for_source(source) if getattr(self, "adapters", None) else None
+        adapter = self._delivery_adapter_for(source) if getattr(self, "adapters", None) else None
         rename_thread = getattr(adapter, "rename_thread", None)
         if rename_thread is None:
             return
@@ -501,7 +501,7 @@ class GatewayTopicThreadsMixin:
         # auto-renaming would silently mutate operator config. Check the class, not the instance —
         # getattr() on a MagicMock auto-creates attributes, so every test double would match. Only
         # dict-shaped returns count; a bare MagicMock or other sentinel shouldn't.
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         get_info = getattr(type(adapter), "_get_dm_topic_info", None) if adapter is not None else None
         if callable(get_info):
             try:

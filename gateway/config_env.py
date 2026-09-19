@@ -45,7 +45,9 @@ _ENV_ENABLE_CREDENTIALS: dict = {
     Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
     Platform.MATRIX: ("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),
     Platform.HOMEASSISTANT: ("HASS_TOKEN",),
-    Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
+    # Email enables with an address + SMTP host; IMAP (inbound) and a password
+    # (SMTP AUTH) are optional — send-only / unauthenticated-relay setups.
+    Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_SMTP_HOST"),
     Platform.SMS: ("TWILIO_ACCOUNT_SID",),
     Platform.DINGTALK: ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
     Platform.FEISHU: ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
@@ -551,8 +553,11 @@ _ENV_STEPS: tuple = (
     _Home(Platform.MATRIX, "MATRIX_HOME_ROOM"),
     _Cred(Platform.HOMEASSISTANT, ("HASS_TOKEN",), token="HASS_TOKEN", optional=(("url", "HASS_URL"),)),
     _Cred(
-        Platform.EMAIL, ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
+        Platform.EMAIL, ("EMAIL_ADDRESS", "EMAIL_SMTP_HOST"),
         fixed=(("address", "EMAIL_ADDRESS"), ("imap_host", "EMAIL_IMAP_HOST"), ("smtp_host", "EMAIL_SMTP_HOST")),
+        # SMTP AUTH id (defaults to the address) and inbound IMAP are optional;
+        # EMAIL_PASSWORD is read directly as a secret and gates SMTP AUTH, not enablement.
+        optional=(("smtp_username", "EMAIL_SMTP_USERNAME"),),
     ),
     _Home(Platform.EMAIL, "EMAIL_HOME_ADDRESS"),
     _Cred(Platform.SMS, ("TWILIO_ACCOUNT_SID",), then=_sms_api_key),

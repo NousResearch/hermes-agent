@@ -77,6 +77,7 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         ("EMAIL_PASSWORD", "Email account password or app password", "Email password", {"password": True}),
         ("EMAIL_IMAP_HOST", "IMAP server host (e.g. imap.gmail.com)", "IMAP host", {}),
         ("EMAIL_SMTP_HOST", "SMTP server host (e.g. smtp.gmail.com)", "SMTP host", {}),
+        ("EMAIL_SMTP_USERNAME", "SMTP login username if it differs from the email address", "SMTP username", {"advanced": True}),
         ("TWILIO_ACCOUNT_SID", "Twilio Account SID", "Twilio Account SID", {"url": "https://www.twilio.com/console"}),
         ("TWILIO_AUTH_TOKEN", "Twilio Auth Token", "Twilio Auth Token", {"password": True}),
         ("WECOM_BOT_ID", "WeCom group bot ID", "WeCom Bot ID", {}),

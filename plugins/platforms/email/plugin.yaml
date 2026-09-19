@@ -9,24 +9,28 @@ description: >
 author: NousResearch
 requires_env:
   - name: EMAIL_ADDRESS
-    description: "Email account address"
+    description: "Email account address (also the visible sender)"
     prompt: "Email address"
     password: false
-  - name: EMAIL_PASSWORD
-    description: "Email account password / app password"
-    prompt: "Email password"
-    password: true
   - name: EMAIL_SMTP_HOST
     description: "SMTP host (e.g. smtp.gmail.com)"
     prompt: "SMTP host"
     password: false
 optional_env:
+  - name: EMAIL_PASSWORD
+    description: "Email account/app password — set to enable SMTP AUTH and IMAP inbound; omit for an unauthenticated send-only relay"
+    prompt: "Email password (optional)"
+    password: true
+  - name: EMAIL_SMTP_USERNAME
+    description: "SMTP AUTH login username if it differs from EMAIL_ADDRESS"
+    prompt: "SMTP username"
+    password: false
   - name: EMAIL_SMTP_PORT
     description: "SMTP port (default 587)"
     prompt: "SMTP port"
     password: false
   - name: EMAIL_IMAP_HOST
-    description: "IMAP host for inbound polling (e.g. imap.gmail.com)"
+    description: "IMAP host for inbound polling (e.g. imap.gmail.com); omit for send-only delivery"
     prompt: "IMAP host"
     password: false
   - name: EMAIL_ALLOWED_USERS

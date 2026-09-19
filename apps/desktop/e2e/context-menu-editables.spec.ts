@@ -102,22 +102,43 @@ test('paste enables when the clipboard holds text', async () => {
   const page = fixture!.page
   const composer = page.locator('[data-slot="composer-rich-input"]').first()
 
+  const originalClipboard = await page.evaluate(
+    () =>
+      (
+        window as unknown as {
+          hermesDesktop?: { readClipboard?: () => Promise<string> }
+        }
+      ).hermesDesktop?.readClipboard?.() ?? ''
+  )
+
   // The empty-clipboard branch stays in the unit suite: the e2e app shares
   // the SYSTEM clipboard, and writeText('') does not reliably clear it.
-  await page.evaluate(() =>
-    (
-      window as unknown as { hermesDesktop?: { writeClipboard?: (text: string) => Promise<boolean> } }
-    ).hermesDesktop?.writeClipboard?.('clipboard payload')
-  )
-  await composer.click()
-  await composer.click({ button: 'right' })
+  try {
+    await page.evaluate(() =>
+      (
+        window as unknown as { hermesDesktop?: { writeClipboard?: (text: string) => Promise<boolean> } }
+      ).hermesDesktop?.writeClipboard?.('clipboard payload')
+    )
+    await composer.click()
+    await composer.click({ button: 'right' })
 
-  const paste = page.getByRole('menuitem', { name: /^Paste/ })
+    const paste = page.getByRole('menuitem', { name: /^Paste/ })
 
-  await paste.waitFor({ state: 'visible', timeout: 10_000 })
+    await paste.waitFor({ state: 'visible', timeout: 10_000 })
 
-  // The clipboard probe is an async IPC — the item enables when it lands.
-  await expect.poll(() => paste.getAttribute('data-disabled'), { timeout: 10_000 }).toBeNull()
+    // The clipboard probe is an async IPC — the item enables when it lands.
+    await expect.poll(() => paste.getAttribute('data-disabled'), { timeout: 10_000 }).toBeNull()
 
-  await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+  } finally {
+    if (originalClipboard) {
+      await page.evaluate(
+        text =>
+          (
+            window as unknown as { hermesDesktop?: { writeClipboard?: (value: string) => Promise<boolean> } }
+          ).hermesDesktop?.writeClipboard?.(text),
+        originalClipboard
+      )
+    }
+  }
 })

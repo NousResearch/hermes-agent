@@ -1988,7 +1988,8 @@ def check_compression_model_feasibility(agent: Any) -> None:
         # Provider may be "auto"; fall back to the client's base_url hostname so the
         # user can tell where the compression model is actually called.
         try:
-            _aux_cfg_provider, _, _, _, _ = _resolve_task_provider_model("compression")
+            _aux_cfg_provider, _, _, _, _ = _resolve_task_provider_model(
+                "compression", main_runtime=agent._current_main_runtime())
         except Exception:
             _aux_cfg_provider = ""
         client, aux_model = get_text_auxiliary_client("compression", main_runtime=agent._current_main_runtime())

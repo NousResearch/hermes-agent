@@ -123,6 +123,98 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+
+class TestPerPrimaryModelAuxiliaryOverrides:
+    def test_model_web_extract_override_routes_all_supported_fields(self, tmp_path):
+        _write_config(tmp_path, {
+            "auxiliary": {"web_extract": {"provider": "global", "model": "global-extract"}},
+            "custom_providers": [{
+                "name": "llama", "base_url": "http://llama.local/v1",
+                "models": {"slow": {"auxiliary": {"web_extract": {
+                    "provider": "override", "model": "fast-extract",
+                    "base_url": "https://aux.example/v1", "api_key": "aux-key",
+                    "api_mode": "chat_completions",
+                }}}},
+            }],
+        })
+        from agent.auxiliary_client import _get_auxiliary_task_config
+
+        config = _get_auxiliary_task_config(
+            "web_extract", main_runtime={
+                "provider": "custom", "requested_provider": "llama", "model": "slow",
+            },
+        )
+        assert {key: config[key] for key in (
+            "provider", "model", "base_url", "api_key", "api_mode",
+        )} == {
+            "provider": "override", "model": "fast-extract",
+            "base_url": "https://aux.example/v1", "api_key": "aux-key",
+            "api_mode": "chat_completions",
+        }
+
+    def test_model_task_override_routes_all_supported_fields(self, tmp_path):
+        _write_config(tmp_path, {
+            "auxiliary": {"vision": {"provider": "global", "model": "global-vision"}},
+            "custom_providers": [{
+                "name": "llama", "base_url": "http://llama.local/v1",
+                "models": {"slow": {"auxiliary": {"vision": {
+                    "provider": "override", "model": "fast-vision",
+                    "base_url": "https://aux.example/v1", "api_key": "aux-key",
+                    "api_mode": "chat_completions",
+                }}}},
+            }],
+        })
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        assert _resolve_task_provider_model(
+            "vision", main_runtime={
+                "provider": "custom:llama", "model": "slow",
+            },
+        ) == (
+            "custom", "fast-vision", "https://aux.example/v1", "aux-key",
+            "chat_completions",
+        )
+
+    def test_malformed_per_model_override_fails_open_to_global_config(self, tmp_path):
+        _write_config(tmp_path, {
+            "auxiliary": {"vision": {"provider": "global", "model": "global-vision"}},
+            "custom_providers": [{
+                "name": "llama", "base_url": "http://llama.local/v1",
+                "models": {"slow": {"auxiliary": []}},
+            }],
+        })
+        from agent.auxiliary_client import _get_auxiliary_task_config
+
+        resolved = _get_auxiliary_task_config(
+            "vision", main_runtime={"provider": "llama", "model": "slow"},
+        )
+        assert resolved["provider"] == "global"
+        assert resolved["model"] == "global-vision"
+
+    def test_model_task_override_wins_and_other_models_keep_global_config(self, tmp_path):
+        _write_config(tmp_path, {
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "global-vision"}},
+            "custom_providers": [{
+                "name": "llama", "base_url": "http://llama.local/v1",
+                "models": {
+                    "slow": {"auxiliary": {"vision": {"provider": "llama", "model": "fast-vision"}}},
+                    "other": {},
+                },
+            }],
+        })
+        from agent.auxiliary_client import _get_auxiliary_task_config
+
+        assert _get_auxiliary_task_config(
+            "vision", main_runtime={
+                "provider": "custom", "requested_provider": "llama", "model": "slow",
+            },
+        )["model"] == "fast-vision"
+        assert _get_auxiliary_task_config(
+            "vision", main_runtime={
+                "provider": "custom", "requested_provider": "llama", "model": "other",
+            },
+        )["model"] == "global-vision"
+
     def test_providers_dict_uses_durable_pool_when_no_inline_key(self, tmp_path):
         """Titles/compression/vision must read credential_pool.<key>, not a placeholder."""
         _write_config(tmp_path, {

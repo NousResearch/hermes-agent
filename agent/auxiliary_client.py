@@ -3618,7 +3618,7 @@ def _prepare_same_provider_retry(
     if task == "vision":
         effective_provider, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider, model=final_model, base_url=resolved_base_url,
-            api_key=resolved_api_key, async_mode=async_mode,
+            api_key=resolved_api_key, async_mode=async_mode, main_runtime=main_runtime,
         )
     else:
         retry_client, retry_model = _get_cached_client(
@@ -5338,7 +5338,8 @@ def resolve_provider_client(
 
 def get_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Return (client, default_model_slug) for text-only aux tasks; ``task`` selects auxiliary.<task> overrides."""
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None, main_runtime=main_runtime)
     return resolve_provider_client(
         provider, model=model, explicit_base_url=base_url, explicit_api_key=api_key,
         api_mode=api_mode, main_runtime=main_runtime,
@@ -5522,7 +5523,7 @@ def resolve_vision_provider_client(
     """
     runtime = _normalize_main_runtime(main_runtime)
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        "vision", provider, model, base_url, api_key
+        "vision", provider, model, base_url, api_key, main_runtime=runtime
     )
     requested = _normalize_vision_provider(requested)
     if resolved_base_url:
@@ -5946,7 +5947,7 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
 
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    api_key: Optional[str] = None, main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine (provider, model, base_url, api_key, api_mode) for a call.
 
@@ -5956,7 +5957,7 @@ def _resolve_task_provider_model(
     """
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
     if task:
-        task_config = _get_auxiliary_task_config(task)
+        task_config = _get_auxiliary_task_config(task, main_runtime=main_runtime)
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
@@ -6029,7 +6030,51 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
-def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
+def _primary_model_auxiliary_config(
+    task: str, config: Dict[str, Any], main_runtime: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return a named custom provider's per-model auxiliary task override.
+
+    Invalid runtime/config shapes deliberately return no override: auxiliary routing must
+    retain its established global configuration and fail-open behavior.
+    """
+    runtime = _normalize_main_runtime(main_runtime)
+    provider = str(runtime.get("provider") or "").strip().lower()
+    requested_provider = str(runtime.get("requested_provider") or "").strip().lower()
+    model = str(runtime.get("model") or "").strip()
+    if not (provider or requested_provider) or not model:
+        return {}
+    aliases = {identity for identity in (provider, requested_provider) if identity}
+    aliases.update(
+        identity.removeprefix("custom:")
+        for identity in tuple(aliases)
+        if identity.startswith("custom:")
+    )
+    try:
+        from hermes_cli.config_providers import get_compatible_custom_providers
+        entries = get_compatible_custom_providers(config)
+    except Exception:
+        return {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        names = {
+            str(entry.get(field) or "").strip().lower()
+            for field in ("name", "provider_key")
+        }
+        if not aliases.intersection(names):
+            continue
+        models = entry.get("models")
+        model_config = models.get(model) if isinstance(models, dict) else None
+        auxiliary = model_config.get("auxiliary") if isinstance(model_config, dict) else None
+        task_config = auxiliary.get(task) if isinstance(auxiliary, dict) else None
+        return dict(task_config) if isinstance(task_config, dict) else {}
+    return {}
+
+
+def _get_auxiliary_task_config(
+    task: str, *, main_runtime: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
     declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG."""
     if not task:
@@ -6049,11 +6094,12 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
             if _entry.get("key") == task:
                 _defaults = _entry.get("defaults") or {}
                 if isinstance(_defaults, dict):
-                    return {**_defaults, **task_config}
+                    task_config = {**_defaults, **task_config}
                 break
     except Exception:
         pass  # plugin discovery failure must not break aux task config reads
-    return task_config
+    override = _primary_model_auxiliary_config(task, config, main_runtime)
+    return {**task_config, **override}
 
 
 class CompressionFastLane(NamedTuple):
@@ -7106,7 +7152,7 @@ def _prepare_aux_request(
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+        task, provider, model, base_url, api_key, main_runtime=main_runtime)
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -7120,7 +7166,8 @@ def _prepare_aux_request(
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
     if not async_mode:
-        compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
+        compression_config = _get_auxiliary_task_config(
+            "compression", main_runtime=main_runtime) if task == "compression" else {}
         _, effective_extra_body = _compression_fast_lane_controls(
             task, actual_provider=request_provider, actual_model=final_model,
             requested_provider=provider, requested_model=model, route_config=compression_config,
@@ -8019,7 +8066,8 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
     (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
     Returns (None, None) when no provider is available.
     """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None, main_runtime=main_runtime)
     return resolve_provider_client(
         provider,
         model=model,

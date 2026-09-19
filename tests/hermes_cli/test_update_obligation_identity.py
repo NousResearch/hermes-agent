@@ -39,6 +39,36 @@ def test_current_successors_settle_historical_obligations(monkeypatch, profiles)
     )  # Historical failure remains truthful.
 
 
+def test_failed_receipt_without_a_code_swap_does_not_owe_a_restart(monkeypatch, capsys):
+    """A pre-apply refusal cannot truthfully claim it left the fleet on old code."""
+    home = get_hermes_home()
+    directory = home / "logs" / "update_receipts"
+    directory.mkdir(parents=True)
+    receipt = {
+        "outcome": "failed",
+        "exit_code": 1,
+        "pre_update": {"sha": "unchanged"},
+        "post_update": {"sha": "unchanged"},
+        "plan": {
+            "runtimes": [
+                {"kind": "gateway", "profile": "alpha", "pid": 1, "code_sha": "unchanged"}
+            ]
+        },
+    }
+    (directory / "latest.json").write_text(json.dumps(receipt))
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "later")
+    monkeypatch.setattr(
+        update_receipt,
+        "collect_fleet_versions",
+        lambda: [{"profile": "alpha", "pid": 1, "state": "stale", "code_sha": "unchanged"}],
+    )
+
+    assert not update_cmd_fleet._pending_fleet_restart_needed()
+    assert not update_cmd_fleet._update_owes_fleet_restart()
+    update_cmd_fleet._warn_pending_fleet_restart_on_startup()
+    assert capsys.readouterr().err == ""
+
+
 @pytest.mark.parametrize(
     "bad",
     [

@@ -218,6 +218,12 @@ class StreamingTTSConsumer:
         # The load-bearing _ABORT sentinel must reach the queue even when full: evict to make room.
         if not any(self._put_sentinel(_ABORT, mark_dropped=False) for _ in range(3)):
             logger.debug("streaming TTS _ABORT sentinel could not be enqueued")
+        if self._task is not None and not self._task.done():
+            # A provider iterator may be blocked in ``asyncio.to_thread`` and cannot be
+            # interrupted by the queue sentinel alone.  Cancel the owning drain task so
+            # loop teardown never leaves it pending; the worker thread can finish later.
+            with contextlib.suppress(RuntimeError):
+                self._loop.call_soon_threadsafe(self._task.cancel)
         if self._handle is not None and not self._handle.aborted:
             with contextlib.suppress(Exception):
                 self._loop.call_soon_threadsafe(asyncio.create_task, self._safe_abort(reason))

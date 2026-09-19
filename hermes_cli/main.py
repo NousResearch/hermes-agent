@@ -2137,7 +2137,8 @@ def select_provider_and_model(args=None):
 _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
     "hermes_cli.update_cmd": (
         "_abort_dependency_sync_if_self_locked", "_assess_parked_branch_switch",
-        "_capture_active_lazy_features", "_capture_active_tool_dependencies",
+        "_audit_checkout_hygiene", "_capture_active_lazy_features",
+        "_capture_active_tool_dependencies",
         "_cold_start_windows_gateway_after_update", "_defer_update_for_self_lock",
         "_dependency_sync_would_rewrite", "_detect_self_loaded_native_modules",
         "_detect_venv_python_processes", "_discard_stashed_changes",
@@ -2145,7 +2146,8 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_get_origin_url", "_handoff_reapable_backend_pids", "_ledger_manual_serve_holders",
         "_ledger_reapable_backend_pids", "_leftover_pausable_gateway_pids", "_npm_lockfile_changed",
         "_orphaned_desktop_backend_pids", "_park_stashed_changes",
-        "_pause_windows_gateways_for_update", "_print_parked_branch_kept_notice",
+        "_pause_windows_gateways_for_update", "_print_checkout_hygiene_refusal",
+        "_print_parked_branch_kept_notice",
         "_print_parked_branch_skip_warning", "_reapply_plugin_python_dependencies",
         "_refresh_active_lazy_features", "_refresh_active_memory_provider_dependencies",
         "_refresh_bootstrap_cache_scripts", "_refresh_windows_gateway_launchers",

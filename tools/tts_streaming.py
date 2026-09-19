@@ -10,11 +10,12 @@ a subclass; the dispatcher, config gate (``tts.<name>.streaming``) and resolver 
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar
 
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
@@ -23,6 +24,21 @@ logger = logging.getLogger(__name__)
 
 # Per-sentence PCM byte cap, mirroring the sync providers' 16 MiB bounded-body invariant.
 _STREAM_SENTENCE_BYTE_CAP = 16 * 1024 * 1024
+
+# --- Kokoro (local, self-hosted) -------------------------------------------
+# A self-hosted OpenAI-compatible Kokoro service. Loopback by default: local
+# speech synthesis must not become a network service by accident.
+DEFAULT_KOKORO_BASE_URL = "http://127.0.0.1:11640/v1"
+DEFAULT_KOKORO_MODEL = "kokoro"
+DEFAULT_KOKORO_VOICE = "af_heart"
+DEFAULT_KOKORO_TIMEOUT_S = 60.0
+# Availability runs on the `auto` resolution path, so a down service must cost
+# milliseconds. Long enough for a loopback round trip, short enough not to stall.
+KOKORO_PROBE_TIMEOUT_S = 1.5
+MAX_CONFIGURED_FALLBACK_DEPTH = 32
+# 20 ms of 24 kHz int16 mono. Small chunks keep first-audio latency low; larger
+# ones would buffer speech that the user is waiting to hear.
+KOKORO_CHUNK_BYTES = 960
 
 
 def _resolve_key(env_var: str, provider_id: str) -> str:
@@ -119,9 +135,14 @@ class StreamingTTSProvider(ABC):
 
 _REGISTRY: Dict[str, type[StreamingTTSProvider]] = {}
 
+# Preserves the decorated subclass's own type. Without it ``@register`` erases
+# every streamer to the base class, so a type checker rejects any access to a
+# subclass-specific member (``KokoroStreamer._base_url``).
+_ProviderT = TypeVar("_ProviderT", bound=type[StreamingTTSProvider])
 
-def register(name: str) -> Callable[[type[StreamingTTSProvider]], type[StreamingTTSProvider]]:
-    def _wrap(cls: type[StreamingTTSProvider]) -> type[StreamingTTSProvider]:
+
+def register(name: str) -> Callable[[_ProviderT], _ProviderT]:
+    def _wrap(cls: _ProviderT) -> _ProviderT:
         _REGISTRY[name] = cls
         return cls
     return _wrap
@@ -130,10 +151,14 @@ def register(name: str) -> Callable[[type[StreamingTTSProvider]], type[Streaming
 def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvider]:
     """Construct the registered streamer *name* if it's usable, else None."""
     cls = _REGISTRY.get(name)
-    if cls is None or not cls.available():
+    if cls is None:
+        return None
+    section = tts_config.get(name) or {}
+    available = cls.available(section) if cls is KokoroStreamer else cls.available()
+    if not available:
         return None
     try:
-        return cls(tts_config, tts_config.get(name) or {})
+        return cls(tts_config, section)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("streaming provider %s init failed: %s", name, exc)
         return None
@@ -141,7 +166,9 @@ def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvid
 
 # Fallback priority for ``tts.streaming.provider: auto`` — best chunked latency/quality
 # first. Deliberately hard-coded (a UX decision); edge is absent (no chunked-PCM API).
-_PROVIDER_PRIORITY: List[str] = ["elevenlabs", "gemini", "openai", "xai"]
+# ``kokoro`` leads: it is the only LOCAL streamer, so it costs nothing per minute and
+# keeps speech on-premises. It is skipped in a millisecond when no service is running.
+_PROVIDER_PRIORITY: List[str] = ["kokoro", "elevenlabs", "gemini", "openai", "xai"]
 
 
 def resolve_streaming_provider(
@@ -151,12 +178,49 @@ def resolve_streaming_provider(
     ``auto`` returns the first usable in ``_PROVIDER_PRIORITY``. Otherwise the configured TTS
     provider (or ``preferred``): ``None`` means "no chunked API" — the dispatcher speaks
     per-sentence via the sync path, preserving the user's chosen voice. We never silently swap
-    providers just to get streaming."""
+    providers just to get streaming.
+
+    The ONE swap allowed is an EXPLICITLY configured one: ``tts.<name>.fallback_provider``.
+    A local provider can be down (its service is not running) in a way a cloud provider with
+    a valid key cannot, so "Kokoro, but Piper when the box is down" has to be expressible.
+    It is opt-in per provider and never inferred.
+    """
     pinned = str((tts_config.get("streaming") or {}).get("provider") or "").lower().strip()
     if pinned == "auto":
         return next((inst for name in _PROVIDER_PRIORITY
                      if (inst := _try_instantiate(name, tts_config))), None)
-    return _try_instantiate(pinned or (preferred or _get_provider(tts_config)).lower().strip(), tts_config)
+    name = pinned or (preferred or _get_provider(tts_config)).lower().strip()
+    instance = _try_instantiate(name, tts_config)
+    if instance is not None:
+        return instance
+    return _try_configured_fallback(name, tts_config)
+
+
+def _try_configured_fallback(
+    name: str, tts_config: Dict, _seen: Optional[set] = None,
+    _depth: int = 0) -> Optional[StreamingTTSProvider]:
+    """Follow ``tts.<name>.fallback_provider`` when *name* is unusable.
+
+    Returns ``None`` when no fallback is configured, the fallback is itself
+    unusable, or it has no streamer (e.g. Piper — a sync-only local provider,
+    which the caller then speaks per sentence through the sync path).
+    ``_seen`` breaks a config cycle (a → b → a) instead of recursing forever.
+    """
+    seen = _seen if _seen is not None else set()
+    if _depth >= MAX_CONFIGURED_FALLBACK_DEPTH:
+        logger.warning("TTS fallback chain exceeded %d hops; stopping", MAX_CONFIGURED_FALLBACK_DEPTH)
+        return None
+    if name in seen:
+        logger.warning("TTS fallback cycle at %r; stopping", name)
+        return None
+    seen.add(name)
+    section = tts_config.get(name)
+    fallback = str((section or {}).get("fallback_provider") or "").lower().strip()
+    if not fallback:
+        return None
+    logger.info("streaming TTS %r unavailable; falling back to %r", name, fallback)
+    return _try_instantiate(fallback, tts_config) or _try_configured_fallback(
+        fallback, tts_config, seen, _depth + 1)
 
 
 def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:
@@ -191,6 +255,103 @@ class ElevenLabsStreamer(StreamingTTSProvider):
             model_id=self.section.get("streaming_model_id",
                                       self.section.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID)),
             output_format="pcm_24000")
+
+
+@register("kokoro")
+class KokoroStreamer(StreamingTTSProvider):
+    """Local Kokoro speech service → chunked int16 PCM. No API key, no per-minute cost.
+
+    Talks to a self-hosted OpenAI-compatible Kokoro server
+    (``POST <base_url>/audio/speech`` with ``response_format=pcm``), NOT to an
+    in-process model. That split is deliberate:
+
+    * Kokoro needs torch+CUDA. Importing it into the Hermes venv would drag a
+      multi-gigabyte GPU stack into every Hermes process, including CLI ones
+      that never speak.
+    * A persistent service keeps the model resident, so first-audio latency is
+      synthesis time and not model load time, and the GPU is shared across
+      sessions rather than re-warmed per process.
+    * ``available()`` is then a cheap socket probe, which is what makes the
+      automatic fall-through to a cloud provider (or to the per-sentence sync
+      Piper path) fast instead of a multi-second import stall.
+
+    Config (``tts.kokoro``): ``base_url`` (default ``http://127.0.0.1:11640/v1``),
+    ``voice``, ``model``, ``speed``, ``sample_rate``, ``timeout``.
+
+    Cancellation: the caller stops consuming the iterator and the streamed
+    response is closed, which drops the HTTP connection and the server's
+    synthesis with it. There is no request-id to revoke because the socket
+    itself is the handle.
+    """
+
+    # Kokoro's native output rate. Overridable because a self-hosted build may
+    # be configured otherwise; the WS handshake sends whatever we report here,
+    # and a mismatch plays back at the wrong pitch.
+    sample_rate: int = 24000
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        rate = section.get("sample_rate")
+        if rate:
+            self.sample_rate = int(rate)
+
+    @staticmethod
+    def _base_url(section: Optional[Dict] = None) -> str:
+        if section is None:
+            try:
+                section = _load_tts_config().get("kokoro") or {}
+            except Exception:
+                section = {}
+        return str((section or {}).get("base_url") or DEFAULT_KOKORO_BASE_URL).strip().rstrip("/")
+
+    @staticmethod
+    def available(section: Optional[Dict] = None) -> bool:
+        """True when a Kokoro service answers within one probe budget."""
+        import requests
+        url = KokoroStreamer._base_url(section)
+        deadline = time.monotonic() + KOKORO_PROBE_TIMEOUT_S
+        for index, path in enumerate(("/audio/voices", "/models")):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            timeout = KOKORO_PROBE_TIMEOUT_S if index == 0 else remaining
+            try:
+                if requests.get(f"{url}{path}", timeout=timeout).status_code < 500:
+                    return True
+            except requests.RequestException:
+                continue
+        return False
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        import requests
+        section = self.section
+        payload: Dict[str, Any] = {
+            "model": str(section.get("model") or DEFAULT_KOKORO_MODEL),
+            "voice": str(section.get("voice") or DEFAULT_KOKORO_VOICE),
+            "input": text,
+            "response_format": "pcm",
+        }
+        speed = section.get("speed", self.tts_config.get("speed"))
+        if speed:
+            payload["speed"] = float(speed)
+        timeout = float(section.get("timeout") or DEFAULT_KOKORO_TIMEOUT_S)
+
+        def _chunks() -> Iterator[bytes]:
+            # stream=True + closing(): abandoning the iterator on barge-in tears
+            # the socket down instead of leaking a synthesis worker per interrupt.
+            with contextlib.closing(requests.post(
+                f"{self._base_url(section)}/audio/speech", json=payload,
+                timeout=timeout, stream=True,
+            )) as response:
+                if response.status_code != 200:
+                    chunk = next(response.iter_content(chunk_size=300), b"")
+                    detail = chunk[:300].decode("utf-8", "replace")
+                    raise RuntimeError(f"Kokoro TTS failed ({response.status_code}): {detail}")
+                for chunk in response.iter_content(chunk_size=KOKORO_CHUNK_BYTES):
+                    if chunk:
+                        yield chunk
+
+        yield from _capped(_chunks(), "Kokoro streaming TTS")
 
 
 def _openai_config_api_key() -> str:
@@ -319,7 +480,7 @@ class XAIStreamer(StreamingTTSProvider):
             raise RuntimeError("No xAI credentials for streaming TTS")
         voice = str(self.section.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
         ws_url = str(self.section.get("streaming_url") or "wss://api.x.ai/v1/tts").strip()
-        async with websockets.connect(ws_url, extra_headers={"Authorization": f"Bearer {api_key}"}) as ws:
+        async with websockets.connect(ws_url, additional_headers={"Authorization": f"Bearer {api_key}"}) as ws:
             await ws.send(_json.dumps({"text": text, "voice_id": voice, "response_format": "pcm"}))
             try:
                 while True:

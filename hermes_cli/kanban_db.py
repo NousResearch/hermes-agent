@@ -102,6 +102,10 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+# Delivery evidence is deliberately separate from lifecycle status.  A task may
+# be done as an implementation handoff without claiming that code is live; an
+# aggregate request opts into the verified gate explicitly.
+COMPLETION_STATES = {"written", "tested", "deployed", "verified"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
@@ -511,9 +515,19 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:
-    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
-    ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
-    return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, ("kanban", "workspaces"), "workspaces")
+    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins).
+
+    The default lives beside, rather than below, the dot-prefixed Hermes home:
+    web-framework file senders commonly reject an otherwise safe absolute path
+    when any ancestor is a dot-directory.
+    """
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    return kanban_home().parent / "hermes-workspaces" / slug
 
 
 def attachments_root(board: Optional[str] = None) -> Path:
@@ -732,6 +746,10 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    completion_state: Optional[str] = None
+    completion_evidence: Optional[dict] = None
+    requires_live_verification: bool = False
+    verification_owner_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -749,6 +767,8 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            completion_evidence=_json_or(g("completion_evidence")),
+            requires_live_verification=bool(g("requires_live_verification")),
         )
 
 
@@ -762,6 +782,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "completion_state", "verification_owner_id",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -966,7 +987,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit, evidence-bearing delivery label. NULL preserves legacy tasks
+    -- and means no label was asserted. It is never derived from a green suite,
+    -- merge, or lifecycle status.
+    completion_state     TEXT,
+    completion_evidence  TEXT,
+    -- Aggregate/request tasks opt in to refusing final completion until an
+    -- explicit verified state is recorded with live proof.
+    requires_live_verification INTEGER NOT NULL DEFAULT 0,
+    -- Organizational request owner, intentionally NOT a task_links parent:
+    -- task_links are prerequisite gates and using them here deadlocks releases.
+    verification_owner_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -991,6 +1023,21 @@ CREATE TABLE IF NOT EXISTS task_events (
     payload    TEXT,
     created_at INTEGER NOT NULL
 );
+
+-- Bounded state for the detection-only Kanban watchdog.  One row per active
+-- (task, condition); resolved rows are pruned by the watchdog after retention.
+-- This prevents a periodic scan from producing a notification storm.
+CREATE TABLE IF NOT EXISTS kanban_watchdog_alerts (
+    task_id       TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at  INTEGER NOT NULL,
+    notified_at   INTEGER NOT NULL,
+    resolved_at   INTEGER,
+    PRIMARY KEY (task_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_kanban_watchdog_resolved
+    ON kanban_watchdog_alerts(resolved_at);
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
@@ -1260,6 +1307,8 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    requires_live_verification: bool = False,
+    verification_owner_id: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1280,11 +1329,17 @@ def create_task(
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
+    verification_owner_id = str(verification_owner_id).strip() if verification_owner_id else None
+    parents = tuple(p for p in parents if p)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    if verification_owner_id and verification_owner_id not in parents:
+        owner = get_task(conn, verification_owner_id)
+        if owner is None:
+            raise ValueError(f"verification_owner_id does not exist: {verification_owner_id}")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
     # A project-scoped board anchors every new task to its project's repo
@@ -1297,7 +1352,20 @@ def create_task(
         except Exception:
             pass
     if workspace_kind is None:
-        workspace_kind = "scratch"
+        # Byrd-IT: a card that names the PRODUCTION Hermes install gets a linked
+        # worktree, never scratch. Scratch has no repo, so the worker reaches into
+        # /usr/local/lib/hermes-agent and `git checkout -b`s the checkout every
+        # gateway executes (t_86acfa96, 2026-09-17: production on a feature branch
+        # ~5h). Lives here so BOTH create surfaces (CLI + kanban_create tool) get it.
+        # An explicit workspace_kind, workspace_path, or project still wins; cards
+        # that say read-only / do-not-edit stay scratch.
+        _text = f"{title}\n{body or ''}"
+        if (workspace_path is None and project_id is None
+                and "/usr/local/lib/hermes-agent" in _text
+                and not re.search(r"\b(read[- ]only|do not (edit|modify|commit|touch)|no code change)\b", _text, re.I)):
+            workspace_kind = "worktree"
+        else:
+            workspace_kind = "scratch"
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -1311,7 +1379,6 @@ def create_task(
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
-    parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
@@ -1359,8 +1426,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        requires_live_verification, verification_owner_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1370,6 +1438,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        1 if requires_live_verification else 0, verification_owner_id,
                     ),
                 )
                 for pid in parents:
@@ -1392,6 +1461,8 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "requires_live_verification": bool(requires_live_verification) or None,
+                        "verification_owner_id": verification_owner_id,
                     },
                 )
                 if task_status == "blocked":
@@ -1921,6 +1992,39 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
 
 def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return [Event.from_row(r) for r in _task_rows(conn, "task_events", task_id, "created_at ASC, id ASC")]
+
+
+def record_completion_state(
+    conn: sqlite3.Connection, task_id: str, state: str, evidence: dict,
+) -> bool:
+    """Record one explicit delivery label and its proof.
+
+    This is intentionally not a state machine that infers or fills predecessor
+    labels: callers must assert each label they mean.  The immutable event log
+    retains every assertion while ``tasks`` holds only the current label for
+    dashboard/list queries.  ``verified`` is accepted only with a textual proof
+    so an empty metadata object cannot masquerade as live observation.
+    """
+    normalized = str(state or "").strip().lower()
+    if normalized not in COMPLETION_STATES:
+        raise ValueError(f"completion state must be one of {sorted(COMPLETION_STATES)}")
+    if not isinstance(evidence, dict) or not evidence:
+        raise ValueError("completion state evidence must be a non-empty object")
+    proof = evidence.get("proof")
+    if not isinstance(proof, str) or not proof.strip():
+        raise ValueError("completion state evidence requires a non-empty 'proof' string")
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET completion_state = ?, completion_evidence = ? WHERE id = ?",
+            (normalized, json.dumps(evidence, ensure_ascii=False), task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn, task_id, "completion_state_recorded",
+            {"state": normalized, "evidence": evidence},
+        )
+    return True
 
 
 def _insert_comment(
@@ -2747,10 +2851,17 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, worker_pid, worker_started_at, completion_state, "
+            "       requires_live_verification FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
+        if trow and bool(trow["requires_live_verification"]) and trow["completion_state"] != "verified":
+            _append_event(
+                conn, task_id, "completion_refused_missing_live_verification",
+                {"completion_state": trow["completion_state"]},
+            )
+            return False
         # Refuse to close a LIVE worker's run without proof of ownership
         # (expected_run_id) or an explicit human override (force=True); see
         # _claim_is_live for what "live" means.
@@ -4070,6 +4181,19 @@ def board_stats(conn: sqlite3.Connection) -> dict:
 
     by_assignee = _counts_by_assignee(conn)
 
+    # Split human-gated waits out of the impediment count. A card blocked with
+    # kind='needs_input' is waiting on an operator decision, not stuck; folding it
+    # into `blocked` made that number read as "things broken" when most of it was
+    # "things Brandon hasn't answered yet" (Byrd-IT ops board, 2026-09-17).
+    blocked_by_kind: dict[str, int] = {}
+    for row in conn.execute(
+        "SELECT COALESCE(block_kind, 'untyped') AS k, COUNT(*) AS n "
+        "FROM tasks WHERE status = 'blocked' GROUP BY k"
+    ):
+        blocked_by_kind[str(row["k"])] = int(row["n"])
+    waiting_on_human = blocked_by_kind.get("needs_input", 0)
+    blocked_impediments = by_status.get("blocked", 0) - waiting_on_human
+
     oldest_row = conn.execute(
         "SELECT MIN(created_at) AS ts FROM tasks WHERE status = 'ready'"
     ).fetchone()
@@ -4082,6 +4206,9 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     return {
         "by_status": by_status,
         "by_assignee": by_assignee,
+        "blocked_by_kind": blocked_by_kind,
+        "waiting_on_human": waiting_on_human,
+        "blocked_impediments": blocked_impediments,
         "oldest_ready_age_seconds": oldest_ready_age,
         "now": now,
     }

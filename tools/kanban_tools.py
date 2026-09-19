@@ -11,8 +11,10 @@ import functools
 import json
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
@@ -23,8 +25,8 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
-    KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_LIST_SCHEMA, KANBAN_RECORD_COMPLETION_STATE_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA,
+    KANBAN_REQUEST_REVIEW_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +256,37 @@ def _ok_landed(kb, conn, tid: str, default_status: str, **extra: Any) -> str:
                status=landed.status if landed else default_status, **extra)
 
 
+_REPO_WORK_HINT = re.compile(
+    r"\b(?:branch\s+off|on\s+(?:a\s+)?branch|commit\s+to)\b", re.IGNORECASE)
+
+
+def _scratch_repo_workspace_warning(
+    title: str, body: Optional[str], workspace_kind: Optional[str],
+) -> Optional[str]:
+    """Return guidance when a scratch card asks for branch/commit work.
+
+    This is intentionally advisory: a creator may explicitly choose scratch,
+    and the creation path must never silently promote that choice to worktree.
+    """
+    if workspace_kind != "scratch":
+        return None
+    text = f"{title}\n{body or ''}"
+    repo_path = next((
+        candidate.rstrip(".,;:!?)]}")
+        for candidate in re.findall(r"(?<!\S)(/[^\s]+)", text)
+        if Path(candidate.rstrip(".,;:!?)]}")).is_dir()
+    ), None)
+    if repo_path is None and not _REPO_WORK_HINT.search(text):
+        return None
+    repo_detail = f" {repo_path}" if repo_path else ""
+    return (
+        f"card references git repository{repo_detail} but workspace_kind=scratch — "
+        "scratch workspaces contain no git repo; create with "
+        "workspace_kind='worktree' (and workspace_path=<repo> for a non-default repo) "
+        "if this task needs a branch or commits"
+    )
+
+
 def _redact(value: Any) -> str:
     return redact_sensitive_text(str(value), force=True)
 
@@ -330,7 +363,8 @@ def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
     "created_at started_at completed_at result current_run_id model_override "
-    "provider_override completion_contract last_failure_error".split())
+    "provider_override completion_contract completion_state completion_evidence "
+    "requires_live_verification verification_owner_id last_failure_error".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
     "created_at started_at completed_at current_run_id model_override provider_override".split())
@@ -771,6 +805,20 @@ def _handle_request_changes(args: dict, **kw) -> str:
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 
 
+@_kanban_handler("kanban_record_completion_state")
+def _handle_record_completion_state(args: dict, **kw) -> str:
+    """Persist precisely one evidence-backed delivery label without inference."""
+    tid = _worker_guard("kanban_record_completion_state", args)
+    state = _require_text(args, "state", "state is required")
+    evidence = args.get("evidence")
+    _check(isinstance(evidence, dict), "evidence must be an object containing a non-empty 'proof' string")
+    with _board(args.get("board")) as (kb, conn):
+        _check(kb.record_completion_state(conn, tid, state, evidence),
+               f"could not record completion state for {tid} (unknown task)")
+        task = kb.get_task(conn, tid)
+        return _ok(task_id=tid, **_fields(task, ("completion_state", "completion_evidence")))
+
+
 @_kanban_handler("kanban_heartbeat")
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal liveness: extend the claim TTL AND record a heartbeat event.
@@ -792,9 +840,10 @@ def _handle_heartbeat(args: dict, **kw) -> str:
 def _handle_comment(args: dict, **kw) -> str:
     """Append a comment to a task's thread."""
     _reject_delegated_child_mutation("kanban_comment")
-    tid = args.get("task_id")
-    _check(tid, "task_id is required (use the current task id if that's what "
-                "you mean — pulls from env but kept explicit here)")
+    # Default resolution only — NOT _worker_guard: cross-task comments are the
+    # handoff channel between tasks (#19713), so no own-task ownership gate here.
+    tid = _default_task_id(args.get("task_id"))
+    _check(tid, "task_id is required (or set HERMES_KANBAN_TASK in the env)")
     body = _redact(_require_text(args, "body"))
     # Author comes from the worker's runtime identity, never caller args: comments are
     # injected into future workers' system prompts, so an args["author"] override could
@@ -950,12 +999,30 @@ def _handle_create(args: dict, **kw) -> str:
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
+    # Production-path -> worktree defaulting lives in kb.create_task so the CLI gets it too.
+    idempotency_key = (args.get("idempotency_key") or "").strip() or None
+    # Worker-filed cards MUST carry an idempotency key. Without one, every worker that
+    # hits the same defect files a fresh card (the same Tirith false-positive landed 5+
+    # times under different titles on the Byrd-IT ops board). Humans and the
+    # orchestrator/decomposer are exempt: they create from a conversation, not a retry.
+    if _is_dispatcher_owned_worker() and os.environ.get("HERMES_KANBAN_TASK") and not idempotency_key:
+        _check(False, (
+            "idempotency_key is required for worker-created cards. Use a stable, "
+            "content-derived key that another worker hitting the same problem would also "
+            "produce, e.g. 'tirith-fp-<scanner-rule>' or 'tool-failure-<tool>-<short-cause>'. "
+            "If a card with that key already exists you get its id back and should COMMENT "
+            "on it instead of describing the problem again."))
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
                     if _is_dispatcher_owned_worker() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
+        pre_existing = None
+        if idempotency_key:
+            pre_existing = conn.execute(
+                "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+                "ORDER BY created_at DESC LIMIT 1", (idempotency_key,)).fetchone()
         # The worker/API runtime may be transient; the owning task's origin is durable.
         # The ambient id is the request-scoped ContextVar binding, not the process-global
         # os.environ: in a multi-session gateway the env holds the LAST agent built, and an
@@ -977,18 +1044,36 @@ def _handle_create(args: dict, **kw) -> str:
             board=args.get("board"),
             project_source_task_id=project_source_task_id, triage=triage,
             creator_task_id=self_tid,
-            idempotency_key=args.get("idempotency_key"),
+            idempotency_key=idempotency_key,
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
+            requires_live_verification=_parse_bool_arg(args, "requires_live_verification"),
+            verification_owner_id=args.get("verification_owner_id"),
             initial_status=str(args.get("initial_status") or "running"),
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
+        if pre_existing is not None and new_tid == pre_existing["id"]:
+            # Dedupe hit: the caller's report is a repeat. Record it on the existing card
+            # so the recurrence is visible, and tell the caller plainly.
+            author = os.environ.get("HERMES_PROFILE") or "worker"
+            note = (f"Duplicate report (idempotency_key={idempotency_key}) from "
+                    f"{author}" + (f" while working {self_tid}" if self_tid else "") +
+                    f": {str(title).strip()}")
+            try:
+                kb.add_comment(conn, new_tid, author, note)
+            except Exception:
+                pass
+            landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
+            return _ok(task_id=new_tid, **landed, deduplicated=True,
+                       note="An open card with this idempotency_key already existed; your "
+                            "report was added as a comment. Do not file it again.")
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
+        warning = _scratch_repo_workspace_warning(title, args.get("body"), landed["workspace_kind"])
         return _ok(task_id=new_tid, **landed, **gate,
-                   subscribed=_maybe_auto_subscribe(conn, new_tid))
+                   subscribed=_maybe_auto_subscribe(conn, new_tid), **({"warning": warning} if warning else {}))
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
@@ -1106,6 +1191,8 @@ _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
+    ("kanban_record_completion_state", KANBAN_RECORD_COMPLETION_STATE_SCHEMA,
+     _handle_record_completion_state, "🏷"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),

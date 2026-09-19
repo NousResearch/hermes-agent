@@ -105,6 +105,12 @@ class TestConfigYamlRouting:
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
 
+    def test_terminal_worker_memory_cap_goes_to_config(self, _isolated_hermes_home, capsys):
+        set_config_value("terminal.worker_memory_max_mb", "8192")
+
+        assert "worker_memory_max_mb: '8192'" in _read_config(_isolated_hermes_home)
+        assert "not a recognized config key" not in capsys.readouterr().out
+
     def test_cron_script_timeout_is_recognized(self, _isolated_hermes_home, capsys):
         """The script timeout read by cron must be accepted by config set."""
         set_config_value("cron.script_timeout_seconds", "600")

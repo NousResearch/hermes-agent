@@ -802,7 +802,12 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
         self.assertEqual(second._seen_uids, {b"1", b"2"})
         asyncio.run(second.disconnect())
 
-    def test_first_connect_still_marks_all_seen(self):
+    def test_first_connect_baselines_seen_messages(self):
+        # NOTE: this helper's mock ignores search criteria (SEEN vs UNSEEN vs
+        # ALL all return the same mailbox_uids), so it only exercises the
+        # "everything comes back as SEEN" path. See
+        # test_first_connect_leaves_unread_messages_for_backfill below for the
+        # case that distinguishes SEEN from UNSEEN (t_890d8d8c backfill fix).
         adapter = self._make_adapter()
         self.assertTrue(self._run_connect(adapter, b"7 8 9", is_reconnect=False))
         self.assertEqual(adapter._seen_uids, {b"7", b"8", b"9"})
@@ -815,6 +820,37 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
         self.assertTrue(self._run_connect(adapter, b"4 5", is_reconnect=True))
         self.assertEqual(adapter._seen_uids, {b"4", b"5"})
         import asyncio
+        asyncio.run(adapter.disconnect())
+
+    def test_first_connect_leaves_unread_messages_for_backfill(self):
+        """First connect (t_890d8d8c): UNSEEN messages already in the mailbox at
+        startup must NOT be marked seen, so a support request that arrived while
+        the gateway was down still gets picked up by the next poll instead of
+        being silently skipped."""
+        import asyncio
+
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+
+        def uid_handler(command, _none, criteria=None):
+            if command == "search" and criteria == "SEEN":
+                return ("OK", [b"1 2"])
+            if command == "search" and criteria == "UNSEEN":
+                return ("OK", [b"3"])  # arrived during downtime
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+        smtp = MagicMock()
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch.object(
+            adapter, "_connect_smtp", return_value=smtp
+        ):
+            self.assertTrue(asyncio.run(adapter.connect(is_reconnect=False)))
+
+        # Only the already-SEEN messages are baselined; UID 3 (unread) stays
+        # eligible so the poll loop dispatches it instead of dropping it.
+        self.assertEqual(adapter._seen_uids, {b"1", b"2"})
+        self.assertNotIn(b"3", adapter._seen_uids)
         asyncio.run(adapter.disconnect())
 
 

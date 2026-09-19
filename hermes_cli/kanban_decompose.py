@@ -336,11 +336,33 @@ def decompose_task(
     return _apply_fanout(task_id, parsed, routing, audit_author)
 
 
+def _in_triage_via_breaker(task_id: str) -> bool:
+    """True when the newest triage-routing event for this task is ``block_loop_detected``.
+
+    The block-recurrence breaker parks a task in ``triage`` FOR A HUMAN. The
+    auto-decomposer must not treat that as fresh intake: rewriting the body and
+    re-promoting it re-dispatches the same failing card every tick (observed:
+    12 respawns in 9 minutes on t_43b59593, 64 cycles / 9 cards in 14 days on the
+    Byrd-IT ops board). Only an operator ``specify``/``unblock`` clears it.
+    A ``specified`` event newer than the breaker event means a human already
+    acted, so the task is fair game again.
+    """
+    with kbc.connect_closing() as conn:
+        row = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? "
+            "AND kind IN ('block_loop_detected', 'specified', 'unblocked', 'promoted_manual') "
+            "ORDER BY id DESC LIMIT 1", (task_id,),
+        ).fetchone()
+    return bool(row) and row["kind"] == "block_loop_detected"
+
+
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids currently in the triage column that are eligible for
+    auto-decomposition (breaker-parked cards are excluded; see
+    :func:`_in_triage_via_breaker`)."""
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+    return [row.id for row in rows if not _in_triage_via_breaker(row.id)]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

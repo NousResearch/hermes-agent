@@ -2590,6 +2590,39 @@ class TestSystemdCgroupIsolation:
 
         assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
 
+    def test_worker_memory_limit_honors_explicit_config_above_auto_cap(self, monkeypatch):
+        """An operator-sized scope cap is not constrained by auto mode's 4 GiB limit."""
+        import tools.process_registry as pr
+        from hermes_cli.config import get_config_path
+
+        get_config_path().write_text(
+            "terminal:\n  worker_memory_max_mb: 8192\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(pr, "_enclosing_cgroup_memory_max_bytes", lambda: None)
+
+        assert pr._worker_memory_max_bytes() == 8192 * 1024 * 1024
+
+    def test_worker_memory_limit_explicit_config_is_clamped_by_enclosing_cgroup(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_enclosing_cgroup_memory_max_bytes", lambda: 6 * 1024 * 1024 * 1024)
+        monkeypatch.setattr(pr, "_configured_worker_memory_max_bytes", lambda: 8192 * 1024 * 1024)
+
+        assert pr._worker_memory_max_bytes() == 6 * 1024 * 1024 * 1024
+
+    @pytest.mark.parametrize("value", ["invalid", 0, 63, True, 8192.5])
+    def test_worker_memory_limit_invalid_config_falls_back_to_auto_bound(self, monkeypatch, value):
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"worker_memory_max_mb": value}},
+        )
+        monkeypatch.setattr(pr, "_enclosing_cgroup_memory_max_bytes", lambda: None)
+        monkeypatch.setattr(pr.os, "sysconf", lambda name: 2 * 1024 * 1024 if name == "SC_PHYS_PAGES" else 4096)
+
+        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
     ):

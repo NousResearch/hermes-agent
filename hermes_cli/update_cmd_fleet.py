@@ -119,6 +119,13 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
     from hermes_cli.update_cmd import _current_checkout_sha
     if not isinstance(receipt, dict):
         return False
+    # The plan is captured before apply.  A failed run that explicitly records the
+    # same pre/post code identity never swapped code, so its old runtime rows are
+    # observational only; they cannot establish a restart debt for this update.
+    pre_sha = (receipt.get("pre_update") or {}).get("sha")
+    post_sha = (receipt.get("post_update") or {}).get("sha")
+    if isinstance(pre_sha, str) and pre_sha and pre_sha == post_sha:
+        return False
     expected_sha = expected_sha or _current_checkout_sha()
     if not expected_sha:
         return False

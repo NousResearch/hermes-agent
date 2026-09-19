@@ -33,7 +33,7 @@ def _kbn():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "watchdog_alert")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
@@ -429,6 +429,13 @@ def _fmt_timed_out(ev, n) -> tuple:
     return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
 
 
+def _fmt_watchdog_alert(ev, n) -> tuple:
+    """Detection-only watchdog ping; remediation stays with the subscribed owner."""
+    kind = _safe_review_reason(_payload(ev, "kind"), 64) or "stalled work"
+    detail = _safe_review_reason(_payload(ev, "detail"), 200)
+    return f"⚠ {n.head} watchdog alert ({kind}){': ' + detail if detail else ''}", None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
@@ -444,6 +451,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
+    "watchdog_alert": _fmt_watchdog_alert,
 }
 
 

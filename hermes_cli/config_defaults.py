@@ -321,6 +321,10 @@ DEFAULT_CONFIG = {
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
+        # Per-worker systemd scope MemoryMax. "auto" retains the conservative
+        # host-aware bound; an explicit MiB value may raise it, but never beyond
+        # a finite enclosing cgroup memory.max limit.
+        "worker_memory_max_mb": "auto",
         "container_persistent": True,   # Persist filesystem across sessions
         # Docker volume mounts, "host_path:container_path" (docker -v syntax), e.g.
         # ["/home/user/.hermes/cache/documents:/output"]. For gateway MEDIA delivery, write to
@@ -2241,6 +2245,19 @@ DEFAULT_CONFIG = {
         # Refresh an installed cua-driver during `hermes update` (best-effort, macOS only). Turn off
         # e.g. on non-admin accounts where /Applications isn't writable.
         "refresh_cua_driver": True,
+        # Pre-update checkout-hygiene audit: refuse (exit 2, receipted) when the checkout has
+        # accumulated more untracked files / stale hermes-update-autostash entries than the limits
+        # below — the silent accumulation shape behind the 2026-09-16 production incident
+        # (164 untracked files + 4 parked stashes blocking an activation). warn = print the
+        # refusal text but continue; off = skip the audit entirely. `hermes update --force`
+        # bypasses it for one reviewed run.
+        "checkout_hygiene": "enforce",
+        # Untracked files allowed before the hygiene audit refuses (see checkout_hygiene).
+        # Ignored files never count (.gitignore'd build output, node_modules, .worktrees/).
+        "max_untracked_files": 25,
+        # hermes-update-autostash entries older than updates.warn age (7 days) allowed before
+        # the hygiene audit refuses (see checkout_hygiene).
+        "max_stale_autostashes": 2,
     },
     # LSP diagnostics (pyright, gopls, rust-analyzer...) in the post-write lint check of
     # write_file/patch. Runs only when the cwd or edited file is inside a git worktree; otherwise

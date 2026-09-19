@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -30,6 +31,15 @@ _CHROMIUM_MISSING_DOCKER_HINT = ("Chromium browser is missing. You're running in
                                  f"to get the bundled Chromium: {_DOCKER_PULL}")
 _CHROMIUM_MISSING_HINT = f"Chromium browser is missing. Install it with: {_CHROMIUM_INSTALL}"
 
+# Browser Use can hold a direct CDP connection for its full public 1800s exec
+# budget. That traffic bypasses agent-browser's control socket, so the daemon
+# cannot observe it as activity. Keep its safety idle timeout beyond one live
+# exec plus the janitor cadence; Hermes' own inactivity janitor still performs
+# the normal configured cleanup when no browser_exec is running.
+_DIRECT_CDP_EXEC_MAX_SECONDS = 1800
+_DIRECT_CDP_DAEMON_GRACE_SECONDS = 60
+_MIN_AGENT_BROWSER_IDLE_TIMEOUT_SECONDS = _DIRECT_CDP_EXEC_MAX_SECONDS + _DIRECT_CDP_DAEMON_GRACE_SECONDS
+
 
 def _needs_chromium_sandbox_bypass() -> bool:
     """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
@@ -45,11 +55,20 @@ def _needs_chromium_sandbox_bypass() -> bool:
 
 
 def _apply_chromium_sandbox_args(browser_env: Dict[str, str]) -> None:
-    """Add required Chromium sandbox flags without overriding user settings."""
-    if ("AGENT_BROWSER_ARGS" not in browser_env and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
-            and _needs_chromium_sandbox_bypass()):
-        _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — injecting --no-sandbox")
-        browser_env["AGENT_BROWSER_ARGS"] = "--no-sandbox,--disable-dev-shm-usage"
+    """Append host-required Chromium flags while preserving user launch settings."""
+    if not _needs_chromium_sandbox_bypass():
+        return
+
+    required = ("--no-sandbox", "--disable-dev-shm-usage")
+    current = "\n".join(browser_env.get(key, "") for key in ("AGENT_BROWSER_ARGS", "AGENT_BROWSER_CHROME_FLAGS"))
+    present = set(filter(None, re.split(r"[\s,]+", current)))
+    missing = [flag for flag in required if flag not in present]
+    if not missing:
+        return
+
+    _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — adding %s", ",".join(missing))
+    existing = browser_env.get("AGENT_BROWSER_ARGS", "")
+    browser_env["AGENT_BROWSER_ARGS"] = ",".join(part for part in (existing, *missing) if part)
 
 
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
@@ -152,13 +171,15 @@ def _prepare_session_socket_dir(session_name: str) -> str:
 
 def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     """Credential-scrubbed env for one command: PATH fallbacks, the session socket dir, and
-    daemon-side idle self-termination (agent-browser 0.24+) mirroring the Python janitor
-    unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly."""
+    daemon-side idle self-termination (agent-browser 0.24+). Direct-CDP Browser Use
+    calls can outlive the Python inactivity window without sending daemon commands, so
+    the default protects one full exec; an explicit ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` wins."""
     env = _bt._build_browser_env()
     env["PATH"] = _install._merge_browser_path(env.get("PATH", ""))
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
-        env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
+        timeout_s = max(_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT, _MIN_AGENT_BROWSER_IDLE_TIMEOUT_SECONDS)
+        env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(timeout_s * 1000)
     return env
 
 

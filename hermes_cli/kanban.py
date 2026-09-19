@@ -700,6 +700,32 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_watchdog(args: argparse.Namespace) -> int:
+    """Run one quiet, detection-only watchdog pass through existing pipelines."""
+    from hermes_cli import kanban_watchdog as watchdog
+    from hermes_cli.config import load_config
+
+    raw_config = load_config()
+    from hermes_cli import kanban_diagnostics as kd
+    diagnostics_config = kd.config_from_runtime_config(raw_config)
+    retention_days = max(1, int(getattr(args, "retention_days", 30)))
+    with kbc.connect_closing() as conn:
+        result = watchdog.run_watchdog(conn, config=diagnostics_config, retention_days=retention_days)
+    payload = {
+        "new_alerts": [alert.__dict__ for alert in result.new_alerts],
+        "resolved_count": result.resolved_count,
+        "pruned_count": result.pruned_count,
+    }
+    if getattr(args, "json", False):
+        _print_json(payload)
+    elif result.new_alerts:
+        for alert in result.new_alerts:
+            print(f"watchdog alert {alert.task_id} {alert.kind}: {alert.detail}")
+    # Healthy runs intentionally print nothing: cron stays quiet unless there is
+    # actionable work, while the normal task-event notifier delivers alerts.
+    return 0
+
+
 def _cmd_link(args: argparse.Namespace) -> int:
     # A worker linking its own running card (dependency-block handoff) proves
     # ownership with its run id; linking a foreign task never needs one.
@@ -1117,7 +1143,11 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         return 0
     print("By status:")
     for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
-        print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
+        line = f"  {k:8s}  {stats['by_status'].get(k, 0)}"
+        if k == "blocked" and stats.get("waiting_on_human"):
+            line += (f"   ({stats['blocked_impediments']} impediment, "
+                     f"{stats['waiting_on_human']} waiting-on-human)")
+        print(line)
     if stats["by_assignee"]:
         print("\nBy assignee:")
         for who, counts in sorted(stats["by_assignee"].items()):
@@ -1298,7 +1328,7 @@ _HANDLERS = {
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
     "assign": _cmd_assign, "set-model": _cmd_set_model,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
-    "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
+    "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics, "watchdog": _cmd_watchdog,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,

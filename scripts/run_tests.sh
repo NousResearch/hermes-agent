@@ -11,7 +11,8 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+#   * Proper venv activation (probes .venv, venv, the ~/.hermes release
+#     venv, then the canonical /usr/local/lib/hermes-agent/venv)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -51,7 +52,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV=""
 VENV_PYTHON=""
 SKIPPED_VENVS=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv" /usr/local/lib/hermes-agent/venv; do
   if [ -f "$candidate/bin/activate" ]; then
     if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
       VENV="$candidate"
@@ -90,8 +91,8 @@ elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
   PYTHON="$HERMES_PYTHON"
   echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
 else
-  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
+  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv, $REPO_ROOT/venv," >&2
+  echo "       $HOME/.hermes/hermes-agent/venv, or /usr/local/lib/hermes-agent/venv" >&2
   if [ -n "$SKIPPED_VENVS" ]; then
     echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
   fi

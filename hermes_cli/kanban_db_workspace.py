@@ -67,6 +67,10 @@ def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
         home = None
     if home is not None:
         with contextlib.suppress(OSError):
+            roots.append((
+                _kb.workspaces_root(board=_kb.DEFAULT_BOARD).resolve(strict=False),
+                _kb.DEFAULT_BOARD,
+            ))
             roots.append(((home / "kanban" / "workspaces").resolve(strict=False), _kb.DEFAULT_BOARD))
         entries: list[Path] = []
         with contextlib.suppress(OSError):
@@ -74,6 +78,10 @@ def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
         for entry in entries:
             with contextlib.suppress(OSError):
                 if entry.is_dir():
+                    roots.append((
+                        _kb.workspaces_root(board=entry.name).resolve(strict=False),
+                        entry.name,
+                    ))
                     roots.append(((entry / "workspaces").resolve(strict=False), entry.name))
     for root, board in roots:
         if p_abs == root:

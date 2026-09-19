@@ -514,6 +514,30 @@ class TestAbortAndCancellation:
 
         _run_test(run)
 
+    def test_abort_cancels_consumer_waiting_on_a_blocked_provider(self):
+        """Barge-in must settle the asyncio task even if provider I/O cannot stop promptly."""
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = SlowFirstChunkStreamer()
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+
+            consumer.start()
+            consumer.on_delta("A sentence whose provider blocks before audio. ")
+            consumer.finish()
+            await asyncio.wait_for(asyncio.to_thread(streamer.started.wait, 1.0), timeout=1.0)
+
+            consumer.abort("barge-in")
+            task = consumer._task
+            assert task is not None
+            result = await asyncio.gather(task, return_exceptions=True)
+
+            assert isinstance(result[0], asyncio.CancelledError)
+            assert consumer.done is True
+            assert consumer.completed is False
+            streamer.allow_first_chunk.set()
+
+        _run_test(run)
+
 
 class TestFallbackSafety:
     """Pre-audio failure falls back; post-audio failure does not replay."""

@@ -177,10 +177,14 @@ session-scoped. Assert the GUI session gets the tool **with the env var absent**
 ## Development Environment
 
 ```bash
-source .venv/bin/activate   # or: source venv/bin/activate
+source /usr/local/lib/hermes-agent/venv/bin/activate
 ```
-`scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
-(worktrees sharing the main checkout's venv).
+On this deployment, the canonical repository virtual environment is
+`/usr/local/lib/hermes-agent/venv`. The main checkout has no `.venv`, and
+worktrees have neither a `.venv` nor their own `venv`.
+`scripts/run_tests.sh` probes `$REPO_ROOT/.venv`, `$REPO_ROOT/venv`,
+`$HOME/.hermes/hermes-agent/venv`, then `/usr/local/lib/hermes-agent/venv`,
+skipping candidates without pytest.
 
 ## Project Structure
 

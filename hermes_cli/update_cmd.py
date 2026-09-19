@@ -63,10 +63,12 @@ from hermes_cli.update_cmd_zip import (  # noqa: F401
     _is_zip_preserved_entry_status_line, _is_zip_staging_artifact_status_line, _stage_replacement,
     _update_via_zip, _zip_overlay_block_reason)
 from hermes_cli.update_cmd_stash import (  # noqa: F401
-    _AUTOSTASH_NAME_PREFIX, _AUTOSTASH_WARN_AGE_DAYS, _discard_stashed_changes,
-    _git_untracked_paths, _park_stashed_changes, _print_stash_cleanup_guidance,
+    _AUTOSTASH_NAME_PREFIX, _AUTOSTASH_WARN_AGE_DAYS, _audit_checkout_hygiene,
+    _discard_stashed_changes,
+    _git_untracked_paths, _park_stashed_changes, _print_checkout_hygiene_refusal,
+    _print_stash_cleanup_guidance,
     _reject_unsafe_stash_restore, _resolve_stash_selector, _restore_stashed_changes,
-    _restored_python_paths, _stash_apply_failed_only_on_existing_untracked,
+    _restored_python_paths, _stale_autostash_entries, _stash_apply_failed_only_on_existing_untracked,
     _stash_local_changes_if_needed, _warn_orphaned_update_autostashes)
 from hermes_cli.update_cmd_config import (  # noqa: F401
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
@@ -791,7 +793,29 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: a true upstream force-push/rebase; local changes are stashed, so reset.
+    # Same-branch divergence is ambiguous: it can be a remote force-push, but it is also
+    # the normal shape when an operator commits a local fleet fix on main before upstream
+    # advances. Never let that latter case fall through to reset --hard.
+    local_ahead = _git_run(git_cmd, ["rev-list", f"origin/{branch}..HEAD", "--count"])
+    try:
+        local_commit_count = int(local_ahead.stdout.strip())
+    except (TypeError, ValueError):
+        print(
+            f"✗ Refusing to reset {branch}: could not verify whether local commits are outside "
+            f"origin/{branch}.")
+        print("  Inspect `git status` and `git log origin/{branch}..HEAD` before retrying.")
+        sys.exit(1)
+    if local_commit_count > 0:
+        print(
+            f"✗ Refusing to reset {branch}: {local_commit_count} local commit(s) are not on "
+            f"origin/{branch}.")
+        print("  Your commits are still on the current branch; no files or refs were changed.")
+        print(
+            f"  Rebase/merge them onto origin/{branch}, or move them to an integration branch, "
+            "then retry.")
+        sys.exit(1)
+
+    # No local commits lie outside origin/<branch>, so this is a true upstream force-push/rebase.
     # Orphan divergence (no common ancestor: corrupted HEAD, re-init) would lose the whole
     # local graph, so park pre_pull_sha behind a rescue ref first.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])
@@ -1628,6 +1652,34 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
+
+        # Checkout-hygiene admission gate (production incident 2026-09-16: repeated updates on a
+        # diverged checkout leaked 164 untracked files and parked 4 stashes until the next
+        # activation had to untangle a 797-behind/dirty tree). Audits BEFORE the fetch/stash/pull
+        # touch anything; refuses (exit 2, receipted) on positive evidence of accumulation.
+        # `--force` is the operator's reviewed override; `updates.checkout_hygiene: warn|off` tunes it.
+        hygiene_mode = "enforce"
+        with _best_effort('Could not read updates.checkout_hygiene: %s'):
+            hygiene_mode = str(_updates_config().get("checkout_hygiene", "enforce")).lower()
+        if hygiene_mode not in ("off",) and not getattr(args, "force", False):
+            hygiene_reason, hygiene_facts = _m()._audit_checkout_hygiene(git_cmd, _m().PROJECT_ROOT)
+            if hygiene_reason is not None:
+                _record_update_step(
+                    "checkout_hygiene", False,
+                    f"refused: {hygiene_reason}"
+                    + (f"; untracked={hygiene_facts.get('untracked_count')}"
+                       if hygiene_facts.get("untracked_count") is not None else ""))
+                if hygiene_mode == "warn":
+                    _m()._print_checkout_hygiene_refusal(hygiene_reason, hygiene_facts)
+                    print("  (updates.checkout_hygiene: warn — continuing anyway)")
+                else:
+                    _m()._print_checkout_hygiene_refusal(hygiene_reason, hygiene_facts)
+                    sys.exit(2)
+            else:
+                _record_update_step(
+                    "checkout_hygiene", True,
+                    "untracked={}, stale_autostashes={}".format(
+                        hygiene_facts.get("untracked_count"), hygiene_facts.get("stale_autostashes")))
 
         print("→ Fetching updates...")
         fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)

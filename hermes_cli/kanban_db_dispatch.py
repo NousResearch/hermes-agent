@@ -80,6 +80,12 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+# An operator can explicitly retire an already-linked PR/repository path. Keep
+# this deliberately structured so casual discussion of abandoning work cannot
+# disable duplicate-PR protection.
+_RESPAWN_GUARD_PR_ABANDONED_RE = re.compile(
+    r"\bkanban:\s*pr-(?:abandoned|superseded)\b", re.IGNORECASE,
+)
 
 
 @dataclass
@@ -1581,22 +1587,37 @@ def check_respawn_guard(
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
+    #    An explicit operator "kanban: pr-abandoned"/"pr-superseded" marker
+    #    also releases the guard, independent of any handoff event.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body, created_at FROM task_comments "
-        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
+        "SELECT id, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
             continue
+        pr_created_at = int(c["created_at"] or 0)
+        pr_comment_id = int(c["id"])
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
             "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
+            (task_id, pr_created_at),
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+            return None
+        pr_abandoned = any(
+            row["body"] and _RESPAWN_GUARD_PR_ABANDONED_RE.search(row["body"])
+            for row in conn.execute(
+                "SELECT body FROM task_comments WHERE task_id = ? "
+                "AND (created_at > ? OR (created_at = ? AND id > ?))",
+                (task_id, pr_created_at, pr_created_at, pr_comment_id),
+            ).fetchall()
+        )
+        if pr_abandoned:
             return None
         return "active_pr"
 

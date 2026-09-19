@@ -123,6 +123,18 @@ def is_machinery_display_kind(display_kind: Any) -> bool:
     return display_kind in MACHINERY_DISPLAY_KINDS
 
 
+def conversation_allows_silence(adapter: Any, source: Any) -> bool:
+    """Query optional native middleware; missing or failing policy stays fail-closed."""
+    try:
+        factory = getattr(adapter, "conversation_middleware", None)
+        if not callable(factory):
+            return False
+        callback = getattr(factory(), "allows_intentional_silence", None)
+        return callable(callback) and callback(source) is True
+    except Exception:
+        return False
+
+
 def is_partial_silence_marker(text: Any) -> bool:
     """True while streamed ``text`` could still resolve to a silence marker.
 

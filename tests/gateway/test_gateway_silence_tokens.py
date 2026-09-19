@@ -11,6 +11,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 from gateway.response_filters import (
+    conversation_allows_silence,
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
 )
@@ -95,8 +96,14 @@ def test_failed_agent_result_never_counts_as_intentional_silence():
 
 
 @pytest.mark.asyncio
-async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path):
+@pytest.mark.parametrize("allow_silence", [False, True])
+async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path, allow_silence):
     runner = _runner(monkeypatch, tmp_path)
+    middleware = SimpleNamespace(allows_intentional_silence=lambda source: allow_silence,
+                                 output_suppressed=lambda *args: None)
+    adapter = SimpleNamespace(conversation_middleware=lambda: middleware)
+    monkeypatch.setattr("gateway.run_turn.conversation_allows_silence",
+                        lambda unused, source: conversation_allows_silence(adapter, source))
     runner._run_agent = AsyncMock(return_value={
         "final_response": "[SILENT]",
         "messages": [
@@ -114,8 +121,11 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
-    assert "silence marker" in response
-    assert "Try again or rephrase" in response
+    if allow_silence:
+        assert response == ""
+    else:
+        assert "silence marker" in response
+        assert "Try again or rephrase" in response
 
 
 @pytest.mark.asyncio
@@ -165,7 +175,8 @@ async def test_scheduled_heartbeat_silence_suppresses_delivery(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_queued_human_turn_also_gets_the_visible_fallback():
+@pytest.mark.parametrize("allow_silence", [False, True])
+async def test_queued_human_turn_also_gets_the_visible_fallback(allow_silence):
     runner = gateway_run.GatewayRunner(GatewayConfig())
     runner._deliver_queued_first_response = AsyncMock()
     turn_ctx = SimpleNamespace(
@@ -182,10 +193,14 @@ async def test_queued_human_turn_also_gets_the_visible_fallback():
     result = {"final_response": "NO_REPLY", "failed": False}
 
     await runner._run_agent_deliver_first_response(
-        turn_ctx, None, result, result, None,
+        turn_ctx, SimpleNamespace(conversation_middleware=lambda: SimpleNamespace(
+            allows_intentional_silence=lambda source: allow_silence)), result, result, None,
     )
 
-    assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
+    if allow_silence:
+        runner._deliver_queued_first_response.assert_not_awaited()
+    else:
+        assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
 
 
 @pytest.mark.asyncio

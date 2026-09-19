@@ -1,5 +1,5 @@
 /**
- * Live inbox controls — real gateway, real tools, real Agent Inbox.
+ * Live inbox controls — real gateway, real tools, real Action Center.
  *
  * Companion to inbox-live-approval.spec.ts (same one-app-per-test harness). Covers the
  * panel's newer controls end to end:
@@ -25,7 +25,7 @@ import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fi
 import { expect, test, type Page } from './test'
 
 const OUTPUT = path.resolve(import.meta.dirname, '../../../.inbox-work/live-approval-evidence')
-const OTHER_PLACEHOLDER = 'Other — type your own…'
+const OTHER_PLACEHOLDER = 'Other (type your answer)'
 
 test.describe.configure({ mode: 'serial' })
 
@@ -99,14 +99,17 @@ async function sendPrompt(page: Page, text: string): Promise<void> {
 async function openInbox(page: Page): Promise<void> {
   await page.keyboard.press('Escape')
   await page.waitForTimeout(200)
-  await page.getByRole('button', { name: /inbox/i }).first().click()
-  await expect(page.getByRole('heading', { name: 'Agent Inbox' })).toBeVisible()
+
+  // The chip's own label — a loose matcher also clicks a sidebar row whose message
+  // text happens to contain the trigger name.
+  await page.getByRole('button', { name: /^(Action Center|Action Center — \d+ need attention)$/ }).first().click()
+  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible()
 }
 
 test('a live clarify letters options A–C and the type-your-own row answers it', async () => {
   test.setTimeout(300_000)
 
-  await withApp('clarify-letters', null, async (fixture, page) => {
+  await withApp('clarify-letters', null, async (_fixture, page) => {
     await installAnswerTap(page)
     await sendPrompt(page, `Ask me about the surface. ${INBOX_CLARIFY_TRIGGER}`)
     await openInbox(page)
@@ -116,44 +119,51 @@ test('a live clarify letters options A–C and the type-your-own row answers it'
     await expect(row).toBeVisible({ timeout: 15_000 })
     await row.click()
 
+    // The chat still mounts the same card beneath the overlay, so scope assertions to
+    // the panel surface or every match is ambiguous.
+    const panel = page.locator('[data-overlay-surface]')
+
     // The live question is answerable in place.
-    await expect(page.getByText(INBOX_CLARIFY_QUESTION)).toBeVisible({ timeout: 15_000 })
+    await expect(panel.getByText(INBOX_CLARIFY_QUESTION)).toBeVisible({ timeout: 15_000 })
 
     // Options carry their letters, and the type-your-own row takes the next one (D).
     for (const [index, choice] of INBOX_CLARIFY_CHOICES.entries()) {
       const letter = String.fromCharCode(65 + index)
-      const option = page.getByRole('button').filter({ hasText: choice }).first()
+      const option = panel.getByRole('button').filter({ hasText: choice }).first()
 
       await expect(option).toBeVisible()
       await expect(option).toHaveText(new RegExp(`^${letter}`))
     }
 
-    const otherRow = page.getByPlaceholder(OTHER_PLACEHOLDER)
+    const otherRow = panel.getByPlaceholder(OTHER_PLACEHOLDER)
     await expect(otherRow).toBeVisible()
-    await expect(page.getByText('D', { exact: true })).toBeVisible()
+    await expect(panel.getByText('D', { exact: true })).toBeVisible()
     await shot(page, 'live-controls-1-clarify-lettered.png')
 
     // Answer with text the options don't offer — the row exists for exactly this.
     await otherRow.fill('Terminal, but over SSH')
-    await page.getByRole('button', { name: 'Submit', exact: true }).click()
+    await panel.getByRole('button', { name: 'Submit', exact: true }).click()
 
     await expect.poll(() => page.evaluate(() => (window as any).__inboxAnswers.join(' | ')), {
       timeout: 15_000
     }).toContain('Terminal, but over SSH')
     await shot(page, 'live-controls-2-clarify-typed-answer.png')
 
-    // The typed answer reached the model: the next completion carries it in history.
-    await expect.poll(
-      () => fixture.mock.receivedPrompts.some(text => text.includes('Terminal, but over SSH')),
-      { timeout: 60_000 }
-    ).toBe(true)
+    // The answer resolved the request: the question retires from the panel, and the
+    // turn resumes to the mock's canned reply. (The answer reaches the model as a
+    // tool result, so `receivedPrompts` — which records the latest user message —
+    // is not the right witness here; the resolved request and the continued turn are.)
+    await expect(panel.getByText(INBOX_CLARIFY_QUESTION)).toHaveCount(0, { timeout: 30_000 })
+    await page.keyboard.press('Escape')
+    await expect(page.getByText(MOCK_REPLY, { exact: true }).first()).toBeVisible({ timeout: 60_000 })
+    await shot(page, 'live-controls-2b-clarify-resolved.png')
   })
 })
 
 test('a live batch clarify stages picks and typed answers per question', async () => {
   test.setTimeout(300_000)
 
-  await withApp('batch-typed', null, async (fixture, page) => {
+  await withApp('batch-typed', null, async (_fixture, page) => {
     await installAnswerTap(page)
     await sendPrompt(page, `Ask the two questions. ${BATCH_CLARIFY_TRIGGER}`)
     await openInbox(page)
@@ -163,30 +173,36 @@ test('a live batch clarify stages picks and typed answers per question', async (
     await expect(row).toBeVisible({ timeout: 15_000 })
     await row.click()
 
+    const panel = page.locator('[data-overlay-surface]')
+
     for (const entry of BATCH_CLARIFY_QUESTIONS) {
-      await expect(page.getByText(entry.question)).toBeVisible({ timeout: 15_000 })
+      await expect(panel.getByText(entry.question)).toBeVisible({ timeout: 15_000 })
     }
 
     // Both questions offer the type-your-own row, single-select included.
-    const otherRows = page.getByPlaceholder(OTHER_PLACEHOLDER)
+    const otherRows = panel.getByPlaceholder(OTHER_PLACEHOLDER)
     await expect(otherRows).toHaveCount(2)
 
     // q1: typed answer; q2: a pick. One confirm submits the batch.
     await otherRows.first().fill('Something else entirely')
-    await page.getByRole('button', { name: /Night/ }).click()
+    await panel.getByRole('button', { name: /Night/ }).click()
     await shot(page, 'live-controls-3-batch-staged.png')
 
-    await page.getByRole('button', { name: 'Submit answers', exact: true }).click()
+    await panel.getByRole('button', { name: 'Submit answers', exact: true }).click()
 
     await expect.poll(() => page.evaluate(() => (window as any).__inboxAnswers.join(' | ')), {
       timeout: 15_000
     }).toContain('Something else entirely')
 
-    await expect.poll(
-      () => fixture.mock.receivedPrompts.some(text => text.includes('Something else entirely')),
-      { timeout: 60_000 }
-    ).toBe(true)
-    await shot(page, 'live-controls-4-batch-answered.png')
+    // One confirm resolves the whole batch: both questions retire, and the turn
+    // resumes to the mock's canned reply.
+    for (const entry of BATCH_CLARIFY_QUESTIONS) {
+      await expect(panel.getByText(entry.question)).toHaveCount(0, { timeout: 30_000 })
+    }
+
+    await page.keyboard.press('Escape')
+    await expect(page.getByText(MOCK_REPLY, { exact: true }).first()).toBeVisible({ timeout: 60_000 })
+    await shot(page, 'live-controls-4-batch-resolved.png')
   })
 })
 
@@ -217,21 +233,23 @@ test('a live goal can be paused and resumed from the inbox panel', async () => {
     await expect(row).toBeVisible({ timeout: 15_000 })
     await row.click()
 
+    const panel = page.locator('[data-overlay-surface]')
+
     // The panel reaches the same control the composer's goal card has.
-    const pause = page.getByRole('button', { name: 'Pause goal', exact: true })
+    const pause = panel.getByRole('button', { name: 'Pause goal', exact: true })
 
     await expect(pause).toBeVisible({ timeout: 15_000 })
     await shot(page, 'live-controls-5-goal-in-inbox.png')
 
     await pause.click()
-    const resume = page.getByRole('button', { name: 'Resume goal', exact: true })
+    const resume = panel.getByRole('button', { name: 'Resume goal', exact: true })
 
     await expect(resume).toBeVisible({ timeout: 30_000 })
     await shot(page, 'live-controls-6-goal-paused.png')
 
     // And back — the same control in both directions.
     await resume.click()
-    await expect(page.getByRole('button', { name: 'Pause goal', exact: true })).toBeVisible({ timeout: 30_000 })
+    await expect(panel.getByRole('button', { name: 'Pause goal', exact: true })).toBeVisible({ timeout: 30_000 })
     await shot(page, 'live-controls-7-goal-resumed.png')
   })
 })

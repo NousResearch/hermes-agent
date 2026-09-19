@@ -412,3 +412,134 @@ def test_attachments_roundtrip(report_pdf: Path, workdir: Path):
     assert len(result["extracted"]) == 1
     extracted = Path(result["extracted"][0])
     assert "UNIQUEATTACH99" in extracted.read_text(encoding="utf-8")
+
+
+def test_attach_preserves_existing_metadata(report_pdf: Path, workdir: Path):
+    """#94870: attaching a file must not drop the document's existing
+    metadata — writer.append(reader) copies pages only, so the Info dict has
+    to be re-applied."""
+    titled = workdir / "meta_titled.pdf"
+    run("pdf_meta.py", str(report_pdf), "--set-meta",
+        "--title", "Preserve Me", "--author", "author-x", "-o", str(titled))
+    meta = json.loads(run("pdf_read.py", str(titled), "--meta").stdout)["metadata"]
+    assert meta["Title"] == "Preserve Me"
+
+    payload = workdir / "keep_meta_payload.txt"
+    payload.write_text("keep-meta payload\n", encoding="utf-8")
+    with_att = workdir / "meta_kept.pdf"
+    run("pdf_meta.py", str(titled), "--attach", str(payload), "-o", str(with_att))
+
+    meta = json.loads(run("pdf_read.py", str(with_att), "--meta").stdout)["metadata"]
+    assert meta.get("Title") == "Preserve Me", "attach dropped existing metadata"
+    assert meta.get("Author") == "author-x"
+    listing = json.loads(run("pdf_meta.py", str(with_att), "--list-attachments").stdout)
+    assert listing["attachments"] == ["keep_meta_payload.txt"]
+
+
+def test_attachments_survive_encrypt_decrypt(workdir: Path):
+    """#94870: embedded attachments must survive an encrypt→decrypt round
+    trip — both pdf_secure paths rebuild via writer.append(reader), which
+    drops embedded files."""
+    pytest.importorskip("cryptography")
+    payload = workdir / "secure_payload.txt"
+    payload.write_text("secure payload UNIQUESPEC42\n", encoding="utf-8")
+    with_att = workdir / "secure_in.pdf"
+    spec = {"title": "Secure Doc", "elements": [{"type": "paragraph", "text": "body"}]}
+    spec_path = workdir / "secure_spec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    run("pdf_create.py", str(spec_path), "-o", str(with_att))
+    run("pdf_meta.py", str(with_att), "--attach", str(payload), "-o", str(with_att))
+
+    encrypted = workdir / "secure_enc.pdf"
+    run("pdf_secure.py", str(with_att), "--encrypt",
+        "--user-password", "pw", "-o", str(encrypted))
+    decrypted = workdir / "secure_dec.pdf"
+    run("pdf_secure.py", str(encrypted), "--decrypt", "--password", "pw",
+        "-o", str(decrypted))
+
+    listing = json.loads(run("pdf_meta.py", str(decrypted), "--list-attachments").stdout)
+    assert listing["attachments"] == ["secure_payload.txt"], (
+        "attachment lost across encrypt/decrypt"
+    )
+    meta = json.loads(run("pdf_read.py", str(decrypted), "--meta").stdout)["metadata"]
+    assert meta.get("Title") == "Secure Doc"
+
+
+XMP_PACKET = (
+    b'<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+    b'<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+    b'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+    b'<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+    b'<dc:title><rdf:Alt><rdf:li xml:lang="x-default">XMPTitle</rdf:li>'
+    b'</rdf:Alt></dc:title></rdf:Description>'
+    b'</rdf:RDF></x:xmpmeta>\n<?xpacket end="w"?>'
+)
+
+
+def _write_pdf_with_xmp_and_dup_attachments(path):
+    """Build a source PDF carrying an XMP packet plus two payloads sharing
+    one attachment name — both shapes that writer.append() drops."""
+    import io
+
+    pypdf = pytest.importorskip("pypdf")
+    from pypdf.generic import NameObject, StreamObject
+    w = pypdf.PdfWriter()
+    w.add_blank_page(200, 200)
+    w.add_metadata({"/Title": "InfoTitle"})
+    stream = StreamObject()
+    stream.set_data(XMP_PACKET)
+    stream.update({
+        NameObject("/Type"): NameObject("/Metadata"),
+        NameObject("/Subtype"): NameObject("/XML"),
+    })
+    w._root_object[NameObject("/Metadata")] = stream
+    w.add_attachment("dup.bin", b"one")
+    w.add_attachment("dup.bin", b"two")
+    buf = io.BytesIO()
+    w.write(buf)
+    Path(path).write_bytes(buf.getvalue())
+
+
+def test_set_meta_preserves_xmp_and_all_same_name_attachments(workdir: Path):
+    """#94870 review: the preserve block must also carry the catalog's XMP
+    metadata stream and *every* payload under a shared attachment name —
+    writer.append() drops both."""
+    pypdf = pytest.importorskip("pypdf")
+    src = workdir / "xmp_src.pdf"
+    _write_pdf_with_xmp_and_dup_attachments(src)
+
+    out = workdir / "xmp_kept.pdf"
+    run("pdf_meta.py", str(src), "--set-meta", "--title", "New", "-o", str(out))
+
+    r = pypdf.PdfReader(str(out))
+    assert r.xmp_metadata is not None, "XMP packet dropped by --set-meta"
+    assert "XMPTitle" in (r.xmp_metadata.dc_title or {}).values()
+    payloads = r.attachments.get("dup.bin")
+    assert sorted(bytes(p) for p in payloads) == [b"one", b"two"], (
+        "same-name attachment payloads truncated"
+    )
+    assert (r.metadata or {}).get("/Title") == "New"
+
+
+def test_xmp_and_same_name_attachments_survive_encrypt_decrypt(workdir: Path):
+    """#94870 review: pdf_secure rebuilds via append() too — the XMP packet
+    and every payload under a shared name must survive the round trip."""
+    pypdf = pytest.importorskip("pypdf")
+    pytest.importorskip("cryptography")
+    src = workdir / "xmp_secure_src.pdf"
+    _write_pdf_with_xmp_and_dup_attachments(src)
+
+    encrypted = workdir / "xmp_enc.pdf"
+    run("pdf_secure.py", str(src), "--encrypt", "--user-password", "pw",
+        "-o", str(encrypted))
+    decrypted = workdir / "xmp_dec.pdf"
+    run("pdf_secure.py", str(encrypted), "--decrypt", "--password", "pw",
+        "-o", str(decrypted))
+
+    r = pypdf.PdfReader(str(decrypted))
+    assert r.xmp_metadata is not None, "XMP packet dropped by encrypt/decrypt"
+    assert "XMPTitle" in (r.xmp_metadata.dc_title or {}).values()
+    payloads = r.attachments.get("dup.bin")
+    assert sorted(bytes(p) for p in payloads) == [b"one", b"two"], (
+        "same-name attachment payloads truncated across encrypt/decrypt"
+    )

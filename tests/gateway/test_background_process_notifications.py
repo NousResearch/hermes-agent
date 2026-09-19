@@ -190,7 +190,7 @@ async def test_agent_notify_receipt_only_while_launching_turn_is_busy(
     runner._enqueue_process_completion_notification.assert_awaited_once()
     if launching_turn_busy:
         adapter.send.assert_awaited_once()
-        assert adapter.send.await_args.args[1].startswith("✅ Background task finished")
+        assert adapter.send.await_args.args[1].startswith("✅ Done.")
     else:
         adapter.send.assert_not_awaited()
 
@@ -447,12 +447,22 @@ class TestConciseFormatter:
             "1300\n1400\n1500\n{...huge json...}",
             duration_seconds=754,
         )
-        assert text.startswith("✅ Background task finished")
-        assert "scan_fleet.py" in text
+        assert text.startswith("✅ Done.")
         assert "12m 34s" in text
-        # The raw output must NOT appear on success
+        # Never echo the command, and never the raw output
+        assert "scan_fleet.py" not in text
         assert "1300" not in text
         assert "\n" not in text
+
+    def test_known_command_gets_a_plain_english_label(self):
+        from gateway.run import _format_concise_process_notification
+        text = _format_concise_process_notification(
+            "proc_abc",
+            "cd /Users/x/.hermes/hermes-agent && timeout 600 scripts/run_tests.sh tests/tools/",
+            0, "", duration_seconds=5,
+        )
+        assert text.startswith("✅ Done. The tests came back clean")
+        assert "run_tests" not in text and "timeout" not in text
 
     def test_failure_appends_short_tail(self):
         from gateway.run import _format_concise_process_notification
@@ -460,19 +470,19 @@ class TestConciseFormatter:
         text = _format_concise_process_notification(
             "proc_abc", "make build", 2, out,
         )
-        assert text.startswith("❌ Background task failed")
+        assert text.startswith("❌ That job hit a problem")
         assert "exit 2" in text and "Traceback: boom" in text
         assert "rerun" in text
         # Only a short tail, not the whole output
         assert "line0" not in text
 
-    def test_long_command_is_truncated(self):
+    def test_long_command_never_reaches_the_chat(self):
         from gateway.run import _format_concise_process_notification
         text = _format_concise_process_notification(
             "proc_abc", "x" * 300, 0, "",
         )
-        assert "…" in text
-        assert len(text) < 200
+        assert "x" * 20 not in text
+        assert text == "✅ Done. That job came back clean"
 
 
 @pytest.mark.asyncio
@@ -501,7 +511,7 @@ async def test_concise_mode_sends_pretty_message_not_raw_dump(monkeypatch, tmp_p
 
     adapter.send.assert_awaited_once()
     sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("✅ Background task finished")
+    assert sent_text.startswith("✅ Done.")
     assert "Here's the final output" not in sent_text
     assert "5000" not in sent_text
 
@@ -529,7 +539,7 @@ async def test_concise_mode_failure_includes_tail(monkeypatch, tmp_path):
 
     adapter.send.assert_awaited_once()
     sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("❌ Background task failed") and "exit 128" in sent_text
+    assert sent_text.startswith("❌ That job hit a problem") and "exit 128" in sent_text
     assert "fatal: repo not found" in sent_text
 
 
@@ -563,7 +573,7 @@ async def test_concise_mode_no_interim_output_updates(monkeypatch, tmp_path):
     adapter.send.assert_awaited_once()
     sent_text = adapter.send.await_args.args[1]
     assert "is still running" not in sent_text
-    assert sent_text.startswith("✅ Background task finished")
+    assert sent_text.startswith("✅ Done.")
 
 
 # ---------------------------------------------------------------------------
@@ -853,8 +863,9 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
     assert len(sent) == 2
     interim, final = sent
     assert interim.startswith("⏳ Background task still running") and "step 1 ok" in interim
-    assert final.startswith("❌ Background task failed") and "exit 2" in final and "linker error" in final
+    assert final.startswith("❌ That job hit a problem") and "exit 2" in final and "linker error" in final
+    # The "all" progress line carries the command; the completion line never echoes it.
+    assert "make -j8 all" in interim and "make -j8 all" not in final
     for text in sent:
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
-        assert "make -j8 all" in text

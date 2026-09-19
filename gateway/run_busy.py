@@ -660,14 +660,9 @@ class GatewayBusySessionMixin:
             logger.debug("Busy steer ack suppressed for session %s", session_key)
         return steer_ack_enabled
 
-    _BUSY_DEMOTED_TAIL = (
-        " — your message is queued for when it finishes (use /stop to cancel everything)."
-    )
-
     def _compose_busy_ack_message(
         self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
-        demoted_for_subagents: bool, demoted_for_compression: bool,
     ) -> str:
         from gateway.run import (
             _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
@@ -700,23 +695,20 @@ class GatewayBusySessionMixin:
                     status_parts.append(f"running: {summary.get('current_tool')}")
             except Exception:
                 pass
+        # Subagents are worth naming even with detail off: the user cannot see that the run
+        # they are talking to is being driven by children.
+        if self._agent_has_active_subagents(running_agent):
+            status_parts.append("subagents running")
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode and self._agent_has_active_subagents(running_agent):
-            head = "⏩ Steered into current run and its active subagent(s)"
-            tail = ". Your message arrives after their next tool call."
-        elif is_steer_mode:
-            head, tail = "⏩ Steered into current run", ". Your message arrives after the next tool call."
-        elif is_redirect_mode:
-            head, tail = "↪ Redirected current run", ". I'll adjust using your correction."
-        elif is_queue_mode and demoted_for_subagents:
-            # Explain the demotion: the follow-up didn't kill the subagent; /stop is the escape hatch.
-            head, tail = "⏳ Subagent working", self._BUSY_DEMOTED_TAIL
-        elif is_queue_mode and demoted_for_compression:
-            head, tail = "⏳ Compressing context", self._BUSY_DEMOTED_TAIL
+        if is_steer_mode or is_redirect_mode:
+            # Either way the text lands inside the running turn. The copy stays neutral:
+            # the old redirect wording ("thanks, got your correction") read as nonsense
+            # when the follow-up was simply a new message.
+            head, tail = "👀 Got it", ". I'll fold your note in as I go."
         elif is_queue_mode:
-            head, tail = "⏳ Queued for the next turn", ". I'll respond once the current task finishes."
+            head, tail = "👀 Noted", ". I'll get to it as soon as this finishes."
         else:
-            head, tail = "⚡ Interrupting current task", ". I'll respond to your message shortly."
+            head, tail = "👀 I'm checking this out", ". Give me a minute to get back."
         message = f"{head}{status_detail}{tail}"
 
         # One-time onboarding hint about the queue/interrupt knob (flag persisted to config.yaml).
@@ -835,8 +827,6 @@ class GatewayBusySessionMixin:
         message = self._compose_busy_ack_message(
             event, now, _busy_state, running_agent, is_steer_mode=is_steer_mode,
             is_queue_mode=is_queue_mode, is_redirect_mode=is_redirect_mode,
-            demoted_for_subagents=_steer.demoted_for_subagents,
-            demoted_for_compression=_steer.demoted_for_compression,
         )
         await self._send_busy_ack_reply(event, adapter, message)
         return True

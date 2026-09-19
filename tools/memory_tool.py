@@ -158,9 +158,9 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
             origin=wa.current_origin())
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
+            "message": ("I spotted a tidy-up for my own notes, but I can't change saved notes on "
+                        "my own in the background. It's set aside for your OK and nothing has "
+                        "changed yet. Say go ahead and I'll apply it, or tell me to drop it."),
         }, ensure_ascii=False)
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)

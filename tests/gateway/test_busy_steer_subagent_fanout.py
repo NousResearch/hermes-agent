@@ -61,8 +61,7 @@ def test_busy_steer_ack_names_subagents(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
     runner = GatewayRunner(config=GatewayConfig())
     parent = _Agent(children=[_Agent()])
-    kwargs = dict(is_steer_mode=True, is_queue_mode=False, is_redirect_mode=False,
-                  demoted_for_subagents=False, demoted_for_compression=False)
+    kwargs = dict(is_steer_mode=True, is_queue_mode=False, is_redirect_mode=False)
     with_children = runner._compose_busy_ack_message(_event(), 0.0, None, parent, **kwargs)
     without = runner._compose_busy_ack_message(_event(), 0.0, None, _Agent(), **kwargs)
     assert "subagent" in with_children

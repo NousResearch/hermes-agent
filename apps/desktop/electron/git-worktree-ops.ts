@@ -462,9 +462,43 @@ async function switchBranch(repoPath, branch, gitBin) {
     throw new Error('Branch name is required.')
   }
 
-  await runGit(gitBin, ['switch', target], resolved)
+  // A brand-new project folder may not be a git repo yet — init it (with a
+  // root commit) so `git switch` has a real branch to move to. No-op for a
+  // repo that already has commits. Mirrors addWorktree, which needs the same
+  // guarantee before `git worktree add`.
+  await ensureGitRepo(gitBin, resolved)
 
-  return { branch: target }
+  try {
+    await runGit(gitBin, ['switch', target], resolved)
+
+    return { branch: target }
+  } catch (err) {
+    // A freshly `git init`-ed repo has an unborn HEAD: the branch ref exists in
+    // name only (HEAD points at refs/heads/<name> but no commit was ever made),
+    // and `git switch` refuses it with "invalid reference: <name>". Switching to
+    // the branch HEAD already targets is a no-op — succeed instead of failing
+    // the caller's new-session flow.
+    if (/invalid reference/i.test(err.stderr || '')) {
+      const headRef = await gitLine(gitBin, ['symbolic-ref', '--quiet', '--short', 'HEAD'], resolved)
+
+      if (headRef === target) {
+        return { branch: target }
+      }
+
+      // If the requested branch doesn't exist, try the other trunk branch name
+      // (main ↔ master). Many modern repos use 'main' while older code or UI
+      // defaults to 'master', and vice versa.
+      const other = target === 'main' ? 'master' : target === 'master' ? 'main' : null
+
+      if (other && (await gitOk(gitBin, ['show-ref', '--verify', '--quiet', `refs/heads/${other}`], resolved))) {
+        await runGit(gitBin, ['switch', other], resolved)
+
+        return { branch: other }
+      }
+    }
+
+    throw err
+  }
 }
 
 // Branches the new worktree can be based on: local heads + remote-tracking

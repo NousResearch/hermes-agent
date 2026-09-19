@@ -238,6 +238,7 @@ export function BotsPane() {
   // `path` is the profile directory the gateway reports on a profiles.list row;
   // it is not part of the shared RosterRow model, so it rides as an extra here.
   const [deleting, setDeleting] = useState<null | (RosterRow & { path?: string })>(null)
+  const [clearing, setClearing] = useState<null | RosterRow>(null)
   const [deletingGroup, setDeletingGroup] = useState<null | { members: GroupMember[]; name: string }>(null)
   const userSections = useValue($botSections)
   const dragging = useValue($draggingBot)
@@ -421,6 +422,7 @@ export function BotsPane() {
     <BotRow
       bot={bot}
       key={`${keyPrefix}${botRosterKey(bot)}`}
+      onClear={setClearing}
       onDelete={setDeleting}
       onEdit={setEditing}
       onGroup={setGrouping}
@@ -521,6 +523,8 @@ export function BotsPane() {
         t,
         createOpen,
         setCreateOpen,
+        clearing,
+        setClearing,
         groupCreateOpen,
         setGroupCreateOpen,
         editing,

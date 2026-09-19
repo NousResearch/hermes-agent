@@ -471,6 +471,43 @@ def _rewind_active_session_history(
     return installed, live_view, rewound_count
 
 
+def _clear_active_session_history(session: dict) -> None:
+    """Install an empty conversation after its durable clear commits.
+
+    Caller holds ``history_lock`` and has already proved the session idle.  The
+    agent itself is retained so profile/model/tool/personality state stays put;
+    only conversation-derived state and provider-native continuity are reset.
+    """
+    session.update(
+        history=[],
+        display_history_prefix=[],
+        inflight_turn=None,
+        queued_prompt=None,
+        edit_snapshots={},
+    )
+    session.pop("queued_prompts", None)
+    session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+    session["history_version"] = int(session.get("history_version", 0)) + 1
+
+    agent = session.get("agent")
+    if agent is None:
+        return
+    agent._session_messages = []
+    if hasattr(agent, "_last_flushed_db_idx"):
+        agent._last_flushed_db_idx = 0
+    if hasattr(agent, "_flushed_db_message_ids"):
+        agent._flushed_db_message_ids = set()
+    if hasattr(agent, "_db_flush_scan_prefix"):
+        agent._db_flush_scan_prefix = None
+    if hasattr(agent, "_codex_reasoning_replay_enabled"):
+        agent._codex_reasoning_replay_enabled = True
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None and callable(reset := getattr(compressor, "on_session_reset", None)):
+        reset()
+    from agent.codex_runtime import _close_codex_session
+    _close_codex_session(agent)
+
+
 def _history_without_ephemeral_scaffolding(history: list[dict]) -> list[dict]:
     """Return the durable transcript shape without transient recovery rows."""
     from agent.session_persistence import _is_ephemeral_scaffolding

@@ -5961,20 +5961,14 @@ class SlackAdapter(BasePlatformAdapter):
     def _build_thread_session_key(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "", *,
         chat_type: str = "group") -> Optional[str]:
-        """Thread session key via ``build_session_key()`` (honours per-user isolation).
-        ``chat_type`` must come from the event's ``channel_type``, not the ID prefix (MPIM ids
-        start with ``G``)."""
-        session_store = getattr(self, "_session_store", None)
-        if not session_store:
+        """Thread session key through the adapter seam (``_source_session_key``: per-user isolation
+        from the adapter config the runner seeded, owner-profile namespace). ``chat_type`` must come
+        from the event's ``channel_type``, not the ID prefix (MPIM ids start with ``G``)."""
+        if not getattr(self, "_session_store", None):
             return None
         try:
-            from gateway.session import build_session_key
             source = self._thread_session_source(channel_id, thread_ts, user_id, team_id, chat_type)
-            store_cfg = getattr(session_store, "config", None)
-            return build_session_key(
-                source, group_sessions_per_user=getattr(store_cfg, "group_sessions_per_user", True),
-                thread_sessions_per_user=getattr(store_cfg, "thread_sessions_per_user", False),
-                profile=self._session_key_profile(source))
+            return self._source_session_key(source)
         except Exception:
             return None
 

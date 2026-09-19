@@ -34,4 +34,34 @@ describe('errText', () => {
   it('should fall back to the raw message when a non-Error value is thrown', () => {
     expect(errText('boom')).toBe('boom')
   })
+
+  it('should fall back to the raw message when detail is an object', () => {
+    const err = new Error('422: {"detail":{"msg":"nested"}}')
+
+    expect(errText(err)).toBe('422: {"detail":{"msg":"nested"}}')
+  })
+
+  it('should fall back to the raw message when detail is a number', () => {
+    const err = new Error('500: {"detail":42}')
+
+    expect(errText(err)).toBe('500: {"detail":42}')
+  })
+
+  it('should fall back to the raw message when detail is null', () => {
+    const err = new Error('500: {"detail":null}')
+
+    expect(errText(err)).toBe('500: {"detail":null}')
+  })
+
+  it('should keep only string msg entries from a mixed detail list', () => {
+    const err = new Error('422: {"detail":[null,42,{"msg":"real problem"},{"msg":{"nested":true}}]}')
+
+    expect(errText(err)).toBe('real problem')
+  })
+
+  it('should fall back to the raw message when no detail entry has a usable msg', () => {
+    const err = new Error('422: {"detail":[null,42]}')
+
+    expect(errText(err)).toBe('422: {"detail":[null,42]}')
+  })
 })

@@ -1832,9 +1832,10 @@ A custom `base_url` (`http://localhost:11434/v1`, a vLLM, SGLang or router endpo
 **Resolution priority:**
 
 1. Session-scoped `/reasoning --session` override (gateway only)
-2. Per-model override from `agent.reasoning_overrides` (spelling-tolerant)
-3. Global `agent.reasoning_effort`
-4. Provider default
+2. Matching gateway `channel_overrides.*.reasoning_effort` (gateway only; topic-specific entries beat their parent channel)
+3. Per-model override from `agent.reasoning_overrides` (spelling-tolerant)
+4. Global `agent.reasoning_effort`
+5. Provider default
 
 The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches (including a switch issued before the first message), session resume (`--resume`, `/resume`), `/new`, and fallback model activation.
 

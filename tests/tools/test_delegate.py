@@ -49,6 +49,8 @@ def _make_mock_parent(depth=0):
     parent.provider_sort = None
     parent._session_db = None
     parent._delegate_depth = depth
+    parent.enabled_toolsets = None
+    parent.disabled_toolsets = None
     parent._active_children = []
     parent._active_children_lock = threading.Lock()
     parent._print_fn = None
@@ -1900,7 +1902,7 @@ class TestOrchestratorRoleBehavior(unittest.TestCase):
             "api_key": None, "api_mode": None, "model": None,
         }
         parent = _make_mock_parent(depth=0)
-        parent.enabled_toolsets = ["terminal", "file"]
+        parent.enabled_toolsets = ["terminal", "file", "delegation"]
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = _make_role_mock_child()
             MockAgent.return_value = mock_child
@@ -2242,6 +2244,48 @@ class TestFallbackModelInheritance(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     _resolve_delegation_credentials(cfg, parent)
         self.assertIn("missing-acp-binary", str(ctx.exception))
+
+
+class TestParentToolsetAuthorization(unittest.TestCase):
+    @staticmethod
+    def _invoke(parent):
+        creds = {
+            "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "model": None,
+        }
+        with (
+            patch("tools.delegate_tool._resolve_delegation_credentials", return_value=creds),
+            patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=MagicMock()) as build_child,
+            patch("tools.delegate_tool._run_batch", return_value='{"success": true}'),
+            patch("tools.delegate_tool._capture_origin", return_value=("", "", None, None, False)),
+            patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])),
+        ):
+            import run_agent
+
+            result = run_agent.AIAgent._dispatch_delegate_task(parent, {"goal": "restricted cron work"})
+        return json.loads(result), build_child
+
+    def test_restricted_cron_parent_refuses_direct_dispatch_without_creating_child(self):
+        parent = _make_mock_parent()
+        parent.platform = "cron"
+        parent.enabled_toolsets = ["web", "file"]
+
+        result, build_child = self._invoke(parent)
+
+        self.assertIn("error", result)
+        self.assertIn("not available", result["error"].lower())
+        build_child.assert_not_called()
+
+    def test_explicit_and_composite_delegation_grants_create_child(self):
+        for enabled_toolsets in (None, ["delegation"], ["hermes-cli"]):
+            with self.subTest(enabled_toolsets=enabled_toolsets):
+                parent = _make_mock_parent()
+                parent.enabled_toolsets = enabled_toolsets
+
+                result, build_child = self._invoke(parent)
+
+                self.assertTrue(result["success"])
+                build_child.assert_called_once()
 
 
 if __name__ == "__main__":

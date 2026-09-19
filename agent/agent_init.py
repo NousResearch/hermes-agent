@@ -2169,6 +2169,9 @@ _USAGE_STATE: Dict[str, Any] = {
     "session_estimated_cost_usd": 0.0,
     "session_cost_status": "unknown",
     "session_cost_source": "none",
+    # Per-call provider response ids (deduped, append-only) — feeds the cron fire
+    # audit (usage_audit.jsonl provider_response_ids) and provider-side diagnosis.
+    "session_provider_response_ids": lambda: [],
     # Status-bar latency/velocity history (last 10 calls), shared by loop + codex_runtime.
     "_api_latency_history": lambda: deque(maxlen=10),
     "_api_output_history": lambda: deque(maxlen=10),

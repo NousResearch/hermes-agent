@@ -582,6 +582,9 @@ def finalize_turn(
             else getattr(agent.context_compressor, "last_prompt_tokens", 0)
         ) or 0,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_COST_KEYS},
+        # Per-call provider response ids (deduped) — the cron fire audit and any
+        # provider-side diagnosis key off these; absent on agents predating the field.
+        "provider_response_ids": list(getattr(agent, "session_provider_response_ids", None) or []),
         # Requested service tier, for billing audits (`hermes -z --usage-file`).
         "service_tier": (
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}

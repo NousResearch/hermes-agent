@@ -2268,8 +2268,14 @@ class _FireAudit:
             "deliver_target": self.job.get("deliver"),
             "model": self.model or None,
             "duration_ms": int((time.monotonic() - self.t_start) * 1000),
+            # Cost + provider-side handle for the fire: the agent already computes the
+            # per-call cost deltas and captures each response id; the fire record is the
+            # only per-fire surface a provider investigation can join on.
+            "estimated_cost_usd": result.get("estimated_cost_usd"),
+            "cost_status": result.get("cost_status"),
+            "cost_source": result.get("cost_source"),
+            "provider_response_ids": list(result.get("provider_response_ids") or []),
             "error": error})
-
 
 
 def run_job(

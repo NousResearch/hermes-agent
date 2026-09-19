@@ -94,6 +94,15 @@ def log_timeout(server_id: str, file_path: str, kind: str = "diagnostics") -> No
     _emit(server_id, logging.WARNING, f"{kind} timed out for {_short_path(file_path)}")
 
 
+def log_degraded_skip(server_id: str, file_path: str, retry_in: float) -> None:
+    """A diagnostics wait was skipped during the timeout cooldown.  DEBUG."""
+    _emit(
+        server_id,
+        logging.DEBUG,
+        f"skipped diagnostics wait during timeout cooldown ({retry_in:.1f}s left; {_short_path(file_path)})",
+    )
+
+
 def log_server_error(server_id: str, file_path: str, exc: BaseException) -> None:
     """An unexpected exception bubbled out of the LSP layer.  WARNING."""
     _emit(server_id, logging.WARNING, f"unexpected error for {_short_path(file_path)}: {type(exc).__name__}: {exc}")
@@ -125,8 +134,8 @@ def reset_announce_caches() -> None:
 
 __all__ = [
     "event_log", "log_clean", "log_disabled", "log_active", "log_diagnostics", "log_no_project_root",
-    "log_server_unavailable", "log_timeout", "log_server_error", "log_spawn_failed", "log_reaped",
-    "reset_announce_caches",
+    "log_server_unavailable", "log_timeout", "log_degraded_skip", "log_server_error", "log_spawn_failed",
+    "log_reaped", "reset_announce_caches",
 ]
 
 

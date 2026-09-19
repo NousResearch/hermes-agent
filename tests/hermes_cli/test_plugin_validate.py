@@ -201,3 +201,15 @@ class TestRequiresHermesSpec:
             "requires_hermes" in f and "does not parse" in f for f in report.failures
         ), report.failures
 
+
+
+def test_dashboard_only_plugin_is_loadable(tmp_path):
+    """A web-dashboard plugin ships only ``dashboard/manifest.json`` (the bundled hermes-achievements
+    shape); the admission gate must not call the documented layout hollow."""
+    d = tmp_path / "dash-only"
+    (d / "dashboard").mkdir(parents=True)
+    (d / "plugin.yaml").write_text(yaml.safe_dump(dict(BASE_MANIFEST, name="dash-only")), encoding="utf-8")
+    (d / "dashboard" / "manifest.json").write_text('{"id": "dash-only", "label": "Dash"}', encoding="utf-8")
+
+    checks = {name: ok for name, ok, _detail in validate_plugin_dir(d).checks}
+    assert checks["loadable"] is True

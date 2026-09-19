@@ -516,7 +516,10 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     return report
 
 
-_LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json")
+# Every layout Hermes actually loads: register() module, Desktop bundle, portable Agent Plugins v1
+# manifest, and a web-dashboard-only plugin (``web_server_dashboard`` scans ``dashboard/manifest.json``;
+# bundled ``plugins/hermes-achievements`` ships that shape with no Python at all).
+_LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json", "dashboard/manifest.json")
 
 
 def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
@@ -527,7 +530,7 @@ def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
     report.add(
         "loadable", bool(present),
         f"entry: {', '.join(present)}" if present else
-        "nothing to load: no __init__.py, desktop/plugin.js or plugin.json beside plugin.yaml "
+        "nothing to load: no __init__.py, desktop/plugin.js, plugin.json or dashboard/manifest.json beside plugin.yaml "
         "(pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
     )
 

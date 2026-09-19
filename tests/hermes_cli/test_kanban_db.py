@@ -2067,3 +2067,65 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+# ---------------------------------------------------------------------------
+# Archived board resurrection guard (#43243)
+# ---------------------------------------------------------------------------
+
+
+class TestArchivedBoardResurrectionGuard:
+    """connect() and init_db() must refuse to create a DB for archived boards."""
+
+    def _archived_board(self, tmp_path, slug="old", archived=True):
+        board_dir = tmp_path / "boards" / slug
+        board_dir.mkdir(parents=True)
+        import json
+        (board_dir / "board.json").write_text(
+            json.dumps({"slug": slug, "archived": archived, "name": slug.capitalize()}),
+            encoding="utf-8",
+        )
+        return board_dir
+
+    def test_connect_refuses_archived_board(self, tmp_path, monkeypatch):
+        """connect(board='old') raises ValueError when board.json says archived."""
+        monkeypatch.setattr(kb, "boards_root", lambda: tmp_path / "boards")
+        board_dir = self._archived_board(tmp_path)
+        # No kanban.db exists yet — connect should refuse to create it
+        assert not (board_dir / "kanban.db").exists()
+        with pytest.raises(ValueError, match="archived"):
+            kbc.connect(board="old")
+        # DB must NOT have been created
+        assert not (board_dir / "kanban.db").exists()
+
+    def test_init_db_refuses_archived_board(self, tmp_path, monkeypatch):
+        """init_db(board='old') raises ValueError when board.json says archived."""
+        monkeypatch.setattr(kb, "boards_root", lambda: tmp_path / "boards")
+        board_dir = self._archived_board(tmp_path)
+        assert not (board_dir / "kanban.db").exists()
+        with pytest.raises(ValueError, match="archived"):
+            kbc.init_db(board="old")
+        assert not (board_dir / "kanban.db").exists()
+
+    def test_connect_allows_non_archived_board(self, tmp_path, monkeypatch):
+        """connect(board='active') works normally when board.json says not archived."""
+        monkeypatch.setattr(kb, "boards_root", lambda: tmp_path / "boards")
+        board_dir = self._archived_board(tmp_path, slug="active", archived=False)
+        conn = kbc.connect(board="active")
+        try:
+            conn.execute("SELECT 1").fetchone()
+        finally:
+            conn.close()
+
+    def test_connect_allows_archived_board_when_db_exists(self, tmp_path, monkeypatch):
+        """connect(board='old') works if kanban.db already exists on disk
+        (e.g., admin wants to read data from an archived board)."""
+        monkeypatch.setattr(kb, "boards_root", lambda: tmp_path / "boards")
+        board_dir = self._archived_board(tmp_path)
+        # Pre-create an empty DB file so the guard's `not path.exists()` is False
+        (board_dir / "kanban.db").touch()
+        conn = kbc.connect(board="old")
+        try:
+            conn.execute("SELECT 1").fetchone()
+        finally:
+            conn.close()

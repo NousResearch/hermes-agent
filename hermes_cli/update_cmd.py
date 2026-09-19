@@ -791,22 +791,32 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: a true upstream force-push/rebase; local changes are stashed, so reset.
-    # Orphan divergence (no common ancestor: corrupted HEAD, re-init) would lose the whole
-    # local graph, so park pre_pull_sha behind a rescue ref first.
+    # Same branch: the reset below is right either way, but the two causes of divergence here
+    # are indistinguishable from the checkout alone. An upstream force-push/rebase loses
+    # nothing; local commits on this branch lose everything, and the reflog is the only way
+    # back — a 90-day expiry the user has to know to reach for, in a directory Hermes updates
+    # unattended. So park pre_pull_sha behind a rescue ref for BOTH, orphan divergence (no
+    # common ancestor: corrupted HEAD, re-init) included.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])
-    has_common_ancestor = merge_base_result.returncode == 0 and merge_base_result.stdout.strip()
-    if not has_common_ancestor and pre_pull_sha:
+    has_common_ancestor = bool(
+        merge_base_result.returncode == 0 and merge_base_result.stdout.strip())
+    if pre_pull_sha:
         from datetime import datetime as _dt, timezone
         # SHA suffix so two updates in the same second get distinct refs.
+        kind = "diverged" if has_common_ancestor else "orphan"
         rescue_ref = (
-            f"refs/hermes-update-backups/orphan-{branch}-"
+            f"refs/hermes-update-backups/{kind}-{branch}-"
             f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
-        head = f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — "
+        head = (
+            f"  ⚠ Local history has diverged from origin/{branch} — "
+            if has_common_ancestor else
+            f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — ")
         if _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha]).returncode == 0:
             print(
                 f"{head}backed up current HEAD to {rescue_ref} before resetting. "
                 f"This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
+            if has_common_ancestor:
+                print(f"    Recover local commits with: git log {rescue_ref}")
         else:
             # update-ref failure is intentionally non-fatal, but never claim a backup exists.
             print(

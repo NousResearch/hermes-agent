@@ -400,9 +400,19 @@ def test_prune_orphan_rescue_refs_leaves_unparseable_names_alone():
     assert delete_calls == []
 
 
-def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, capsys):
-    """Common ancestor still exists (e.g. upstream force-push) → no rescue
-    ref, no orphan messaging, behavior identical to before #87694."""
+def test_cmd_update_ordinary_divergence_also_leaves_a_rescue_ref(monkeypatch, tmp_path, capsys):
+    """Common ancestor still exists → rescue ref under the ``diverged-`` kind, no orphan messaging.
+
+    Divergence on the target branch has two causes the checkout cannot tell apart: an upstream
+    force-push, where nothing local is lost, and local commits on that branch, where the reset
+    discards all of them. This case used to write no ref at all, which is correct only for the
+    first cause.
+
+    The #87694 size concern is specific to the orphan shape: there ``pre_pull_sha`` is an
+    autostash orphan commit carrying a full working-tree snapshot, which can be multi-GB. Here it
+    is ordinary branch history whose objects the reflog pins anyway for its expiry window, so the
+    ref adds no meaningful footprint — and it expires under the same keep/age rules.
+    """
     _setup_update_mocks(monkeypatch, tmp_path)
 
     side_effect, recorded = _make_update_side_effect(
@@ -412,11 +422,17 @@ def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, 
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
-    assert update_ref_calls == []
+    update_ref_calls = [
+        c for c in recorded
+        if "update-ref" in " ".join(str(x) for x in c) and "-d" not in c
+    ]
+    assert len(update_ref_calls) == 1, "the discarded local history needs exactly one anchor"
+    ref_name = str(update_ref_calls[0][2])
+    assert ref_name.startswith("refs/hermes-update-backups/diverged-main-")
 
     out = capsys.readouterr().out
     assert "orphan divergence" not in out
+    assert "Local history has diverged" in out
     assert "Fast-forward not possible (history diverged), resetting to match remote" in out
 
 

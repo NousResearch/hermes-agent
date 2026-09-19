@@ -63,7 +63,12 @@ beforeEach(() => {
   )
 })
 
-afterEach(() => {
+afterEach(async () => {
+  const { setApiRequestConnection, setApiRequestProfile } = await import('@/api/client')
+  setApiRequestConnection(null)
+  setApiRequestProfile(null)
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   cleanup()
   client.clear()
   disposeApi()
@@ -80,6 +85,83 @@ function openDrawer() {
 }
 
 describe('task attachment compatibility', () => {
+  it('downloads the persisted attachment through its original remote owner', async () => {
+    const { setApiRequestConnection, setApiRequestProfile } = await import('@/api/client')
+    const save = vi.fn().mockResolvedValue({ saved: true })
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    setApiRequestConnection('remote-owner')
+    setApiRequestProfile('research')
+    detail = {
+      ...legacyDetail,
+      attachments: [{ id: 42, filename: 'report.md', stored_path: '/persisted/attachments/report.md' }]
+    }
+    openDrawer()
+    const download = await screen.findByRole('button', { name: 'Download report.md' })
+    setApiRequestConnection('other-host')
+    setApiRequestProfile('other-profile')
+    fireEvent.click(download)
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        connectionId: 'remote-owner',
+        profile: 'research',
+        path: '/persisted/attachments/report.md',
+        suggestedName: 'report.md'
+      })
+    )
+    setApiRequestConnection(null)
+    setApiRequestProfile(null)
+  })
+
+  it('disables downloads with no persisted path instead of guessing a workspace path', async () => {
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md' }] }
+    openDrawer()
+    const button = await screen.findByRole('button', { name: 'Download gone.md' })
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('reports a failed download and allows retry', async () => {
+    const { host } = await import('@hermes/plugin-sdk')
+    const notify = vi.spyOn(host, 'notify')
+    const save = vi.fn().mockRejectedValue(new Error('File not found'))
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md', stored_path: '/persisted/gone.md' }] }
+    openDrawer()
+    const button = await screen.findByRole('button', { name: 'Download gone.md' })
+    fireEvent.click(button)
+    await waitFor(() => expect(notify).toHaveBeenCalledWith({ kind: 'error', message: 'File not found' }))
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+    save.mockResolvedValueOnce({ saved: true })
+    fireEvent.click(button)
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+    notify.mockRestore()
+  })
+
+  it('disables a pending download and treats save-dialog cancellation quietly', async () => {
+    const { host } = await import('@hermes/plugin-sdk')
+    const notify = vi.spyOn(host, 'notify')
+    let finish!: (value: { saved: boolean; canceled: boolean }) => void
+
+    const save = vi.fn(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'report.md', stored_path: '/persisted/report.md' }] }
+    openDrawer()
+    const button = await screen.findByRole('button', { name: 'Download report.md' })
+    fireEvent.click(button)
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true))
+    fireEvent.click(button)
+    expect(save).toHaveBeenCalledOnce()
+    await act(async () => finish({ saved: false, canceled: true }))
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+    expect(notify).not.toHaveBeenCalled()
+    notify.mockRestore()
+  })
+
   it.each([{}, { attachments: null }])(
     'keeps older task details usable without attachment controls (%j)',
     async extra => {

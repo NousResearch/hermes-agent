@@ -269,7 +269,14 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         else:
             agent._vprint(f"{agent.log_prefix}↻ Requesting continuation ({n}/4)...", diagnostic=True)
         append_message(messages, {
-            "role": "user", "content": _get_continuation_prompt(st.is_stub, _dropped_tools),
+            "role": "user",
+            "content": _get_continuation_prompt(
+                st.is_stub,
+                _dropped_tools,
+                has_recovered_content=bool(
+                    _interim_content and agent._has_content_after_think_block(_interim_content)
+                ),
+            ),
             "_length_continuation_nudge": True,
         })
         agent._session_messages = messages

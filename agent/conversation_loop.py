@@ -834,6 +834,12 @@ _LENGTH_CONTINUATION_NETWORK_STUB = (
     "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
 )
+_LENGTH_CONTINUATION_EMPTY_NETWORK_STUB = (
+    "[System: The previous response was interrupted by a network error before any visible output "
+    "was recovered. The action or tool call it may have been starting was not confirmed to have "
+    "executed. Re-evaluate the current task and tool results, then retry the next needed action. "
+    "Do not assume an unconfirmed action ran.]"
+)
 _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "[System: Your previous response was truncated by the output length limit. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
@@ -842,7 +848,10 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
-def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
+def _get_continuation_prompt(
+    is_partial_stub: bool, dropped_tools: Optional[List[str]] = None, *,
+    has_recovered_content: bool = True,
+) -> str:
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (
@@ -852,7 +861,12 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "calls (e.g. use multiple patch calls or write smaller files). Each tool call's "
             "arguments must be under ~8K tokens to avoid stream timeouts.]"
         )
-    return _LENGTH_CONTINUATION_NETWORK_STUB if is_partial_stub else _LENGTH_CONTINUATION_OUTPUT_LIMIT
+    if is_partial_stub:
+        return (
+            _LENGTH_CONTINUATION_NETWORK_STUB
+            if has_recovered_content else _LENGTH_CONTINUATION_EMPTY_NETWORK_STUB
+        )
+    return _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
 
 # Codex/Responses turns that returned only internal reasoning: a bare retry would be

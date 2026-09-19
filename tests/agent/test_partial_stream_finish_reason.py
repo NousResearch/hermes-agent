@@ -376,6 +376,13 @@ class TestLengthContinuationPromptBranching:
         assert "network error mid-stream" in prompt
         assert "output length limit" not in prompt
 
+    def test_empty_partial_stream_stub_requires_action_re_evaluation(self):
+        prompt = _get_continuation_prompt(PARTIAL_STREAM_STUB_ID, has_recovered_content=False)
+
+        assert "before any visible output was recovered" in prompt
+        assert "not confirmed to have executed" in prompt
+        assert "Re-evaluate" in prompt
+
 
     def test_no_id_falls_through_to_length_prompt(self):
         prompt = self._simulate_branch("")
@@ -472,6 +479,45 @@ class TestConversationLoopPartialStreamContinuation:
         # And the final response stitches both halves together.
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
+
+    def test_empty_partial_stream_stub_marks_lost_action_unconfirmed(self, loop_agent):
+        """A zero-character stub has no continuation point, so its nudge
+        must make the model re-evaluate rather than blindly repeat an action."""
+        from tests.agent.test_run_agent import _mock_response, _mock_assistant_msg
+
+        partial_stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=""),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        continuation = _mock_response(
+            content="I checked the task state and retried the required action.",
+            finish_reason="stop",
+        )
+        loop_agent.client.chat.completions.create.side_effect = [
+            partial_stub, continuation,
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("complete the task")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        second_call = loop_agent.client.chat.completions.create.call_args_list[1]
+        messages = second_call.kwargs.get("messages") or second_call.args[0].get("messages")
+        last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+        assert last_user is not None
+        assert "before any visible output was recovered" in (last_user.get("content") or "")
+        assert "not confirmed to have executed" in (last_user.get("content") or "")
+        assert result["final_response"] == "I checked the task state and retried the required action."
 
 
 class TestContentFilterStallActivatesFallback:

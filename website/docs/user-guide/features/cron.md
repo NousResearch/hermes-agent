@@ -492,6 +492,23 @@ reminder cooldown) → `resolved` (the job ran OK afterwards; re-opens on a
 repeat) or `closed` (acknowledged; terminal for that signature). Stored error
 text is secret-redacted and truncated before it is written.
 
+The stored error is capped at 500 characters by default. Because per-run
+output files rotate out under `output_retention`, the incident row is often
+the only surviving record of a failure that took days to notice — script-heavy
+jobs may want the whole traceback kept:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  incident_max_error_chars: 4000
+```
+
+Lower it instead to bound growth of the incidents table on a large fleet. `0`
+or negative falls back to the 500 default. Secrets are redacted *before* the
+truncation, so raising this never widens what a stored error can expose, and
+incident ids are keyed off a separate 200-character signature, so retuning it
+leaves existing incidents (and their acks) intact.
+
 ### Fleet health check: `hermes cron doctor`
 
 `hermes cron doctor` is a read-only health check over every active job. It prints grouped, per-job issues and exits `1` while any finding stands, including historical late or catch-up dispatches (`0` when no findings remain).

@@ -39,7 +39,13 @@ _FAILURE_TYPE_ORDER = (
     ("script", ("script", "no_agent")),
     ("agent", ("agent", "model", "provider", "inference")),
 )
+# Default bound on the persisted ``error`` column; ``cron.incident_max_error_chars`` overrides it.
+# The incident row is the DURABLE failure record — per-run output files rotate out under
+# ``cron.output_retention`` long before a low-frequency failure gets investigated, so script-heavy
+# users need room for a full traceback while fleet operators keep the table small (#115036).
 MAX_ERROR_CHARS = 500
+# Dedup floor: the signature (and therefore the incident id) is built from its own 200-char bound,
+# so retuning the stored length above NEVER re-keys existing incidents.
 _MAX_SIGNATURE_ERROR_CHARS = 200
 
 _lock = threading.RLock()
@@ -111,8 +117,24 @@ def _normalize_error(error: str) -> str:
     return re.sub(r"\s+", " ", str(error or "")).strip().lower()
 
 
+def _max_error_chars() -> int:
+    """Stored-error bound (``cron.incident_max_error_chars``). Late import: this runs on the
+    scheduler's failure path, where ``cron.jobs`` must be resolved at call time (see ``_connect``).
+    A non-positive or unreadable value falls back to the default rather than storing an empty
+    error — a blank row would destroy the durable record this table exists to keep."""
+    try:
+        from cron.jobs import _cron_config_number
+
+        bound = _cron_config_number("incident_max_error_chars", MAX_ERROR_CHARS, int)
+    except Exception:
+        return MAX_ERROR_CHARS
+    return bound if bound > 0 else MAX_ERROR_CHARS
+
+
 def _redact_error(error: str) -> str:
-    """Redact secrets (best-effort; the scheduler path never fails on it) then bound the length."""
+    """Redact secrets (best-effort; the scheduler path never fails on it) then bound the length.
+    Redaction runs BEFORE the bound so a raised bound can never widen the window a secret is
+    stored through."""
     text = str(error or "")
     try:
         from agent.redact import redact_sensitive_text
@@ -120,7 +142,7 @@ def _redact_error(error: str) -> str:
         text = redact_sensitive_text(text, force=True)  # persisted to disk: always scrub
     except Exception:
         pass
-    return text[:MAX_ERROR_CHARS]
+    return text[:_max_error_chars()]
 
 
 def _error_signature(job_id: str, error: str) -> str:

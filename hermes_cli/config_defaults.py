@@ -1753,6 +1753,14 @@ DEFAULT_CONFIG = {
         # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning
         # (for externally managed cleanup).
         "output_retention": 50,
+        # Max characters of failure text kept in the durable `cron_incidents.error` column. Per-run
+        # output files rotate out under `output_retention`, so this row is often the only surviving
+        # record of a failure — raise it (script-heavy jobs want the whole traceback) or keep it
+        # small (fleet operators bounding table growth). Secrets are redacted before truncation.
+        # 0 or negative falls back to the default. Keep in sync with
+        # cron.incidents.MAX_ERROR_CHARS; the dedup signature has its own 200-char bound, so
+        # changing this never re-keys existing incident ids.
+        "incident_max_error_chars": 500,
         # Timeout (seconds) for a no-agent cron script. Env: HERMES_CRON_SCRIPT_TIMEOUT. Keep in
         # sync with cron.scheduler._DEFAULT_SCRIPT_TIMEOUT.
         "script_timeout_seconds": 3600,

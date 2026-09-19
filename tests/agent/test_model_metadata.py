@@ -860,6 +860,44 @@ class TestFetchEndpointModelMetadata:
         not_found.close.assert_called_once()
         success.close.assert_called_once()
 
+    def test_context_window_tokens_is_parsed_as_a_window_key(self):
+        """`context_window_tokens` is the spelling LiteLLM-style gateways and
+        several OpenAI-compatible proxies publish in ``/v1/models``. Pre-fix it
+        was not in ``_CONTEXT_LENGTH_KEYS`` (only ``context_window`` was), so a
+        1M-window model was silently parsed as unannotated and resolution fell
+        through to a hardcoded family guess or the 256K fallback — in the wild
+        this capped a 1,048,576-token model at 256K and fired compaction at
+        ~100K tokens. The probe must read it as a WINDOW key (input side), and
+        ``max_output_tokens`` must still parse as the OUTPUT cap."""
+        import agent.model_metadata as mm
+
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {
+            "data": [{
+                "id": "zai-org/GLM-5.3",
+                "context_window_tokens": 1_048_576,
+                "max_output_tokens": 943_717,
+            }]
+        }
+
+        with patch("agent.model_metadata.requests.get", return_value=success):
+            result = mm.fetch_endpoint_model_metadata("https://gateway.example/v1")
+
+        entry = result["zai-org/GLM-5.3"]
+        assert entry["context_length"] == 1_048_576
+        assert entry["max_completion_tokens"] == 943_717
+
+        # And the resolver picks the advertised window over the catalog guess.
+        with patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            resolved = mm.get_model_context_length(
+                "zai-org/GLM-5.3",
+                base_url="https://gateway.example/v1",
+                api_key="test-key",
+            )
+        assert resolved == 1_048_576
+
     def test_remote_probe_is_memoized_on_disk_across_processes(self, tmp_path, monkeypatch):
         """A fresh process (cleared in-memory cache) must answer from the disk
         memo within the TTL instead of re-probing the endpoint — the cost every

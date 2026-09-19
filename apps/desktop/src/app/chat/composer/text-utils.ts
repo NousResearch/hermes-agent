@@ -153,6 +153,72 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   return blobs
 }
 
+/** `file:///home/me/my%20report.pdf` → `/home/me/my report.pdf`, or null for
+ *  anything that isn't a local-path file URL (remote hosts, non-file schemes). */
+export function localPathFromFileUrl(value: string): string | null {
+  const raw = value.trim()
+
+  if (!raw.toLowerCase().startsWith('file://')) {
+    return null
+  }
+
+  const rest = raw.slice('file://'.length)
+
+  if (rest.startsWith('/')) {
+    return decodeURIComponent(rest)
+  }
+
+  // file://C:/... (single-slash Windows spelling) and file://localhost/...
+  // resolve to a path on THIS machine only when the host is empty or loopback.
+  const slash = rest.indexOf('/')
+
+  if (slash < 0) {
+    return null
+  }
+
+  const host = rest.slice(0, slash)
+
+  if (host && host.toLowerCase() !== 'localhost') {
+    return null
+  }
+
+  return decodeURIComponent(rest.slice(slash))
+}
+
+/**
+ * Absolute local paths pasted from an OS file-manager copy (Finder "Copy",
+ * Explorer "Copy file", Nautilus "Copy"). Chromium surfaces those clipboard
+ * entries to the paste event only as `text/uri-list` / `text/plain` file://
+ * URLs — never as `items`/`files` entries — so the image-only extraction above
+ * never sees them and the paste used to land as literal URL text the gateway
+ * can't resolve. Order mirrors the clipboard's own: uri-list first, then
+ * plain text. Non-file:// entries are ignored (real URL pastes must stay
+ * links), as are entries that decode to nothing.
+ */
+export function pastedFileClipboardPaths(clipboard: DataTransfer): string[] {
+  const paths: string[] = []
+  const seen = new Set<string>()
+
+  for (const flavor of ['text/uri-list', 'text/plain']) {
+    const raw = clipboard.getData(flavor)
+
+    if (!raw) {
+      continue
+    }
+
+    for (const line of raw.split(/\r?\n/)) {
+      const path = localPathFromFileUrl(line)
+
+      if (path && !seen.has(path)) {
+        seen.add(path)
+        paths.push(path)
+      }
+    }
+  }
+
+  return paths
+}
+
 /** Caret-anchored text before the cursor, or null if the selection isn't a
  *  collapsed caret inside `editor`.
  *

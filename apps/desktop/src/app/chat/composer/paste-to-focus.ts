@@ -16,9 +16,9 @@ import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
 
-import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from './focus'
+import { requestComposerAttachImages, requestComposerAttachPaths, requestComposerFocus, requestComposerInsert } from './focus'
 import { pathifyRefs } from './path-refs'
-import { extractClipboardImageBlobs } from './text-utils'
+import { extractClipboardImageBlobs, localPathFromFileUrl, pastedFileClipboardPaths } from './text-utils'
 import { linkifyUrls } from './url-refs'
 
 /** Route clipboard contents to the active composer. True when it carried
@@ -26,22 +26,44 @@ import { linkifyUrls } from './url-refs'
 export function routeClipboardToComposer(clipboard: DataTransfer): boolean {
   const blobs = extractClipboardImageBlobs(clipboard)
   const text = sanitizeComposerInput(clipboard.getData('text').trim())
+  // A file copied from the OS file manager pastes as file:// URL text only —
+  // decode it here and route the absolute path to the composer, where it rides
+  // the same upload/staging pipeline as an OS drop. Consumed so the URL text
+  // is not ALSO inserted as a message.
+  const filePaths = pastedFileClipboardPaths(clipboard)
 
   if (blobs.length > 0) {
     requestComposerAttachImages(blobs)
   }
 
+  if (filePaths.length > 0) {
+    requestComposerAttachPaths(filePaths)
+  }
+
   // A bare `data:` URL IS the image attached above — not text to insert.
-  if (text && !DATA_IMAGE_URL_RE.test(text)) {
+  // A pure file:// copy likewise becomes an attachment, not text.
+  const residualText =
+    filePaths.length === 0
+      ? text
+      : sanitizeComposerInput(
+          clipboard
+            .getData('text')
+            .split(/\r?\n/)
+            .filter(line => localPathFromFileUrl(line) === null)
+            .join('\n')
+            .trim()
+        )
+
+  if (residualText && !DATA_IMAGE_URL_RE.test(residualText)) {
     // Same chipping the focused paste path applies: links land as `@url:`
     // chips, bare `@path` tokens promote. The insert focuses the composer.
-    requestComposerInsert(pathifyRefs(linkifyUrls(text)), { mode: 'inline' })
+    requestComposerInsert(pathifyRefs(linkifyUrls(residualText)), { mode: 'inline' })
 
     return true
   }
 
-  if (blobs.length > 0) {
-    // Image-only paste: pull focus so the attach lands somewhere visible.
+  if (blobs.length > 0 || filePaths.length > 0) {
+    // Image-only / file-only paste: pull focus so the attach lands somewhere visible.
     requestComposerFocus('active')
 
     return true

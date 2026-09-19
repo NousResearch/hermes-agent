@@ -26,6 +26,60 @@ _COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 _COMMIT_CONTEXT_UNTRACKED_MAX = 80
 _TRUNK_BRANCHES = ("main", "master")
 
+_DEFAULT_TRAILER_NAME = "Hermes Agent"
+_DEFAULT_TRAILER_EMAIL = "hermes@nousresearch.com"
+
+
+def _build_commit_trailer() -> str:
+    """Build an attribution trailer string based on config.
+
+    Reads from config.yaml under the ``git`` key:
+
+    * ``git.commit_trailer`` (bool) — set to ``false`` to disable entirely.
+      Default: ``true``.
+    * ``git.commit_trailer_type`` (str) — ``"co-authored-by"`` (default) or
+      ``"generated-by"``.  ``Co-authored-by:`` follows the Git trailer
+      convention used by pairing tools.  ``Generated-by:`` is a bespoke
+      marker that doesn't imply human co-authorship.
+    * ``git.commit_trailer_name`` (str) — the name portion of the trailer.
+      Default: ``"Hermes Agent"``.
+    * ``git.commit_trailer_email`` (str) — the email portion of the trailer
+      (only used for ``Co-authored-by``).  Default: ``"hermes@nousresearch.com"``.
+
+    Returns an empty string when trailers are disabled, and a string of the
+    form ``"\\nTrailer-Name: value\\n"`` otherwise.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return ""
+
+    git_cfg = cfg.get("git", {})
+    if isinstance(git_cfg, dict) and git_cfg.get("commit_trailer") is False:
+        return ""
+
+    trailer_type = (
+        git_cfg.get("commit_trailer_type", "co-authored-by") if isinstance(git_cfg, dict) else "co-authored-by"
+    )
+    trailer_name = (
+        git_cfg.get("commit_trailer_name", _DEFAULT_TRAILER_NAME) if isinstance(git_cfg, dict) else _DEFAULT_TRAILER_NAME
+    )
+
+    trailer_type = trailer_type.strip().lower()
+    if trailer_type == "generated-by":
+        trailer_line = f"Generated-by: {trailer_name}"
+    else:
+        trailer_email = (
+            git_cfg.get("commit_trailer_email", _DEFAULT_TRAILER_EMAIL)
+            if isinstance(git_cfg, dict)
+            else _DEFAULT_TRAILER_EMAIL
+        )
+        trailer_line = f"Co-authored-by: {trailer_name} <{trailer_email}>"
+
+    return f"\n{trailer_line}\n"
+
 
 def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.CompletedProcess | None:
     """Non-interactive subprocess (stdin nulled, prompts disabled): a credential prompt from
@@ -341,7 +395,8 @@ def review_commit(cwd: str, message: str, push: bool) -> dict:
     """Commit the working tree; stage everything first when nothing is staged."""
     if not _has_staged(_status_z(cwd)[1]):
         _git_ok(cwd, ["add", "-A"])
-    _git_ok(cwd, ["commit", "-m", message])
+    trailer = _build_commit_trailer()
+    _git_ok(cwd, ["commit", "-m", f"{message}{trailer}"])
     if push:
         _review_push(cwd)
     return {"ok": True}

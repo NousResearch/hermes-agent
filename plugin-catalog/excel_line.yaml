@@ -1,13 +1,16 @@
 name: excel_line
 repo: https://github.com/kalice-vi/hermes-excel-line
-sha: c9b592bdb4793bdd21e1815b0ebcafa858d43388
-description: Excel-backed hierarchical long-term memory tree (10-row cap per workbook, dynamic branching, leaf pointers, keyless model rotation).
+sha: 45dcf84f59545e83e7e4545c2802f5dfac05390d
+description: Excel-backed hierarchical long-term memory tree (10-row cap per workbook, dynamic branching, leaf pointers). Classifier defaults to the host model; third-party keyless rotation is opt-in.
 maintainer: kalice-vi
 tier: community
 docs_url: https://github.com/kalice-vi/hermes-excel-line
 platforms: []
 capabilities:
-  provides_tools: []
-  provides_hooks: []
+  provides_tools:
+  - excel_line
+  provides_hooks:
+  - on_session_end
+  - on_memory_write
   provides_middleware: []
   requires_env: []

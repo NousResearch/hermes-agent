@@ -487,7 +487,9 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     return error
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None):
+def _run_after_agent_ready(
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -516,7 +518,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
                 else "Session no longer running before the agent was ready")})
             return
     _run_prompt_submit(
-        rid, sid, session, text, display_kind=display_kind,
+        rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
         terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
 
@@ -568,6 +570,12 @@ def _(rid, params: dict) -> dict:
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
+    title_preview = params.get("title_preview")
+    display_metadata = (
+        {"title_preview": title_preview[:1000]}
+        if isinstance(title_preview, str) and title_preview.strip()
+        else None
+    )
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.get("interrupted"):
@@ -632,6 +640,14 @@ def _(rid, params: dict) -> dict:
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
+        if has_truncation:
+            # A rewind/edit/restore/regenerate must land as a truncation, never as a
+            # steered correction or a plain follow-up queued to run after the live
+            # turn — either would silently drop the history cut the user asked for.
+            # Signal busy so the caller's own interrupt-then-retry loop (already
+            # built for exactly this race — see desktop's `runRewindSubmit`) waits
+            # for `running` to clear and resubmits with the truncation intact.
+            return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
         if busy_response is not None:
@@ -649,7 +665,7 @@ def _(rid, params: dict) -> dict:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -672,7 +688,7 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

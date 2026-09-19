@@ -100,6 +100,18 @@ restarting the gateway from inside its own supervised process. A self-restart ca
 terminate the tool before it finishes and cause a supervisor/auto-resume loop.
 User approval, YOLO mode, and `force=True` do not bypass this guard.
 
+The guard also refuses process killers aimed at the interpreter image the gateway
+runs as — `taskkill /F /IM python.exe`, `taskkill /FI "IMAGENAME eq python.exe"`,
+`Stop-Process -Name python`, `pkill -9 python3`, `killall python`, `pkill -f python`,
+and name-derived kills such as `pgrep python | xargs kill` — because a supervised
+gateway is literally a `python` process and such a command takes it (and the agent's
+own turn) down. Kills scoped to a process the agent owns pass: the `proc_*` id of a
+background job (`process(action="kill", …)`) or an explicit PID
+(`taskkill /F /PID <pid>`, `kill <pid>`). Other image names (`taskkill /F /IM notepad.exe`)
+are unaffected. The guard is active under every generated launcher — systemd unit,
+launchd plist, s6 run script and the Windows Scheduled Task — via the
+`HERMES_SUPERVISED_CHILD` marker they export.
+
 On macOS, executed `launchctl submit` and `launchctl bootstrap` commands are
 restricted **regardless of the job label**. This is a conservative registration
 restriction intended to catch indirect restart helpers with neutral labels, not
@@ -174,6 +186,8 @@ Deny rules are a shell-command policy, not a complete shell interpreter or an OS
 ### Approval Timeout
 
 When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
+
+An expired prompt cannot be reopened: the pending entry is discarded and the agent is told not to retry on its own within that turn. To run the operation after all, send a new message asking for it (for example "go ahead and run that now") — the agent issues a fresh tool call, which raises a fresh approval card, and a "once" approval applies only to that call. A timeout is not counted as a denial, so asking again is never penalized.
 
 Configure the timeout in `~/.hermes/config.yaml`:
 
@@ -353,6 +367,8 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
 
 Sensitive paths inside the safe root are still blocked — pointing `HERMES_WRITE_SAFE_ROOT` at `$HOME` does not allow writing `~/.ssh/id_rsa`.
+
+The `~` in the OS-credential rows means *every* home a write can land in, not just the process `HOME`: the OS user's real home, the profile home (`{HERMES_HOME}/home` under `TERMINAL_HOME_MODE=profile`, containers and spawned workers, where the process `HOME` is pinned), and named accounts (`~root/.ssh/authorized_keys`). An absolute path to the real home's `~/.aws/credentials` is denied even when the agent process runs with `HOME` pointed elsewhere.
 
 Safe-root violations return `Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (…)`. Credential-path blocks use `Write denied: '…' is a protected system/credential file.`
 
@@ -618,6 +634,8 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
+Both lists apply to `terminal`, `execute_code` and `no_agent` cron scripts alike. A declared variable is forwarded with the value of the profile the child runs for: when one process serves several profiles (multi-profile gateway, Desktop/dashboard backend) each profile's declared value comes from its own `.env` / secret sources, never from the process environment the launch profile populated, and the launch profile's `.env` credentials are dropped from a served profile's children.
+
 ### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
 
 Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` under the active profile's `HERMES_HOME`. Skills declare these in frontmatter:
@@ -718,7 +736,7 @@ security:
 
 When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_navigate`, and all URL-capable tools.
 
-See [Website Blocklist](/user-guide/configuration#website-blocklist) in the configuration guide for full details.
+See [Website Blocklist](./configuration.md#website-blocklist) in the configuration guide for full details.
 
 ### SSRF Protection
 
@@ -732,6 +750,8 @@ All URL-capable tools (web search, web extract, vision, browser) validate URLs b
 - **Reserved, multicast, and unspecified addresses**
 
 SSRF protection is always active for internet-facing use and DNS failures are treated as blocked (fail-closed). Redirect chains are re-validated at each hop to prevent redirect-based bypasses.
+
+The same guard covers fetches whose URL comes from a remote party rather than from you: image/video URLs returned by a generation provider, reference-image URLs a model supplies for edits, pet spritesheets and the petdex manifest, and skills.sh sitemap entries. A provider or index that points one of those at a private or metadata address is refused before any connection opens; the operator's own provider `base_url` is not affected — a download fetched directly from your configured `base_url` (the OpenRouter video content endpoint) skips only the private-address class check on that first hop, while the cloud-metadata floor still applies and any redirect it issues is re-validated in full — and an image-generation provider hosted on your LAN needs `security.allow_private_urls: true` (below) for the *result* URLs it returns to be cached locally.
 
 #### Intentionally allowing private URLs
 
@@ -791,9 +811,13 @@ security:
 
 When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
 
+Three consecutive operational failures (spawn error, timeout, crash) suspend scanning for five minutes so a broken binary cannot stall every command; after that window one command re-probes tirith, and any completed scan (allow, warn or block) resumes normal scanning. A probe that fails again re-arms the five-minute window.
+
 Tirith ships prebuilt binaries for Linux (x86_64 / aarch64) and macOS (x86_64 / arm64). On platforms with no prebuilt binary (Windows, etc.), tirith is silently skipped — pattern-matching guards still run, and the CLI does not surface an "unavailable" banner. To use tirith on Windows, run Hermes under WSL.
 
 Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
+
+Two known Tirith false positives are downgraded to "allow" so they never prompt (or, in cron, never deny): a `lookalike_tld` warning whose only target is the legitimate `.app` gTLD, and a `variation_selector` warning when every selector in the command is U+FE0F directly after an emoji (folder names such as `🗞️ Journal/` or `▶️ Media/`). A variation selector after a letter or digit — the steganographic-obfuscation signal the rule exists for — still prompts.
 
 ### Context File Injection Protection
 

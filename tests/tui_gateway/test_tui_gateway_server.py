@@ -2947,6 +2947,24 @@ def test_history_to_messages_renders_multimodal_content():
     ]
 
 
+def test_history_to_messages_strips_legacy_discord_triggering_note():
+    # Rows written before the gateway persisted the authored text carry the model-facing
+    # routing note in user ``content``; this projection heals them for TUI/web resume
+    # (the desktop hydration strip is the same rule). Reply pointer and assistant rows are kept.
+    from gateway.run_inbound import discord_triggering_note
+
+    note = discord_triggering_note("123")
+    history = [
+        {"role": "user", "content": f"{note}\n\n[Replying to: hi]\nwhat is up"},
+        {"role": "assistant", "content": f"echo: {note}"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "[Replying to: hi]\nwhat is up"},
+        {"role": "assistant", "text": f"echo: {note}"},
+    ]
+
+
 def test_history_to_messages_hides_gateway_system_markers():
     # Model-switch / personality notices are persisted as role=user [System: …]
     # rows so strict providers accept them mid-history, but they are model-facing
@@ -3104,6 +3122,83 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
     assert server._expand_skill_invocation_for_replay("just words", "t") == "just words"
     # A core slash command is not a skill — nothing to expand.
     assert server._expand_skill_invocation_for_replay("/status", "t") == "/status"
+
+
+def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:
+    """Two trusted repos (``alpha-skill`` / ``beta-skill``) bound to sessions ``sid-a`` / ``sid-b``, in a
+    launch shape whose process cwd and TERMINAL_CWD both point at a non-project dir."""
+    import agent.skill_commands as skill_commands
+    import agent.skill_utils as skill_utils
+    import tools.skills_tool as skills_tool
+
+    def repo(name: str, skill: str) -> Path:
+        r = tmp_path / name
+        (r / ".git").mkdir(parents=True)
+        (r / ".hermes" / "skills" / skill).mkdir(parents=True)
+        (r / ".hermes" / "skills" / skill / "SKILL.md").write_text(
+            f"---\nname: {skill}\ndescription: from {name}\n---\n\n# {skill}\n\nBODY OF {skill.upper()}\n")
+        return r
+
+    repo_a, repo_b = repo("proj-a", "alpha-skill"), repo("proj-b", "beta-skill")
+    home = tmp_path / "hermes-home"
+    (home / "skills").mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        f"skills:\n  external_dirs: []\n  trusted_project_dirs: ['{repo_a}', '{repo_b}']\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", home / "skills")
+    monkeypatch.setattr(skill_utils, "_skills_cfg", lambda: {
+        "external_dirs": [], "trusted_project_dirs": [str(repo_a), str(repo_b)]})
+    skill_utils._external_dirs_cache_clear()
+    monkeypatch.setattr(skill_commands, "_skill_commands", {})
+    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    # Launch shape: process cwd and TERMINAL_CWD both point at a non-project dir (the resolved placeholder).
+    elsewhere = tmp_path / "home-dir"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("TERMINAL_CWD", str(elsewhere))
+    monkeypatch.setattr(server, "_sessions", {
+        "sid-a": {"session_key": "key-a", "cwd": str(repo_a)},
+        "sid-b": {"session_key": "key-b", "cwd": str(repo_b)}})
+    return repo_a, repo_b
+
+
+def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cwd(tmp_path, monkeypatch):
+    # TUI/desktop: the RPC thread has no session context and the terminal scope / process env resolve a
+    # placeholder ``terminal.cwd`` to $HOME, so project skills of the session's repo never registered and
+    # ``/<name>`` died with "not a quick/plugin/bundle/skill command". Two sessions in two trusted repos
+    # in ONE process must each catalog and dispatch their own repo's skill (the cached registry is
+    # keyed by project root, not just platform + home).
+    import agent.skill_utils as skill_utils
+
+    _two_repo_project_skill_sessions(tmp_path, monkeypatch)
+    for sid, own, other in (("sid-a", "alpha-skill", "beta-skill"), ("sid-b", "beta-skill", "alpha-skill")):
+        catalog = server._methods["commands.catalog"]("c", {"session_id": sid})["result"]
+        assert f"/{own}" in catalog["skills"] and f"/{other}" not in catalog["skills"]
+        res = server._methods["command.dispatch"]("d", {"name": own, "arg": "go", "session_id": sid})
+        assert res["result"]["type"] == "skill", res
+        assert f"BODY OF {own.upper()}" in res["result"]["message"]
+        miss = server._methods["command.dispatch"]("m", {"name": other, "arg": "", "session_id": sid})
+        assert miss["error"]["code"] == 4018
+    # Nothing leaks past the RPC: the thread's logical cwd is unbound again.
+    assert skill_utils.find_project_root() is None
+
+
+def test_complete_slash_and_skills_reload_are_bound_to_the_session_cwd(tmp_path, monkeypatch):
+    # The '/' popup and /reload-skills ran the registry unbound: the popup never offered a project skill
+    # ``command.dispatch`` accepts, and a rescan after that dispatch reported the session's project skills
+    # as "Removed" and republished a registry without them.
+    import agent.skill_commands as skill_commands
+
+    _two_repo_project_skill_sessions(tmp_path, monkeypatch)
+    items = server._methods["complete.slash"]("s", {"text": "/alph", "session_id": "sid-a"})["result"]["items"]
+    assert [i["text"] for i in items if i["kind"] == "skill"] == ["alpha-skill"]
+    assert server._methods["command.dispatch"]("d", {"name": "alpha-skill", "arg": "", "session_id": "sid-a"})[
+        "result"]["type"] == "skill"
+    reload = server._methods["skills.reload"]("r", {"session_id": "sid-a"})["result"]
+    assert reload["result"]["removed"] == [] and "/alpha-skill" in skill_commands._skill_commands, reload["output"]
+    # Another session's reload resolves ITS repo, not the launch env.
+    other = server._methods["skills.reload"]("r", {"session_id": "sid-b"})["result"]
+    assert {i["name"] for i in other["result"]["added"]} == {"beta-skill"}, other["output"]
 
 
 def test_history_to_messages_types_a_legacy_auto_continue_row():
@@ -7952,7 +8047,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -7973,7 +8068,7 @@ def test_ensure_session_db_row_persists_session_source(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -7998,7 +8093,7 @@ def test_ensure_session_db_row_records_a_terminal_workspace(monkeypatch, tmp_pat
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -8021,7 +8116,7 @@ def test_ensure_session_db_row_defaults_desktop_to_no_workspace(monkeypatch, tmp
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -8048,7 +8143,7 @@ def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
             created.append(
                 {"key": key, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -8080,7 +8175,7 @@ def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
             created.append({"model": model, "model_config": model_config})
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -12063,6 +12158,7 @@ def test_rollback_restore_resolves_number_and_file_path():
 
     class _Mgr:
         enabled = True
+        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
 
         def list_checkpoints(self, cwd):
             return [{"hash": "aaa111"}, {"hash": "bbb222"}]
@@ -12095,6 +12191,7 @@ def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
 
     class _Mgr:
         enabled = True
+        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
 
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
@@ -12151,6 +12248,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
 
     class _Mgr:
         enabled = True
+        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
 
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
@@ -12211,6 +12309,7 @@ def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_
 
     class _Mgr:
         enabled = True
+        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
 
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
@@ -13259,6 +13358,65 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         ]
         assert server._sessions["sid"]["history_version"] == 2
         assert stub_db.replaced == [("session-key", original_history[:2])]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_truncation_signals_busy_instead_of_queueing(monkeypatch):
+    """#113942: editing a message while the turn it belongs to is still running
+
+    must not be silently absorbed as a steered correction or a plain follow-up
+    queued to run AFTER the live turn — both would drop the truncation and
+    leave the original (un-edited) turn's reply intact, which reads to the
+    user as "my edit was rejected". It must surface as the same "session busy"
+    (4009) the desktop client's edit path already retries through (interrupt,
+    then poll) until the turn actually clears.
+    """
+    agent = types.SimpleNamespace()  # no redirect/steer support -> would fall to queue+interrupt
+    server._sessions["sid"] = _session(agent=agent, running=True)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited while thinking",
+                    "truncate_before_user_ordinal": 0,
+                    "confirm_truncate": True,
+                    "confirm_empty_truncate": True,
+                },
+            }
+        )
+
+        assert resp.get("error", {}).get("code") == 4009
+        assert "session busy" in resp["error"]["message"]
+        # The edit must not have been silently accepted as a queued follow-up.
+        assert server._sessions["sid"].get("queued_prompt") is None
+        assert server._sessions["sid"]["running"] is True
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_truncation_refuses_redirect_of_live_turn():
+    """The redirect-capable agent (the Desktop's normal case) is the branch that silently
+    absorbed the edit: `busy_input_mode=interrupt` turned the rewind into a mid-turn
+    redirect and left the un-edited transcript in place."""
+    redirected = []
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True, redirect=lambda text: redirected.append(text) or True)
+    server._sessions["sid"] = _session(agent=agent, running=True, history=[{"role": "user", "content": "original"}])
+
+    try:
+        resp = server.handle_request({
+            "id": "1", "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "edited while thinking", "truncate_before_user_ordinal": 0,
+                       "confirm_truncate": True, "confirm_empty_truncate": True}})
+
+        assert resp.get("error", {}).get("code") == 4009
+        assert redirected == []
+        assert server._sessions["sid"]["history"] == [{"role": "user", "content": "original"}]
     finally:
         server._sessions.pop("sid", None)
 
@@ -16808,6 +16966,40 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
         picker_hints=True,
         max_models=50,
     )
+
+
+def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch):
+    """The gated picker's own chat waits on ``setup.status``, which answers from the boot record:
+    a key saved for the launch profile must flip a ``False`` record (+ ``setup.ready``) at once;
+    a key saved for another profile (``profile`` param) must leave the launch record alone."""
+    from hermes_cli import free_tier_bootstrap as fb
+
+    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", {"test-provider": types.SimpleNamespace(
+        name="Test Provider", auth_type="api_key", api_key_env_vars=("TEST_PROVIDER_API_KEY",))})
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr("hermes_cli.credential_lifecycle.save_provider_env_credential", Mock())
+    monkeypatch.setattr("hermes_cli.inventory.build_models_payload", Mock(return_value={"providers": []}))
+    monkeypatch.setenv("TEST_PROVIDER_API_KEY", "previous-value")  # save_key exports the new key
+    monkeypatch.setattr(fb, "_inventory_other_providers", lambda: True)
+    monkeypatch.setattr(fb, "_resolve_inference", lambda: "test-provider")
+    broadcasts = []
+    monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
+    fb.reset_for_tests()
+    stale = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+                           has_identity=False, other_providers=False)
+    with fb._lock:
+        fb._record, fb._started = stale, True
+        fb._done.set()
+    try:
+        params = {"slug": "test-provider", "api_key": "k-" + "1"}
+        assert "result" in server._methods["model.save_key"](104, {**params, "profile": "other"})
+        assert fb.current_record() is stale and broadcasts == [], "another profile's key is not ours"
+        assert "result" in server._methods["model.save_key"](105, params)
+        record = fb.current_record()
+        assert record.provider_configured is True and record.inference_provider == "test-provider"
+        assert broadcasts == [record]
+    finally:
+        fb.reset_for_tests()
 
 
 # ---------------------------------------------------------------------------

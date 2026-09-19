@@ -29,6 +29,9 @@ Usage:
     (e.g. ``-q``, ``-v``, ``-x``, ``--tb=long``, ``-k 'pattern'``, ``--lf``)
     with no special separator — a bare ``-q`` "just works". Anything after
     a literal ``--`` is also passed through, and stacks with bare flags.
+    ``-h``/``--help`` prints this usage; a bare flag pytest does not know
+    (a typo like ``--jbs``) is a usage error here rather than a per-file
+    pytest failure. Tokens after ``--`` are never validated.
 
 Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
@@ -53,7 +56,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # Default test discovery roots.
@@ -821,6 +824,38 @@ def _make_stdio_glyph_safe() -> None:
                 pass
 
 
+def _pytest_flag_error(tokens: List[str]) -> Optional[str]:
+    """Return pytest's own complaint about the bare passthrough tokens, if any.
+
+    A mistyped flag (``--jbs``) that is not one of OUR options used to be
+    forwarded to every per-file pytest, so the run discovered the whole suite
+    and each file died with ``unrecognized arguments`` — an hours-long way to
+    learn about a typo. Ask pytest's own argparse parser (with the installed
+    plugins loaded, so ``-n``/``--timeout`` count) which tokens it does not
+    know; argparse handles the attached-value (``-rA``), combined-flag
+    (``-xvs``) and ``-k expr`` forms for us. A known flag with a bad or
+    missing value (``--tb`` alone) makes that parser raise ``UsageError``;
+    it is reported the same way instead of once per discovered file. Only
+    if the parser cannot be built is the check skipped and tokens forwarded
+    as before.
+    """
+    try:
+        from _pytest.config import UsageError, get_config
+
+        config = get_config()
+        config.pluginmanager.load_setuptools_entrypoints("pytest11")
+        parser = config._parser.optparser
+    except Exception:
+        return None
+    try:
+        _, unknown = parser.parse_known_args(tokens)
+    except UsageError as exc:
+        # "usage: ...\n<prog>: error: argument --tb: expected one argument"
+        return str(exc).rsplit("error: ", 1)[-1].strip()
+    unknown = [tok for tok in unknown if tok.startswith("-")]
+    return f"unrecognized arguments: {' '.join(unknown)}" if unknown else None
+
+
 def main() -> int:
     _make_stdio_glyph_safe()
     parser = argparse.ArgumentParser(
@@ -933,7 +968,7 @@ def main() -> int:
     # it never reaches our positional ``paths``. ``=``-joined forms
     # (``-k=expr``, ``--tb=long``) are self-contained and need no lookahead.
     OUR_FLAGS = {
-        "-j", "--jobs", "--paths", "--include-integration",
+        "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
     }
     # pytest short flags that consume the NEXT token as their value.
@@ -976,6 +1011,14 @@ def main() -> int:
         i += 1
 
     args = parser.parse_args(our_args)
+
+    # Bare tokens are validated against pytest's option set so a typo fails
+    # here with usage instead of once per discovered file. Anything after a
+    # literal ``--`` is the caller's explicit choice and is forwarded as-is.
+    if bare_passthrough:
+        flag_error = _pytest_flag_error(bare_passthrough)
+        if flag_error:
+            parser.error(flag_error)
 
     # ── Node-id selectors → file + ``-k`` filter ────────────────────────────
     # This runner is FILE-granular: it spawns one ``pytest <file>`` per test

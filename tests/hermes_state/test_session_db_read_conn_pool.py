@@ -37,6 +37,7 @@ connection count and make such assertions flaky.
 
 import hermes_state_readpool
 import queue
+import sqlite3
 import threading
 
 import pytest
@@ -740,3 +741,47 @@ def test_handle_diagnostics_unavailable_does_not_block_database(tmp_path, monkey
         handle.create_session(session_id="available", source="cli", model="m")
         assert handle.get_session("available")["id"] == "available"
         assert handle._creation_site == "unknown"
+
+
+@pytest.mark.requires_wal
+def test_closed_handles_do_not_count_toward_duplicate_writer_warning(db, caplog):
+    """Closing a writer releases its duplicate-writer diagnostic membership."""
+    import logging
+
+    from hermes_state_readpool import _HANDLES_PER_PATH_WARN
+
+    closed = [SessionDB(db_path=db.db_path) for _ in range(_HANDLES_PER_PATH_WARN - 1)]
+    for handle in closed:
+        handle.close()
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_state"):
+        survivor = SessionDB(db_path=db.db_path)
+    try:
+        assert not any(
+            "live SessionDB handles on" in record.getMessage() for record in caplog.records
+        ), "closed writers were retained as live duplicate handles"
+    finally:
+        survivor.close()
+
+
+def test_failed_initialization_does_not_register_duplicate_writer_handle(db, monkeypatch):
+    """A constructor that raises before opening must never join the handle budget."""
+    budget = hermes_state_readpool._read_budget_for(db.db_path)
+    registered = []
+    original_register = budget.register
+
+    def remember_register(handle):
+        registered.append(handle)
+        original_register(handle)
+
+    def fail_open_writer(self):
+        raise sqlite3.OperationalError("injected initialization failure")
+
+    monkeypatch.setattr(budget, "register", remember_register)
+    monkeypatch.setattr(SessionDB, "_open_writer", fail_open_writer)
+
+    with pytest.raises(sqlite3.OperationalError, match="injected initialization failure"):
+        SessionDB(db_path=db.db_path)
+
+    assert registered == []

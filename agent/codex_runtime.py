@@ -250,7 +250,8 @@ def _codex_item_to_preview(item: dict) -> Any:
 
 
 def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
-    """(result_text, is_error) for a completed tool item; mirrors the projector's tool-result content."""
+    """(result_text, is_error) for a completed tool item — display-facing text for live tool cards (the
+    persisted history keeps the projector's ``{exit_code, output}`` envelope instead)."""
     item_type = item.get("type") or ""
     if item_type == "commandExecution":
         out, exit_code = item.get("aggregatedOutput") or "", item.get("exitCode")

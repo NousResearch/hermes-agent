@@ -962,16 +962,18 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
 
   const attachButton = (thread: null | string) => (
-    <Button
-      className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
-      onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
-      size="sm"
-      title={b.group.attachHint}
-      type="button"
-      variant="ghost"
-    >
-      <Codicon name="attach" />
-    </Button>
+    <Tip label={b.group.attachHint}>
+      <Button
+        aria-label={b.group.attachHint}
+        className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+        onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
+        size="sm"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="attach" />
+      </Button>
+    </Tip>
   )
 
   // #91359: recognized @mentions render as inline references; recomputed
@@ -1076,15 +1078,16 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             {isUser ? (
               <span className="text-[0.7rem] font-semibold text-foreground">{label}</span>
             ) : (
-              <Button
-                className="text-left text-[0.7rem] font-semibold text-(--ui-accent)"
-                onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
-                size="inline"
-                title={revealed ? 'Hide full handle' : 'Show full handle'}
-                variant="text"
-              >
-                {label}
-              </Button>
+              <Tip label={revealed ? 'Hide full handle' : 'Show full handle'}>
+                <Button
+                  className="text-left text-[0.7rem] font-semibold text-(--ui-accent)"
+                  onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
+                  size="inline"
+                  variant="text"
+                >
+                  {label}
+                </Button>
+              </Tip>
             )}
             <span className="text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(entry.at)}</span>
             {entry.text.trim() || !isUser ? (
@@ -1110,6 +1113,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
+            data-slot="group-chat-message-content"
           >
             {MessageTextContent ? (
               <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />

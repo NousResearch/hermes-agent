@@ -362,7 +362,14 @@ export async function ensureDefaultWorkspaceCwd(shouldPublish: () => boolean = (
   const remembered = getRememberedWorkspaceCwd()
 
   if ($connection.get()?.mode === 'remote') {
-    seedLiveCwd(remembered)
+    // Unlike the local branches below, an empty `remembered` here is meaningful:
+    // it means the incoming gateway has no memory of its own, so any workspace
+    // still live from the outgoing gateway is stale and must be cleared rather
+    // than left in place (seedLiveCwd's cwd-truthy guard would otherwise skip
+    // publishing and leave the old path looking valid — #114306).
+    if (shouldPublish() && !$activeSessionId.get()) {
+      setCurrentCwdTransient(remembered)
+    }
 
     return
   }

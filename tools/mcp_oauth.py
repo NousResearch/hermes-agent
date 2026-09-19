@@ -731,7 +731,7 @@ _SSH_HINT_PROXY = (
     "  which forwards to the callback listener on this machine — no SSH tunnel needed.\n")
 _SSH_HINT_LOOPBACK = (
     "  Remote session detected. After you authorize, the provider redirects to\n"
-    "    http://127.0.0.1:{port}/callback\n"
+    "    http://{host}:{port}/callback\n"
     "  which only the listener on THIS machine can receive. Two options:\n"
     "\n"
     "    1. Easiest — when your browser shows a connection error after\n"
@@ -746,14 +746,16 @@ _SSH_HINT_LOOPBACK = (
     "  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n")
 
 
-def _announce_authorization_url(authorization_url: str, port: int, redirect_uri: str | None) -> None:
+def _announce_authorization_url(
+    authorization_url: str, port: int, redirect_uri: str | None, redirect_host: str | None = None,
+) -> None:
     """Print the URL (always, as the fallback) and open the browser when possible."""
     print(f"\n  MCP OAuth: authorization required.\n  Open this URL in your browser:\n\n    {authorization_url}\n", file=sys.stderr)
     if os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"):
         if redirect_uri:
             print(_SSH_HINT_PROXY.format(redirect_uri=redirect_uri), file=sys.stderr)
         elif port:
-            print(_SSH_HINT_LOOPBACK.format(port=port), file=sys.stderr)
+            print(_SSH_HINT_LOOPBACK.format(host=redirect_host or "127.0.0.1", port=port), file=sys.stderr)
     if not _can_open_browser():
         note = "Headless environment detected — open the URL manually."
     else:
@@ -764,9 +766,11 @@ def _announce_authorization_url(authorization_url: str, port: int, redirect_uri:
     print(f"  ({note})\n", file=sys.stderr)
 
 
-def _make_redirect_handler(port: int, redirect_uri: str | None = None):
+def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_host: str | None = None):
     """Redirect handler closing over this flow's port (a closure, not ``_oauth_port``, keeps concurrent
-    flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the hint.
+    flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the
+    hint; ``redirect_host`` is the loopback hostname the provider will actually redirect to (see
+    :func:`_resolve_redirect_uri`).
 
     Using a closure instead of reading the module-level ``_oauth_port`` avoids cross-server state pollution
     when multiple MCP servers run OAuth concurrently (fixes #44588).
@@ -787,7 +791,7 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
         _raise_if_non_interactive(
             "MCP OAuth requires browser authorization but no interactive session is available (non-interactive/background context)."
         )
-        _announce_authorization_url(authorization_url, port, redirect_uri)
+        _announce_authorization_url(authorization_url, port, redirect_uri, redirect_host)
 
     return _redirect_handler
 
@@ -845,8 +849,9 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
     """
     async def _wait():
         dashboard_flow = get_dashboard_oauth_flow()
-        if dashboard_flow is not None:
-            # Dashboard flow speaks the legacy tuple; normalize to one shape.
+        if dashboard_flow is not None and not port:
+            # Dashboard flow speaks the legacy tuple; normalize to one shape. A pinned loopback port
+            # (pre-registered client) listens locally instead; the dashboard only shows the URL.
             return _authorization_code_result(*await dashboard_flow.wait_for_callback())
         # The SDK entered the authorization-code flow, so any cached token is unusable. Reject BEFORE
         # binding: binding would block for the full timeout and collide with the TIME_WAIT port on retry.
@@ -863,9 +868,14 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
             "context); skipping browser authorization without binding a callback listener.")
         handler_cls, result = _make_callback_handler()
         server = _start_callback_server(port, handler_cls)
-        threading.Thread(target=server.handle_request, daemon=True).start()
-        # Paste fallback races the HTTP listener; whichever fills result first wins.
-        if _is_interactive():
+        # serve_forever/shutdown, not a bare handle_request thread: a thread parked in handle_request's
+        # select() keeps the listening socket alive past server_close() (the kernel holds the file for
+        # the duration of the poll), so a cancelled flow — e.g. the handshake timeout firing mid-login —
+        # left the port bound and the retry on the same pinned/cached port died with EADDRINUSE (#113771).
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True).start()
+        # Paste fallback races the HTTP listener; whichever fills result first wins (no stdin reader
+        # under a dashboard flow — the gateway's stdin is not the user's).
+        if _is_interactive() and dashboard_flow is None:
             print(
                 "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
                 "Type ``skip`` + Enter to continue without this server:",
@@ -877,6 +887,7 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
         finally:
+            server.shutdown()  # returns once the serve loop exits (≤ poll_interval) — the port is free after close
             server.server_close()
         return _callback_outcome(result, cimd_url)
 
@@ -1005,12 +1016,16 @@ def _configure_callback_port(cfg: dict, storage: "HermesTokenStorage | None" = N
     """
     global _oauth_port
     dashboard_flow = get_dashboard_oauth_flow()
-    if dashboard_flow is not None:
+    # A pre-registered client with a pinned ``redirect_port`` (no DCR; the vendor matches the registered
+    # loopback URI exactly) keeps its loopback listener even under the dashboard/Desktop flow: the
+    # dashboard's own callback URL was never registered with the vendor, so that flow could not complete.
+    pinned_loopback = bool(cfg.get("client_id") and cfg.get("redirect_port"))
+    if dashboard_flow is not None and not pinned_loopback:
         cfg["_resolved_port"] = 0
         cfg["redirect_uri"] = cfg.get("redirect_uri") or dashboard_flow.redirect_uri
         return 0
     cached_uri, cached_port = _cached_redirect(storage)
-    if cached_uri and not cfg.get("redirect_uri"):
+    if cached_uri and not cfg.get("redirect_uri") and not pinned_loopback:
         cfg["redirect_uri"] = cached_uri
         cfg["_resolved_port"] = 0
         return 0
@@ -1154,6 +1169,9 @@ def humanize_oauth_registration_error(
     when the user overrode it or an older Hermes is running."""
     msg = str(exc)
     lowered = msg.lower()
+    from tools.mcp_oauth_provider import _DISCOVERY_CONTEXT_LEAD
+    if msg.startswith(_DISCOVERY_CONTEXT_LEAD):  # the 403 there is the metadata fetch, not a DCR refusal
+        return None
     looks_like_registration = ("403" in msg or "forbidden" in lowered) and (
         any(k in lowered for k in ("regist", "dcr", "dynamic client"))
         or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}

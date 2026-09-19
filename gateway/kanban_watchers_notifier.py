@@ -7,6 +7,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import re
 from functools import partial
@@ -17,6 +18,7 @@ from typing import Any, Callable, Optional
 from agent.i18n import t
 
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
+from gateway.wake import session_owned_by_profile
 
 
 def _kbc():
@@ -169,6 +171,15 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
         if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
                          thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None)):
             return None
+    # A stateless (api_server) subscription carries a RAW session id, not a routable chat, so no
+    # profile_routes entry can anchor it — and a platform-wide api_server route would deny the
+    # default profile's own api_server destinations. The shared listener mirrors /p/<profile>/ for
+    # every served profile, so the owner's own session store is the proof: authorize exactly the
+    # session that lives in the served profile's state.db, never the platform. The default profile
+    # keeps the historical fallthrough below (no store read).
+    if profile != primary_profile and getattr(platform, "value", platform) == "api_server" \
+            and session_owned_by_profile(config, profile, chat):
+        return primary
     return primary if profile == primary_profile else None
 
 
@@ -554,14 +565,27 @@ class _KanbanNotification:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                     self.task_id, self.platform_str, self.sub["chat_id"], self.sub_profile or "default", self.wake_kinds)
 
+    def _served_wake_profile(self) -> Optional[str]:
+        """The subscription's profile when THIS gateway is a multiplexer serving it, else ``None``.
+
+        ``None`` keeps the historical path: a standalone ``hermes -p <name>`` gateway owns its own
+        listener and key, so its api_server wakes keep using the HTTP self-post.
+        """
+        if not self.sub_profile:
+            return None
+        if not getattr(getattr(self.runner, "config", None), "multiplex_profiles", False):
+            return None
+        return self.sub_profile
+
     def _owner_scope(self):
         """Runtime scope of the subscription's profile under multiplex, else a no-op context."""
         runner = self.runner
-        if not (self.sub_profile and getattr(getattr(runner, "config", None), "multiplex_profiles", False)):
+        served_profile = self._served_wake_profile()
+        if not served_profile:
             return contextlib.nullcontext()
         from gateway.run import _async_profile_runtime_scope
         from gateway.session import SessionSource
-        source = SessionSource(platform=self.plat, chat_id=self.sub["chat_id"], profile=self.sub_profile)
+        source = SessionSource(platform=self.plat, chat_id=self.sub["chat_id"], profile=served_profile)
         return _async_profile_runtime_scope(runner._resolve_profile_home_for_source(source))
 
     async def wake(self) -> None:
@@ -569,8 +593,14 @@ class _KanbanNotification:
         from gateway.wake import deliver_wake
         sub = self.sub
         if not self.is_push_adapter:
-            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
-                               notification_category="diagnostic" if self.wake_diagnostic else "result")
+            # A served profile's raw-session wake runs in THAT profile's scope, in-process: the
+            # shared listener's /p/<profile>/ self-post would need the profile's own
+            # API_SERVER_KEY, which a route-only profile legitimately does not have, and an
+            # unprefixed self-post would resume the session in the DEFAULT profile's store.
+            async with self._owner_scope():
+                await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
+                                   profile=self._served_wake_profile(),
+                                   notification_category="diagnostic" if self.wake_diagnostic else "result")
             self._log_woke()
             return
         from gateway.session import SessionSource
@@ -681,8 +711,11 @@ class _KanbanNotification:
         except ValueError:
             await self.advance()
             return
-        # Recheck the exact route after claiming: config/adapters can change between ticks.
-        adapter = _adapter_for_subscription(self.runner, self.plat, self.sub, self.sub_profile or None)
+        # Recheck the exact route after claiming: config/adapters can change between ticks. The
+        # recheck reads the served profile's session store for a stateless destination, so it runs
+        # off the event loop (the claim path already collects in a worker thread).
+        adapter = await asyncio.to_thread(
+            _adapter_for_subscription, self.runner, self.plat, self.sub, self.sub_profile or None)
         if adapter is None:
             logger.debug("kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
                          self.platform_str, self.task_id)

@@ -96,7 +96,14 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
         pc.cmd_install("cat-plugin", enable=False)
     pc.cmd_install("cat-plugin", enable=False, allow_removed=True)
     assert (world["plugins_dir"] / "cat-plugin" / cat.CATALOG_SIDECAR).exists()
-    assert cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin") == "malware"
+    assert cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin",
+                                  cat.resolved_removed_entries()) == "malware"
+
+
+def test_removed_annotation_requires_a_pre_resolved_kill_list(world):
+    """No on-demand fallback: callers must resolve the kill list once, never per row."""
+    with pytest.raises(TypeError):
+        cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin")
 
 
 def test_owner_repo_hash_subdir_shorthand_resolves_like_the_catalog_spelling():

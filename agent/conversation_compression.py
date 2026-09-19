@@ -728,6 +728,16 @@ def resolve_context_compression_timeouts(compression_cfg: Optional[dict] = None)
                 ceiling = float(cfg["context_total_ceiling_seconds"])
     if idle > 0:
         ceiling = max(ceiling, idle)
+        # #114594: the aux summary attempt legitimately needs up to its own budget (floor 300s), while the
+        # host idle watchdog defaults to 120s. Clamp the idle window up to at least the effective aux
+        # compression timeout so prep/chunking work with no streamed tokens yet is not cut off. Only raises:
+        # an explicit cfg value above the aux budget is kept, and idle never exceeds the ceiling.
+        from agent.auxiliary_client import _effective_aux_timeout
+        _aux_budget = float(_effective_aux_timeout("compression", None))
+        if _aux_budget > 0:
+            if _aux_budget > ceiling:
+                ceiling = _aux_budget
+            idle = max(idle, min(_aux_budget, ceiling))
     return idle, ceiling
 
 
@@ -858,6 +868,18 @@ def _prior_timeout_failures(agent: Any) -> int:
     return count if isinstance(count, int) and not isinstance(count, bool) else 0
 
 
+def request_exceeds_model_window(agent: Any, request_tokens: Any) -> Optional[bool]:
+    """Whether a ~``request_tokens`` request cannot be sent at all (above the model's context window).
+    ``None`` when either side is unknown (no compressor / unresolvable window / no estimate), so callers
+    keep their conservative default instead of treating "unknown" as "fits"."""
+    window = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        return None
+    if isinstance(request_tokens, bool) or not isinstance(request_tokens, int):
+        return None
+    return request_tokens > window
+
+
 def _retry_compression_on_fallback_chain(
     *, worker: Callable[[CompressionCommitFence], Tuple[list, str]], messages: list,
     system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,
@@ -928,7 +950,7 @@ def _run_pinned_compression_retry(
     deterministic = route.get("deterministic") is True
     if deterministic:
         logger.warning(
-            "Context compression stalled again after a stall backoff — committing the %s (no summary model) "
+            "Context compression stalled on every summary route — committing the %s (no summary model) "
             "before continuing without compression", route["label"],
         )
     else:
@@ -1079,11 +1101,15 @@ def run_compress_context_with_progress_timeout(
     fence: Optional[CompressionCommitFence] = None, telemetry_agent: Any = None, stall_fallback: bool = True,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
     fallback_worker: Optional[Callable[[CompressionCommitFence], Tuple[list, str]]] = None,
+    request_exceeds_window: bool = False,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware (idle + ceiling) timeout.
     Budgets bound the PRE-commit phase only: an admitted commit always completes (overrun logged, surfaced
     once via ``on_commit_overrun``). A pre-commit cancel returns ``(messages, system_prompt_fallback)`` (lazy
-    callable), detaching the worker; a stall first retries the chain once on ``new_fence``, then on_timeout"""
+    callable), detaching the worker; a stall first retries the chain once on ``new_fence``, then on_timeout.
+    ``request_exceeds_window``: the request this compaction must shrink is above the model's context
+    window, so "continue without compression" is not an option — a stall escalates to the deterministic
+    fallback summary on the FIRST timeout instead of waiting for a prior stall in the session (#114594)."""
     if idle_timeout_seconds <= 0:
         raise ValueError(
             "run_compress_context_with_progress_timeout requires "
@@ -1099,8 +1125,11 @@ def run_compress_context_with_progress_timeout(
     fence.set_total_ceiling_seconds(ceiling)
     # Read BEFORE this attempt runs: the host's ``stalled`` record and the cancelled worker's
     # ``stall_interrupted`` record both land during the unwind below, and this stall must not count as
-    # its own prior. One prior timeout-class failure = the route already burned a full idle window.
-    escalate_deterministic = stall_fallback and _prior_timeout_failures(telemetry_agent) >= 1
+    # One prior timeout-class failure = the route already burned a full idle window. An over-window request
+    # cannot be sent unchanged, so it earns the deterministic fallback on its first stall (#114594).
+    escalate_deterministic = stall_fallback and (
+        request_exceeds_window or _prior_timeout_failures(telemetry_agent) >= 1
+    )
     # Sync mirror of gateway hygiene's run_in_executor + wait_for loop: offload,
     # poll idle budget + ceiling, fence-cancel on timeout so no late commit lands.
     from tools.thread_context import propagate_context_to_thread
@@ -1224,9 +1253,77 @@ class CompressionCheckpointUnavailable(RuntimeError):
     """Raised when required durable pre-compress checkpointing is unavailable."""
 
 
+# Shared by the startup warning and compress-time block so operators see the
+# same recovery path: disable the fail-closed flag, or switch providers.
+_CHECKPOINT_REQUIRED_REMEDIATION = (
+    "set compression.checkpoint_required: false, or switch to a memory "
+    "provider that implements checkpoint API v2"
+)
+
+
+def _active_memory_provider_label(agent: Any) -> str:
+    """Human-readable active provider name, or an explicit none sentinel."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    if memory_manager is None:
+        return "no active provider"
+    providers = getattr(memory_manager, "providers", None)
+    names: list[str] = []
+    if providers is not None:
+        try:
+            iterable = list(providers)
+        except TypeError:
+            iterable = []
+        for provider in iterable:
+            name = getattr(provider, "name", None)
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+    return ", ".join(names) if names else "no active provider"
+
+
 def _checkpoint_blocked(reason: str) -> CompressionCheckpointUnavailable:
     return CompressionCheckpointUnavailable(
         f"BLOCKED_MISSING_PREREQUISITE: required pre-compress checkpoint unavailable: {reason}"
+    )
+
+
+def _checkpoint_incapable(reason: str) -> CompressionCheckpointUnavailable:
+    """Capability refusal: the gate can never pass with this provider set, so the
+    message carries the config-level way out. Transient checkpoint failures keep
+    the plain form — there the provider is capable and the right move is a retry."""
+    return _checkpoint_blocked(f"{reason}. Recover by {_CHECKPOINT_REQUIRED_REMEDIATION}")
+
+
+def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
+    """Startup warning when fail-closed compress will block (init itself must not refuse).
+
+    Capability-probe exceptions are suppressed so a broken provider cannot crash
+    agent construction — same fail-open style as the micro-compact warning.
+    Probe failures log at DEBUG so a flaky probe can be diagnosed without
+    refusing init or emitting the incapable-provider WARNING.
+    """
+    if getattr(agent, "compression_checkpoint_required", False) is not True:
+        return
+    memory_manager = getattr(agent, "_memory_manager", None)
+    if memory_manager is not None:
+        supports_checkpoint = getattr(memory_manager, "supports_pre_compress_checkpoint", None)
+        if callable(supports_checkpoint):
+            try:
+                if bool(supports_checkpoint(PRE_COMPRESS_CHECKPOINT_API_VERSION)):
+                    return
+            except Exception as exc:
+                logger.debug(
+                    "checkpoint-required capability probe failed; init continues: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return
+    logger.warning(
+        "compression.checkpoint_required is enabled but the active memory "
+        "provider (%s) does not implement checkpoint API v%s. Compress will "
+        "fail closed. Recover by %s.",
+        _active_memory_provider_label(agent),
+        PRE_COMPRESS_CHECKPOINT_API_VERSION,
+        _CHECKPOINT_REQUIRED_REMEDIATION,
     )
 
 
@@ -1779,6 +1876,16 @@ class _CompressionLockLeaseRefresher:
                 break
 
 
+def _emit_feasibility_notice(agent: Any, msg: str) -> None:
+    """Store + emit a feasibility verdict once per distinct text: every main-runtime change re-probes, and an
+    unchanged verdict must not re-warn on each `/model --once` restore or fallback cycle (#114707)."""
+    if getattr(agent, "_last_feasibility_notice", None) == msg:
+        return
+    agent._last_feasibility_notice = msg
+    agent._compression_warning = msg
+    agent._emit_diagnostic_status(msg)
+
+
 def _lower_threshold_to_aux_context(
     agent: Any, *, aux_model: str, aux_context: int, aux_provider: str, aux_base_url: str
 ) -> None:
@@ -1789,6 +1896,9 @@ def _lower_threshold_to_aux_context(
     compressor = agent.context_compressor
     old_threshold = compressor.threshold_tokens
     new_threshold = compressor.threshold_tokens = aux_context
+    # Durable ceiling: update_model() recomputes threshold_tokens from the main model on every window
+    # correction and re-applies this through _apply_threshold_tokens_cap() (#114707).
+    compressor._aux_context_ceiling = aux_context
     summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
     if getattr(compressor, "tail_mode", None) == "lean":
         # Keep the window-relative policy owned by the compressor property.
@@ -1846,8 +1956,7 @@ def _lower_threshold_to_aux_context(
             f"Hermes's small-context floor and output reservation would recompute the trigger to "
             f"{recomputed_threshold:,} tokens, still above the compression model's {aux_context:,}.)"
         )
-    agent._compression_warning = msg
-    agent._emit_diagnostic_status(msg)
+    _emit_feasibility_notice(agent, msg)
     logger.warning(
         "Auxiliary compression model %s has %d token context, below the main model's compression threshold of %d "
         "tokens — auto-lowered session threshold to %d to keep compression working.", aux_model, aux_context,
@@ -1903,8 +2012,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     "⚠ No auxiliary LLM provider configured: Hermes has no helper model for summarising "
                     "long chats, so older messages will be cut without a summary. Run `hermes setup` to add one."
                 )
-            agent._compression_warning = msg
-            agent._emit_diagnostic_status(msg)
+            _emit_feasibility_notice(agent, msg)
             logger.warning("No auxiliary LLM provider for compression — summaries will be unavailable.")
             return
         aux_base_url = str(getattr(client, "base_url", ""))
@@ -1945,11 +2053,51 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 agent, aux_model=aux_model, aux_context=aux_context, aux_provider=_aux_cfg_provider,
                 aux_base_url=aux_base_url,
             )
+        elif getattr(agent, "_last_feasibility_notice", None) is not None:
+            # Symmetric un-clamp: the summariser fits again, so the stale "auto-lowered" notice must not be
+            # replayed (``replay_compression_warning``) for a session that is no longer clamped (#114707).
+            agent._last_feasibility_notice = None
+            agent._compression_warning = None
     except ValueError:
         # Hard rejections (aux below minimum context) must propagate so the session refuses to start.
         raise
     except Exception as exc:
         logger.debug("Compression feasibility check failed (non-fatal): %s", exc)
+
+
+def revalidate_compression_feasibility(agent: Any) -> None:
+    """Re-run the aux feasibility probe after the main runtime changed (model switch, fallback activation,
+    primary restore). ``update_model()`` already voided the previous ceiling; probing now clamps the trigger
+    before the first compaction on the new window rather than after it (#114707). A probe failure leaves the
+    latch unset so the lazy probe at the next compaction re-raises hard rejections."""
+    agent._compression_feasibility_checked = False
+    if not getattr(agent, "context_compressor", None):
+        return
+    try:
+        check_compression_model_feasibility(agent)
+    except Exception as exc:
+        logger.debug("Compression feasibility re-check deferred to the next compaction: %s", exc)
+        return
+    agent._compression_feasibility_checked = True
+
+
+def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) -> None:
+    """Run the deferred aux feasibility probe once a request first reaches ``MINIMUM_CONTEXT_LENGTH`` — the
+    smallest window any summariser may have — so an aux clamp lands before the first compaction fires on the
+    main-window threshold instead of after it (#114707). Below that size no summariser can be too small, so
+    short sessions keep the probe-free cold start (#28957). A probe failure leaves the latch unset for the
+    lazy probe in ``compress_context`` to re-raise hard rejections."""
+    if getattr(agent, "_compression_feasibility_checked", False) or not getattr(agent, "context_compressor", None):
+        return
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+    if int(estimated_tokens or 0) < MINIMUM_CONTEXT_LENGTH:
+        return
+    try:
+        check_compression_model_feasibility(agent)
+    except Exception as exc:
+        logger.debug("Compression feasibility probe deferred to the first compaction: %s", exc)
+        return
+    agent._compression_feasibility_checked = True
 
 
 def replay_compression_warning(agent: Any) -> None:
@@ -2705,7 +2853,7 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
     if checkpoint_required:
         supports_checkpoint = getattr(memory_manager, "supports_pre_compress_checkpoint", None)
         if memory_manager is None or not callable(supports_checkpoint):
-            raise _checkpoint_blocked(
+            raise _checkpoint_incapable(
                 f"no active provider implements checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
             )
         try:
@@ -2713,7 +2861,7 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
         except Exception as exc:
             raise _checkpoint_blocked("provider capability probe failed") from exc
         if not compatible:
-            raise _checkpoint_blocked(
+            raise _checkpoint_incapable(
                 f"active provider does not implement checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
             )
         try:
@@ -4159,7 +4307,9 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
 
 __all__ = [
     "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
-    "check_compression_model_feasibility", "replay_compression_warning", "compress_context",
+    "check_compression_model_feasibility", "ensure_compression_feasibility_checked",
+    "revalidate_compression_feasibility", "replay_compression_warning",
+    "compress_context",
     "try_shrink_image_parts_in_messages",
 ]
 

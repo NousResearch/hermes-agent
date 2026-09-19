@@ -4,6 +4,7 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -303,6 +304,31 @@ class TestHandleResumeCommand:
         assert "Lane Work 1" in result
         assert "Lane Work 2" in result
         assert "Foreign Work" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_bare_resume_ranks_lineages_by_last_activity(self, tmp_path):
+        """A lineage whose root started days ago but was touched last must lead the list: the
+        picker ranks by lineage activity, not root ``started_at`` (#114271)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume")
+        lane_key = _session_key_for_event(event)
+        t0 = time.time() - 5 * 86400
+        for sid, started, active in (("old_root", t0, t0 + 4 * 86400), ("new_root", t0 + 86400, t0 + 86400 + 60)):
+            db.create_session(sid, "telegram", session_key=lane_key, user_id="12345", chat_id="67890")
+            db.append_message(sid, "user", "hi")
+            db._conn.execute("UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?", (started, active, sid))
+            db._conn.execute("UPDATE messages SET timestamp=? WHERE session_id=?", (active, sid))
+        db._conn.commit()
+        db.set_session_title("old_root", "Old But Active")
+        db.set_session_title("new_root", "Newer But Idle")
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert result.index("Old But Active") < result.index("Newer But Idle")
         db.close()
 
     @pytest.mark.asyncio

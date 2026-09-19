@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # fcntl is Unix-only; Windows uses msvcrt
 try:
@@ -250,7 +250,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     if not job.get("no_agent"):
         notice = provider_failure_notice(
             job_name, job_id, classify_cron_failure_reason(text),
-            backup_provider_phrase=_fallback_chain_phrase())
+            backup_provider_phrase=_fallback_chain_phrase(), provider=job.get("provider"))
         if notice is not None:
             return notice
 
@@ -285,20 +285,53 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     return message
 
 
+DEFAULT_FAILURE_REPEAT_ALERT_HOURS = 6.0
+
+
+def _failure_repeat_alert_hours() -> float:
+    """``cron.failure_repeat_alert_hours``: how long an ``alerted`` incident stays silent before one
+    reminder ping. ``0`` (or negative) re-alerts on every failing run (the pre-gate behaviour)."""
+    from cron.jobs import _cron_config_number
+
+    return _cron_config_number("failure_repeat_alert_hours", DEFAULT_FAILURE_REPEAT_ALERT_HOURS, float)
+
+
+def _repeat_alert_withheld(incident: dict) -> bool:
+    """An ``alerted`` incident withholds the per-run ping until the reminder cooldown has elapsed
+    since its last ping. A missing/unparseable ``alerted_at`` (ledger written before the column
+    existed) delivers rather than swallowing an alert."""
+    hours = _failure_repeat_alert_hours()
+    if hours <= 0:
+        return False
+    alerted_at = incident.get("alerted_at")
+    if not alerted_at:
+        return False
+    try:
+        from cron.jobs import _ensure_aware
+
+        last = _ensure_aware(datetime.fromisoformat(str(alerted_at)))
+    except (TypeError, ValueError):
+        return False
+    return _hermes_now() - last < timedelta(hours=hours)
+
+
 def _upsert_incident_for_failure(
     job: dict, error: str, *, output_file: Optional[Any] = None
 ) -> tuple[bool, Optional[str]]:
     """Record a durable failure incident (grouped by job + error signature). Returns
-    ``(acked, incident_id)``; acked=True when the signature's incident is already ``closed`` ->
-    suppress the per-run ping. Store errors log at debug; the caller delivers as if none existed."""
+    ``(withheld, incident_id)``; withheld=True when the signature's incident is already ``closed``
+    (operator ack) or ``alerted`` inside the ``cron.failure_repeat_alert_hours`` cooldown (a ping
+    already went out) -> suppress the per-run ping. Store errors log at debug; the caller delivers
+    as if none existed."""
     try:
         from cron.incidents import get_incident, upsert_incident
 
         incident_id, _is_new = upsert_incident(
             job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
         incident = get_incident(incident_id)
-        acked = bool(incident and incident.get("state") == "closed")
-        return acked, incident_id
+        state = incident.get("state") if incident else None
+        withheld = state == "closed" or (state == "alerted" and _repeat_alert_withheld(incident))
+        return withheld, incident_id
     except Exception as exc:
         logger.debug(
             "Incident store unavailable for job %s (delivery unaffected): %s",
@@ -1115,6 +1148,8 @@ _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
+# Pause before re-sampling a fire-claim heartbeat miss; a genuinely re-owned claim misses twice.
+_FIRE_CLAIM_MISS_CONFIRM_SECONDS = 1.0
 
 
 def _cron_cleanup_timeout_seconds() -> float:
@@ -2421,6 +2456,12 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                     if self_removal_delivery_allowed(job_id):
                         # Record dropped by this run; nothing left to keep fresh.
                         continue
+                    # One miss is a sample, not a verdict (#113357): a latch cancels the live
+                    # agent run and ends the lease refresh, so confirm before acting on it.
+                    if stop.wait(_FIRE_CLAIM_MISS_CONFIRM_SECONDS) or heartbeat_fire_claim(
+                            job_id, expected_owner=owner):
+                        last_confirmed = time.monotonic()
+                        continue
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",
@@ -2561,7 +2602,8 @@ def _classify_delivery_outcome(
     if should_deliver and normalized_deliver != "local":
         return "delivered"
     if incident_acked and not success:
-        # Failure ping withheld: operator acked this exact signature (vs. plain "suppressed").
+        # Failure ping withheld for a known signature: operator acked it, or it was already
+        # alerted inside the reminder cooldown (vs. plain "suppressed").
         return "suppressed_acked"
     return "suppressed"
 
@@ -2589,8 +2631,9 @@ def _compose_run_delivery(
         deliver_content = final_response
         _resolve_incidents_for_recovered_job(job)
     else:
-        # Record the job+error signature once; if already acked by the operator, suppress the
-        # per-run ping. Best-effort: a ledger failure never breaks delivery.
+        # Record the job+error signature once; withhold the per-run ping while the operator
+        # already acked it (closed) or was already told (alerted, inside the reminder cooldown).
+        # Best-effort: a ledger failure never breaks delivery.
         incident_acked, failure_incident_id = _upsert_incident_for_failure(
             job, error or "", output_file=output_file
         )
@@ -2645,20 +2688,25 @@ class _FireOwnership:
         return fire_claim_fence(self.job["id"], expected_owner=self.owner)
 
     def lost(self) -> bool:
-        if self.cancel_event is not None and self.cancel_event.is_set():
+        if self.transport_cancelled():
             return True
         if self.owner is None:
             return False
         if self_removal_delivery_allowed(self.job["id"]):
             # The run deleted its own record; there is no claim left to re-resolve.
             return False
+        # The heartbeat's latched miss is one sample, not the verdict (#113357): the store is
+        # re-checked here, and a claim that still validates keeps the run's real outcome. The
+        # owner-fenced mark_job_run / fire_claim_fence remain the authority for side effects.
+        latched = self.claim_lost is not None and self.claim_lost.is_set()
         try:
             if heartbeat_fire_claim(self.job["id"], expected_owner=self.owner):
                 return False
         except Exception:
             logger.debug(
                 "Job '%s': fire_claim ownership validation failed", self.job["id"], exc_info=True)
-            return False
+            # Unreachable store after a latched miss stays fail-closed; a first miss is best-effort.
+            return latched
         if self.claim_lost is not None:
             self.claim_lost.set()
         return True
@@ -3122,6 +3170,9 @@ def _wait_for_external_cron_worker_body(
             returncode = process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
             if _is_terminal():
+                from cron.scheduler_detached_worker import reap_terminal_worker_in_background
+
+                reap_terminal_worker_in_background(process)
                 return True
             continue
         # The worker can commit its terminal row and exit between the first

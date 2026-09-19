@@ -371,9 +371,11 @@ export interface Translations {
     // bodies (the agent's reply, a command, an error) are passed through raw.
     native: {
       approvalTitle: string
+      approvalTitleNamed: (session: string) => string
       approveAction: string
       rejectAction: string
       inputTitle: string
+      inputTitleNamed: (session: string) => string
       inputBody: string
       turnDoneTitle: string
       turnDoneBody: string
@@ -1496,6 +1498,10 @@ export interface Translations {
         selectedMessage: (backend: string) => string
         failedSelect: (backend: string) => string
         needsSetupHint: string
+        needsSetupConfirmTitle: (backend: string) => string
+        needsSetupConfirmDescription: (detail: string) => string
+        needsSetupConfirmDescriptionGeneric: string
+        needsSetupConfirmAction: string
         unavailableTitle: string
         unavailableMessage: (backend: string) => string
         openBackendSettings: string
@@ -1593,6 +1599,8 @@ export interface Translations {
       installAgentHereNoOrigin: string
       desktopHalfPending: string
       desktopHalfPendingTip: string
+      desktopHalfRemote: string
+      desktopHalfRemoteTip: string
       emptyAll: string
       empty: string
       emptyHint: string
@@ -2246,6 +2254,7 @@ export interface Translations {
     emptyTitleSearch: string
     last: string
     next: string
+    overdueSince: string
     noRuns: string
     manage: string
     showRuns: string
@@ -2840,6 +2849,7 @@ export interface Translations {
     notAvailableTitle: string
     unsupportedMessage: string
     connectionRetry: string
+    gitUnusable: string
     connectionSettings: string
     openDownloadPage: string
     latestBody: string

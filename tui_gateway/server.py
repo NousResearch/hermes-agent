@@ -553,10 +553,21 @@ def _profile_scoped(handler):
     systemd / ``op run`` injection); once multiplexing is active it binds its own scope from the env
     frozen at activation (``_session_profile_runtime_scope``), never ambient state a secondary context
     might have poisoned (#107422).
+
+    No ``profile`` param but a ``session_id`` naming a live session: that session's ``profile_home``
+    is the scope. The TUI and the Desktop's ambient dispatcher send session-bound RPCs with the
+    session id alone, so a ``config.set`` from a focused worker session otherwise persisted into the
+    LAUNCH profile's config.yaml while the worker's stayed unchanged (#85669).
     """
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-        with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
+        p = params if isinstance(params, dict) else {}
+        if str(p.get("profile") or "").strip():
+            home = _profile_home(p.get("profile"))
+            profile_home = str(home) if home else None
+        else:
+            session = _sessions.get(str(p.get("session_id") or ""))
+            profile_home = session.get("profile_home") if isinstance(session, dict) else None
+        with _session_profile_runtime_scope({"profile_home": profile_home or None}):
             return handler(rid, params)
     return wrapper
 
@@ -1249,12 +1260,15 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
         # callers that know the workspace pass it.
         resolved = cwd if cwd is not None else (str(sess.get("cwd") or "") if sess is not None else "")
         source = _resolve_session_platform()
+        profile = _current_profile_name()
         browser_control_principal = browser_control_transport_family = ""
         # Live conversation id for subprocess HERMES_SESSION_ID: an explicitly empty contextvar is authoritative
         # (no os.environ fallback), so never leave it "" — agent's durable session_id, then session_key.
         session_id = session_key
         if sess is not None:
             source = _session_source(sess)
+            # App-global backends multiplex profiles: prefer the live session's own home.
+            profile = profile_name_for_home(sess.get("profile_home")) or profile
             session_id = getattr(sess.get("agent"), "session_id", None) or session_key
             identity = getattr(sess.get("transport"), "auth_identity", None)
             if _methods_browser_control._is_authenticated_identity(identity):
@@ -1262,6 +1276,7 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
                 browser_control_transport_family = _methods_browser_control._CLOUD_TRANSPORT_FAMILY
         return set_session_vars(
             session_key=session_key, session_id=session_id, source=source,
+            profile=profile,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family, cwd=resolved,
             ui_session_id=ui_session_id, cron_session="")
@@ -1428,10 +1443,17 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     if not (explicit_model := _env_model_seed()):
         return model, None
     with contextlib.suppress(Exception):
+        from hermes_cli.model_switch import resolve_startup_model_route
         from hermes_cli.models import detect_static_provider_for_model
-        cfg = _load_cfg().get("model") or {}
+        full_cfg = _load_cfg()
+        cfg = full_cfg.get("model") or {}
         current_provider = ((str(cfg.get("provider") or "").strip().lower() if isinstance(cfg, dict) else "")
                             or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto")
+        # Same owner as HermesCLI/oneshot: ``custom:<name>:<model>`` selects that provider (#73943).
+        if route := resolve_startup_model_route(
+                explicit_model, current_provider=current_provider,
+                user_providers=full_cfg.get("providers"), custom_providers=full_cfg.get("custom_providers")):
+            return route.model, route.provider
         if detected := detect_static_provider_for_model(explicit_model, current_provider):
             provider, detected_model = detected
             return detected_model, provider

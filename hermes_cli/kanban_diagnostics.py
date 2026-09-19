@@ -533,6 +533,40 @@ def _rule_review_dependency_deadlock(task, events, runs, now, cfg) -> list[Diagn
     )]
 
 
+def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A ``running`` card with a direct parent that is not ``done``/``archived``:
+    the dependency gate is not holding it (the parent reopened mid-run, or the
+    edge predates the running-child refusal) and ``kanban_complete`` will be
+    refused until the parents finish. Graph-aware; mutates nothing."""
+    if _task_field(task, "status") != "running":
+        return []
+    graph = cfg.get("_graph")
+    if not isinstance(graph, dict):
+        return []
+    open_parents = [
+        parent for parent in (graph.get("parents") or [])
+        if isinstance(parent, dict) and parent.get("id")
+        and parent.get("status") not in ("done", "archived")
+    ]
+    if not open_parents:
+        return []
+    task_id = str(_task_field(task, "id") or "")
+    parent_ids = [str(parent["id"]) for parent in open_parents]
+    seen_at = int(_task_field(task, "started_at", default=0) or 0) or now
+    return [Diagnostic(
+        kind="running_with_open_parents", severity="warning",
+        title=f"Running while {len(parent_ids)} parent(s) are not done",
+        detail="This card is running concurrently with a parent it declares a dependency on, so the "
+               "parent's work is not serialised ahead of it and completion will be refused until every "
+               "parent is done or archived. Finish the parent, or unlink the edge if it was never meant "
+               "to gate this run.",
+        actions=[_cli_hint("Unlink the parent that should not gate this run",
+                           f"hermes kanban unlink {parent_ids[0]} {task_id}")],
+        first_seen_at=seen_at, last_seen_at=now, count=len(parent_ids),
+        data={"open_parents": [{"id": p["id"], "status": p.get("status")} for p in open_parents]},
+    )]
+
+
 def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Blocked for >= cfg["blocked_stale_hours"] (default 24) with no comment
     or unblock since the last ``blocked`` event."""
@@ -686,6 +720,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_review_dependency_deadlock,
+    _rule_running_with_open_parents,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,

@@ -197,8 +197,8 @@ def thinking_toggle_extras(
 
 
 def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[str]) -> tuple[dict, dict]:
-    """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation, shared by the
-    opencode-zen and opencode-free profiles (low/high/max only; anything else 400s)."""
+    """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation for the
+    opencode-zen profile (low/high/max only; anything else 400s)."""
     if (model or "").strip().rsplit("/", 1)[-1].lower() != "x-preview-f-free":
         return {}, {}
     effort = requested_effort(reasoning_config)

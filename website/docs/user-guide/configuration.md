@@ -9,7 +9,7 @@ description: "Configure Hermes Agent — config.yaml, providers, models, API key
 All settings are stored in the `~/.hermes/` directory for easy access.
 
 :::tip Easiest path to a working `config.yaml`
-Run `hermes setup --portal` — one OAuth gets you a model provider and all four Tool Gateway tools without hand-editing YAML. Portal subscribers also get 10% off token-billed providers. See [Nous Portal](/integrations/nous-portal).
+Run `hermes setup --portal` — one OAuth gets you a model provider and all four Tool Gateway tools without hand-editing YAML. Portal subscribers also get 10% off token-billed providers. See [Nous Portal](../integrations/nous-portal.md).
 :::
 
 ## Directory Structure
@@ -66,7 +66,7 @@ Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, 
 :::tip Org deployments
 An administrator can pin specific config and secret values that a standard user
 cannot override, via a system-level managed directory. See
-[Managed Scope](/user-guide/managed-scope).
+[Managed Scope](./managed-scope.md).
 :::
 
 ## Runtime Limits
@@ -148,11 +148,11 @@ delegation:
 
 Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is) and a warning is logged. Bare `$VAR` is not expanded.
 
-Under a [multiplexed multi-profile gateway](/user-guide/multi-profile-gateways), references in a profile's `config.yaml` resolve against **that profile's** `.env` (its secret scope), not the shared process environment — a `${MATRIX_ACCESS_TOKEN}` in profile B stays unresolved (kept verbatim, warning logged) unless B defines the variable itself. This holds wherever B's config is loaded inside the multiplexer: routed gateway turns, B's adapter startup, and B's cron jobs. Single-profile runs are unchanged. See [What is isolated per profile](/user-guide/multi-profile-gateways#what-is-isolated-per-profile) for the full list.
+Under a [multiplexed multi-profile gateway](./multi-profile-gateways.md), references in a profile's `config.yaml` resolve against **that profile's** `.env` (its secret scope), not the shared process environment — a `${MATRIX_ACCESS_TOKEN}` in profile B stays unresolved (kept verbatim, warning logged) unless B defines the variable itself. This holds wherever B's config is loaded inside the multiplexer: routed gateway turns, B's adapter startup, and B's cron jobs. Single-profile runs are unchanged. See [What is isolated per profile](./multi-profile-gateways.md#what-is-isolated-per-profile) for the full list.
 
 Cursor-style SecretRef syntax is also accepted: `${env:VAR_NAME}` resolves exactly like `${VAR_NAME}` (the `env:` prefix is stripped), so MCP or provider snippets copied from Cursor / Claude configs work unchanged in both `config.yaml` and the `mcp_servers` block. Other SecretRef sources (`${file:...}`, `${vault:...}`, `${bitwarden:...}`) are **not** resolved inline — external secret backends inject their values into the environment at startup via the `secrets:` block, so reference them as `${env:NAME}` instead; unknown prefixes warn once and stay verbatim.
 
-For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
+For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](../integrations/providers.md).
 
 ### Provider Timeouts
 
@@ -224,6 +224,7 @@ terminal:
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
+  sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
@@ -591,7 +592,8 @@ When in doubt, set `terminal.backend` back to `local` and verify that commands r
 
 For the **SSH**, **Modal**, and **Daytona** backends, Hermes pushes your `~/.hermes/` state (credential files, skills, cache) into the remote sandbox during the session, and on teardown **syncs changed state files back** to their original host locations. Files that differ from what was originally pushed (compared by content hash) are applied back in place; new remote files under a synced directory (e.g. a skill the agent created remotely) are mapped back to the corresponding host path. Upload-only credential files are never overwritten on the host.
 
-- The sync-back retries up to 3 times with backoff and refuses to extract remote archives larger than 2 GiB.
+- The sync-back retries up to 3 times with backoff and refuses to extract remote archives larger than 2 GiB; set `terminal.sync_back_max_bytes` (bytes) in `config.yaml` to raise the cap for a larger state tree. Live sockets under the remote `~/.hermes/` (e.g. `gateway.sock`) are skipped rather than failing the transfer.
+- The downloaded archive is staged under the system temp directory (`hermes-sync-back-<pid>-*`); leftovers from a hard-killed process are reclaimed on the next sync-back.
 - Docker and Singularity use bind mounts (live host filesystem view) and don't need this.
 - This covers Hermes state (`~/.hermes/`), **not** arbitrary working-tree files inside the sandbox — have the agent copy important artifacts out explicitly (e.g. `scp`, `modal volume put`) before the sandbox is destroyed.
 
@@ -706,6 +708,8 @@ Security tradeoff:
 
 Use the opt-in only when you intentionally want the container to work on live host files.
 
+A host path in `terminal.cwd` (for example `C:\Users\me\project` on Windows, or a desktop/TUI session's workspace) never becomes the container's working directory: when it is the directory mounted at `/workspace`, file tools and terminal commands use `/workspace`; otherwise the container keeps its own working directory. If a file tool still cannot enter its working directory, the error names the invalid `terminal.cwd` for the active backend rather than the shell's raw `cd:` line.
+
 ### Persistent Shell
 
 By default, each terminal command runs in its own subprocess — working directory, environment variables, and shell variables reset between commands. When **persistent shell** is enabled, a single long-lived bash process is kept alive across `execute()` calls so that state survives between commands.
@@ -771,7 +775,7 @@ skills:
 hermes config set skills.config.myplugin.path ~/myplugin-data
 ```
 
-For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml).
+For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](../developer-guide/creating-skills.md#config-settings-configyaml).
 
 ### Auto-loading skills every session
 
@@ -784,7 +788,7 @@ skills:
     - github-pr-workflow
 ```
 
-Resolved once per session when the system prompt is first built (so the prompt stays cache-stable; edits apply to the next session). Missing or disabled skills warn and are skipped; `--ignore-rules` / `HERMES_IGNORE_RULES=1` suppresses the list. Profile-scoped. See [CLI — persistent auto-load](/user-guide/cli#persistent-auto-load-via-config).
+Resolved once per session when the system prompt is first built (so the prompt stays cache-stable; edits apply to the next session). Missing or disabled skills warn and are skipped; `--ignore-rules` / `HERMES_IGNORE_RULES=1` suppresses the list. Profile-scoped. See [CLI — persistent auto-load](./cli.md#persistent-auto-load-via-config).
 
 ### Guard on agent-created skill writes
 
@@ -806,7 +810,7 @@ skills:
   write_approval: false   # false = write freely (default) | true = stage every write for review
 ```
 
-When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
+When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
 
 ## Memory Configuration
 
@@ -819,7 +823,7 @@ memory:
   write_approval: false     # true = require approval before any memory write
 ```
 
-With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
 
 ## Context File Truncation
 
@@ -1011,7 +1015,7 @@ The same limit is also a **fail-closed bound on what the model is sent** wheneve
 
 The value is the **first rung** of an escalating ladder, not a fixed interval: consecutive failures for the same session wait `1x`, `3x`, then `9x` this value, capped at one hour. A session whose summary model is permanently broken therefore backs off instead of retrying forever on a fixed interval, and a run that actually shrinks the transcript resets it to the first rung. Escalation is per-session and process-local — a gateway restart resets it to the first rung while the cooldown deadline itself survives.
 
-`context_timeout_seconds` (default `120`) is the same **inactivity budget** for in-agent `compress_context` — the conversation loop, preflight compaction, and manual `/compress` — so a hung summary model cannot stall a session indefinitely. Streamed summary tokens extend the wait; only a silent worker is cut off. On timeout Hermes retries the summary once against the first entry of `auxiliary.compression.fallback_chain` (using that entry's own `timeout` when it declares one) — a stalled route never raises, so the auxiliary client's own fallback handling cannot see it. Only if that attempt also fails, or no fallback chain is configured, does Hermes skip compaction, keep the existing messages, and warn the user. Set to `0` to disable. Gateway session hygiene keeps its own `hygiene_timeout_seconds` path and is not double-wrapped.
+`context_timeout_seconds` (default `120`) is the same **inactivity budget** for in-agent `compress_context` — the conversation loop, preflight compaction, and manual `/compress` — so a hung summary model cannot stall a session indefinitely. Streamed summary tokens extend the wait; only a silent worker is cut off. The budget is floored at the auxiliary compression request's own timeout (`auxiliary.compression.timeout`, minimum 300s), so the host never gives up on a silent summariser before the request itself would — a reasoning summariser thinking before its first token, or a route that cannot stream, gets the same budget the provider call has. On timeout Hermes retries the summary once against the first entry of `auxiliary.compression.fallback_chain` (using that entry's own `timeout` when it declares one) — a stalled route never raises, so the auxiliary client's own fallback handling cannot see it. If that attempt also fails, or no fallback chain is configured, what happens next depends on whether the request still fits the model's context window: a request that fits is sent uncompressed this turn (the summary-failure cooldown stops the retry from repeating every turn); a request above the window cannot be sent at all, so Hermes commits its deterministic fallback summary (old tool results pruned, a static handoff in place of the summarised middle) instead of ending the turn — ending the turn with the "compression timed out" recovery result (and, on the messaging gateway, the automatic session reset) is the last resort, reached only when even the deterministic pass cannot shrink the transcript. Set to `0` to disable. Gateway session hygiene keeps its own `hygiene_timeout_seconds` path and is not double-wrapped.
 
 `context_total_ceiling_seconds` (default `600`) bounds the in-agent **pre-commit** wait (summary / stream phase) even while tokens are still moving. It is clamped to at least `context_timeout_seconds`. The exact guarantee: **the summary phase is bounded by this ceiling; the commit phase is logged and surfaced if it exceeds it.** Once the worker has entered the compression commit fence and SessionDB mutation is in flight, the commit is never abandoned mid-flight — that would risk transcript divergence — but the wait is no longer silent: if the commit runs past the ceiling, Hermes logs the overrun (WARNING, escalating to ERROR on repeat), sends a one-shot warning through the user-visible warning channel, and keeps waiting in bounded increments until the commit completes. When the ceiling expires during the summary phase, the summary model's stream is closed at that same instant on every auxiliary wire (chat.completions, Codex Responses, Anthropic Messages) — an abandoned summary is not billed to completion on a connection nobody is waiting for, and its session lease is freed for the next attempt.
 
@@ -1146,7 +1150,7 @@ Agent cache pressure: anon RSS 6802MB over budget 6656MB — evicting 5 LRU sess
 
 ## Context Engine
 
-The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](/developer-guide/context-compression-and-caching)). Plugin engines can replace it with alternative strategies.
+The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](../developer-guide/context-compression-and-caching.md)). Plugin engines can replace it with alternative strategies.
 
 ```yaml
 context:
@@ -1162,7 +1166,7 @@ context:
 
 Plugin engines are **never auto-activated** — you must explicitly set `context.engine` to the plugin name. Available engines can be browsed and selected via `hermes plugins` → Provider Plugins → Context Engine.
 
-See [Memory Providers](/user-guide/features/memory-providers) for the analogous single-select system for memory plugins.
+See [Memory Providers](./features/memory-providers.md) for the analogous single-select system for memory plugins.
 
 ## Iteration Budget
 
@@ -1183,7 +1187,7 @@ agent:
 
 `agent.budget_warning_ratio` is off by default for ordinary and delegated conversations. When set to a value strictly between `0` and `1` alongside a finite `max_turns`, Hermes appends one model-visible checkpoint notice to the latest tool result after the threshold is reached. The notice rearms each conversation turn and uses each agent's own iteration budget. It only appends to a current tool-result tail, never an older turn, and does not add a synthetic user/system message or change the existing exhaustion grace call. Dispatcher-owned Kanban workers receive a completion checkpoint at 90% by default (an explicit ratio changes that threshold), while their tools are still available. The checkpoint asks for verified completion or a durable progress comment, not premature success.
 
-`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](./features/fallback-providers.md) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
 ## Wall-Clock Run Budget
 
@@ -1223,7 +1227,7 @@ agent:
 
 The evidence that feeds this guard (which test/lint/build commands ran, which files were edited since) lives in `~/.hermes/verification_evidence.db`. That ledger is only written or created while the guard is enabled; with `verify_on_stop: false` nothing is recorded and an existing file can be deleted freely.
 
-For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](/user-guide/features/hooks#pre_verify).
+For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](./features/hooks.md#pre_verify).
 
 ## Standing Goals (`/goal`)
 
@@ -1234,7 +1238,7 @@ goals:
   max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
 ```
 
-`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](/user-guide/features/goals) for the full feature.
+`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](./features/goals.md) for the full feature.
 
 ### API Timeouts
 
@@ -1305,7 +1309,7 @@ credential_pool_strategies:
   anthropic: least_used      # always pick the least-used key
 ```
 
-Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/user-guide/features/credential-pools) for full documentation.
+Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](./features/credential-pools.md) for full documentation.
 
 ## Prompt caching
 
@@ -1313,7 +1317,7 @@ Hermes turns on cross-session prompt caching automatically when the active provi
 
 For Claude on **native Anthropic**, **OpenRouter**, and **Nous Portal**, Hermes attaches `cache_control` breakpoints with the 1-hour TTL (`ttl: "1h"`) on the system prompt and skill blocks. The first send within a fresh hour pays full input rates; subsequent sends across any session within the same hour pull from the cache at the discounted cached-read rate. This means the system prompt, loaded skill content, and the early portion of any long-context include get reused across `hermes` sessions and across forked subagents for the first hour.
 
-The Qwen Cloud (Alibaba DashScope) upstream caps cache TTL at 5 minutes, so Hermes uses the 5-minute breakpoint TTL there instead. Other Claude-via-third-party paths (AWS Bedrock, Azure Foundry) fall back to the provider's own caching defaults. xAI Grok uses a separate session-pinned conversation-id mechanism — see [xAI prompt caching](/integrations/providers#xai-grok--responses-api--prompt-caching).
+The Qwen Cloud (Alibaba DashScope) upstream caps cache TTL at 5 minutes, so Hermes uses the 5-minute breakpoint TTL there instead. Other Claude-via-third-party paths (AWS Bedrock, Azure Foundry) fall back to the provider's own caching defaults. xAI Grok uses a separate session-pinned conversation-id mechanism — see [xAI prompt caching](../integrations/providers.md#xai-grok--responses-api--prompt-caching).
 
 No knob exists to disable this — caching is always-on and saves money even on single-turn conversations because the system prompt alone is a meaningful fraction of the input token count.
 
@@ -1367,6 +1371,12 @@ No background `auto-title` thread starts and no automatic title-model request is
 explicit repair command `hermes sessions retitle-skills` still calls the model. `enabled: false`
 still disables both stages.
 
+In Hermes Desktop, a plain-text paste over 3,000 characters becomes a generated `.txt`
+attachment. The first ~1,000 characters of that paste are handed to the title stages as a
+title-only hint (the agent turn still sees only the attachment reference), so a "summarize
+this" plus a large paste is named after the pasted topic. Files you attach yourself are never
+read for titling.
+
 ### Stream-only endpoints
 
 Some OpenAI-compatible endpoints reject non-streaming chat requests outright (e.g. Tencent Copilot returns HTTP 400 `"Non-stream chat request is currently not supported"`). Interactive chat already streams, but auxiliary tasks (title generation, compression, vision) use non-streaming calls and would fail on every attempt. Hermes always treats `copilot.tencent.com` as stream-only; for any other such endpoint, list a URL substring under `auxiliary.stream_only_base_urls`:
@@ -1407,13 +1417,13 @@ Auxiliary task blocks additionally accept a `reasoning_effort` knob:
 |-----|-------------|---------|
 | `reasoning_effort` | Thinking level for that task's LLM calls: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | not set (provider default) |
 
-This is the per-task counterpart of the global `agent.reasoning_effort`: run compression at `low` or vision at `none` to cut side-task latency and cost when your main model is an expensive reasoning model, without touching your main chat behavior. It applies to auxiliary-client tasks such as `vision`, `compression`, `title_generation`, and `curator`, across all three auxiliary wire formats (chat completions, Codex Responses, Anthropic Messages). An explicit `extra_body.reasoning` on the same task wins over the shorthand.
+This is the per-task counterpart of the global `agent.reasoning_effort`: run compression at `low` or vision at `none` to cut side-task latency and cost when your main model is an expensive reasoning model, without touching your main chat behavior. It applies to auxiliary-client tasks such as `vision`, `compression`, `title_generation`, and `curator`, across all three auxiliary wire formats (chat completions, Codex Responses, Anthropic Messages). An explicit `extra_body.reasoning` on the same task wins over the shorthand. A caller that turns thinking off for its own call (title generation does — a 64-token title has no room for reasoning) wins over both: the task-level effort is dropped for that request instead of being sent beside the provider's thinking-off field.
 
-If the endpoint rejects the reasoning field outright (a chat-only model behind an OpenAI-compatible relay answering `400 Unrecognized request argument supplied: reasoning_effort`), the auxiliary call is retried once with every reasoning field omitted, so the task (for example the session title) still completes with the endpoint's default behaviour.
+If the endpoint rejects the reasoning field outright (a chat-only model behind an OpenAI-compatible relay answering `400 Unrecognized request argument supplied: reasoning_effort`, or the reversed wording `400 reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh`), the auxiliary call is retried once with every reasoning field omitted, so the task (for example the session title) still completes with the endpoint's default behaviour. The main conversation applies the same recovery: when a route rejects the reasoning-off request Hermes sends for a thinking-only truncated continuation, the disable is dropped for the rest of the session and the request is retried with the route's default.
 
-**Background review is different:** a same-model review fork always inherits the parent's reasoning effort. `auxiliary.background_review.reasoning_effort` is ignored on that path, including when the parent provider/model is explicitly selected. This preserves byte-identical reasoning settings, system prompt, full conversation snapshot, and tool definitions for prompt-cache parity; there is no independent-effort switch for same-model reviews. See [background review reasoning](/user-guide/features/memory#same-model-review-reasoning). When the review is routed to a different provider/model, `reasoning_effort` applies to that routed fork (unset = the routed provider's default). Hermes prints a one-time warning when the key is set but the review runs on the main model.
+**Background review is different:** a same-model review fork always inherits the parent's reasoning effort. `auxiliary.background_review.reasoning_effort` is ignored on that path, including when the parent provider/model is explicitly selected. This preserves byte-identical reasoning settings, system prompt, full conversation snapshot, and tool definitions for prompt-cache parity; there is no independent-effort switch for same-model reviews. See [background review reasoning](./features/memory.md#same-model-review-reasoning). When the review is routed to a different provider/model, `reasoning_effort` applies to that routed fork (unset = the routed provider's default). Hermes prints a one-time warning when the key is set but the review runs on the main model.
 
-**MoA also uses a different configuration:** reasoning depth for Mixture-of-Agents is configured **per slot** in the MoA preset (`moa.presets.<name>.reference_models[].reasoning_effort` / `aggregator.reasoning_effort`), not on the `moa_reference`/`moa_aggregator` auxiliary blocks — see [Mixture of Agents](/user-guide/features/mixture-of-agents).
+**MoA also uses a different configuration:** reasoning depth for Mixture-of-Agents is configured **per slot** in the MoA preset (`moa.presets.<name>.reference_models[].reasoning_effort` / `aggregator.reasoning_effort`), not on the `moa_reference`/`moa_aggregator` auxiliary blocks — see [Mixture of Agents](./features/mixture-of-agents.md).
 
 ```yaml
 auxiliary:
@@ -1425,7 +1435,7 @@ auxiliary:
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `opencode-free`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `providers:` dict (e.g. `provider: "beans"`).
+Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](../reference/environment-variables.md) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `providers:` dict (e.g. `provider: "beans"`).
 
 Local OpenAI-compatible servers work under their own names too: `provider: ollama` (also `vllm`, `llamacpp`, `llama.cpp`) with a `base_url` such as `http://127.0.0.1:11434` and an empty `api_key` routes through the custom endpoint with a placeholder key, and a bare `host:port` base_url gets the `/v1` suffix automatically.
 
@@ -1438,7 +1448,7 @@ Local OpenAI-compatible servers work under their own names too: `provider: ollam
 :::
 
 :::warning `"main"` is for auxiliary tasks only
-The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and primary fallback entries (`fallback_providers:` or legacy `fallback_model:`). It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/integrations/providers) for all main model provider options.
+The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and primary fallback entries (`fallback_providers:` or legacy `fallback_model:`). It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](../integrations/providers.md) for all main model provider options.
 :::
 
 ### Full auxiliary config reference
@@ -1543,7 +1553,7 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::
 
 :::info
-Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The primary fallback chain uses a top-level `fallback_providers:` list — see [Fallback Providers](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
+Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The primary fallback chain uses a top-level `fallback_providers:` list — see [Fallback Providers](../integrations/providers.md#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
 
 ### Per-task fallback chain for auxiliary tasks
@@ -1576,7 +1586,7 @@ Each entry supports the same three knobs as any auxiliary task config:
 
 ### Native vision embed budgets (top-level `vision:`)
 
-Separate from `auxiliary.vision` (which picks the describer model): when the *main* model is vision-capable, `vision_analyze` and browser screenshots embed real pixels into tool results that are re-sent every later turn. `vision.embed_target_bytes` (default `262144`, clamped 64 KiB..4 MiB) sizes one embed; `vision.max_calls_per_image` caps how often the same image may be embedded per session (unset = 3 inside delegated subagents, unlimited for the main agent; `0` = unlimited). See [Vision → Native embeds ride the session](/user-guide/features/vision#native-embeds-ride-the-session-visionembed_target_bytes-and-visionmax_calls_per_image).
+Separate from `auxiliary.vision` (which picks the describer model): when the *main* model is vision-capable, `vision_analyze` and browser screenshots embed real pixels into tool results that are re-sent every later turn. `vision.embed_target_bytes` (default `262144`, clamped 64 KiB..4 MiB) sizes one embed; `vision.max_calls_per_image` caps how often the same image may be embedded per session (unset = 3 inside delegated subagents, unlimited for the main agent; `0` = unlimited). See [Vision → Native embeds ride the session](./features/vision.md#native-embeds-ride-the-session-visionembed_target_bytes-and-visionmax_calls_per_image).
 
 ### Limiting auxiliary concurrency
 
@@ -1599,7 +1609,7 @@ The semaphore wraps the entire call including retries and fallbacks, so a single
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
 
-When an auxiliary task resolves to OpenRouter (either explicitly or via `provider: "main"` while your main agent is on OpenRouter), the main agent's `provider_routing` and `openrouter.min_coding_score` settings **do not propagate** — by design, each auxiliary task is independent. To set OpenRouter provider preferences or use the [Pareto Code router](/integrations/providers#openrouter-pareto-code-router) for a specific aux task, set them per-task via `extra_body`:
+When an auxiliary task resolves to OpenRouter (either explicitly or via `provider: "main"` while your main agent is on OpenRouter), the main agent's `provider_routing` and `openrouter.min_coding_score` settings **do not propagate** — by design, each auxiliary task is independent. To set OpenRouter provider preferences or use the [Pareto Code router](../integrations/providers.md#openrouter-pareto-code-router) for a specific aux task, set them per-task via `extra_body`:
 
 ```yaml
 auxiliary:
@@ -1808,10 +1818,15 @@ agent:
 The key matching is **spelling-tolerant** — any reasonable spelling will match:
 - `claude-opus-4.5`, `claude-opus-4-5`, `claude-opus.4.5` (dots and dashes are interchangeable)
 - `anthropic/claude-opus-4.5`, `openrouter/anthropic/claude-opus-4.5` (provider prefix optional)
+- A key prefixed with a named custom provider (`ollama-local/qwen3.6:27b-q4_k_m`) also applies when the request carries only the bare model id (`qwen3.6:27b-q4_k_m`), which is what fallback entries and `providers:` routes send
 - Exact matches take precedence over variants
 
 :::note
-There is no `hermes config set` support for `reasoning_overrides` keys — edit the YAML file directly. This is because model names often contain dots (e.g. `claude-opus-4.5`), which conflict with the CLI's dotted-key syntax.
+Model ids contain dots (`claude-opus-4.5`, `qwen3.6:27b`), which `hermes config set` treats as nesting separators. Escape them with a backslash to write the literal key — `hermes config set 'agent.reasoning_overrides.ollama-local/qwen3\.6:27b-q4_k_m' low` — or edit the YAML directly. See [Dots inside key names](../reference/cli-commands.md#dots-inside-key-names).
+:::
+
+:::note Local OpenAI-compatible endpoints
+A custom `base_url` (`http://localhost:11434/v1`, a vLLM, SGLang or router endpoint) receives the resolved effort — `agent.reasoning_effort` or the matching per-model override — as the standard top-level `reasoning_effort` request field, clamped to the values the OpenAI-compatible wire accepts (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). The nested `reasoning` object is reserved for endpoints known to accept it (Nous Portal, OpenRouter reasoning-capable models, GitHub Models) because arbitrary servers reject unknown fields with HTTP 400. If your server reads its thinking budget from a different field (Ollama's `think`, vLLM's `chat_template_kwargs`, a router-specific key), set it under the custom provider's [`extra_body`](../integrations/providers.md#named-custom-providers), which is merged into every request routed there.
 :::
 
 **Resolution priority:**
@@ -2325,7 +2340,7 @@ stt:
   prompt: "Hermes, Teknium, Nous Research, kanban, Ollama"
 ```
 
-**Composition.** The config value is the base. Plugins that register the [`pre_transcription`](/user-guide/features/hooks#pre_transcription) hook mutate on top of it, last-writer-wins per field. Multiple plugins' hints compose deterministically: plugin discovery loads plugins in sorted order by plugin id, and each plugin's callbacks run in its own registration order, so the same set of plugins always produces the same final prompt. A hook returning an empty string for `prompt` clears the config prompt for that request. Hooks may also override `language` and `model`; `file_path` is read-only and any attempt to change it is logged and dropped. With no hook registered and no `stt.prompt` set, the outgoing request is identical to previous releases.
+**Composition.** The config value is the base. Plugins that register the [`pre_transcription`](./features/hooks.md#pre_transcription) hook mutate on top of it, last-writer-wins per field. Multiple plugins' hints compose deterministically: plugin discovery loads plugins in sorted order by plugin id, and each plugin's callbacks run in its own registration order, so the same set of plugins always produces the same final prompt. A hook returning an empty string for `prompt` clears the config prompt for that request. Hooks may also override `language` and `model`; `file_path` is read-only and any attempt to change it is logged and dropped. With no hook registered and no `stt.prompt` set, the outgoing request is identical to previous releases.
 
 **Provider support.**
 
@@ -2361,7 +2376,7 @@ voice:
   silence_duration: 3.0         # Seconds of silence before auto-stop
 ```
 
-Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
+Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](./features/voice-mode.md) for end-to-end setup and platform-specific behavior.
 
 ## Streaming
 
@@ -2426,7 +2441,11 @@ both are set.
 The cap is enforced with a local runtime lease file and is best-effort: Hermes
 fails open if the registry cannot be read or locked so users are not stranded.
 It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
-mounted across multiple machines.
+mounted across multiple machines. A lease whose owning process exists but whose
+liveness cannot be proved (for example an unreadable `/proc` entry inside a
+container after `hermes update` restarts the backend) still counts toward the
+cap and still fences its own session id, but it no longer blocks claiming or
+releasing a different session.
 
 Control whether shared chats keep one conversation per room or one conversation per participant:
 
@@ -2439,7 +2458,7 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 - Direct messages are unaffected. Hermes still keys DMs by chat/DM ID as usual.
 - Threads stay isolated from their parent channel either way; with `true`, each participant also gets their own session inside the thread.
 
-For the behavior details and examples, see [Sessions](/user-guide/sessions) and the [Discord guide](/user-guide/messaging/discord).
+For the behavior details and examples, see [Sessions](./sessions.md) and the [Discord guide](./messaging/discord.md).
 
 ## Unauthorized DM Behavior
 
@@ -2567,9 +2586,9 @@ web:
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) |
 | **Exa** | `EXA_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 
-**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PERPLEXITY_API_KEY` is set, Perplexity; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
+**Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PERPLEXITY_API_KEY` is set, Perplexity; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](./features/web-search.md) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
 
-**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
+**SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](./features/web-search.md) for Docker setup instructions.
 
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 
@@ -2609,7 +2628,7 @@ browser:
 
 See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
-The browser toolset supports multiple providers. See the [Browser feature page](/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
+The browser toolset supports multiple providers. See the [Browser feature page](./features/browser.md) for details on Browserbase, Browser Use, and local Chromium-family CDP setup.
 
 ## Timezone
 
@@ -2731,7 +2750,7 @@ approvals:
     - "*curl*|*sh*"
 ```
 
-Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny) for details.
+Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](./security.md#user-defined-deny-rules-approvalsdeny) for details.
 
 ### Custom smart-approval policy
 
@@ -2747,7 +2766,7 @@ approvals:
 
 ## Checkpoints
 
-Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](/user-guide/checkpoints-and-rollback) for details.
+Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](./checkpoints-and-rollback.md) for details.
 
 ```yaml
 checkpoints:
@@ -2808,12 +2827,14 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 
 ## Clarify
 
-Configure how long the gateway waits for a response to a clarifying question. The canonical key is `agent.clarify_timeout` (default `3600` seconds); a legacy top-level `clarify.timeout` is still honored if explicitly set:
+Configure how long Hermes waits for a response to a clarifying question. One value covers every surface — the classic CLI modal, the TUI/Desktop card, and the messaging gateway. The canonical key is `agent.clarify_timeout` (default `3600` seconds; `0` or less = unlimited); a legacy top-level `clarify.timeout` is still honored if explicitly set:
 
 ```yaml
 agent:
   clarify_timeout: 3600        # Seconds to wait for user clarification response (0 or less = unlimited)
 ```
+
+When the timeout expires, the agent unblocks with a "user did not respond" sentinel and continues on its own. A clarify prompt is never cut by the generic per-tool deadline (`timeouts.tools.sequential_call`); only `agent.clarify_timeout` bounds the wait.
 
 ## Context Files (SOUL.md, AGENTS.md)
 
@@ -2836,8 +2857,8 @@ Hermes uses two different context scopes:
 - All loaded context files are capped at `context_file_max_chars` characters (default 20,000) with smart truncation.
 
 See also:
-- [Personality & SOUL.md](/user-guide/features/personality)
-- [Context Files](/user-guide/features/context-files)
+- [Personality & SOUL.md](./features/personality.md)
+- [Context Files](./features/context-files.md)
 
 ## Working Directory
 
@@ -2865,7 +2886,7 @@ network:
   force_ipv4: false   # Force IPv4 for outbound connections (default: false)
 ```
 
-`force_ipv4` — on servers with broken or unreachable IPv6, Python resolves AAAA records first and can hang for the full TCP timeout before falling back to IPv4. Set this to `true` to skip IPv6 entirely and connect over IPv4 directly.
+`force_ipv4` — on servers with broken or unreachable IPv6, Python resolves AAAA records first and can hang for the full TCP timeout before falling back to IPv4. Hermes already races IPv6 and IPv4 for every outbound connection it makes (Happy Eyeballs, RFC 8305: the IPv4 attempt starts 250 ms after IPv6 and whichever connects first wins), so an advertised-but-blackholed IPv6 route costs about a quarter second per connection instead of the full timeout. This covers the gateway's WebSocket dials (relay connector, platform adapters) as well as HTTP. Set this to `true` only when you want to skip IPv6 entirely and connect over IPv4 directly. `hermes doctor` runs an `IPv6 route` check that detects a dead IPv6 path and points at this setting.
 
 ## Onboarding
 
@@ -2882,7 +2903,7 @@ onboarding:
 
 ## Dashboard
 
-Configuration for the [web dashboard](/user-guide/features/web-dashboard) — visual theme, public URL, and authentication providers. The auth providers (OAuth, basic password, drain) are documented in detail on the web-dashboard page; this is the `config.yaml` shape.
+Configuration for the [web dashboard](./features/web-dashboard.md) — visual theme, public URL, and authentication providers. The auth providers (OAuth, basic password, drain) are documented in detail on the web-dashboard page; this is the `config.yaml` shape.
 
 ```yaml
 dashboard:
@@ -2914,7 +2935,7 @@ dashboard:
 - `show_token_analytics` — off by default. The Analytics page and token/cost figures are a **local lower-bound estimate** (they exclude auxiliary calls, retries, fallbacks, and cache writes), so they can read far below the provider bill. Set `true` only if you understand they're not billing.
 - `public_url` — when set, this is the complete authority (scheme + host + optional path prefix) the OAuth `redirect_uri` is built from. Set it for deploys behind reverse proxies that don't reliably forward `X-Forwarded-*` headers. Leave empty to use proxy-header reconstruction.
 - `trusted_proxies` — IP addresses or bounded CIDR networks allowed to supply `X-Forwarded-Proto` and `X-Forwarded-For`. Loopback remains trusted automatically. Configure this when the TLS reverse proxy connects from another container or host. Prefer the proxy's exact IP; use a small dedicated network only when its address is dynamic. Wildcards and `/0` networks are rejected.
-- `oauth` / `basic_auth` / `drain_auth` — auth provider config read by the bundled dashboard-auth plugins. The drain secret itself is **not** set here; it's provisioned via the `HERMES_DASHBOARD_DRAIN_SECRET` env var. See [Web Dashboard](/user-guide/features/web-dashboard) for full auth setup.
+- `oauth` / `basic_auth` / `drain_auth` — auth provider config read by the bundled dashboard-auth plugins. The drain secret itself is **not** set here; it's provisioned via the `HERMES_DASHBOARD_DRAIN_SECRET` env var. See [Web Dashboard](./features/web-dashboard.md) for full auth setup.
 - `ws_ping_interval` / `ws_ping_timeout` — WebSocket keepalive tuning for non-loopback binds (loopback connections never ping). Raise these on high-latency links (Tailscale, distant SSH tunnels) where the 20 s defaults can manufacture spurious 1006 disconnects.
 - `ssh_isolated_idle_grace_s` (default `900`) — a Desktop-owned `hermes serve --isolated` backend reached over SSH is detached from the SSH session on purpose, so a laptop that sleeps mid-connection cannot tear it down; each dark-wake reconnect used to leave another backend holding `state.db`. The backend now retires itself once no client WebSocket has been connected for this long and no agent turn is running (a turn keeps it alive; an unreadable turn state keeps it alive too). Set high if you rely on a detached backend finishing long work after the laptop sleeps. Such backends also send a slow WebSocket ping (60 s, 10 min timeout) so a half-open tunnel is noticed.
 - `ws_orphan_reap_grace_s` — how long a WS-detached session waits before the orphan reaper collects it. Raise alongside the keepalive values if clients reconnect slowly. Periodic session maintenance also completes cleanup for closed sockets and re-arms a missing orphan timer, so a detached chat cannot keep its ownership lease solely because its initial cleanup or timer was lost. Reconnecting cancels that timer; active delegated work and healthy running turns remain protected by the normal orphan-reaper checks. (`HERMES_TUI_WS_ORPHAN_REAP_GRACE_S` remains as an internal override.)

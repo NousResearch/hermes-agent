@@ -1,0 +1,21 @@
+name: jev-typesafe
+repo: https://github.com/ajensenwaud/hermes-jev-plugin
+sha: b3d29f71770a3447ad0b3db00658f64a8edc7dd3
+description: TypeSafe Jev (System One) decision tools — atomic yes/no checks, routing, rubric scoring and mixed typed questions with calibrated probabilities, for triage, routing and review gating in coding agents.
+maintainer: Anders Jensen-Waud
+tier: community
+category: tools
+requires_hermes: ">=0.19"
+docs_url: https://github.com/ajensenwaud/hermes-jev-plugin/blob/b3d29f71770a3447ad0b3db00658f64a8edc7dd3/README.md
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - jev_evaluate
+    - jev_check
+    - jev_route
+    - jev_score
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TYPESAFE_API_KEY

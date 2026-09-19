@@ -2,6 +2,7 @@
 name: inspecting-hermes-desktop-dom
 description: "Read the live Hermes desktop DOM/CSS over CDP."
 version: 1.0.0
+risk: READ
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]

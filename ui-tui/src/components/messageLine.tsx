@@ -167,6 +167,19 @@ export const MessageLine = memo(function MessageLine({
 
   const showResponseSeparator = shouldShowResponseSeparator(msg, showDetails)
 
+  // `display.timestamps`: dim [HH:MM] beside the gutter glyph on user and
+  // assistant rows only — event/trail/system chrome stays unstamped, matching
+  // the classic CLI which stamps its user/assistant labels (#41531).
+  const stamp =
+    timestamps && (msg.role === 'user' || msg.role === 'assistant') && !msg.kind ? fmtMsgTimestamp(msg.createdAt) : null
+
+  // The stamp rides inline on the gutter row, so the body yields its width
+  // (stamp + one space) to keep the row within `cols`.
+  const contentWidth = Math.max(
+    1,
+    transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE) - (stamp ? stamp.length + 1 : 0)
+  )
+
   const content = (() => {
     if (msg.kind === 'slash') {
       return <Text color={t.color.muted}>{msg.text}</Text>
@@ -198,15 +211,13 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'assistant') {
-      const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)
-
       return isStreaming ? (
         // Incremental markdown: split at the last stable block boundary so
         // only the in-flight tail re-tokenizes per delta. See
         // streamingMarkdown.tsx for the cost model.
-        <StreamingMd cols={bodyWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
+        <StreamingMd cols={contentWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
       ) : (
-        <Md cols={bodyWidth} compact={compact} t={t} text={msg.text} />
+        <Md cols={contentWidth} compact={compact} t={t} text={msg.text} />
       )
     }
 
@@ -253,12 +264,6 @@ export const MessageLine = memo(function MessageLine({
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
 
-  // `display.timestamps`: dim [HH:MM] beside the gutter glyph on user and
-  // assistant rows only — event/trail/system chrome stays unstamped, matching
-  // the classic CLI which stamps its user/assistant labels (#41531).
-  const stamp =
-    timestamps && (msg.role === 'user' || msg.role === 'assistant') && !msg.kind ? fmtMsgTimestamp(msg.createdAt) : null
-
   return (
     <Box
       flexDirection="column"
@@ -293,25 +298,19 @@ export const MessageLine = memo(function MessageLine({
         </Box>
       )}
 
-      {stamp && (
-        <Box>
-          <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-            <Text> </Text>
-          </NoSelect>
-          <Text color={t.color.muted} dim>
-            {stamp}
-          </Text>
-        </Box>
-      )}
-
       <Box>
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
             {glyph}{' '}
           </Text>
         </NoSelect>
+        {stamp && (
+          <Text color={t.color.muted} dim>
+            {stamp}{' '}
+          </Text>
+        )}
 
-        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
+        <Box width={contentWidth}>{content}</Box>
       </Box>
     </Box>
   )

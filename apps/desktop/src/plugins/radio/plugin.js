@@ -18,6 +18,16 @@ const PRESETS = [
   { id: 'eve-radio', name: 'EVE Radio', description: 'GamingNow · EVE community radio', provider: 'GamingNow', url: 'https://media01.gamingnow.net:8010/erweb.mp3', homepage: 'https://gamingnow.net/eve-radio/' }
 ]
 
+// Live streams stop for ordinary reasons — the broadcaster closes the
+// connection (this station's edge server drops it about every five minutes),
+// the OS suspends the audio graph, media keys pause the element. A stream that
+// stops while the user still wants it playing is reconnected on this backoff,
+// for this long, before the station is called unavailable. The first retry is
+// near-immediate: refusing a live stream a fresh socket costs the listener a
+// gap, and a live stream rejoins at the live edge.
+const RECOVERY_DELAYS = [250, 1000, 2000, 4000, 8000]
+const RECOVERY_WINDOW = 45000
+
 const EN = {
   radio: 'Radio', browse: 'Choose a station', play: 'Play radio', pause: 'Pause radio', next: 'Next station',
   live: 'Live', paused: 'Paused', connecting: 'Connecting', error: 'Stream unavailable', retry: 'Try again',
@@ -173,14 +183,33 @@ function createPlayer(ctx) {
   const waveformData = new Float32Array(2048)
   let generation = 0
   let timeout = null
+  let watchdog = null
   let disposed = false
   let lastVolume = volume.get() || 25
+  // What the user asked for, as opposed to what the element is doing. A pause
+  // this player did not cause, and a stream that dropped, both recover: the
+  // widget must not sit silent while claiming the user paused it.
+  let intent = false
+  let liveSince = 0
+  let interruptions = []
+  let recovering = null
+  let recoveryStarted = 0
+  let attempts = 0
+  let lastProgress = -1
+  let still = 0
   const bus = new BroadcastChannel('hermes:radio:playback')
   const windowId = crypto.randomUUID()
 
-  function stop(nextStatus = 'paused') {
+  // Releasing the transport is not the same as the user pausing: a reconnect
+  // releases too, so the intent to play has to survive it.
+  function release(nextStatus = 'paused') {
     generation++
     clearTimeout(timeout)
+    clearInterval(watchdog)
+    timeout = null
+    watchdog = null
+    still = 0
+    lastProgress = -1
     source?.disconnect()
     analyser?.disconnect()
     output?.disconnect()
@@ -198,9 +227,59 @@ function createPlayer(ctx) {
     status.set(nextStatus)
   }
 
+  function stop(nextStatus = 'paused') {
+    intent = false
+    interruptions = []
+    recovering = null
+    recoveryStarted = 0
+    attempts = 0
+    liveSince = 0
+    release(nextStatus)
+  }
+
+  // A stream that was playing and stopped is reconnected, not written off: live
+  // radio drops constantly, and a paused widget is never what the user asked
+  // for. Bounded, so a station that is genuinely gone still ends in the
+  // ordinary error state instead of reconnecting forever.
+  function reconnect(next, element, why = 'stream ended') {
+    if (disposed || !intent) return
+    if (!recovering || !sameStation(recovering, next)) {
+      recovering = next
+      recoveryStarted = Date.now()
+      attempts = 0
+    }
+    // A healthy stretch earns a fresh window; a stream that keeps flapping
+    // without ever holding does not.
+    if (liveSince && Date.now() - liveSince >= 15000) {
+      recoveryStarted = Date.now()
+      attempts = 0
+    }
+    if (Date.now() - recoveryStarted > RECOVERY_WINDOW) {
+      recovering = null
+      recoveryStarted = 0
+      attempts = 0
+      return stop('error')
+    }
+    const delay = RECOVERY_DELAYS[Math.min(attempts++, RECOVERY_DELAYS.length - 1)]
+    console.warn('[radio] stream stopped while playing; reconnecting', { url: next.url, why, readyState: element?.readyState, networkState: element?.networkState })
+    release('connecting')
+    timeout = setTimeout(() => {
+      if (!disposed && intent) void play(station.get())
+    }, delay)
+  }
+
   async function play(next = station.get(), analyse = true) {
     if (disposed || !validStation(next)) return
-    stop()
+    // Playing another station starts a new episode rather than continuing the
+    // one being reconnected.
+    if (recovering && !sameStation(recovering, next)) {
+      recovering = null
+      recoveryStarted = 0
+      attempts = 0
+      liveSince = 0
+    }
+    intent = true
+    release()
     const token = generation
     station.set(next)
     ctx.storage.set('local.station', next)
@@ -219,27 +298,108 @@ function createPlayer(ctx) {
     element.volume = metered ? 1 : volume.get() / 100
     document.body.append(element)
     const current = () => !disposed && token === generation
-    const fail = () => {
-      if (!current()) return
+    let live = false
+    let starvedAt = 0
+    let silent = 0
+    // A live stream loses almost nothing by reconnecting: the new connection joins at the live
+    // edge, so the listener hears a fraction of a second instead of the whole stall. The longer
+    // window belongs to a FIRST connect, where a slow server deserves its chance.
+    const connectTimeout = () => (live || recovering ? 6000 : 15000)
+    // A station that never produced audio keeps the immediate answer; one that
+    // was playing and then stopped is reconnected instead of being written off.
+    // `why` is what the log needs to tell a 2s broadcaster hiccup from a dead graph.
+    const fail = (why = 'stream ended') => {
+      if (!current() || !intent) return
+      if (live || (recovering && sameStation(recovering, next))) return reconnect(next, element, why)
       if (metered) {
         plainStreams.add(next.url)
         void play(next, false)
       } else stop('error')
     }
-    element.addEventListener('playing', () => {
-      if (current()) { clearTimeout(timeout); status.set('live') }
-    })
-    // Browser/media controls can pause the element outside our buttons.
-    // Reflect that state instead of showing a frozen trace as live playback.
+    // Live radio can also go quiet without any event at all: a suspended audio graph, a
+    // connection that stopped delivering, or an analyser reading digital silence while the
+    // element still reports progress. Poll the transport and rebuild what stopped moving.
+    // Digital silence is the one failure that looks healthy, so it needs its own test.
+    const silentSamples = () => {
+      if (!metered || !live || !analyser) return false
+      analyser.getFloatTimeDomainData(waveformData)
+      for (let i = 0; i < waveformData.length; i++) {
+        if (waveformData[i] > 1e-4 || waveformData[i] < -1e-4) return false
+      }
+      return true
+    }
+    const check = () => {
+      if (!current() || !intent) return
+      const graph = !metered || audioContext?.state === 'running'
+      if (!graph) void audioContext?.resume()
+      const moving = !element.paused && element.readyState >= 3 && element.currentTime !== lastProgress
+      lastProgress = element.currentTime
+      // Two different failures: the transport stops moving (a stall), and a transport that is
+      // still moving while the samples are digital silence (a graph that broke silently). The
+      // first heals in seconds; the second is only believed once no broadcast could be this
+      // quiet — a station pausing between sentences must not be mistaken for a fault.
+      const stalled = !moving || !graph
+      if (!stalled) {
+        if (!silentSamples()) {
+          still = 0
+          silent = 0
+          return
+        }
+        if (++silent < 8) return
+      } else if (++still < 3) {
+        silent = 0
+        return
+      }
+      const why = !graph ? 'audio graph suspended' : stalled ? 'no progress for 6s' : 'digital silence while playing'
+      still = 0
+      silent = 0
+      // A suspended graph never comes back by itself; rebuild it on reconnect.
+      if (!graph) {
+        const dead = audioContext
+        audioContext = null
+        void dead?.close()
+      }
+      reconnect(next, element, why)
+    }
+    const listening = () => {
+      if (!current()) return
+      // The hitch the listener just heard: one line per episode, with the numbers that make it
+      // diagnosable (a 2s rebuffer from the broadcaster reads nothing like a 12s dead graph).
+      if (starvedAt) {
+        const starved = (Date.now() - starvedAt) / 1000
+        if (starved >= 1) console.info(`[radio] rebuffered after ${starved.toFixed(1)}s`, { readyState: element.readyState, networkState: element.networkState })
+        starvedAt = 0
+      }
+      live = true
+      liveSince = Date.now()
+      clearTimeout(timeout)
+      still = 0
+      silent = 0
+      lastProgress = -1
+      status.set('live')
+      watchdog ??= setInterval(check, 2000)
+    }
+    element.addEventListener('playing', listening)
+    // Media keys, an audio-device change and the OS itself pause the element
+    // outside our buttons. That is an interruption, not a user pause: resume
+    // it, and only give in if it keeps being paused.
     element.addEventListener('pause', () => {
-      if (current() && element.paused && !element.ended) stop()
+      if (!current() || !intent || !element.paused || element.ended) return
+      interruptions = [...interruptions.filter(at => Date.now() - at < 20000), Date.now()]
+      if (interruptions.length > 3) return stop()
+      console.warn('[radio] playback was paused outside the player; resuming', next.url)
+      void element.play().catch(() => reconnect(next, element, 'resume after an outside pause failed'))
     })
     element.addEventListener('waiting', () => {
-      if (current()) { status.set('connecting'); clearTimeout(timeout); timeout = setTimeout(fail, 15000) }
+      if (!current()) return
+      if (!starvedAt) starvedAt = Date.now()
+      status.set('connecting')
+      clearTimeout(timeout)
+      timeout = setTimeout(() => fail('starved while live'), connectTimeout())
     })
-    element.addEventListener('error', fail)
-    element.addEventListener('ended', fail)
-    timeout = setTimeout(fail, 15000)
+    element.addEventListener('error', () => fail('stream error'))
+    element.addEventListener('ended', () => fail('broadcaster closed the stream'))
+    timeout = setTimeout(() => fail('no audio within the connect timeout'), connectTimeout())
     element.src = next.url
     try {
       if (metered) {
@@ -256,7 +416,7 @@ function createPlayer(ctx) {
         if (!current()) return
       }
       await element.play()
-    } catch { fail() }
+    } catch { fail('play() was rejected') }
   }
 
   function toggle() {

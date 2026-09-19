@@ -348,6 +348,8 @@ class TeamsAdapter(BasePlatformAdapter):
         super().__init__(config, Platform("teams"))
         # Kept on the instance: ``platforms.teams.extra.*`` keys are read after construction too.
         self._extra: Dict[str, Any] = config.extra or {}
+        # Approval delegation state: session_key → admin_user_id
+        self._approval_state: Dict[str, str] = {}
         self._client_id, self._client_secret, self._tenant_id = _credentials(config)
         # (token, expiry monotonic ts) for connector attachment auth; refreshed under
         # _bf_token_lock so concurrent attachments can't stampede the STS.
@@ -635,12 +637,34 @@ class TeamsAdapter(BasePlatformAdapter):
         denied = self._card_action_denied(ctx.activity.from_)
         if denied:
             return self._invoke_message(denied)
+        # Delegation admin identity gate: when the approval was sent to a
+        # configured delegation admin, only that exact user may click —
+        # even if they'd pass the general allowlist (or TEAMS_ALLOW_ALL_USERS).
+        # Use .get() (NOT .pop()) so unauthorized clicks don't consume the
+        # state — the real admin can still retry.
+        _from = getattr(ctx.activity, "from_", None)
+        _clicker_id = (getattr(_from, "aad_object_id", None) or getattr(_from, "id", "")) if _from else ""
+        expected_admin_uid = self._approval_state.get(session_key)
+        if not expected_admin_uid:
+            logger.warning(
+                "[teams] admin_user_id empty in approval state — "
+                "admin identity gate is not enforced (session_key=%s)", session_key[:16],
+            )
+        if expected_admin_uid and _clicker_id and _clicker_id != expected_admin_uid:
+            logger.warning(
+                "[teams] Unauthorized approval click: expected admin %s, "
+                "got %s (session_key=%s)",
+                expected_admin_uid, _clicker_id, session_key[:16],
+            )
+            return self._invoke_message("⛔ Not authorized to approve this command.")
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message("Unknown action.")
         if not has_blocking_approval(session_key):
             return self._invoke_card([TextBlock(text="⚠️ Approval already resolved or expired.", wrap=True)])
         resolve_gateway_approval(session_key, choice)
+        # Clean up delegation state after successful resolution
+        self._approval_state.pop(session_key, None)
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
         body.append(TextBlock(text=_APPROVAL_LABELS[choice], wrap=True, weight="Bolder"))
         return self._invoke_card(body)
@@ -669,13 +693,17 @@ class TeamsAdapter(BasePlatformAdapter):
     _EA_CMD_BUDGET = 2000
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
     _EA_CARD_STYLES = {"primary": "positive", "danger": "destructive"}
+    _enforces_delegation_admin_identity = True
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Adaptive Card: the shared text is split into its header / fenced command / reason blocks."""
+        """Adaptive Card: the shared text is split into its header / fenced command / reason blocks.
+        ``prompt.admin_user_id`` (delegation) is stored for the card-action callback validation."""
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         # Button data carries a truncated cmd — just enough to reconstruct the card body.
         btn_data_base = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        # Store admin_user_id for delegation callback validation
+        self._approval_state[prompt.session_key] = str(prompt.admin_user_id or "")
         actions = []
         for label, choice, style in prompt.actions:
             kw = {"style": self._EA_CARD_STYLES[style]} if style else {}

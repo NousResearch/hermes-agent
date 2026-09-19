@@ -82,7 +82,7 @@ FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
+from gateway.platforms.base_exec_approval import EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
@@ -1731,11 +1731,15 @@ class FeishuAdapter(BasePlatformAdapter):
     _EA_CMD_BUDGET = 3000
 
     _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
+    _EA_I18N_ACTION_LABELS = True
+    _enforces_delegation_admin_identity = True
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approval-button card; ``hermes_action`` in each button value lets the click callback
-        route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""
+        route to ``resolve_gateway_approval()`` and unblock the waiting agent thread.
+        ``prompt.admin_user_id`` (delegation) is stored with the card state so the click can be
+        validated against the configured admin."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
@@ -1744,10 +1748,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 _card_button(label, style or "default",
                              {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
                 for label, choice, style in prompt.actions]
-            card = _card(f"⚠️ {EA_HEADER_TEXT}", "orange", prompt.text, actions=actions)
+            card = _card(self._ea_card_header(), "orange", prompt.text, actions=actions)
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
+                admin_user_id=str(prompt.admin_user_id or ""),
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -1756,6 +1761,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _send_interactive_card(
         self, chat_id: str, card: Dict[str, Any], metadata: Optional[Dict[str, Any]], failure_message: str, *,
         state_map: Dict[int, Dict[str, str]], state_id: int, session_key: str,
+        admin_user_id: str = "",
     ) -> SendResult:
         """Send a button card and, on success, remember where it went so a click can be validated."""
         response = await self._feishu_send_with_retry(
@@ -1768,6 +1774,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "session_key": session_key,
                 "message_id": result.message_id or "",
                 "chat_id": chat_id,
+                "admin_user_id": admin_user_id,
             }
         return result
 
@@ -1803,7 +1810,19 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Raw card JSON shown in place of the buttons once an approval is resolved."""
         icon = "❌" if choice == "deny" else "✅"
-        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        # i18n approval result labels with English fallback
+        try:
+            from agent.i18n import t as _t
+            _key_map = {
+                "once": "approved_once",
+                "session": "approved_session",
+                "always": "approved_always",
+                "deny": "denied",
+            }
+            _i18n_key = _key_map.get(choice, "approved_once")
+            label = _t(f"gateway.approval_delegation.{_i18n_key}")
+        except Exception:
+            label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
         return _card(f"{icon} {label}", "red" if choice == "deny" else "green", f"{icon} **{label}** by {user_name}")
 
     @staticmethod
@@ -2225,6 +2244,25 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning(
                 "[Feishu] %s callback chat mismatch for %s (expected=%s, got=%s)",
                 label.capitalize(), ident, expected_chat_id, callback_chat_id,
+            )
+            return None
+
+        # Validate delegation admin identity: the button click must come
+        # from the configured admin user, not just any member of the chat.
+        # Compare against operator.user_id (the internal Feishu user ID used
+        # in config), NOT open_id which is the cross-tenant application ID.
+        expected_admin_uid = str(state.get("admin_user_id", "") or "")
+        _clicker_uid = str(getattr(operator, "user_id", "") or "")
+        if not expected_admin_uid:
+            logger.warning(
+                "[Feishu] admin_user_id empty in approval state — "
+                "admin identity gate is not enforced (%s=%s)", label, ident,
+            )
+        if expected_admin_uid and _clicker_uid and _clicker_uid != expected_admin_uid:
+            logger.warning(
+                "[Feishu] Unauthorized %s click: expected admin %s, "
+                "got %s (%s=%s)",
+                label, expected_admin_uid, _clicker_uid, label, ident,
             )
             return None
         return open_id, callback_chat_id, self._get_cached_sender_name(open_id) or open_id

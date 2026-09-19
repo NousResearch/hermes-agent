@@ -5463,6 +5463,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # The reason shares the 2000-char content cap with the command; unbounded it would starve
     # the command preview to zero and push the content past the cap.
     _EA_REASON_BUDGET = 300
+    _enforces_delegation_admin_identity = True
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
@@ -5473,7 +5474,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Send an approval with content as its canonical payload and an embed for state."""
+        """Send an approval with content as its canonical payload and an embed for state.
+        Buttons call ``resolve_gateway_approval()`` (not /approve); a delegation
+        ``prompt.admin_user_id`` forces the admin gate on and joins the admin set —
+        the separation-of-duties model requires the exact configured admin to click."""
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -5485,6 +5489,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
+            # If a delegation admin user_id is specified, ensure it is in the
+            # admin set and force the admin gate on — the delegation separation-
+            # of-duties model requires the exact configured admin to click.
+            _deleg_admin = str(prompt.admin_user_id or "").strip()
+            if _deleg_admin:
+                require_admin = True
+                admin_user_ids = (admin_user_ids or set()) | {_deleg_admin}
             view = ExecApprovalView(
                 session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,

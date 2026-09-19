@@ -1590,6 +1590,11 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[Dict[str, Any]] = None
+    # Approval delegation: the configured admin whose click alone may resolve
+    # this prompt. Only adapters that set ``_enforces_delegation_admin_identity``
+    # validate the clicker against it; the rest ignore the field (and the runner
+    # keeps them on the typed /approve fallback for delegation).
+    admin_user_id: Optional[str] = None
 
     @property
     def choices(self) -> List[str]:
@@ -2696,7 +2701,8 @@ class BasePlatformAdapter(ABC):
             if allow_permanent:
                 choices.append("always")
         choices.append("deny")
-        return [(self._EA_ACTION_LABELS[c], c, self._EA_ACTION_STYLES.get(c, "")) for c in choices]
+        labels = self._exec_approval_labels()
+        return [(labels[c], c, self._EA_ACTION_STYLES.get(c, "")) for c in choices]
 
     @classmethod
     def supports_exec_approval_buttons(cls) -> bool:
@@ -2704,17 +2710,76 @@ class BasePlatformAdapter(ABC):
         the runner otherwise sends the plain-text ``/approve`` prompt."""
         return cls._send_exec_approval_prompt is not BasePlatformAdapter._send_exec_approval_prompt
 
+    # Approval delegation: the runner only routes a delegated (button) approval
+    # to adapters that validate the clicker against the delegated admin. The
+    # template below always accepts ``admin_user_id`` (it has to hand it to the
+    # render hook), so a signature probe can no longer tell the safe renderers
+    # from the ones that ignore the field — the marker must be set explicitly.
+    _enforces_delegation_admin_identity: bool = False
+    # Opt-in for adapters whose approval wording matches the delegation catalog
+    # (telegram / feishu / slack): render locale-aware button labels (and the
+    # card header on card surfaces) when a non-English locale is active.
+    _EA_I18N_ACTION_LABELS: bool = False
+    _EA_DELEGATION_LABEL_KEYS = {"once": "btn_allow_once", "session": "btn_session",
+                                 "always": "btn_always", "deny": "btn_deny"}
+
+    def _exec_approval_labels(self) -> Dict[str, str]:
+        """Button labels: locale-aware when opted in, else the adapter's defaults.
+        When the active locale resolves to the same strings as English the
+        adapter's own ``_EA_ACTION_LABELS`` are kept, so opting in never changes
+        the shipped English look."""
+        if not self._EA_I18N_ACTION_LABELS:
+            return self._EA_ACTION_LABELS
+        try:
+            from agent.i18n import t as _t
+            loc: Dict[str, str] = {}
+            for choice, key in self._EA_DELEGATION_LABEL_KEYS.items():
+                full = f"gateway.approval_delegation.{key}"
+                v = _t(full)
+                if not v or v.startswith("gateway.") or v == _t(full, lang="en"):
+                    return self._EA_ACTION_LABELS
+                loc[choice] = v
+            return {**self._EA_ACTION_LABELS, **loc}
+        except Exception:
+            return self._EA_ACTION_LABELS
+
+    def _ea_card_header(self) -> str:
+        """Card title for card-surface adapters (Feishu); locale-aware under the
+        same opt-in + differs-from-English rule as the button labels. The English
+        default tracks upstream's shared wording (``EA_HEADER_TEXT``) so the card
+        header and the prompt body never diverge."""
+        default = f"⚠️ {EA_HEADER_TEXT}"
+        if not self._EA_I18N_ACTION_LABELS:
+            return default
+        try:
+            from agent.i18n import t as _t
+            key = "gateway.approval_delegation.card_header"
+            v = _t(key)
+            if v and not v.startswith("gateway.") and v != _t(key, lang="en"):
+                return v
+        except Exception:
+            pass
+        return default
+
+    @classmethod
+    def supports_delegation_admin_gate(cls) -> bool:
+        """True when the click callbacks enforce the delegated admin's identity."""
+        return bool(cls._enforces_delegation_admin_identity)
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, admin_user_id: Optional[str] = None,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
-        render them natively in ``_send_exec_approval_prompt``."""
+        render them natively in ``_send_exec_approval_prompt``. ``admin_user_id`` carries the
+        approval-delegation identity: adapters that enforce it on clicks set
+        ``_enforces_delegation_admin_identity``; others ignore it (and never receive a
+        delegated button send — the runner keeps them on the typed /approve fallback)."""
         prompt = ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied,
+            description=description, smart_denied=smart_denied, admin_user_id=admin_user_id,
             text=self._format_exec_approval(command, description, smart_denied),
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))

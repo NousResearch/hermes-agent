@@ -1060,6 +1060,11 @@ class SlackAdapter(BasePlatformAdapter):
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
+        # Approval delegation admin identity, keyed identically to
+        # _approval_resolved → (chat_id, admin_user_id).
+        self._approval_admin: Dict[Any, tuple] = {}
+        # Same guard for clarify prompts (interactive multiple-choice
+        # buttons); mirrors _approval_resolved.
         self._clarify_resolved: Dict[Any, bool] = {}
         # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
         # card whose clarify ended without a click (timeout, reset, superseding prose).
@@ -4762,7 +4767,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, metadata: Optional[Dict[str, Any]],
         build: Callable[[], Tuple[str, list]], label: str, *,
         resolved: Optional[Dict[Any, bool]] = None, resolved_max: int = 0,
-        team_scoped_key: bool = True, sanitize: bool = True) -> SendResult:
+        team_scoped_key: bool = True, sanitize: bool = True,
+        extra_state: Optional[Dict[Any, Any]] = None, extra_state_value: Any = None) -> SendResult:
         """Shared body of the Block Kit prompt senders: DM-resolve, ``build()`` -> ``(fallback
         text, blocks)``, post, then mark the message unresolved in ``resolved`` (double-click
         guard). Any failure is logged as ``<label> failed`` and returned, never raised."""
@@ -4779,7 +4785,13 @@ class SlackAdapter(BasePlatformAdapter):
                 if team_scoped_key:
                     key = self._workspace_message_marker(self._metadata_team_id(metadata), msg_ts)
                 resolved[key] = False
+                if extra_state is not None:
+                    # Same key as `resolved` — lets the click callback look up
+                    # delegation admin identity alongside the double-click guard.
+                    extra_state[key] = extra_state_value
                 self._trim_oldest_dict_entries(resolved, resolved_max)
+                if extra_state is not None:
+                    self._trim_oldest_dict_entries(extra_state, resolved_max)
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
@@ -4793,6 +4805,10 @@ class SlackAdapter(BasePlatformAdapter):
     _EA_SECTION_CAP = 3000  # a longer section text → invalid_blocks → no buttons at all
     _EA_ACTION_IDS = {"once": "hermes_approve_once", "session": "hermes_approve_session",
                       "always": "hermes_approve_always", "deny": "hermes_deny"}
+    _EA_ACTION_LABELS = {"once": "Allow Once", "session": "Allow Session",
+                         "always": "Always Allow", "deny": "Deny"}
+    _EA_I18N_ACTION_LABELS = True
+    _enforces_delegation_admin_identity = True
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # execute_code approvals embed the whole script, so budget the preview against the cap.
@@ -4803,7 +4819,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Block Kit approval prompt; the buttons call ``resolve_gateway_approval()`` to unblock the
-        waiting agent thread — same mechanism as the text ``/approve`` flow."""
+        waiting agent thread — same mechanism as the text ``/approve`` flow. ``admin_user_id``
+        (delegation) is remembered per workspace message marker so the click callback can validate
+        the exact configured admin."""
 
         def _build() -> Tuple[str, list]:
             actions = [
@@ -4816,7 +4834,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         return await self._send_interactive_prompt(
             prompt.chat_id, prompt.metadata, _build, "send_exec_approval",
-            resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)
+            resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX,
+            extra_state=self._approval_admin,
+            extra_state_value=(prompt.chat_id, str(prompt.admin_user_id or "")))
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -5457,8 +5477,35 @@ class SlackAdapter(BasePlatformAdapter):
         approval_key = self._workspace_message_marker(team_id, msg_ts)
         if msg_ts in self._approval_resolved:
             approval_key = msg_ts
+        # Delegation admin identity gate: chat + admin user must match the state
+        # recorded when the card was sent. Validated with .get() BEFORE the
+        # double-click pop, so an unauthorized click (forwarded card) cannot
+        # consume the guard and lock out the real admin.
+        _admin_info = self._approval_admin.get(approval_key)
+        if _admin_info is None and approval_key != msg_ts:
+            _admin_info = self._approval_admin.get(msg_ts)
+        if _admin_info:
+            expected_chat_id, expected_admin_uid = _admin_info
+            if not expected_admin_uid:
+                logger.warning(
+                    "[Slack] admin_user_id empty in approval state — "
+                    "admin identity gate is not enforced (msg_ts=%s)", msg_ts)
+            if expected_chat_id and channel_id and expected_chat_id != channel_id:
+                logger.warning(
+                    "[Slack] Unauthorized approval click: expected chat %s, got %s (user=%s)",
+                    expected_chat_id, channel_id, user_id)
+                return
+            if expected_admin_uid and user_id and user_id != expected_admin_uid:
+                logger.warning(
+                    "[Slack] Unauthorized approval click: expected admin %s, "
+                    "got %s (chat=%s, msg_ts=%s)",
+                    expected_admin_uid, user_id, channel_id, msg_ts)
+                return
         if self._approval_resolved.pop(approval_key, True):
             return
+        # All validation passed — consume delegation admin state alongside the guard.
+        for _k in {approval_key, msg_ts}:
+            self._approval_admin.pop(_k, None)
         # Resolve FIRST (unblocks the agent); render after so a click past the
         # timeout (count == 0) shows "expired", not "approved".
         try:

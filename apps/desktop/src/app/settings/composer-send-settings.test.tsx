@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import {
-  COMPOSER_SEND_DEFAULT_MODE,
   DOUBLE_ENTER_DEFAULT_MS,
   HOLD_DEFAULT_MS,
+  IDLE_SEND_DEFAULT_MS,
   SEND_GRACE_DEFAULT_MS,
   SEND_GRACE_DEFAULT_REASONS,
   TYPING_IDLE_DEFAULT_MS
@@ -16,38 +16,46 @@ import { stubResizeObserver } from '@/test/jsdom'
 import { ComposerSendSettings } from './composer-send-settings'
 
 /**
- * The graded half of the send-mode feature: which rows exist for which state,
- * and whether a control persists what it says it does.
+ * The graded half of the send settings: which rows exist for which state, and
+ * whether a control persists what it says it does.
  *
  * The store is REAL here — only the IPC bridge and the i18n table are stubbed —
- * so a change that stopped persisting would fail these, not pass them.
+ * so a control that stopped persisting would fail these, not pass them.
  */
 
-// Radix's Popover measures its content with ResizeObserver, which jsdom lacks.
-stubResizeObserver()
-
 const mocks = vi.hoisted(() => ({
+  haptic: vi.fn(),
   notify: vi.fn(),
   notifyError: vi.fn(),
-  set: vi.fn(),
-  haptic: vi.fn()
+  set: vi.fn()
 }))
 
 const WORDS = {
-  title: 'Send with',
-  description: 'Which keypress commits a message.',
-  modeEnter: 'Enter',
-  modeDoubleEnter: 'Double tap',
-  modePause: 'Pause',
-  modeModEnter: 'Enter + modifier',
+  title: 'Enter and sending',
+  description: 'Keep a stray Enter from sending.',
+  gateLabel: 'Keep a bare Enter from sending',
+  gateDescription: 'A lone press never commits.',
+  newlineLabel: 'A bare Enter starts a new line',
+  newlineDescription: 'Off means the press does nothing at all.',
+  gesturesTitle: 'Other ways to send',
+  gesturesDisabled: 'Available once a bare Enter stops sending.',
+  gestureDoubleTap: 'Double tap',
+  gesturePause: 'Enter after a pause',
+  gestureHold: 'Press and hold',
+  gestureIdle: 'Send when I stop typing',
+  gestureDoubleTapDesc: 'Enter twice in quick succession sends.',
+  gesturePauseDesc: 'A single Enter sends once you have stopped typing.',
+  gestureHoldDesc: 'Keep the key down and the press becomes a send.',
+  gestureIdleDesc: 'Sends on its own if you stop typing.',
   doubleTapTitle: 'Double-tap window',
   doubleTapDescription: 'How fast the two Enter presses have to land.',
   doubleTapUnit: 'ms',
-  holdToggleTitle: 'Press and hold Enter',
-  holdToggleDescription: 'Keep the key down to send.',
   holdMsTitle: 'Hold time',
   holdMsDescription: 'How long Enter has to stay down.',
   holdMsUnit: 'ms',
+  idleMsTitle: 'Idle time',
+  idleMsDescription: 'How long the composer waits before sending on its own.',
+  idleMsUnit: 'ms',
   typingIdleTitle: 'Typing pause',
   typingIdleDescription: 'How long you have to stop typing.',
   typingIdleUnit: 'ms',
@@ -56,8 +64,8 @@ const WORDS = {
   gracePopoverHint: 'Which sends should wait?',
   graceReasonEnter: 'A bare Enter',
   graceReasonDoubleTap: 'A double tap',
-  graceReasonPause: 'Enter after a pause',
-  graceReasonHold: 'Press and hold',
+  graceReasonPause: 'The pause send',
+  graceReasonHold: 'The long press',
   graceNone: 'None',
   graceAll: 'All',
   graceSome: (count: string, total: string) => `${count} of ${total}`,
@@ -67,15 +75,20 @@ const WORDS = {
   fileHint: (path: string) => `Saved in ${path} — edit that file for exact values.`
 }
 
+// Radix's Popover measures its content with ResizeObserver, which jsdom lacks.
+stubResizeObserver()
+
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       composer: {
         placeholderSendChord: (chord: string) => `${chord} sends`,
-        placeholderSendDoubleTap: 'tap it twice to send',
+        placeholderSendDoubleTap: 'tap Enter twice to send',
         placeholderSendEnterSends: 'Enter sends',
-        placeholderSendNewline: 'send · Shift+Enter for newline',
-        placeholderSendPause: 'sends once you stop typing'
+        placeholderSendHold: 'hold Enter to send',
+        placeholderSendIdle: 'and it sends if you stop typing',
+        placeholderSendNewline: 'Enter starts a new line',
+        placeholderSendPause: 'Enter after a pause sends'
       },
       keybinds: { composerSend: WORDS }
     }
@@ -105,13 +118,18 @@ vi.mock('./primitives', () => ({
 }))
 
 const DEFAULTS = {
-  mode: COMPOSER_SEND_DEFAULT_MODE,
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
+  enterNewline: true,
+  enterSends: true,
   holdMs: HOLD_DEFAULT_MS,
+  idleSendMs: IDLE_SEND_DEFAULT_MS,
+  sendOnDoubleTap: false,
   sendOnHold: false,
-  typingIdleMs: TYPING_IDLE_DEFAULT_MS,
+  sendOnIdle: false,
+  sendOnPause: false,
   sendGraceFor: SEND_GRACE_DEFAULT_REASONS,
-  sendGraceMs: SEND_GRACE_DEFAULT_MS
+  sendGraceMs: SEND_GRACE_DEFAULT_MS,
+  typingIdleMs: TYPING_IDLE_DEFAULT_MS
 }
 
 const setPrefs = (next: Partial<typeof DEFAULTS>) => {
@@ -119,6 +137,9 @@ const setPrefs = (next: Partial<typeof DEFAULTS>) => {
     $composerSendPrefs.set({ ...DEFAULTS, ...next })
   })
 }
+
+/** A configuration where the gestures are reachable at all. */
+const newlineMode = (next: Partial<typeof DEFAULTS> = {}) => setPrefs({ enterSends: false, ...next })
 
 const later = () => Promise.resolve()
 
@@ -143,82 +164,90 @@ afterEach(() => {
 })
 
 describe('ComposerSendSettings', () => {
-  it('offers every mode, including the pause that the schema already carried', () => {
-    const { getByText } = render(<ComposerSendSettings />)
+  it('leads with the gate, and hides the newline choice until it can matter', () => {
+    const { getByRole, getByText, queryByText } = render(<ComposerSendSettings />)
 
-    for (const label of ['Enter', 'Double tap', 'Pause', 'Enter + modifier']) {
-      expect(getByText(label)).toBeTruthy()
-    }
+    expect(getByText('Keep a bare Enter from sending')).toBeTruthy()
+    expect(getByRole('switch', { name: 'Keep a bare Enter from sending' })).toBeTruthy()
+    // Nothing can break the line while the press still sends.
+    expect(queryByText('A bare Enter starts a new line')).toBeNull()
   })
 
-  it('persists the chosen mode and says what the switch did', async () => {
-    const { getByText } = render(<ComposerSendSettings />)
+  it('persists the gate, which is stored inverted from how it reads', async () => {
+    const { getByRole } = render(<ComposerSendSettings />)
 
-    fireEvent.click(getByText('Pause'))
+    fireEvent.click(getByRole('switch', { name: 'Keep a bare Enter from sending' }))
     await later()
 
-    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ mode: 'pause' }))
+    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ enterSends: false }))
     expect(mocks.notify).toHaveBeenCalled()
   })
 
-  it('shows both timing rows for pause — it measures the double-tap too', () => {
-    setPrefs({ mode: 'pause' })
+  it('offers the line break as its own choice once the gate is closed', async () => {
+    newlineMode()
 
-    const { getByText } = render(<ComposerSendSettings />)
+    const { getByRole, getByText } = render(<ComposerSendSettings />)
 
-    expect(getByText('Typing pause')).toBeTruthy()
-    expect(getByText('Double-tap window')).toBeTruthy()
-  })
+    expect(getByText('A bare Enter starts a new line')).toBeTruthy()
 
-  it('offers press-and-hold everywhere a bare Enter does not already send', () => {
-    setPrefs({ mode: 'pause' })
-
-    const { getByText } = render(<ComposerSendSettings />)
-
-    expect(getByText('Press and hold Enter')).toBeTruthy()
-  })
-
-  it('withholds press-and-hold in `enter`, where the press has already sent', () => {
-    setPrefs({ mode: 'enter' })
-
-    const { queryByText } = render(<ComposerSendSettings />)
-
-    expect(queryByText('Press and hold Enter')).toBeNull()
-  })
-
-  it('keeps the hold time off until the gesture is switched on', () => {
-    setPrefs({ mode: 'pause', sendOnHold: false })
-
-    const { queryByText } = render(<ComposerSendSettings />)
-
-    expect(queryByText('Hold time')).toBeNull()
-  })
-
-  it('shows the hold time once the gesture is on, and persists the switch', async () => {
-    setPrefs({ mode: 'pause', sendOnHold: true })
-
-    const { getByText, getByRole } = render(<ComposerSendSettings />)
-
-    expect(getByText('Hold time')).toBeTruthy()
-
-    fireEvent.click(getByRole('switch', { name: 'Press and hold Enter' }))
+    fireEvent.click(getByRole('switch', { name: 'A bare Enter starts a new line' }))
     await later()
 
-    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ sendOnHold: false }))
+    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ enterNewline: false }))
   })
 
-  it('hides both timing rows for a mode that measures neither', () => {
-    setPrefs({ mode: 'enter' })
-
+  it('hides the gestures entirely while Enter sends on the press', () => {
     const { queryByText } = render(<ComposerSendSettings />)
 
-    expect(queryByText('Typing pause')).toBeNull()
-    expect(queryByText('Double-tap window')).toBeNull()
+    // They cannot fire, and a row of dead switches reads as a broken panel. The
+    // note is what says where they went.
+    for (const label of ['Double tap', 'Press and hold', 'Send when I stop typing']) {
+      expect(queryByText(label)).toBeNull()
+    }
+
+    expect(queryByText('Available once a bare Enter stops sending.')).toBeTruthy()
   })
 
-  it('offers the delay on every mode — default Enter is the one that needs undo-send', () => {
-    setPrefs({ mode: 'enter' })
+  it('brings the gestures back once Enter only breaks the line', () => {
+    newlineMode()
 
+    const { getByRole, getByText, queryByText } = render(<ComposerSendSettings />)
+
+    expect(getByText('Press and hold')).toBeTruthy()
+    expect(getByRole('switch', { name: 'Press and hold' })).toBeTruthy()
+    expect(queryByText('Available once a bare Enter stops sending.')).toBeNull()
+  })
+
+  it('persists a gesture switch', async () => {
+    newlineMode()
+
+    const { getByRole } = render(<ComposerSendSettings />)
+
+    fireEvent.click(getByRole('switch', { name: 'Press and hold' }))
+    await later()
+
+    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ sendOnHold: true }))
+  })
+
+  it('shows each window only for the gesture that is switched on', () => {
+    newlineMode({ sendOnHold: true })
+
+    const { getByText, queryByText } = render(<ComposerSendSettings />)
+
+    expect(getByText('Hold time')).toBeTruthy()
+    expect(queryByText('Idle time')).toBeNull()
+    expect(queryByText('Typing pause')).toBeNull()
+  })
+
+  it('shows the idle window, which is the only gesture that acts with no key', () => {
+    newlineMode({ sendOnIdle: true })
+
+    const { getByText } = render(<ComposerSendSettings />)
+
+    expect(getByText('Idle time')).toBeTruthy()
+  })
+
+  it('offers the delay in every configuration — default Enter is where undo-send matters most', () => {
     const { getByText } = render(<ComposerSendSettings />)
 
     expect(getByText('Wait before sending')).toBeTruthy()
@@ -244,10 +273,10 @@ describe('ComposerSendSettings', () => {
   it('persists one situation at a time', async () => {
     setPrefs({ sendGraceFor: ['pause'] })
 
-    const { getByText, getByRole } = render(<ComposerSendSettings />)
+    const { getByRole, getByText } = render(<ComposerSendSettings />)
 
     fireEvent.click(getByRole('button', { name: '1 of 4' }))
-    fireEvent.click(getByText('Press and hold'))
+    fireEvent.click(getByText('The long press'))
 
     await later()
 
@@ -257,10 +286,10 @@ describe('ComposerSendSettings', () => {
   it('can turn a single situation back off without touching the others', async () => {
     setPrefs({ sendGraceFor: ['pause', 'hold'] })
 
-    const { getByText, getByRole } = render(<ComposerSendSettings />)
+    const { getByRole, getByText } = render(<ComposerSendSettings />)
 
     fireEvent.click(getByRole('button', { name: '2 of 4' }))
-    fireEvent.click(getByText('Enter after a pause'))
+    fireEvent.click(getByText('The pause send'))
 
     await later()
 
@@ -268,7 +297,7 @@ describe('ComposerSendSettings', () => {
   })
 
   it('names the file it persists to, so the hand-edit path is discoverable', () => {
-    setPrefs({ mode: 'pause' })
+    newlineMode({ sendOnHold: true })
 
     const { getAllByText } = render(<ComposerSendSettings />)
 

@@ -49,13 +49,14 @@ export {
   toHex
 } from './color'
 export {
+  activeSendGestures,
   clampDoubleEnterMs,
   clampHoldMs,
+  clampIdleSendMs,
   clampSendGraceMs,
   clampTypingIdleMs,
-  COMPOSER_SEND_DEFAULT_MODE,
-  COMPOSER_SEND_MODES,
-  type ComposerSendMode,
+  COMPOSER_SEND_GESTURES,
+  type ComposerSendGesture,
   type ComposerSendPrefs,
   DOUBLE_ENTER_DEFAULT_MS,
   DOUBLE_ENTER_MAX_MS,
@@ -63,7 +64,9 @@ export {
   HOLD_DEFAULT_MS,
   HOLD_MAX_MS,
   HOLD_MIN_MS,
-  isComposerSendMode,
+  IDLE_SEND_DEFAULT_MS,
+  IDLE_SEND_MAX_MS,
+  IDLE_SEND_MIN_MS,
   normalizeComposerSendPrefs,
   SEND_GRACE_DEFAULT_MS,
   SEND_GRACE_DEFAULT_REASONS,

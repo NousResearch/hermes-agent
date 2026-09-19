@@ -6,7 +6,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { $composerSendPrefs } from '@/store/composer-send'
 
 import { pickPlaceholder } from '../composer-utils'
-import { composerSendModeHint } from '../send-mode-hint'
+import { composerSendHint } from '../send-hint'
 
 interface UseComposerPlaceholderOptions {
   disabled: boolean
@@ -32,18 +32,20 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
   const { t } = useI18n()
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
-  const { mode } = useStore($composerSendPrefs)
+  const sendPrefs = useStore($composerSendPrefs)
 
-  const sendHint =
-    mode === 'enter'
-      ? null
-      : composerSendModeHint(mode, {
-          chord: t.composer.placeholderSendChord,
-          doubleTap: t.composer.placeholderSendDoubleTap,
-          enterSends: t.composer.placeholderSendEnterSends,
-          newline: t.composer.placeholderSendNewline,
-          pause: t.composer.placeholderSendPause
-        })
+  // The default says nothing: telling everyone what Enter already does is noise.
+  const sendHint = sendPrefs.enterSends
+    ? null
+    : composerSendHint(sendPrefs, {
+        chord: t.composer.placeholderSendChord,
+        doubleTap: t.composer.placeholderSendDoubleTap,
+        enterSends: t.composer.placeholderSendEnterSends,
+        hold: t.composer.placeholderSendHold,
+        idle: t.composer.placeholderSendIdle,
+        newline: t.composer.placeholderSendNewline,
+        pause: t.composer.placeholderSendPause
+      })
 
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
     pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)

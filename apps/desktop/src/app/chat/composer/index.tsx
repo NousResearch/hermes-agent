@@ -32,7 +32,7 @@ import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
-import { $composerSendPrefs, enterBreaksLine, type SendGraceReason } from '@/store/composer-send'
+import { $composerSendPrefs, activeSendGestures, type SendGraceReason } from '@/store/composer-send'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { sessionBlockingPrompt } from '@/store/prompts'
@@ -289,6 +289,13 @@ export function ChatBar({
   // keyup cancels it) so the gesture is decided by a value we control rather
   // than by the operating system's key-repeat delay.
   const enterHoldTimerRef = useRef<number | undefined>(undefined)
+  // The idle-send deadline: armed on every edit, cleared by the next one. There
+  // is no key to watch, so the timer IS the whole gesture.
+  const idleSendTimerRef = useRef<number | undefined>(undefined)
+  // Whether a real CHARACTER key has been pressed since the composer last held
+  // content. The idle send requires it, so a pasted blob or a restored draft can
+  // never send itself before the user has touched it.
+  const typedSinceContentRef = useRef(false)
   // Timestamp of the last plain Enter. A second press inside
   // DOUBLE_ENTER_SEND_MS commits the draft; a lone press just breaks the line.
   const lastEnterAtRef = useRef(0)
@@ -497,9 +504,6 @@ export function ChatBar({
     }
   }, [])
 
-  // A composer that unmounts mid-press must not fire a send into a dead tree.
-  useEffect(() => cancelEnterHold, [cancelEnterHold])
-
   /** Commit the draft a long press has been holding. Drops the break the press
    *  inserted, so a hold sends the same text a tap would have left in the box,
    *  and goes through the same grace window every other send uses — the hold is
@@ -521,6 +525,69 @@ export function ChatBar({
     submitDraft()
     // `editorRef` is a ref (stable identity); the rule wants it named.
   }, [editorRef, sendGrace, submitDraft])
+
+  const cancelIdleSend = useCallback(() => {
+    if (idleSendTimerRef.current !== undefined) {
+      window.clearTimeout(idleSendTimerRef.current)
+      idleSendTimerRef.current = undefined
+    }
+  }, [])
+
+  /** The one send nobody asked for: it takes the grace window ALWAYS, whatever
+   *  the per-situation checkboxes say. There is no press to point at, so the
+   *  hold is the only thing between a pause for thought and a message the user
+   *  never sent. */
+  const commitIdleSend = useCallback(() => {
+    idleSendTimerRef.current = undefined
+
+    // The draft can be gone by now (sent by hand, cleared, session swapped).
+    // Submitting an empty composer is not a no-op — it drains or steers — so the
+    // payload is re-checked at the moment the timer fires.
+    const editor = editorRef.current
+
+    if (!editor || composerPlainText(editor).trim().length === 0) {
+      return
+    }
+
+    if (sendGrace.hold()) {
+      triggerHaptic('submit')
+
+      return
+    }
+
+    submitDraft()
+  }, [sendGrace, submitDraft])
+
+  /** Arm (or re-arm) the idle send from the current state. Called on every edit,
+   *  so typing pushes the deadline out — a fresh window each time, rather than a
+   *  fixed clock a momentary pause mid-thought could trip. */
+  const armIdleSend = useCallback(() => {
+    cancelIdleSend()
+
+    const { enterSends, idleSendMs, sendOnIdle } = $composerSendPrefs.get()
+    const editor = editorRef.current
+    const hasPayload = Boolean(editor && composerPlainText(editor).trim().length > 0)
+
+    // Never while a turn is running: queueing and steering are deliberate acts,
+    // and the app guessing on top of them is not. Never for content that arrived
+    // some other way either — a pasted blob or a restored draft has to be typed
+    // into before it can send itself.
+    if (!sendOnIdle || enterSends || busy || !hasPayload || !typedSinceContentRef.current) {
+      return
+    }
+
+    idleSendTimerRef.current = window.setTimeout(commitIdleSend, idleSendMs)
+  }, [busy, cancelIdleSend, commitIdleSend])
+
+  // A composer that unmounts mid-press must not fire a send into a dead tree —
+  // and the idle deadline must not outlive the composer that armed it either.
+  useEffect(
+    () => () => {
+      cancelEnterHold()
+      cancelIdleSend()
+    },
+    [cancelEnterHold, cancelIdleSend]
+  )
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
@@ -612,6 +679,13 @@ export function ChatBar({
     typedAtRef.current = Date.now()
     sendGrace.cancel()
 
+    if (composerPlainText(event.currentTarget).trim().length === 0) {
+      // An empty composer has nothing to send itself, and the next content to
+      // arrive has to be typed into before the idle deadline counts again.
+      typedSinceContentRef.current = false
+    }
+
+    armIdleSend()
     scheduleFlushEditorToDraft(event.currentTarget)
   }
 
@@ -805,11 +879,24 @@ export function ChatBar({
       return
     }
 
-    // Read once, at press time: the mode and grace scope must not change
-    // mid-gesture (a settings change while the key is held would otherwise make
-    // the repeat that arrives a few ms later mean something else), and the
-    // handler reads them on paths that run before its own later declaration.
-    const { holdMs: holdMsAtHand, mode: sendModeAtHand, sendGraceFor, sendOnHold } = $composerSendPrefs.get()
+    // Read once, at press time: none of this may change mid-gesture (a settings
+    // change while the key is held would otherwise make the repeat that arrives
+    // a few ms later mean something else), and the handler reads it on paths
+    // that run before its own later declarations.
+    const sendPrefsAtHand = $composerSendPrefs.get()
+
+    const {
+      doubleEnterMs,
+      enterNewline,
+      enterSends,
+      holdMs: holdMsAtHand,
+      sendGraceFor,
+      sendOnDoubleTap,
+      sendOnHold,
+      sendOnPause,
+      typingIdleMs
+    } = sendPrefsAtHand
+
     /** Does a send started THIS way wait for the grace window? */
     const delays = (reason: SendGraceReason) => sendGraceFor.includes(reason)
 
@@ -1083,11 +1170,18 @@ export function ChatBar({
     // system's key repeat happens to be — and it still works for anyone with
     // repeat switched off. So a repeat never reaches the gesture logic below.
     //
-    // It still falls through UNPREVENTED where Enter breaks the line, so holding
-    // the key keeps inserting them; `enter` and `hold` give a repeat no meaning,
-    // and there it is swallowed rather than leaving stray breaks behind.
+    // It still falls through UNPREVENTED when a bare Enter only breaks the line
+    // and no gesture owns it, so holding the key keeps inserting them; a mode
+    // where Enter sends, or where any gesture is armed, gives a repeat no
+    // meaning and it is swallowed rather than leaving stray breaks behind.
+    // A real character key. Modifiers, arrows and the like do not count: the
+    // idle send asks "did the user type this", not "did they touch the keyboard".
+    if (event.key.length === 1 && !event.metaKey && !event.ctrlKey) {
+      typedSinceContentRef.current = true
+    }
+
     if (event.key === 'Enter' && event.repeat) {
-      if (sendModeAtHand === 'enter' || sendOnHold) {
+      if (enterSends || activeSendGestures(sendPrefsAtHand).length > 0) {
         event.preventDefault()
       }
 
@@ -1171,11 +1265,8 @@ export function ChatBar({
         return
       }
 
-      // Mode and grace scope come from the single press-time read above.
-      const { doubleEnterMs, typingIdleMs } = $composerSendPrefs.get()
-      const sendMode = sendModeAtHand
-
-      if (!enterBreaksLine(sendMode)) {
+      // A bare Enter that commits needs no other branch.
+      if (enterSends) {
         event.preventDefault()
 
         if (delays('enter') && sendGrace.hold()) {
@@ -1189,34 +1280,26 @@ export function ChatBar({
         return
       }
 
-      // `hold` (the flag, not a mode) starts its timer here, before the branches
-      // below can return: a long press is an ADDITIONAL way out of the composer,
-      // so it has to work in every mode where a bare Enter does not already
-      // commit — `mod-enter` included, which is where it is most useful.
-      const holdApplies = sendOnHold && !(sendMode === 'pause' && Date.now() - typedAtRef.current > typingIdleMs)
+      // Everything below is a state where the press does not send, so the
+      // gestures get their turn. The hold timer starts BEFORE the branches that
+      // can return, because a long press is an additional way out rather than a
+      // different opinion about the tap — but never on a press the pause rule is
+      // about to commit, or it would fire a second send into an empty composer.
+      const pausedEnough = sendOnPause && Date.now() - typedAtRef.current > typingIdleMs
 
       cancelEnterHold()
 
-      if (holdApplies) {
+      if (sendOnHold && !pausedEnough) {
         enterHoldTimerRef.current = window.setTimeout(() => {
           enterHoldTimerRef.current = undefined
           commitHeldEnter()
         }, holdMsAtHand)
       }
 
-      // `mod-enter`: a bare Enter only ever breaks the line. The ⌘/Ctrl+Enter
-      // branch above is the send path.
-      if (sendMode === 'mod-enter') {
-        return
-      }
-
-
-      // `pause`: an Enter after you have stopped typing is the send you meant,
-      // so it commits — held for the grace window when one is configured, which
-      // is the whole reason a guessed send is safe to ship. While you are still
-      // typing it falls through to the double-tap below, exactly like
-      // `double-enter`: mid-flow, one press is a line break.
-      if (sendMode === 'pause' && Date.now() - typedAtRef.current > typingIdleMs) {
+      // `pause`: an Enter after you have stopped typing is the send you meant, so
+      // it commits — held for the grace window when one is configured, which is
+      // the whole reason a guessed send is safe to ship.
+      if (pausedEnough) {
         event.preventDefault()
 
         if (delays('pause') && sendGrace.hold()) {
@@ -1230,7 +1313,18 @@ export function ChatBar({
         return
       }
 
-      // `double-enter` (and `pause` mid-flow): the line break lands immediately
+      // No gesture is armed, so the press lands in the composer — or is dropped,
+      // when the user asked for a bare Enter that only stays out of the way.
+      // Either way it never sends.
+      if (!sendOnDoubleTap) {
+        if (!enterNewline) {
+          event.preventDefault()
+        }
+
+        return
+      }
+
+      // `doubleTap`: the line break lands immediately
       // rather than on a timer, so text typed right after Enter can never land
       // on the wrong side of it — the send path deletes the break the first
       // press added. Shift+Enter stays an unambiguous newline (it never sends).
@@ -1240,16 +1334,22 @@ export function ChatBar({
       lastEnterAtRef.current = now
 
       if (!doubleTap) {
-        // Fall through UNPREVENTED so the editor inserts the line break, exactly
-        // as it does for Shift+Enter.
+        // The first press of a possible pair: fall through UNPREVENTED so the
+        // editor inserts the line break, exactly as it does for Shift+Enter —
+        // unless the press is meant to do nothing at all.
+        if (!enterNewline) {
+          event.preventDefault()
+        }
+
         return
       }
 
       event.preventDefault()
 
       // Drop the break the first press just inserted, otherwise every
-      // double-tap message would ship with a trailing newline.
-      if (editorRef.current) {
+      // double-tap message would ship with a trailing newline. Nothing to drop
+      // when the press does not break the line in the first place.
+      if (enterNewline && editorRef.current) {
         const live = composerPlainText(editorRef.current)
 
         if (live.endsWith('\n')) {
@@ -1281,6 +1381,10 @@ export function ChatBar({
         return
       }
 
+      // A pending idle send is the same kind of promise as a held one: Esc is
+      // how you say "not yet", and it must work before the hold even starts.
+      cancelIdleSend()
+
       // Editing a queued turn → Esc cancels the edit, restoring the prior draft.
       if (queueEdit) {
         event.preventDefault()
@@ -1302,9 +1406,9 @@ export function ChatBar({
 
   const triggerKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
 
-  // Releasing Enter before the hold timer fires means it was a tap: the break
-  // the press inserted stands and nothing is sent. The timer is the ONLY thing
-  // that can turn a press into a send in `hold` mode.
+  // Releasing Enter before the hold timer fires means it was a tap: whatever the
+  // press put in the composer stands, and nothing is sent. The timer is the ONLY
+  // thing that can turn a press into a send.
   const handleEditorKeyUp = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter') {
       cancelEnterHold()

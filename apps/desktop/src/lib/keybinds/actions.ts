@@ -5,10 +5,15 @@
 // like navigate / theme); labels come from i18n (`t.keybinds.actions[id]`). To
 // add a hotkey, add a row here and a handler there — nothing else.
 
+// The send-prefs contract comes from `@hermes/shared`, never from the renderer
+// store: the store pulls in notifications → desktop-metrics, which reads
+// KEYBIND_ACTION_IDS from this file at module scope, so importing the store here
+// closes a cycle and leaves that constant undefined at evaluation time.
+import { activeSendGestures, type ComposerSendGesture, type ComposerSendPrefs } from '@hermes/shared'
+
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import { isMacPlatform } from '@/lib/platform'
-import type { ComposerSendMode } from '@/store/composer-send'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
 
@@ -345,51 +350,54 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]
 
-// The four composer rows whose keys depend on the send mode (Settings →
-// Keyboards → Send with). They live outside KEYBIND_READONLY because there is
-// no single fixed combo to print: the whole point of the setting is which
-// keypress commits a draft.
-const COMPOSER_SEND_MODE_KEYS: Record<
-  ComposerSendMode,
-  { labelKey?: string; newline: readonly string[]; send: readonly string[] }
-> = {
-  enter: { newline: ['shift+enter'], send: ['enter'] },
-  'double-enter': {
-    labelKey: 'composer.send.double',
-    newline: ['enter', 'shift+enter'],
-    send: ['enter', 'enter']
-  },
-  pause: {
-    labelKey: 'composer.send.pause',
-    newline: ['enter', 'shift+enter'],
-    send: ['enter']
-  },
-  'mod-enter': {
-    labelKey: 'composer.send.mod',
-    newline: ['enter', 'shift+enter'],
-    send: ['mod+enter']
+// The composer rows whose keys depend on the send settings (Settings →
+// Keyboards → Send with). They live outside KEYBIND_READONLY because there is no
+// single fixed combo to print: the whole point of the setting is which keypress
+// commits a draft, and more than one gesture can be armed at once.
+//
+// An armed gesture gets its OWN row rather than a shared "Send message" row,
+// because a sequence like "Enter, Enter" and a long press are different
+// instructions and squashing them into one line teaches neither.
+const GESTURE_SEND_ROW: Record<ComposerSendGesture, KeybindReadonly> = {
+  doubleTap: { id: 'composer.send.double', category: 'composer', keys: ['enter', 'enter'], labelKey: 'composer.send.double' },
+  hold: { id: 'composer.send.hold', category: 'composer', keys: ['enter'], labelKey: 'composer.send.hold' },
+  pause: { id: 'composer.send.pause', category: 'composer', keys: ['enter'], labelKey: 'composer.send.pause' }
+}
+
+/** The row that represents "a draft can be committed this way" for these prefs:
+ *  the direct Enter when it sends, otherwise the first armed gesture, otherwise
+ *  the chord that always works. */
+export function primarySendRow(prefs: ComposerSendPrefs): KeybindReadonly {
+  if (prefs.enterSends) {
+    return { id: 'composer.send', category: 'composer', keys: ['enter'] }
   }
+
+  const [gesture] = activeSendGestures(prefs)
+
+  return gesture ? GESTURE_SEND_ROW[gesture] : { id: 'composer.send', category: 'composer', keys: ['mod+enter'], labelKey: 'composer.send.mod' }
 }
 
-/** The keys that commit a draft, in `sendMode`. */
-export function composerSendKeys(sendMode: ComposerSendMode): readonly string[] {
-  return COMPOSER_SEND_MODE_KEYS[sendMode].send
+/** The keys that commit a draft, for the hint tooltips. */
+export function composerSendKeys(prefs: ComposerSendPrefs): readonly string[] {
+  return primarySendRow(prefs).keys
 }
 
-export function composerKeybindRows(sendMode: ComposerSendMode): readonly KeybindReadonly[] {
-  const { labelKey, newline, send } = COMPOSER_SEND_MODE_KEYS[sendMode]
+export function composerKeybindRows(prefs: ComposerSendPrefs): readonly KeybindReadonly[] {
+  const send = composerSendKeys(prefs)
+  const newline = prefs.enterSends ? ['shift+enter'] : ['enter', 'shift+enter']
+  const gestureRows = activeSendGestures(prefs).map(gesture => GESTURE_SEND_ROW[gesture])
 
   return [
-    { id: 'composer.send', category: 'composer', keys: send, labelKey },
+    ...(gestureRows.length > 0 ? gestureRows : [primarySendRow(prefs)]),
     { id: 'composer.newline', category: 'composer', keys: newline },
     { id: 'composer.steer', category: 'composer', keys: send },
     { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] }
   ]
 }
 
-/** Every fixed shortcut, with the composer rows resolved for `sendMode`. The
+/** Every fixed shortcut, with the composer rows resolved for these prefs. The
  *  one entry point for both the shortcuts panel and the hint tooltips, so the
  *  two can't drift apart. */
-export function readonlyShortcuts(sendMode: ComposerSendMode): readonly KeybindReadonly[] {
-  return [...composerKeybindRows(sendMode), ...KEYBIND_READONLY]
+export function readonlyShortcuts(prefs: ComposerSendPrefs): readonly KeybindReadonly[] {
+  return [...composerKeybindRows(prefs), ...KEYBIND_READONLY]
 }

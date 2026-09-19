@@ -3,8 +3,8 @@ import type { ReactNode } from 'react'
 
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
-import { composerSendKeys } from '@/lib/keybinds/actions'
-import { $composerSendMode } from '@/store/composer-send'
+import { composerSendKeys, primarySendRow } from '@/lib/keybinds/actions'
+import { $composerSendPrefs } from '@/store/composer-send'
 
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
@@ -22,21 +22,12 @@ const COMPOSER_HOTKEY_ROWS = [
   { id: 'composer.history', combos: ['up', 'down'] }
 ] as const
 
-/** The send/newline row: label and keys both follow the send mode. */
-const SEND_ROW_BY_MODE = {
-  enter: { id: 'composer.sendNewline' },
-  'double-enter': { id: 'composer.sendNewlineDouble' },
-  pause: { id: 'composer.sendNewlinePause' },
-  hold: { id: 'composer.sendNewlineHold' },
-  'mod-enter': { id: 'composer.sendNewlineMod' }
-} as const
-
 export function HelpHint() {
   const { t } = useI18n()
   const c = t.composer
-  const sendMode = useStore($composerSendMode)
+  const sendPrefs = useStore($composerSendPrefs)
 
-  const sendRow = { id: SEND_ROW_BY_MODE[sendMode].id, combos: composerSendKeys(sendMode) }
+  const sendRow = { id: primarySendRow(sendPrefs).id, combos: composerSendKeys(sendPrefs) }
 
   return (
     <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">

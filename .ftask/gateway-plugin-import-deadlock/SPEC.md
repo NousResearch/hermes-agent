@@ -15,7 +15,7 @@
 > The crisp goal the interview converges to. Must be checkable, not vague —
 > it doubles as the future drive-to-green stop condition.
 > e.g. 'subscribe-v3 import maps all 7 fields; imported row count = source ±0'.
-- Gateway `run` must never start plugin discovery on a background thread before gateway imports complete; the focused launcher regression test and a real local cold start both complete without an import-lock stall, while chat still backgrounds discovery.
+- Gateway `run` must never start plugin discovery on a background thread before gateway imports complete; the focused launcher regression test and a real local cold start both complete without an import-lock stall, chat still backgrounds discovery, and the canonical CI full-suite/E2E path runs exactly once.
 
 ## What sunke wants (plain language)  [Objective]
 - Eliminate the intermittent startup freeze caused by directory plugins and publish the minimal compatibility fix upstream.

@@ -209,10 +209,19 @@ def _normalize_dashboard_cmdline(argv: list[str]) -> tuple[str, ...]:
 
 
 def _resolved_home(home: str) -> Path:
+    """Absolute, symlink-resolved form of *home* for identity comparison.
+
+    ``home`` may be a foreign PID's raw exec-time ``HERMES_HOME`` (``_hermes_home_for_pid``
+    replays ``/proc/<pid>/environ``, which never reflects an in-process rewrite, and never
+    shell-expands it either) — a literal ``~/.hermes``/``$HOME/.hermes`` compares unequal to
+    this install's own, already-expanded home, so a stop/update sweep spares a backend it
+    should own. Expand the same way ``_expand_hermes_home()`` does before resolving.
+    """
+    from hermes_constants import _expand_hermes_home
     try:
-        return Path(home).resolve()
+        return _expand_hermes_home(home).resolve()
     except (OSError, RuntimeError, ValueError):
-        return Path(home)
+        return _expand_hermes_home(home)
 
 
 def _normalized_home_for_compare(home: str) -> str:

@@ -268,9 +268,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         extra = config.extra
         self._bridge_process: Optional[subprocess.Popen] = None
+        self._foreign_bridge_session: Optional[str] = None  # set by _reuse_running_bridge when /health names another profile's session
         self._bridge_port: int = extra.get("bridge_port", 3000)
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
-        self._session_path = Path(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
+        # F4: normalized ONCE here — the --session argv, the pidfile check and
+        # the /health comparison all use one absolute string, so a gateway
+        # restarted from a different cwd does not see its own bridge as foreign.
+        self._session_path = Path(os.path.abspath(os.path.expanduser(str(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session"))))))
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
@@ -357,9 +361,30 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
         """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""
+        # F2: reset the sentinel FIRST, before the probe — a failed probe or an
+        # exception path must never leave a stale value from an earlier call.
+        self._foreign_bridge_session = None
         try:
             ok, data = await self._probe_bridge_health()
             if not ok or data is None:
+                return False
+            # Session handshake: /health reports the bridge's own session dir.
+            # A bridge serving a DIFFERENT profile's session must be left
+            # alone entirely — adopting it would cross wire two profiles, and
+            # falling through to the kill path would kill the other profile's
+            # bridge. connect() turns this into a fatal error telling the user
+            # to give each profile its own bridge_port. A bridge that predates
+            # the handshake reports no session and is treated as stale.
+            # F1: this check runs BEFORE the connected-status check — bridge.js
+            # reports only 'connected' or 'disconnected', so a foreign bridge
+            # during startup/reconnect/QR-wait reports 'disconnected' and would
+            # otherwise fall through to the kill path unmarked.
+            reported_session = data.get("session")
+            if reported_session and reported_session != str(self._session_path):
+                self._foreign_bridge_session = reported_session
+                return False
+            if not reported_session:
+                print(f"[{self.name}] Running bridge predates the session handshake, restarting")
                 return False
             bridge_status = data.get("status", "unknown")
             if bridge_status != "connected":
@@ -491,6 +516,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._session_path.mkdir(parents=True, exist_ok=True)
             if await self._reuse_running_bridge(bridge_path):
                 return True
+            if self._foreign_bridge_session:
+                # The port is served by another profile's bridge. Never adopt
+                # it and never kill it: it belongs to a live session.
+                foreign = self._foreign_bridge_session
+                self._set_fatal_error(
+                    "whatsapp_bridge_foreign_session",
+                    f"Port {self._bridge_port} is already served by a WhatsApp bridge for a different session "
+                    f"({foreign}). Give this profile its own port via platforms.whatsapp.extra.bridge_port "
+                    f"(one distinct bridge_port per profile); nothing on port {self._bridge_port} was stopped.",
+                    retryable=False,
+                )
+                return False
             _kill_stale_bridge_by_pidfile(self._session_path)
             _kill_port_process(self._bridge_port)
             await asyncio.sleep(1)

@@ -914,9 +914,14 @@ export const host = {
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
 
-    // A new wake owns the syncing affordance — a lingering badge from an
-    // earlier paint-first wake must not survive into this one.
+    // A new wake owns the syncing affordances — a lingering badge or
+    // chat-swap cover from an earlier wake must not survive into this one.
+    // The overlay reset especially matters when the superseded open was the
+    // generation-guarded kind: its finally skips the clear once superseded,
+    // and a paint-first wake never sets the target itself, so without this
+    // the "Waking up …" cover would stay over a fully working session.
     $hydrationSyncProfile.set(null)
+    $gatewaySwapTarget.set(null)
     const explicitRoute = options.route ? { ...options.route } : null
     const profile = (explicitRoute?.profile ?? options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())

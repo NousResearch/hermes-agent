@@ -293,3 +293,40 @@ describe('host workspace scope', () => {
     expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
   })
 })
+
+describe('host.openSession chat-swap overlay ownership', () => {
+  afterEach(() => {
+    warmMocks.openGatewayForProfile.mockImplementation(async () => undefined)
+  })
+
+  it('clears a lingering swap overlay target when a paint-first wake supersedes an awaited one', async () => {
+    const { $gatewaySwapTarget } = await import('@/store/profile')
+
+    // The awaited wake must still be IN its activation when the supersede
+    // lands, so the first dial never settles; the second one resolves.
+    warmMocks.openGatewayForProfile
+      .mockImplementationOnce(() => new Promise<undefined>(() => undefined))
+      .mockImplementation(() => Promise.resolve(undefined))
+
+    const first = host.openSession('stored-superseded', {
+      awaitHydration: true,
+      hydrationTimeoutMs: 5,
+      profile: 'swapme'
+    })
+
+    await vi.waitFor(() => expect(warmMocks.openGatewayForProfile).toHaveBeenCalled())
+
+    // The residue a superseded 20s-hydration wake leaves behind: its overlay
+    // target was set at the hydration half, and its finally-clear is skipped
+    // because the generation guard now belongs to the newer wake.
+    $gatewaySwapTarget.set('swapme')
+
+    // A paint-first wake: no awaitHydration, so it neither sets nor clears
+    // the overlay target on its own — only the entry-point ownership handoff
+    // can retire the stale cover.
+    await host.openSession('stored-superseded', { profile: 'swapme' })
+
+    await expect(first).rejects.toThrow('Timed out loading')
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+})

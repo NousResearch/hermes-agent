@@ -929,6 +929,32 @@ def test_egress_enabled_does_not_reuse_pre_egress_container(monkeypatch):
     assert run_invocations, "egress-enabled containers require a fresh docker run"
 
 
+def test_forward_env_collision_matches_case_insensitively():
+    """docker_forward_env names resolve via os.getenv() on the host, which is
+    case-insensitive on Windows — a case variant of an egress-protected name
+    must still collide, or it injects the real credential past the token swap."""
+    from tools.environments.docker_egress import check_forward_env_collisions
+
+    with pytest.raises(RuntimeError, match="openai_api_key"):
+        check_forward_env_collisions(["openai_api_key"], {"OPENAI_API_KEY"}, enforce=True)
+    # Negative arm: an unrelated lowercase name is not flagged.
+    check_forward_env_collisions(["my_own_key"], {"OPENAI_API_KEY"}, enforce=True)
+
+
+def test_extra_args_collision_matches_case_insensitively():
+    """``-e NAME`` resolves NAME in the host env (case-insensitive on Windows),
+    so a variant spelling must collide with the critical set too."""
+    from tools.environments.docker_egress import _extra_args_egress_collisions
+
+    critical = {"OPENAI_API_KEY", "HTTPS_PROXY"}
+    assert _extra_args_egress_collisions(
+        ["-e", "openai_api_key=sk-real"], critical) == ["openai_api_key"]
+    assert _extra_args_egress_collisions(
+        ["--env=HtTpS_PrOxY=http://evil"], critical) == ["HtTpS_PrOxY"]
+    # Negative arm: unrelated names pass.
+    assert _extra_args_egress_collisions(["-e", "MY_OWN_KEY=x"], critical) == []
+
+
 def test_reuse_probe_format_is_podman_compatible(monkeypatch):
     """Podman does not implement the Docker-only ``{{.Label "key"}}`` template
     function — a reuse probe using it fails wholesale (``podman ps`` exits

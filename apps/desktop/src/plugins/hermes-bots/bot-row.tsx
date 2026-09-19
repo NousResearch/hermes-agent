@@ -24,10 +24,12 @@ import {
   RowButton,
   SessionStatusDot,
   SidebarRowLead,
+  startBotChatDrag,
   Tip,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -38,6 +40,7 @@ import {
   focusedRosterOwner,
   saveSelectedRosterBot
 } from './bot-state'
+import { CANONICAL_CHAT_TITLE } from './canonical-chat'
 import { ensureBotMetadata } from './canonical-chat'
 import {
   $botAttention,
@@ -64,7 +67,7 @@ import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
-import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta, botWorkspaceOwnerKey, resolveBotConnectionRoute, setBotsWorkspaceOwner } from './routing'
 import {
   A2A_PREFIX_RE,
   botCanonicalSessionId,
@@ -232,6 +235,37 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const dragging = useValue($draggingBot) === rosterKey
   const currentSectionId = botSectionId(bot, allMeta)
 
+  // The workspace drag rides the SAME pointer press as the click (the exact
+  // arrangement session-row.tsx uses: one press, two drags, each declining
+  // outside its own region — the region where the release lands commits).
+  // Over the roster only the native section drag has a target; over the
+  // workspace only the pointer drag does. Sub-threshold releases stay the
+  // row's ordinary open click. Requires the bot's canonical chat to exist
+  // (no chat yet → nothing to dock, the click still mints it).
+  const canonicalSessionIdValue = canonicalSessionId
+  const botDisplayName = displayName(bot, meta)
+
+  const onRowPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!canonicalSessionIdValue || event.button !== 0) {
+      return
+    }
+
+    startBotChatDrag(
+      {
+        id: canonicalSessionIdValue,
+        profile: bot.name || 'default',
+        title: `${botDisplayName} — ${CANONICAL_CHAT_TITLE}`,
+        scope: {
+          ownerRoute: resolveBotConnectionRoute(bot).route ?? undefined,
+          workspaceMode: 'bots',
+          workspaceOwnerKey: botWorkspaceOwnerKey(bot),
+          workspaceTabTitle: botDisplayName
+        }
+      },
+      event
+    )
+  }
+
   const row = (
     <RowButton
       aria-label={rowTooltip}
@@ -252,9 +286,19 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         event.dataTransfer.effectAllowed = 'move'
         $draggingBot.set(rosterKey)
       }}
+      onPointerDown={onRowPointerDown}
       onPointerEnter={warm}
     >
-      <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
+      <div
+        className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}
+        draggable
+        onDragEnd={() => $draggingBot.set(null)}
+        onDragStart={event => {
+          event.dataTransfer.setData(BOT_DRAG_MIME, rosterKey)
+          event.dataTransfer.effectAllowed = 'move'
+          $draggingBot.set(rosterKey)
+        }}
+      >
         <BotFace
           color={avatarColor(color, bot.name)}
           image={photo ? image : null}

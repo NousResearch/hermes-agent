@@ -275,7 +275,8 @@ def get_board(
     with _board_conn(board) as (board, conn):
         tasks = kanban_db.list_tasks(
             conn, tenant=tenant, include_archived=include_archived,
-            workflow_template_id=workflow_template_id, current_step_key=current_step_key)
+            workflow_template_id=workflow_template_id, current_step_key=current_step_key,
+            order_by="priority-recent")
         # Link / comment / progress rollups are each one aggregate query rather than N per-task lookups.
         link_counts: dict[str, dict[str, int]] = {}
         for row in conn.execute("SELECT parent_id, child_id FROM task_links").fetchall():

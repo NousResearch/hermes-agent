@@ -1848,6 +1848,10 @@ def cmd_gateway(args):
 
     from hermes_cli.gateway import gateway_command
 
+    # --yolo must be set before tools.approval is imported: it freezes
+    # _YOLO_MODE_FROZEN at import time (mirrors the cmd_chat safety net).
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
     gateway_command(args)
 
 

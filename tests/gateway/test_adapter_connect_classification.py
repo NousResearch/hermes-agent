@@ -290,17 +290,14 @@ class TestReconnectNeedsAttention:
         info = {"queued_at": now - 60}
         assert _reconnect_needs_attention(info, now) is False
 
-    def test_past_threshold_is_flagged(self):
-        import gateway.run as run_module
-
+    def test_past_threshold_is_flagged(self, monkeypatch):
+        monkeypatch.setenv("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", "10")
         now = time.monotonic()
-        info = {"queued_at": now - (run_module._RECONNECT_ATTENTION_AFTER_SECONDS + 1)}
+        info = {"queued_at": now - 11}
         assert _reconnect_needs_attention(info, now) is True
 
     def test_zero_threshold_disables_escalation(self, monkeypatch):
-        import gateway.run as run_module
-
-        monkeypatch.setattr(run_module, "_RECONNECT_ATTENTION_AFTER_SECONDS", 0)
+        monkeypatch.setenv("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", "0")
         info = {"queued_at": time.monotonic() - 999999}
         assert _reconnect_needs_attention(info, time.monotonic()) is False
 
@@ -333,8 +330,6 @@ def _make_runner():
 class TestWatcherAttentionEscalation:
     @pytest.mark.asyncio
     async def test_watcher_flags_long_queued_platform_and_keeps_retrying(self, monkeypatch):
-        import gateway.run as run_module
-
         runner = _make_runner()
         status_writes = []
         monkeypatch.setattr(
@@ -343,7 +338,8 @@ class TestWatcherAttentionEscalation:
             lambda platform, **kw: status_writes.append((platform, kw)),
         )
 
-        threshold = run_module._RECONNECT_ATTENTION_AFTER_SECONDS
+        monkeypatch.setenv("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", "10")
+        threshold = 10
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 40,
@@ -377,8 +373,6 @@ class TestWatcherAttentionEscalation:
 
     @pytest.mark.asyncio
     async def test_watcher_flags_only_once(self, monkeypatch):
-        import gateway.run as run_module
-
         runner = _make_runner()
         status_writes = []
         monkeypatch.setattr(
@@ -387,7 +381,8 @@ class TestWatcherAttentionEscalation:
             lambda platform, **kw: status_writes.append((platform, kw)),
         )
 
-        threshold = run_module._RECONNECT_ATTENTION_AFTER_SECONDS
+        monkeypatch.setenv("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", "10")
+        threshold = 10
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 40,

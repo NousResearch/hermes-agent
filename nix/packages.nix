@@ -43,7 +43,7 @@
           "voice"
         ]
         # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
-        ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
+        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ "matrix" ];
       };
     in
     {

@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import types
+import warnings
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -678,3 +679,133 @@ class TestSelfHostedBackend:
         s = _StubServer()
         with pytest.raises(httpx.HTTPStatusError):
             _backend(s).delete("missing")  # 404 -> raise_for_status; 'not found' won't trip breaker
+
+
+class TestQdrantInsecureWarningSuppression:
+
+    """HERMES_QDRANT_ALLOW_INSECURE=1 must silence only the Qdrant api-key-over-HTTP warning."""
+
+    @staticmethod
+    def _raw_config():
+        return {
+            "llm": {"provider": "ollama", "config": {"model": "llama3"}},
+            "embedder": {
+                "provider": "openai",
+                "config": {"model": "text-embedding-3-small"},
+            },
+            "vector_store": {
+                "provider": "qdrant",
+                "config": {"url": "http://qdrant:6333", "api_key": "secret"},
+            },
+        }
+
+    def test_opt_in_suppresses_warning_from_memory_construction(
+        self, monkeypatch, recwarn
+    ):
+        _install_fake_mem0(monkeypatch)
+        monkeypatch.setenv("HERMES_QDRANT_ALLOW_INSECURE", "1")
+        fake_mem0 = sys.modules["mem0"]
+
+        class WarningRaisingMemory(fake_mem0.Memory):
+            def __init__(self, config):
+                warnings.warn(
+                    "Api key is used with an insecure connection.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                super().__init__(config)
+
+        monkeypatch.setattr(fake_mem0, "Memory", WarningRaisingMemory)
+        OSSBackend(self._raw_config())
+        assert not [w for w in recwarn.list if "insecure connection" in str(w.message)]
+
+    def test_warning_surfaces_without_opt_in(self, monkeypatch, recwarn):
+        _install_fake_mem0(monkeypatch)
+        monkeypatch.delenv("HERMES_QDRANT_ALLOW_INSECURE", raising=False)
+        fake_mem0 = sys.modules["mem0"]
+
+        class WarningRaisingMemory(fake_mem0.Memory):
+            def __init__(self, config):
+                warnings.warn(
+                    "Api key is used with an insecure connection.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                super().__init__(config)
+
+        monkeypatch.setattr(fake_mem0, "Memory", WarningRaisingMemory)
+        OSSBackend(self._raw_config())
+        assert [w for w in recwarn.list if "insecure connection" in str(w.message)]
+
+    def test_opt_in_suppresses_warning_from_dims_check_client(
+        self, monkeypatch, recwarn
+    ):
+        qdrant_client = types.ModuleType("qdrant_client")
+
+        class WarningRaisingQdrantClient:
+            def __init__(self, url=None, api_key=None, path=None):
+                warnings.warn(
+                    "Api key is used with an insecure connection.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        qdrant_client.QdrantClient = WarningRaisingQdrantClient
+        monkeypatch.setitem(sys.modules, "qdrant_client", qdrant_client)
+        monkeypatch.setenv("HERMES_QDRANT_ALLOW_INSECURE", "1")
+        # The dims check bails out right after construction (no collection to inspect).
+        OSSBackend._recreate_collection_if_dims_changed(
+            "qdrant", {"url": "http://qdrant:6333", "api_key": "secret"}, 1536
+        )
+        assert not [w for w in recwarn.list if "insecure connection" in str(w.message)]
+
+    def test_dims_check_warning_surfaces_without_opt_in(self, monkeypatch, recwarn):
+        qdrant_client = types.ModuleType("qdrant_client")
+
+        class WarningRaisingQdrantClient:
+            def __init__(self, url=None, api_key=None, path=None):
+                warnings.warn(
+                    "Api key is used with an insecure connection.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        qdrant_client.QdrantClient = WarningRaisingQdrantClient
+        monkeypatch.setitem(sys.modules, "qdrant_client", qdrant_client)
+        monkeypatch.delenv("HERMES_QDRANT_ALLOW_INSECURE", raising=False)
+        OSSBackend._recreate_collection_if_dims_changed(
+            "qdrant", {"url": "http://qdrant:6333", "api_key": "secret"}, 1536
+        )
+        assert [w for w in recwarn.list if "insecure connection" in str(w.message)]
+
+    def test_unrelated_user_warning_survives_opt_in(self, monkeypatch, recwarn):
+        _install_fake_mem0(monkeypatch)
+        monkeypatch.setenv("HERMES_QDRANT_ALLOW_INSECURE", "1")
+        fake_mem0 = sys.modules["mem0"]
+
+        class NoisyMemory(fake_mem0.Memory):
+            def __init__(self, config):
+                warnings.warn(
+                    "some unrelated misconfiguration", UserWarning, stacklevel=2
+                )
+                warnings.warn(
+                    "Api key is used with an insecure connection.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                super().__init__(config)
+
+        monkeypatch.setattr(fake_mem0, "Memory", NoisyMemory)
+        OSSBackend(self._raw_config())
+        messages = [str(w.message) for w in recwarn.list]
+        assert "some unrelated misconfiguration" in messages
+        assert "Api key is used with an insecure connection." not in messages
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "on", "0", "", "false"])
+    def test_truthy_string_set_governs_the_gate(self, monkeypatch, value):
+        from utils import TRUTHY_STRINGS
+
+        from plugins.memory.mem0._backend import _qdrant_insecure_warning_allowed
+
+        monkeypatch.setenv("HERMES_QDRANT_ALLOW_INSECURE", value)
+        assert _qdrant_insecure_warning_allowed() == (value in TRUTHY_STRINGS)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import closing, suppress
 from typing import Any
@@ -98,6 +99,32 @@ class SelfHostedBackend(Mem0Backend):
 _DIRECT_OPENAI_PROVIDER = "hermes_openai"
 _DIRECT_OPENAI_CLASS_PATH = "plugins.memory.mem0._openai_llm.DirectOpenAILLM"
 
+_QDRANT_INSECURE_WARNING = "Api key is used with an insecure connection."
+
+
+def _qdrant_insecure_warning_allowed() -> bool:
+    """Whether the operator opted into plain-HTTP Qdrant with an API key (trusted same-network deployments)."""
+    from utils import env_var_enabled
+
+    return env_var_enabled("HERMES_QDRANT_ALLOW_INSECURE")
+
+
+def _suppress_qdrant_insecure_warning() -> "warnings.catch_warnings | None":
+    """Context manager silencing only the Qdrant api-key-over-HTTP warning; None when not opted in.
+
+    qdrant-client raises it synchronously in QdrantRemote.__init__ whenever an api_key
+    accompanies an http:// url, so scoping to client construction covers every construction
+    site without touching unrelated warnings.
+    """
+    if not _qdrant_insecure_warning_allowed():
+        return None
+    ctx = warnings.catch_warnings()
+    ctx.__enter__()
+    warnings.filterwarnings(
+        "ignore", message=_QDRANT_INSECURE_WARNING, category=UserWarning
+    )
+    return ctx
+
 
 def _register_direct_openai_provider() -> None:
     """Register Hermes' OpenAI-only Mem0 LLM provider once per factory."""
@@ -150,9 +177,19 @@ class OSSBackend(Mem0Backend):
                 memory_config.llm.provider = _DIRECT_OPENAI_PROVIDER
             except (AttributeError, TypeError) as exc:
                 raise RuntimeError("mem0 MemoryConfig does not expose a mutable llm.provider for the Hermes OpenAI OSS backend") from exc
-            self._memory = Memory(memory_config)
+            suppress_insecure = _suppress_qdrant_insecure_warning()
+            try:
+                self._memory = Memory(memory_config)
+            finally:
+                if suppress_insecure is not None:
+                    suppress_insecure.__exit__(None, None, None)
         else:
-            self._memory = Memory.from_config(config)
+            suppress_insecure = _suppress_qdrant_insecure_warning()
+            try:
+                self._memory = Memory.from_config(config)
+            finally:
+                if suppress_insecure is not None:
+                    suppress_insecure.__exit__(None, None, None)
 
     @staticmethod
     def _recreate_collection_if_dims_changed(provider: str, vs_config: dict, expected_dims: int) -> None:
@@ -162,12 +199,17 @@ class OSSBackend(Mem0Backend):
             if provider == "qdrant":
                 from qdrant_client import QdrantClient
                 path, url = vs_config.get("path"), vs_config.get("url")
-                if path:
-                    client = QdrantClient(path=path)
-                elif url:
-                    client = QdrantClient(url=url, api_key=vs_config.get("api_key"))
-                else:
-                    return
+                suppress_insecure = _suppress_qdrant_insecure_warning()
+                try:
+                    if path:
+                        client = QdrantClient(path=path)
+                    elif url:
+                        client = QdrantClient(url=url, api_key=vs_config.get("api_key"))
+                    else:
+                        return
+                finally:
+                    if suppress_insecure is not None:
+                        suppress_insecure.__exit__(None, None, None)
                 with closing(client):
                     if not client.collection_exists(collection_name):
                         return

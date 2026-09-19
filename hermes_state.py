@@ -334,18 +334,28 @@ def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:
     return isinstance(content, str) and bool(_STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()))
 
 
-def _strip_stale_tool_call_markers(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_stale_tool_call_markers(
+    messages: List[Dict[str, Any]], *, session_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Blank stale ``[marker]`` assistant content (replaying it teaches the model
-    to keep emitting it); tool_call/result pairing stays intact."""
+    to keep emitting it); tool_call/result pairing stays intact without mutating
+    caller-owned history."""
     repaired = 0
-    for msg in filter(_is_stale_tool_call_marker_message, messages):
-        msg["content"] = ""
+    repaired_messages = messages
+    for index, msg in enumerate(messages):
+        if not _is_stale_tool_call_marker_message(msg):
+            continue
+        if repaired_messages is messages:
+            repaired_messages = list(messages)
+        repaired_messages[index] = {**msg, "content": ""}
         repaired += 1
     if repaired:
         logger.info(
-            "Cleared %d stale tool-call marker message(s) while restoring session (#78148)", repaired,
+            "event=stale_tool_call_marker_repaired session_id=%s "
+            "stale_tool_call_marker_repaired_total=%d",
+            session_id or "unknown", repaired,
         )
-    return messages
+    return repaired_messages
 
 
 _SESSION_DB_CONSEQUENCE = "Sessions will not be saved until this is fixed."

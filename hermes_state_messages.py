@@ -1069,7 +1069,9 @@ class SessionMessagesMixin:
             messages.append(msg)
         # Defense-in-depth: strip a background-review harness turn (older builds shared the parent's
         # session_id) plus its curator reply, and bare tool-call marker content ("[memory]") persisted as an answer.
-        messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+        messages = _strip_stale_tool_call_markers(
+            _strip_background_review_harness(messages), session_id=session_id,
+        )
         if repair_alternation and messages:
             from agent.agent_runtime_helpers import repair_message_sequence
             repaired = repair_message_sequence(None, messages)

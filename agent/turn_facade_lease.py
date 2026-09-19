@@ -329,17 +329,23 @@ def carry_unadmitted_user_message(
     if hard_interrupted or not early_result.get("interrupted") or user_message in (None, ""):
         return
     from agent.message_metadata import append_message
-    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+    from agent.session_persistence import FilesUserTranscript, _PERSIST_AFTER_ADMISSION_INTERRUPT
 
+    files_transcript = isinstance(persist_user_message, FilesUserTranscript)
     durable_content = user_message
-    if persist_user_message is not None and (
+    if files_transcript:
+        # No prologue/provider admission happened. Carry only the trusted accepted
+        # prompt + labels, never private references/native parts or a replay sidecar.
+        # This ordinary string remains safe after the original Files scope exits.
+        durable_content = str(persist_user_message)
+    elif persist_user_message is not None and (
         not isinstance(user_message, list) or isinstance(persist_user_message, list)
     ):
         durable_content = persist_user_message
     deferred_user: Dict[str, Any] = {
         "role": "user", "content": durable_content, _PERSIST_AFTER_ADMISSION_INTERRUPT: True,
     }
-    if isinstance(user_message, str) and user_message != durable_content:
+    if not files_transcript and isinstance(user_message, str) and user_message != durable_content:
         deferred_user["api_content"] = user_message
     if display_kind:
         deferred_user["display_kind"] = display_kind

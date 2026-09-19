@@ -762,6 +762,8 @@ class GatewayAgentCacheMixin:
         if agent is None:
             return
         with suppress(Exception):
+            from agent.files_live_context import retire_files_context
+            retire_files_context(agent)
             if hasattr(agent, "release_clients"):
                 agent.release_clients()
             else:

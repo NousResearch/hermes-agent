@@ -940,6 +940,8 @@ class AIAgent(
         blocks the rest."""
         # close() is the hard owner boundary; shutdown_memory_provider() is idempotent so gateway pre-calls
         # never double-extract.
+        from agent.files_live_context import retire_files_context
+        retire_files_context(self)
         session_messages = getattr(self, "_session_messages", None)
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
         self._close_task_resources(getattr(self, "session_id", None) or "")

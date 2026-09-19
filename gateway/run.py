@@ -1208,7 +1208,7 @@ def _has_replayable_sidecar(role: Any, content: Any, msg: Dict[str, Any]) -> boo
 
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]], *, channel_prompt: Optional[str] = None,
-    inject_timestamps: bool = False) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    inject_timestamps: bool = False, files_bindings=None) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
@@ -1272,6 +1272,9 @@ def _build_gateway_agent_history(
                 entry["content"] = f"[Delivered from {mirror_src}] {entry['content']}"
                 entry.pop("api_content", None)  # prefix rewrite: the sidecar no longer matches
             agent_history.append(entry)
+            if files_bindings is not None:
+                files_bindings.transformed(msg, entry, unchanged=(
+                    content == msg.get("content") and not msg.get("mirror")))
 
     # Keep gateway resume byte-identical to the TUI resume and send paths. The
     # canonicalizer owns interrupted-block, dangling-tail, and stale-confirmation

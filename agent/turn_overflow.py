@@ -20,6 +20,7 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock, context_compression_timed_out,
 )
 from agent.error_classifier import FailoverReason
+from agent.files_live_context import files_error_display
 from agent.message_sanitization import serialized_messages_bytes
 from agent.model_metadata import (
     get_context_length_from_provider_error, is_output_cap_error,
@@ -380,7 +381,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
             ),
             log=(
                 f"{agent.log_prefix}Output-cap error not routed into compression "
-                f"(max_tokens over provider cap): {error_msg[:200]}",
+                f"(max_tokens over provider cap): {files_error_display(agent, error_msg)[:200]}",
             ),
             compression_exhausted=False,
         )

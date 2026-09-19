@@ -20,6 +20,7 @@ from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STA
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason
+from agent.files_live_context import files_error_display
 from agent.message_sanitization import (
     _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
@@ -261,7 +262,7 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     try:
         _body = getattr(api_error, "body", None) or getattr(api_error, "response", None)
         if _body is not None:
-            _body_text = str(_body)[:200]
+            _body_text = str(files_error_display(agent, _body))[:200]
     except Exception:
         pass
     _plines(agent, "🔐 Nous 401 — Portal authentication failed.")
@@ -461,7 +462,7 @@ def _recover_format_errors(
             from tools.schema_sanitizer import strip_pattern_and_format
             _, _stripped = strip_pattern_and_format(agent.tools)
         except Exception as _strip_exc:  # pragma: no cover — defensive
-            logger.warning("%sllama.cpp grammar recovery: strip helper failed: %s", agent.log_prefix, _strip_exc)
+            logger.warning("%sllama.cpp grammar recovery: strip helper failed: %s", agent.log_prefix, files_error_display(agent, _strip_exc))
             _stripped = 0
         if _stripped:
             _vlines(agent, f"⚠️  llama.cpp rejected tool schema grammar — stripped {_stripped} pattern/format keyword(s), retrying...")
@@ -802,7 +803,7 @@ def nonretryable_client_error_result(
     agent._flush_status_buffer()
     # Summarize once: Cloudflare/proxy HTML pages and raw provider bodies must be
     # collapsed here or they leak verbatim via the ``error`` field.
-    _nonretryable_summary = agent._summarize_api_error(api_error)
+    _nonretryable_summary = files_error_display(agent, api_error, summarize=True)
     _plabel = provider_label_for(provider)
     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
     agent._emit_status(f"❌ {_label}: {_nonretryable_summary}")
@@ -850,7 +851,7 @@ def nonretryable_client_error_result(
             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
             "        for localhost, or add the server's cert to your trust store.",
         )
-    logger.error("%sNon-retryable client error: %s", agent.log_prefix, api_error)
+    logger.error("%sNon-retryable client error: %s", agent.log_prefix, files_error_display(agent, api_error))
     # Skip persistence on likely context-overflow (400 + large session): persisting the
     # failed message grows the session and repeats the failure.
     # Persisting the failed user message would make the session even larger, causing the same failure on the
@@ -920,7 +921,7 @@ def max_retries_exhausted_result(
     )
 
     agent._flush_status_buffer()
-    _final_summary = agent._summarize_api_error(api_error)
+    _final_summary = files_error_display(agent, api_error, summarize=True)
     _billing_guidance = ""
     _is_billing = classified.reason == FailoverReason.billing
     if _is_billing:
@@ -1038,7 +1039,7 @@ def log_api_error_attempt(
     retry+fallback exhausts. Returns ``(error_type, error_msg, provider, base_url, model)``."""
     error_type = type(api_error).__name__
     error_msg = str(api_error).lower()
-    _error_summary = agent._summarize_api_error(api_error)
+    _error_summary = files_error_display(agent, api_error, summarize=True)
     logger.warning(
         "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
         retry_count, max_retries, error_type, agent._client_log_context(), _error_summary,
@@ -1058,7 +1059,7 @@ def log_api_error_attempt(
         )
         if status_code and status_code < 500:
             _err_body = getattr(api_error, "body", None)
-            _err_body_str = str(_err_body)[:300] if _err_body else None
+            _err_body_str = str(files_error_display(agent, _err_body))[:300] if _err_body else None
             if _err_body_str:
                 _blines(agent, f"   📋 Details: {_err_body_str}")
         _blines(agent, f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
@@ -1212,7 +1213,7 @@ def compute_error_backoff(
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
         wait_time, retry_count, max_retries, agent._client_log_context(),
-        _backoff_policy or "default", api_error,
+        _backoff_policy or "default", files_error_display(agent, api_error),
     )
     return wait_time
 
@@ -1229,7 +1230,7 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
     if agent.api_mode == "codex_responses":
         _codex_resp_status = str(getattr(response, "status", "") or "").strip().lower()
         if _codex_resp_status in {"failed", "cancelled"}:
-            _codex_error_obj = getattr(response, "error", None)
+            _codex_error_obj = files_error_display(agent, getattr(response, "error", None))
             _codex_error_msg = (
                 _codex_error_obj.get("message") if isinstance(_codex_error_obj, dict)
                 else str(_codex_error_obj) if _codex_error_obj
@@ -1253,8 +1254,9 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
         logger.warning(
             "Codex response.output is empty after stream backfill "
             "(status=%s, incomplete_details=%s, model=%s). %s",
-            getattr(response, "status", None), getattr(response, "incomplete_details", None),
-            getattr(response, "model", None),
+            files_error_display(agent, getattr(response, "status", None)),
+            files_error_display(agent, getattr(response, "incomplete_details", None)),
+            files_error_display(agent, getattr(response, "model", None)),
             f"api_mode={agent.api_mode} provider={agent.provider}",
         )
         return True, ["response.output is empty"]
@@ -1278,21 +1280,27 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
     error_msg = "Unknown"
     provider_name = "Unknown"
     _has_error = bool(response and hasattr(response, 'error') and response.error)
-    if _has_error:
-        error_msg = str(response.error)
-        if hasattr(response.error, 'metadata') and response.error.metadata:
-            provider_name = response.error.metadata.get('provider_name', 'Unknown')
-    elif response and hasattr(response, 'message') and response.message:
-        error_msg = str(response.message)
+    display_response = files_error_display(agent, response)
+    if display_response is not response:
+        # Omit before rendering any SDK body/metadata. Keep the original response
+        # below for code-derived hints and in the caller for validation/recovery.
+        error_msg = display_response
+    else:
+        if _has_error:
+            error_msg = str(response.error)
+            if hasattr(response.error, 'metadata') and response.error.metadata:
+                provider_name = response.error.metadata.get('provider_name', 'Unknown')
+        elif response and hasattr(response, 'message') and response.message:
+            error_msg = str(response.message)
 
-    # OpenRouter often returns the actual model used.
-    if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
-        provider_name = f"model={response.model}"
+        # OpenRouter often returns the actual model used.
+        if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
+            provider_name = f"model={response.model}"
 
-    if provider_name == "Unknown" and response:
-        resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
-        if agent.verbose_logging:
-            logging.debug(f"Response attributes for invalid response: {resp_attrs}")
+        if provider_name == "Unknown" and response:
+            resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+            if agent.verbose_logging:
+                logging.debug(f"Response attributes for invalid response: {resp_attrs}")
 
     _resp_error_code = None
     if _has_error:
@@ -1579,7 +1587,7 @@ def route_classified_error(
             False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
         )
         if not pool_may_recover:
-            agent._buffer_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
+            agent._buffer_status(files_error_display(agent, _eager_fallback_status(classified, _is_upstream, _is_transport_failure)))
             if agent._try_activate_fallback(reason=classified.reason):
                 return _fallback_break()
 

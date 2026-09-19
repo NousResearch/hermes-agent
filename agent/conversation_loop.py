@@ -1511,6 +1511,10 @@ def _run_conversation_turn(
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
+        from agent.files_live_context import native_files_refusal
+        refusal = native_files_refusal(agent, s.messages)
+        if refusal is not None:
+            return refusal
         return agent._run_codex_app_server_turn(
             user_message=s.user_message, original_user_message=s.original_user_message,
             messages=s.messages, effective_task_id=s.effective_task_id,

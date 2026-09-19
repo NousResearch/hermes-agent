@@ -7,6 +7,8 @@ No file read, custody refresh, durable payload, or restart reconstruction lives 
 from __future__ import annotations
 
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 import weakref
@@ -214,7 +216,68 @@ def capture_files_row_ids(agent):
                     entry.row_id = row_id
 
 
-def safe_files_result(agent, result, *, force=False, trusted_carry=False):
+@dataclass(eq=False, repr=False)
+class _FilesResultBoundary:
+    owner: Any
+    db: Any
+    session_id: Any
+    invocation: Any = None
+    result: Any = None
+    snapshot: Any = None
+
+    def owns(self, agent):
+        return (self.owner is agent and self.db is getattr(agent, '_session_db', None)
+                and self.session_id == getattr(agent, 'session_id', None))
+
+
+_files_result_boundary: ContextVar[_FilesResultBoundary | None] = ContextVar(
+    'files_result_boundary', default=None)
+
+
+@contextmanager
+def files_result_boundary(agent):
+    """Private to this gateway call; no proof rides a result or survives its exit."""
+    boundary = _FilesResultBoundary(agent, getattr(agent, '_session_db', None),
+                                    getattr(agent, 'session_id', None))
+    token = _files_result_boundary.set(boundary)
+    try:
+        yield
+    finally:
+        # Clear even a copied Context's reference to this completed boundary.
+        boundary.owner = boundary.db = boundary.invocation = None
+        boundary.result = boundary.snapshot = None
+        _files_result_boundary.reset(token)
+
+
+def begin_files_result_invocation(agent):
+    """A fresh facade call invalidates any prior early return in this boundary."""
+    boundary = _files_result_boundary.get()
+    if boundary is not None and boundary.owns(agent):
+        boundary.invocation = object()
+        boundary.result = boundary.snapshot = None
+        return boundary.invocation
+    return None
+
+
+def safe_files_unadmitted_result(agent, result, invocation, *, force=False):
+    """Only the facade's constructed pre-prologue result can establish carry proof.
+
+    Its history is the explicitly selected input history, not stale canonical
+    rows. The carry helper already replaced current Files input with safe labels.
+    Preserve that envelope, but never give a clone or an alternate runner authority.
+    """
+    if not force and getattr(agent, '_files_safe_results', False) is not True:
+        return result
+    snapshot = _freeze(result)
+    out = _thaw(snapshot)
+    boundary = _files_result_boundary.get()
+    if (boundary is not None and boundary.owns(agent) and invocation is not None
+            and invocation is boundary.invocation):
+        boundary.result, boundary.snapshot = out, snapshot
+    return out
+
+
+def safe_files_result(agent, result, *, force=False):
     """Independent canonical snapshot, never an alias to retained safe history.
 
     Unknown alternate result implementations cannot prove a transcript mapping:
@@ -231,11 +294,20 @@ def safe_files_result(agent, result, *, force=False, trusted_carry=False):
     canonical = getattr(agent, '_session_messages', ()) or ()
     rows = result.get('messages', [])
     try:
+        boundary = _files_result_boundary.get()
+        if boundary is not None and boundary.owns(agent) and boundary.snapshot is not None:
+            # Once this invocation returned early, canonical-row equality cannot
+            # rehabilitate a modified envelope or a previous invocation's result.
+            if result is not boundary.result or _freeze(result) != boundary.snapshot:
+                return failed
+            out = _thaw(boundary.snapshot)
+            boundary.result = out
+            return out
         # This is a serialization integrity check, NEVER reattachment authority.
         # Alternate runners may return clones, but not a raw provider transcript.
         safe_rows = [_freeze(row) for row in canonical]
-        if (not isinstance(rows, list) or (not trusted_carry and
-                any(_freeze(row) not in safe_rows for row in rows))):
+        if (not isinstance(rows, list) or
+                any(_freeze(row) not in safe_rows for row in rows)):
             return failed
         out = _thaw(_freeze(result))
     except TypeError:

@@ -753,18 +753,18 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             captured = execution_result.get()
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
-            if api is not None and "files_persist_user_message" in api:
-                from agent.session_persistence import files_user_message_persistence
-                with files_user_message_persistence(agent, kwargs["persist_user_message"],
-                        admission_id=kwargs.get("persist_user_platform_id")) as transcript:
-                    kwargs["persist_user_message"] = transcript
+            from agent.files_live_context import files_result_boundary, safe_files_result
+            with files_result_boundary(agent):
+                if api is not None and "files_persist_user_message" in api:
+                    from agent.session_persistence import files_user_message_persistence
+                    with files_user_message_persistence(agent, kwargs["persist_user_message"],
+                            admission_id=kwargs.get("persist_user_platform_id")) as transcript:
+                        kwargs["persist_user_message"] = transcript
+                        result = agent.run_conversation(api_message, **kwargs)
+                        result = safe_files_result(agent, result, force=True)
+                else:
                     result = agent.run_conversation(api_message, **kwargs)
-                    from agent.files_live_context import safe_files_result
-                    result = safe_files_result(agent, result, force=True)
-            else:
-                result = agent.run_conversation(api_message, **kwargs)
-            from agent.files_live_context import safe_files_result
-            result = safe_files_result(agent, result)
+                result = safe_files_result(agent, result)
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])

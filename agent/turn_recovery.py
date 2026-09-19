@@ -1230,7 +1230,7 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
     if agent.api_mode == "codex_responses":
         _codex_resp_status = str(getattr(response, "status", "") or "").strip().lower()
         if _codex_resp_status in {"failed", "cancelled"}:
-            _codex_error_obj = getattr(response, "error", None)
+            _codex_error_obj = files_error_display(agent, getattr(response, "error", None))
             _codex_error_msg = (
                 _codex_error_obj.get("message") if isinstance(_codex_error_obj, dict)
                 else str(_codex_error_obj) if _codex_error_obj
@@ -1254,8 +1254,9 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
         logger.warning(
             "Codex response.output is empty after stream backfill "
             "(status=%s, incomplete_details=%s, model=%s). %s",
-            getattr(response, "status", None), getattr(response, "incomplete_details", None),
-            getattr(response, "model", None),
+            files_error_display(agent, getattr(response, "status", None)),
+            files_error_display(agent, getattr(response, "incomplete_details", None)),
+            files_error_display(agent, getattr(response, "model", None)),
             f"api_mode={agent.api_mode} provider={agent.provider}",
         )
         return True, ["response.output is empty"]
@@ -1279,21 +1280,27 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
     error_msg = "Unknown"
     provider_name = "Unknown"
     _has_error = bool(response and hasattr(response, 'error') and response.error)
-    if _has_error:
-        error_msg = str(response.error)
-        if hasattr(response.error, 'metadata') and response.error.metadata:
-            provider_name = response.error.metadata.get('provider_name', 'Unknown')
-    elif response and hasattr(response, 'message') and response.message:
-        error_msg = str(response.message)
+    display_response = files_error_display(agent, response)
+    if display_response is not response:
+        # Omit before rendering any SDK body/metadata. Keep the original response
+        # below for code-derived hints and in the caller for validation/recovery.
+        error_msg = display_response
+    else:
+        if _has_error:
+            error_msg = str(response.error)
+            if hasattr(response.error, 'metadata') and response.error.metadata:
+                provider_name = response.error.metadata.get('provider_name', 'Unknown')
+        elif response and hasattr(response, 'message') and response.message:
+            error_msg = str(response.message)
 
-    # OpenRouter often returns the actual model used.
-    if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
-        provider_name = f"model={response.model}"
+        # OpenRouter often returns the actual model used.
+        if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
+            provider_name = f"model={response.model}"
 
-    if provider_name == "Unknown" and response:
-        resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
-        if agent.verbose_logging:
-            logging.debug(f"Response attributes for invalid response: {resp_attrs}")
+        if provider_name == "Unknown" and response:
+            resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+            if agent.verbose_logging:
+                logging.debug(f"Response attributes for invalid response: {resp_attrs}")
 
     _resp_error_code = None
     if _has_error:

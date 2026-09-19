@@ -13,6 +13,7 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from agent.files_live_context import files_error_display
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
@@ -118,8 +119,9 @@ def check_api_response(
         agent._vprint(f"{agent.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
 
     if agent.verbose_logging:
-        resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
-        logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
+        resp_model = files_error_display(agent, getattr(response, 'model', 'N/A') if response else 'N/A')
+        resp_usage = files_error_display(agent, getattr(response, 'usage', 'N/A'))
+        logging.debug("API Response received - Model: %s, Usage: %s", resp_model, resp_usage)
 
     response_invalid, error_details = validate_response_shape(agent, response)
     if response_invalid:
@@ -244,11 +246,14 @@ def retry_invalid_response(
             compression_attempts=compression_attempts, result=result,
         )
 
+    display_details = files_error_display(agent, error_details)
+    detail_text = (display_details if isinstance(display_details, str)
+                   else ", ".join(display_details))
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
         error_type="InvalidAPIResponse",
-        error_message=", ".join(error_details) or "Invalid API response",
+        error_message=detail_text or "Invalid API response",
         status_code=getattr(getattr(response, "error", None), "code", None),
         retry_count=retry_count, max_retries=max_retries, retryable=True, reason="invalid_response",
     )
@@ -269,7 +274,7 @@ def retry_invalid_response(
     error_msg, provider_name, _failure_hint = describe_invalid_response(
         agent, response, api_duration
     )
-    agent._buffer_vprint(f"⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}")
+    agent._buffer_vprint(f"⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {detail_text}")
     agent._buffer_vprint(f"   🏢 Provider: {provider_name}")
     agent._buffer_vprint(f"   📝 Provider message: {agent._clean_error_message(error_msg)}")
     agent._buffer_vprint(f"   ⏱️  {_failure_hint}")
@@ -308,7 +313,7 @@ def retry_invalid_response(
 
     wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
     agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...")
-    logger.warning("Invalid API response (retry %d/%d): %s | Provider: %s", retry_count, max_retries, ', '.join(error_details), provider_name)
+    logger.warning("Invalid API response (retry %d/%d): %s | Provider: %s", retry_count, max_retries, detail_text, provider_name)
 
     # A redirect cancels only the live request; the helper preserves the pending
     # correction (restart_with_redirected_messages) instead of clear_interrupt()-ing it.

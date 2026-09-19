@@ -327,6 +327,12 @@ def resolve_billing_route(
     provider_name = (provider or "").strip().lower()
     base = (base_url or "").strip().lower()
     model = (model_name or "").strip()
+    if provider_name and model.lower().startswith(f"@{provider_name}:"):
+        model = model[len(provider_name) + 2:]
+    elif model.startswith("@") and ":" in model:
+        declared_provider, model = model[1:].split(":", 1)
+        if not provider_name:
+            provider_name = declared_provider.strip().lower()
     if not provider_name and "/" in model:
         inferred_provider, bare_model = model.split("/", 1)
         if inferred_provider in {"anthropic", "openai", "google"}:
@@ -358,7 +364,7 @@ def resolve_billing_route(
             snapshot_provider = "fireworks"
     if snapshot_provider:
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
-    if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
+    if provider_name in {"custom", "local"} or provider_name.startswith("custom:") or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=url, billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=bare if model else "", base_url=url, billing_mode="unknown")
 

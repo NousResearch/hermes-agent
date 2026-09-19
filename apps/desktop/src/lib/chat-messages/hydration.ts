@@ -175,6 +175,16 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
 
 // Only parse producer-owned boundaries, never render the model's task preamble.
 // Older backends can persist an unwrapped result rather than an envelope.
+// The model-facing notification frames a child's text as `<subagent_result>` + a one-paragraph
+// boundary notice so it cannot read as the user's own words; the user sees the report itself.
+const SUBAGENT_FRAME = /^<subagent_result>\n[^\n]*\n\n([\s\S]*)\n<\/subagent_result>$/
+
+function unframeSubagentResult(body: string): string {
+  const match = body.match(SUBAGENT_FRAME)
+
+  return match ? match[1].trim() : body
+}
+
 function asyncResultBody(content: string): string | undefined {
   let bodies = [content]
 
@@ -200,7 +210,9 @@ function asyncResultBody(content: string): string | undefined {
         const output = body.startsWith('Cron job ') ? body.match(/^--- JOB OUTPUT ---\r?\n/m) : null
         const result = output ? body.slice(output.index! + output[0].length) : body
 
-        return result.replace(/\nFull live transcript \(complete tool\/assistant trace\): [^\n]*\n*$/, '').trim()
+        return unframeSubagentResult(
+          result.replace(/\nFull live transcript \(complete tool\/assistant trace\): [^\n]*\n*$/, '').trim()
+        )
       })
       .filter(Boolean)
       .join('\n\n') || undefined

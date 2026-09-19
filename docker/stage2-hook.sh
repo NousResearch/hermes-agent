@@ -171,6 +171,51 @@ for sock in /var/run/docker.sock /run/docker.sock; do
     break
 done
 
+# --- Compose `group_add` / `--group-add` supplementary groups ---
+# Same initgroups() wipe as the Docker socket case above: groups granted
+# via `group_add:` in Compose (or `--group-add` on the CLI) are recorded
+# in the container's kernel group list on PID 1, but the s6-setuidgid
+# privilege drop calls initgroups() for the target user, which rebuilds
+# the supplementary group list from /etc/group. Without an /etc/group
+# entry matching the granted GID, the kernel-granted supp group is
+# silently wiped between PID 1 and the dropped process — the same
+# mechanism as the socket case above. Confirmed empirically: with
+# `group_add: ["1001"]` and no /etc/group entry, the dropped hermes
+# process shows `Groups: 10000` (1001 gone). See #75627.
+#
+# Fix: read PID 1's supplementary group list from /proc/1/status and
+# ensure /etc/group has a matching entry that includes hermes.
+# Idempotent across container restarts. Skipped silently when no
+# supplementary groups are granted (the common case). Avoids the
+# well-known groups that must NOT be granted: the socket case above
+# already handles docker.sock, and we deliberately skip gid 0 (root).
+pid1_groups="$(sed -n 's/^Groups:[[:space:]]*//p' /proc/1/status 2>/dev/null || true)"
+for gid in $pid1_groups; do
+    [ -n "$gid" ] || continue
+    # Skip gid 0 (root) — never add hermes to the root group.
+    [ "$gid" != 0 ] || continue
+    # Already a member? Nothing to do (idempotent restarts, and
+    # skips the docker.sock case above which ran first).
+    if id -G hermes 2>/dev/null | tr ' ' '\n' | grep -qx "$gid"; then
+        continue
+    fi
+    # Resolve or create a group name for this GID.
+    supp_group="$(getent group "$gid" 2>/dev/null | cut -d: -f1)"
+    if [ -z "$supp_group" ]; then
+        supp_group="hostgroup$gid"
+        if ! groupadd -g "$gid" "$supp_group" 2>/dev/null; then
+            echo "[stage2] Warning: groupadd -g $gid $supp_group failed; skipping supplementary group $gid"
+            continue
+        fi
+        echo "[stage2] Created group $supp_group (GID $gid) for Compose group_add / --group-add"
+    fi
+    if usermod -aG "$supp_group" hermes 2>/dev/null; then
+        echo "[stage2] Added hermes to group $supp_group (GID $gid) from --group-add"
+    else
+        echo "[stage2] Warning: usermod -aG $supp_group hermes failed; group $gid may be unavailable to runtime"
+    fi
+done
+
 # --- Fix ownership of data volume ---
 # When HERMES_UID is remapped or the top-level $HERMES_HOME isn't owned by
 # the runtime hermes UID, restore ownership to hermes — but ONLY for the

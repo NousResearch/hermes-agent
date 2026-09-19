@@ -1356,15 +1356,15 @@ def _render_skills_index(
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
     return (
         "## Skills\n"
-        "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
-        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
-        "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
-        "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
-        "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
-        f"even if you think you could handle the task with basic tools like {_basic_tools}. "
-        "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
-        "code review, planning, and testing — load them even for tasks you already know how to do, because "
-        "the skill defines how it should be done here.\n"
+        "Before replying, scan the skills below. Use the metadata in this index to select skills deliberately. "
+        "Load only the narrowest skill that directly matches the task, or a compatible set when each skill is "
+        "necessary. Do not load adjacent-scope skills merely because they are loosely related. If the user "
+        "explicitly asks for a named skill, load it with skill_view(name) and follow its instructions. This policy "
+        "is model-neutral: apply it regardless of model or provider. Skills contain specialized knowledge — API "
+        "endpoints, tool-specific commands, and proven workflows that outperform general-purpose approaches. "
+        f"Use a matching skill even when basic tools like {_basic_tools} could complete the task. "
+        "Skills also encode the user's preferred approach, conventions, and quality standards for applicable "
+        "tasks like code review, planning, and testing.\n"
         "If a skill has issues, fix it with skill_manage(action='patch').\n"
         "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
         "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
@@ -1372,7 +1372,7 @@ def _render_skills_index(
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"
         "</available_skills>\n\n"
-        "Only proceed without loading a skill if genuinely none are relevant to the task."
+        "Only proceed without loading a skill if no skill directly matches the task."
         + hidden_note
     )
 

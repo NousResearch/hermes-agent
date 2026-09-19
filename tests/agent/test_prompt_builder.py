@@ -349,6 +349,39 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_skill_selection_guidance_is_narrow_and_metadata_driven(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "search"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: search\ndescription: Search stuff\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "Use the metadata in this index to select skills deliberately." in result
+        assert "Load only the narrowest skill that directly matches the task" in result
+        assert "or a compatible set when each skill is necessary." in result
+        assert "Do not load adjacent-scope skills merely because they are loosely related." in result
+        assert "This policy is model-neutral: apply it regardless of model or provider." in result
+        assert "partially relevant" not in result
+        assert "Err on the side of loading" not in result
+
+    def test_skill_selection_guidance_preserves_explicit_invocation(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "search"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: search\ndescription: Search stuff\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert (
+            "If the user explicitly asks for a named skill, load it with "
+            "skill_view(name) and follow its instructions."
+        ) in result
+
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path

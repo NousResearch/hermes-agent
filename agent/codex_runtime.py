@@ -382,10 +382,25 @@ def _consume_user_interrupt(agent, active: bool = True) -> tuple[bool, Any]:
     return interrupted, message
 
 
+def _codex_developer_instructions(agent) -> str:
+    """The prompt composition the standard loop sends as its system message (turn_context order)."""
+    developer_instructions = getattr(agent, "_cached_system_prompt", None) or ""
+    if getattr(agent, "ephemeral_system_prompt", None):
+        developer_instructions = (developer_instructions + "\n\n" + agent.ephemeral_system_prompt).strip()
+    return developer_instructions
+
+
 def _ensure_codex_session(agent) -> None:
-    """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook)."""
+    """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
+    A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
+    or a prompt mirror mutate the agent in place) is retired first so the new thread carries the current one."""
+    developer_instructions = _codex_developer_instructions(agent)
     if getattr(agent, "_codex_session", None) is not None:
-        return
+        # Only a session whose recorded composition differs is stale; one attached without a record is kept.
+        recorded = getattr(agent, "_codex_session_prompt", None)
+        if recorded is None or recorded == developer_instructions:
+            return
+        _close_codex_session(agent)
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
@@ -406,10 +421,24 @@ def _ensure_codex_session(agent) -> None:
     # _emit_interim_assistant_message). Without this, Discord/Telegram users see no live tool-progress or
     # interim commentary while codex_app_server is running — only the final answer (#33200). Supersedes the
     # narrower item/started-only bridge from #38835.
+    # Hermes owns the prompt: the same composition the standard loop sends as its system message
+    # (cached per-session prompt + ephemeral additions such as channel overrides) rides along ONCE per
+    # thread as developerInstructions. A retired/recreated session re-sends the current composition;
+    # conversation history is still not projected into the codex thread (#74712, #26035).
+    agent._codex_session_prompt = developer_instructions
+    # A named custom provider (``providers.<name>``) maps onto codex's own ``[model_providers.<name>]``
+    # table: send the stable id plus the active model and let codex resolve base_url/env_key itself, so
+    # Hermes' credential never enters the JSON-RPC payload (#75186). openai/openai-codex keep codex's defaults.
+    model_provider = None
+    if str(getattr(agent, "provider", "") or "").strip().lower() == "custom":
+        from hermes_cli.runtime_provider_custom import codex_model_provider_id
+        model_provider = codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
+        developer_instructions=developer_instructions or None,
+        model=getattr(agent, "model", None) if model_provider else None, model_provider=model_provider,
     )
 
 

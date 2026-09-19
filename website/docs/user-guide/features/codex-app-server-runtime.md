@@ -5,7 +5,7 @@ sidebar_label: Codex App-Server Runtime
 
 # Codex App-Server Runtime
 
-Hermes can optionally hand `openai/*` and `openai-codex/*` turns to the [Codex CLI app-server](https://github.com/openai/codex) instead of running its own tool loop. When enabled, terminal commands, file edits, sandboxing, and MCP tool calls all execute inside Codex's runtime — Hermes becomes the shell around it (sessions DB, slash commands, gateway, memory and skill review).
+Hermes can optionally hand `openai/*`, `openai-codex/*` and [named custom provider](#named-custom-providers) turns to the [Codex CLI app-server](https://github.com/openai/codex) instead of running its own tool loop. When enabled, terminal commands, file edits, sandboxing, and MCP tool calls all execute inside Codex's runtime — Hermes becomes the shell around it (sessions DB, slash commands, gateway, memory and skill review).
 
 This is **opt-in only**. Default Hermes behavior is unchanged unless you flip the flag. Hermes never auto-routes you onto this runtime.
 
@@ -20,6 +20,7 @@ Not using OpenAI Codex? `hermes setup --portal` configures a non-Codex backend w
 - **Native Codex plugins** — Linear, GitHub, Gmail, Calendar, Canva, etc. — installed via `codex plugin` are auto-migrated and active in your Hermes session.
 - **Hermes' richer tools come along** — web_search, web_extract, browser automation, vision, image generation, skills, and TTS work via an MCP callback. Codex calls back into Hermes for tools it doesn't have built in.
 - **Memory and skill nudges keep working** — Codex's events are projected into Hermes' message shape so the self-improvement loop sees a normal-looking transcript.
+- **Your Hermes persona rides along** — the composed system prompt (SOUL.md, MEMORY.md/USER.md, per-channel `system_prompt` overrides) is sent to the codex thread once as developer instructions when the thread starts, and Codex's built-in personality is disabled so it cannot compete with yours.
 
 ## What tools the model actually has
 
@@ -125,12 +126,14 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
 | Native Codex plugins (Linear, GitHub, etc.) | — | yes (auto-migrated) |
 | User MCP servers | yes | yes (auto-migrated to codex) |
 | Memory + skill review (background) | yes | yes (via item projection) |
+| System prompt / SOUL.md / channel `system_prompt` overrides | yes | yes (sent once as developer instructions on thread start) |
 | Multi-turn conversations | yes | yes |
 | `/goal` (Ralph loop) | yes | yes |
 | Kanban worker dispatch | yes | yes (via callback) |
 | Kanban orchestrator tools | yes | yes (via callback) |
 | All gateway platforms | yes | yes |
-| Non-OpenAI providers | yes | n/a — OpenAI/Codex-scoped |
+| Named custom providers (`providers.<name>`) | yes | yes — a matching `[model_providers.<name>]` in `~/.codex/config.toml` is required |
+| Other non-OpenAI providers | yes | n/a — not routed through codex |
 
 ### Live display
 
@@ -159,6 +162,35 @@ uses:
    codex login                  # writes tokens to ~/.codex/auth.json
    ```
    Hermes' own `hermes auth add openai-codex` writes to `~/.hermes/auth.json` — that's a separate session. **Run `codex login` separately** if you haven't.
+
+   <a id="named-custom-providers"></a>**Or: a named custom provider.** A `providers.<name>` entry in Hermes config can use this runtime when the **same name** is defined as a Codex provider. Hermes config:
+
+   ```yaml
+   providers:
+     my-gateway:
+       api: https://gateway.example.com/v1
+       key_env: MY_GATEWAY_API_KEY
+       default_model: gpt-5.4
+
+   model:
+     provider: custom:my-gateway
+     default: gpt-5.4
+     openai_runtime: codex_app_server
+   ```
+
+   and the matching table in `~/.codex/config.toml`:
+
+   ```toml
+   [model_providers.my-gateway]
+   name = "My Gateway"
+   base_url = "https://gateway.example.com/v1"
+   env_key = "MY_GATEWAY_API_KEY"
+   wire_api = "responses"
+   ```
+
+   Hermes sends only `model` and `modelProvider = "my-gateway"` on `thread/start`; codex resolves `base_url` and reads the key from `env_key` in its own environment. **Hermes never forwards the API key**, so `MY_GATEWAY_API_KEY` must be present in the process environment Hermes runs in — `~/.hermes/.env` is loaded at startup and provider credentials are inherited by the codex subprocess. Auxiliary calls (titles, compression, memory review) still use Hermes' own `providers.my-gateway` entry.
+
+   Caveats: the name after `custom:` is the `providers:` config key and must match the `[model_providers.<name>]` table name exactly — if it does not exist on the codex side, codex reports an unknown provider rather than silently using the Hermes endpoint. Anonymous `provider: custom` (a bare `base_url`) is not eligible: it has no stable name to hand to codex, so it stays on Hermes' standard runtime.
 
 3. **(Optional) Install the Codex plugins you want.** When you enable the runtime, Hermes auto-migrates whichever curated plugins you've already installed via Codex CLI:
    ```bash
@@ -408,6 +440,7 @@ Known limitations:
 - **Hermes auth and codex auth are separate sessions.** You need both `codex login` AND `hermes auth add openai-codex` for the cleanest UX (the runtime uses codex's session for the LLM call). This is a deliberate design choice in Hermes' `_import_codex_cli_tokens` — Hermes won't share OAuth state with codex CLI to avoid clobbering each other on token refresh.
 - **`delegate_task`, `memory`, `session_search`, `todo` are unavailable on this runtime.** They need the running AIAgent context which a stateless MCP callback can't provide. Use `/codex-runtime auto` when you need these.
 - **No inline patch preview in approval prompts when codex doesn't track the changeset.** Codex's `fileChange` approval params don't always carry the changeset. Hermes caches the data from the corresponding `item/started` notification when possible, but if approval arrives before the item has streamed, the prompt falls back to whatever `reason` codex provides.
+- **Conversation history is not projected into the codex thread.** The codex thread receives Hermes' system prompt when it starts plus each new user message; prior Hermes history (e.g. from a resumed session) is not replayed into it. When the composed prompt changes mid-session (for example `/personality` in the TUI or Desktop), the next turn retires the running thread and starts a new one carrying the updated prompt; that new thread does not inherit the retired thread's history.
 - **Sub-second cancellation isn't guaranteed.** Mid-stream interrupts (Ctrl+C while codex is responding) are sent via `turn/interrupt`, but if codex has already flushed the final message, you get the response anyway.
 
 If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/issues) with the output of `hermes logs --since 5m`. Mention `codex-runtime` in the title so it's easy to triage.

@@ -188,6 +188,22 @@ def has_named_custom_provider(requested_provider: str) -> bool:
         return False
 
 
+def codex_model_provider_id(requested_provider: str) -> Optional[str]:
+    """Codex ``[model_providers.<id>]`` key for a configured named custom provider — its ``custom:``
+    identity without the prefix (the ``providers:`` config key; legacy ``custom_providers:`` entries
+    use their normalized display name). None for bare ``custom``, aliases that resolve to custom
+    (ollama, vllm, …) and unknown names: codex has no stable id to look up for those (#75186)."""
+    if _normalize_custom_provider_name(requested_provider or "") in {"", "custom"}:
+        return None
+    try:
+        entry = _rp()._get_named_custom_provider(requested_provider)
+    except Exception:
+        return None
+    if not entry:
+        return None
+    return custom_provider_slug(str(entry.get("name") or ""), str(entry.get("provider_key") or "")).split(":", 1)[1] or None
+
+
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 

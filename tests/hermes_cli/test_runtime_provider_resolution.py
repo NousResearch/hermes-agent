@@ -644,6 +644,31 @@ def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monke
     assert resolved["api_key"] == "no-key-required"
 
 
+def test_codex_app_server_opt_in_routes_only_named_custom_providers(monkeypatch):
+    """#75186: ``model.openai_runtime: codex_app_server`` reaches a configured ``providers.<name>``
+    entry (codex selects it by id from its own config); anonymous ``custom`` has no stable id and
+    stays on chat_completions, as does the named entry without the opt-in."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config = {
+        "model": {"provider": "custom:my-gateway", "default": "gpt-5.4", "openai_runtime": "codex_app_server"},
+        "providers": {"my-gateway": {"api": "https://gateway.example.com/v1", "api_key": "test-key", "default_model": "gpt-5.4"}},
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    resolved = rp.resolve_runtime_provider(requested="custom:my-gateway")
+    assert (resolved["provider"], resolved["requested_provider"], resolved["api_mode"]) == (
+        "custom", "custom:my-gateway", "codex_app_server")
+    assert resolved["api_key"] == "test-key"  # Hermes' own aux/fallback client keeps the credential
+
+    anonymous = rp.resolve_runtime_provider(requested="custom", explicit_base_url="https://gateway.example.com/v1",
+                                            explicit_api_key="k")
+    assert anonymous["api_mode"] == "chat_completions"
+
+    config["model"].pop("openai_runtime")
+    assert rp.resolve_runtime_provider(requested="custom:my-gateway")["api_mode"] == "chat_completions"
+
+
 def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

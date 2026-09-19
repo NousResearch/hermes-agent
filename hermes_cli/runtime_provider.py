@@ -261,10 +261,15 @@ def _api_key_provider_api_mode(provider: str, model_cfg: Dict[str, Any], api_key
     return _configured_or_fallback_api_mode(provider, model_cfg, base_url, effective_model, opencode_by_model=opencode_by_model)
 
 
-def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model_cfg: Optional[Dict[str, Any]]) -> str:
-    """Opt-in rewrite to "codex_app_server" via ``model.openai_runtime``; only ``openai`` /
-    ``openai-codex`` are eligible. No-op when unset, "auto", or empty."""
-    if model_cfg and provider in {"openai", "openai-codex"} and str(model_cfg.get("openai_runtime") or "").strip().lower() == "codex_app_server":
+def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model_cfg: Optional[Dict[str, Any]],
+                                          requested_provider: str = "") -> str:
+    """Opt-in rewrite to "codex_app_server" via ``model.openai_runtime``. Eligible: ``openai`` /
+    ``openai-codex``, and a configured named custom provider (``providers.<name>``) whose id codex
+    looks up in its own ``[model_providers.<name>]`` table (#75186). Anonymous ``custom`` has no
+    stable id and stays ineligible. No-op when unset, "auto", or empty."""
+    if not model_cfg or str(model_cfg.get("openai_runtime") or "").strip().lower() != "codex_app_server":
+        return api_mode
+    if provider in {"openai", "openai-codex"} or (provider == "custom" and codex_model_provider_id(requested_provider)):
         return "codex_app_server"
     return api_mode
 
@@ -455,7 +460,7 @@ from hermes_cli.runtime_provider_custom import (  # noqa: E402,F401
     _LLAMACPP_ALIASES, _apply_custom_provider_extras, _custom_provider_request_overrides, _filter_capabilities, _find_custom_identity,
     _get_named_custom_provider, _lift_common_custom_fields, _lift_extra_headers,
     _lift_model_capabilities, _normalize_base_url_for_match, _normalize_custom_provider_name, _resolve_named_custom_runtime,
-    _try_resolve_from_custom_pool, canonical_custom_identity, find_custom_provider_identity,
+    _try_resolve_from_custom_pool, canonical_custom_identity, codex_model_provider_id, find_custom_provider_identity,
     find_custom_provider_identity_by_model, has_named_custom_provider, is_routable_provider,
 )
 from hermes_cli.runtime_provider_backends import (  # noqa: E402,F401
@@ -887,6 +892,18 @@ def _tag(runtime: Optional[Dict[str, Any]], requested_provider: str) -> Optional
     return runtime
 
 
+def _named_custom_rung(requested_provider, explicit_api_key, explicit_base_url, target_model) -> Optional[Dict[str, Any]]:
+    """Rung 3: a configured named custom provider. Honours the ``model.openai_runtime`` opt-in like the
+    pool path does for openai/openai-codex (codex resolves the provider from its own config by id)."""
+    runtime = _tag(_resolve_named_custom_runtime(requested_provider=requested_provider, explicit_api_key=explicit_api_key,
+                                                explicit_base_url=explicit_base_url, target_model=target_model), requested_provider)
+    if runtime and runtime.get("provider") == "custom":
+        runtime["api_mode"] = _maybe_apply_codex_app_server_runtime(
+            provider="custom", api_mode=runtime.get("api_mode") or "chat_completions", model_cfg=_get_model_config(),
+            requested_provider=requested_provider)
+    return runtime
+
+
 def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url) -> Dict[str, Any]:
     return _tag(_resolve_openrouter_runtime(requested_provider=requested_provider, explicit_api_key=explicit_api_key,
                                             explicit_base_url=explicit_base_url), requested_provider)
@@ -940,8 +957,7 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     """Ladder rungs 2-8, yielded lazily so each is evaluated only when the previous one returned
     nothing; the last rung (OpenRouter / bare-custom fallback) always yields a runtime."""
     yield _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model)
-    yield _tag(_resolve_named_custom_runtime(requested_provider=requested_provider, explicit_api_key=explicit_api_key,
-                                             explicit_base_url=explicit_base_url, target_model=target_model), requested_provider)
+    yield _named_custom_rung(requested_provider, explicit_api_key, explicit_base_url, target_model)
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url pointing at a custom/local
     # endpoint (e.g. Ollama at localhost:11434), route through the OpenAI-compatible resolver instead of
     # letting resolve_provider() pick up an ANTHROPIC_API_KEY or OPENAI_API_KEY from the environment and

@@ -73,6 +73,64 @@ def test_normalize_spotify_uri_accepts_urls() -> None:
     assert uri == "spotify:track:7ouMYWpwJ422jRcDASZB7P"
 
 
+def test_normalize_spotify_id_accepts_plain_and_locale_prefixed_urls() -> None:
+    """A share link copied from a localized web player must parse the same.
+
+    Spotify hands out /intl-<locale>/<type>/<id> from every non-English web
+    player, and its router treats any intl-* first segment as a locale. Reading
+    the path positionally without dropping that segment mistakes the locale for
+    the type.
+    """
+    plain = "https://open.spotify.com/track/7ouMYWpwJ422jRcDASZB7P"
+    assert spotify_mod.normalize_spotify_id(plain, "track") == "7ouMYWpwJ422jRcDASZB7P"
+
+    localized = "https://open.spotify.com/intl-de/track/7ouMYWpwJ422jRcDASZB7P"
+    assert spotify_mod.normalize_spotify_id(localized, "track") == "7ouMYWpwJ422jRcDASZB7P"
+
+    # Locale subtags are not always two letters: /intl-pt-br/ and /intl-zh-tw/
+    # are both live share-url shapes.
+    subtagged = "https://open.spotify.com/intl-pt-br/album/1DFixLWuPkv3KT3TnV35m3"
+    assert spotify_mod.normalize_spotify_id(subtagged, "album") == "1DFixLWuPkv3KT3TnV35m3"
+
+    # Without expected_type the old code returned the *type* segment as the id
+    # instead of raising, so this asserts the quiet half of the bug too.
+    assert spotify_mod.normalize_spotify_id(localized) == "7ouMYWpwJ422jRcDASZB7P"
+
+    # The ?si= share tracker rides along on copied links.
+    tracked = "https://open.spotify.com/intl-de/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc123"
+    assert spotify_mod.normalize_spotify_id(tracked, "playlist") == "37i9dQZF1DXcBWIGoYBM5M"
+
+    # A wrong type is still rejected once the locale is out of the way.
+    with pytest.raises(spotify_mod.SpotifyError):
+        spotify_mod.normalize_spotify_id(localized, "album")
+
+
+def test_normalize_spotify_uri_accepts_locale_prefixed_urls() -> None:
+    for url, item_type, expected in (
+        (
+            "https://open.spotify.com/track/7ouMYWpwJ422jRcDASZB7P",
+            "track",
+            "spotify:track:7ouMYWpwJ422jRcDASZB7P",
+        ),
+        (
+            "https://open.spotify.com/intl-de/track/7ouMYWpwJ422jRcDASZB7P",
+            "track",
+            "spotify:track:7ouMYWpwJ422jRcDASZB7P",
+        ),
+        (
+            "https://open.spotify.com/intl-pt-br/album/1DFixLWuPkv3KT3TnV35m3",
+            "album",
+            "spotify:album:1DFixLWuPkv3KT3TnV35m3",
+        ),
+        (
+            "https://open.spotify.com/intl-de/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc123",
+            "playlist",
+            "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+        ),
+    ):
+        assert spotify_mod.normalize_spotify_uri(url, item_type) == expected
+
+
 def test_get_currently_playing_returns_explanatory_empty_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         spotify_mod,

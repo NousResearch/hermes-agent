@@ -108,7 +108,8 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
         kb.claim_task(conn, parent, claimer="worker")
-        kb.complete_task(conn, parent, result="done")
+        kb.complete_task(conn, parent, result="done",
+                         expected_run_id=kb._current_run_id(conn, parent))
         kb.recompute_ready(conn)
         assert kb.get_task(conn, child).status == "ready"
 

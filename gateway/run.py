@@ -977,7 +977,9 @@ def build_resume_recovery_note(
         resume_guidance = (
             "Address the user's NEW message below FIRST and focus on what the user is asking now.")
         tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any unfinished work from the conversation history."
+            "Do NOT re-execute completed tool calls. This recovery note does "
+            "not supersede the user's new instruction, including an explicit "
+            "request to continue unfinished work. Check recorded results first."
         )
     elif interactive:
         resume_guidance = (

@@ -2447,7 +2447,8 @@ class _BedrockStream:
                 on_stream_created=_stream_created, on_chunk=intercepted_events.append,
                 chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_event,
                 completed_response_predicate=lambda response: bool(getattr(response, "choices", None)),
-                metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True)
+                metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True,
+                cancelled=lambda: bool(agent._interrupt_requested))
             wants_reasoning = agent.reasoning_callback or agent.stream_delta_callback or plugin_reasoning_observer
             streamed_response = stream_converse_with_callbacks({"stream": stream},
                 on_text_delta=self._after_first(agent._fire_stream_delta) if agent._has_stream_consumers() else None,
@@ -2895,7 +2896,8 @@ class _StreamingCall(StreamingWaitMonitor):
             on_stream_created=self._chat_stream_created, on_chunk=relay_response.observe,
             accept_chunk=lambda chunk: self._accept_chat_chunk(stream_attempt_id, chunk),
             completed_response_predicate=lambda value: hasattr(value, "choices"),
-            metadata=_relay_stream_metadata(self.agent, "chat_completions"), defer_logical_completion=True))
+            metadata=_relay_stream_metadata(self.agent, "chat_completions"), defer_logical_completion=True,
+            cancelled=lambda: bool(self.agent._interrupt_requested)))
         if self.agent.provider == "moa":
             # Hermes interrupts the managed stream; Relay alone closes the provider stream.
             self.clients.set_stream_handle(stream)
@@ -3150,7 +3152,8 @@ class _StreamingCall(StreamingWaitMonitor):
             **_relay_stream_identity(self.agent, "anthropic"), finalizer=accumulator.finalize,
             on_stream_created=_anthropic_stream_created, on_chunk=accumulator.observe,
             accept_chunk=lambda _event: self._writer_still_current("Anthropic streaming"),
-            metadata=_relay_stream_metadata(self.agent, "anthropic_messages"), defer_logical_completion=True))
+            metadata=_relay_stream_metadata(self.agent, "anthropic_messages"), defer_logical_completion=True,
+            cancelled=lambda: bool(self.agent._interrupt_requested)))
         try:
             for event in stream:
                 saw_stream_event = True

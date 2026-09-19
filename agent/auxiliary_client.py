@@ -7791,7 +7791,10 @@ def _call_llm_impl(
         if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
             # Responses-shim clients consume the stream internally and return a completed
             # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
-            return client.chat.completions.create(**kwargs)
+            return _relay_sync_completion(
+                client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
+                create=lambda request: client.chat.completions.create(**request),
+            )
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
     def _primary(**validate_kw: Any) -> Any:

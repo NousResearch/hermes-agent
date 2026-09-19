@@ -402,6 +402,13 @@ DEFAULT_CONFIG = {
         # With a cloud provider, auto-spawn local Chromium for LAN/localhost URLs instead
         "auto_local_for_private_urls": True,
         "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        # Opt-in lazy launch for an unreachable loopback browser.cdp_url. Cloud and remote CDP
+        # endpoints are never launched; the spawned Chrome receives an isolated session profile.
+        "auto_launch": False,
+        "auto_launch_chrome_path": "",  # optional binary; BH_CHROME_PATH/CHROME_PATH win
+        "auto_launch_headful": False,  # false = --headless=new, useful on WSL/headless hosts
+        "auto_launch_proxy": "",  # optional Chrome --proxy-server value
+        "auto_launch_user_data_dir": "",  # root for isolated per-session profiles
         # Consent to browse with the user's REAL logins locally: runs on a Hermes-managed SNAPSHOT
         # of the ACTIVE default-Chromium profile (Local State -> profile.last_used; cookies, logins,
         # prefs copied and re-synced per fresh session) driven by Hermes' packaged Chromium. The

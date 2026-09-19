@@ -8,12 +8,14 @@ import contextlib
 import importlib
 import json
 import logging
+import ntpath
 import os
 import re
 import shutil
 import signal
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -75,6 +77,8 @@ _DEFAULT_TIMEOUT_S = 300
 _MIN_TIMEOUT_S = 5
 _MAX_TIMEOUT_S = 1800
 _STDERR_CAP_CHARS = 4000
+_AUTO_LAUNCH_READY_TIMEOUT_S = 40.0
+_AUTO_LAUNCH_POLL_INTERVAL_S = 0.2
 
 _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")  # filesystem-safe task ids
 # Screenshot paths printed by capture_screenshot(): POSIX or Windows drive-letter absolute.
@@ -176,6 +180,137 @@ def _read_browser_cfg() -> dict:
     except Exception as e:
         logger.debug("Could not read browser config section: %s", e)
         return {}
+
+
+def _is_loopback_cdp_endpoint(endpoint: str) -> bool:
+    """Whether an explicit CDP endpoint is safe for Hermes to start a browser for."""
+    try:
+        host = urllib.parse.urlparse(endpoint).hostname
+    except ValueError:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _cdp_discovery_url(endpoint: str) -> Optional[str]:
+    """Turn an HTTP/WebSocket CDP endpoint into its loopback ``/json/version`` URL."""
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+        port = parsed.port
+    except ValueError:
+        return None
+    if not port or not _is_loopback_cdp_endpoint(endpoint):
+        return None
+    scheme = "https" if parsed.scheme in {"https", "wss"} else "http"
+    host = f"[{parsed.hostname}]" if parsed.hostname and ":" in parsed.hostname else parsed.hostname
+    return f"{scheme}://{host}:{port}/json/version" if host else None
+
+
+def _cdp_endpoint_ready(endpoint: str) -> bool:
+    """True only after the explicit endpoint answers Chrome's discovery endpoint."""
+    version_url = _cdp_discovery_url(endpoint)
+    if not version_url:
+        return False
+    try:
+        import requests
+        from agent.proxy_bypass import loopback_request_kwargs
+        response = requests.get(version_url, timeout=1, **loopback_request_kwargs(version_url))
+        return bool(response.ok and response.json().get("webSocketDebuggerUrl"))
+    except Exception:
+        return False
+
+
+def _find_auto_launch_chrome(browser_cfg: dict) -> Optional[str]:
+    """Find an explicit or installed Chrome-family binary."""
+    configured = [os.environ.get("BH_CHROME_PATH", ""), os.environ.get("CHROME_PATH", ""),
+                  str(browser_cfg.get("auto_launch_chrome_path") or "")]
+    for candidate in configured:
+        candidate = candidate.strip()
+        if candidate and (os.path.isfile(candidate) or shutil.which(candidate)):
+            return candidate
+    try:
+        import platform
+        from hermes_cli.browser_connect import get_chrome_debug_candidates
+        candidates = get_chrome_debug_candidates(platform.system())
+        if candidates:
+            return candidates[0]
+    except Exception as exc:
+        logger.debug("auto-launch Chrome candidate lookup failed: %s", exc)
+    cache_root = Path(get_hermes_home()) / "cache"
+    patterns = ("**/chrome-linux*/chrome", "**/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+                "**/chrome-win*/chrome.exe")
+    found = [path for pattern in patterns for path in cache_root.glob(pattern) if path.is_file()]
+    return str(max(found, key=lambda path: path.stat().st_mtime)) if found else None
+
+
+def _auto_launch_profile_dir(browser_cfg: dict, session_name: str, windows_binary: bool) -> str:
+    root = str(browser_cfg.get("auto_launch_user_data_dir") or
+               (Path(get_hermes_home()) / "cache" / "browser-use" / "auto-launch"))
+    name = _TASK_ID_SAFE_RE.sub("-", session_name or "default").strip(".-") or "default"
+    path = os.path.join(root, name)
+    if not windows_binary:
+        return path
+    try:
+        converted = subprocess.run(["wslpath", "-w", path], capture_output=True, text=True, timeout=2,
+                                   stdin=subprocess.DEVNULL, check=False).stdout.strip()
+        if converted:
+            return converted
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ntpath.normpath(path.replace("/", "\\"))
+
+
+def _auto_launch_chrome_argv(binary: str, endpoint: str, browser_cfg: dict, session_name: str) -> list[str]:
+    """Arguments for one dedicated, loopback-only Chrome instance."""
+    parsed = urllib.parse.urlparse(endpoint)
+    port = parsed.port
+    if not port:
+        raise ValueError("CDP endpoint must include a port")
+    windows_binary = binary.lower().endswith(".exe")
+    profile = _auto_launch_profile_dir(browser_cfg, session_name, windows_binary)
+    debug_host = "::1" if parsed.hostname == "::1" else "127.0.0.1"
+    argv = [binary, f"--remote-debugging-address={debug_host}", f"--remote-debugging-port={port}",
+            f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check"]
+    proxy = str(browser_cfg.get("auto_launch_proxy") or "").strip()
+    if proxy:
+        argv.append(f"--proxy-server={proxy}")
+    # Windows desktop Chrome defaults to a visible window; Linux/macOS headless hosts need
+    # Chrome's new headless mode unless the user explicitly asked for a window.
+    if not windows_binary and not is_truthy_value(browser_cfg.get("auto_launch_headful"), default=False):
+        argv.append("--headless=new")
+    return argv
+
+
+def _launch_configured_local_chrome(endpoint: str, browser_cfg: dict, session_name: str) -> bool:
+    """Best-effort lazy launch; failure leaves the original endpoint untouched."""
+    binary = _find_auto_launch_chrome(browser_cfg)
+    if not binary:
+        logger.debug("browser_exec auto-launch: no Chrome binary available")
+        return False
+    try:
+        proc = subprocess.Popen(_auto_launch_chrome_argv(binary, endpoint, browser_cfg, session_name),
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True, env=_base_subprocess_env())
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        logger.debug("browser_exec auto-launch failed: %s", exc)
+        return False
+    deadline = time.monotonic() + _AUTO_LAUNCH_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _cdp_endpoint_ready(endpoint):
+            logger.info("browser_exec auto-launch: Chrome ready at %s (pid=%s)", endpoint, getattr(proc, "pid", None))
+            return True
+        if proc.poll() is not None:
+            break
+        time.sleep(_AUTO_LAUNCH_POLL_INTERVAL_S)
+    logger.debug("browser_exec auto-launch did not make %s ready", endpoint)
+    return False
+
+
+def _maybe_auto_launch_local_cdp(endpoint: str, browser_cfg: dict, session_name: str) -> None:
+    """Launch only for an opted-in, unreachable loopback override; otherwise keep attach-only behavior."""
+    if (not is_truthy_value(browser_cfg.get("auto_launch"), default=False)
+            or not _is_loopback_cdp_endpoint(endpoint) or _cdp_endpoint_ready(endpoint)):
+        return
+    _launch_configured_local_chrome(endpoint, browser_cfg, session_name)
 
 
 def _use_gateway(browser_cfg: dict) -> bool:
@@ -451,6 +586,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
     override = _quiet(_get_cdp_override, "")
     if override:
+        _maybe_auto_launch_local_cdp(override, _read_browser_cfg(), session_name)
         _set_cdp_env(env, override)
         return None
     provider = _quiet(_get_cloud_provider, None, "Cloud provider lookup failed")

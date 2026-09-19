@@ -504,7 +504,7 @@ def _install_tui_dependencies(tui_dir: Path, *, termux_startup: bool) -> None:
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(tui_dir, include_child_workspaces=True)
     npm_install_cmd = [
         npm, "install", *npm_workspace_args,
-        "--include=dev", "--silent", "--no-fund", "--no-audit", "--progress=false",
+        "--include=dev", "--no-fund", "--no-audit", "--progress=false",
     ]
 
     def _run_tui_install() -> subprocess.CompletedProcess:

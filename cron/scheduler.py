@@ -3494,11 +3494,23 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                 return False
             try:
                 ack_path.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(ack_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
-                    json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
-                    ack_file.flush()
-                    os.fsync(ack_file.fileno())
+                # Publish atomically: write the complete payload to a private temp file first,
+                # then os.link() it into place. link() fails with FileExistsError if ack_path
+                # already exists — same exclusivity guarantee the old O_EXCL-on-ack_path open
+                # gave against a duplicate worker — but unlike O_CREAT|O_EXCL, ack_path never
+                # exists half-written: it is only ever created already holding the full
+                # fsync'd content, so a reader polling exists() can no longer observe a
+                # 0-byte file mid-write (#114270).
+                tmp_path = ack_path.with_name(f"{ack_path.name}.tmp.{os.getpid()}")
+                try:
+                    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
+                        json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
+                        ack_file.flush()
+                        os.fsync(ack_file.fileno())
+                    os.link(tmp_path, ack_path)
+                finally:
+                    tmp_path.unlink(missing_ok=True)
             except Exception:
                 logger.exception(
                     "Cron external worker could not publish ready acknowledgement for %s",

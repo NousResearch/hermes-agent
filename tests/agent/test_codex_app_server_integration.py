@@ -111,27 +111,29 @@ class TestRunConversationCodexPath:
         with patch.object(agent, "_spawn_background_review", return_value=None):
             result = agent.run_conversation("hello")
 
+        # inputTokens (80) is INCLUSIVE of cachedInputTokens (20): uncached=60, prompt=60+20=80 (never 100),
+        # totalTokens stays the provider passthrough (130). #105412 / #63654
         assert result["api_calls"] == 1
-        assert result["prompt_tokens"] == 100
+        assert result["prompt_tokens"] == 80
         assert result["completion_tokens"] == 25
         assert result["total_tokens"] == 130
-        assert result["input_tokens"] == 80
+        assert result["input_tokens"] == 60
         assert result["output_tokens"] == 25
         assert result["cache_read_tokens"] == 20
         assert result["cache_write_tokens"] == 0
         assert result["reasoning_tokens"] == 5
-        assert result["last_prompt_tokens"] == 100
+        assert result["last_prompt_tokens"] == 80
 
         assert agent.session_api_calls == 1
-        assert agent.session_prompt_tokens == 100
+        assert agent.session_prompt_tokens == 80
         assert agent.session_completion_tokens == 25
         assert agent.session_total_tokens == 130
-        assert agent.session_input_tokens == 80
+        assert agent.session_input_tokens == 60
         assert agent.session_output_tokens == 25
         assert agent.session_cache_read_tokens == 20
         assert agent.session_cache_write_tokens == 0
         assert agent.session_reasoning_tokens == 5
-        assert agent.context_compressor.last_prompt_tokens == 100
+        assert agent.context_compressor.last_prompt_tokens == 80
         assert agent.context_compressor.last_completion_tokens == 25
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
@@ -346,7 +348,7 @@ class TestRunConversationCodexPath:
         assert not client_mock.chat.completions.create.called
 
     def test_gateway_terminal_cwd_seeds_codex_thread_cwd(self, monkeypatch, tmp_path):
-        """Gateway sessions set TERMINAL_CWD without stamping agent.session_cwd.
+        """Gateway sessions set TERMINAL_CWD without pinning agent.session_cwd.
         Codex app-server must still start in that configured workspace instead
         of falling back to the Hermes daemon process cwd."""
         from agent.transports.codex_app_server_session import (
@@ -372,11 +374,43 @@ class TestRunConversationCodexPath:
         monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
 
         agent = _make_codex_agent()
-        assert not hasattr(agent, "session_cwd")
+        assert agent.session_cwd is None
         with patch.object(agent, "_spawn_background_review", return_value=None):
             agent.run_conversation("hi")
 
         assert captured["cwd"] == str(tmp_path)
+
+    def test_configured_codex_binary_seeds_app_server_session(self, monkeypatch):
+        """A codex_app_server turn spawns ``model.codex_bin``, not bare ``codex`` (#61360)."""
+        configured = "/Applications/Codex.app/Contents/Resources/codex"
+        captured: dict = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+            self._thread_id = "thread-stub-1"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"model": {"codex_bin": configured}},
+        ):
+            agent = _make_codex_agent()
+            with patch.object(
+                agent, "_spawn_background_review", return_value=None
+            ):
+                agent.run_conversation("hi")
+
+        assert captured["codex_bin"] == configured
 
     def _capture_routing_agent(self, monkeypatch):
         """Build a codex agent with a CodexAppServerSession stub that captures
@@ -618,6 +652,61 @@ class TestErrorHandling:
         assert result["completed"] is False
         assert result["partial"] is True
         assert result["error"] == "user interrupted"
+
+
+class TestQuotaFailureFallsOverToConfiguredFallback:
+    """A codex app-server turn that ends in a usage-limit error must hand the same user turn to the
+    configured ``fallback_providers`` entry instead of failing outright (#71633). The fallback is a
+    local fake OpenAI-compatible server so the real classify -> activate -> retry path runs."""
+
+    def test_usage_limit_turn_completes_on_fallback_provider(self, monkeypatch):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        calls = []
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or b"{}"))
+                calls.append(self.path)
+                chunk = {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": body.get("model"),
+                         "choices": [{"index": 0, "delta": {"role": "assistant", "content": "fallback answered"},
+                                      "finish_reason": "stop"}]}
+                data = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        srv = HTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            def limit_turn(self, user_input, **kwargs):
+                return TurnResult(final_text="", projected_messages=[], tool_iterations=0, interrupted=False,
+                                  error="turn ended status=failed: You've hit your usage limit.",
+                                  turn_id="t1", thread_id="th1", should_retire=True)
+
+            monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th1")
+            monkeypatch.setattr(CodexAppServerSession, "run_turn", limit_turn)
+            agent = _make_codex_agent(fallback_model=[{
+                "provider": "custom", "model": "fake-fb", "api_key": "fb-key",
+                "base_url": f"http://127.0.0.1:{srv.server_port}/v1",
+            }])
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                result = agent.run_conversation("hello")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+        assert result["final_response"] == "fallback answered"
+        assert result["completed"] is True
+        assert "/v1/chat/completions" in calls
+        assert agent.api_mode != "codex_app_server"
 
 
 class TestSessionRetirementOnRunAgent:

@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
+from agent.secret_scope import get_secret_str
 from hermes_cli.urllib_security import url_origin
 
 # Log-record parity with the origin module.
@@ -116,12 +117,16 @@ def _get_ollama_base_url() -> str:
 
 
 def _api_key_from_provider_config(entry: dict, *env_keys: str) -> str:
-    """``api_key`` from a provider config block, else the env var named by the first set *env_keys*."""
+    """``api_key`` from a provider config block, else the env var named by the first set *env_keys*.
+
+    The variable is read through the profile secret scope (fresh ``.env``, never another
+    profile's process env under multiplexing), like every other credential read (#67935).
+    """
     api_key = str(entry.get("api_key") or "").strip()
     if api_key:
         return api_key
     key_env = str(next((entry.get(k) for k in env_keys if entry.get(k)), "") or "").strip()
-    return os.getenv(key_env, "").strip() if key_env else ""
+    return get_secret_str(key_env, "").strip() if key_env else ""
 
 
 def _drop_authorization(headers: dict[str, str]) -> None:
@@ -657,10 +662,12 @@ def fetch_ollama_cloud_models(
     base_url: Optional[str] = None,
     *,
     force_refresh: bool = False,
+    cache_only: bool = False,
 ) -> list[str]:
     """Ollama Cloud models: fresh disk cache (< 1h, unless force_refresh) → live ``/v1/models``
-    (freshest) merged with models.dev additions (deduped, live first) → stale cache → ``[]``.
-    Never None."""
+    (freshest) merged with models.dev additions (deduped, live first) → stale cache → models.dev
+    only → ``[]``. ``cache_only`` (GUI read path) never runs the 8s network probe and never writes
+    the disk cache. Never None."""
     from hermes_cli.models import fetch_api_models
     if not force_refresh:
         cached = _load_ollama_cloud_cache()
@@ -669,7 +676,9 @@ def fetch_ollama_cloud_models(
 
     api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
     base_url = base_url or os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
-    live_models = (fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else []
+    # cache_only (GUI read path): skip only the network probe. The models.dev additions are a local
+    # cache read, so the row still populates with what is known; the live catalog lands next open.
+    live_models = [] if cache_only else ((fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else [])
     mdev_models: list[str] = []
     try:
         from agent.models_dev import list_agentic_models
@@ -681,9 +690,12 @@ def fetch_ollama_cloud_models(
     for m in [*live_models, *(_strip_ollama_cloud_suffix(m) for m in mdev_models)]:
         if m and m not in merged:
             merged.append(m)
-    if merged:
+    if live_models:
+        # Persist only a result that included the live catalog: writing the models.dev-only list here
+        # (cache_only, or a failed probe) would stamp it fresh, drop the live-only ids, and make the
+        # next non-cache_only call serve that trimmed list for an hour instead of probing.
         _save_ollama_cloud_cache(merged)
         return merged
 
     stale = _load_ollama_cloud_cache(ignore_ttl=True)
-    return stale["models"] if stale is not None else []
+    return stale["models"] if stale is not None else merged

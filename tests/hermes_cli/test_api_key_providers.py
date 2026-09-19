@@ -218,6 +218,24 @@ class TestResolveProvider:
         assert resolve_provider("Z-AI") == "zai"
         assert resolve_provider("Kimi") == "kimi-coding"
 
+    def test_alias_chatgpt(self):
+        """Issue #95794: ``--provider chatgpt`` selects the ChatGPT-backed Codex OAuth provider."""
+        assert resolve_provider("chatgpt") == "openai-codex"
+        assert resolve_provider("chatgpt-codex") == "openai-codex"
+
+    def test_alias_chatgpt_every_alias_table(self):
+        """Issue #95794: the runtime (providers.py), the /model parser (models_catalog_static via
+        parse_model_input) and ``hermes auth login`` all resolve the ChatGPT alias, not just auth."""
+        from hermes_cli.providers import normalize_provider
+        from hermes_cli.models import parse_model_input
+        from hermes_cli.auth_commands import _normalize_provider
+
+        assert normalize_provider("chatgpt") == "openai-codex"
+        assert normalize_provider("chatgpt-codex") == "openai-codex"
+        assert parse_model_input("chatgpt:gpt-5.5", "openrouter") == ("openai-codex", "gpt-5.5")
+        assert parse_model_input("chatgpt-codex:gpt-5.5", "openrouter") == ("openai-codex", "gpt-5.5")
+        assert _normalize_provider("chatgpt") == "openai-codex"
+
     def test_alias_github_copilot(self):
         assert resolve_provider("github-copilot") == "copilot"
 
@@ -306,7 +324,7 @@ class TestResolveProvider:
             lambda env=None: False,
         )
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
-        with pytest.raises(AuthError, match="No inference provider configured"):
+        with pytest.raises(AuthError, match="not connected to any AI provider"):
             resolve_provider("auto")
 
 
@@ -740,6 +758,18 @@ class TestZaiEndpointAutoDetect:
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == ""
+
+    def test_failed_probe_is_not_repeated_within_ttl(self, monkeypatch):
+        """A key whose detection fails (429 on every endpoint) is probed once, not on every
+        credential resolution — the picker resolves Z.AI dozens of times per open (#114215)."""
+        from hermes_cli import auth_zai_kimi
+        monkeypatch.setenv("GLM_API_KEY", "glm-key-that-429s")
+        monkeypatch.setattr(auth_zai_kimi, "_zai_probe_failed_until", {})
+        calls = []
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: calls.append(1))
+        for _ in range(3):
+            assert resolve_api_key_provider_credentials("zai")["base_url"] == "https://api.z.ai/api/paas/v4"
+        assert len(calls) == 1
 
 
 class TestZaiParallelProbe:

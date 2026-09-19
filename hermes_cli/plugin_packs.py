@@ -317,6 +317,7 @@ def install_pack_plugins(
         _get_disabled_set,
         _get_enabled_set,
         _install_plugin_core,
+        _install_python_dependencies,
         _prompt_plugin_env_vars,
         _run_capability_consent,
         _save_disabled_set,
@@ -350,6 +351,7 @@ def install_pack_plugins(
             _prompt_plugin_env_vars(manifest, console)
         except Exception:
             logger.debug("requires_env prompt failed for %s", installed_name, exc_info=True)
+        _install_python_dependencies(target, console)
 
         enabled = _get_enabled_set()
         disabled = _get_disabled_set()

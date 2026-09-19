@@ -8,7 +8,7 @@ import os
 import re
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -81,9 +81,15 @@ def _broadcast_gateway_session_info() -> None:
         _log.exception("session.info broadcast after config save failed")
 
 
-def _parse_model_ids(resp: "Any") -> List[str]:
-    """Model ids from an OpenAI-compatible ``/v1/models`` response: ``{"data": [{"id": ..}]}``
-    or a bare ``{"data": ["id", ..]}``. ``[]`` on any parse/HTTP error so a slightly
+_MODEL_ENTRY_METADATA = ("canonical_model", "reasoning_effort")
+
+
+def _parse_model_entries(resp: "Any") -> List[Dict[str, str]]:
+    """Model rows from an OpenAI-compatible ``/v1/models`` response as ``{"id": ..}`` dicts,
+    keeping the alias metadata a gateway may advertise (``canonical_model``,
+    ``reasoning_effort``). Flattening to bare ids lost that, so Desktop stored a reasoning
+    alias as the literal upstream model (#93622). Accepts ``{"data": [{"id": ..}]}`` or a
+    bare ``{"data": ["id", ..]}``; ``[]`` on any parse/HTTP error so a slightly
     non-standard endpoint never hard-blocks."""
     try:
         if not resp.is_success:
@@ -94,8 +100,24 @@ def _parse_model_ids(resp: "Any") -> List[str]:
     data = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(data, list):
         return []
-    ids = [str((item.get("id") if isinstance(item, dict) else item) or "").strip() for item in data]
-    return [mid for mid in ids if mid]
+    entries: List[Dict[str, str]] = []
+    for item in data:
+        model_id = str((item.get("id") if isinstance(item, dict) else item) or "").strip()
+        if not model_id:
+            continue
+        entry = {"id": model_id}
+        if isinstance(item, dict):
+            for key in _MODEL_ENTRY_METADATA:
+                value = str(item.get(key) or "").strip()
+                if value:
+                    entry[key] = value
+        entries.append(entry)
+    return entries
+
+
+def _parse_model_ids(resp: "Any") -> List[str]:
+    """Bare model ids from a ``/v1/models`` response (see :func:`_parse_model_entries`)."""
+    return [entry["id"] for entry in _parse_model_entries(resp)]
 
 
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,
@@ -106,9 +128,10 @@ def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: 
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
-        "skill_count": _safe(lambda: profiles_mod._count_skills(home), 0),
+        "skill_count": _safe(lambda: profiles_mod._cached_skill_count(home), 0),
         "gateway_running": _safe(gateway_running, False),
         "description": meta("description", ""), "description_auto": meta("description_auto", False),
+        "bot_title": meta("bot_title", ""),
         "distribution_name": None, "distribution_version": None, "distribution_source": None,
         "has_alias": False}
 
@@ -230,20 +253,49 @@ def _profile_scope(profile: Optional[str]):
 
 @contextmanager
 def _config_profile_scope(profile: Optional[str]):
-    """Await-safe, config-only profile scope: touches ONLY the task-local HERMES_HOME
-    contextvar, never the process-global skills-module attributes ``_profile_scope`` swaps
-    (holding those across an ``await`` lets a concurrent request restore THIS request's dir
-    on its ``finally``). None/""/"current" = no override.
+    """Await-safe profile scope: the task-local HERMES_HOME contextvar PLUS the profile's secret
+    scope, never the process-global skills-module attributes ``_profile_scope`` swaps (holding
+    those across an ``await`` lets a concurrent request restore THIS request's dir on its
+    ``finally``). None/""/"current" = no override.
+
+    Home alone left ``get_secret`` on the dashboard process's ``os.environ`` - the DEFAULT
+    profile's values - so ``GET /api/config?profile=B`` expanded B's ``${VAR}`` refs to the default
+    profile's plaintext credentials and ``load_gateway_config()`` under B's home bridged B's YAML
+    settings into the shared process env (``yaml_env_setter`` skips only under a secret scope).
+    A request for another profile's home also flips this process to fail-closed multi-profile
+    hosting (``tui_gateway/launch_profile_policy.py``), so any remaining unscoped read raises
+    instead of borrowing; the dashboard's own profile then runs under its frozen-launch-env scope.
 
     Explicit names resolving to the process home retain current-profile semantics.
     Still enter the requested home so a nested scope cannot retain another profile.
     """
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+
+    process_home = get_process_hermes_home()
     if _is_current_profile(profile):
-        yield None
-        return
-    profile_dir = _resolve_profile_dir(profile.strip())
-    with _hermes_home_scope(profile_dir):
-        yield None if profile_dir.resolve() == get_process_hermes_home().resolve() else profile_dir
+        profile_dir, scoped = None, None  # the dashboard's own profile: no home override
+    else:
+        profile_dir = _resolve_profile_dir(profile.strip())
+        scoped = None if profile_dir.resolve() == process_home.resolve() else profile_dir
+    if scoped is not None:
+        activate_multi_profile_hosting()
+        hydrate_profile_secret_sources(scoped)  # first call may block on the source's fetch
+        secrets = build_profile_secret_scope(scoped)
+    else:
+        # The dashboard's own profile: its launch-env scope (live env + .env while single-profile, so
+        # systemd / op-run injection keeps resolving; frozen at activation afterwards). Bound even
+        # before any secondary is served so the request's credential source is decided HERE: a
+        # concurrent first ``?profile=B`` request flips ``get_secret`` to fail closed mid-request,
+        # and an unscoped launch request would then raise ``UnscopedSecretError`` on its next read.
+        secrets = launch_secret_scope(process_home)
+    with (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
+        token = set_secret_scope(secrets)
+        try:
+            yield scoped
+        finally:
+            reset_secret_scope(token)
 
 
 # Terminal backend picker rows — GUI counterpart of terminal.backend. Keep in sync with
@@ -258,8 +310,8 @@ def _config_profile_scope(profile: Optional[str]):
 _TERMINAL_BACKENDS: List[Dict[str, str]] = [
     dict(zip(("name", "label", "description"), row)) for row in (
         ("local", "Local", "Run commands directly on this machine. No isolation."),
-        ("docker", "Docker",
-         "Run commands in an isolated Docker container with a persistent workspace."),
+        ("docker", "Docker / Podman",
+         "Run commands in an isolated Docker or Podman container with a persistent workspace."),
         ("singularity", "Singularity / Apptainer",
          "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),

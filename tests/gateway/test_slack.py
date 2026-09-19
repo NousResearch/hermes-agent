@@ -99,6 +99,15 @@ _slack_mod.SLACK_AVAILABLE = True
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
+class _StreamExpiredError(Exception):
+    """slack_sdk.SlackApiError's shape (``exc.response["error"]``) without importing the SDK,
+    which CI stubs as a bare module. The adapter only reads the response mapping."""
+
+    def __init__(self, message, response):
+        super().__init__(message)
+        self.response = response
+
+
 @pytest.fixture(autouse=True)
 def _pin_legacy_assistant_threads_api():
     """Pin the SDK capability probe to the legacy assistant.threads API.
@@ -1770,6 +1779,32 @@ class TestIncomingDocumentHandling:
         assert len(msg_event.media_urls) == 1
         assert "[Content of" not in (msg_event.text or "")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = content
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "text/plain",
+                        "name": "notes.txt",
+                        "url_private_download": "https://files.slack.com/notes.txt",
+                        "size": len(content),
+                    }
+                ],
+                text="",
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert ("[Content of" in (msg_event.text or "")) is inlined
+        assert msg_event.media_text_inlined == [inlined]
+
 
     @pytest.mark.asyncio
     async def test_unauthorized_message_does_not_fetch_file_info(
@@ -2603,7 +2638,7 @@ class TestFormatMessage:
 
         args = {"target": target, "pattern": pattern}
         ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
-        runner = SimpleNamespace(_adapter_for_source=lambda source: adapter)
+        runner = SimpleNamespace(_delivery_adapter_for=lambda source: adapter)
         message = TurnRunner(runner, ctx)._progress_build_message("search_files", pattern, args)
         client = adapter._app.client
         client.chat_postMessage.return_value = {"ok": True, "ts": "123.456"}
@@ -3035,7 +3070,10 @@ class TestThreadReplyHandling:
         from gateway.session import SessionEntry
 
         # Deserialize a legacy routing entry so lifecycle flags have real defaults.
+        # The thread key with a per-user suffix comes from the adapter's isolation flags (the runner
+        # seeds them into PlatformConfig.extra); this store has no bearing on the key any more.
         session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
+        adapter_with_session_store.config.extra["thread_sessions_per_user"] = True
         mock_session_store._entries = {session_key: SessionEntry.from_dict({
             "session_key": session_key,
             "session_id": "slack-thread-session",
@@ -5241,6 +5279,83 @@ class TestNativeTaskCardProgress:
             "rejects the pair and the whole native card fails (#87743)"
         )
 
+    @pytest.mark.asyncio
+    async def test_expired_stream_reopens_a_fresh_card_with_the_full_projection(
+        self, adapter
+    ):
+        """Slack seals a native stream server-side after a few minutes of a long
+        turn; the next chat.appendStream fails with message_not_in_streaming_state.
+        The lane must not degrade to text: seal the dead stream, start a fresh
+        card in the same thread carrying the whole current task projection, and
+        report success so later updates continue on the new card."""
+        client = adapter._app.client
+        starts = 0
+
+        async def api_call(method, *, json):
+            nonlocal starts
+            if method == "chat.startStream":
+                starts += 1
+                return {"ts": f"stream-{starts}"}
+            if method == "chat.appendStream" and json["ts"] == "stream-1" and starts == 1 and json["chunks"][1]["status"] == "complete":
+                raise _StreamExpiredError("expired", {"ok": False, "error": "message_not_in_streaming_state"})
+            return {"ok": True}
+
+        client.api_call.side_effect = api_call
+        metadata = {"thread_id": "thread-1"}
+        running = [{"id": "call-1", "title": "terminal", "status": "in_progress"}]
+        done = [
+            {"id": "call-1", "title": "terminal", "status": "complete"},
+            {"id": "call-2", "title": "web_search", "status": "in_progress"},
+        ]
+
+        first = await adapter.send_native_task_card_progress("C1", running, metadata=metadata)
+        second = await adapter.send_native_task_card_progress("C1", done, metadata=metadata)
+
+        assert first.success is True and first.message_id == "stream-1"
+        assert second.success is True and second.message_id == "stream-2"
+        methods = [(c.args[0], c.kwargs["json"]["ts"] if "ts" in c.kwargs["json"] else None) for c in client.api_call.await_args_list]
+        assert methods == [
+            ("chat.startStream", None),
+            ("chat.appendStream", "stream-1"),
+            ("chat.appendStream", "stream-1"),  # rejected: expired
+            ("chat.startStream", None),
+            ("chat.appendStream", "stream-2"),
+        ]
+        reopened = client.api_call.await_args_list[-1].kwargs["json"]["chunks"]
+        assert [(c["id"], c["status"]) for c in reopened if c["type"] == "task_update"] == [
+            ("call-1", "complete"), ("call-2", "in_progress"),
+        ]
+        # No stopStream on the dead ts (Slack already sealed it) and the cache now points at the new card.
+        assert all(c.args[0] != "chat.stopStream" for c in client.api_call.await_args_list)
+        (stream,) = adapter._native_task_card_streams.values()
+        assert stream.stream_ts == "stream-2" and stream.stopped is False
+
+        await adapter.stop_native_task_card_progress("C1", metadata=metadata)
+        stop = client.api_call.await_args_list[-1]
+        assert stop.args[0] == "chat.stopStream" and stop.kwargs["json"]["ts"] == "stream-2"
+        assert adapter._native_task_card_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_expired_stream_reopen_gives_up_after_one_retry(self, adapter):
+        """A reopened card that is itself rejected as not-streaming is a real
+        failure, not a loop: one reopen per update, then the failure surfaces."""
+        client = adapter._app.client
+
+        async def api_call(method, *, json):
+            if method == "chat.startStream":
+                return {"ts": "stream-x"}
+            raise _StreamExpiredError("expired", {"ok": False, "error": "message_not_in_streaming_state"})
+
+        client.api_call.side_effect = api_call
+        result = await adapter.send_native_task_card_progress(
+            "C1", [{"id": "call-1", "title": "terminal", "status": "in_progress"}], metadata={"thread_id": "thread-1"},
+        )
+
+        assert result.success is False
+        assert [c.args[0] for c in client.api_call.await_args_list] == [
+            "chat.startStream", "chat.appendStream", "chat.startStream", "chat.appendStream",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # TestSlackAuthoredTextDeduplication
@@ -6049,3 +6164,39 @@ class TestAgentSessionsApiRouting:
             thread_ts="171234.0001",
             title="Summarize the incident",
         )
+
+
+# ---------------------------------------------------------------------------
+# TestNonConversationalSubtypeAllowlist
+# ---------------------------------------------------------------------------
+
+
+class TestNonConversationalSubtypeAllowlist:
+    """#110778 — Slack system messages must not start a turn in free-response channels; the
+    gate is an allowlist so subtypes Slack adds later are dropped instead of readmitted."""
+
+    @staticmethod
+    def _event(subtype, **extra):
+        # Distinct ts per subtype: the prefilter dedups by (team, ts) before the subtype gate.
+        event = {"type": "message", "user": "U_HUMAN", "text": "hello",
+                 "ts": f"12345.{abs(hash(subtype)) % 10**6}", "channel": "C_FREE",
+                 "client_msg_id": "m1", **extra}
+        if subtype is not None:
+            event["subtype"] = subtype
+        return event
+
+    @pytest.mark.asyncio
+    async def test_housekeeping_subtypes_are_dropped(self, adapter):
+        for subtype in ("channel_join", "channel_topic", "channel_convert_to_private",
+                        "pinned_item", "file_comment", "message_deleted"):
+            assert await adapter._prefilter_inbound(self._event(subtype), None) is None, subtype
+
+    @pytest.mark.asyncio
+    async def test_conversational_subtypes_still_pass(self, adapter):
+        adapter.config.extra["allow_bots"] = "all"
+        events = [self._event(s) for s in (None, "file_share", "thread_broadcast", "me_message",
+                                           "document_mention")]
+        events.append(self._event("bot_message", bot_id="B_OTHER"))
+        for event in events:
+            accepted = await adapter._prefilter_inbound(event, None)
+            assert accepted is not None and accepted[0]["channel"] == "C_FREE", event.get("subtype")

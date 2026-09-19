@@ -9,15 +9,20 @@ some other facade under the same name, or whose facade stem has a sibling ``<ste
 name, the facade attribute IS the sibling's object.
 """
 import importlib
+import importlib.util
 import json
 import pkgutil
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 MANIFEST = ROOT / "compat_manifest.json"
+# Stdlib modules that do not exist on native Windows; a pointer whose target imports one of them
+# (the dashboard PTY bridge: fcntl/termios) cannot be resolved there, only located (#112576).
+_POSIX_ONLY_STDLIB = {"fcntl", "termios", "pty", "tty", "grp", "pwd", "resource"}
 
 # This file resolves every pointer on purpose; the once-per-name plugin warning is expected here.
 pytestmark = [
@@ -57,6 +62,14 @@ def test_moved_lazy_pointers_resolve_to_the_split_off_siblings_object():
             continue
         try:
             got = getattr(importlib.import_module(facade), name)
+        except ModuleNotFoundError as exc:
+            if sys.platform == "win32" and exc.name in _POSIX_ONLY_STDLIB:
+                # POSIX-only target: object identity is checked on POSIX hosts; here the
+                # declared target module must at least exist in the tree.
+                assert importlib.util.find_spec(e["target"]) is not None, (facade, name, e["target"])
+                continue
+            bad.append((facade, name, f"unresolvable: {exc!r}"))
+            continue
         except Exception as exc:  # unresolvable pointer is its own failure
             bad.append((facade, name, f"unresolvable: {exc!r}"))
             continue

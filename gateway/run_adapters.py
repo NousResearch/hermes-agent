@@ -457,6 +457,7 @@ class GatewayAdapterLifecycleMixin:
         → running), re-bind the home channel to the CLI session_id, dispatch a synthetic event, mark
         ``completed``/``failed``."""
         from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes, _reclaim_stale
+        from gateway.run_idle_gates import off_loop_gate, profile_has_pending_handoff
         await asyncio.sleep(5)  # let platforms connect before dispatching through them
         # Does _process_handoff accept the profile argument? Test stand-ins bind a one-arg callable.
         try:
@@ -524,6 +525,11 @@ class GatewayAdapterLifecycleMixin:
             while self._running:
                 try:
                     for profile_name, profile_home in _handoff_watch_scopes(self):
+                        # Idle gate (run_idle_gates): skip the scope entry when the profile's store
+                        # holds no pending handoff. The root poll (None) is unscoped and stays cheap.
+                        if profile_home is not None and not await off_loop_gate(
+                                self, lambda home=profile_home: profile_has_pending_handoff(home)):
+                            continue
                         async with _scope(profile_home):
                             await _tick(profile_name)
                 except asyncio.CancelledError:
@@ -781,6 +787,13 @@ class GatewayAdapterLifecycleMixin:
             logger.info("⚠ %s reconnected in degraded mode (receive path not yet confirmed)", platform.value)
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
+        # Notification delivery must not hold up adapter recovery or other platforms' reconnects.
+        from gateway.run import _planned_restart_notification_pending
+        if _planned_restart_notification_pending():
+            task = self._retain_background_task(asyncio.create_task(
+                self._replay_pending_planned_restart_notification(),
+            ))
+            task.add_done_callback(self._late_failure_callback("planned-restart notification replay failed"))
         # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
         with _log_suppressed(
             logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",
@@ -840,7 +853,7 @@ class GatewayAdapterLifecycleMixin:
             from hermes_cli.profiles import get_active_profile_name
         except Exception:
             return 0
-        active = get_active_profile_name() or "default"
+        active = get_active_profile_name() or "default"  # launch profile, pre-identity (adapter boot)
         connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)
@@ -955,6 +968,45 @@ class GatewayAdapterLifecycleMixin:
         )
         return True
 
+    def _note_unserved_secondary_platform(self, profile_name: str, platform: Platform) -> None:
+        """A secondary enabled a shared-ingress platform (Relay, WhatsApp) the multiplexer only runs on
+        the default profile. Log the reason + remedy once per (profile, platform) and stamp a
+        ``<profile>:<platform>`` status entry so ``hermes gateway status --profile X`` and the
+        dashboard show *why* the channel is dead instead of nothing at all."""
+        noted = getattr(self, "_unserved_secondary_platforms", None)
+        if noted is None:
+            noted = self._unserved_secondary_platforms = set()
+        if (profile_name, platform) in noted:
+            return
+        noted.add((profile_name, platform))
+        pv = platform.value
+        logger.info(
+            "[MULTIPLEX] Profile '%s': %s is enabled but not served — %s is process-level shared ingress "
+            "owned by the default profile under multiplex. Enable and configure %s on the default profile "
+            "(it serves every profile), or disable it in profile '%s'.",
+            profile_name, pv, pv, pv, profile_name,
+        )
+        self._update_platform_runtime_status(
+            f"{profile_name}:{pv}", platform_state="disabled", error_code="multiplex_shared_ingress",
+            error_message="not served under multiplex (shared ingress owned by default)",
+        )
+
+    def _unserved_shared_ingress_warnings(self) -> list:
+        """Loud ``not being served`` lines for shared-ingress platforms secondaries enabled while
+        NO profile (default included) actually runs them; empty when the default serves the platform."""
+        noted = getattr(self, "_unserved_secondary_platforms", None) or ()
+        lines = []
+        for platform in sorted({p for _n, p in noted}, key=lambda p: p.value):
+            if platform in self.adapters or platform in (getattr(self, "_failed_platforms", None) or {}):
+                continue  # the default owns it: secondaries ARE served through the shared adapter
+            profiles = sorted(n for n, p in noted if p is platform)
+            lines.append(
+                f"{platform.value} is enabled in profile(s) {', '.join(profiles)} but not on the default "
+                f"profile — the platform is not being served. Under multiplex {platform.value} is shared "
+                "ingress: enable and configure it on the default profile, or disable it in those profiles."
+            )
+        return lines
+
     async def _start_one_profile_adapters(
         self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
     ) -> int:
@@ -980,7 +1032,9 @@ class GatewayAdapterLifecycleMixin:
                 )
                 continue
             # Relay/WhatsApp are shared process-level ingress under multiplex; a secondary would retry-loop.
+            # Say so: four profiles with WHATSAPP_ENABLED=true and nothing in the log is a silent dead channel.
             if multiplex and platform in (Platform.RELAY, Platform.WHATSAPP):
+                self._note_unserved_secondary_platform(profile_name, platform)
                 continue
             # api_server / webhook: the default's listener already mirrors them at /p/<profile>/; a second
             # instance here would fight the default for the port (#100397).
@@ -1294,34 +1348,49 @@ class GatewayAdapterLifecycleMixin:
         """``scope_factory(profile_home)`` or a nullcontext when the profile home is unknown."""
         return scope_factory(profile_home) if profile_home is not None else contextlib.nullcontext()
 
-    @staticmethod
-    def _stamp_event_profile(event, profile_name: str) -> None:
-        """Best-effort: stamp ``source.profile`` on an inbound event that has none yet."""
-        with suppress(Exception):
-            if getattr(event, "source", None) is not None and not event.source.profile:
-                event.source.profile = profile_name
+    def _canonicalize(self, source, *, transport_profile: Optional[str] = None,
+                      primary_home: Optional[Path] = None):
+        """Runner-side identity seam: the pinned :class:`RoutingIdentity` of *source*, resolving it
+        once when absent. ``transport_profile`` names a secondary's own bot (its handlers know it by
+        construction); ``None`` = the primary/shared bot. ``None`` result = rejected route under
+        multiplexing (the caller drops; the ingress gate warns once) or a source that cannot resolve
+        (bare test rigs) — the legacy readers then stay in force."""
+        if source is None:
+            return None
+        from gateway.session_identity import canonical_identity
+        try:
+            identity = canonical_identity(
+                source, runner=self, transport_profile=transport_profile, primary_home=primary_home)
+        except Exception:
+            logger.debug("identity resolution failed; legacy readers stay in force", exc_info=True)
+            return None
+        if transport_profile and not getattr(source, "profile", None):
+            with suppress(Exception):
+                source.profile = transport_profile  # a secondary's own event is at least its own
+        return identity
 
     def _make_profile_message_handler(self, profile_name: str):
-        """Message handler that stamps source.profile, then delegates under the profile scope
-        (auth runs BEFORE the agent-turn scope, so the profile's ``.env`` must be visible here)."""
+        """Message handler that canonicalizes the event's identity FIRST, then delegates under the
+        profile scope (auth runs BEFORE the agent-turn scope, so the profile's ``.env`` must be
+        visible here)."""
         from gateway.run import _async_profile_runtime_scope
         profile_home = self._profile_home_or_none(profile_name)
 
         async def _handler(event):
-            self._stamp_event_profile(event, profile_name)
+            self._canonicalize(getattr(event, "source", None), transport_profile=profile_name)
             async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
                 return await self._handle_message(event)
 
         return _handler
 
     def _make_profile_busy_session_handler(self, profile_name: str):
-        """Stamp an owning adapter's profile, then resolve busy policy under the profile scope
+        """Busy-path twin: canonicalize FIRST, then resolve busy policy under the profile scope
         (auth runs against the profile's own allowlist, same as the cold-path message handler)."""
         from gateway.run import _async_profile_runtime_scope
         profile_home = self._profile_home_or_none(profile_name)
 
         async def _handler(event, _session_key):
-            self._stamp_event_profile(event, profile_name)
+            self._canonicalize(event.source, transport_profile=profile_name)
             async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
                 return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
 
@@ -1361,43 +1430,36 @@ class GatewayAdapterLifecycleMixin:
         return _handler
 
     def _admit_primary_source(self, source, default_home: Path) -> Optional[Path]:
-        """Stamp the transport home (authorization) and routed profile on a primary-adapter source and
-        return the runtime home to scope the turn under; ``None`` when the route targets an unserved
-        profile. ``_authorization_profile_home`` is in-process only (serialization ignores dynamic attrs);
-        route ≠ admitting bot."""
-        source._authorization_profile_home = default_home
-        if (
-            not getattr(source, "profile", None)
-            and getattr(source, "profile_route_rejected", False) is not True
-            and not self._stamp_routed_profile(source)
-        ):
-            source.profile_route_rejected = True
-        if getattr(source, "profile_route_rejected", False) is True:
-            return None
-        return (
-            self._resolve_profile_home_for_source(source)
-            if getattr(source, "profile", None) else default_home
-        )
-
-    def _stamp_routed_profile(self, source) -> bool:
-        """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected."""
-        from gateway.profile_routing import ProfileRouteRejected
-        try:
-            source.profile = self._profile_name_for_source(source)
-        except ProfileRouteRejected:
-            return False
-        return True
+        """Canonicalize a primary-adapter source (transport home for authorization, routed profile
+        for the runtime) and return the runtime home to scope the turn under; ``None`` when the
+        route targets an unserved profile. Route ≠ admitting bot."""
+        identity = self._canonicalize(source, primary_home=default_home)
+        if identity is not None:
+            return identity.runtime_home
+        return None if getattr(source, "profile_route_rejected", False) is True else default_home
 
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
-        return self._make_default_profile_message_handler() if self._multiplex_on() else self._handle_message
+        if self._multiplex_on():
+            return self._make_default_profile_message_handler()
+        return self._standalone_scoped(self._handle_message)
 
     def _primary_busy_session_handler(self):
         """Return the correctly scoped busy-session handler for a primary adapter."""
-        return (
-            self._make_default_profile_busy_session_handler()
-            if self._multiplex_on() else self._handle_active_session_busy_message
-        )
+        if self._multiplex_on():
+            return self._make_default_profile_busy_session_handler()
+        return self._standalone_scoped(self._handle_active_session_busy_message)
+
+    def _standalone_scoped(self, handler):
+        """Standalone twin of the ``_make_default_profile_*`` wrappers: run ``handler`` under
+        ``_standalone_launch_scope`` so slash commands and turns keep resolving the launch profile's
+        credentials after a hosted room flipped the process-wide guard (#112878). Decided per event:
+        activation happens after the adapters were wired."""
+        async def _handler(*args):
+            with self._standalone_launch_scope():
+                return await handler(*args)
+
+        return _handler
 
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
@@ -1416,8 +1478,7 @@ class GatewayAdapterLifecycleMixin:
         profile_home = self._profile_home_or_none(profile_name)
 
         async def _handler(event, source):
-            if getattr(source, "profile", None) is None:
-                source.profile = profile_name
+            self._canonicalize(source, transport_profile=profile_name)
             with self._scope_or_null(_profile_runtime_scope, profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
@@ -1429,8 +1490,10 @@ class GatewayAdapterLifecycleMixin:
         default_home = Path(get_hermes_home())
 
         async def _handler(event, source):
-            source._authorization_profile_home = default_home
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+            profile_home = self._admit_primary_source(source, default_home)
+            if profile_home is None:
+                return None  # rejected route: same disposition as the message ingress gate
+            with _profile_runtime_scope(profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler
@@ -1438,7 +1501,7 @@ class GatewayAdapterLifecycleMixin:
     def _primary_platform_event_handler(self):
         if self._multiplex_on():
             return self._make_default_profile_platform_event_handler()
-        return self._handle_gateway_platform_event
+        return self._standalone_scoped(self._handle_gateway_platform_event)
 
     @staticmethod
     def _adapter_credential_claim(platform: Platform, adapter: Any) -> Optional[tuple]:
@@ -1542,8 +1605,9 @@ class GatewayAdapterLifecycleMixin:
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
                 return self._is_user_authorized(source)
-            source._authorization_profile_home = transport_home
-            if not self._stamp_routed_profile(source):
+            # Canonicalize FIRST (callback sources never went through ``build_source``): the routed
+            # profile's pairing store is consulted, allowlists read under the transport home.
+            if self._canonicalize(source, primary_home=transport_home) is None:
                 return False  # fail-closed, like the ``_handle_message`` ingress gate
             return self._is_user_authorized_for_source(source)
         return check

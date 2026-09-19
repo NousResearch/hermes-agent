@@ -97,10 +97,6 @@ const remoteGit: GitBridge = {
     prList: (repoPath, branches, numbers) =>
       gitPost<HermesRepoPullRequests>('review/pr-list', { branches, numbers: numbers ?? [], path: repoPath }),
 
-    // Remote gateways have no PR-comment route yet; resolve to null so the
-    // paste degrades to a plain URL instead of throwing mid-paste.
-    fetchPrComment: async () => null,
-
     createPr: repoPath => gitPost('review/create-pr', { path: repoPath })
   },
 

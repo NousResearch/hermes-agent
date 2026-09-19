@@ -1,6 +1,6 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { fuzzyRank } from '@hermes/shared/fuzzy'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@hermes/shared/gateway-events'
+import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
 import { modelSearchText } from '@hermes/shared/model-search-text'
 import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
 import { useEffect, useMemo, useState } from 'react'
@@ -98,7 +98,7 @@ export function ModelPicker({
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
-    gw.request<ModelOptionsResponse>('model.options', {
+    gw.request<ModelOptionsResult>('model.options', {
       ...(sessionId ? { session_id: sessionId } : {}),
       ...(initialRefresh ? { refresh: true } : {}),
       // The TUI picker shows the full provider universe with setup
@@ -108,7 +108,7 @@ export function ModelPicker({
       include_unconfigured: true
     })
       .then(raw => {
-        const r = asRpcResult<ModelOptionsResponse>(raw)
+        const r = asRpcResult<ModelOptionsResult>(raw)
 
         if (!r) {
           setErr('invalid response: model.options')

@@ -12,6 +12,7 @@ import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { errorMessage } from "@/lib/api-error";
 
 function getUserKey(user: PairingUser): string {
   return `${user.platform}:${user.user_id}`;
@@ -63,7 +64,7 @@ export default function PairingPage() {
       showToast(`Approved: "${getUserLabel(user)}"`, "success");
       loadPairing();
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(`Could not approve the pairing request: ${errorMessage(e)}`, "error");
     } finally {
       setApproving(null);
     }
@@ -77,7 +78,7 @@ export default function PairingPage() {
       showToast(`Cleared ${res.cleared} pending request(s)`, "success");
       loadPairing();
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(`Could not clear pending requests: ${errorMessage(e)}`, "error");
     } finally {
       setClearing(false);
     }
@@ -96,7 +97,7 @@ export default function PairingPage() {
           );
           loadPairing();
         } catch (e) {
-          showToast(`Error: ${e}`, "error");
+          showToast(`Could not revoke access: ${errorMessage(e)}`, "error");
           throw e;
         }
       },

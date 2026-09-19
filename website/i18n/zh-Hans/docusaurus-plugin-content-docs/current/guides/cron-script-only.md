@@ -173,7 +173,7 @@ hermes cron create "0 9 * * *"       # 标准 cron：每天上午 9 点
 hermes cron create "30m"             # 单次：30 分钟后运行一次
 ```
 
-完整语法请参阅 [cron 功能参考](/user-guide/features/cron)。
+完整语法请参阅 [cron 功能参考](../user-guide/features/cron.md)。
 
 ## 投递目标
 
@@ -235,13 +235,13 @@ hermes cron create "*/15 * * * *" \
 |----------|-----------|-------------|
 | `cronjob --no-agent`（本页） | 你的脚本，由 Hermes 调度 | 不需要推理的周期性看门狗 / 告警 / 指标 |
 | `cronjob`（默认，LLM） | 带可选预检脚本的 agent | 消息内容需要对数据进行推理时 |
-| OS cron + `curl` 到 [webhook 订阅](/user-guide/messaging/webhooks) | 你的脚本，由 OS 调度 | 当 Hermes 本身可能不健康时（即被监控对象） |
+| OS cron + `curl` 到 [webhook 订阅](../user-guide/messaging/webhooks.md) | 你的脚本，由 OS 调度 | 当 Hermes 本身可能不健康时（即被监控对象） |
 
 对于必须在 **gateway 宕机时也能触发**的关键系统健康看门狗，请使用 OS 级 cron 配合 `curl` 调用 Hermes webhook 订阅（或任何外部告警端点）——这些作为独立 OS 进程运行，不依赖 Hermes 是否在线。当被监控对象是外部系统时，in-gateway 调度器才是正确选择。
 
 ## 相关文档
 
-- [用 Cron 自动化一切](/guides/automate-with-cron) — LLM 驱动的 cron 模式。
-- [定时任务（Cron）参考](/user-guide/features/cron) — 完整计划语法、生命周期、投递路由。
-- [Webhook 订阅](/user-guide/messaging/webhooks) — 供外部调度器使用的即发即忘 HTTP 入口。
-- [Gateway 内部机制](/developer-guide/gateway-internals) — 投递路由器内部实现。
+- [用 Cron 自动化一切](./automate-with-cron.md) — LLM 驱动的 cron 模式。
+- [定时任务（Cron）参考](../user-guide/features/cron.md) — 完整计划语法、生命周期、投递路由。
+- [Webhook 订阅](../user-guide/messaging/webhooks.md) — 供外部调度器使用的即发即忘 HTTP 入口。
+- [Gateway 内部机制](../developer-guide/gateway-internals.md) — 投递路由器内部实现。

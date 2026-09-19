@@ -196,7 +196,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("SKILL.md", bundle.files)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
         self.assertEqual(bundle.files["README.md"], "hello")
-        mock_safe_get.assert_called_once_with("https://files.example/skill-md", timeout=20)
+        mock_safe_get.assert_called_once_with("https://files.example/skill-md", timeout=20, headers=None)
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_falls_back_to_versions_list(self, mock_get):
@@ -516,6 +516,54 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
         self.assertEqual(page_calls["n"], 750)
         self.assertEqual(len(results), 750)
 
+    @patch("tools.skills_hub_clawhub.time.sleep")
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    def test_unbounded_walk_retries_none_page_then_caches(
+        self, _mock_read_cache, mock_write_cache, mock_sleep
+    ):
+        """A single None page is a fetch hole, not catalog end — resume and cache."""
+        payloads = [
+            {"items": [{"slug": "skill-a", "displayName": "A"}], "nextCursor": "c1"},
+            None,
+            {"items": [{"slug": "skill-b", "displayName": "B"}]},
+        ]
+        calls = {"n": 0}
+
+        def fake_get_json(url, *, timeout=30, **kwargs):
+            idx = calls["n"]
+            calls["n"] += 1
+            return payloads[idx] if idx < len(payloads) else None
+
+        with patch.object(ClawHubSource, "_get_json", side_effect=fake_get_json):
+            results = self.src._load_catalog_index(max_items=0)
+
+        self.assertEqual([m.identifier for m in results], ["skill-a", "skill-b"])
+        mock_write_cache.assert_called_once()
+        mock_sleep.assert_called()
+
+    @patch("tools.skills_hub_clawhub.time.sleep")
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    def test_unbounded_walk_exhausted_retries_does_not_cache(
+        self, _mock_read_cache, mock_write_cache, mock_sleep
+    ):
+        """Five consecutive None pages after a live cursor must not poison the cache."""
+        calls = {"n": 0}
+
+        def fake_get_json(url, *, timeout=30, **kwargs):
+            idx = calls["n"]
+            calls["n"] += 1
+            if idx == 0:
+                return {"items": [{"slug": "skill-a", "displayName": "A"}], "nextCursor": "c1"}
+            return None
+
+        with patch.object(ClawHubSource, "_get_json", side_effect=fake_get_json):
+            results = self.src._load_catalog_index(max_items=0)
+
+        self.assertEqual([m.identifier for m in results], ["skill-a"])
+        mock_write_cache.assert_not_called()
+        self.assertGreaterEqual(calls["n"], 6)
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)

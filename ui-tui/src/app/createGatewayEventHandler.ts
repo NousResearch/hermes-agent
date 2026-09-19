@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
-import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type { StreamDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -31,9 +31,21 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
+import { forgetServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import {
+  BACKEND_SLOW_START,
+  BACKEND_SLOW_START_STATUS,
+  backendReconnecting,
+  describeRpcError,
+  describeTurnFailure,
+  isBareErrorText,
+  promptTimeoutNotice,
+  stderrLooksLikeProblem,
+  stderrProblemActivity
+} from './userMessages.js'
 import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
@@ -449,8 +461,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // paths can't both persist the same prompt twice.
   const persistedAbandonedClarify = new Set<string>()
 
-  // When a clarify prompt is dismissed without an answer (the backend _block
-  // timed out and returned an empty string), the live ClarifyPrompt overlay is
+  // When a clarify prompt is dismissed without an answer (the backend request
+  // timed out and returned no answer), the live ClarifyPrompt overlay is
   // left set until the next turn's idle() silently nulls it — so the question
   // and options vanish from the screen while the agent's follow-up still refers
   // to them.  The reliable signal is the clarify tool's own tool.complete (and,
@@ -683,7 +695,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
     }
 
-    rpc<CommandsCatalogResponse>('commands.catalog', {})
+    // Bound to the live session when one exists (reconnect): project-local
+    // skills follow the session's repo. Before the first session the gateway
+    // uses the same workspace it seeds a new session with.
+    const catalogSid = getUiState().sid
+
+    rpc<CommandsCatalogResponse>('commands.catalog', catalogSid ? { session_id: catalogSid } : {})
       .then(r => {
         if (!r?.pairs) {
           return
@@ -703,15 +720,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
       .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
-    // Crash recovery: a respawn triggered by an unexpected gateway death
-    // resumes the session that was live, not a brand-new one. One-shot — the
-    // ref is cleared so an ordinary later restart still forges/resumes per
-    // config. No startup prompt here (this is mid-session, not a cold boot).
+    // Keep the recovery target until resume succeeds, including across a second
+    // disconnect during setup or history loading. Recovery never resends the prompt.
     const recoverSid = recoverSidRef?.current
 
     if (recoverSidRef && recoverSid) {
-      recoverSidRef.current = null
-      resumeById(recoverSid)
+      void resumeById(recoverSid).then(() => {
+        if (getUiState().sid && recoverSidRef.current === recoverSid) {
+          recoverSidRef.current = null
+        }
+      })
       // After resumeById: it synchronously sets status to 'resuming…' on entry,
       // so override it here to keep the distinct "recovering" label visible for
       // the duration of the resume RPC (which later flips status to 'ready').
@@ -787,7 +805,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'session.info': {
-        const info = ev.payload as SessionInfo | undefined
+        let info = ev.payload as SessionInfo | undefined
 
         if (!info) {
           return
@@ -801,10 +819,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setStatus('ready')
         }
 
+        // Agent-less producers (lazy cwd switches, `_fallback_session_info`) send
+        // payloads without a durable id — keep the one we already track so a
+        // later reconnect still resumes this session.
+        const storedSid = info.stored_session_id || getUiState().storedSid
+
+        if (storedSid) {
+          info = { ...info, stored_session_id: storedSid }
+        }
+
         patchUiState(state => ({
           ...state,
           info,
           status: state.status === 'starting agent…' ? 'ready' : state.status,
+          storedSid,
           usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
         }))
 
@@ -919,8 +947,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         turnController.showNotice({
-          id: p.id,
-          key: p.key,
+          id: p.id ?? undefined,
+          key: p.key ?? undefined,
           kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
           level: isNoticeLevel(p.level) ? p.level : 'info',
           text: p.text,
@@ -967,13 +995,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.stderr': {
+        // Every raw line is already in the /logs buffer (gatewayClient.pushLog).
+        // Only failure-looking lines earn an activity row, and a traceback's
+        // many lines collapse into one (pushActivity dedupes a repeated tail).
         if (!ev.payload) {
           return
         }
 
-        const line = String(ev.payload.line).slice(0, 120)
+        const line = String(ev.payload.line)
 
-        turnController.pushActivity(line, 'info')
+        if (stderrLooksLikeProblem(line)) {
+          turnController.pushActivity(stderrProblemActivity(line), 'warn')
+        }
+
+        return
+      }
+
+      case 'gateway.reconnecting': {
+        const { attempt, delay_ms: delayMs } = ev.payload ?? {}
+
+        setStatus(backendReconnecting(attempt, delayMs))
 
         return
       }
@@ -1099,25 +1140,22 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.start_timeout': {
-        const { cwd, python, stderr_tail: stderrTail } = ev.payload ?? {}
-        const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
+        // Still waiting (the ready timer does not give up) — say so, and point
+        // at /logs for the interpreter/cwd/stderr detail instead of printing
+        // paths here. Only failure-looking stderr lines are echoed inline so
+        // "wrong python" / "missing dep" stay diagnosable at a glance.
+        const { stderr_tail: stderrTail } = ev.payload ?? {}
 
-        setStatus('gateway startup timeout')
-        turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
+        setStatus(BACKEND_SLOW_START_STATUS)
+        turnController.pushActivity(BACKEND_SLOW_START, 'warn')
 
-        // Surface the most useful stderr lines inline so users can tell
-        // "wrong python", "missing dep", and "config parse failure"
-        // apart without leaving the TUI.  Filter blank rows BEFORE
-        // taking the last N so trailing empty lines in the buffer
-        // don't crowd out actual content; truncate to match the
-        // 120-char clip used for `gateway.stderr` activity entries.
         const STDERR_LINE_CAP = 120
-        const STDERR_LINES_MAX = 8
+        const STDERR_LINES_MAX = 4
 
         const tailLines = (stderrTail ?? '')
           .split('\n')
           .map(l => l.trim())
-          .filter(Boolean)
+          .filter(l => l && stderrLooksLikeProblem(l))
           .slice(-STDERR_LINES_MAX)
 
         for (const line of tailLines) {
@@ -1208,7 +1246,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        turnController.recordTodos(ev.payload.todos)
         turnController.recordToolStart(
           ev.payload.tool_id,
           ev.payload.name ?? 'tool',
@@ -1240,16 +1277,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             inlineDiffText,
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.duration_s,
+            ev.payload.duration_s ?? undefined,
             resultText
           )
         } else {
           turnController.recordToolComplete(
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.summary,
-            ev.payload.duration_s,
-            ev.payload.todos,
+            ev.payload.summary ?? undefined,
+            ev.payload.duration_s ?? undefined,
+            ev.payload.todos ?? undefined,
             resultText
           )
         }
@@ -1257,124 +1294,39 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'clarify.request': {
-        if (!ev.payload) {
+      case 'request.cancel': {
+        // The backend withdrew a server→client request (timeout / interrupt /
+        // session close): tear down whichever card carries that id. A clarify
+        // that timed out is persisted as an abandoned prompt by tool.complete.
+        const id = ev.payload?.id
+
+        if (!id) {
           return
         }
 
-        const batch = (ev.payload.questions ?? [])
-          .filter(q => typeof q?.qid === 'string' && q.qid && typeof q?.question === 'string' && q.question.trim())
-          .map(q => ({
-            choices: q.choices && q.choices.length > 0 ? q.choices : null,
-            multiSelect: q.multi_select === true,
-            qid: q.qid,
-            question: q.question.trim()
-          }))
+        // A password/secret/vault card that timed out vanished silently; say
+        // what happened and how to get it back. Clarify already records its
+        // own "(timed out)" line via tool.complete.
+        const timeoutNotice = promptTimeoutNotice(ev.payload?.method, ev.payload?.reason)
 
-        patchOverlayState({
-          clarify: batch.length
-            ? {
-                answers: ev.payload.answers ?? {},
-                choices: null,
-                question: '',
-                questions: batch,
-                requestId: ev.payload.request_id
-              }
-            : {
-                choices: ev.payload.choices ?? null,
-                question: ev.payload.question ?? '',
-                requestId: ev.payload.request_id
-              }
-        })
-        setStatus('waiting for input…')
-        ringPromptBell()
-
-        return
-      }
-
-      case 'approval.request': {
-        if (!ev.payload) {
-          return
+        if (timeoutNotice) {
+          sys(timeoutNotice)
         }
 
-        const description = String(ev.payload.description ?? 'dangerous command')
-        // Only an explicit false (tirith warning) drops the permanent-allow option.
-        const allowPermanent = ev.payload.allow_permanent !== false
+        forgetServerRequest(id)
+        patchOverlayState(prev => {
+          const next = { ...prev }
+          let changed = false
 
-        patchOverlayState({
-          approval: {
-            allowPermanent,
-            choices: ev.payload.choices,
-            command: String(ev.payload.command ?? ''),
-            description,
-            smartDenied: ev.payload.smart_denied === true
+          for (const key of ['approval', 'clarify', 'secret', 'sudo', 'vaultUnlock'] as const) {
+            if (prev[key]?.requestId === id) {
+              next[key] = null
+              changed = true
+            }
           }
+
+          return changed ? next : prev
         })
-        setStatus('approval needed')
-        ringPromptBell()
-
-        return
-      }
-
-      case 'sudo.request':
-        if (!ev.payload) {
-          return
-        }
-
-        patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
-        setStatus('sudo password needed')
-        ringPromptBell()
-
-        return
-
-      case 'secret.request':
-        if (!ev.payload) {
-          return
-        }
-
-        patchOverlayState({
-          secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
-        })
-        setStatus('secret input needed')
-        ringPromptBell()
-
-        return
-      case 'sudo.expire': {
-        const expired = ev.payload?.request_id
-
-        patchOverlayState(prev => (prev.sudo?.requestId === expired ? { ...prev, sudo: null } : prev))
-
-        return
-      }
-
-      case 'secret.expire': {
-        const expired = ev.payload?.request_id
-
-        patchOverlayState(prev => (prev.secret?.requestId === expired ? { ...prev, secret: null } : prev))
-
-        return
-      }
-
-      case 'vault.unlock.request':
-        if (!ev.payload) {
-          return
-        }
-
-        patchOverlayState({
-          vaultUnlock: {
-            backend: ev.payload.backend,
-            displayName: ev.payload.display_name,
-            requestId: ev.payload.request_id
-          }
-        })
-        setStatus(`unlock ${ev.payload.display_name}`)
-        ringPromptBell()
-
-        return
-      case 'vault.unlock.expire': {
-        const expired = ev.payload?.request_id
-
-        patchOverlayState(prev => (prev.vaultUnlock?.requestId === expired ? { ...prev, vaultUnlock: null } : prev))
 
         return
       }
@@ -1539,7 +1491,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.delta':
-        turnController.recordMessageDelta(ev.payload ?? {})
+        turnController.recordMessageDelta(ev.payload ?? ({} as StreamDeltaPayload))
 
         return
       case 'message.interim': {
@@ -1556,7 +1508,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
-          const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
+          const payload = ev.payload ?? {}
+          // A failed turn with no reply: the backend's assistant-slot text is
+          // "Error: <raw provider body>". Render the structured error_surface
+          // (layer/code/retryable) as a plain title + Details + next step
+          // instead; a partial reply keeps its streamed text.
+          const failed = payload.status === 'error' && !payload.partial && isBareErrorText(finalText, payload.error)
+
+          // Only the trailing bare-error slot is replaced; interim segments the
+          // model streamed before the failure stay in the transcript.
+          const msgs: Msg[] = failed
+            ? [
+                ...finalMessages.filter(
+                  (m, i) => !(i === finalMessages.length - 1 && m.role === 'assistant' && isBareErrorText(m.text, payload.error))
+                ),
+                { role: 'assistant', text: describeTurnFailure(payload) }
+              ]
+            : finalMessages.length
+              ? finalMessages
+              : [{ role: 'assistant', text: finalText }]
+
           msgs.forEach(appendMessage)
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
@@ -1574,7 +1545,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         if (ev.payload?.usage) {
-          patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, ev.payload!.usage) }))
+          patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, ev.payload!.usage ?? undefined) }))
         }
 
         // Billing wall (out of credits / payment required): open a proper
@@ -1625,7 +1596,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             return
           }
 
-          sys(`error: ${message}`)
+          sys(`error: ${describeRpcError(new Error(message))}`)
           setStatus('ready')
         }
     }

@@ -68,6 +68,9 @@ _IMAGE_PART_TYPES = {"image_url", "input_image"}
 _VIDEO_PART_TYPES = {"video", "video_url", "input_video"}
 _OUTPUT_TEXT_TYPES = {"output_text", "text"}
 _ASSISTANT_IMAGE_PLACEHOLDER = "[Assistant image omitted during replay]"
+# Inline data-URL subtypes the Responses backends accept as ``input_image``. Anything else
+# (SVG source, BMP, TIFF, ...) 400s the WHOLE request — and, once baked into history, every
+# later turn too — so it is downgraded to a text placeholder at this converging seam (#29711).
 _INCOMPLETE_STATUSES = {"queued", "in_progress", "incomplete"}
 _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 
@@ -187,7 +190,9 @@ def _iter_content_parts(content: list) -> Iterator[tuple[str, Any]]:
 def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_url: bool) -> Optional[Dict[str, Any]]:
     """Responses image part from a chat/Responses image part (``image_url`` may be a str or
     ``{url, detail}``). Assistant → text placeholder (an assistant ``input_image`` 400s every
-    replay); user → ``input_image``, None for an empty url unless ``keep_empty_url``."""
+    replay); user → ``input_image``, None for an empty url unless ``keep_empty_url``; an inline
+    SVG is rasterized to PNG when a rasterizer is installed, any other unsupported inline
+    subtype (or an SVG with no rasterizer) → text placeholder."""
     if role == "assistant":
         return {"type": "output_text", "text": _ASSISTANT_IMAGE_PLACEHOLDER}
     url, detail = part.get("image_url"), part.get("detail")
@@ -195,7 +200,19 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
         url, detail = url.get("url"), url.get("detail", detail)
     if not _nonempty_str(url) and not keep_empty_url:
         return None
-    image_part: Dict[str, Any] = {"type": "input_image", "image_url": str(url or "")}
+    url = str(url or "")
+    # Lazy import: the prep module only depends on hermes_constants at import time (no cycle).
+    from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
+    mime = unsupported_inline_image_media_type(url)
+    if mime == "image/svg+xml":
+        # Rasterize so the model still sees the drawing; the placeholder is the fallback only
+        # when no rasterizer (cairosvg / svglib / rsvg-convert / inkscape) is available.
+        png_url = rasterize_svg_data_url(url)
+        if png_url is not None:
+            url, mime = png_url, None
+    if mime is not None:
+        return {"type": "input_text", "text": f"[image omitted: {mime} is not a supported image format]"}
+    image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
     if _nonblank(detail):
         image_part["detail"] = detail.strip()
     return image_part

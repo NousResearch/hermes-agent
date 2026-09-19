@@ -1174,37 +1174,25 @@ def _extract_literal_prefix(pattern: str) -> str:
     return pattern
 
 
-def _skip_char_class(pattern: str, i: int) -> int:
-    """Given ``pattern[i] == "["``, return the index just past the closing ``]``."""
-    i += 2 if pattern[i + 1:i + 2] == "]" else 1  # a leading "]" is literal
-    while i < len(pattern) and pattern[i] != "]":
-        i += 2 if pattern[i] == "\\" else 1
-    return i
+def _split_top_level_alternation(pattern: str) -> list:
+    """Split ``pattern`` at each ``|`` outside any group or class.
 
+    ``nvapi-x|nvkey-y`` -> ``["nvapi-x", "nvkey-y"]``; a pattern without
+    top-level alternation comes back as a single-element list. Escaped
+    pipes and pipes inside ``[...]`` or ``(...)`` are literals/branch
+    separators of their own scope and do not split.
 
-def _unbounded_quantifier_follows(pattern: str, j: int) -> bool:
-    """True if an open-ended quantifier (``*``, ``+``, ``{m,}``) starts at ``pattern[j]``."""
-    if j >= len(pattern):
-        return False
-    if pattern[j] in "*+":
-        return True
-    if pattern[j] == "{":
-        k = pattern.find("}", j)
-        body = pattern[j + 1:k] if k != -1 else ""
-        return body[:-1].isdigit() and body.endswith(",")  # {m,} is open-ended; {m} / {m,n} bounded
-    return False
-
-
-def _pattern_structure(pattern: str) -> tuple[bool, bool]:
-    """One scan → ``(has_top_level_alternation, has_nested_unbounded_repeat)``.
-
-    Top-level ``|`` defeats the literal-prefix guarantee (in ``ab|.*`` the prefix
-    binds only the first branch; ``ab(?:x|y)`` is fine). An unbounded quantifier
-    on a group containing one (``(a+)+``, ``(a{2,})+``) is the canonical ReDoS
-    shape. Structural only; overlapping branches (``(a|aa)+``) are not detected.
+    The literal-prefix guarantee behind the pre-screen gate is per
+    BRANCH, not per pattern: ``_extract_literal_prefix`` stops at ``|``,
+    so for ``ab|.*`` it returns ``ab`` even though the ``.*`` branch is
+    not bound by that prefix. Callers therefore validate every branch's
+    prefix separately and feed every branch's prefix into
+    ``_PREFIX_SUBSTRINGS``, which keeps multi-prefix vendor patterns
+    (``nvapi-...|nvkey_...``) registrable without weakening the gate.
     """
-    top_level_alt = nested = False
-    contains_unbounded = [False]  # per open group: does it contain an unbounded repeat?
+    branches = []
+    depth = 0
+    start = 0
     i = 0
     while i < len(pattern):
         ch = pattern[i]
@@ -1212,33 +1200,243 @@ def _pattern_structure(pattern: str) -> tuple[bool, bool]:
             i += 2
             continue
         if ch == "[":
-            i = _skip_char_class(pattern, i)
+            i += 1
+            if i < len(pattern) and pattern[i] == "]":
+                i += 1
+            while i < len(pattern) and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
         elif ch == "(":
-            contains_unbounded.append(False)
+            depth += 1
         elif ch == ")":
-            inner = contains_unbounded.pop() if len(contains_unbounded) > 1 else False
-            if inner and _unbounded_quantifier_follows(pattern, i + 1):
-                nested = True
-            contains_unbounded[-1] = contains_unbounded[-1] or inner
-        elif ch == "|" and len(contains_unbounded) == 1:
-            top_level_alt = True
-        elif _unbounded_quantifier_follows(pattern, i):
-            contains_unbounded[-1] = True
-            if ch == "{":
-                i = pattern.find("}", i)  # skip the {m,} body
+            depth = max(0, depth - 1)
+        elif ch == "|" and depth == 0:
+            branches.append(pattern[start:i])
+            start = i + 1
         i += 1
-    return top_level_alt, nested
-
-
-def _has_top_level_alternation(pattern: str) -> bool:
-    return _pattern_structure(pattern)[0]
-
+    branches.append(pattern[start:])
+    return branches
 
 def _has_nested_unbounded_repeat(pattern: str) -> bool:
-    return _pattern_structure(pattern)[1]
+    """True if the pattern has the catastrophic-backtracking (ReDoS) shape.
+
+    ``(a+)+``, ``(?:x*)*``, ``(a{2,})+``: an unbounded quantifier applied
+    to a group whose content is itself ambiguously unbounded. Registered
+    patterns run against every log line, tool output, and transcript
+    chunk, so a pathological pattern from a buggy plugin would stall the
+    host process, not just the plugin.
+
+    One structurally-safe shape is allowed through: separator repetition,
+    ``(?:A+sep)+`` where ``sep`` is a required literal character that
+    ``A`` cannot match (``(?:[0-9]+-)+`` in a Slack-style token). Each
+    iteration must end at the separator and the separator cannot be
+    absorbed by ``A``, so iteration boundaries are unambiguous and
+    matching stays linear. Everything the analysis cannot positively
+    clear stays rejected: quantified last atoms, optional separators,
+    alternation inside the repeated group, zero-width or wildcard
+    separators, opaque escapes.
+
+    Detection is structural only; ambiguity between overlapping
+    alternation branches (``(a|aa)+``) is not statically detected and
+    remains the plugin author's responsibility.
+
+    The separator disjointness test runs each inner atom under default
+    flags, so inline regex flags (``(?i)``, ``(?i:...)``, ``(?im-sx:...)``)
+    invalidate its verdict: under IGNORECASE the "disjoint" separator can
+    be absorbed by the inner class. Patterns containing any inline flag
+    construct therefore never get the separator carve-out.
+    """
+    # (?flags: or (?flags) — letters, optionally negated with '-'. Only
+    # flag constructs can match this: every other "(?" form (named groups,
+    # lookarounds, conditionals) starts with a character outside the class.
+    flag_construct = re.compile(r"\(\?[aiLmsux-]+([:)])")
+    has_inline_flags = False
+
+    def _read_quantifier(j: int):
+        # Classify the quantifier at pattern[j:] for the atom that just
+        # ended: ("unbounded" | "bounded" | None, index past it). A lazy
+        # "?" suffix is consumed with it. A "{" that is not a valid
+        # quantifier body is a literal and classifies as no quantifier.
+        if j >= len(pattern):
+            return None, j
+        ch = pattern[j]
+        if ch in "*+":
+            end = j + 1
+            kind = "unbounded"
+        elif ch == "?":
+            return "bounded", j + 1
+        elif ch == "{":
+            k = pattern.find("}", j)
+            body = pattern[j + 1:k] if k != -1 else ""
+            if body.endswith(",") and body[:-1].isdigit():
+                kind, end = "unbounded", k + 1
+            elif body and all(c.isdigit() or c == "," for c in body):
+                kind, end = "bounded", k + 1
+            else:
+                return None, j
+        else:
+            return None, j
+        if end < len(pattern) and pattern[end] == "?":
+            end += 1
+        return kind, end
+
+    class _Frame:
+        # Per-group scan state. simple_unbounded holds the source of each
+        # unbounded-quantified simple atom (char / class / class escape),
+        # usable directly in re.fullmatch for the separator disjointness
+        # test. complex_unbounded covers everything that test can't
+        # reason about (quantified groups, opaque escapes, alternation
+        # mixed with repeats).
+        __slots__ = ("simple_unbounded", "complex_unbounded",
+                     "has_alternation", "last_atom", "atoms", "transparent")
+
+        def __init__(self):
+            self.simple_unbounded = []
+            self.complex_unbounded = False
+            self.has_alternation = False
+            self.last_atom = None  # (kind, src, quantifier_kind)
+            self.atoms = []
+            self.transparent = True
+
+    def _record_atom(frame, kind, src, qkind):
+        if qkind == "unbounded":
+            if kind in ("char", "class", "classescape"):
+                frame.simple_unbounded.append(src)
+            else:
+                frame.complex_unbounded = True
+        frame.last_atom = (kind, src, qkind)
+        frame.atoms.append(frame.last_atom)
+
+    def _separator_clears(frame) -> bool:
+        # The repeated group's last atom must be a required single literal
+        # the inner repeats cannot match. Anchors, ".", classes, and
+        # anything quantified or optional do not qualify.
+        # A delimiter alone cannot disambiguate a+a+ or a+a? inside
+        # each segment. Only prove the single-atom repeat + delimiter shape.
+        if len(frame.atoms) != 2:
+            return False
+        first, atom = frame.atoms
+        if first[0] not in ("char", "class", "classescape") or first[2] != "unbounded":
+            return False
+        kind, src, qkind = atom
+        if qkind is not None:
+            return False
+        if kind == "char":
+            if src in ".^$":
+                return False
+            sep = src
+        elif kind == "escape" and len(src) == 2 and not src[1].isalnum():
+            sep = src[1]
+        else:
+            return False
+        for atom_src in frame.simple_unbounded:
+            try:
+                if re.fullmatch(atom_src, sep):
+                    return False
+            except re.error:
+                return False
+        return True
+
+    frames = [_Frame()]
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            src = pattern[i:i + 2]
+            i += 2
+            # \d \w \s and friends are single-char classes the
+            # disjointness test can evaluate; punctuation escapes are
+            # literals; everything else (\x41, \1, \b, \N{...}) is
+            # opaque to this analysis and treated conservatively.
+            if len(src) == 2 and src[1] in "dDwWsS":
+                kind = "classescape"
+            elif len(src) == 2 and not src[1].isalnum():
+                kind = "escape"
+            else:
+                kind = "opaque"
+            qkind, i = _read_quantifier(i)
+            _record_atom(frames[-1], kind, src, qkind)
+            continue
+        if ch == "[":
+            start = i
+            i += 1
+            if i < len(pattern) and pattern[i] == "]":
+                i += 1
+            while i < len(pattern) and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
+            i = min(i + 1, len(pattern))
+            src = pattern[start:i]
+            qkind, i = _read_quantifier(i)
+            _record_atom(frames[-1], "class", src, qkind)
+            continue
+        if ch == "(":
+            m = flag_construct.match(pattern, i)
+            if m:
+                has_inline_flags = True
+                if m.group(1) == ":":
+                    frames.append(_Frame())
+                i = m.end()
+                continue
+            child = _Frame()
+            frames.append(child)
+            if pattern.startswith("(?:", i):
+                i += 3
+            elif pattern.startswith("(?P<", i):
+                i = pattern.index(">", i + 4) + 1
+            else:
+                child.transparent = not pattern.startswith("(?", i)
+                i += 1
+            continue
+        if ch == ")":
+            child = frames.pop() if len(frames) > 1 else _Frame()
+            i += 1
+            qkind, i = _read_quantifier(i)
+            parent = frames[-1]
+            has_unbounded = bool(child.simple_unbounded) or child.complex_unbounded
+            # Alternation branches inside a repeated group can overlap in
+            # ways this scan doesn't model, so repeats behind alternation
+            # count as complex.
+            is_complex = child.complex_unbounded or (
+                child.has_alternation and has_unbounded
+            )
+            if qkind == "unbounded":
+                if is_complex:
+                    return True
+                if child.simple_unbounded and (
+                    has_inline_flags or not _separator_clears(child)
+                ):
+                    return True
+                # The safe-or-empty quantified group is still unbounded
+                # content of a shape the separator test can't vouch for
+                # one level up, so a repeat of THIS repeat stays rejected.
+                parent.complex_unbounded = True
+            elif is_complex:
+                parent.complex_unbounded = True
+            else:
+                parent.simple_unbounded.extend(child.simple_unbounded)
+            if qkind is None and child.transparent and not child.has_alternation:
+                parent.atoms.extend(child.atoms)
+            else:
+                parent.atoms.append(("group", "", qkind))
+            parent.last_atom = ("group", "", qkind)
+            continue
+        if ch == "|":
+            frames[-1].has_alternation = True
+            frames[-1].last_atom = None
+            i += 1
+            continue
+        src = ch
+        i += 1
+        qkind, i = _read_quantifier(i)
+        _record_atom(frames[-1], "char", src, qkind)
+    return False
 
 
-_PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in _PREFIX_PATTERNS)
+_PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(branch) for p in _PREFIX_PATTERNS
+                           for branch in _split_top_level_alternation(p))
 
 
 def _has_known_prefix_substring(text: str) -> bool:
@@ -1267,21 +1465,19 @@ def _rebuild_prefix_matcher() -> None:
     global _PREFIX_RE, _PREFIX_SUBSTRINGS
     combined = _PREFIX_PATTERNS + _plugin_patterns()
     _PREFIX_RE = _compile_prefix_matcher(combined)
-    _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in combined)
+    _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(branch) for p in combined
+                               for branch in _split_top_level_alternation(p))
 
 
 # Structural validators for register_redaction_patterns, in check order:
 # (predicate -> reject when True, warning message with (source, pattern) args).
 _PATTERN_REJECT_RULES = (
-    (_has_top_level_alternation,
-     "%s: skipping redaction pattern %r — top-level alternation escapes the literal-prefix "
-     "guarantee (in 'ab|.*' the prefix binds only the first branch); wrap alternation in "
-     "a group after the prefix, e.g. 'ab(?:x|y)'"),
     (_has_nested_unbounded_repeat,
      "%s: skipping redaction pattern %r — nested unbounded quantifiers (e.g. '(a+)+') can "
      "backtrack catastrophically, and registered patterns run on every log line and tool output"),
-    (lambda pattern: len(_extract_literal_prefix(pattern)) < 2,
-     "%s: skipping redaction pattern %r — must start with at least 2 literal characters "
+    (lambda pattern: any(len(_extract_literal_prefix(branch)) < 2
+                         for branch in _split_top_level_alternation(pattern)),
+     "%s: skipping redaction pattern %r — every branch must start with at least 2 literal characters "
      "(needed for the pre-screen substring gate)"),
 )
 
@@ -1289,8 +1485,8 @@ _PATTERN_REJECT_RULES = (
 def register_redaction_patterns(patterns, source: str = "plugin") -> int:
     """Additively register credential-token regexes; returns the count accepted.
 
-    Invalid entries (non-compiling, top-level alternation, nested unbounded
-    quantifiers, < 2 literal prefix chars) and duplicates are warned/skipped,
+    Invalid entries (non-compiling, ambiguous nested unbounded
+    quantifiers, < 2 literal prefix chars in any branch) and duplicates are warned/skipped,
     never raised — a broken plugin must not break startup.
     """
     accepted = []

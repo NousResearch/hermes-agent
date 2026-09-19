@@ -167,13 +167,33 @@ def test_plugin_context_method_never_raises(monkeypatch):
 # ── Top-level alternation guard ─────────────────────────────────────────
 
 
-def test_top_level_alternation_rejected():
+def test_unprefixed_alternation_branch_rejected():
     # 'ab|.*' compiles and has the accepted 'ab' literal prefix, but the
     # '.*' branch is unprefixed — accepting it would redact everything.
     assert register_redaction_patterns([r"ab|.*"], source="test") == 0
-    assert register_redaction_patterns([r"ab|cd"], source="test") == 0
+    # One literal char on a branch is as short as on a whole pattern.
+    assert register_redaction_patterns([r"ab|x[0-9]{20,}"], source="test") == 0
+    # Empty branch matches everywhere.
+    assert register_redaction_patterns([r"ab|"], source="test") == 0
     clean = "nothing here resembles a credential"
     assert redact_sensitive_text(clean, force=True) == clean
+
+
+def test_multi_prefix_alternation_accepted_and_prescreened():
+    # A vendor with two token prefixes registers them as one pattern.
+    # Every branch carries its own literal prefix, so the pre-screen
+    # guarantee holds per branch. Blanket-rejecting these silently
+    # dropped the whole pattern and leaked both token forms.
+    pattern = r"nvapi-[A-Za-z0-9_-]{20,}|nvkey_[A-Za-z0-9_-]{20,}"
+    assert register_redaction_patterns([pattern], source="test") == 1
+    # BOTH branch prefixes must reach the pre-screen tuple, or text
+    # containing only the second form is skipped before the regex runs.
+    assert "nvapi-" in redact_mod._PREFIX_SUBSTRINGS
+    assert "nvkey_" in redact_mod._PREFIX_SUBSTRINGS
+    first = "nvapi-AbCdEfGhIjKlMnOpQrStUvWx0123"
+    second = "nvkey_AbCdEfGhIjKlMnOpQrStUvWx0123"
+    out = redact_sensitive_text(f"a {first} b {second}", force=True)
+    assert first not in out and second not in out
 
 
 def test_grouped_alternation_and_literal_pipe_accepted():
@@ -192,10 +212,28 @@ def test_nested_unbounded_quantifiers_rejected():
     assert register_redaction_patterns([r"ab(a+)+"], source="test") == 0
     assert register_redaction_patterns([r"ab(?:x*)*"], source="test") == 0
     assert register_redaction_patterns([r"ab(x{2,})+"], source="test") == 0
-    # Nesting through an intermediate group is still nesting.
-    assert register_redaction_patterns([r"ab((x+)y)*"], source="test") == 0
+    # Nesting through an intermediate group with no separator between
+    # the inner repeat and the iteration boundary is still nesting.
+    assert register_redaction_patterns([r"ab((x+))*"], source="test") == 0
+    assert register_redaction_patterns([r"ab((x+)x)*"], source="test") == 0
     clean = "nothing here resembles a credential"
     assert redact_sensitive_text(clean, force=True) == clean
+
+
+def test_separator_repetition_accepted():
+    # (?:A+sep)+ where sep is a required literal A can't match is the
+    # unambiguous linear shape real vendor tokens use (Slack's
+    # digit-dash-digit segments). Rejecting it silently dropped the
+    # pattern and leaked the tokens.
+    slack_shape = r"xoxb-(?:[0-9]+-)+[A-Za-z0-9]{10,}"
+    assert register_redaction_patterns([slack_shape], source="test") == 1
+    token = "xoxb-1234567890-0987654321-AbCdEfGhIjKl"
+    out = redact_sensitive_text(f"auth: {token}", force=True)
+    assert token not in out
+    # Escaped-literal separators qualify too.
+    assert register_redaction_patterns([r"qs(?:\d+\.)+[0-9]{4,}"], source="test") == 1
+    # Nesting through an intermediate group keeps the separator safety.
+    assert register_redaction_patterns([r"nb((x+)y)*[0-9]{8,}"], source="test") == 1
 
 
 def test_bounded_and_sibling_quantifiers_accepted():
@@ -249,3 +287,42 @@ def test_registered_pattern_no_prose_false_positive(tmp_path):
     register_redaction_patterns([demo.NVAPI_PATTERN], source="test")
     prose = "the nvapi-endpoint docs describe rate limits"
     assert redact_sensitive_text(prose, force=True) == prose
+
+
+def test_ambiguous_or_flagged_separator_is_rejected():
+    # A fixed delimiter does not resolve overlapping repeats within a segment.
+    for pattern in (r"ab(?:a+a+-)+Z", r"ab(?:a+a+a+a+-)+Z",
+                    r"ab(?:a+a?-)+Z", r"ab(?:a+a{1,2}-)+Z",
+                    r"ab(?:(?=a+)a-)+Z"):
+        assert register_redaction_patterns([pattern], source="test") == 0
+    # The separator carve-out must not open the door to ambiguity: a
+    # separator the inner repeat CAN match, an optional separator, a
+    # wildcard or zero-width one, or alternation inside the repeated
+    # group all stay rejected.
+    assert register_redaction_patterns([r"ab(?:[0-9a-f]+a)+"], source="test") == 0
+    assert register_redaction_patterns([r"ab(?:[0-9]+-?)+"], source="test") == 0
+    assert register_redaction_patterns([r"ab(?:.+-)+"], source="test") == 0
+    assert register_redaction_patterns([r"ab(?:x+$)+"], source="test") == 0
+    assert register_redaction_patterns([r"ab(?:x+-|y)+"], source="test") == 0
+    # A repeat of a safe repeat has no separator at the outer level.
+    assert register_redaction_patterns([r"ab((?:[0-9]+-)+)+"], source="test") == 0
+    # The disjointness test runs inner atoms under default flags. Inline
+    # flags change what those atoms really match, so under (?i) a
+    # "disjoint" separator can be absorbed by the inner class: with
+    # r'ab(?i:[a-z]+A)+B' the checker sees [a-z] vs 'A' as disjoint, but
+    # IGNORECASE overlaps them and a failing input explores exponentially
+    # many partitions. Scoped, global, and negated flag forms all stay
+    # rejected; a flags pattern WITHOUT nested repeats still registers.
+    assert register_redaction_patterns([r"ab(?i:[a-z]+A)+B"], source="test") == 0
+    assert register_redaction_patterns([r"ab(?i:[a-z]+A)+"], source="test") == 0
+    assert register_redaction_patterns([r"(?i)ab(?:[a-z]+A)+"], source="test") == 0
+    assert register_redaction_patterns([r"ab(?i:[0-9]+-)+[A-Za-z0-9]{10,}"], source="test") == 0
+    assert register_redaction_patterns([r"ab(?-i:[a-z]+A)+B"], source="test") == 0
+    assert register_redaction_patterns([r"ab(?mi:[a-z]+A)+B"], source="test") == 0
+    # Flags without the nested-repeat shape are unaffected (Python itself
+    # rejects global (?i) mid-pattern, so use the scoped form).
+    assert register_redaction_patterns([r"zq(?i:tok)-[a-z0-9]{20,}"], source="test") == 1
+    # Lookarounds and named groups are not flag constructs.
+    assert register_redaction_patterns(
+        [r"ab(?P<x>[0-9]+-)+[A-Za-z0-9]{10,}"], source="test"
+    ) == 1

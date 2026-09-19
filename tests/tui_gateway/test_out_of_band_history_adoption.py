@@ -4,6 +4,7 @@ reach the model on the next local prompt, not only the repainted transcript."""
 import contextlib
 import threading
 
+from agent.session_persistence import _durable_content
 from hermes_state import SessionDB
 from tui_gateway import server
 
@@ -167,17 +168,16 @@ def test_marker_free_history_must_match_the_durable_prefix(tmp_path, monkeypatch
     assert session["history_version"] == 0
 
 
-def test_marker_free_structured_user_content_must_match_durable_prefix(tmp_path, monkeypatch):
+def test_marker_free_structured_user_content_must_match_durable_prefix(
+    tmp_path, monkeypatch
+):
     db = SessionDB(tmp_path / "state.db")
     db.create_session("s1", source="desktop")
-    db.append_message(
-        "s1",
-        "user",
-        [
-            {"type": "text", "text": "Describe this image."},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-        ],
-    )
+    durable_native_content = [
+        {"type": "text", "text": "Describe this image.\n@image:/tmp/image-a.png"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    db.append_message("s1", "user", _durable_content(durable_native_content))
     db.append_message("s1", "assistant", "It is image A.")
     session = {
         "session_key": "s1",
@@ -185,7 +185,7 @@ def test_marker_free_structured_user_content_must_match_durable_prefix(tmp_path,
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Describe this image."},
+                    {"type": "text", "text": "Describe this image.\n@image:/tmp/image-b.png"},
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBBB"}},
                 ],
             },
@@ -199,7 +199,10 @@ def test_marker_free_structured_user_content_must_match_durable_prefix(tmp_path,
     db.append_message("s1", "assistant", "Done.")
     own = db.append_message("s1", "user", "What changed?")
     session["_submit_user_row"] = {
-        "role": "user", "content": "What changed?", "_row_id": own}
+        "role": "user",
+        "content": "What changed?",
+        "_row_id": own,
+    }
     before = list(session["history"])
 
     server._adopt_out_of_band_turns(session)
@@ -207,6 +210,46 @@ def test_marker_free_structured_user_content_must_match_durable_prefix(tmp_path,
     assert session["history"] == before
     assert all("_row_id" not in message for message in session["history"])
     assert session["history_version"] == 0
+
+
+def test_marker_free_native_image_history_adopts_durable_tail(tmp_path, monkeypatch):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s1", source="desktop")
+    native_content = [
+        {"type": "text", "text": "Describe this image.\n@image:/tmp/image-a.png"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    db.append_message("s1", "user", _durable_content(native_content))
+    db.append_message("s1", "assistant", "It is image A.")
+    session = {
+        "session_key": "s1",
+        "history": [
+            {"role": "user", "content": native_content},
+            {"role": "assistant", "content": "It is image A."},
+        ],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+    _bind_db(monkeypatch, db)
+    db.append_message("s1", "user", "Continue.")
+    db.append_message("s1", "assistant", "Done.")
+    own = db.append_message("s1", "user", "What changed?")
+    session["_submit_user_row"] = {
+        "role": "user",
+        "content": "What changed?",
+        "_row_id": own,
+    }
+
+    server._adopt_out_of_band_turns(session)
+
+    assert session["history"][0]["content"] == native_content
+    assert [message["content"] for message in session["history"][1:]] == [
+        "It is image A.",
+        "Continue.",
+        "Done.",
+    ]
+    assert [message.get("_row_id") for message in session["history"]] == [1, 2, 3, 4]
+    assert session["history_version"] == 1
 
 
 def test_next_turn_reloads_history_rewritten_without_summary(tmp_path, monkeypatch):

@@ -554,6 +554,9 @@ def _adopt_out_of_band_turns(session: dict) -> None:
                     return mem.get("content") == row.get("content")
                 mem_content, row_content = mem_view.get("content"), row_view.get("content")
                 if not isinstance(mem_content, str) or not isinstance(row_content, str):
+                    if isinstance(mem_content, list) != isinstance(row_content, list):
+                        from agent.session_persistence import _durable_content
+                        return _durable_content(mem_content) == _durable_content(row_content)
                     return mem_content == row_content
                 return True  # _mem_db_pair_agrees already compared sanitized text.
             if role == "assistant":

@@ -2246,6 +2246,33 @@ _probe_neg_cache: dict[str, float] = {}
 _PROBE_NEG_TTL = 60.0  # seconds
 
 
+# Catalog entries whose ``status`` marks them unusable (case-insensitive).
+# ARK-style providers (e.g. Volcengine) tag decommissioned models with
+# ``Shutdown``/``Retiring`` but keep returning them from ``/models``; passing
+# them through floods the ``/model`` picker with entries that fail on use
+# (#68536). Entries with no ``status`` field (OpenAI-style catalogs) are
+# always kept.
+_UNAVAILABLE_MODEL_STATUSES = frozenset({"shutdown", "retiring", "retired"})
+
+
+def _is_model_entry_available(entry: Any) -> bool:
+    """Return True when a ``/models`` catalog entry is usable for the picker.
+
+    Drops entries without a non-empty ``id`` (malformed rows previously
+    surfaced as ``""``) and entries whose ``status`` is a known
+    decommissioned marker. Unknown or absent statuses pass through — the
+    filter must never hide a working model.
+    """
+    if not isinstance(entry, dict) or not entry.get("id"):
+        return False
+    status = entry.get("status")
+    if isinstance(status, str) and status.strip().lower() in _UNAVAILABLE_MODEL_STATUSES:
+        return False
+    return True
+
+
+
+
 def _probe_neg_key(base_url: str) -> Optional[str]:
     """``host:port`` for *base_url* (both URL candidates share one entry), or None without a host."""
     from utils import base_url_origin
@@ -2330,7 +2357,8 @@ def probe_api_models(
         if _neg_key is not None:
             _probe_neg_cache.pop(_neg_key, None)
         return _probe_result(
-            [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
+            [m["id"] for m in data.get("data", []) if _is_model_entry_available(m)],
+            url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
 
     if _neg_key is not None and not reachable:

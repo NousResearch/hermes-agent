@@ -226,6 +226,32 @@ class TestTranscribeGroq:
         assert "openai package" in result["error"]
 
 
+class TestOpenAIClientConfig:
+    @pytest.mark.parametrize(
+        ("openai_config", "expected_timeout", "expected_retries"),
+        [({}, 60, 1), ({"timeout": 95, "max_retries": 3}, 95, 3)],
+    )
+    def test_stt_openai_config_controls_sdk_client(
+        self, monkeypatch, tmp_path, sample_wav, openai_config, expected_timeout, expected_retries
+    ):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_lines = ["stt:", "  openai:"]
+        config_lines.extend(f"    {key}: {value}" for key, value in openai_config.items())
+        (tmp_path / "config.yaml").write_text("\n".join(config_lines) + "\n", encoding="utf-8")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client) as openai_client:
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        assert openai_client.call_args.kwargs["timeout"] == expected_timeout
+        assert openai_client.call_args.kwargs["max_retries"] == expected_retries
+
+
     def test_null_groq_subsection_is_safe(self, monkeypatch, sample_wav):
         """`stt.groq: null` in YAML yields None; must not raise, auto-detect stays intact."""
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")

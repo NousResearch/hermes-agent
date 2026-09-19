@@ -466,6 +466,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
+| `defer` | bool | If `false`, this server's tools stay in the model-visible `tools[]` even when [Tool Search](./tool-search.md) is active (per-server pin; default: MCP tools defer behind `tool_search`). Use it for a small server you call on most turns; a tool-heavy sibling keeps deferring. |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 

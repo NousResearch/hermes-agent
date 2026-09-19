@@ -2,7 +2,7 @@ import { isRecord } from '@hermes/shared/i18n'
 
 import { TRANSLATIONS } from './catalog'
 import { DEFAULT_LOCALE } from './languages'
-import type { Locale } from './types'
+import type { Locale } from './locale'
 
 let runtimeLocale: Locale = DEFAULT_LOCALE
 

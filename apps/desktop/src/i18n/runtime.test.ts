@@ -36,6 +36,13 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('cron.promptPlaceholder')).toBe('代理每次執行時應做什麼？')
   })
 
+  it('handles Ukrainian pluralization', () => {
+    setRuntimeI18nLocale('uk')
+    expect(translateNow('statusStack.background', 1)).toBe('1 фоновий')
+    expect(translateNow('statusStack.background', 2)).toBe('2 фонові')
+    expect(translateNow('statusStack.background', 5)).toBe('5 фонових')
+  })
+
   it('translates settings copy for newly supported locales', () => {
     setRuntimeI18nLocale('ja')
     expect(translateNow('settings.appearance.title')).toBe('外観')

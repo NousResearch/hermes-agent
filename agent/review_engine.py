@@ -1,7 +1,8 @@
 """Shared engine for the /review command — every surface calls this.
 
 /review spawns an independent, full-privilege background subagent (the same async rail as
-``delegate_task(background=true)``) to review whatever the recent conversation presented;
+``delegate_task(background=true)``) to review whatever the recent conversation presented,
+optionally augmented with a bounded uncommitted, merge-base, or single-commit git diff;
 its result re-enters the spawning session as a normal async-delegation completion.
 Model routing: ``auxiliary.review`` when configured, else the parent agent's credentials,
 passed as ``credentials_cfg`` to ``delegate_task`` so native-SDK providers, api_mode
@@ -13,7 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -24,6 +29,26 @@ DEFAULT_CONTEXT_MESSAGES = 10
 # Per-message excerpt cap: generous (a PR summary/diff excerpt is exactly what the
 # reviewer needs) but bounded against a pathological turn.
 _MESSAGE_CHAR_CAP = 12_000
+
+# Maximum number of characters from a git patch placed in reviewer context. The
+# stat is collected separately, and truncation is always disclosed in-band.
+GIT_DIFF_CHAR_CAP = 100_000
+_GIT_COMMAND_TIMEOUT_SECONDS = 20
+_GIT_ERROR_CHAR_CAP = 300
+_REVIEW_TARGET_USAGE = (
+    "Usage: /review [--quick | --deep] [uncommitted | base <branch> | commit <sha> | review instructions]"
+)
+
+# Per-invocation review depth (Cursor's Agent Review "Quick"/"Deep"): a flag beats the configured
+# ``auxiliary.review.reasoning_effort``; both fall through to delegation/parent reasoning when unset.
+REVIEW_DEPTH_EFFORT = {"--quick": "low", "--deep": "high"}
+
+
+@dataclass(frozen=True)
+class GitReviewTarget:
+    kind: str
+    value: str = ""
+
 
 _REVIEW_GOAL = (
     "Act as an independent senior reviewer. Thoroughly review the work presented in the conversation excerpt "
@@ -67,6 +92,134 @@ def snapshot_recent_messages(messages: List[Dict[str, Any]], limit: int = DEFAUL
     return out
 
 
+def parse_review_depth(user_prompt: str) -> tuple[Optional[str], str]:
+    """Pull a ``--quick``/``--deep`` flag out of the request (anywhere); returns (effort, remaining text)."""
+    depth = None
+    kept = []
+    for word in (user_prompt or "").split():
+        if word in REVIEW_DEPTH_EFFORT:
+            depth = REVIEW_DEPTH_EFFORT[word]
+        else:
+            kept.append(word)
+    return depth, " ".join(kept)
+
+
+def parse_review_request(user_prompt: str) -> tuple[Optional[GitReviewTarget], str]:
+    """Split a recognized leading git selector from optional review instructions.
+
+    Unknown text remains free-form instructions for backward compatibility.
+    """
+    text = (user_prompt or "").strip()
+    if not text:
+        return None, ""
+    parts = text.split(None, 2)
+    selector = parts[0]
+    if selector == "uncommitted":
+        return GitReviewTarget(selector), text[len(selector):].strip()
+    if selector not in ("base", "commit"):
+        return None, text
+    if len(parts) < 2:
+        raise ValueError(_REVIEW_TARGET_USAGE)
+    return GitReviewTarget(selector, parts[1]), parts[2].strip() if len(parts) > 2 else ""
+
+
+def _git_error(detail: str) -> ValueError:
+    first_line = (detail or "").strip().splitlines()[:1]
+    cleaned = " ".join((first_line[0] if first_line else "git command failed").split())
+    return ValueError(f"Unable to prepare git review: {cleaned[:_GIT_ERROR_CHAR_CAP]}")
+
+
+def _run_git(args: List[str], cwd: Path) -> str:
+    """Run git without a shell and decode output strictly for reviewer context."""
+    command = ["git", "--no-pager", "-c", "core.quotepath=true", *args]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError:
+        raise _git_error("git executable was not found") from None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _git_error(str(exc)) from None
+    stdout = completed.stdout.decode("utf-8", errors="replace")
+    stderr = completed.stderr.decode("utf-8", errors="replace")
+    if completed.returncode != 0:
+        raise _git_error(stderr or stdout)
+    return stdout
+
+
+def _resolve_commit(ref: str, cwd: Path) -> str:
+    resolved = _run_git(
+        ["rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}"], cwd,
+    ).strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", resolved):
+        raise _git_error(f"invalid revision {ref!r}")
+    return resolved
+
+
+def _bounded_diff(diff: str) -> str:
+    if len(diff) <= GIT_DIFF_CHAR_CAP:
+        return diff
+    marker = f"\n[... git diff truncated at {GIT_DIFF_CHAR_CAP} characters ...]"
+    return diff[:max(0, GIT_DIFF_CHAR_CAP - len(marker))] + marker
+
+
+def collect_git_review_context(target: GitReviewTarget, cwd: os.PathLike[str] | str) -> Optional[str]:
+    """Return stat + bounded patch for ``target``, or ``None`` for a clean diff."""
+    workspace = Path(cwd)
+    if target.kind == "uncommitted":
+        label = "uncommitted"
+        stat_args = ["diff", "--stat", "--no-ext-diff", "HEAD", "--"]
+        diff_args = ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"]
+    elif target.kind == "base":
+        target_sha = _resolve_commit(target.value, workspace)
+        merge_base = _run_git(["merge-base", "HEAD", target_sha], workspace).strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", merge_base):
+            raise _git_error(f"could not find merge base for {target.value!r}")
+        label = f"base {target.value} (merge-base {merge_base})"
+        stat_args = ["diff", "--stat", "--no-ext-diff", merge_base, "HEAD", "--"]
+        diff_args = ["diff", "--no-ext-diff", "--no-textconv", merge_base, "HEAD", "--"]
+    elif target.kind == "commit":
+        if not re.fullmatch(r"[0-9a-fA-F]{4,64}", target.value):
+            raise _git_error(f"invalid commit SHA {target.value!r}")
+        commit_sha = _resolve_commit(target.value, workspace)
+        label = f"commit {target.value} ({commit_sha})"
+        stat_args = ["show", "--stat", "--format=fuller", commit_sha, "--"]
+        diff_args = ["show", "--format=fuller", "--patch", "--no-ext-diff", "--no-textconv", commit_sha, "--"]
+    else:
+        raise _git_error(f"unsupported target {target.kind!r}")
+
+    stat = _run_git(stat_args, workspace).strip()
+    diff = _bounded_diff(_run_git(diff_args, workspace))
+    if not diff.strip():
+        return None
+    return (
+        f"Git diff target: {label}\n\n"
+        f"Diff stat:\n{stat or '(no stat output)'}\n\n"
+        f"Full diff (bounded to {GIT_DIFF_CHAR_CAP} characters):\n{diff}"
+    )
+
+
+def _review_workspace(selected_cwd: Optional[os.PathLike[str] | str] = None) -> Path:
+    """The TUI/Desktop session cwd when given, else the agent's working directory — the same resolver the
+    terminal tool uses (scope-aware TERMINAL_CWD, then launch dir), so the reviewed diff is the tree the
+    agent actually edited."""
+    if selected_cwd:
+        path = Path(selected_cwd).expanduser()
+        if path.is_dir():
+            return path.resolve()
+    from agent.runtime_cwd import resolve_agent_cwd
+    path = resolve_agent_cwd().resolve()
+    if not path.is_dir():
+        raise _git_error("working directory is unavailable")
+    return path
+
+
 def collect_parent_loaded_skills(parent_agent, messages: List[Dict[str, Any]], limit: int = 8) -> List[str]:
     """Skills the parent was operating under: launch-preloaded (marker in ``ephemeral_system_prompt``)
     first, then ``skill_view`` loads from history, deduped, capped at ``limit`` (a reviewer told to load 30
@@ -96,7 +249,12 @@ def collect_parent_loaded_skills(parent_agent, messages: List[Dict[str, Any]], l
     return names[:limit]
 
 
-def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loaded_skills: Optional[List[str]] = None) -> tuple:
+def build_review_task(
+    snapshot: List[Dict[str, str]],
+    user_prompt: str = "",
+    loaded_skills: Optional[List[str]] = None,
+    git_context: str = "",
+) -> tuple:
     """Compose a viewer-friendly goal and the complete reviewer briefing."""
     focus = " ".join(user_prompt.split())
     goal = f"Review: {focus}" if focus else "Review recent work"
@@ -115,6 +273,8 @@ def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loa
     for message in snapshot:
         lines += [f"[{'USER' if message['role'] == 'user' else 'PRIMARY AGENT'}]", message["text"], ""]
     lines.append("--- End of conversation excerpt ---")
+    if git_context:
+        lines += ["", "--- Git changes to review ---", git_context, "--- End of git changes ---"]
     if loaded_skills:
         skill_list = ", ".join(loaded_skills)
         lines += [
@@ -136,17 +296,18 @@ def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loa
     return goal, "\n".join(lines)
 
 
-def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
-    """``auxiliary.review`` as a delegation-credentials dict, or None when unconfigured (provider auto/empty
-    and no model/base_url) so the reviewer inherits the parent's credentials."""
+def _load_review_config() -> Dict[str, Any]:
+    """Return one snapshot of ``auxiliary.review`` or an empty mapping."""
     try:
         from hermes_cli.config import load_config_readonly
         review = (load_config_readonly().get("auxiliary") or {}).get("review") or {}
     except Exception:
-        return None
-    if not isinstance(review, dict):
-        return None
+        return {}
+    return review if isinstance(review, dict) else {}
 
+
+def _review_credentials_cfg(review: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Build delegation credentials while keeping reasoning independent of routing."""
     cfg = {k: str(review.get(k) or "").strip() for k in ("provider", "model", "base_url", "api_key", "api_mode")}
     if cfg["provider"].lower() == "auto":
         cfg["provider"] = ""
@@ -155,20 +316,43 @@ def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
     return cfg
 
 
-def start_review(parent_agent, messages: List[Dict[str, Any]], user_prompt: str = "") -> Dict[str, Any]:
+def start_review(
+    parent_agent,
+    messages: List[Dict[str, Any]],
+    user_prompt: str = "",
+    *,
+    cwd: Optional[os.PathLike[str] | str] = None,
+) -> Dict[str, Any]:
     """Dispatch the reviewer subagent; returns the parsed ``delegate_task`` dict (``status: "dispatched"`` +
     ``delegation_id``, or the synchronous result on channels without async completions). Raises ValueError
     when there is nothing to review or the dispatch is rejected/errored."""
+    depth_effort, user_prompt = parse_review_depth(user_prompt)
+    target, review_instructions = parse_review_request(user_prompt)
     if parent_agent is None:
         raise ValueError("No active agent — send a message first.")
     snapshot = snapshot_recent_messages(messages)
     if not snapshot:
         raise ValueError("Nothing to review yet — the conversation is empty.")
-    goal, context = build_review_task(snapshot, user_prompt, collect_parent_loaded_skills(parent_agent, messages))
-    credentials_cfg = _load_review_credentials_cfg()
+    git_context = ""
+    if target is not None:
+        git_context = collect_git_review_context(target, _review_workspace(cwd)) or ""
+        if not git_context:
+            raise ValueError("Nothing to review — the selected git diff is clean.")
+    goal, context = build_review_task(
+        snapshot,
+        review_instructions,
+        collect_parent_loaded_skills(parent_agent, messages),
+        git_context,
+    )
+    review_cfg = _load_review_config()
+    credentials_cfg = _review_credentials_cfg(review_cfg)
 
     from tools.delegate_tool import delegate_task
-    raw = delegate_task(goal=goal, context=context, background=True, parent_agent=parent_agent, credentials_cfg=credentials_cfg)
+    raw = delegate_task(
+        goal=goal, context=context, background=True, parent_agent=parent_agent,
+        credentials_cfg=credentials_cfg,
+        override_reasoning_effort=depth_effort or review_cfg.get("reasoning_effort"),
+    )
     try:
         result = json.loads(raw)
     except Exception:

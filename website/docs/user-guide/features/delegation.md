@@ -298,7 +298,22 @@ Note that the pin is global: `delegate_task` has no per-task model parameter, so
 ```
 /review                       # review whatever the last 10 messages presented
 /review focus on security     # add extra instructions for the reviewer
+/review uncommitted           # review the working tree (staged + unstaged) against HEAD
+/review base main             # review everything on this branch since its merge-base with main
+/review commit abc1234        # review one commit
+/review --deep base main      # depth flag: --quick (low effort) or --deep (high effort), this run only
 ```
+
+**Git targets.** A leading `uncommitted`, `base <branch>` or `commit <sha>` selector makes the reviewer's
+briefing carry the diff stat and the full patch (bounded to 100k characters, with an explicit truncation
+marker) in addition to the conversation excerpt, so the review covers your whole set of changes rather
+than only the last edit the conversation mentioned. The diff is taken from the session's workspace with
+`--no-ext-diff --no-textconv`, so repository-configured diff drivers never run. A clean target reports
+"Nothing to review" and spawns no reviewer. Any other leading text stays free-form instructions.
+
+**Depth.** `--quick` and `--deep` set the reviewer's reasoning effort for that invocation (`low` / `high`)
+and beat the configured `auxiliary.review.reasoning_effort`; the flag itself is stripped before the
+instructions reach the reviewer.
 
 What happens:
 
@@ -320,9 +335,16 @@ auxiliary:
   review:
     provider: openrouter               # or nous, anthropic, a direct base_url, ...
     model: anthropic/claude-opus-4.6   # a strong reviewer model
+    reasoning_effort: medium           # optional review-only thinking level
 ```
 
 Credentials resolve exactly like a `delegation.provider` pin (full runtime-provider bundle: base_url, api key, api_mode). `provider: auto` with an empty `model` means "inherit the main agent's model" — the default.
+
+`auxiliary.review.reasoning_effort` accepts `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`, and `ultra`. It overrides
+`delegation.reasoning_effort` for `/review` only; otherwise the reviewer falls
+back to the delegation setting and then the parent agent's level. A per-invocation
+`/review --quick` or `/review --deep` flag beats all of these.
 
 `/review` is deliberately separate from `/refine`: `/refine` reviews the conversation to update memory and skills, `/review` reviews the *work product* the conversation created.
 

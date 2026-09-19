@@ -10,12 +10,15 @@ import pytest
 @pytest.fixture
 def runtime(monkeypatch):
     from tui_gateway import server
-    from tools import async_delegation, delegate_tool_registry
+    from tools import async_delegation, delegate_tool_registry, delegate_tool_progress
 
     transport = SimpleNamespace(write=lambda frame: True)
     owner = {"session_key": "parent", "history": [], "transport": transport}
     monkeypatch.setattr(server, "_sessions", {"ui-owner": owner})
-    monkeypatch.setattr(delegate_tool_registry, "_active_subagents", {})
+    live = {}
+    monkeypatch.setattr(delegate_tool_registry, "_active_subagents", live)
+    # Progress imports the registry dict by identity; all readers must share the fixture.
+    monkeypatch.setattr(delegate_tool_progress, "_active_subagents", live)
     monkeypatch.setattr(delegate_tool_registry, "_recent_subagents", {})
     monkeypatch.setattr(async_delegation, "_records", {})
 
@@ -24,6 +27,84 @@ def runtime(monkeypatch):
                                 "params": {"session_id": "ui-owner", **params}}, transport=via)
 
     return server, owner, transport, call
+
+
+def test_tail_images_use_real_writer_dispatch_and_child_session(runtime, tmp_path, monkeypatch):
+    from tools import delegate_tool, terminal_tool
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _unregister_subagent
+    from tools.delegation_live_log import LiveTranscriptWriter
+
+    server, owner, transport, call = runtime
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test",
+                            session_id="durable-child", _current_task_id="child-task")
+    monkeypatch.setattr(delegate_tool, "_build_child_preserving_parent_tools", lambda **kw: child)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {"child-task": str(tmp_path)})
+    writer = LiveTranscriptWriter("rpc-images", 0, "goal")
+    children, error = delegate_tool._build_children(
+        [{"goal": "goal"}], [None],
+        {"model": "test", "provider": None, "base_url": None, "api_key": None, "api_mode": None},
+        top_role="leaf", max_iterations=3, parent_agent=None, routing_cfg={},
+        live_deleg_id="rpc-images", live_writers=[writer])
+    assert error is None and children[0][2] is child
+    _register_child(child, None, "goal", owner_session_id="ui-owner",
+                    owner_transport=transport, owner_session_record=owner)
+    try:
+        assert "images" not in call("subagent.tail", subagent_id="child")["result"]
+        child.tool_progress_callback("tool.completed", "terminal", result="plain text " * 10000)
+        assert "images" not in call("subagent.tail", subagent_id="child")["result"]
+        image = tmp_path / "render.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        child.tool_progress_callback("tool.completed", "image_generate", result={"image_path": "render.png"})
+        writer.event("tool", "x" * 20000)
+        tail = call("subagent.tail", subagent_id="child")["result"]
+        assert tail["images"] == [str(image)] and tail["image_session_id"] == "durable-child"
+        # The earlier oversized text result hit the bounded metadata scanner.
+        assert tail["truncated"] and tail["images_truncated"]
+        assert "render.png" not in tail["text"]
+        server._sessions["foreign"] = {**owner}
+        assert "images" not in call("subagent.tail", session_id="foreign", subagent_id="child")["result"]
+        _unregister_subagent("child")
+        assert "images" not in call("subagent.tail", subagent_id="child")["result"]
+    finally:
+        _unregister_subagent("child")
+
+
+@pytest.mark.parametrize("race", ["finish", "replace-child", "replace-owner", "transport"])
+def test_tail_rechecks_authority_after_image_snapshot(runtime, tmp_path, monkeypatch, race):
+    from tools import delegate_tool_registry as registry
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegation_live_log import LiveTranscriptWriter
+
+    server, owner, transport, call = runtime
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test", session_id="durable")
+    writer = LiveTranscriptWriter("racing", 0, "goal")
+    writer.bind_child(child)
+    child._live_transcript_path = str(writer.path)
+    child._live_transcript_writer = writer
+    writer.observe("tool.completed", "tool", result={"image_path": str(tmp_path / "private.png")})
+    _register_child(child, None, "goal", owner_session_id="ui-owner",
+                    owner_transport=transport, owner_session_record=owner)
+    original = writer.image_snapshot
+
+    def raced_snapshot():
+        result = original()
+        if race == "finish":
+            registry._unregister_subagent("child")
+        elif race == "replace-child":
+            _register_child(SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test"),
+                            None, "replacement", owner_session_id="ui-owner",
+                            owner_transport=transport, owner_session_record=owner)
+        elif race == "replace-owner":
+            server._sessions["ui-owner"] = {**owner}
+        else:
+            owner["transport"] = SimpleNamespace(write=lambda frame: True)
+        return result
+
+    monkeypatch.setattr(writer, "image_snapshot", raced_snapshot)
+    result = call("subagent.tail", subagent_id="child")
+    assert "error" in result or result["result"] == {
+        "subagent_id": "child", "available": False, "text": "", "truncated": False}
 
 
 def test_snapshot_projects_only_this_sessions_runtime_records(runtime):

@@ -1699,6 +1699,7 @@ export const ru = defineLocale({
   },
   agents: {
     extendedTranscript: 'Подробный журнал',
+    imagePreviewsTruncated: 'Некоторые миниатюры изображений пропущены.',
     transcriptTruncated: 'Последние 16 КиБ',
     transcriptUnavailable: 'Текущий журнал недоступен',
 
@@ -3890,6 +3891,11 @@ export const ru = defineLocale({
     restartToSaveImages: 'Перезапустите Hermes Desktop, чтобы сохранять изображения',
     imageDownloadFailed: 'Загрузка изображения не удалась',
     openImage: 'Открыть изображение',
+    imageGallery: 'Галерея изображений',
+    previousImage: 'Предыдущее изображение',
+    nextImage: 'Следующее изображение',
+    imagePosition: (current, total) => `Изображение ${current} из ${total}`,
+    thumbnailRange: (start, end, total) => `Миниатюры ${start}–${end} из ${total}`,
     downloadImage: 'Скачать изображение',
     savingImage: 'Сохранение изображения',
     imagePreviewFailed: 'Предпросмотр изображения не удался',

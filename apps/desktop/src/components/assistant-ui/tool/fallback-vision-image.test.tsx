@@ -3,8 +3,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $connection } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId, $sessions, setSessionOwnerHint } from '@/store/session'
 import { $toolDisclosureStates } from '@/store/tool-view'
+
+import { stubThreadEnvironment } from '../test-utils'
+
+stubThreadEnvironment()
 
 vi.mock('@assistant-ui/react', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -16,6 +20,7 @@ const { ToolFallback } = await import('./fallback')
 
 const IMAGE_PATH = '/tmp/analyzed image.png'
 const DATA_URL = 'data:image/png;base64,YW5hbHl6ZWQ='
+const STORED_SESSION = 'vision-session'
 
 // The native-vision fast path hands the desktop a text-only receipt: the image
 // is only known from the call's `image_url` argument.
@@ -50,12 +55,20 @@ beforeEach(() => {
     configurable: true,
     value: { api, readFileDataUrl }
   })
+  // The reader is owner-scoped by design: it resolves the file against the
+  // session that produced the call instead of guessing a host.
+  $activeSessionId.set('runtime-vision-session')
+  $selectedStoredSessionId.set(STORED_SESSION)
+  setSessionOwnerHint(STORED_SESSION, { connectionId: 'local', profile: 'default' })
 })
 
 afterEach(() => {
   cleanup()
   $connection.set(null)
   $toolDisclosureStates.set({})
+  $activeSessionId.set(null)
+  $selectedStoredSessionId.set(null)
+  $sessions.set([])
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: originalDesktop
@@ -67,44 +80,32 @@ describe('vision_analyze activity image', () => {
     $connection.set({ mode: 'local' } as never)
     renderVisionRow()
 
-    const toggle = screen.getByRole('button', { expanded: false })
-
-    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole('button', { name: /open image/i }))
 
     const img = await screen.findByRole('img')
 
     await waitFor(() => expect(img.getAttribute('src')).toBe(DATA_URL))
-    expect(readFileDataUrl).toHaveBeenCalledWith(IMAGE_PATH)
-    expect(api).not.toHaveBeenCalled()
-
-    // "cannot be expanded": the inline preview opens the shared lightbox.
-    fireEvent.click(img)
-    expect(await screen.findByRole('dialog')).toBeTruthy()
-  })
-
-  it('reads a remote-gateway image through the profile-scoped fs API, never the local reader', async () => {
-    $connection.set({ mode: 'remote', profile: 'wsl-work' } as never)
-    renderVisionRow()
-
-    fireEvent.click(screen.getByRole('button', { expanded: false }))
-
-    const img = await screen.findByRole('img')
-
-    await waitFor(() => expect(img.getAttribute('src')).toBe(DATA_URL))
+    // A local session's file is still read through its own owner route, never
+    // the unscoped local reader: the origin decides, not the connection mode.
     expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({ path: `/api/fs/read-data-url?path=${encodeURIComponent(IMAGE_PATH)}`, profile: 'wsl-work' })
+      expect.objectContaining({
+        connectionId: 'local',
+        profile: 'default',
+        path: `/api/fs/read-data-url?path=${encodeURIComponent(IMAGE_PATH)}&session_id=${STORED_SESSION}`
+      })
     )
     expect(readFileDataUrl).not.toHaveBeenCalled()
   })
 
   it('says so when the image cannot be read instead of silently dropping the preview', async () => {
     $connection.set({ mode: 'local' } as never)
-    readFileDataUrl.mockRejectedValueOnce(new Error('ENOENT'))
+    api.mockRejectedValueOnce(new Error('ENOENT'))
     renderVisionRow()
 
-    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    fireEvent.click(screen.getByRole('button', { name: /open image/i }))
 
-    expect(await screen.findByText(/Couldn't load/)).toBeTruthy()
+    expect(await screen.findByText('Preview unavailable')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
     expect(screen.queryByRole('img')).toBeNull()
   })
 })

@@ -2038,6 +2038,7 @@ export const zh = defineLocale({
   },
   agents: {
     extendedTranscript: '扩展记录',
+    imagePreviewsTruncated: '部分图片预览已省略。',
     transcriptTruncated: '显示最新 16 KiB',
     transcriptUnavailable: '实时记录不可用',
 
@@ -4353,6 +4354,11 @@ export const zh = defineLocale({
     restartToSaveImages: '重启 Hermes 桌面版以保存图片',
     imageDownloadFailed: '图片下载失败',
     openImage: '打开图片',
+    imageGallery: '图片库',
+    previousImage: '上一张图片',
+    nextImage: '下一张图片',
+    imagePosition: (current, total) => `第 ${current} 张，共 ${total} 张`,
+    thumbnailRange: (start, end, total) => `预览 ${start}–${end} / ${total}`,
     downloadImage: '下载图片',
     savingImage: '正在保存图片',
     imagePreviewFailed: '图片预览失败',

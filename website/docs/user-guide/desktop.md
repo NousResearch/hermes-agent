@@ -42,7 +42,11 @@ Sidebar selection follows the focused chat pane. Opening or focusing a session t
 
 The center of the app. You get:
 
-- **Streaming responses** with live tool activity and structured tool-call summaries as the agent works. When a tool works on an image (for example `vision_analyze` on a file under the backend's filesystem), expand its activity row to see the image and click it to open it full-size; on a remote connection the image is fetched from the gateway, not from the machine running the app.
+- **Streaming responses** with live tool activity and structured tool-call summaries as the agent works.
+- **Inspect images while the agent works** — image-bearing tool calls stay reachable rather than disappearing into the activity ticker. Click **Open image** to inspect a screenshot or visual input, click the image to enlarge it, or choose **Open preview** to keep it beside the chat while typing a correction.
+  - Multiple images use a numbered gallery with five thumbnails per page and a visible preview-range label. Previous/next buttons, arrow keys and Home/End work while the gallery or enlarged image has focus, without intercepting the composer. Close the enlarged image with its visible close button or Escape.
+  - Native image results show the supplied pixels, including crops. Local paths are read through the originating session and gateway — on a remote connection the image is fetched from the gateway, not from the machine running the app — with at most three reads in flight across galleries. Only the current thumbnail page is cached; explicit image arrays are not silently truncated.
+  - Tool completion refreshes provisional local-file pixels without resetting the selected image. Reopening retries failed loads; **Retry** targets the selected image. Each image can have its own transient side-preview tab without persisting its image bytes. Text steering uses the existing composer behavior; image attachments remain queued for the next turn.
 - **Markdown line breaks** follow Markdown semantics: two trailing spaces create a hard line break; an ordinary newline stays a soft break. Media and preview extraction preserve text outside removed attachment spans, including first-line code indentation and unfinished fenced-code spacing. Code display and Copy preserve leading blank lines, trailing spaces, and terminal blank lines from the Markdown parser.
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
@@ -115,6 +119,10 @@ Explore and preview the working directory without leaving the app — useful for
 ### Artifacts
 
 When connected to a remote gateway, opening a file artifact downloads it through that gateway, using the artifact’s originating profile and session. Relative paths resolve against the session’s saved working directory; home-relative paths use the gateway’s home, never the Desktop machine’s home. Windows-style relative paths are recognized alongside forward-slash paths, and file URIs retain drive and network-share information for the gateway to interpret. Missing sessions or working directories produce an error rather than selecting a different local file.
+
+**Subagent images:** Expand the subagent status group and select a running child to see its recent image previews alongside its live log. The same gallery, zoom, download and side-preview controls are available there. You can steer the child without closing a pinned image. A new image event refreshes an overwritten file even when its path has not changed; text-only updates do not reload images.
+
+This requires both the updated Desktop and backend. Older backends continue to show the text log. Previews are bounded to recent references and can disappear when the child leaves the live registry; pin an image to keep its already-loaded pixels open. Unsupported or oversized images are omitted with a notice rather than guessed from arbitrary log text. See the [subagent image contract](../developer-guide/desktop-subagent-images.md) for supported sources and limits.
 
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
 

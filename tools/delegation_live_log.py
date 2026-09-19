@@ -93,6 +93,7 @@ class LiveTranscriptWriter:
         self._stream_buf: List[str] = []
         self._stream_len = 0
         self.path: Optional[Path] = None
+        self._image_refs = None
         with _best_effort(f"init ({delegation_id} task {task_index})"):
             goal_line = _one_line(goal, _KICKOFF_MAX)
             d = (root if root is not None else live_transcript_root()) / delegation_id
@@ -108,6 +109,13 @@ class LiveTranscriptWriter:
             self.path, self._ok = path, True
             self.event("user", "kickoff: " + goal_line
                        + (f" | context: {_one_line(context, _KICKOFF_MAX)}" if context else ""))
+
+    def bind_child(self, child) -> None:
+        from tools.delegation_image_refs import LiveImageRefs
+        self._image_refs = LiveImageRefs(child)
+
+    def image_snapshot(self) -> Dict[str, Any]:
+        return self._image_refs.snapshot() if self._image_refs is not None else {}
 
     def event(self, role: str, text: str) -> None:
         """Append one ``HH:MM:SS role | text`` line. Single choke point: every typed
@@ -133,8 +141,9 @@ class LiveTranscriptWriter:
         self._line("think", text, _THINKING_MAX)
 
     def tool_start(self, name: str, args_preview: Any = None) -> None:
+        from tools.delegation_image_refs import log_preview
         self.flush_stream()
-        self.event("tool", f"-> {name or '?'}({_one_line(args_preview, _ARGS_MAX)})")
+        self.event("tool", f"-> {name or '?'}({_one_line(log_preview(args_preview), _ARGS_MAX)})")
 
     def tool_result(self, name: str, result: Any = None,
                     duration: Any = None, is_error: bool = False) -> None:
@@ -143,7 +152,8 @@ class LiveTranscriptWriter:
             dur = "" if duration is None else f" {float(duration):.1f}s"
         except (TypeError, ValueError):
             dur = ""
-        self.event("result", f"{name or '?'} {status}{dur}: {_one_line(result, _RESULT_MAX)}")
+        from tools.delegation_image_refs import log_preview
+        self.event("result", f"{name or '?'} {status}{dur}: {_one_line(log_preview(result), _RESULT_MAX)}")
 
     def marker(self, text: str) -> None:
         """Lifecycle marker: start / final / error / interrupt / budget."""
@@ -190,6 +200,10 @@ class LiveTranscriptWriter:
                 args: Any = None, **kwargs: Any) -> None:
         """Map a child tool_progress_callback event onto transcript lines.
         Unknown events are ignored. Never raises (event() swallows I/O)."""
+        if self._image_refs is not None and event_type in ("tool.started", "tool.completed"):
+            with _best_effort("image capture"):
+                self._image_refs.capture(tool_name, args if event_type == "tool.started" else kwargs.get("result"),
+                                         started=event_type == "tool.started")
         handler = self._OBSERVERS.get(str(event_type or ""))
         if handler is not None:
             handler(self, tool_name, preview, args, kwargs)

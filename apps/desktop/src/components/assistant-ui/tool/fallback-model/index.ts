@@ -2,9 +2,9 @@ import { stripAnsi } from '@hermes/shared/ansi'
 
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
-import { isFileMediaPath, mediaKind } from '@/lib/media'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
+import { toolImageSources } from '@/lib/tool-images'
 import { CONNECTION_CARD_KEY, isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 import { envelopeErrorText, toolResultRecord } from '@/lib/tool-result-metadata'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
@@ -773,24 +773,6 @@ function toolPreviewTarget(toolName: string, args: Record<string, unknown>, resu
   return ''
 }
 
-function toolImageUrl(args: Record<string, unknown>, result: Record<string, unknown>): string {
-  const candidate =
-    firstStringField(result, ['image_url', 'url', 'path', 'image_path']) ||
-    firstStringField(args, ['image_url', 'url', 'path'])
-
-  if (!candidate) {
-    return ''
-  }
-
-  // Filesystem images are resolved by the activity renderer through the
-  // authenticated media pipeline before they reach an <img>. This matters for
-  // vision_analyze, whose input commonly lives on the local or remote gateway.
-  const isDataImage = candidate.toLowerCase().startsWith('data:image/')
-  const isRemoteImage = /^https?:\/\//i.test(candidate) && /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(candidate)
-  const isLocalImage = isFileMediaPath(candidate) && mediaKind(candidate) === 'image'
-
-  return isDataImage || isRemoteImage || isLocalImage ? candidate : ''
-}
 
 export function stripInlineDiffChrome(value: string): string {
   return value
@@ -1510,7 +1492,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     detailLabel: error ? 'Error details' : toolDetailLabel(part.toolName),
     durationLabel: durationLabel(resultRecord),
     icon: meta.icon,
-    imageUrl: toolImageUrl(argsRecord, resultRecord),
+    imageSources: toolImageSources(argsRecord, resultRecord),
     inlineDiff,
     previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
     rendersAnsi: rendersAnsi || undefined,

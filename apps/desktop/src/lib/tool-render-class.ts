@@ -8,6 +8,9 @@
  * rather than inside either one.
  */
 
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { toolImageSources } from '@/lib/tool-images'
+
 const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
 
 /** Renders a diff — the deliverable of the turn, and the one card whose cost scales. */
@@ -33,10 +36,11 @@ const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate'])
 // Name the run splitter uses for a manage_connections part it has classified as a card.
 export const CONNECTION_CARD_KEY = 'manage_connections:card'
 
-export function isCardTool(toolName: string): boolean {
+export function isCardTool(toolName: string, args?: unknown, result?: unknown): boolean {
   return (
     CARD_TOOL_NAMES.has(toolName) ||
     toolName === CONNECTION_CARD_KEY ||
+    toolImageSources(args, result).length > 0 ||
     isFileEditTool(toolName) ||
     toolName === 'manage_connections'
   )

@@ -29457,6 +29457,29 @@
             "default": false,
             "title": "Truncated",
             "type": "boolean"
+          },
+          "images": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Images",
+            "type": "array"
+          },
+          "image_session_id": {
+            "default": "",
+            "title": "Image Session Id",
+            "type": "string"
+          },
+          "images_truncated": {
+            "default": false,
+            "title": "Images Truncated",
+            "type": "boolean"
+          },
+          "image_revision": {
+            "default": 0,
+            "title": "Image Revision",
+            "type": "integer"
           }
         },
         "required": [

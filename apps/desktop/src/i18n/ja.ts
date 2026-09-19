@@ -1534,6 +1534,7 @@ export const ja = defineLocale({
   },
   agents: {
     extendedTranscript: '詳細な実行ログ',
+    imagePreviewsTruncated: '一部の画像プレビューは省略されました。',
     transcriptTruncated: '最新の 16 KiB を表示',
     transcriptUnavailable: 'ライブログは利用できません',
 
@@ -3629,6 +3630,11 @@ export const ja = defineLocale({
     restartToSaveImages: '画像を保存するには Hermes Desktop を再起動してください',
     imageDownloadFailed: '画像のダウンロードに失敗しました',
     openImage: '画像を開く',
+    imageGallery: '画像ギャラリー',
+    previousImage: '前の画像',
+    nextImage: '次の画像',
+    imagePosition: (current, total) => `画像 ${current} / ${total}`,
+    thumbnailRange: (start, end, total) => `プレビュー ${start}–${end} / ${total}`,
     downloadImage: '画像をダウンロード',
     savingImage: '画像を保存中',
     imagePreviewFailed: '画像のプレビューに失敗しました',

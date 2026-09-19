@@ -20,7 +20,7 @@ def _owned_subagent_records(session_id, transport, owner):
     from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _subagent_transport_matches
 
     with _active_subagents_lock:
-        return [dict(r) for r in _active_subagents.values()
+        return [r for r in _active_subagents.values()
                 if r.get("owner_session_id") == session_id
                 and _subagent_transport_matches(r, transport)
                 and r.get("owner_session_record") is owner]
@@ -75,18 +75,37 @@ def _(rid, params):
     result = {"subagent_id": subagent_id, "available": False, "text": "", "truncated": False}
     record = next((r for r in _owned_subagent_records(session_id, transport, owner)
                    if r.get("subagent_id") == subagent_id), None)
-    path = getattr(record.get("agent"), "_live_transcript_path", None) if record else None
+    agent = record.get("agent") if record else None
+    path = getattr(agent, "_live_transcript_path", None)
     if not path:
         return _ok(rid, result)
+    snapshot = dict(result)
     try:
         with open(path, "rb") as stream:
             size = stream.seek(0, 2)
             stream.seek(max(0, size - _SUBAGENT_TAIL_BYTES))
             text = stream.read(_SUBAGENT_TAIL_BYTES).decode("utf-8", errors="ignore")
+        snapshot.update(available=True, text=text, truncated=size > _SUBAGENT_TAIL_BYTES)
     except OSError:
-        # Creation/cleanup races are normal while a child starts or ends.
+        # Images remain useful if just the text log has disappeared.
+        logger.debug("subagent tail transcript unavailable", exc_info=True)
+    from tools.delegation_live_log import LiveTranscriptWriter
+    writer = getattr(agent, "_live_transcript_writer", None)
+    image_session_id = getattr(agent, "session_id", None)
+    if isinstance(writer, LiveTranscriptWriter) and isinstance(image_session_id, str) and image_session_id:
+        images = writer.image_snapshot()
+        if images.get("images") or images.get("images_truncated"):
+            snapshot.update(images, image_session_id=image_session_id)
+    # File/cache reads may race completion, public-id reuse, or transport reattach.
+    # Revalidate both identities; never authorize old pixels using a replacement child.
+    current_transport, current_owner = _current_session_steer_authority(session_id)
+    if current_transport is not transport or current_owner is not owner:
         return _ok(rid, result)
-    return _ok(rid, {**result, "available": True, "text": text, "truncated": size > _SUBAGENT_TAIL_BYTES})
+    if not any(r is record for r in _owned_subagent_records(session_id, transport, owner)):
+        return _ok(rid, result)
+    if record.get("agent") is not agent or getattr(agent, "session_id", None) != image_session_id:
+        return _ok(rid, result)
+    return _ok(rid, snapshot)
 
 
 def register(server):

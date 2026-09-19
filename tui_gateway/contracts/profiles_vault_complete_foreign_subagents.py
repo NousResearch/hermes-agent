@@ -615,6 +615,10 @@ class SubagentTailResult(Result):
     available: bool = False
     text: str = ""
     truncated: bool = False
+    images: list[str] = []
+    image_session_id: str = ""
+    images_truncated: bool = False
+    image_revision: int = 0
 
 
 method("subagent.tail", params=SubagentIdParams, result=SubagentTailResult,

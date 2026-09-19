@@ -1546,6 +1546,7 @@ export const zhHant = defineLocale({
   },
   agents: {
     extendedTranscript: '完整記錄尾端',
+    imagePreviewsTruncated: '部分圖片預覽已省略。',
     transcriptTruncated: '顯示最新 16 KiB',
     transcriptUnavailable: '即時記錄無法使用',
 
@@ -3550,6 +3551,11 @@ export const zhHant = defineLocale({
     restartToSaveImages: '重新啟動 Hermes Desktop 以儲存圖片',
     imageDownloadFailed: '圖片下載失敗',
     openImage: '開啟圖片',
+    imageGallery: '圖片庫',
+    previousImage: '上一張圖片',
+    nextImage: '下一張圖片',
+    imagePosition: (current, total) => `第 ${current} 張，共 ${total} 張`,
+    thumbnailRange: (start, end, total) => `預覽 ${start}–${end} / ${total}`,
     downloadImage: '下載圖片',
     savingImage: '正在儲存圖片',
     imagePreviewFailed: '圖片預覽失敗',

@@ -1791,6 +1791,10 @@ export interface SubagentTailResult {
   available?: boolean
   text?: string
   truncated?: boolean
+  images?: string[]
+  image_session_id?: string
+  images_truncated?: boolean
+  image_revision?: number
 }
 /** ``methods_projects._projects_payload``: every project (archived included) + the active id. */
 export interface ProjectsPayload {

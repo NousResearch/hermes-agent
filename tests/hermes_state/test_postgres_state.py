@@ -282,6 +282,47 @@ def test_gateway_owner_probe_ignores_malformed_metadata(state_db):
     assert not state_db.has_gateway_input_owner("accepted-input", "owner-2")
 
 
+def test_display_history_filters_model_only_rows_before_paging(state_db):
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+
+    state_db.create_session("display-page", "cli")
+    for content, metadata in (
+        ("First question", None),
+        ("Model context", {MODEL_ONLY_DISPLAY_METADATA_KEY: True}),
+        ("Visible answer", {MODEL_ONLY_DISPLAY_METADATA_KEY: False}),
+        ("Next question", None),
+    ):
+        state_db.append_message("display-page", "user", content, display_metadata=metadata)
+
+    def displayed(**kwargs):
+        return [row["content"] for row in state_db.get_messages(
+            "display-page", include_compacted=True, **kwargs
+        )]
+
+    assert displayed() == ["First question", "Visible answer", "Next question"]
+    assert displayed(offset=1) == ["Visible answer", "Next question"]
+    assert displayed(limit=1, offset=1) == ["Visible answer"]
+    assert displayed(limit=2, latest=True) == ["Visible answer", "Next question"]
+    assert "Model context" in [row["content"] for row in state_db.get_messages("display-page")]
+
+
+def test_verified_delete_rejects_changed_display_history(state_db):
+    state_db.create_session("verified-delete", "cli")
+    state_db.append_message("verified-delete", "user", "Exported question")
+    snapshot = state_db.get_messages("verified-delete", include_compacted=True)
+    state_db.append_message("verified-delete", "assistant", "New answer")
+
+    assert not state_db.delete_session(
+        "verified-delete", expected_display_messages={"verified-delete": snapshot}
+    )
+    assert state_db.get_session("verified-delete") is not None
+    snapshot = state_db.get_messages("verified-delete", include_compacted=True)
+    assert state_db.delete_session(
+        "verified-delete", expected_display_messages={"verified-delete": snapshot}
+    )
+    assert state_db.get_session("verified-delete") is None
+
+
 def test_gateway_routes_remain_isolated_by_scope(state_db):
     first = json.dumps({"session_id": "first"})
     second = json.dumps({"session_id": "second"})

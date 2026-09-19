@@ -50,6 +50,11 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 # (two default dispatch ticks).
 TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 
+# A stale local worker that survives termination must not renew its claim
+# forever. The gateway passes the configurable value; direct callers stay
+# bounded by this default.
+DEFAULT_RECLAIM_DEFER_MAX_ATTEMPTS = 3
+
 # ---------------------------------------------------------------------------
 # Respawn guard constants
 # ---------------------------------------------------------------------------
@@ -80,6 +85,12 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+# An operator can explicitly retire an already-linked PR/repository path. Keep
+# this deliberately structured so casual discussion of abandoning work cannot
+# disable duplicate-PR protection.
+_RESPAWN_GUARD_PR_ABANDONED_RE = re.compile(
+    r"\bkanban:\s*pr-(?:abandoned|superseded)\b", re.IGNORECASE,
+)
 
 
 @dataclass
@@ -102,6 +113,8 @@ class DispatchResult:
     reconciled_orphans: list[str] = field(default_factory=list)
     """``running`` cards requeued by :func:`reconcile_orphaned_running` (broken
     claim bookkeeping, dead/gone worker)."""
+    reconciled_state_divergence: list[str] = field(default_factory=list)
+    """Tasks whose lifecycle/run state was repaired before capacity calculation."""
     reaped_terminal_workers: list[str] = field(default_factory=list)
     """Task ids whose worker outlived its closed run and was terminated by
     :func:`reap_terminal_workers`."""
@@ -495,6 +508,61 @@ def _terminate_reclaimed_worker(
     return info
 
 
+def _kanban_worker_scope_name(task_id: str, run_id: int) -> str:
+    """The transient user-scope name minted for a Kanban worker run."""
+    return f"hermes-worker-kanban-{task_id}-run-{run_id}.scope"
+
+
+def _scope_descendant_summary(unit_name: str) -> Optional[dict[str, Any]]:
+    """Return bounded, non-secret process evidence for a live transient scope.
+
+    ``comm`` comes from ``/proc/<pid>/comm`` rather than command lines or the
+    environment, either of which can contain credentials. ``None`` means the
+    unit/cgroup could not be inspected; an empty summary means it has no
+    remaining processes.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import shutil
+        from tools.process_registry import systemd_user_bus_env
+
+        systemctl = shutil.which("systemctl")
+        if not systemctl:
+            return None
+        result = subprocess.run(
+            [systemctl, "--user", "show", unit_name, "--no-pager", "--property=ControlGroup", "--value"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=2,
+            stdin=subprocess.DEVNULL,
+            env=systemd_user_bus_env(),
+        )
+        cgroup = (result.stdout or "").strip()
+        if result.returncode != 0 or not cgroup or ".." in Path(cgroup).parts:
+            return None
+        root = Path("/sys/fs/cgroup").resolve()
+        cgroup_dir = (root / cgroup.lstrip("/")).resolve()
+        if root not in (cgroup_dir, *cgroup_dir.parents):
+            return None
+        pids = [
+            int(raw) for raw in (cgroup_dir / "cgroup.procs").read_text(encoding="utf-8").splitlines()
+            if raw.isdigit() and int(raw) > 0
+        ][:16]
+        processes = []
+        for pid in pids:
+            try:
+                comm = (Path("/proc") / str(pid) / "comm").read_text(encoding="utf-8").strip()[:80]
+            except OSError:
+                continue
+            processes.append({"pid": pid, "comm": comm})
+        return {"count": len(processes), "processes": processes}
+    except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
+        return None
+
+
 def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
     """End host-local workers that outlived their run (issue #111791) — a worker
     that called ``kanban_complete`` and then hung keeps its ``state.db`` sidecar
@@ -525,6 +593,80 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
     return reaped
 
 
+def reconcile_task_run_invariants(conn: sqlite3.Connection) -> list[str]:
+    """Repair task/run divergence before a dispatcher calculates capacity.
+
+    A non-running task cannot retain an open attempt. A running task can retain
+    exactly one open ``running`` attempt, and ``current_run_id`` must reference
+    it. Non-running rows retain their requested lifecycle state; a malformed
+    running row returns to ``ready`` because it has no trustworthy attempt.
+
+    The candidate scan is read-only. Each decision re-reads the task inside its
+    write transaction because lifecycle actions do not share the dispatch tick
+    lock and may complete a task between scan and repair.
+    """
+    candidate_ids = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM tasks WHERE (status = 'running' AND current_run_id IS NULL) "
+            "OR current_run_id IS NOT NULL "
+            "OR EXISTS (SELECT 1 FROM task_runs r "
+            "           WHERE r.task_id = tasks.id AND r.ended_at IS NULL)"
+        ).fetchall()
+    ]
+    reconciled: list[str] = []
+    now = int(time.time())
+    for task_id in candidate_ids:
+        with _kb.write_txn(conn):
+            task = conn.execute(
+                "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if task is None:
+                continue
+            open_runs = conn.execute(
+                "SELECT id, status FROM task_runs WHERE task_id = ? AND ended_at IS NULL",
+                (task_id,),
+            ).fetchall()
+            current_run_id = _kb._current_run_id(conn, task_id)
+            valid_running_attempt = (
+                task["status"] == "running"
+                and len(open_runs) == 1
+                and current_run_id == int(open_runs[0]["id"])
+                and open_runs[0]["status"] == "running"
+            )
+            if valid_running_attempt:
+                continue
+
+            closed_run_ids = [int(run["id"]) for run in open_runs]
+            if closed_run_ids:
+                conn.execute(
+                    "UPDATE task_runs SET status = 'reconciled_state_divergence', "
+                    "outcome = 'reconciled_state_divergence', error = ?, ended_at = ?, "
+                    "claim_expires = NULL WHERE task_id = ? AND ended_at IS NULL",
+                    (f"task lifecycle is {task['status']!r}, not a valid running attempt", now, task_id),
+                )
+            landing_status = "ready" if task["status"] == "running" else task["status"]
+            conn.execute(
+                "UPDATE tasks SET status = ?, current_run_id = NULL, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+                "last_heartbeat_at = NULL WHERE id = ?",
+                (landing_status, task_id),
+            )
+            _kb._append_event(
+                conn,
+                task_id,
+                "reconciled_state_divergence",
+                {
+                    "task_status": task["status"],
+                    "landing_status": landing_status,
+                    "closed_run_ids": closed_run_ids,
+                    "current_run_id": current_run_id,
+                },
+            )
+            reconciled.append(task_id)
+    return reconciled
+
+
 def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
     pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
     if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
@@ -538,18 +680,41 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
             pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
         if not termination["terminated"]:
             return  # still alive: try again next tick
+    else:
+        unit = _kanban_worker_scope_name(row["task_id"], int(row["id"]))
+        descendants = _scope_descendant_summary(unit)
+        if descendants and descendants.get("count", 0):
+            from tools.process_registry import _stop_systemd_unit
+
+            stop_result = _stop_systemd_unit(unit)
+            with _kb.write_txn(conn):
+                _kb._append_event(
+                    conn,
+                    row["task_id"],
+                    "terminal_scope_reaped",
+                    {
+                        "unit": unit,
+                        "scope_id": unit.removesuffix(".scope"),
+                        "descendants": descendants,
+                        "stop_result": stop_result,
+                    },
+                    run_id=row["id"],
+                )
+            if not stop_result:
+                return
+            termination = {"scope_reaped": True}
     with _kb.write_txn(conn):
         conn.execute(
             "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
             "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
             (row["id"], pid, fingerprint),
         )
-        if alive:
+        if alive or termination:
             _kb._append_event(
                 conn, row["task_id"], "terminal_worker_reaped",
                 {"pid": pid, "worker_started_at": fingerprint, **termination}, run_id=row["id"],
             )
-    if alive:
+    if alive or termination:
         reaped.append(row["task_id"])
 
 
@@ -576,16 +741,39 @@ def _defer_reclaim_for_live_worker(
     termination: dict,
     *,
     reason: str,
+    max_attempts: int = DEFAULT_RECLAIM_DEFER_MAX_ATTEMPTS,
 ) -> None:
     """Hold a claim whose worker survived termination instead of releasing it.
 
-    Extends ``claim_expires`` by ``RECLAIM_DEFER_GRACE_SECONDS`` so the task
-    stays ``running`` (no duplicate spawn) and records ``reclaim_deferred``.
-    The next tick retries the kill; not spawning a duplicate is what lets the
-    throttled worker finally die.
+    Extends ``claim_expires`` only while its bounded recovery budget remains.
+    Once exhausted, keep the claim to prevent duplicate work and emit one
+    durable escalation instead of silently extending the lease forever.
     """
-    grace = now + _kb.RECLAIM_DEFER_GRACE_SECONDS
     with _kb.write_txn(conn):
+        run_id = _kb._current_run_id(conn, task_id)
+        try:
+            limit = max(1, int(max_attempts))
+        except (TypeError, ValueError):
+            limit = DEFAULT_RECLAIM_DEFER_MAX_ATTEMPTS
+        attempts = 0
+        if run_id is not None:
+            attempts = int(conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND run_id = ? "
+                "AND kind = 'reclaim_deferred'",
+                (task_id, run_id),
+            ).fetchone()[0])
+            if attempts >= limit:
+                prior = conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id = ? AND run_id = ? "
+                    "AND kind = 'reclaim_escalated' LIMIT 1",
+                    (task_id, run_id),
+                ).fetchone()
+                if prior is None:
+                    payload = {"reason": reason, "attempts": attempts, "limit": limit}
+                    payload.update(termination)
+                    _kb._append_event(conn, task_id, "reclaim_escalated", payload, run_id=run_id)
+                return
+        grace = now + _kb.RECLAIM_DEFER_GRACE_SECONDS
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
             "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
@@ -593,10 +781,15 @@ def _defer_reclaim_for_live_worker(
         )
         if cur.rowcount != 1:
             return
-        run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute("UPDATE task_runs SET claim_expires = ? WHERE id = ?", (grace, run_id))
-        payload = {"reason": reason, "claim_lock": claim_lock, "claim_expires_now": grace}
+        payload = {
+            "reason": reason,
+            "attempt": attempts + 1,
+            "limit": limit,
+            "claim_lock": claim_lock,
+            "claim_expires_now": grace,
+        }
         payload.update(termination)
         _kb._append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
 
@@ -744,6 +937,7 @@ def detect_stale_running(
     *,
     stale_timeout_seconds: int = 0,
     signal_fn=None,
+    reclaim_defer_max_attempts: int = DEFAULT_RECLAIM_DEFER_MAX_ATTEMPTS,
 ) -> list[str]:
     """Reclaim ``running`` tasks with no heartbeat progress; returns their ids.
 
@@ -794,6 +988,7 @@ def detect_stale_running(
             _defer_reclaim_for_live_worker(
                 conn, tid, lock, now, termination,
                 reason="heartbeat_stale_worker_alive",
+                max_attempts=reclaim_defer_max_attempts,
             )
             continue
 
@@ -1581,22 +1776,37 @@ def check_respawn_guard(
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
+    #    An explicit operator "kanban: pr-abandoned"/"pr-superseded" marker
+    #    also releases the guard, independent of any handoff event.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body, created_at FROM task_comments "
-        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
+        "SELECT id, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
             continue
+        pr_created_at = int(c["created_at"] or 0)
+        pr_comment_id = int(c["id"])
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
             "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
+            (task_id, pr_created_at),
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+            return None
+        pr_abandoned = any(
+            row["body"] and _RESPAWN_GUARD_PR_ABANDONED_RE.search(row["body"])
+            for row in conn.execute(
+                "SELECT body FROM task_comments WHERE task_id = ? "
+                "AND (created_at > ? OR (created_at = ? AND id > ?))",
+                (task_id, pr_created_at, pr_created_at, pr_comment_id),
+            ).fetchall()
+        )
+        if pr_abandoned:
             return None
         return "active_pr"
 
@@ -1833,20 +2043,44 @@ def configured_max_in_progress() -> Optional[int]:
 
 
 def count_running_tasks(conn: sqlite3.Connection) -> int:
-    """Number of tasks in ``status='running'``.
+    """Number of fingerprint-verified live workers on ``running`` tasks.
 
     Used by the multi-board sweep to count OTHER boards' workers against the
     host-level budget — the memory-derived cap bounds the machine, not the
-    board. Fails open to 0 so a broken board doesn't brick dispatch on healthy ones.
+    board. A live scope or stale running row reserves no capacity: only the
+    fingerprinted Hermes worker that this dispatcher spawned can do that. Fails
+    open to 0 so a broken board doesn't brick dispatch on healthy ones.
     """
     try:
-        return int(
-            conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-            ).fetchone()[0]
-        )
+        rows = conn.execute(
+            "SELECT worker_pid, worker_started_at FROM tasks WHERE status = 'running'"
+        ).fetchall()
+        return sum(_fingerprint_verified_worker_alive(row["worker_pid"], row["worker_started_at"]) for row in rows)
     except Exception:
         return 0
+
+
+def _fingerprint_verified_worker_alive(pid: Optional[int], fingerprint: Any) -> bool:
+    """True only when a recorded worker has a usable spawn fingerprint and is live."""
+    return bool(
+        pid
+        and fingerprint not in (None, "", UNVERIFIED_WORKER_FINGERPRINT)
+        and _worker_alive(int(pid), fingerprint)
+    )
+
+
+def _running_workers_by_profile(conn: sqlite3.Connection) -> dict[str, int]:
+    """Fingerprint-verified live worker counts keyed by assignee profile."""
+    rows = conn.execute(
+        "SELECT assignee, worker_pid, worker_started_at FROM tasks "
+        "WHERE status = 'running' AND assignee IS NOT NULL"
+    ).fetchall()
+    counts: dict[str, int] = {}
+    for row in rows:
+        if _fingerprint_verified_worker_alive(row["worker_pid"], row["worker_started_at"]):
+            assignee = row["assignee"]
+            counts[assignee] = counts.get(assignee, 0) + 1
+    return counts
 
 
 def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
@@ -1919,6 +2153,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    reclaim_defer_max_attempts: int = DEFAULT_RECLAIM_DEFER_MAX_ATTEMPTS,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1942,6 +2177,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            reclaim_defer_max_attempts=reclaim_defer_max_attempts,
         )
 
     try:
@@ -2014,6 +2250,20 @@ def _dispatch_lane_task(
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
+        if guard_reason == "blocker_auth":
+            # Credential/auth failures cannot self-heal by repeatedly spawning
+            # the same ready card. The typed hold is the sole durable event;
+            # block_task shares the run-finalization invariant.
+            _kb.block_task(
+                conn,
+                task_id,
+                kind="capability",
+                reason=(
+                    "dispatcher detected an authentication or credential blocker; "
+                    "resolve it, then explicitly unblock"
+                ),
+            )
+            return False
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
         # Honour kanban.default_assignee: when the dispatcher hits an unassigned ready task and an
@@ -2129,15 +2379,26 @@ def _run_reclaim_phase(
     stale_timeout_seconds: int,
     failure_limit: int,
     reconcile_orphans: bool,
+    reclaim_defer_max_attempts: int = DEFAULT_RECLAIM_DEFER_MAX_ATTEMPTS,
     board: Optional[str] = None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
+    result.reconciled_state_divergence = reconcile_task_run_invariants(conn)
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
-    result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
+    result.reclaimed = _kb.release_stale_claims(
+        conn,
+        failure_limit=failure_limit,
+        stale_timeout_seconds=stale_timeout_seconds,
+        reclaim_defer_max_attempts=reclaim_defer_max_attempts,
+    )
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
-    result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
+    result.stale = detect_stale_running(
+        conn,
+        stale_timeout_seconds=stale_timeout_seconds,
+        reclaim_defer_max_attempts=reclaim_defer_max_attempts,
+    )
     result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.
@@ -2281,6 +2542,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    reclaim_defer_max_attempts: int = DEFAULT_RECLAIM_DEFER_MAX_ATTEMPTS,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2290,7 +2552,8 @@ def _dispatch_once_locked(
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
-        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
+        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        reclaim_defer_max_attempts=reclaim_defer_max_attempts, board=board,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
@@ -2316,12 +2579,7 @@ def _dispatch_once_locked(
     ) else None
     per_profile_running: dict[str, int] = {}
     if per_profile_cap is not None:
-        for prow in conn.execute(
-            "SELECT assignee, COUNT(*) AS n FROM tasks "
-            "WHERE status = 'running' AND assignee IS NOT NULL "
-            "GROUP BY assignee"
-        ):
-            per_profile_running[prow["assignee"]] = int(prow["n"])
+        per_profile_running = _running_workers_by_profile(conn)
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold

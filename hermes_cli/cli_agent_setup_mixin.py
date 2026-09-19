@@ -215,6 +215,13 @@ def _resume_panel_colors() -> tuple:
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
+    def _has_explicit_cli_route(self) -> bool:
+        """Whether CLI flags pinned the startup model or provider for this invocation."""
+        return bool(
+            getattr(self, "_explicit_model_override", False)
+            or getattr(self, "_explicit_provider_override", False)
+        )
+
     def _ensure_runtime_credentials(self) -> bool:
         """Re-resolve provider credentials before agent use so key rotation / token
         refresh are picked up without restarting the CLI. False on auth failure."""
@@ -233,12 +240,17 @@ class CLIAgentSetupMixin:
                 explicit_base_url=self._explicit_base_url, target_model=self.model or None)
         except Exception as exc:
             _primary_exc = exc
-        if _primary_exc is not None:
+        if _primary_exc is not None and not self._has_explicit_cli_route():
             runtime = self._resolve_fallback_runtime(_primary_exc)
             if runtime is not None:
                 _primary_exc = None
         if runtime is None:
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
+            if _primary_exc is not None and self._has_explicit_cli_route():
+                message = (
+                    f"Requested route {self.requested_provider or 'auto'} / {self.model or '(default)'} "
+                    f"could not be resolved: {message}"
+                )
             if getattr(self, "tool_progress_mode", "full") == "off":
                 print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
             else:

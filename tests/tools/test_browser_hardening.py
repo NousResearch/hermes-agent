@@ -126,6 +126,103 @@ class TestSessionInactivityTimeout:
             assert _get_session_inactivity_timeout() == 240
 
 
+class TestAgentBrowserDaemonIdleTimeout:
+    def test_default_outlives_one_direct_cdp_exec(self, monkeypatch):
+        """Browser Use does not send control-socket commands while it holds direct CDP,
+        so the daemon's fallback timeout must exceed its longest public exec budget.
+        """
+        import tools.browser_tool as bt
+        from tools import browser_tool_session as session
+
+        monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
+        monkeypatch.setattr(session._install, "_merge_browser_path", lambda path: path)
+        env = session._agent_browser_command_env("/tmp/agent-browser-test")
+
+        assert int(env["AGENT_BROWSER_IDLE_TIMEOUT_MS"]) > 1800 * 1000
+
+    def test_explicit_daemon_timeout_is_preserved(self, monkeypatch):
+        import tools.browser_tool as bt
+        from tools import browser_tool_session as session
+
+        monkeypatch.setattr(bt, "_build_browser_env", lambda: {"AGENT_BROWSER_IDLE_TIMEOUT_MS": "9876"})
+        monkeypatch.setattr(session._install, "_merge_browser_path", lambda path: path)
+
+        assert session._agent_browser_command_env("/tmp/agent-browser-test")["AGENT_BROWSER_IDLE_TIMEOUT_MS"] == "9876"
+
+
+class TestChromiumSandboxArgs:
+    def test_user_chromium_flags_reach_the_agent_browser_command(self, monkeypatch, tmp_path):
+        """Regression for the scrubbed child env dropping AGENT_BROWSER_ARGS before spawn."""
+        import json
+        from unittest.mock import MagicMock
+        import tools.browser_tool as bt
+
+        captured_env = {}
+        process = MagicMock(returncode=0)
+        process.wait.return_value = None
+
+        def capture_popen(_argv, env, _socket_dir, _tag, _stdin_payload=None):
+            captured_env.update(env)
+            return process
+
+        monkeypatch.setattr(bt, "_build_browser_env", lambda: {
+            "AGENT_BROWSER_ARGS": "--run-all-compositor-stages-before-draw",
+        })
+        monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+        monkeypatch.setattr(bt_session._install, "_merge_browser_path", lambda path: path)
+        monkeypatch.setattr(bt_session, "_needs_chromium_sandbox_bypass", lambda: True)
+        monkeypatch.setattr(bt_session, "_popen_agent_browser", capture_popen)
+        monkeypatch.setattr(bt_session, "_unlink_command_output_files", lambda *_paths: None)
+        monkeypatch.setattr(bt_session, "_prepare_session_socket_dir", lambda _name: str(tmp_path))
+        monkeypatch.setattr(bt_session, "_read_command_output_files", lambda *_paths: (json.dumps({"success": True}), ""))
+
+        stdout = tmp_path / "_stdout_get"
+        stderr = tmp_path / "_stderr_get"
+        stdout.write_text(json.dumps({"success": True}), encoding="utf-8")
+        stderr.write_text("", encoding="utf-8")
+        result = bt_session._spawn_and_collect(
+            "task", {"session_name": "session"}, ["agent-browser", "get"], "get", "auto", 5,
+        )
+
+        assert result == {"success": True}
+        assert captured_env["AGENT_BROWSER_ARGS"] == (
+            "--run-all-compositor-stages-before-draw,"
+            "--no-sandbox,--disable-dev-shm-usage"
+        )
+
+    def test_appends_required_sandbox_bypass_to_user_compositor_flag(self, monkeypatch):
+        """A rendering mitigation must extend, not replace, host-required Chrome flags."""
+        env = {"AGENT_BROWSER_ARGS": "--run-all-compositor-stages-before-draw"}
+        monkeypatch.setattr(bt_session, "_needs_chromium_sandbox_bypass", lambda: True)
+
+        bt_session._apply_chromium_sandbox_args(env)
+
+        assert env["AGENT_BROWSER_ARGS"] == (
+            "--run-all-compositor-stages-before-draw,"
+            "--no-sandbox,--disable-dev-shm-usage"
+        )
+
+    def test_preserves_user_supplied_sandbox_flag_without_duplication(self, monkeypatch):
+        env = {"AGENT_BROWSER_ARGS": "--run-all-compositor-stages-before-draw,--no-sandbox"}
+        monkeypatch.setattr(bt_session, "_needs_chromium_sandbox_bypass", lambda: True)
+
+        bt_session._apply_chromium_sandbox_args(env)
+
+        assert env["AGENT_BROWSER_ARGS"] == (
+            "--run-all-compositor-stages-before-draw,--no-sandbox,"
+            "--disable-dev-shm-usage"
+        )
+
+    def test_preserves_legacy_flags_while_adding_missing_sandbox_bypass(self, monkeypatch):
+        env = {"AGENT_BROWSER_CHROME_FLAGS": "--no-sandbox"}
+        monkeypatch.setattr(bt_session, "_needs_chromium_sandbox_bypass", lambda: True)
+
+        bt_session._apply_chromium_sandbox_args(env)
+
+        assert env["AGENT_BROWSER_CHROME_FLAGS"] == "--no-sandbox"
+        assert env["AGENT_BROWSER_ARGS"] == "--disable-dev-shm-usage"
+
+
 # ---------------------------------------------------------------------------
 # Caching: _discover_homebrew_node_dirs
 # ---------------------------------------------------------------------------

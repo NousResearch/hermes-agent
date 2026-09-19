@@ -15,6 +15,28 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _worker_create_idempotency_key(monkeypatch):
+    """Byrd-IT carried patch: dispatcher-spawned workers must pass ``idempotency_key``
+    to ``kanban_create`` (duplicate bug-report cards). Upstream tests exercise worker
+    fan-out without one; inject a per-call unique key so they keep testing what they
+    were written to test. Tests that pass their own key are untouched."""
+    import itertools
+    from tools import kanban_tools as _kt
+    counter = itertools.count()
+    real = _kt._handle_create.__wrapped__ if hasattr(_kt._handle_create, "__wrapped__") else None
+    orig = _kt._handle_create
+
+    def wrapped(args, **kw):
+        if isinstance(args, dict) and not args.get("idempotency_key"):
+            args = {**args, "idempotency_key": f"test-autokey-{next(counter)}"}
+        return orig(args, **kw)
+
+    monkeypatch.setattr(_kt, "_handle_create", wrapped)
+    yield
+
+
+
 # ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------
@@ -111,6 +133,33 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     })
     tenant_ids = [t["id"] for t in json.loads(tenant_out)["tasks"]]
     assert tenant_ids == [c]
+
+
+def test_record_completion_state_keeps_labels_explicit_and_returns_evidence(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_record_completion_state({
+        "state": "tested",
+        "evidence": {"proof": "scripts/run_tests.sh: 42 passed"},
+    })
+    data = json.loads(out)
+    assert data["ok"] is True
+    assert data["task_id"] == worker_env
+    assert data["completion_state"] == "tested"
+    assert data["completion_evidence"] == {"proof": "scripts/run_tests.sh: 42 passed"}
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.completion_state == "tested"
+        assert task.completion_evidence == {"proof": "scripts/run_tests.sh: 42 passed"}
+        states = [event.payload["state"] for event in kb.list_events(conn, worker_env)
+                  if event.kind == "completion_state_recorded"]
+        assert states == ["tested"]
+    finally:
+        conn.close()
 
 
 def test_complete_happy_path(worker_env):
@@ -460,6 +509,52 @@ def test_comment_ignores_caller_supplied_author(worker_env):
         conn.close()
 
 
+def test_comment_defaults_to_env_task_id(worker_env):
+    """kanban_comment without task_id falls back to HERMES_KANBAN_TASK —
+    the documented default every other lifecycle tool already honors
+    (_require_task_id). Regression: _handle_comment read args["task_id"]
+    raw and errored despite the schema promising the env fallback."""
+    from tools import kanban_tools as kt
+    out = kt._handle_comment({"body": "implicit task id"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["task_id"] == worker_env
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        comments = kb.list_comments(conn, worker_env)
+        assert [c.body for c in comments] == ["implicit task id"]
+    finally:
+        conn.close()
+
+
+def test_comment_missing_task_id_without_env_fails(worker_env, monkeypatch):
+    """With the env var gone, omitting task_id is a clean tool error —
+    same message as _require_task_id."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = kt._handle_comment({"body": "no target"})
+    assert "task_id is required" in out
+    assert "error" in out
+
+
+def test_comment_implicit_default_refused_for_delegated_child(worker_env, monkeypatch):
+    """A delegate_task child shares the parent's HERMES_KANBAN_TASK env. Two
+    fail-closed layers: the mutation reject fires first (child is never a run
+    owner), and beneath it _default_task_id refuses to resolve the implicit
+    default so an explicit cross-task comment is the only path."""
+    from agent.delegation_context import delegated_child_context
+    from tools import kanban_tools as kt
+    with delegated_child_context():
+        out = kt._handle_comment({"body": "child must not implicitly own this"})
+        # The default resolver itself must return None for a child even if a
+        # future handler reorder reaches task-id resolution first.
+        assert kt._default_task_id(None) is None
+    assert "delegate_task child agents are not Kanban run owners" in out
+    assert "error" in out
+
+
 def test_create_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({
@@ -481,6 +576,27 @@ def test_create_happy_path(worker_env):
         assert child.assignee == "peer"
     finally:
         conn.close()
+
+
+def test_create_scratch_with_repo_path_returns_worktree_guidance(worker_env, tmp_path):
+    """A repo-bound scratch card remains scratch but tells its creator why that
+    workspace cannot support the requested branch/commit work."""
+    from tools import kanban_tools as kt
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = json.loads(kt._handle_create({
+        "title": "Implement the fix",
+        "body": f"Branch off main in {repo} and commit the change.",
+        "assignee": "peer",
+        "workspace_kind": "scratch",
+    }))
+
+    assert result["ok"] is True
+    assert result["workspace_kind"] == "scratch"
+    assert str(repo) in result["warning"]
+    assert "workspace_kind='worktree'" in result["warning"]
 
 
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])

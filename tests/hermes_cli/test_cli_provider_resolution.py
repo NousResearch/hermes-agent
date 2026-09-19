@@ -337,6 +337,70 @@ def test_ensure_runtime_credentials_passes_cli_model_as_target_model(monkeypatch
     assert seen["target_model"] == "mimo-v2.5"
 
 
+def test_explicit_cli_provider_model_does_not_fallback_on_auth_failure(monkeypatch, capsys):
+    """A CLI provider/model pin either resolves as requested or fails before a fallback route runs."""
+    cli = _import_cli()
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {"default": "primary-model", "provider": "openai-codex"})
+    monkeypatch.setitem(cli.CLI_CONFIG, "fallback_providers", [{"provider": "zai", "model": "glm-5.3-flash"}])
+    attempts = []
+
+    def _runtime_resolve(requested=None, **kwargs):
+        attempts.append(requested)
+        if requested == "google":
+            raise AuthError(
+                "Google credentials are not configured.",
+                provider="google",
+                code="missing_api_key",
+            )
+        return {
+            "provider": "zai",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "fallback-key",
+            "source": "env",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    shell = cli.HermesCLI(model="gemini-3.6-flash", provider="google", compact=True, max_turns=1)
+    shell.tool_progress_mode = "off"
+    monkeypatch.setattr(shell, "_maybe_print_free_tier_available_notice", lambda: None)
+
+    assert shell._ensure_runtime_credentials() is False
+    assert attempts == ["google"]
+    assert (shell.requested_provider, shell.model) == ("google", "gemini-3.6-flash")
+    error = capsys.readouterr().err
+    assert "Requested route google / gemini-3.6-flash" in error
+    assert "Google credentials are not configured." in error
+
+
+def test_default_route_auth_failure_still_falls_back(monkeypatch):
+    """Configured defaults retain the existing startup auth-fallback behavior."""
+    cli = _import_cli()
+    monkeypatch.setattr(cli, "_cprint", lambda *a, **k: None)
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {"default": "primary-model", "provider": "openai-codex"})
+    monkeypatch.setitem(cli.CLI_CONFIG, "fallback_providers", [{"provider": "zai", "model": "glm-5.3-flash"}])
+    attempts = []
+
+    def _runtime_resolve(requested=None, **kwargs):
+        attempts.append(requested)
+        if requested == "openai-codex":
+            raise AuthError("Primary credentials are unavailable.", provider="openai-codex", code="missing_api_key")
+        return {
+            "provider": "zai",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key": "fallback-key",
+            "source": "env",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+    monkeypatch.setattr(shell, "_maybe_print_free_tier_available_notice", lambda: None)
+
+    assert shell._ensure_runtime_credentials() is True
+    assert attempts == ["openai-codex", "zai"]
+    assert (shell.requested_provider, shell.provider, shell.model) == ("zai", "zai", "glm-5.3-flash")
 
 
 def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_path):

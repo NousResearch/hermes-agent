@@ -1,0 +1,41 @@
+#!/bin/bash
+# Byrd-IT guard: the production Hermes checkout stays on `main`.
+#
+# Kanban workers (and the updater) run from THIS directory. A worker that runs
+# `git checkout -b <branch>` here switches what every gateway and the dispatcher
+# execute, and leaves `hermes update` facing a feature branch (t_86acfa96,
+# 2026-09-17: production sat on b-20260916-t86acfa96 for ~5h). Feature work
+# belongs in a linked worktree (`workspace_kind=worktree` on the card ->
+# <repo>/.worktrees/<task-id>), never in the production checkout.
+#
+# post-checkout args: $1 = previous HEAD, $2 = new HEAD, $3 = 1 for a branch checkout.
+# Only branch checkouts matter (file checkouts pass 0). A worktree's own HEAD moves
+# via its own hooks path, so this only fires for the main checkout.
+[ "$3" = "1" ] || exit 0
+# Linked worktrees have their own git-dir under .git/worktrees/<name>; the production
+# checkout's git-dir IS the common dir. Only guard the latter.
+[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] || exit 0
+
+branch=$(git symbolic-ref --short -q HEAD 2>/dev/null)
+[ "$branch" = "main" ] && exit 0
+# NOTE: do not early-exit on $1 == $2 — `git checkout -b new` passes prev==new.
+
+# Allow an explicit, deliberate override for a human at the keyboard.
+if [ "${HERMES_ALLOW_BRANCH_SWITCH:-}" = "1" ]; then
+  echo "post-checkout: HERMES_ALLOW_BRANCH_SWITCH=1 — leaving production on '$branch' (you own this)." >&2
+  exit 0
+fi
+
+# Undo it. `git checkout main` from inside a post-checkout hook is safe: git has
+# already finished updating HEAD/index for the offending checkout, and the hook's
+# exit code does not abort the checkout (docs), so we actively reverse it.
+git checkout -q main 2>/dev/null
+cat >&2 <<EOF
+post-checkout: BLOCKED — production checkout must stay on 'main'.
+  You switched /usr/local/lib/hermes-agent to '$branch'; it has been switched back.
+  The branch '$branch' still exists with your commits; nothing was lost.
+  For feature work use a worktree:  git worktree add .worktrees/<task-id> -b <branch>
+  (Kanban: create the card with workspace_kind=worktree.)
+  Human override for one deliberate switch:  HERMES_ALLOW_BRANCH_SWITCH=1 git checkout <branch>
+EOF
+exit 0

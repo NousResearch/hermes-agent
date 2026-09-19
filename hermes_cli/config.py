@@ -2410,8 +2410,16 @@ def _strip_managed_keys_for_save(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
-def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
-    """Commented-out example blocks for features that are off/unconfigured."""
+def _commented_sections_for_save(normalized: Dict[str, Any], path: Optional[Path] = None) -> Optional[str]:
+    """Commented-out example blocks for features that are off/unconfigured.
+
+    Returned unconditionally: writers feed it to ``atomic_yaml_write`` as ``extra_content``,
+    which appends it AFTER a freshly serialized YAML body. The dump never carries the blocks
+    (pyyaml drops comments), so appending unconditionally is inherently non-duplicating.
+    ``path`` is accepted for signature stability; the old "skip if already present in the
+    file" dedupe was removed because the file's comments are destroyed by the rewrite itself
+    — skipping against the OLD file's content silently dropped blocks instead (t_3ee100cc).
+    """
     parts = []
     if (normalized.get("security") or {}).get("redact_secrets") is None:
         parts.append(_SECURITY_COMMENT)
@@ -3607,9 +3615,15 @@ def _exit_invalid(msg: str) -> None:
 
 
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
-    """Write only the user's raw config back (never the merged defaults)."""
+    """Write only the user's raw config back (never the merged defaults).
+
+    Re-emits the commented-out doc blocks (security/fallback) exactly like ``save_config``
+    so ``hermes config set`` / ``unset`` don't silently strip curated documentation that
+    other write paths preserve (t_3ee100cc).
+    """
     ensure_hermes_home()
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    atomic_yaml_write(config_path, user_config, sort_keys=False,
+                      extra_content=_commented_sections_for_save(user_config, config_path))
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:

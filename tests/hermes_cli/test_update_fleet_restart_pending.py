@@ -882,8 +882,11 @@ def test_startup_warn_silent_when_completed_update_fleet_restarted_onto_moved_ch
                     "externally_supervised_profiles": [], "killed_pids": [], "failed_units": [],
                     "incomplete": False, "phase_error": "",
                 },
-                "fleet": [{"profile": "default", "pid": 7, "code_sha": pulled, "state": "current"}],
-                "plan": {"runtimes": [{"kind": "gateway", "profile": "default", "code_sha": pre, "pid": 1}]},
+                "fleet": [{"kind": None, "profile": "default", "pid": 7, "code_sha": pulled, "state": "current"}],
+                "plan": {"runtimes": [
+                    {"kind": "gateway", "profile": "default", "code_sha": pre, "pid": 1},
+                    {"kind": "serve", "profile": "default", "supervisor": "desktop", "pid": 2},
+                ]},
             }
         ),
         encoding="utf-8",

@@ -107,12 +107,14 @@ class OutputConsent:
     adapter: object
     owner: tuple
     record_json: str
+    authorizer: object
 
 
 def capture_output_consent(adapter, token, dispatch, policy, *, connection=None):
     claims = verify_room_grant(adapter._room_grant_secret(), token, dispatch, permission='dispatch')
     if not set(RIGHTS) <= set(claims['permissions']):
         return None
+    authorizer = getattr(adapter, '_room_output_admission', None)
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     authority, _ = root_target(adapter, dispatch.target_profile, connection=connection)
     _, catalog = _local_room_catalog(adapter, dispatch.target_profile, dispatch.target_install_id, _connection=connection)
@@ -120,6 +122,7 @@ def capture_output_consent(adapter, token, dispatch, policy, *, connection=None)
     if (getattr(provider, '__self__', None) is not adapter
             or getattr(provider, '__func__', None) is not peer_output_permissions
             or provider(profile=dispatch.target_profile, catalog=catalog, connection=connection) != RIGHTS
+            or getattr(adapter, '_room_output_admission', None) is not authorizer
             or catalog['execution_policy'] != policy):
         raise RuntimeStoreError('room_output_unavailable')
     for right in RIGHTS:
@@ -131,7 +134,7 @@ def capture_output_consent(adapter, token, dispatch, policy, *, connection=None)
     record = dict(version=1, scope=scope.as_mapping(), claims=claims, dispatch=dispatch.as_mapping(),
                   policy=policy, profile_id=authority.profile_id, owner_epoch=authority.epoch,
                   instance_id=authority.instance_id, run_owner_scope=owner_scope)
-    return OutputConsent(adapter, _owner_identity(authority), _json(record))
+    return OutputConsent(adapter, _owner_identity(authority), _json(record), authorizer)
 
 
 def consent_record(evidence, adapter, authority, dispatch, owner_scope):

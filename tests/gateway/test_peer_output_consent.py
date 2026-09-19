@@ -87,7 +87,7 @@ async def test_output_consent_rechecked_inside_new_after_input_preparation(files
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('field', ['_room_output_consent', '_room_artifact_publication', 'room_artifact_publication', 'output_consent', 'api_turn_v1'])
+@pytest.mark.parametrize('field', ['_room_output_consent', '_room_output_authorizer', '_room_artifact_publication', 'room_artifact_publication', 'output_consent', 'api_turn_v1'])
 async def test_caller_cannot_supply_private_output_consent(files_target, field):
     response = await files_target.adapter._handle_runs(request({'input': 'hello', field: True}))
     assert response.status == 400

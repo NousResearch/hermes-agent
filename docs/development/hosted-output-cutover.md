@@ -19,14 +19,16 @@ Output consumes their real canonical owner registry, shared-first grant fence, c
 ## Separately owned transactional admission
 
 Route owns the NEW-write seam in `gateway/session_api_turn.py` and
-`gateway/session_peer_target.py` (local candidate
-`33227e36c4c2a1a9b580da25b30ccb2eef21dd0b` — see the exact handoff for the final
-owner identity). Compose that Route delta with the lower/Files owners and this
-Output owner using ordinary Git merges. Retain both sides of the shared
+`gateway/session_peer_target.py`; the exact separately owned candidate is recorded
+in the local seam handoff. Compose that Route delta with the lower/Files owners
+and this Output owner using ordinary Git merges. Retain both sides of the shared
 registration/dispatch/append contexts. No dependent patch is applied.
 
-Before preparation, API pins the concrete adapter-bound
-`_room_output_admission` consumer. Inside the existing shared-first/owner SQL
+At HTTP consent capture, Output pins the concrete adapter-bound
+`_room_output_admission` consumer in immutable transient evidence. API receives
+that exact consumer through the server-only `_room_output_authorizer` argument,
+not a new lookup that could accept replacement between capture and API entry.
+Inside the existing shared-first/owner SQL
 fence, `authorize_dispatch` verifies current dispatch, policy, catalog and both
 grant stores, then requires that same consumer for signed artifact rights.
 Missing, rebound, unavailable or incomplete Output consent refuses NEW instead

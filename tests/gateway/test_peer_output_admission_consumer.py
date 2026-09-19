@@ -57,7 +57,8 @@ async def test_real_output_consumer_authorizes_new_on_exact_fenced_owner(files_t
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['absent', 'foreign', 'replacement', 'owner_db', 'registry',
-                                   'evidence_owner', 'evidence_adapter', 'evidence_record', 'evidence_missing'])
+                                   'evidence_owner', 'evidence_adapter', 'evidence_record', 'evidence_missing',
+                                   'replacement_before_api'])
 async def test_output_consumer_drift_at_new_write_rolls_back_admission(files_target, monkeypatch, change):
     from gateway import session_api_turn, session_peer_output
     from gateway.platforms import api_server_runs
@@ -67,6 +68,13 @@ async def test_output_consumer_drift_at_new_write_rolls_back_admission(files_tar
     issued = await invite(t)
     original = session_api_turn.admit_session_input
     entered = []
+    if change == 'replacement_before_api':
+        api_admit = session_api_turn.admit_api_turn
+
+        def replace_before_api(*args, **kwargs):
+            t.adapter._room_output_admission = MethodType(lambda *args: True, t.adapter)
+            return api_admit(*args, **kwargs)
+        monkeypatch.setattr(session_api_turn, 'admit_api_turn', replace_before_api)
     if change == 'evidence_missing':
         capture = session_peer_output.capture_output_consent
 
@@ -87,7 +95,7 @@ async def test_output_consumer_drift_at_new_write_rolls_back_admission(files_tar
             t.adapter._peer_output_owner = (t.authority, object(), *t.adapter._peer_output_owner[2:])
         elif change == 'registry':
             t.runner.session_authorities._by_key.clear()
-        elif change != 'evidence_missing':
+        elif change not in {'evidence_missing', 'replacement_before_api'}:
             capture = session_peer_output.capture_output_consent
 
             def changed(*args, **kwargs):

@@ -630,7 +630,7 @@ class GatewayConfig:
                 # and emits noisy retry-forever errors. ``_platform_status`` was already fixed for the same
                 # bug class in commit 7849a3d73; this is the runtime counterpart.
                 from hermes_cli.plugins import discover_plugins
-                discover_plugins()
+                discover_plugins(defer_platforms=False)
             entry = platform_registry.get(platform.value)
             if entry:
                 check = entry.is_connected if entry.is_connected is not None else entry.validate_config

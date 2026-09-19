@@ -178,11 +178,16 @@ class ManifestGate:
 
 
 def gate_manifest(
-    manifest: PluginManifest, disabled: Set[str], enabled: Optional[Set[str]]
+    manifest: PluginManifest,
+    disabled: Set[str],
+    enabled: Optional[Set[str]],
+    *,
+    defer_platforms: bool = True,
 ) -> ManifestGate:
     """Decide how one winning manifest is handled. Gate order matters: legacy relay refusal, explicit disable,
-    category-owned kinds (exclusive / model-provider), bundled auto-loads (backend now, platform deferred),
-    then ``plugins.enabled`` opt-in (path-derived key or legacy bare name)."""
+    category-owned kinds (exclusive / model-provider), bundled auto-loads, then ``plugins.enabled`` opt-in
+    (path-derived key or legacy bare name). Platform adapters defer outside gateway runs and load at gateway
+    startup so enabled third-party adapters are available before configuration creates them."""
     lookup_key = manifest_key(manifest)
     names = {lookup_key, manifest.name}
 
@@ -213,10 +218,15 @@ def gate_manifest(
         # Bundled backends auto-load; selection among them is ``<category>.provider`` config.
         if manifest.kind == "backend":
             return ManifestGate("load_now")
-        # Bundled platforms register LAZILY: eagerly importing ~20 heavy SDKs added seconds to every `hermes`
-        # invocation. A deferred loader keeps every platform available on first use.
+        # Bundled platforms register LAZILY outside gateway runs: eagerly importing ~20 heavy SDKs added
+        # seconds to every `hermes` invocation. Gateway startup instead needs every enabled adapter ready
+        # before it reads platform configuration.
         if manifest.kind == "platform":
-            return ManifestGate("defer")
+            return ManifestGate("defer" if defer_platforms else "load_now")
+    # Enabled third-party platforms have the same adapter lifecycle as bundled ones. Keep their SDKs out of
+    # CLI/TUI/dashboard startup, but eagerly register them for gateway configuration and adapter creation.
+    if manifest.kind == "platform" and enabled is not None and names & enabled:
+        return ManifestGate("defer" if defer_platforms else "load_now")
     if enabled is None or not names & enabled:
         return _placeholder(
             f"not enabled in config (run `hermes plugins enable {lookup_key}` to activate)", logging.DEBUG,

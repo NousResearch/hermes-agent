@@ -1025,7 +1025,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         return entry
 
     def _sync_entry_from_pool_store(self, entry: PooledCredential) -> PooledCredential:
-        """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth).
+        """Adopt a token pair rotated by another pool instance (Anthropic, Codex, xAI).
 
         Re-reads the exact persisted row from the credential-pool store while
         the shared cross-process auth-store lock is held. Direct integrations
@@ -1039,9 +1039,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         the pool store, is token authority for those sources; a row with no
         token material at all is refused for the same reason.
         """
-        if self.provider not in ("anthropic", "xai-oauth"):
+        if self.provider not in ("anthropic", "openai-codex", "xai-oauth"):
             return entry
         is_anthropic = self.provider == "anthropic"
+        display = {"anthropic": "Anthropic", "openai-codex": "Codex", "xai-oauth": "xAI"}[self.provider]
         if is_anthropic and is_borrowed_credential_source(entry.source, self.provider):
             return entry
         try:
@@ -1057,14 +1058,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if stored.access_token != entry.access_token or stored.refresh_token != entry.refresh_token:
                 logger.debug(
                     "Pool entry %s: adopting %s OAuth tokens rotated by another pool instance",
-                    entry.id, "Anthropic" if is_anthropic else "xAI",
+                    entry.id, display,
                 )
                 self._replace_entry(entry, stored)
                 return stored
         except Exception as exc:
             logger.debug(
                 "Failed to sync %s OAuth entry from credential pool: %s",
-                "Anthropic" if is_anthropic else "xAI", exc,
+                display, exc,
             )
         return entry
 
@@ -1256,7 +1257,15 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # the winner's rotated token and skips the POST.
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
-                synced = self._sync_entry_from_auth_store(entry)
+                # Pool-only device-code credentials have no provider singleton.
+                # Re-read this row before spending its single-use refresh token.
+                synced = self._sync_entry_from_pool_store(entry)
+                synced = self._sync_entry_from_auth_store(synced)
+                if (
+                    synced.access_token != entry.access_token
+                    or synced.refresh_token != entry.refresh_token
+                ) and not self._entry_needs_refresh(synced):
+                    return synced
                 if synced is not entry and not force and not self._entry_needs_refresh(synced):
                     return synced
                 return self._refresh_entry_impl(synced, force=force)

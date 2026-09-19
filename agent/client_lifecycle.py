@@ -578,7 +578,25 @@ class ClientLifecycleMixin:
             return False
         singleton_key = str(singleton_now.get("api_key") or "").strip()
         old_key = str(self.api_key or "").strip()
-        if singleton_key and old_key and singleton_key != old_key:
+        # A pool-only resolver can return a new bearer for the same persistent
+        # credential row. Compare stable IDs; another row still fails closed.
+        same_pool_credential = False
+        active_entry_id = getattr(self, "_credential_pool_entry_id", None)
+        if (
+            self.provider == "openai-codex"
+            and singleton_now.get("source") == "credential_pool"
+            and isinstance(active_entry_id, str)
+            and active_entry_id
+            and singleton_key
+        ):
+            try:
+                from agent.credential_pool import load_pool
+                same_pool_credential = (
+                    load_pool(self.provider).entry_id_for_api_key(singleton_key) == active_entry_id
+                )
+            except Exception as exc:
+                logger.debug("Codex persisted pool identity lookup failed: %s", exc)
+        if singleton_key and old_key and singleton_key != old_key and not same_pool_credential:
             logger.debug(
                 "%s singleton tokens differ from the active api_key; skipping singleton force-refresh to avoid "
                 "silent account swap. Reactive credential rotation should go through the pool.", self.provider,
@@ -592,6 +610,17 @@ class ClientLifecycleMixin:
         api_key, base_url = creds.get("api_key"), creds.get("base_url")
         if not _valid_credential_pair(api_key, base_url):
             return False
+        if same_pool_credential and str(api_key).strip() != singleton_key:
+            try:
+                same_pool_credential = (
+                    load_pool(self.provider).entry_id_for_api_key(str(api_key).strip()) == active_entry_id
+                )
+            except Exception as exc:
+                logger.debug("Codex final pool identity lookup failed: %s", exc)
+                same_pool_credential = False
+            if not same_pool_credential:
+                logger.debug("Codex pool token changed rows during refresh; refusing account swap")
+                return False
         # No NEW token minted (the resolver returns the same stale token when refresh fails) → False.
         if old_key and api_key.strip() == old_key:
             logger.debug("%s credential refresh returned the same token; refresh likely failed silently", self.provider)

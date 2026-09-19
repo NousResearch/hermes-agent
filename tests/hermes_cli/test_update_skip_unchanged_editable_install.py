@@ -29,6 +29,7 @@ def repo(tmp_path):
         GIT + ["config", "user.email", "t@example.com"], cwd=tmp_path, check=True
     )
     subprocess.run(GIT + ["config", "user.name", "t"], cwd=tmp_path, check=True)
+    subprocess.run(GIT + ["config", "commit.gpgSign", "false"], cwd=tmp_path, check=True)
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'hermes'\n")
     (tmp_path / "agent").mkdir()
     (tmp_path / "agent" / "__init__.py").write_text("")
@@ -66,6 +67,55 @@ def test_new_submodule_in_mapped_package_skips_the_reinstall(repo):
     _commit(repo, "new submodule")
 
     assert _editable_install_is_current(GIT, repo, before) is True
+
+
+@pytest.mark.parametrize("source,destination", [
+    (None, "new_module.py"),
+    ("cli.py", None),
+    ("cli.py", "renamed.py"),
+    ("agent/__init__.py", "new_module.py"),
+    ("cli.py", "agent/cli.py"),
+])
+def test_root_module_inventory_change_forces_reinstall(repo, source, destination):
+    """The editable finder must be refreshed when its root module names change."""
+    before = _head(repo)
+    if source is None:
+        (repo / destination).write_text("x = 1\n", encoding="utf-8")
+    elif destination is None:
+        (repo / source).unlink()
+    else:
+        (repo / source).rename(repo / destination)
+    _commit(repo, "change root module inventory")
+
+    assert _editable_install_is_current(GIT, repo, before) is False
+
+
+@pytest.mark.parametrize("source,destination,stage,expected", [
+    (None, "new_module.py", False, False),
+    (None, "new_module.py", True, False),
+    ("cli.py", None, False, False),
+    ("cli.py", "renamed.py", False, False),
+    ("cli.py", "renamed.py", True, False),
+    ("cli.py", "cli.py", False, True),
+    (None, "agent/new_module.py", False, True),
+])
+def test_restored_autostash_inventory_controls_reinstall(repo, source, destination, stage, expected):
+    """Reinstall decisions include local inventory restored after a source-only pull."""
+    before = _head(repo)
+    if source is None or source == destination:
+        (repo / destination).write_text("x = 2\n", encoding="utf-8")
+    elif destination is None:
+        (repo / source).unlink()
+    else:
+        (repo / source).rename(repo / destination)
+    if stage:
+        subprocess.run(GIT + ["add", "-A"], cwd=repo, check=True)
+    subprocess.run(GIT + ["stash", "push", "--include-untracked"], cwd=repo, check=True)
+    (repo / "agent" / "update.py").write_text("x = 3\n", encoding="utf-8")
+    _commit(repo, "source-only update")
+    subprocess.run(GIT + ["stash", "pop", "--index"], cwd=repo, check=True)
+
+    assert _editable_install_is_current(GIT, repo, before) is expected
 
 
 @pytest.mark.parametrize(

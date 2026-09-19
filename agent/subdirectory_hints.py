@@ -53,26 +53,64 @@ def _first_hint_file(directory: Path):
 
 
 _NAV_COMMANDS = frozenset({"cd", "pushd"})
+_DIR_STACK_COMMANDS = _NAV_COMMANDS | {"popd"}
 _SHELL_OPERATORS = frozenset({"&&", "||", "|", ";", "&", ";;", "|&", "(", ")"})
 
 
-def _nav_targets(cmd: str) -> list:
-    """Operands of `cd` / `pushd` that begin a shell segment. `cd -` and bare `cd` yield nothing."""
+def _nav_destination(operand: Optional[str], cwd: Path, previous: Path) -> Path:
+    """Where a `cd` / `pushd` lands: no operand = HOME, ``-`` = the previous cwd, else the operand
+    against *cwd*. Logical like the shell's own cwd (``normpath``, no symlink walk) — the caller
+    resolves. ``os.path.expanduser`` rather than ``Path.expanduser``: the latter raises without a
+    resolvable HOME (#43963, #45401) and this runs outside ``_add_path_candidate``'s guard."""
+    if operand == "-":
+        return previous
+    target = Path(os.path.expanduser("~" if operand is None else operand))
+    return target if target.is_absolute() else Path(os.path.normpath(cwd / target))
+
+
+def _nav_targets(cmd: str, start_dir: Path) -> list:
+    """Directories `cd` / `pushd` enters, each resolved against the cwd its OWN segment runs in.
+
+    The shell carries its cwd from one segment to the next, so every hop after the first is
+    relative to the previous one: ``cd backend && cd src`` enters ``<start>/backend/src``, and
+    resolving each operand against *start_dir* instead silently names a different directory when
+    ``<start>/src`` also exists. A bare `cd`, `cd -` and `popd` move that cwd without naming a
+    project subdirectory, so they yield no target; `pushd` / `(` save the cwd `popd` / `)` restores.
+    """
     lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
     except ValueError:
         return []
-    targets, segment_start = [], True
+    targets, saved = [], []
+    cwd = previous = start_dir
+    segment_start = True
     for idx, token in enumerate(tokens):
         if token in _SHELL_OPERATORS:
+            if token == "(":
+                saved.append(cwd)
+            elif token == ")" and saved:
+                cwd, previous = saved.pop(), cwd
             segment_start = True
             continue
-        if segment_start and token in _NAV_COMMANDS:
-            operand = next((t for t in tokens[idx + 1:] if t in _SHELL_OPERATORS or not t.startswith("-")), None)
-            if operand and operand not in _SHELL_OPERATORS:
-                targets.append(operand)
+        if segment_start and token in _DIR_STACK_COMMANDS:
+            if token == "popd":
+                if saved:
+                    cwd, previous = saved.pop(), cwd
+            else:
+                # Flags (`cd -P dir`) are skipped, but a lone `-` IS the operand; reaching an
+                # operator first means the command had no operand at all.
+                operand = next((t for t in tokens[idx + 1:]
+                                if t in _SHELL_OPERATORS or t == "-" or not t.startswith("-")), None)
+                if operand in _SHELL_OPERATORS:
+                    operand = None
+                if token == "pushd":
+                    saved.append(cwd)
+                destination = _nav_destination(operand, cwd, previous)
+                if operand not in (None, "-"):
+                    targets.append(destination)
+                cwd, previous = destination, cwd
         segment_start = False
     return targets
 
@@ -151,8 +189,8 @@ class SubdirectoryHintTracker:
         # it; the operand of a navigation command is a path by construction (#11032). Only a `cd` at the
         # START of a shell segment counts (`echo cd backend` is prose); punctuation-aware tokenizing keeps
         # a quoted `'backend;'` literal while splitting bare `backend;ls` at the operator.
-        for target in _nav_targets(cmd):
-            self._add_path_candidate(target, candidates)
+        for target in _nav_targets(cmd, self.working_dir):
+            self._add_path_candidate(str(target), candidates)
         for token in tokens:
             if token.startswith(("-", "http://", "https://", "git@")) or ("/" not in token and "." not in token):
                 continue

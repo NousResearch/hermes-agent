@@ -93,6 +93,30 @@ class TestSubdirectoryHintTracker:
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         assert tracker.check_tool_call("terminal", {"command": command}) is None
 
+    def test_chained_cd_resolves_each_hop_against_the_previous_one(self, project):
+        """A shell carries its cwd across `&&`, so the second hop of `cd backend && cd src` is
+        backend/src. Resolving every hop against working_dir instead names a DIFFERENT directory
+        whenever the same name also exists at the root, and injects that one's rules (#11032)."""
+        (project / "backend" / "src" / "AGENTS.md").write_text("Backend src rules", encoding="utf-8")
+        (project / "src").mkdir()
+        (project / "src" / "AGENTS.md").write_text("Root src rules", encoding="utf-8")
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("terminal", {"command": "cd backend && cd src && ls"}) or ""
+        assert "Backend src rules" in result
+        assert "Root src rules" not in result
+
+    @pytest.mark.parametrize("command", ["pushd backend && popd && cd frontend",
+                                         "(cd backend && ls) && cd frontend"])
+    def test_popd_and_a_subshell_return_the_cwd_to_the_outer_directory(self, project, command):
+        """`popd` and a subshell's `)` put the cwd back where the hop started, so the trailing
+        `cd frontend` is still the working dir's frontend/, never backend/frontend/."""
+        (project / "backend" / "frontend").mkdir()
+        (project / "backend" / "frontend" / "AGENTS.md").write_text("Nested frontend rules", encoding="utf-8")
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("terminal", {"command": command}) or ""
+        assert "Frontend rules" in result
+        assert "Nested frontend rules" not in result
+
     def test_relative_path(self, project):
         """Relative paths resolved against working_dir."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

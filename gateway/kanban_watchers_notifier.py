@@ -198,6 +198,7 @@ class _Collector:
         self.gc_due = gc_due
         self.gc_retention_days = gc_retention_days
         self.deliveries: list[dict] = []
+        self.query_ok = True
         self.include_unowned = runner._owns_kanban_dispatcher_lock()
         self.profile_adapters = getattr(runner, "_profile_adapters", {})
         self.notifier_profiles = {notifier_profile}
@@ -259,6 +260,7 @@ class _Collector:
                 logger.info("kanban notifier: purged %d stale done/blocked-task subscription(s) on board %s (retention %dd)",
                             _purged, slug, self.gc_retention_days)
         except Exception as _gc_exc:
+            self.query_ok = False
             logger.debug("kanban notifier: stale-sub GC failed for board %s: %s", slug, _gc_exc)
 
     def _claim_for_sub(self, conn: Any, slug: str, sub: dict) -> Optional[dict]:
@@ -292,6 +294,7 @@ class _Collector:
         try:
             conn = _kbc().connect(board=slug)
         except Exception as exc:
+            self.query_ok = False
             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
             return
         try:
@@ -310,22 +313,40 @@ class _Collector:
                         self.deliveries.append(claimed)
                 except Exception as sub_exc:
                     # One bad subscription must not block the rest of the tick.
+                    self.query_ok = False
                     logger.warning("kanban notifier: subscription for %s on board %s failed: %s",
                                    sub.get("task_id"), slug, sub_exc)
         finally:
             conn.close()
 
 
-def _notifier_collect(runner: Any, kb: Any, *, notifier_profile: Optional[str], gc_due: bool, gc_retention_days: int) -> list[dict]:
+class _NotifierCollectResult(list):
+    """List-compatible deliveries with a cache-safety outcome."""
+
+    def __init__(self, deliveries: list[dict], *, query_ok: bool) -> None:
+        super().__init__(deliveries)
+        self.query_ok = query_ok
+
+
+def _notifier_collect(
+    runner: Any,
+    kb: Any,
+    *,
+    notifier_profile: Optional[str],
+    gc_due: bool,
+    gc_retention_days: int,
+) -> _NotifierCollectResult:
     """Claim unseen terminal events for every owned subscription on every board.
 
     Each gateway polls only subscriptions owned by profiles whose adapters it
     hosts; legacy rows without a profile stamp are visible only to the process
     holding the singleton dispatcher lock.
     """
-    return _Collector(
+    collector = _Collector(
         runner, kb, notifier_profile=notifier_profile, gc_due=gc_due, gc_retention_days=gc_retention_days,
-    ).collect()
+    )
+    deliveries = collector.collect()
+    return _NotifierCollectResult(deliveries, query_ok=collector.query_ok)
 
 
 # --- Per-event message formatting: kind -> (msg, wake_handoff, wake_review_detail) ---

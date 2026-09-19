@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 from typing import List, Optional
+from xml.etree import ElementTree
 
 from hermes_cli.cli_output import (
     print_info as _print_info, print_success as _print_success, print_warning as _print_warning)
@@ -47,6 +48,13 @@ _CUA_INSTALL_SH_URL = (
     "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh")
 _CUA_MANUAL_README = "https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md"
 _UPGRADE_CMD = "hermes computer-use install --upgrade"
+
+# Logon task install.ps1 / `cua-driver autostart enable` register for `cua-driver serve`.
+_WINDOWS_CUA_TASK_NAME = "cua-driver-serve"
+# The installer always wraps the daemon in a PowerShell launcher
+# (`powershell.exe -NoProfile -WindowStyle Hidden … Start-Process <cua-driver> serve`), so a task
+# action whose executable is anything else was swapped in by the user.
+_WINDOWS_CUA_TASK_LAUNCHERS = frozenset({"powershell", "powershell.exe", "pwsh", "pwsh.exe"})
 
 
 def _run_text(cmd: list, *, timeout, capture_output: bool = True,
@@ -501,11 +509,82 @@ def _cua_driver_autostart_registered_windows() -> bool:
     if sys.platform != "win32":
         return False
     try:
-        return subprocess.run(["schtasks.exe", "/Query", "/TN", "cua-driver-serve"],
+        return subprocess.run(["schtasks.exe", "/Query", "/TN", _WINDOWS_CUA_TASK_NAME],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               timeout=10).returncode == 0
     except Exception:
         return False
+
+
+def _decode_windows_task_xml(raw) -> str:
+    """Decode ``schtasks /XML`` output, which is UTF-16 (with or without a BOM) on Windows.
+    A probe result that is neither text nor bytes (`schtasks` can only produce those) decodes to
+    "" — the task definition is unreadable, which callers treat as "no task to preserve"."""
+    if not isinstance(raw, (str, bytes, bytearray)):
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16", "replace")
+    text = raw.decode("utf-8-sig", "replace")
+    # A BOM-less UTF-16 document decodes to NUL-stuffed ASCII above; retry it as UTF-16.
+    return raw.decode("utf-16", "replace") if "\x00" in text else text
+
+
+def _cua_task_xml_windows() -> Optional[str]:
+    """The registered `cua-driver-serve` definition, or None when it is not registered.
+    Read-only query: a failure (usually "task not found") reports no task."""
+    try:
+        result = subprocess.run(["schtasks.exe", "/Query", "/TN", _WINDOWS_CUA_TASK_NAME, "/XML"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+    except Exception as e:
+        logger.debug("cua-driver task XML query failed: %s", e)
+        return None
+    if result.returncode != 0:
+        return None
+    return _decode_windows_task_xml(result.stdout or "")
+
+
+def _cua_task_action_windows(xml: str) -> Optional[tuple]:
+    """``(Command, Arguments)`` of the task's first Exec action, or None when it cannot be read.
+    The document carries an encoding declaration that ElementTree rejects on str input, and the
+    element namespace is not worth matching exactly, so strip the declaration and compare local
+    names."""
+    if not xml:
+        return None
+    try:
+        root = ElementTree.fromstring(re.sub(r"^\s*<\?xml[^>]*\?>", "", xml, count=1))
+    except ElementTree.ParseError as e:
+        logger.debug("cua-driver task XML parse failed: %s", e)
+        return None
+    actions = [el for el in root.iter() if el.tag.rsplit("}", 1)[-1] == "Exec"]
+    if not actions:
+        return None
+    command, arguments = "", ""
+    for child in actions[0]:
+        local, text = child.tag.rsplit("}", 1)[-1], (child.text or "")
+        if local == "Command":
+            command = text
+        elif local == "Arguments":
+            arguments = text
+    return command, arguments
+
+
+def _cua_driver_task_user_modified_windows() -> bool:
+    """Whether the registered task holds an action the user replaced.
+    Hermes refreshes the driver by re-running upstream's installer, and install.ps1 re-registers an
+    existing task even under ``-NoAutoStart`` (#108400) — which reverts a hand-swapped action (e.g.
+    a windowless ``wscript.exe`` launcher silencing the logon console flash) to the installer's
+    visible one. An action the installer registered is a PowerShell launcher; anything else is a
+    user edit that must survive. An action we cannot classify counts as user-owned: a definition we
+    cannot read must not be silently rewritten either."""
+    xml = _cua_task_xml_windows()
+    if not xml:
+        return False  # no task registered — nothing to preserve
+    action = _cua_task_action_windows(xml)
+    if action is None:
+        return True
+    return os.path.basename(action[0].strip().strip('"')).lower() not in _WINDOWS_CUA_TASK_LAUNCHERS
 
 
 def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> bool:
@@ -668,10 +747,18 @@ def _unattended_installer_preflight(install_cmd: list, is_windows: bool):
                     "(will retry on the next update).")
         return None
     if is_windows:
-        # -NoAutoStart skips Register-CuaDriverAutostart — the ONLY branch of install.ps1 that
-        # self-elevates (UAC). Cost: an existing cua-driver-serve task keeps pointing at the
-        # previous binary until the next interactive upgrade. Scriptblock invocation (not `| iex`)
-        # is what lets us pass the parameter.
+        # install.ps1 re-registers an existing cua-driver-serve task even under -NoAutoStart, which
+        # reverts an action the user swapped in (#108400). Look at the task first: a customized
+        # action makes this refresh skip, because no installer flag can be trusted to leave it
+        # alone and re-registering it needs the elevation an unattended run must not request.
+        if _cua_driver_task_user_modified_windows():
+            _print_info("    cua-driver-serve task holds a customized action — skipping this "
+                        "refresh so the installer cannot re-register it.")
+            _print_info("    Upstream's install.ps1 rewrites an existing task even under "
+                        f"-NoAutoStart. Refresh with: {_UPGRADE_CMD}")
+            return None
+        # -NoAutoStart keeps the installer out of its self-elevating -AutoStart branch (UAC).
+        # Scriptblock invocation (not `| iex`) is what lets us pass the parameter.
         install_cmd = [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
             f"$sc = irm {_CUA_INSTALL_PS1_URL}; & ([scriptblock]::Create($sc)) -NoAutoStart"]

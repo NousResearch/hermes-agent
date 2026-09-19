@@ -1758,3 +1758,147 @@ class TestUnattendedRefreshPreflights:
         joined = " ".join(cmd)
         assert "-NoAutoStart" not in joined
         assert "| iex" in joined
+
+
+class TestCustomizedAutostartTaskSurvivesRefresh:
+    """#108400: an existing `cua-driver-serve` task is re-registered by
+    install.ps1's `-NoAutoStart` branch, which reverts the action a user
+    swapped in (the windowless `wscript.exe` launcher that silences the logon
+    console flash). An unattended refresh must look at the task first and
+    leave a customized action alone — no argv it can pass upstream is trusted
+    to, and re-registering needs the elevation an unattended run must not ask
+    for.
+    """
+
+    # Task name / trigger / RunLevel untouched; only the action differs — the
+    # workaround from the issue, reduced to the Exec block that matters.
+    _USER_LAUNCHER_XML = (
+        '<?xml version="1.0" encoding="UTF-16"?>\n'
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+        ' <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType>'
+        "<RunLevel>HighestAvailable</RunLevel></Principal></Principals>\n"
+        ' <Actions Context="Author"><Exec>\n'
+        "    <Command>wscript.exe</Command>\n"
+        '    <Arguments>"C:\\Users\\demo\.cua-driver\\launcher-hidden.vbs"</Arguments>\n'
+        "  </Exec></Actions>\n"
+        "</Task>\n"
+    )
+    # What install.ps1 / `cua-driver autostart enable` register.
+    _INSTALLER_LAUNCHER_XML = (
+        '<?xml version="1.0" encoding="UTF-16"?>\n'
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+        ' <Actions Context="Author"><Exec>\n'
+        "    <Command>powershell.exe</Command>\n"
+        "    <Arguments>-NoProfile -WindowStyle Hidden -NonInteractive -Command "
+        '"Start-Process -FilePath ' "'C:\\Users\\demo\\.cua-driver\\packages\\current\\cua-driver.exe'"
+        " -ArgumentList 'serve' -WindowStyle Hidden\"</Arguments>\n"
+        "  </Exec></Actions>\n"
+        "</Task>\n"
+    )
+
+    @staticmethod
+    def _refresh(task_xml):
+        """Run an unattended Windows refresh with `task_xml` registered (None = no task)."""
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config_cua as tools_config
+
+        proc = MagicMock()
+        proc.communicate.return_value = ("ok", None)
+        proc.returncode = 0
+        info_calls, schtasks_calls = [], []
+
+        def fake_run(cmd, **kwargs):
+            if "schtasks.exe" in cmd:
+                schtasks_calls.append((list(cmd), kwargs))
+                return SimpleNamespace(returncode=0 if task_xml is not None else 1,
+                                       stdout=task_xml or "", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(tools_config, "_cua_install_lock_held", return_value=False), \
+             patch.object(tools_config, "_cua_release_endpoint_reachable", return_value=True), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config.shutil, "which", side_effect=lambda n: "/x/" + n), \
+             patch("subprocess.run", side_effect=fake_run), \
+             patch.object(tools_config.subprocess, "Popen", return_value=proc) as popen, \
+             patch.object(tools_config, "_print_success"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info",
+                          side_effect=lambda message: info_calls.append(message)):
+            ok = tools_config._run_cua_driver_installer(
+                label="Refreshing", verbose=False, show_progress=False, installer_timeout=120)
+        return ok, popen, info_calls, schtasks_calls
+
+    def test_customized_action_skips_the_refresh(self):
+        """The installer is never launched, and the only Task Scheduler call
+        is the read-only query: nothing overwrites the action."""
+        ok, popen, info, schtasks_calls = self._refresh(self._USER_LAUNCHER_XML)
+
+        assert ok is False
+        popen.assert_not_called()
+        assert [cmd for cmd, _ in schtasks_calls] == [
+            ["schtasks.exe", "/Query", "/TN", "cua-driver-serve", "/XML"]
+        ]
+        assert any("customized action" in message for message in info)
+        assert any("install --upgrade" in message for message in info)
+
+    def test_installer_registered_action_still_refreshes(self):
+        ok, popen, _, _ = self._refresh(self._INSTALLER_LAUNCHER_XML)
+
+        assert ok is True
+        popen.assert_called_once()
+        assert "-NoAutoStart" in " ".join(popen.call_args.args[0])
+
+    def test_absent_task_still_refreshes(self):
+        ok, popen, _, _ = self._refresh(None)
+
+        assert ok is True
+        popen.assert_called_once()
+
+
+class TestCuaTaskActionClassification:
+    """`schtasks /XML` decoding and the installer-launcher-vs-user-edit rule."""
+
+    @staticmethod
+    def _modified(xml):
+        from hermes_cli import tools_config_cua as tools_config
+
+        with patch.object(tools_config, "_cua_task_xml_windows", return_value=xml):
+            return tools_config._cua_driver_task_user_modified_windows()
+
+    def test_wscript_action_is_user_modified(self):
+        assert self._modified(TestCustomizedAutostartTaskSurvivesRefresh._USER_LAUNCHER_XML) is True
+
+    def test_powershell_action_is_installer_owned(self):
+        assert self._modified(
+            TestCustomizedAutostartTaskSurvivesRefresh._INSTALLER_LAUNCHER_XML) is False
+
+    def test_absent_task_is_not_modified(self):
+        assert self._modified(None) is False
+
+    def test_unparseable_action_is_treated_as_user_owned(self):
+        """A definition we cannot read must not be silently rewritten either."""
+        assert self._modified("<Task><Actions><Exec>") is True
+        assert self._modified("<Task><Settings/></Task>") is True
+
+    def test_action_ignores_the_encoding_declaration(self):
+        xml = TestCustomizedAutostartTaskSurvivesRefresh._USER_LAUNCHER_XML
+        from hermes_cli import tools_config_cua as tools_config
+
+        assert tools_config._cua_task_action_windows(xml) == (
+            "wscript.exe", '"C:\\Users\\demo\\.cua-driver\\launcher-hidden.vbs"')
+
+    def test_utf16_query_output_is_decoded(self):
+        from hermes_cli import tools_config_cua as tools_config
+
+        xml = TestCustomizedAutostartTaskSurvivesRefresh._USER_LAUNCHER_XML
+        assert tools_config._decode_windows_task_xml(xml.encode("utf-16")) == xml
+        assert tools_config._decode_windows_task_xml(xml.encode("utf-8")) == xml
+
+    def test_unusable_probe_result_reports_no_task(self):
+        """Neither text nor bytes cannot be a task definition, and a probe we
+        cannot read must not be mistaken for a registered task."""
+        from hermes_cli import tools_config_cua as tools_config
+
+        assert tools_config._decode_windows_task_xml(object()) == ""

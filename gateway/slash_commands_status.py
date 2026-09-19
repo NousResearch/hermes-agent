@@ -109,8 +109,10 @@ def _status_model_route(
                    {"base_url": _clean_str(active_override.get("base_url")),
                     "api_key": _clean_str(active_override.get("api_key"))}))
     routes.append((_clean_str(persisted_route.get("model")),
-                   _clean_str(persisted_route.get("billing_provider")), {}))
-    row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")), {})
+                   _clean_str(persisted_route.get("billing_provider")),
+                   {"base_url": _clean_str(persisted_route.get("billing_base_url"))}))
+    row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")),
+                 {"base_url": _clean_str(session_row.get("billing_base_url"))})
     # First fully-resolved (model AND provider) route wins; the SessionDB row is used even if partial.
     model_name, provider_name, route = next((r for r in routes if r[0] and r[1]), row_route)
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
@@ -254,9 +256,17 @@ class GatewayStatusCommandsMixin:
             # Same resolver /context uses (off-loop: it can probe /models). A window the resolver only
             # invented (unknown model → DEFAULT_FALLBACK_CONTEXT) stays hidden rather than being shown
             # as a real limit; the occupancy-only line below is honest for that case.
-            resolved = await self._resolve_route_context(source, model_name, route)
-            if resolved is not None and resolved.context_source != "default":
-                context_total = _int_value(resolved.context_length)
+            # Metadata is optional: bound the wait, even if its worker's probe is still running.
+            try:
+                resolved = await asyncio.wait_for(
+                    self._resolve_route_context(source, model_name, route), timeout=3.0)
+            except TimeoutError:
+                resolved = None
+            if (resolved is not None and resolved.context_source != "default"
+                    and isinstance(resolved.context_length, int)
+                    and not isinstance(resolved.context_length, bool)
+                    and resolved.context_length > 0):
+                context_total = resolved.context_length
 
         fields = build_status_fields(
             session_entry.session_id, None, session_row, title=title, model=model_name, provider=provider_name,

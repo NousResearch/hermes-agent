@@ -123,6 +123,48 @@ describe('ApprovalCard', () => {
     )
   })
 
+  it('calls respondToApproval with the session scope when Approve for session is clicked', async () => {
+    const { respondToApproval } = await import('@/store/inbox')
+    vi.mocked(respondToApproval).mockResolvedValue({ resolved: 1 })
+
+    render(
+      <ApprovalCard
+        approval={makeApproval({ allow_session: true, choices: ['once', 'session', 'deny'] })}
+        liveSessionId="live-1"
+      />
+    )
+    fireEvent.click(screen.getByText('Approve for session'))
+    expect(respondToApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        choice: 'session',
+        liveSessionId: 'live-1',
+        profile: 'test-profile',
+        requestId: 'req-1'
+      })
+    )
+  })
+
+  it('calls respondToApproval with the permanent scope when Always allow is clicked', async () => {
+    const { respondToApproval } = await import('@/store/inbox')
+    vi.mocked(respondToApproval).mockResolvedValue({ resolved: 1 })
+
+    render(
+      <ApprovalCard
+        approval={makeApproval({ allow_permanent: true, choices: ['once', 'always', 'deny'] })}
+        liveSessionId="live-1"
+      />
+    )
+    fireEvent.click(screen.getByText('Always allow'))
+    expect(respondToApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        choice: 'always',
+        liveSessionId: 'live-1',
+        profile: 'test-profile',
+        requestId: 'req-1'
+      })
+    )
+  })
+
   it('shows "Resolved" after successful response', async () => {
     const { respondToApproval } = await import('@/store/inbox')
     vi.mocked(respondToApproval).mockResolvedValue({ resolved: 1 })

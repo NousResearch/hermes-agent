@@ -236,3 +236,46 @@ test('an expired request persists in the inbox and the redo re-raises it', async
     await shot(page, 'live-10-redo-approved-command-ran.png')
   })
 })
+
+test('an expired request can be dismissed and stays gone', async () => {
+  test.setTimeout(480_000)
+
+  // Short approval timeout: the request must EXPIRE inside the test.
+  await withApp('expiry-dismiss', SHORT_TIMEOUT_APPROVALS, async (_fixture, page) => {
+    await sendPrompt(page, `Run the maintenance probe now. ${APPROVAL_COMMAND_TRIGGER}`)
+    await openInbox(page)
+
+    const row = page.locator('[data-panel-row]').first()
+    const approveOnce = page.getByRole('button', { name: 'Approve once', exact: true })
+
+    await expect(row).toBeVisible({ timeout: 15_000 })
+    await row.click()
+    await expect(approveOnce).toBeVisible({ timeout: 15_000 })
+
+    // Let it expire untouched, then dismiss the persisted record.
+    await expect(approveOnce).toHaveCount(0, { timeout: 90_000 })
+    const expired = page.getByText(/Expired .* timed out without an answer/)
+
+    await expect(expired).toBeVisible({ timeout: 30_000 })
+    await shot(page, 'live-11-expired-before-dismiss.png')
+
+    // Expiry raises the app's own "Approval timed out" toast, whose × shares the name
+    // Dismiss with the card's text button; the card's is the one with visible text.
+    await page.getByRole('button', { name: 'Dismiss', exact: true }).filter({ hasText: 'Dismiss' }).click()
+    await expect(expired).toHaveCount(0, { timeout: 30_000 })
+    await shot(page, 'live-12-expired-dismissed.png')
+
+    // The expiry toast, when it is up, floats over the row's center and would intercept a
+    // default click; close it if present and click the row near its left edge regardless.
+    const toastDismiss = page.getByRole('region', { name: 'Notifications' }).getByRole('button', { name: 'Dismiss', exact: true })
+
+    if ((await toastDismiss.count()) > 0) {
+      await toastDismiss.first().click({ timeout: 15_000 }).catch(() => {})
+    }
+
+    // Collapse and re-expand: a fresh details read must not resurrect it.
+    await row.click({ position: { x: 24, y: 12 } })
+    await row.click({ position: { x: 24, y: 12 } })
+    await expect(page.getByText(/Expired .* timed out without an answer/)).toHaveCount(0, { timeout: 15_000 })
+  })
+})

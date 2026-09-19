@@ -253,3 +253,83 @@ test('a live goal can be paused and resumed from the inbox panel', async () => {
     await shot(page, 'live-controls-7-goal-resumed.png')
   })
 })
+
+test('a live loop can be paused and resumed from the panel', async () => {
+  test.setTimeout(420_000)
+
+  await withApp('loop-controls', null, async (_fixture, page) => {
+    // Prime the session, then create a loop the same way a person does.
+    await sendPrompt(page, 'Hello. This is the loop controls test.')
+    await expect(page.getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 30_000 })
+
+    await page.getByRole('button', { name: 'Add files and actions', exact: true }).first().click()
+    await page.getByRole('menuitem', { name: /Create automation/ }).click()
+    await page.getByRole('button', { name: 'Loop', exact: true }).click()
+    await page.getByLabel('Loop prompt', { exact: true }).fill('Pause the loop from the panel')
+    await page.getByLabel('Interval', { exact: true }).fill('3600')
+    // A generous run limit: resuming a loop re-arms it to fire within ~5s, and a limit of 1
+    // would let that fire COMPLETE the loop (controls then disappear before we can resume).
+    await page.getByLabel(/Run limit/).fill('50')
+    await page.getByRole('button', { name: 'Start loop', exact: true }).click()
+    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30_000 })
+
+    await openInbox(page)
+
+    const row = page.locator('[data-panel-row]').first()
+
+    await expect(row).toBeVisible({ timeout: 15_000 })
+    await row.click()
+
+    const panel = page.locator('[data-overlay-surface]')
+    const pause = panel.getByRole('button', { name: 'Pause loop', exact: true })
+
+    await expect(pause).toBeVisible({ timeout: 15_000 })
+    await shot(page, 'live-controls-8-loop-in-panel.png')
+
+    await pause.click()
+    await expect(panel.getByRole('button', { name: 'Resume loop', exact: true })).toBeVisible({ timeout: 30_000 })
+    await shot(page, 'live-controls-9-loop-paused.png')
+
+    await panel.getByRole('button', { name: 'Resume loop', exact: true }).click()
+    await expect(panel.getByRole('button', { name: 'Pause loop', exact: true })).toBeVisible({ timeout: 30_000 })
+    await shot(page, 'live-controls-10-loop-resumed.png')
+  })
+})
+
+test('a live heartbeat can be paused and resumed from the panel', async () => {
+  test.setTimeout(420_000)
+
+  await withApp('heartbeat-controls', null, async (_fixture, page) => {
+    await sendPrompt(page, 'Hello. This is the heartbeat controls test.')
+    await expect(page.getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 30_000 })
+
+    await page.getByRole('button', { name: 'Add files and actions', exact: true }).first().click()
+    await page.getByRole('menuitem', { name: /Create automation/ }).click()
+    await page.getByRole('button', { name: 'Heartbeat', exact: true }).click()
+    await page.getByLabel('Heartbeat prompt', { exact: true }).fill('Pause the heartbeat from the panel')
+    await page.getByLabel('Interval', { exact: true }).fill('3600')
+    await page.getByRole('button', { name: 'Create heartbeat', exact: true }).click()
+    await expect(page.getByRole('dialog')).not.toBeVisible({ timeout: 30_000 })
+
+    await openInbox(page)
+
+    const row = page.locator('[data-panel-row]').first()
+
+    await expect(row).toBeVisible({ timeout: 15_000 })
+    await row.click()
+
+    const panel = page.locator('[data-overlay-surface]')
+    const pause = panel.getByRole('button', { name: 'Pause heartbeat', exact: true })
+
+    await expect(pause).toBeVisible({ timeout: 15_000 })
+    await shot(page, 'live-controls-11-heartbeat-in-panel.png')
+
+    await pause.click()
+    await expect(panel.getByRole('button', { name: 'Resume heartbeat', exact: true })).toBeVisible({ timeout: 30_000 })
+    await shot(page, 'live-controls-12-heartbeat-paused.png')
+
+    await panel.getByRole('button', { name: 'Resume heartbeat', exact: true }).click()
+    await expect(panel.getByRole('button', { name: 'Pause heartbeat', exact: true })).toBeVisible({ timeout: 30_000 })
+    await shot(page, 'live-controls-13-heartbeat-resumed.png')
+  })
+})

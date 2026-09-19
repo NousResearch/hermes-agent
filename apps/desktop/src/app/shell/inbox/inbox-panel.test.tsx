@@ -537,6 +537,51 @@ describe('InboxPanel', () => {
     ))
   })
 
+  it('dismiss removes the expired record through the store', async () => {
+    const item = makeItem({ expired_request_count: 1, session_key: 'sess-dismiss', title: 'Dismiss test' })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'amber',
+        counts: { needs_you: 1, running: 0, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    const { fetchInboxRequestDetails, dismissExpiredRequest } = await import('@/store/inbox')
+
+    vi.mocked(fetchInboxRequestDetails).mockResolvedValue({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: 'unavailable: no context',
+        errors: [], live_session_count: 0, profile: 'inbox-test-profile', session_key: 'sess-dismiss'
+      },
+      sessions: [{
+        approvals: [],
+        clarifications: [],
+        expired_requests: [{
+          command: 'rm -rf /tmp/hermes-e2e-approval-probe',
+          description: 'Delete scratch dir',
+          ended_at: Date.now() / 1000 - 60,
+          kind: 'approval',
+          outcome: 'timeout',
+          request_id: 'exp-3'
+        }],
+        live_session_ids: []
+      }]
+    })
+
+    renderPanel(entry)
+    clickRow('Dismiss test')
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+
+    await waitFor(() => expect(vi.mocked(dismissExpiredRequest)).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'exp-3', sessionKey: 'sess-dismiss' })
+    ))
+  })
+
   it('a refused redo (session not running) is shown, not swallowed', async () => {
     const item = makeItem({ expired_request_count: 1, session_key: 'sess-refused', title: 'Refused test' })
 
@@ -748,6 +793,46 @@ describe('InboxPanel', () => {
     await waitFor(() => expect(screen.getByText('Pause goal')).toBeTruthy())
     expect(screen.getByText('Pause loop')).toBeTruthy()
     expect(screen.getByText('Resume heartbeat')).toBeTruthy()
+  })
+
+  it('stored session keeps the controls usable and says they apply to stored state', async () => {
+    const item = makeItem({
+      goal: { status: 'active', title: 'Ship inbox' },
+      heartbeat: { status: 'paused' },
+      loop: { status: 'active' },
+      session_key: 'sess-stored',
+      title: 'Stored controls'
+    })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 1, running: 1, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'inbox-test-profile', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    const { fetchInboxRequestDetails } = await import('@/store/inbox')
+
+    vi.mocked(fetchInboxRequestDetails).mockResolvedValue({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: '', errors: [],
+        live_session_count: 0, profile: 'inbox-test-profile', session_key: 'sess-stored'
+      },
+      sessions: [{ approvals: [], clarifications: [], expired_requests: [], live_session_ids: [] }]
+    })
+
+    renderPanel(entry)
+    clickRow('Stored controls')
+
+    // With no live runtime the gateway pauses/resumes the persisted state, so the
+    // controls must stay actionable and say what they apply to.
+    await waitFor(() => expect(screen.getByText('Pause goal')).toBeTruthy())
+    expect(screen.getByText('Pause goal').closest('button')!.disabled).toBe(false)
+    expect(screen.getByText('Pause loop').closest('button')!.disabled).toBe(false)
+    expect(screen.getByText('Resume heartbeat').closest('button')!.disabled).toBe(false)
+    expect(screen.getAllByText("session isn't running — applies to stored state")).toHaveLength(3)
   })
 
   it('goal section states the goal, its criteria and the turn', async () => {

@@ -1123,6 +1123,72 @@ def _strategy_drop_fts_vacuum(conn: sqlite3.Connection) -> None:
     conn.execute("VACUUM")
 
 
+_TRANSCRIPT_SALVAGE_TABLE = "messages_salvage__115571"
+_TRANSCRIPT_CREATE_TABLE_RE = re.compile(
+    r"CREATE\s+TABLE\s+(\"messages\"|\[messages\]|`messages`|messages)\s*\(", re.IGNORECASE)
+
+
+def _salvage_messages_table(conn: sqlite3.Connection) -> int:
+    """Rebuild messages + its indexes inside *conn* (an offline scratch file).
+
+    Copies every messages row into a fresh table created from the live schema
+    SQL, requires exact row-count parity (a damaged b-tree that silently drops
+    rows must never swap in), then drops the damaged table and recreates the
+    saved index/trigger SQL verbatim. Raises on anything unexpected: the caller
+    discards the scratch file and fails closed. Returns the salvaged row count.
+    """
+    table_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'").fetchone()
+    if not table_row or not table_row[0]:
+        raise sqlite3.DatabaseError("messages table definition is unreadable; cannot salvage")
+    index_sqls = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages' "
+        "AND sql IS NOT NULL").fetchall()]
+    trigger_sqls = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'messages' "
+        "AND sql IS NOT NULL").fetchall()]
+    try:
+        src_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    except sqlite3.Error as exc:
+        raise sqlite3.DatabaseError("messages table unreadable (%s); cannot salvage" % exc) from exc
+    salvage_sql = _TRANSCRIPT_CREATE_TABLE_RE.sub(
+        "CREATE TABLE %s (" % _TRANSCRIPT_SALVAGE_TABLE, table_row[0], count=1)
+    if salvage_sql == table_row[0]:
+        raise sqlite3.DatabaseError("messages CREATE TABLE did not match the expected shape; refusing salvage")
+    conn.execute(salvage_sql)
+    try:
+        conn.execute("INSERT INTO %s SELECT * FROM messages ORDER BY id" % _TRANSCRIPT_SALVAGE_TABLE)
+    except sqlite3.Error as exc:
+        raise sqlite3.DatabaseError("messages row copy failed (%s); refusing partial salvage" % exc) from exc
+    dst_count = conn.execute("SELECT COUNT(*) FROM %s" % _TRANSCRIPT_SALVAGE_TABLE).fetchone()[0]
+    if dst_count != src_count:
+        raise sqlite3.DatabaseError(
+            "messages row-count mismatch after copy (%s live vs %s salvaged); refusing lossy rebuild"
+            % (src_count, dst_count))
+    conn.execute("DROP TABLE messages")
+    # The FTS *_src views dangle between DROP and RENAME; the stock RENAME
+    # revalidates them and fails, so skip the reference rewrite: the final
+    # name is identical, leaving every view/trigger/FK resolving as before.
+    conn.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        conn.execute("ALTER TABLE %s RENAME TO messages" % _TRANSCRIPT_SALVAGE_TABLE)
+    finally:
+        conn.execute("PRAGMA legacy_alter_table=OFF")
+    for sql in index_sqls:
+        conn.execute(sql)
+    for sql in trigger_sqls:
+        conn.execute(sql)
+    return dst_count
+
+
+def _strategy_salvage_messages(conn: sqlite3.Connection) -> None:
+    """Rebuild messages table and its indexes from canonical rows; fixes out-of-order
+    rowids and structural index damage while ensuring row-count parity."""
+    _reapply_durability_barriers(conn)
+    _salvage_messages_table(conn)
+    conn.commit()
+
+
 # (name, body, success log, failure log) in escalation order. failure log None =
 # final strategy: its failure lands in report["error"] instead of logged-and-skipped.
 _REPAIR_STRATEGIES = (
@@ -1130,6 +1196,9 @@ _REPAIR_STRATEGIES = (
      "state.db FTS in-place rebuild pass failed: %s"),
     ("reindex_btree", _strategy_reindex, "state.db B-tree indexes rebuilt via REINDEX: %s",
      "state.db REINDEX pass failed: %s"),
+    ("rebuild_messages_table", _strategy_salvage_messages,
+     "state.db messages table and indexes rebuilt from canonical rows: %s",
+     "state.db messages table rebuild pass failed: %s"),
     ("dedup_schema", _strategy_dedup_schema,
      "state.db schema repaired by de-duplicating sqlite_master (FTS index preserved): %s",
      "state.db dedup repair pass failed: %s"),
@@ -1158,3 +1227,204 @@ def _run_repair_strategies(db_path: Path, report: Dict[str, Any]) -> Dict[str, A
         if failure_msg is None:
             report["error"] = reason
     return report
+
+
+# ── Transcript-corruption repair (#115571) ────────────────────────────────────
+# A worker transcript write that hits structural damage in the messages table
+# or its idx_messages_* indexes used to fail with no repair attempted: the
+# transcript was lost on restart. This lane rebuilds messages + its indexes
+# into a fresh offline file and atomically swaps it in — but only after the
+# copy passes a full integrity_check AND messages row-count parity. Anything
+# else fails closed: the original file is never deleted, truncated, or written.
+_TRANSCRIPT_REBUILD_TMP_SUFFIX = ".transcript-rebuild.tmp"
+
+
+def _transcript_scoped_damage(integrity_lines, master_rows) -> "List[str]":
+    """Integrity lines implicating the messages table b-tree or a non-FTS
+    messages index. FTS-owned lines (messages_fts*) belong to the FTS
+    fail-open/rebuild ladder, never this lane. Unscoped lines (freelist,
+    sessions, bare malformed) do NOT count: without a transcript object the
+    rebuild cannot prove it healed anything, so callers fail closed."""
+    name_by_rootpage = {int(rp): name for rp, _type, name in master_rows if rp}
+    hits = []
+    for line in integrity_lines:
+        text = str(line)
+        if text.strip().lower() == "ok":
+            continue
+        if "messages_fts" in text.lower():
+            continue
+        if "idx_messages_" in text:
+            hits.append(text)
+            continue
+        tree = _INTEGRITY_TREE_RE.search(text)
+        if tree and name_by_rootpage.get(int(tree.group(1))) == "messages":
+            hits.append(text)
+    return hits
+
+
+def _transcript_integrity_verdict(db_path: Path) -> "Dict[str, Any]":
+    """Read-only integrity verdict: clean | transcript | unscoped | unverdictable.
+
+    ``transcript`` means at least one line names the messages table or a
+    non-FTS messages index. ``unverdictable`` (unopenable, unreadable schema,
+    a raising integrity_check) and ``unscoped`` both fail closed downstream.
+    """
+    try:
+        conn = sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=5.0)
+    except sqlite3.Error as exc:
+        return {"status": "unverdictable", "damage": [],
+                "error": "cannot open %s read-only: %s" % (db_path, exc)}
+    try:
+        try:
+            master_rows = [tuple(r) for r in conn.execute(
+                "SELECT rootpage, type, name FROM sqlite_master WHERE rootpage > 0").fetchall()]
+        except sqlite3.Error as exc:
+            return {"status": "unverdictable", "damage": [],
+                    "error": "sqlite_master unreadable on %s: %s" % (db_path, exc)}
+        try:
+            raw = [str(r[0]) for r in conn.execute("PRAGMA integrity_check").fetchall()]
+        except sqlite3.DatabaseError as exc:
+            return {"status": "unverdictable", "damage": [],
+                    "error": "PRAGMA integrity_check raised on %s: %s" % (db_path, exc)}
+        lines = [ln for row in raw for ln in str(row).splitlines() if ln.strip()]
+        if all(line.strip().lower() == "ok" for line in lines):
+            return {"status": "clean", "damage": [], "error": None}
+        damage = _transcript_scoped_damage(lines, master_rows)
+        if not damage:
+            return {"status": "unscoped", "damage": [],
+                    "error": "integrity damage on %s names no messages-table/index object "
+                             "(%s); refusing transcript rebuild" % (db_path, "; ".join(lines[:3]))}
+        return {"status": "transcript", "damage": damage, "error": None}
+    finally:
+        conn.close()
+
+
+def _fsync_parent_dir(path: Path) -> None:
+    """Best-effort directory fsync so the atomic swap survives a crash."""
+    try:
+        fd = os.open(os.fspath(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _rebuild_transcript_offline_locked(db_path: Path, report: "Dict[str, Any]") -> None:
+    """Snapshot -> salvage messages -> verify -> atomic swap. Raises on any
+    failure with the original file untouched (only the scratch tmp is ever
+    written, and it is unlinked on failure). Sets report on success."""
+    tmp_path = db_path.with_name(db_path.name + _TRANSCRIPT_REBUILD_TMP_SUFFIX)
+    with contextlib.suppress(OSError):
+        tmp_path.unlink()  # leftover scratch from a killed repair; never the live file
+    try:
+        # Consistent page-level snapshot (folds committed WAL frames); the live
+        # file is only ever read, never written, by this lane.
+        _copy_database_snapshot(db_path, tmp_path)
+        with _repair_conn(tmp_path) as conn:
+            salvaged = _salvage_messages_table(conn)
+            problems = [str(r[0]) for r in conn.execute("PRAGMA integrity_check").fetchall()
+                        if r and str(r[0]).lower() != "ok"]
+            if problems:
+                raise sqlite3.DatabaseError(
+                    "rebuilt copy still fails integrity_check (%s); refusing swap"
+                    % "; ".join(problems[:3]))
+        live_count = _transcript_table_count(db_path)
+        if live_count is not None and live_count != salvaged:
+            raise sqlite3.DatabaseError(
+                "messages row-count drifted during rebuild (%s live vs %s rebuilt); refusing swap"
+                % (live_count, salvaged))
+        os.replace(tmp_path, db_path)
+        _fsync_parent_dir(db_path)
+        # The old generation's sidecars reference replaced pages: a stale -wal
+        # replayed onto the swapped image is corruption, so drop them (open
+        # FDs keep working on the unlinked inodes; new opens mint fresh ones).
+        for sidecar in _sidecars(db_path):
+            with contextlib.suppress(OSError):
+                sidecar.unlink()
+        report["repaired"] = True
+        report["strategy"] = "transcript_rebuild_and_swap"
+        logger.warning("state.db transcript repair rebuilt messages (%d rows) + indexes into a "
+                       "verified copy and swapped it in: %s", salvaged, db_path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+
+
+def _transcript_table_count(db_path: Path) -> "Optional[int]":
+    """Best-effort live messages COUNT(*); None when the table is unreadable
+    (the salvage copy already proved parity against its own source read)."""
+    try:
+        conn = sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=5.0)
+    except sqlite3.Error:
+        return None
+    try:
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+        except sqlite3.Error:
+            return None
+    finally:
+        conn.close()
+
+
+def repair_transcript_corruption_offline(db_path) -> "Dict[str, Any]":
+    """Rebuild a transcript-damaged state.db offline; fail closed otherwise.
+
+    Runs a read-only ``PRAGMA integrity_check`` verdict first: clean images
+    report ``strategy="clean"`` untouched, and damage that names no
+    messages-table/index object (or an unreadable schema/check) reports an
+    error with the file bit-identical. A confirmed transcript verdict takes
+    the cross-process repair lock, re-probes (a queued repairer may have
+    healed it), then snapshots, salvages messages + indexes into a scratch
+    file and atomically swaps only a fully-verified copy into place. The
+    original is never deleted or truncated on failure. Returns
+    ``{repaired, strategy, damage, error}``.
+    """
+    report: "Dict[str, Any]" = {"repaired": False, "strategy": None, "damage": [], "error": None}
+    db_path = Path(db_path)
+    if not db_path.exists():
+        report["error"] = "%s does not exist" % db_path
+        return report
+    verdict = _transcript_integrity_verdict(db_path)
+    if verdict["status"] == "clean":
+        report["strategy"] = "clean"
+        logger.warning("state.db transcript repair: integrity_check clean on %s; nothing to do",
+                       db_path)
+        return report
+    if verdict["status"] != "transcript":
+        report["error"] = verdict["error"] or "no transcript-scoped damage proven; refusing rebuild"
+        logger.warning("state.db transcript repair skipped on %s: %s", db_path, report["error"])
+        return report
+    report["damage"] = verdict["damage"]
+    if _persistent_repair_attempts_exhausted(db_path):
+        report["error"] = _persistent_repair_exhausted_error(db_path)
+        logger.warning("state.db transcript repair skipped on %s: repair budget exhausted", db_path)
+        return report
+    with _cross_process_repair_lock(db_path) as holding_lock:
+        if not holding_lock:
+            report["error"] = ("could not obtain the state.db repair lock (held by another process); "
+                               "skipped transcript rebuild to avoid racing a concurrent repairer")
+            logger.warning("state.db transcript repair skipped on %s: %s", db_path, report["error"])
+            return report
+        healed = _transcript_integrity_verdict(db_path)
+        if healed["status"] == "clean":
+            report["repaired"], report["strategy"] = True, "repaired_by_other_process"
+            report["damage"] = []
+            _record_repair_outcome(db_path, repaired=True)
+            return report
+        if healed["status"] == "transcript":
+            report["damage"] = healed["damage"]
+        try:
+            _rebuild_transcript_offline_locked(db_path, report)
+        except Exception as exc:
+            report["error"] = "transcript rebuild failed on %s: %s" % (db_path, exc)
+            logger.warning("state.db transcript repair failed on %s: %s", db_path, exc)
+        _record_repair_outcome(db_path, repaired=bool(report.get("repaired")))
+    return report
+
+
+repair_transcript_corruption = repair_transcript_corruption_offline
+

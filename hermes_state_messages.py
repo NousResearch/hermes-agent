@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,6 +17,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+from hermes_state_errors import StateDbCorruptError
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -276,6 +278,43 @@ class SessionMessagesMixin:
             conn.execute(
                 f"UPDATE sessions SET message_count = message_count + {inc} WHERE id = ?", (*params, session_id))
 
+    def _execute_transcript_write(self, fn):
+        """Run a transcript write; on structural corruption attempt the offline
+        messages/index rebuild once, then retry once (#115571). Fail closed:
+        anything but a verified swap re-raises the original quarantine error,
+        and the original file is never deleted or truncated."""
+        corrupt_exc = None
+        try:
+            return self._execute_write(fn, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        except StateDbCorruptError as exc:
+            corrupt_exc = exc
+        except sqlite3.DatabaseError:
+            raise
+
+        with self._lock:
+            self._close_connection_quietly(self._conn)
+            self._conn = None
+            while self._evict_one_idle_read_conn():
+                pass
+
+        from hermes_state_repair import repair_transcript_corruption_offline
+        report = repair_transcript_corruption_offline(self.db_path)
+        if not report.get("repaired"):
+            raise corrupt_exc
+
+        with self._lock:
+            try:
+                self._conn = self._open_writer_conn()
+            except Exception:
+                self._db_corrupt = True
+                raise
+            self._db_corrupt = False
+            self._db_corrupt_reason = ""
+            self._record_db_file_identity()
+            while self._evict_one_idle_read_conn():
+                pass
+        return self._execute_write(fn, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
     def append_message(
         self, session_id: str, role: str, content: str = None, tool_name: str = None, tool_calls: Any = None,
         tool_call_id: str = None, token_count: int = None, finish_reason: str = None, reasoning: str = None,
@@ -303,7 +342,7 @@ class SessionMessagesMixin:
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
-        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return self._execute_transcript_write(_do)
 
     def append_delegation_delivery(self, session_id: str, content: str, metadata: Dict[str, Any]) -> int:
         """Record a detached API result once, between client turns, including replay after rotation.
@@ -337,7 +376,7 @@ class SessionMessagesMixin:
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
             return msg_id
 
-        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return self._execute_transcript_write(_do)
 
     def append_messages_batch(
         self, session_id: str, messages: List[Dict[str, Any]], compression_lock_holder: Optional[str] = None,
@@ -361,7 +400,7 @@ class SessionMessagesMixin:
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
-        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return self._execute_transcript_write(_do)
 
     def set_latest_matching_message_display_kind(self, session_id: str, *, role: str, content: str,
                                                  display_kind: str,

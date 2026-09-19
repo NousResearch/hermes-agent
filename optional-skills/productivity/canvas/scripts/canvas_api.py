@@ -48,15 +48,15 @@ def _paginated_get(url, params=None, max_items=200):
     """Fetch all pages up to max_items, following Canvas Link headers."""
     results = []
     while url and len(results) < max_items:
-        resp = requests.get(url, headers=_headers(), params=params, timeout=30)
-        resp.raise_for_status()
-        results.extend(resp.json())
-        params = None  # params are included in the Link URL for subsequent pages
-        url = None
-        link = resp.headers.get("Link", "")
-        for part in link.split(","):
-            if 'rel="next"' in part:
-                url = part.split(";")[0].strip().strip("<>")
+        with requests.get(url, headers=_headers(), params=params, timeout=30) as resp:
+            resp.raise_for_status()
+            results.extend(resp.json())
+            params = None  # params are included in the Link URL for subsequent pages
+            url = None
+            link = resp.headers.get("Link", "")
+            for part in link.split(","):
+                if 'rel="next"' in part:
+                    url = part.split(";")[0].strip().strip("<>")
     return results[:max_items]
 
 

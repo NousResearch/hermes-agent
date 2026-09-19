@@ -685,8 +685,15 @@ def _apply_accounting_notification(result: TurnResult, note: dict) -> None:
 _APPROVAL_CHOICE_TO_DECISION = {"once": "accept", "session": "acceptForSession", "always": "acceptForSession"}
 
 
-def _approval_choice_to_codex_decision(choice: str) -> str:
-    """Map a Hermes approval choice onto codex's approval decision wire value."""
+def _approval_choice_to_codex_decision(choice: Any) -> str:
+    """Map only exact Hermes approval choices onto codex wire values.
+
+    Approval callbacks are a generic seam, so malformed values must never reach
+    a truthiness check or an unguarded mapping lookup.  Anything other than one
+    of the known string choices is an explicit decline.
+    """
+    if not isinstance(choice, str):
+        return "decline"
     return _APPROVAL_CHOICE_TO_DECISION.get(choice, "decline")
 
 

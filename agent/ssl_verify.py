@@ -33,6 +33,20 @@ def _context_for_ca_bundle(ca_path: str) -> ssl.SSLContext:
         return ctx
 
 
+def resolve_ca_bundle_path(*, ca_bundle: Optional[str] = None) -> Optional[str]:
+    """Return the configured, existing CA bundle path, or ``None``."""
+    effective_ca = (ca_bundle or "").strip() or next(
+        (v for v in (os.getenv(var, "").strip() for var in _CA_BUNDLE_ENV_VARS) if v), "",
+    )
+    if not effective_ca:
+        return None
+    ca_path = str(Path(effective_ca).expanduser())
+    if os.path.isfile(ca_path):
+        return ca_path
+    logger.warning("CA bundle path does not exist: %s — falling back to default certificates", effective_ca)
+    return None
+
+
 def resolve_httpx_verify(*, ca_bundle: Optional[str] = None, ssl_verify: Any = None, base_url: str = "") -> bool | ssl.SSLContext:
     """Resolve httpx ``verify``: ``ssl_verify: false`` > explicit ``ca_bundle`` >
     CA-bundle env vars > ``True`` (certifi default). ``base_url`` only feeds the warning."""
@@ -45,12 +59,5 @@ def resolve_httpx_verify(*, ca_bundle: Optional[str] = None, ssl_verify: Any = N
         )
         return False
 
-    effective_ca = (ca_bundle or "").strip() or next(
-        (v for v in (os.getenv(var, "").strip() for var in _CA_BUNDLE_ENV_VARS) if v), "",
-    )
-    if effective_ca:
-        ca_path = str(Path(effective_ca).expanduser())
-        if os.path.isfile(ca_path):
-            return _context_for_ca_bundle(ca_path)
-        logger.warning("CA bundle path does not exist: %s — falling back to default certificates", effective_ca)
-    return True
+    ca_path = resolve_ca_bundle_path(ca_bundle=ca_bundle)
+    return _context_for_ca_bundle(ca_path) if ca_path else True

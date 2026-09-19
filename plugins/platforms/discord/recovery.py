@@ -20,7 +20,7 @@ _RETENTION_DAYS = 30
 
 
 class DiscordRecoveryStore:
-    """Small profile-scoped SQLite ledger for completed Discord messages."""
+    """Small profile-scoped ledger for completed Discord messages."""
 
     def __init__(self, hermes_home: Path | None = None) -> None:
         self._lock = threading.Lock()
@@ -36,13 +36,20 @@ class DiscordRecoveryStore:
         try:
             with self._lock:
                 path = self.path()
-                conn = sqlite3.connect(path, timeout=0.1)
+                from hermes_state_backend import resolve_database_settings
+                settings = resolve_database_settings(self._hermes_home / "state.db")
+                if settings.backend == "postgres":
+                    from hermes_cli.postgres_util import connect
+                    conn = connect(settings, "discord_recovery", initialize=self._initialize)
+                else:
+                    conn = sqlite3.connect(path, timeout=0.1)
                 try:
                     if not self._initialized:
                         self._initialize(conn)
                         self._initialized = True
-                        with suppress(OSError):
-                            os.chmod(path, 0o600)
+                        if settings.backend == "sqlite":
+                            with suppress(OSError):
+                                os.chmod(path, 0o600)
                     result = fn(conn)
                     conn.commit()
                     return result
@@ -53,8 +60,9 @@ class DiscordRecoveryStore:
             return default
 
     def _initialize(self, conn: sqlite3.Connection) -> None:
-        from hermes_state_wal import apply_wal_with_fallback
-        apply_wal_with_fallback(conn, db_label="discord_recovery.db")
+        if getattr(conn, "backend", "sqlite") != "postgres":
+            from hermes_state_wal import apply_wal_with_fallback
+            apply_wal_with_fallback(conn, db_label="discord_recovery.db")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS discord_messages (
                 message_id TEXT PRIMARY KEY, channel_id TEXT, thread_id TEXT, parent_channel_id TEXT,
@@ -66,7 +74,7 @@ class DiscordRecoveryStore:
             );
             CREATE TABLE IF NOT EXISTS discord_recovery_scans (
                 scan_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, completed_at TEXT, status TEXT NOT NULL,
-                channels TEXT NOT NULL, window_seconds REAL NOT NULL, limit_count INTEGER NOT NULL,
+                channels TEXT NOT NULL, window_seconds DOUBLE PRECISION NOT NULL, limit_count INTEGER NOT NULL,
                 scanned INTEGER NOT NULL DEFAULT 0, missed INTEGER NOT NULL DEFAULT 0,
                 dispatched INTEGER NOT NULL DEFAULT 0, error TEXT
             );

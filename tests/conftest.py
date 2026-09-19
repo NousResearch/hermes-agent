@@ -998,6 +998,61 @@ def tmp_dir(tmp_path):
 
 
 @pytest.fixture()
+def fake_os_name(monkeypatch):
+    """Fake ``os.name`` for the module under test WITHOUT poisoning the host.
+
+    ``pathlib.Path.__new__`` reads the live ``os.name`` on every call, so the
+    tempting ``monkeypatch.setattr("os.name", "posix")`` on a Windows host
+    makes every later ``Path(...)`` raise ``NotImplementedError: cannot
+    instantiate 'PosixPath' on your system`` — including the ones pytest
+    itself makes while formatting a report. One unrelated failure in the
+    worker then becomes a suite-wide INTERNALERROR that hides every real
+    result. Patching ``pathlib.Path`` instead is worse: ``__new__`` guards on
+    ``cls is Path``, so rebinding that name skips the flavour swap and yields
+    ``AttributeError: type object 'Path' has no attribute '_flavour'``.
+
+    This swaps only the ``os`` *reference inside the modules under test* for a
+    proxy that reports the requested ``name`` and forwards everything else to
+    the real module — so ``monkeypatch.setattr("os.getpgid", ...)`` in the
+    same test still works, and the host's own ``os.name`` never changes.
+
+    Usage::
+
+        def test_posix_branch(fake_os_name):
+            fake_os_name("posix", tools.browser_tool_install)
+    """
+    import types
+
+    class _OsProxy(types.ModuleType):
+        def __init__(self, name_value: str):
+            super().__init__("os")
+            self.__dict__["_name_value"] = name_value
+
+        def __getattr__(self, attr):
+            if attr == "name":
+                return self.__dict__["_name_value"]
+            return getattr(os, attr)
+
+    def _apply(name: str, *modules, **attrs):
+        if not modules:
+            raise AssertionError(
+                "fake_os_name(name, *modules) needs the module(s) under test; "
+                "faking the global os.name breaks pathlib on Windows."
+            )
+        proxy = _OsProxy(name)
+        # POSIX-only names (os.getpgid/os.killpg) don't exist on a Windows host, so
+        # monkeypatch.setattr("os.getpgid", ...) raises AttributeError there. Pass them
+        # as keywords instead: fake_os_name("posix", mod, getpgid=lambda pid: 999).
+        for attr, value in attrs.items():
+            proxy.__dict__[attr] = value
+        for module in modules:
+            monkeypatch.setattr(module, "os", proxy)
+        return proxy
+
+    return _apply
+
+
+@pytest.fixture()
 def mock_config():
     """Return a minimal hermes config dict suitable for unit tests."""
     return {

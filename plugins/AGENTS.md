@@ -58,6 +58,22 @@ bare names resolve through the catalog or error.
 tool) and `run_agent.py` (lifecycle). When a plugin changes a default, add a migration guard keyed
 on an "existing config" signal (`_explicitly_configured`) so existing users keep the old default.
 
+**Model-provider discovery is re-entrant, and reads of it must not import.** `list_providers()`
+imports every profile module, so anything those modules do at import time runs *inside* discovery.
+Two consequences, both silent:
+
+- **A profile doing I/O at import widens the window** in which other code sees a partial provider
+  list. `hermes_cli.config._inject_profile_env_vars()` calls `list_providers()` while `config`
+  itself is still importing, and the one-shot registration pass in `hermes_cli.auth` can then run
+  against that partial list — a profile that sorts **last** never reaches `PROVIDER_REGISTRY`,
+  reports unauthenticated, and disappears from the model picker while resolving fine from
+  `--provider <name>`. Mint credentials lazily (on first read), never in module scope, and make any
+  such registration pass re-runnable (`hermes_cli.auth.ensure_plugin_providers_registered()`).
+- **Reading the transport registry must not import it.** `agent.transports` pulls the transport
+  modules, whose import chain re-enters provider discovery; code reached *from* discovery (e.g.
+  `hermes_cli.providers.determine_api_mode`) reads it through `sys.modules` instead
+  (`is_registered_api_mode()`), never with an import.
+
 **Lifecycle hooks fire under the owning profile's scope, and the caller binds it.**
 `on_session_start`/`on_session_end`/`sync_turn`/`shutdown` are invoked from the turn (bound) AND
 from eviction, shutdown, `tui_gateway` teardown and cron completion (bound by the caller via

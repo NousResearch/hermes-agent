@@ -166,6 +166,24 @@ def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     return is_truthy_value(_cfg().get("inherit_mcp_toolsets"), default=True)
 
+def _get_child_toolsets() -> Optional[List[str]]:
+    """Return the operator profile, or None for parent inheritance."""
+    raw = _cfg().get("child_toolsets")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        logger.warning("delegation.child_toolsets must be a list or null; disabling child tools")
+        return []
+    normalized: List[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            logger.warning("delegation.child_toolsets contains an invalid entry; disabling child tools")
+            return []
+        name = item.strip()
+        if name not in normalized:
+            normalized.append(name)
+    return normalized
+
 def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 

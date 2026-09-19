@@ -1275,6 +1275,8 @@ DEFAULT_CONFIG = {
         # {"extra_body": {"provider": {"sort": "throughput"}}}. Explicit values win OVER
         # runtime/parent overrides (extra_body deep-merged 1 level).
         "request_overrides": {},
+        # Operator-controlled child profile; null preserves parent inheritance.
+        "child_toolsets": None,
         # compression_threshold_tokens: optional absolute cap on a subagent's compaction TRIGGER
         # (not the request payload), applied as the lower of this and the child's ratio threshold.
         # 0 (default) = no subagent-specific cap; children compact where the parent does — the lower

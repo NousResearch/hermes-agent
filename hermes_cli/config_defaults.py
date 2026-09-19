@@ -1835,8 +1835,11 @@ DEFAULT_CONFIG = {
         # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
         # run it as a separate unit or don't want the gateway spawning workers.
         "dispatch_in_gateway": True,
-        # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
-        # sdlc-review skill. Disable where every review is done manually from the dashboard.
+        # Auto-claim tasks in the review column and spawn the assigned profile with the
+        # sdlc-review skill force-loaded. The skill must exist in the ASSIGNEE profile's
+        # home (profile homes do not inherit the default home's bundled skills); a profile
+        # that cannot load it gets the card auto-blocked with an install hint instead of a
+        # pre-boot crash loop. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

@@ -20,7 +20,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.auth_constants import (
-    _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
+    _decode_jwt_claims, AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
     CODEX_OAUTH_USER_AGENT, CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, _codex_err, httpx)
 from utils import env_float
@@ -93,19 +93,34 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     auth_store = _load_auth_store_maybe_locked(_lock)
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
-        raise _codex_err(_NO_CREDENTIALS_MSG.format(relogin=_codex_relogin_command()),
-                         "codex_auth_missing", relogin=True)
+        raise _codex_err(
+            _NO_CREDENTIALS_MSG.format(relogin=_codex_relogin_command()),
+            "codex_auth_missing",
+            relogin=True,
+            category=AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL,
+        )
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
         raise _codex_err(
             f"Codex auth state is missing tokens. Run `{_codex_relogin_command()}` to re-authenticate.",
-            "codex_auth_invalid_shape", relogin=True)
+            "codex_auth_invalid_shape",
+            relogin=True,
+            category=AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL,
+        )
     if not _nonempty_str(tokens.get("access_token")):
-        raise _codex_err(_MISSING_ACCESS_TOKEN_MSG.format(relogin=_codex_relogin_command()),
-                         "codex_auth_missing_access_token", relogin=True)
+        raise _codex_err(
+            _MISSING_ACCESS_TOKEN_MSG.format(relogin=_codex_relogin_command()),
+            "codex_auth_missing_access_token",
+            relogin=True,
+            category=AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL,
+        )
     if not _nonempty_str(tokens.get("refresh_token")):
-        raise _codex_err(_MISSING_REFRESH_TOKEN_MSG.format(relogin=_codex_relogin_command()),
-                         "codex_auth_missing_refresh_token", relogin=True)
+        raise _codex_err(
+            _MISSING_REFRESH_TOKEN_MSG.format(relogin=_codex_relogin_command()),
+            "codex_auth_missing_refresh_token",
+            relogin=True,
+            category=AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL,
+        )
     return {"tokens": tokens, "last_refresh": state.get("last_refresh")}
 
 
@@ -476,7 +491,7 @@ def resolve_codex_runtime_credentials(
     """
     from hermes_cli.auth import (
         _auth_store_lock, _codex_access_token_is_expiring, _probe_codex_quota_restored,
-        _read_codex_tokens)
+        _nonempty_str, _read_codex_tokens)
     read_error: Optional[AuthError] = None
     data = None
     try:
@@ -516,9 +531,19 @@ def resolve_codex_runtime_credentials(
             in_future = isinstance(reset_at, (int, float)) and reset_at > time.time()
             raise _codex_quota_exhausted_error(int(reset_at - time.time()) if in_future else None)
         if read_error is not None:
+            # A pool entry means credential material was obtained, even if every entry is
+            # currently cooled down/quarantined. Do not misclassify that state as absence.
+            with suppress(Exception):
+                entries = _read_codex_pool_entries()
+                if any(_nonempty_str(entry.get("access_token")) for entry in _codex_pool_dicts(entries)):
+                    read_error.category = None
             raise read_error
-        raise _codex_err(_NO_CREDENTIALS_MSG.format(relogin=_codex_relogin_command()),
-                         "codex_auth_missing", relogin=True)
+        raise _codex_err(
+            _NO_CREDENTIALS_MSG.format(relogin=_codex_relogin_command()),
+            "codex_auth_missing",
+            relogin=True,
+            category=AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL,
+        )
     tokens = dict(data["tokens"])
     access_token = _stripped(tokens.get("access_token"))
     refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
@@ -662,6 +687,13 @@ def _codex_pool_dicts(entries: Optional[List[Any]]) -> Iterator[Dict[str, Any]]:
     for entry in entries or ():
         if isinstance(entry, dict):
             yield entry
+
+
+def _read_codex_pool_entries() -> Optional[List[Any]]:
+    """Read ``credential_pool.openai-codex`` from the active auth store (None when absent)."""
+    from hermes_cli.auth import read_credential_pool
+    entries = read_credential_pool("openai-codex")
+    return entries if entries else None
 
 
 def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:

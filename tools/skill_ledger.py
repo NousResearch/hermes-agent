@@ -299,7 +299,8 @@ def append_entry(
 def compact_ledger() -> Tuple[int, int, int]:
     """Rewrite the ledger with every entry's unchanged paths dropped (see ``_delta``); ids, order and
     rollback semantics are preserved. Returns ``(entries, bytes_before, bytes_after)``. Atomic: the
-    new file replaces the old only once fully written. Malformed lines are kept verbatim."""
+    new file replaces the old only once fully written. Malformed lines are kept verbatim. Follow with
+    ``gc_blobs()``: dropped references leave blobs nothing can restore."""
     path = ledger_path()
     try:
         raw = path.read_bytes()
@@ -324,6 +325,41 @@ def compact_ledger() -> Tuple[int, int, int]:
     tmp.write_bytes(data)
     os.replace(tmp, path)
     return kept, len(raw), len(data)
+
+
+def gc_blobs() -> Tuple[int, int]:
+    """Delete blobs no ledger entry references; returns ``(deleted, bytes_freed)``. The store was
+    write-only: on one install 98.9% of 47k blobs (1.18 GB) were unreachable after a venv walk
+    (#107539). Malformed ledger lines abort the sweep (nothing deleted) — an unreadable entry
+    may still hold references."""
+    blobs = blobs_dir()
+    if not blobs.is_dir():
+        return 0, 0
+    referenced: set = set()
+    try:
+        lines = ledger_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            return 0, 0
+        for item in (row.get("before") or []) + (row.get("after") or []):
+            referenced.add(str(item.get("sha256", "")))
+    deleted = freed = 0
+    for blob in blobs.iterdir():
+        if blob.is_file() and blob.name not in referenced:
+            try:
+                size = blob.stat().st_size
+                blob.unlink()
+            except OSError:
+                continue
+            deleted += 1
+            freed += size
+    return deleted, freed
 
 
 def record_mutation(

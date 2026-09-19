@@ -21,7 +21,7 @@ _KEYED_PROBES = {
     "FAL": ("https://fal.ai/api/models?page=1", "FAL_KEY", "Key"),
 }
 # TTS/STT providers that never touch the network (nothing to probe).
-_LOCAL_AUDIO_PROVIDERS = {"", "local", "edge", "neutts", "kittentts", "piper"}
+_LOCAL_AUDIO_PROVIDERS = {"", "local", "edge", "neutts", "kittentts", "piper", "luxtts"}
 _AUDIO_PROBES = {
     "openai": ("https://api.openai.com/v1/models", "OPENAI_API_KEY", "Bearer"),
     "groq": ("https://api.groq.com/openai/v1/models", "GROQ_API_KEY", "Bearer"),

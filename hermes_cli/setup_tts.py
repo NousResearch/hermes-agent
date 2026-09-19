@@ -70,6 +70,15 @@ def _install_kittentts_deps() -> bool:
         "kittentts", ["-U", wheel_url, "soundfile", "--quiet"], f"uv pip install -U '{wheel_url}' soundfile")
 
 
+def _install_luxtts_deps() -> bool:
+    """Install the optional LuxTTS ZipVoice package without downloading its model."""
+    source = "git+https://github.com/ysharma3501/LuxTTS.git"
+    requirements = "https://raw.githubusercontent.com/ysharma3501/LuxTTS/master/requirements.txt"
+    _setup._info(None, "Installing LuxTTS; its model downloads only on first use...", None)
+    return _pip_install_tts_package("zipvoice", ["-U", "-r", requirements, source, "soundfile", "--quiet"],
+                                    f"uv pip install -U -r '{requirements}' '{source}' soundfile")
+
+
 def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are stored locally, so TTS/STT setup can skip the
     API-key prompt for users who logged in via ``hermes model`` -> xAI Grok OAuth."""
@@ -115,7 +124,8 @@ _TTS_PROVIDER_CHOICES = [
     ("mistral", "Mistral Voxtral TTS (multilingual, native Opus, needs API key)"),
     ("gemini", "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)"),
     ("neutts", "NeuTTS (local on-device, free, ~300MB model download)"),
-    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)")]
+    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)"),
+    ("luxtts", "LuxTTS (local voice cloning, 48 kHz, needs a consented reference recording)")]
 # Short label = menu label minus its parenthetical ("Edge TTS", "Mistral Voxtral TTS", ...).
 _TTS_PROVIDER_LABELS = {key: label.split(" (")[0] for key, label in _TTS_PROVIDER_CHOICES}
 # provider -> (env vars that satisfy it, env var to save, prompt, success line, pre-prompt hint)
@@ -140,7 +150,11 @@ _TTS_LOCAL_PROVIDERS = {
     "kittentts": ("kittentts", "KittenTTS",
                   ("KittenTTS is lightweight (~25-80MB, CPU-only, no API key required).",
                    "Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo"),
-                  "Install KittenTTS now?", _install_kittentts_deps)}
+                  "Install KittenTTS now?", _install_kittentts_deps),
+    "luxtts": ("zipvoice", "LuxTTS",
+                ("LuxTTS runs locally and generates 48 kHz cloned speech.",
+                 "You must configure tts.luxtts.ref_audio with a recording you have permission to use."),
+                "Install LuxTTS now?", _install_luxtts_deps)}
 
 
 def _tts_api_key_step(selected: str) -> str:

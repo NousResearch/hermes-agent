@@ -2,7 +2,7 @@
 """Text-to-speech tool: config resolution, built-in provider dispatch, output policy, registration.
 
 Built-ins: Edge (free default), ElevenLabs, OpenAI, DeepInfra, MiniMax, Mistral, Gemini, xAI,
-local NeuTTS / KittenTTS / Piper; plus ``type: command`` providers under ``tts.providers.<name>``
+local NeuTTS / KittenTTS / Piper / LuxTTS; plus ``type: command`` providers under ``tts.providers.<name>``
 and plugin-registered ones. Output is Opus (.ogg) on voice-bubble platforms, MP3 elsewhere.
 Sibling ``tts_tool_*`` modules hold backends/delivery/lifecycle; they read the seams defined
 here (config, provider resolution, lazy SDK importers) through ``_origin()`` at call time.
@@ -42,7 +42,7 @@ from tools.tts_tool_delivery import (
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
-from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
+from tools.tts_tool_local import _generate_kittentts, _generate_luxtts, _generate_neutts, _generate_piper_tts
 from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
@@ -74,6 +74,7 @@ _import_mistral_client = _sdk_importer("mistralai.client", "Mistral", feature="t
 _import_sounddevice = _sdk_importer("sounddevice")
 _import_kittentts = _sdk_importer("kittentts", "KittenTTS")
 _import_piper = _sdk_importer("piper", "PiperVoice")  # piper-tts wheels embed espeak-ng
+_import_luxtts = _sdk_importer("zipvoice.luxvoice", "LuxTTS")
 
 
 def _importable(importer: Callable[[], Any]) -> bool:
@@ -94,6 +95,7 @@ def _package_installed(name: str) -> bool:
 def _check_neutts_available() -> bool: return _package_installed("neutts")
 def _check_kittentts_available() -> bool: return _package_installed("kittentts")
 def _check_piper_available() -> bool: return _package_installed("piper")
+def _check_luxtts_available() -> bool: return _package_installed("zipvoice")
 
 
 # --- Defaults / config ---
@@ -148,7 +150,7 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
-_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
+_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper", "luxtts"})
 
 
 # --- Built-in provider dispatch ---
@@ -177,7 +179,11 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
     "piper": (lambda: _importable(_import_piper), "Piper (local)", "_generate_piper_tts",
               "Piper provider selected but 'piper-tts' package not installed. "
               "Run 'hermes tools' and select Piper under TTS, or install manually: "
-              "pip install piper-tts")}
+              "pip install piper-tts"),
+    "luxtts": (lambda: _importable(_import_luxtts), "LuxTTS (local, 48 kHz)", "_generate_luxtts",
+                "LuxTTS provider selected but its ZipVoice package is not installed. "
+                "Run 'hermes setup tts' and choose LuxTTS, or install manually: "
+                "pip install 'git+https://github.com/ysharma3501/LuxTTS.git' soundfile")}
 
 
 def _error_json(message: str) -> str:
@@ -498,7 +504,8 @@ _BUILTIN_REQUIREMENTS: Dict[str, Callable[[], bool]] = {
     "mistral": lambda: _importable(_import_mistral_client) and bool(_resolve_provider_key("MISTRAL_API_KEY", "mistral")),
     "neutts": lambda: _check_neutts_available(),
     "kittentts": lambda: _check_kittentts_available(),
-    "piper": lambda: _check_piper_available()}
+    "piper": lambda: _check_piper_available(),
+    "luxtts": lambda: _check_luxtts_available()}
 
 
 def check_tts_requirements() -> bool:
@@ -559,7 +566,7 @@ TTS_SCHEMA = {
                 "description": (
                     "Optional TTS provider override. Accepts built-in names "
                     "(edge, openai, elevenlabs, minimax, xai, mistral, gemini, "
-                    "neutts, kittentts, piper), user-declared command provider "
+                    "neutts, kittentts, piper, luxtts), user-declared command provider "
                     "names from tts.providers.<name>, or plugin-registered names. "
                     "When omitted, the configured tts.provider from config.yaml is used."
                 )

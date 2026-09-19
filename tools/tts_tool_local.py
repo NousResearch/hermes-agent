@@ -1,4 +1,4 @@
-"""Local on-device TTS engines for ``tools.tts_tool``: NeuTTS, Piper, KittenTTS.
+"""Local on-device TTS engines for ``tools.tts_tool``: NeuTTS, Piper, KittenTTS, LuxTTS.
 
 All three synthesize WAV natively; :func:`_finalize_wav_output` converts/renames to the requested
 container. Piper and KittenTTS keep loaded models in small LRU caches registered in
@@ -33,8 +33,11 @@ _TTS_MODEL_CACHE_MAX = 3
 # (+cuda flag); KittenTTS on model name.
 _piper_voice_cache: Dict[str, Any] = {}
 _kittentts_model_cache: Dict[str, Any] = {}
+# A LuxTTS entry holds both the loaded model and its encoded reference audio. Encoding a reference
+# can be noticeably slower than sentence synthesis, so it belongs in the same lifecycle cache.
+_luxtts_model_cache: Dict[str, Any] = {}
 _LOCAL_TTS_MODEL_CACHES: Dict[str, Dict[str, Any]] = {
-    "piper": _piper_voice_cache, "kittentts": _kittentts_model_cache}
+    "piper": _piper_voice_cache, "kittentts": _kittentts_model_cache, "luxtts": _luxtts_model_cache}
 
 
 def _tts_cache_get_or_load(cache: Dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
@@ -191,4 +194,80 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
     import soundfile as sf
     wav_path = _wav_sidecar_path(output_path)
     sf.write(wav_path, audio, 24000)
+    return _finalize_wav_output(wav_path, output_path)
+
+
+# --- LuxTTS (local ZipVoice voice cloning, 48 kHz) ---
+DEFAULT_LUXTTS_MODEL = "YatharthS/LuxTTS"
+
+
+def _resolve_luxtts_device(requested: Any) -> str:
+    """Return an available LuxTTS device, falling back safely to CPU.
+
+    This deliberately avoids importing torch until LuxTTS is selected. A missing torch or an
+    unavailable accelerator must not make the optional provider prevent voice-mode startup.
+    """
+    device = str(requested or "auto").lower().strip()
+    if device not in {"auto", "cpu", "cuda", "mps"}:
+        logger.warning("[LuxTTS] Unknown device '%s'; falling back to CPU", device)
+        return "cpu"
+    if device == "cpu":
+        return "cpu"
+    try:
+        import torch
+        cuda = bool(torch.cuda.is_available())
+        mps = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+    except Exception:  # torch is an optional LuxTTS dependency
+        cuda = mps = False
+    if device == "cuda":
+        if cuda:
+            return "cuda"
+        logger.warning("[LuxTTS] CUDA requested but unavailable; using CPU")
+        return "cpu"
+    if device == "mps":
+        if mps:
+            return "mps"
+        logger.warning("[LuxTTS] MPS requested but unavailable; using CPU")
+        return "cpu"
+    return "cuda" if cuda else "mps" if mps else "cpu"
+
+
+def _load_luxtts_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Any, Dict[str, Any]]:
+    """Load LuxTTS and encode its explicit reference recording once per configuration."""
+    LuxTTS = _origin()._import_luxtts()
+    config = _section(tts_config, "luxtts")
+    model_name = str(config.get("model") or DEFAULT_LUXTTS_MODEL)
+    reference = str(config.get("ref_audio") or "").strip()
+    if not reference:
+        raise RuntimeError("LuxTTS requires tts.luxtts.ref_audio: an explicit, consented reference recording")
+    reference_path = Path(reference).expanduser()
+    if not reference_path.is_file():
+        raise RuntimeError(f"LuxTTS reference audio does not exist: {reference_path}")
+    device = _resolve_luxtts_device(config.get("device", "auto"))
+    duration = float(config.get("ref_duration", 5))
+    rms = float(config.get("rms", 0.01))
+    cache_key = f"{model_name}::{reference_path.resolve()}::{device}::{duration}::{rms}"
+
+    def _load() -> Tuple[Any, Any]:
+        logger.info("[LuxTTS] Loading model %s on %s", model_name, device)
+        model = LuxTTS(model_name, device=device)
+        prompt = model.encode_prompt(str(reference_path), duration=duration, rms=rms)
+        logger.info("[LuxTTS] Model and reference prompt loaded")
+        return model, prompt
+
+    model, prompt = _tts_cache_get_or_load(_luxtts_model_cache, cache_key, _load)
+    return model, prompt, config
+
+
+def _generate_luxtts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Synthesize one completed sentence with LuxTTS and retain its native 48 kHz WAV."""
+    model, prompt, config = _load_luxtts_for_config(tts_config)
+    audio = model.generate_speech(
+        text, prompt, num_steps=int(config.get("num_steps", 4)),
+        t_shift=float(config.get("t_shift", 0.9)), speed=float(config.get("speed", 1.0)),
+        return_smooth=bool(config.get("return_smooth", False)))
+    import soundfile as sf
+    wav_path = _wav_sidecar_path(output_path)
+    waveform = audio.numpy().squeeze() if hasattr(audio, "numpy") else audio
+    sf.write(wav_path, waveform, 48000)
     return _finalize_wav_output(wav_path, output_path)

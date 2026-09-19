@@ -1019,7 +1019,7 @@ DEFAULT_CONFIG = {
     # NeuTTS/KittenTTS 2000).
     "tts": {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
-        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local) | "luxtts" (local)
         "provider": "edge",
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -1074,6 +1074,16 @@ DEFAULT_CONFIG = {
             # (~/.hermes/cache/piper-voices/), use_cuda, length_scale (2.0 = twice as slow),
             # noise_scale, noise_w_scale, volume, normalize_audio.
             "voice": "en_US-lessac-medium",
+        },
+        "luxtts": {
+            # Explicitly provide a recording you have permission to use; no bundled default exists.
+            "ref_audio": "",
+            "model": "YatharthS/LuxTTS",
+            "device": "auto",  # auto, cpu, cuda, or mps; unavailable accelerators fall back to CPU
+            "ref_duration": 5,
+            "num_steps": 4,
+            "t_shift": 0.9,
+            "speed": 1.0,
         },
         "deepinfra": {
             "model": "",  # empty = first tts-tagged model from the live catalog

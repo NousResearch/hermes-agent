@@ -1,0 +1,32 @@
+name: camel-guard
+version: "1.0.0"
+manifest_version: 2
+api_version: 1
+description: "Opt-in CaMeL-style capability guard for untrusted tool data."
+author: "nativ3ai"
+license: MIT
+homepage: "https://github.com/nativ3ai/hermes-agent-camel"
+tags: [security, prompt-injection, guardrails]
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_reset
+config_schema:
+  mode:
+    type: str
+    default: off
+    description: "off, monitor, or enforce; invalid values remain off"
+  trace_enabled:
+    type: bool
+    default: false
+    description: "Persist bounded metadata-only policy decisions"
+  trace_max_events:
+    type: int
+    default: 200
+    description: "Maximum persisted decision events per profile"
+  classifier_timeout_seconds:
+    type: float
+    default: 12.0
+    description: "Trusted-intent classifier timeout, clamped to 2-120 seconds"

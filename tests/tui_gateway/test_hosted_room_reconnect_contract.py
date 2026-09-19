@@ -130,7 +130,9 @@ def test_exact_rpc_uses_requested_profile_and_preserves_sibling_grant(
             is True
         )
     assert "error" in method(1, {"profile": "default", "grant": winning})
-    for db in (root / "state.db", profile / "state.db"):
+    # Shared coordination never writes the launch profile's session database.
+    assert not (root / "state.db").exists()
+    for db in (root / "shared-state.db", profile / "state.db"):
         assert hosted_rooms.room_grant_is_revoked(
             db,
             claims=hosted_room_peer.decode_room_grant(

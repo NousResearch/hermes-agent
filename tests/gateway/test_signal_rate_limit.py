@@ -1,8 +1,11 @@
 """Tests for the SignalAttachmentScheduler token-bucket simulator."""
 import asyncio
+import threading
+import time
 
 import pytest
 
+from gateway.platforms import signal_rate_limit as rate_limit_module
 from gateway.platforms.signal_rate_limit import (
     SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
     SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
@@ -146,4 +149,34 @@ class TestSingleton:
         s1 = get_scheduler()
         s2 = get_scheduler()
         assert s1 is s2
+
+    def test_concurrent_first_touch_returns_one_instance(self, monkeypatch):
+        """Regression for #24744: racing first touches must converge on one scheduler."""
+        workers = 16
+        gate = threading.Barrier(workers)
+        constructed: list = []
+        real_cls = rate_limit_module.SignalAttachmentScheduler
+
+        class SlowScheduler(real_cls):  # type: ignore[valid-type, misc]
+            def __init__(self, *args, **kwargs):
+                time.sleep(0.05)  # hold the check-then-act window open
+                super().__init__(*args, **kwargs)
+                constructed.append(1)
+
+        monkeypatch.setattr(rate_limit_module, "SignalAttachmentScheduler", SlowScheduler)
+        results: list = []
+
+        def worker():
+            gate.wait(timeout=10)  # release every thread into get_scheduler at once
+            results.append(get_scheduler())
+
+        threads = [threading.Thread(target=worker) for _ in range(workers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        assert not any(t.is_alive() for t in threads)
+        assert len(constructed) == 1
+        assert len(results) == workers
+        assert all(r is results[0] for r in results)
 

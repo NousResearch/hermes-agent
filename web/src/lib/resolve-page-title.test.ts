@@ -53,4 +53,22 @@ describe("resolvePageTitle", () => {
     expect(resolvePageTitle("/", t, [])).toBe("Sessions");
     expect(resolvePageTitle("/mcp/", t, [])).toBe("MCP");
   });
+
+  it("prefers a plugin's own label when it overrides the root path (#80891)", () => {
+    // A plugin with tab: { path: "/example", override: "/" } is registered
+    // in pluginTabs under the "/" key (the override target's path, not
+    // the plugin's own) -- resolvePageTitle must consult pluginTabs
+    // before special-casing "/" to the hardcoded "Sessions" title.
+    expect(
+      resolvePageTitle("/", t, [{ path: "/", label: "Example Plugin" }]),
+    ).toBe("Example Plugin");
+  });
+
+  it("still falls back to Sessions at root when no plugin overrides it", () => {
+    // Sanity: a plugin registered at a DIFFERENT path must not affect the
+    // root title -- behavior for everyone else is unchanged.
+    expect(
+      resolvePageTitle("/", t, [{ path: "/kanban", label: "Kanban" }]),
+    ).toBe("Sessions");
+  });
 });

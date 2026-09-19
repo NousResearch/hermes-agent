@@ -4,7 +4,12 @@ provider="custom" (Ollama, vLLM, llama.cpp, GLM-5.2 on ARK, …)."""
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
+from agent.reasoning_effort import (
+    OPENAI_COMPAT_WIRE_EFFORTS,
+    QWEN38_EFFORTS,
+    clamp_effort,
+    is_qwen38_model,
+)
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -63,7 +68,10 @@ class CustomProfile(ProviderProfile):
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
                     extra_body["think"] = False
             elif effort:
-                top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+                # Qwen 3.8 templates raise_exception (HTTP 500) on levels outside their set, so
+                # the widest OpenAI-compat vocabulary must narrow per family before hitting the wire.
+                supported = QWEN38_EFFORTS if is_qwen38_model(ctx.get("model")) else OPENAI_COMPAT_WIRE_EFFORTS
+                top_level["reasoning_effort"] = clamp_effort(effort, supported)
         return extra_body, top_level
 
     def fetch_models(

@@ -170,6 +170,61 @@ class TestCustomReasoningWireShape:
         assert eb.get("think") is not True
 
 
+class TestQwen38EffortClamp:
+    """Qwen 3.8 templates raise_exception → HTTP 500 on levels outside their set.
+
+    Live-verified 2026-09-17 against Qwen3.8-Flash GGUF on llama.cpp llama-server:
+    ``reasoning_effort="minimal"`` 500s with "Unexpected reasoning effort minimal.
+    Supported types are xhigh (default), medium, and low." — a deterministic
+    template rejection that burns the whole retry budget. The profile must clamp
+    onto the family's declared vocabulary BEFORE the wire (same pattern as the
+    Kimi K3 / Ollama-Cloud declared sets), never pass an unsupported level through.
+    """
+
+    @pytest.mark.parametrize(
+        "model", ["qwen3.8-flash-next", "qwen38-27b", "vendor/qwen-3.8-max", "QWEN3.8-Flash"]
+    )
+    @pytest.mark.parametrize("effort, expected", [("minimal", "low"), ("high", "medium"), ("max", "xhigh")])
+    def test_out_of_set_efforts_clamp_not_leak(self, custom_profile, model, effort, expected):
+        """Every level the template rejects arrives at the wire as the nearest supported one."""
+        _eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort}, model=model
+        )
+        assert tl == {"reasoning_effort": expected}
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "xhigh"])
+    def test_in_set_efforts_pass_through(self, custom_profile, effort):
+        _eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort}, model="qwen3.8-flash-next"
+        )
+        assert tl == {"reasoning_effort": effort}
+
+    def test_clamp_stays_in_set_and_is_monotonic(self):
+        """Every request lands ON the supported set (the whole point — anything else 500s)
+        and the mapping is monotonic: a stronger request never resolves weaker."""
+        from agent.reasoning_effort import QWEN38_EFFORTS, clamp_effort
+
+        requests = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+        resolved = [level for level in (clamp_effort(e, QWEN38_EFFORTS) for e in requests) if level]
+        for level in resolved:
+            assert level in QWEN38_EFFORTS
+        ladder = list(QWEN38_EFFORTS)
+        indices = [ladder.index(level) for level in resolved]
+        assert indices == sorted(indices), resolved
+        # The generic clamp passes "minimal" through — that pass-through IS the bug being
+        # fixed; the narrowed clamp must land it on a level the template actually renders.
+        assert clamp_effort("minimal", QWEN38_EFFORTS) in QWEN38_EFFORTS
+
+    def test_non_qwen_models_keep_the_wide_wire(self, custom_profile):
+        """The clamp is family-keyed: an 8B Qwen3 size slug or a GLM keeps passing ``minimal``/
+        ``high`` through verbatim (the pre-existing contract above)."""
+        for model in ("qwen3-8b", "qwen3:8b", "glm-5.2"):
+            _eb, tl = custom_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "minimal"}, model=model
+            )
+            assert tl == {"reasoning_effort": "minimal"}, model
+
+
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""
 

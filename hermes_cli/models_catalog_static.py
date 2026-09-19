@@ -282,8 +282,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",
     ],
     "novita": [
-        "moonshotai/kimi-k2.5", "minimax/minimax-m2.7", "zai-org/glm-5", "deepseek/deepseek-v3-0324",
-        "deepseek/deepseek-r1-0528", "qwen/qwen3-235b-a22b-fp8",
+        "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-pro-0813", "zai-org/glm-5.3",
+        "moonshotai/kimi-k3", "minimax/minimax-m3", "qwen/qwen3.8-flash",
     ],
     # Bare ids derived from the picker snapshot so both stay in sync.
     "ai-gateway": [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS],

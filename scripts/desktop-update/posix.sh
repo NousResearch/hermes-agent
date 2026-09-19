@@ -18,7 +18,7 @@
 #     [--relaunch-cwd <p>]     linux: working directory to restore on relaunch
 #     [--sandbox-fallback]     linux: the caller vouches for a sandbox opt-out
 #                              (ELECTRON_DISABLE_SANDBOX / --no-sandbox launch)
-#     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
+#     [--no-ui] [--no-notify] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
 #     [--self-test-marker]
 #     [-- <args...>]           linux: filtered launch args to replay
 #
@@ -38,7 +38,7 @@ set -u
 ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
-NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
+NO_UI=0 NO_NOTIFY=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
 SELF_TEST_TCC_HEAL=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
@@ -50,6 +50,7 @@ while [ $# -gt 0 ]; do
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
     --sandbox-fallback) SANDBOX_FALLBACK=1; shift ;;
     --no-ui) NO_UI=1; shift ;;
+    --no-notify) NO_NOTIFY=1; shift ;;
     --no-marker-cleanup) NO_MARKER_CLEANUP=1; shift ;;
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
@@ -121,6 +122,7 @@ json_escape() { # minimal JSON string escape: \ " and control whitespace
 }
 
 notify_fallback() { # status message — renderer-free recovery surface.
+  [ "$NO_NOTIFY" -eq 1 ] && return 0
   # Fires only when there is no shim window. BEST-EFFORT immediate channel:
   # each rung requires EXECUTION acceptance, not existence — notify-send's
   # exit code is its acceptance (fire-and-forget), zenity/kdialog must

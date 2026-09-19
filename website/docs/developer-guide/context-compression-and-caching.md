@@ -197,6 +197,14 @@ backend does not re-fire every turn. Three paths run a real attempt anyway:
   compaction rebinds the compressor and resets the ladder count, so each
   compaction cycle grants the LLM route one stall before escalating; the
   persisted cooldown row still paces attempts across turns and restarts.
+- **Summary provider overloaded → abort, transcript kept.** When the summary
+  call fails with a provider-overload error (`overloaded`, `at capacity`,
+  HTTP 529) and the one-shot main-model retry also fails, compress() aborts
+  and preserves the transcript unchanged instead of committing the
+  deterministic fallback; the warning names the overload
+  (`failure_class=summary_overload_failure`) and `/compress` retries once
+  capacity recovers. Auth/quota, network and empty-content failures already
+  abort the same way.
 - **Provider-proven overflow** — when the provider itself rejects the request
   with a context-length error, the recovery pass ignores the cooldown for one
   bounded attempt (`max_compression_attempts`) without clearing it. Deferring

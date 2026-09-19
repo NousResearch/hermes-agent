@@ -218,7 +218,7 @@ class ContextTokenStore:
 
     def _persist(self, account_id: str, payload: Dict[str, str]) -> None:
         try:
-            atomic_json_write(self._root / f"{account_id}.context-tokens.json", payload)
+            atomic_json_write(self._root / f"{account_id}.context-tokens.json", payload, mode=0o600)
         except Exception as exc:
             logger.warning("weixin: failed to persist context tokens for %s: %s", _safe_id(account_id), exc)
 

@@ -125,6 +125,27 @@ def _resolve_terminal_backend() -> str:
         return "local"
 
 
+def _terminal_probe_path() -> str:
+    """Return the PATH the terminal tool hands the model's subshell.
+
+    The agent process's own PATH never carries the Hermes-managed runtime dirs
+    ($HERMES_HOME/uv, $HERMES_HOME/bin, the node dirs) — those are appended
+    only when the terminal subshell PATH is built
+    (tools/environments/local._append_missing_sane_path_entries), and only for
+    the Hermes sandbox shell. Asking about the agent-process PATH would report
+    "no uv" on a managed-only install even though the model can type ``uv`` in
+    the terminal it actually drives. Rebuild the terminal PATH the same way
+    local.py does, so the probe and the actual subshell stay consistent on
+    both POSIX and Windows.
+    """
+    try:
+        from tools.environments.local import _append_missing_sane_path_entries
+
+        return _append_missing_sane_path_entries(os.environ.get("PATH", ""))
+    except Exception:  # pragma: no cover — defensive
+        return os.environ.get("PATH", "")
+
+
 def _build_probe_line() -> str:
     """Build the one-liner; "" when nothing notable is detected — the goal is to
     save the model from an avoidable wall, not narrate a healthy environment."""
@@ -133,10 +154,17 @@ def _build_probe_line() -> str:
     py3_has_pip = _has_pip_module("python3") if py3_ver else False
     pip_bound_to = _pip_python_version()
     py3_pep668 = _detect_pep668("python3") if py3_ver else False
-    # Bare which() is correct here (unlike Hermes's own uv call sites): this reports
-    # the environment *the model will see* in the terminal tool, whose PATH includes
-    # the Hermes-managed $HERMES_HOME/bin via local.py.
-    has_uv = shutil.which("uv") is not None
+    # Bare which() is correct here, unlike Hermes's own uv call sites: this
+    # reports the environment *the model will see* in the terminal tool, and
+    # what the model can type is exactly what is on that subshell's PATH.
+    # local.py appends the Hermes-managed dirs to the terminal subshell PATH
+    # ($HERMES_HOME/uv for the managed uv, $HERMES_HOME/bin for other managed
+    # CLIs), so the probe must ask THAT PATH — the agent process's own PATH
+    # never carries the managed dirs, and a managed-only install would look
+    # uv-less here even though the model can run uv. On Windows the helper
+    # appends $HERMES_HOME\uv at the tail too, keeping the probe and the
+    # actual subshell in sync there as well.
+    has_uv = shutil.which("uv", path=_terminal_probe_path()) is not None
 
     mismatch = bool(pip_bound_to and py3_ver and not py3_ver.startswith(pip_bound_to))
     if py3_ver is not None and py3_has_pip and not mismatch and (not py3_pep668 or has_uv):

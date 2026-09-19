@@ -205,7 +205,8 @@ hermes gateway uninstall   # 移除 schtasks 条目、Startup 快捷方式、pid
 | `%LOCALAPPDATA%\hermes\hermes-agent\` | Git 检出 + venv。可安全执行 `Remove-Item -Recurse` 后重新安装。 |
 | `%LOCALAPPDATA%\hermes\git\`          | PortableGit（仅在安装程序配置时存在）。                         |
 | `%LOCALAPPDATA%\hermes\node\`         | 便携式 Node.js（仅在安装程序配置时存在）。                      |
-| `%LOCALAPPDATA%\hermes\bin\`          | `hermes.cmd` 垫片，已添加到用户 PATH。                          |
+| `%LOCALAPPDATA%\hermes\bin\` | `hermes.cmd` 垫片，已添加到用户 PATH（以及 Hermes 安装的其他 CLI，如 `browser-use`）。**不含托管 `uv`** — 托管 `uv.exe`/`uvx.exe` 位于私有的 `uv\` 子目录，永不进 PATH，Hermes 不会遮蔽你自己的 `uv`/`uvx` 命令。 |
+| `%LOCALAPPDATA%\hermes\uv\` | Hermes 的托管 `uv.exe`/`uvx.exe`（更新时使用的 Python 管理器）。私有 — 仅可通过绝对路径访问；你自己的 `uv`/`uvx` 在 shell 中保持优先。 |
 | `%USERPROFILE%\.hermes\`              | 你的配置、认证、技能、会话、日志。**重装后保留。**              |
 
 这种分离是有意为之：`%LOCALAPPDATA%\hermes` 是可丢弃的基础设施（可以删除后用一行命令恢复）。`%USERPROFILE%\.hermes` 是你的数据——配置、记忆、技能、会话历史——其结构与 Linux 安装完全相同。在机器间同步它，你的 Hermes 就随之迁移。

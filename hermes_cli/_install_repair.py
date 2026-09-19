@@ -68,9 +68,14 @@ def _resolve_install_target(root: Path) -> tuple[list[str], dict | None]:
     """
     uv_bin = _er._find_uv_binary()
     if uv_bin:
-        from hermes_constants import project_venv_dir
+        from hermes_constants import get_hermes_home, project_venv_dir
 
-        env = {**os.environ, "VIRTUAL_ENV": str(project_venv_dir(root) or root / "venv")}
+        env = {
+            **os.environ,
+            "VIRTUAL_ENV": str(project_venv_dir(root) or root / "venv"),
+            # stdlib-only repair: sandbox uv's cache by hand (no managed_uv).
+            "UV_CACHE_DIR": str(get_hermes_home() / "cache" / "uv"),
+        }
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)
@@ -160,17 +165,42 @@ def ensure_windows_bin_launchers(
 ) -> list[str]:
     r"""Re-stage the Windows ``hermes`` launchers when they vanish.
 
-    On Windows, ``hermes`` resolves through launchers derived from the venv console scripts — never
-    ``venv\Scripts`` itself on PATH, which would shadow the user's ``python``. Targets: the
-    canonical managed binary dir (only when *root* is the managed clone, so source checkouts
-    elsewhere never gain launchers) and the legacy ``<root>\bin`` (only while the user PATH still
-    points at it). Never raises.
+    On Windows, ``hermes`` resolves through launchers derived from the venv
+    console scripts — never ``venv\\Scripts`` itself on PATH, which would
+    shadow the user's ``python`` (#83797). The canonical launcher home is
+    the default Hermes root's ``bin`` (``%LOCALAPPDATA%\\hermes\\bin``; the
+    managed uv lives in the sibling ``uv\\`` dir since the uv-isolation
+    change) — a per-machine dir OUTSIDE the git checkout shared by every
+    profile: ``get_hermes_home()`` would point inside ``profiles\\<name>``
+    under ``hermes -p``, so the anchor here is
+    :func:`hermes_constants.get_default_hermes_root`.
 
-    The canonical launcher home is the managed binary dir — the default Hermes root's ``bin``
-    (``%LOCALAPPDATA%\\hermes\\bin``, next to the managed uv) — which lives OUTSIDE the git checkout so no
-    git operation can ever touch it. It is a per-machine dir shared by every profile: ``get_hermes_home()``
-    would point inside ``profiles\\<name>`` under ``hermes -p``, so the anchor here is
-    :func:`hermes_constants.get_default_hermes_root`. See #83797.
+    Earlier installer versions staged the launchers at ``<checkout>\\bin``
+    instead — inside the git working tree, where ``hermes update``'s
+    pre-update autostash swept them off disk. That legacy location is
+    re-staged too, while the user PATH still resolves through it.
+
+    The launcher FORM depends on the venv (see :func:`_venv_is_relocatable`):
+    a normal venv's exe trampoline survives copying and is staged as
+    ``<name>.exe``; a relocatable venv's trampoline resolves relative to its
+    own location, so a ``<name>.cmd`` delegator invoking the in-venv exe by
+    absolute path is written instead. A name counts as present when EITHER
+    form exists — exe copies staged before a venv rebuild keep working.
+
+    Two targets, two gates, both failing toward inaction:
+
+    - canonical managed binary dir: only when *root* is the managed clone
+      (``root.parent == get_default_hermes_root()``), so source checkouts
+      elsewhere never gain launchers;
+    - legacy ``<root>\\bin``: only when that dir is on the user PATH
+      (registry value, process PATH as fallback), i.e. the install opted
+      into the old layout and still resolves through it.
+
+    Writes go through a staging name + ``os.replace`` so concurrent process
+    starts cannot tear a launcher. Never raises; returns the restored paths.
+
+    *windows* and *user_path_entries* are injectable for tests, same pattern
+    as ``hermes_constants.venv_bin_dir``.
     """
     if windows is None:
         windows = _is_windows()

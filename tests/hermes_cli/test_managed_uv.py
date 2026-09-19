@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -29,6 +30,15 @@ def _make_executable(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\necho uv 0.1.2\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
+
+
+# The code resolves uv/uvx as ``uv.exe``/``uvx.exe`` on Windows and bare
+# ``uv``/``uvx`` on POSIX (see managed_uv_path / managed_uvx_path).  Tests must
+# seed the binary under the name the product code actually looks for, or they
+# silently pass on POSIX and fail on Windows because the resolver finds nothing.
+_BINARY_EXE = ".exe" if sys.platform == "win32" else ""
+_BIN_UV = f"uv{_BINARY_EXE}"
+_BIN_UVX = f"uvx{_BINARY_EXE}"
 
 
 def _runtime_info(
@@ -84,11 +94,68 @@ def _make_runtime_install(
 class TestManagedUvPath:
     # POSIX arm of the name mapping; the Windows arm (uv.exe) is exercised
     # for real by TestEnsureUvWindowsSafe on the Windows lane.
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: bin/uv name")
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: uv/uv name")
     def test_posix(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
             from hermes_cli.managed_uv import managed_uv_path
-            assert managed_uv_path() == tmp_path / "bin" / "uv"
+            assert managed_uv_path() == tmp_path / "uv" / _BIN_UV
+
+
+class TestManagedUvEnv:
+    """Hermes uv invocations must pin every uv-managed state dir inside
+    HERMES_HOME — never the user's own tool store / cache / python store."""
+
+    def test_pins_all_state_dirs(self, tmp_path):
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import managed_uv_env
+
+            env = managed_uv_env()
+
+        assert env["UV_CACHE_DIR"] == str(tmp_path / "cache" / "uv")
+        assert env["UV_TOOL_DIR"] == str(tmp_path / "uv" / "tools")
+        assert env["UV_PYTHON_INSTALL_DIR"] == str(tmp_path / "python")
+        assert env["UV_PYTHON_INSTALL_BIN"] == "0"
+        assert env["UV_PYTHON_INSTALL_REGISTRY"] == "0"
+        assert "UV_TOOL_BIN_DIR" not in env
+
+    def test_overrides_inherited_user_values(self, tmp_path, monkeypatch):
+        """A user who exported their own UV_* dirs must not be written into —
+        Hermes overrides unconditionally (same contract as the installers)."""
+        monkeypatch.setenv("UV_CACHE_DIR", "/user/cache")
+        monkeypatch.setenv("UV_TOOL_DIR", "/user/tools")
+        monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", "/user/pythons")
+        monkeypatch.setenv("UV_TOOL_BIN_DIR", "/user/bin")
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import managed_uv_env
+
+            env = managed_uv_env()
+
+        assert env["UV_CACHE_DIR"] == str(tmp_path / "cache" / "uv")
+        assert env["UV_TOOL_DIR"] == str(tmp_path / "uv" / "tools")
+        assert env["UV_PYTHON_INSTALL_DIR"] == str(tmp_path / "python")
+        # tool_bin_dir is caller-owned: without it the inherited value survives
+        # (a caller that wants to move tools passes it explicitly).
+        assert env["UV_TOOL_BIN_DIR"] == "/user/bin"
+
+    def test_tool_bin_dir_pins_shims(self, tmp_path):
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import managed_uv_env
+
+            env = managed_uv_env(tool_bin_dir=tmp_path / "bin")
+
+        assert env["UV_TOOL_BIN_DIR"] == str(tmp_path / "bin")
+
+    def test_respects_base_env(self, tmp_path):
+        base = {"KEEP_ME": "yes", "VIRTUAL_ENV": "/venv"}
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import managed_uv_env
+
+            env = managed_uv_env(base_env=base)
+
+        assert env["KEEP_ME"] == "yes"
+        assert env["VIRTUAL_ENV"] == "/venv"
+        assert env["UV_CACHE_DIR"] == str(tmp_path / "cache" / "uv")
+        assert base["KEEP_ME"] == "yes"  # caller's dict untouched
 
 
 class TestMacOSManagedPythonSigning:
@@ -166,15 +233,19 @@ class TestMacOSManagedPythonSigning:
 class TestResolveUv:
 
     def test_existing_executable(self, tmp_path):
-        uv = tmp_path / "bin" / _UV_BINARY_NAME
-        _make_executable(uv)
+        _make_executable(tmp_path / "uv" / _BIN_UV)
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
             from hermes_cli.managed_uv import resolve_uv
             result = resolve_uv()
-            assert result == str(uv)
+            assert result == str(tmp_path / "uv" / _BIN_UV)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX execute-bit semantics: Windows os.access(X_OK) is true for any "
+        "existing file, so a 'non-executable' file cannot be expressed there.",
+    )
     def test_non_executable_file_returns_none(self, tmp_path):
-        uv = tmp_path / "bin" / "uv"
+        uv = tmp_path / "uv" / _BIN_UV
         uv.parent.mkdir(parents=True)
         uv.write_text("not a binary", encoding="utf-8")
         # Ensure no execute bit
@@ -187,7 +258,7 @@ class TestResolveUv:
 class TestPipInstallHint:
 
     def test_names_the_managed_uv_when_present(self, tmp_path):
-        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        uv = tmp_path / "uv" / _BIN_UV
         _make_executable(uv)
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
             from hermes_cli.managed_uv import pip_install_hint
@@ -206,26 +277,29 @@ class TestPipInstallHint:
 class TestEnsureUv:
 
     def test_installs_if_missing(self, tmp_path):
-        uv = tmp_path / "bin" / _UV_BINARY_NAME
-        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
-             patch("hermes_cli.managed_uv._uv_version", return_value="uv 0.1.2"), \
-             patch("hermes_cli.managed_uv._install_uv") as mock_install:
-            # Simulate the installer creating the binary (host-native name:
-            # uv.exe on Windows, uv on POSIX).
+        # The fake binary is a `#!/bin/sh` script; on Windows it is not a
+        # launchable PE, so stub the post-install `--version` probe.
+        with (
+            patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path),
+            patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")),
+            patch("hermes_cli.managed_uv._install_uv") as mock_install,
+            patch("hermes_cli.managed_uv.subprocess.run",
+                  return_value=SimpleNamespace(stdout="uv 0.1.2\n")),
+        ):
+            # Simulate the installer creating the binary
             def fake_install(target):
                 _make_executable(target)
             mock_install.side_effect = fake_install
 
             from hermes_cli.managed_uv import ensure_uv
             path = ensure_uv()
-            assert path == str(uv)
+            assert path == str(tmp_path / "uv" / _BIN_UV)
             mock_install.assert_called_once()
 
     def test_dead_managed_launcher_is_reinstalled(self, tmp_path):
-        """A managed uv that exists, is executable, and exits non-zero (a relocated shim a pre-fix
+        """A managed uv that exists, is executable, and exits non-zero (a relocated shim an earlier
         installer copied in) must be replaced, not handed out."""
-        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        uv = tmp_path / "uv" / _UV_BINARY_NAME
         uv.parent.mkdir(parents=True)
         uv.write_text("#!/bin/sh\necho 'launcher target missing' >&2\nexit 1\n", encoding="utf-8")
         uv.chmod(uv.stat().st_mode | stat.S_IEXEC)
@@ -265,10 +339,15 @@ class TestEnsureUv:
         ), patch(
             "hermes_cli.managed_uv.repair_vulnerable_runtime",
             return_value=repair,
+        ), patch(
+            # Stub the post-install `--version` probe: the fake binary is a
+            # `#!/bin/sh` script, not a launchable PE on Windows.
+            "hermes_cli.managed_uv.subprocess.run",
+            return_value=SimpleNamespace(stdout="uv 0.1.2\n"),
         ):
             path = ensure_uv(repair_observer=observed.append)
 
-        assert path == str(tmp_path / "bin" / _UV_BINARY_NAME)
+        assert path == str(tmp_path / "uv" / _BIN_UV)
         assert observed == [repair]
 
 
@@ -295,21 +374,21 @@ class TestEnsureUvUpdateBoundary:
     """
 
     def test_success_usable_as_single_value(self, tmp_path):
-        _make_executable(tmp_path / "bin" / "uv")
+        _make_executable(tmp_path / "uv" / _BIN_UV)
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")):
             from hermes_cli.managed_uv import ensure_uv
             uv_bin = ensure_uv()
-            assert uv_bin == str(tmp_path / "bin" / "uv")
+            assert uv_bin == str(tmp_path / "uv" / _BIN_UV)
             assert bool(uv_bin) is True
 
     def test_success_unpacks_as_legacy_two_tuple(self, tmp_path):
-        _make_executable(tmp_path / "bin" / "uv")
+        _make_executable(tmp_path / "uv" / _BIN_UV)
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")):
             from hermes_cli.managed_uv import ensure_uv
             uv_bin, fresh = ensure_uv()  # old: uv_bin, fresh_bootstrap = ensure_uv()
-            assert uv_bin == str(tmp_path / "bin" / "uv")
+            assert uv_bin == str(tmp_path / "uv" / _BIN_UV)
             assert fresh is False
 
     def test_failure_unpacks_without_raising(self, tmp_path):
@@ -356,7 +435,7 @@ class TestEnsureUvWindowsSafe:
         import subprocess
         # On Windows the managed binary is uv.exe (a shell-script stand-in cannot run there, so the
         # launcher probe is answered for it).
-        _make_executable(tmp_path / "bin" / "uv.exe")
+        _make_executable(tmp_path / "uv" / "uv.exe")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv._uv_runs", return_value=True), \
              patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")):
@@ -368,6 +447,83 @@ class TestEnsureUvWindowsSafe:
             assert "pip" in cmdline and "install" in cmdline
 
 
+class TestMigrateLegacyManagedUv:
+    def test_moves_legacy_bin_uv_to_private_dir(self, tmp_path):
+        from hermes_cli.managed_uv import _migrate_legacy_managed_uv
+
+        legacy = tmp_path / "bin" / _BIN_UV
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("#!/bin/sh\necho uv 0.1.2\n")
+        legacy.chmod(0o755)
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            moved = _migrate_legacy_managed_uv()
+        assert moved is True
+        assert (tmp_path / "uv" / _BIN_UV).exists()
+        assert not legacy.exists()
+
+    def test_noop_when_managed_already_present(self, tmp_path):
+        from hermes_cli.managed_uv import _migrate_legacy_managed_uv
+
+        legacy = tmp_path / "bin" / _BIN_UV
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("#!/bin/sh\necho uv 0.1.2\n")
+        managed = tmp_path / "uv" / _BIN_UV
+        managed.parent.mkdir(parents=True)
+        managed.write_text("#!/bin/sh\necho uv 0.9.9\n")
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            moved = _migrate_legacy_managed_uv()
+        assert moved is True
+        assert not legacy.exists() and managed.exists()
+
+    def test_moves_legacy_bin_uvx_to_private_dir(self, tmp_path):
+        """The astral installer always drops uvx alongside uv, so a legacy
+        bin/uvx must migrate too — otherwise it keeps shadowing the user's
+        uvx through the persisted bin/ PATH entry on Windows."""
+        from hermes_cli.managed_uv import _migrate_legacy_managed_uv
+
+        legacy_uvx = tmp_path / "bin" / _BIN_UVX
+        legacy_uvx.parent.mkdir(parents=True)
+        legacy_uvx.write_text("#!/bin/sh\necho uvx 0.1.2\n")
+        legacy_uvx.chmod(0o755)
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            moved = _migrate_legacy_managed_uv()
+        assert moved is True
+        assert (tmp_path / "uv" / _BIN_UVX).exists()
+        assert not legacy_uvx.exists()
+
+    def test_one_call_migrates_uv_and_uvx(self, tmp_path):
+        """One call must clear BOTH legacy binaries, not just the one the
+        calling path needs."""
+        from hermes_cli.managed_uv import _migrate_legacy_managed_uv
+
+        for name in (_BIN_UV, _BIN_UVX):
+            legacy = tmp_path / "bin" / name
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            legacy.write_text(f"#!/bin/sh\necho {name} 0.1.2\n")
+            legacy.chmod(0o755)
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            moved = _migrate_legacy_managed_uv()
+        assert moved is True
+        assert (tmp_path / "uv" / _BIN_UV).exists()
+        assert (tmp_path / "uv" / _BIN_UVX).exists()
+        assert not (tmp_path / "bin" / _BIN_UV).exists()
+        assert not (tmp_path / "bin" / _BIN_UVX).exists()
+
+    def test_uvx_duplicate_removed_when_managed_already_present(self, tmp_path):
+        from hermes_cli.managed_uv import _migrate_legacy_managed_uv
+
+        legacy_uvx = tmp_path / "bin" / _BIN_UVX
+        legacy_uvx.parent.mkdir(parents=True)
+        legacy_uvx.write_text("#!/bin/sh\necho uvx 0.1.2\n")
+        managed_uvx = tmp_path / "uv" / _BIN_UVX
+        managed_uvx.parent.mkdir(parents=True)
+        managed_uvx.write_text("#!/bin/sh\necho uvx 0.9.9\n")
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            moved = _migrate_legacy_managed_uv()
+        assert moved is True
+        assert not legacy_uvx.exists() and managed_uvx.exists()
+
+
 # ---------------------------------------------------------------------------
 # update_managed_uv
 # ---------------------------------------------------------------------------
@@ -375,19 +531,44 @@ class TestEnsureUvWindowsSafe:
 class TestUpdateManagedUv:
 
 
-
-    def test_fresh_stamp_skips_network_self_update_but_not_repair(self, tmp_path):
-        """A recent success stamp must skip `uv self update` entirely while the
-        vulnerable-runtime repair probe still runs (CVE repair is never gated)."""
-        import time
-
+    def test_legacy_bin_uv_is_migrated_before_resolve(self, tmp_path):
+        """A pre-isolation install keeps uv in $HERMES_HOME/bin. update_managed_uv
+        must migrate it BEFORE resolving, or a legacy install's vulnerable-runtime
+        repair is deferred to the NEXT update (resolve_uv is a pure lookup)."""
         from hermes_cli.managed_uv import RuntimeRepairResult, update_managed_uv
 
-        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        legacy = tmp_path / "bin" / _BIN_UV
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("#!/bin/sh\necho uv 0.1.2\n")
+        legacy.chmod(0o755)
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv._managed_uv_refresh_is_fresh", return_value=True), \
+             patch(
+                 "hermes_cli.managed_uv.repair_vulnerable_runtime",
+                 return_value=RuntimeRepairResult("skipped"),
+             ) as mock_repair:
+            result = update_managed_uv()
+
+        managed = tmp_path / "uv" / _BIN_UV
+        assert result == str(managed)
+        assert not legacy.exists(), "legacy bin/uv must be migrated"
+        assert managed.exists()
+        mock_repair.assert_called_once_with(str(managed))
+
+
+    def test_fresh_stamp_skips_installer_refresh_but_not_repair(self, tmp_path, monkeypatch):
+        """A recent success stamp must skip the installer re-run entirely while
+        the vulnerable-runtime repair probe still runs (CVE repair is never
+        gated)."""
+        from hermes_cli.managed_uv import RuntimeRepairResult, update_managed_uv
+
+        uv = tmp_path / "uv" / _BIN_UV
         _make_executable(uv)
-        # The stamp reader imports get_hermes_home separately from the binary
-        # resolver. Give both paths the same explicit test root.
-        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
+        # The stamp reader does a function-local `from hermes_constants import
+        # get_hermes_home`, so pin BOTH that and the module-level binding the
+        # binary resolver uses — otherwise the stamp lands in the session home
+        # while the binary is looked up under tmp_path.
+        stamp = tmp_path / "cache" / ".uv_refresh_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
         # File timestamps can lead time.time() briefly on Windows. Stay well
@@ -396,42 +577,60 @@ class TestUpdateManagedUv:
         os.utime(stamp, (recent, recent))
 
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv._uv_self_update_stamp", return_value=stamp), \
-             patch("hermes_cli.managed_uv.repair_vulnerable_runtime",
-                   return_value=RuntimeRepairResult("skipped")) as mock_repair, \
-             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+             patch("hermes_constants.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch("hermes_cli.managed_uv._install_uv") as mock_install, \
+             patch(
+                 "hermes_cli.managed_uv.repair_vulnerable_runtime",
+                 return_value=RuntimeRepairResult("skipped"),
+             ) as mock_repair:
             result = update_managed_uv()
 
         assert result == str(uv)
-        assert mock_run.call_count == 0, "fresh stamp must skip the network self-update"
+        mock_install.assert_not_called(), "fresh stamp must skip the installer refresh"
+        assert mock_run.call_count == 0, "fresh stamp must not run any subprocess"
         mock_repair.assert_called_once_with(str(uv))
 
 
-    def test_stale_stamp_runs_self_update_and_refreshes_stamp(self, tmp_path):
+    def test_stale_stamp_reinstalls_private_binary_and_refreshes_stamp(self, tmp_path):
+        """An unmanaged install refuses `uv self update`, so a stale stamp must
+        re-run the official installer over the private binary (never a user's
+        uv), and a successful refresh refreshes the throttle stamp."""
         import os as _os
         import time as _time
 
         from hermes_cli.managed_uv import UV_SELF_UPDATE_INTERVAL_SECONDS, update_managed_uv
 
-        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        uv = tmp_path / "uv" / _BIN_UV
         _make_executable(uv)
-        # Keep the stamp and binary resolver in the same test root.
-        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
+        # Same root for the binary resolver and the stamp reader (the latter
+        # imports get_hermes_home locally from hermes_constants).
+        stamp = tmp_path / "cache" / ".uv_refresh_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
         old = _time.time() - UV_SELF_UPDATE_INTERVAL_SECONDS - 60
         _os.utime(stamp, (old, old))
 
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv._uv_self_update_stamp", return_value=stamp), \
+             patch("hermes_constants.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
-             patch("hermes_cli.managed_uv._uv_version", return_value="uv 0.2.0"), \
-             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.2.0")
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch("hermes_cli.managed_uv._install_uv") as mock_install, \
+             patch(
+                 "hermes_cli.managed_uv._uv_version_string",
+                 side_effect=["uv 0.1.2", "uv 0.1.2", "uv 0.2.0", "uv 0.2.0"],
+             ):
             update_managed_uv()
 
-        assert mock_run.call_args_list[0][0][0] == [str(uv), "self", "update"]
-        assert stamp.stat().st_mtime > old + 30, "successful self-update must refresh the stamp"
+        # The refresh is installer re-run over the private binary, NOT `uv self
+        # update` (which an unmanaged install refuses).
+        mock_install.assert_called_once_with(tmp_path / "uv" / _BIN_UV)
+        assert mock_run.call_count == 0, (
+            "stale stamp must not run `uv self update` or any other subprocess"
+        )
+        assert stamp.stat().st_mtime > old + 30, (
+            "successful installer refresh must refresh the throttle stamp"
+        )
 
 
 
@@ -800,24 +999,58 @@ class TestRuntimeCutover:
 # ---------------------------------------------------------------------------
 
 class TestInstallUvInternals:
-    def test_installer_uses_host_branch_and_managed_directory(self, tmp_path):
-        """The native installer receives the managed directory, not a PATH default."""
-        import hermes_cli.managed_uv as managed_uv
-
-        target = tmp_path / "bin" / _UV_BINARY_NAME
+    def test_sets_uv_unmanaged_install_and_dir_on_every_platform(self, tmp_path):
+        # ``_install_uv`` builds the env dict (UV_UNMANAGED_INSTALL +
+        # UV_INSTALL_DIR) on the shared path, THEN dispatches to the
+        # posix/windows branches by host.  Assert the env on whichever branch
+        # this host actually calls, so both platforms are covered by one test.
+        target = tmp_path / "uv" / _BIN_UV
         with patch("hermes_cli.managed_uv._install_uv_posix") as mock_posix, \
              patch("hermes_cli.managed_uv._install_uv_windows") as mock_windows:
+            from hermes_cli.managed_uv import _install_uv
+            _install_uv(target)
+            called = mock_windows if mock_windows.called else mock_posix
+            called.assert_called_once()
+            call_env = called.call_args[0][0]
+            assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "uv")
+            assert call_env["UV_INSTALL_DIR"] == str(tmp_path / "uv")
+
+    def test_every_installer_subprocess_is_bounded(self, tmp_path):
+        """The standalone installer is a network operation; unbounded it can
+        hang ``hermes update`` forever (the risk the removed `uv self update`
+        timeout guarded).  Every subprocess it runs must carry the bound, on
+        the host branch this platform actually takes.
+        """
+        import hermes_cli.managed_uv as managed_uv
+
+        target = tmp_path / "uv" / _BIN_UV
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
             managed_uv._install_uv(target)
 
-        host_installer, other_installer = (
-            (mock_windows, mock_posix) if sys.platform == "win32"
-            else (mock_posix, mock_windows))
-        host_installer.assert_called_once()
-        other_installer.assert_not_called()
-        call_env = host_installer.call_args[0][0]
-        assert call_env["UV_INSTALL_DIR"] == str(tmp_path / "bin")
-        if sys.platform != "win32":
-            assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")
+        assert mock_run.call_count >= 1, "the host installer branch must run a subprocess"
+        for call in mock_run.call_args_list:
+            assert call.kwargs.get("timeout") == managed_uv.UV_INSTALLER_TIMEOUT_SECONDS, (
+                f"unbounded installer subprocess: {call}"
+            )
+
+    def test_installer_timeout_is_a_failure_not_a_hang(self, tmp_path, monkeypatch):
+        """A timed-out installer must surface as a non-fatal failure: the
+        refresh reports False (stamp left stale so the next update retries)
+        rather than propagating out of ``hermes update``.
+        """
+        import subprocess as _subprocess
+
+        import hermes_cli.managed_uv as managed_uv
+
+        uv = tmp_path / "uv" / _BIN_UV
+        _make_executable(uv)
+        monkeypatch.setattr(managed_uv, "managed_uv_path", lambda: uv)
+        monkeypatch.setattr(
+            managed_uv, "_install_uv",
+            lambda *a, **k: (_ for _ in ()).throw(
+                _subprocess.TimeoutExpired("curl", managed_uv.UV_INSTALLER_TIMEOUT_SECONDS)),
+        )
+        assert managed_uv._refresh_managed_binary(str(uv)) is False
 
 
 class TestRuntimeRequestMinorLine:
@@ -1252,15 +1485,16 @@ class TestListAvailablePatches:
 
 
 # ---------------------------------------------------------------------------
-# _refresh_managed_uv_catalog + provisioning retry (issue #72093)
+# _refresh_managed_binary + provisioning retry (issue #72093)
 # ---------------------------------------------------------------------------
 
-class TestRefreshManagedUvCatalog:
+class TestRefreshManagedBinary:
     """The managed uv is UV_UNMANAGED_INSTALL'd, so `uv self update` is
-    disabled and its python-build-standalone catalog freezes at bootstrap
+    refused and its python-build-standalone catalog freezes at bootstrap
     age. python-build-standalone re-releases the same patch versions with
     fixed SQLite, so a stale catalog makes provisioning fail forever with
-    no newer patch number to retry (issue #72093)."""
+    no newer patch number to retry (issue #72093). Re-running the official
+    installer over the private binary is the only refresh path."""
 
 
     def test_version_change_reports_true(self, tmp_path):
@@ -1278,7 +1512,7 @@ class TestRefreshManagedUvCatalog:
             # (uv on POSIX, uv.exe on Windows) — no platform fake needed.
             uv_path = managed_uv.managed_uv_path()
             _make_executable(uv_path)
-            assert managed_uv._refresh_managed_uv_catalog(str(uv_path)) is True
+            assert managed_uv._refresh_managed_binary(str(uv_path)) is True
 
 
     def test_installer_failure_reports_false(self, tmp_path):
@@ -1291,7 +1525,7 @@ class TestRefreshManagedUvCatalog:
              ):
             uv_path = managed_uv.managed_uv_path()
             _make_executable(uv_path)
-            assert managed_uv._refresh_managed_uv_catalog(str(uv_path)) is False
+            assert managed_uv._refresh_managed_binary(str(uv_path)) is False
 
 
 @pytest.mark.skipif(sys.platform == "win32",
@@ -1321,7 +1555,7 @@ class TestRepairRetriesAfterUvRefresh:
                  side_effect=fake_install,
              ), \
              patch(
-                 "hermes_cli.managed_uv._refresh_managed_uv_catalog",
+                 "hermes_cli.managed_uv._refresh_managed_binary",
                  return_value=refresh_result,
              ) as mock_refresh, \
              patch(

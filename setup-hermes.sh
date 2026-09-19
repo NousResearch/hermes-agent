@@ -29,6 +29,14 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Keep this developer bootstrap on the same private-toolchain contract as the
+# production installers.  The checkout's venv is local to this tree, while
+# the managed uv binaries live under HERMES_HOME and are never added to the
+# user's shell PATH.
+export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+MANAGED_UV_DIR="$HERMES_HOME/uv"
+mkdir -p "$MANAGED_UV_DIR"
+
 # Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
 # wrong user's home directory when running under sudo -u <user>.  See #21269.
 export UV_NO_CONFIG=1
@@ -37,6 +45,27 @@ PYTHON_VERSION="3.11"
 
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
+}
+
+# Migrate pre-isolation managed uv/uvx from $HERMES_HOME/bin into the private
+# $MANAGED_UV_DIR (never on PATH). Same contract as scripts/install.sh's
+# migrate_managed_uv_binaries(): the astral installer drops BOTH uv and uvx
+# into the target dir, so a legacy install leaves both in bin; on Windows bin
+# is a persisted User PATH entry, so a stale bin/uvx keeps shadowing the
+# user's own uvx exactly like bin/uv did. Best effort and pure — a behavior
+# test lifts it into a bash harness against a fake $HERMES_HOME (see
+# tests/test_setup_hermes_uv_isolation.py).
+migrate_managed_uv_binaries() {
+    for _managed_name in uv uvx; do
+        _legacy_path="$HERMES_HOME/bin/$_managed_name"
+        _private_path="$MANAGED_UV_DIR/$_managed_name"
+        if [ -f "$_legacy_path" ] && [ ! -e "$_private_path" ]; then
+            mkdir -p "$MANAGED_UV_DIR"
+            mv "$_legacy_path" "$_private_path" 2>/dev/null || true
+        elif [ -f "$_legacy_path" ] && [ -e "$_private_path" ]; then
+            rm -f "$_legacy_path" 2>/dev/null || true
+        fi
+    done
 }
 
 get_command_link_dir() {
@@ -69,12 +98,10 @@ UV_CMD=""
 if is_termux; then
     echo -e "${CYAN}→${NC} Termux detected — using Python's stdlib venv + pip instead of uv"
 else
-    if command -v uv &> /dev/null; then
-        UV_CMD="uv"
-    elif [ -x "$HOME/.local/bin/uv" ]; then
-        UV_CMD="$HOME/.local/bin/uv"
-    elif [ -x "$HOME/.cargo/bin/uv" ]; then
-        UV_CMD="$HOME/.cargo/bin/uv"
+    migrate_managed_uv_binaries
+
+    if [ -x "$MANAGED_UV_DIR/uv" ]; then
+        UV_CMD="$MANAGED_UV_DIR/uv"
     fi
 
     if [ -n "$UV_CMD" ]; then
@@ -96,12 +123,10 @@ else
             rm -f "$_uv_log" "$_uv_installer"
             exit 1
         fi
-        if sh "$_uv_installer" >>"$_uv_log" 2>&1; then
+        if UV_UNMANAGED_INSTALL="$MANAGED_UV_DIR" sh "$_uv_installer" >>"$_uv_log" 2>&1; then
             rm -f "$_uv_installer"
-            if [ -x "$HOME/.local/bin/uv" ]; then
-                UV_CMD="$HOME/.local/bin/uv"
-            elif [ -x "$HOME/.cargo/bin/uv" ]; then
-                UV_CMD="$HOME/.cargo/bin/uv"
+            if [ -x "$MANAGED_UV_DIR/uv" ]; then
+                UV_CMD="$MANAGED_UV_DIR/uv"
             fi
 
             if [ -n "$UV_CMD" ]; then
@@ -109,7 +134,7 @@ else
                 UV_VERSION=$($UV_CMD --version 2>/dev/null)
                 echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
             else
-                echo -e "${RED}✗${NC} uv installer reported success but binary not found. Add ~/.local/bin to PATH and retry."
+                echo -e "${RED}✗${NC} uv installer reported success but binary not found at $MANAGED_UV_DIR/uv."
                 echo -e "${CYAN}→${NC} Installer output:"
                 sed 's/^/    /' "$_uv_log" >&2
                 rm -f "$_uv_log"
@@ -124,6 +149,19 @@ else
             exit 1
         fi
     fi
+fi
+
+# Keep uv's Python acquisition inside Hermes as well.  The values are
+# intentionally exported even when the private uv already existed, because
+# this script may be re-run with a user's UV_* environment inherited.
+# UV_CACHE_DIR / UV_TOOL_DIR get the same containment: `uvx` and `uv tool
+# install` inside this bootstrap must never write into the user's uv dirs.
+if ! is_termux; then
+    export UV_PYTHON_INSTALL_DIR="$HERMES_HOME/python"
+    export UV_PYTHON_INSTALL_BIN=0
+    export UV_PYTHON_INSTALL_REGISTRY=0
+    export UV_CACHE_DIR="$HERMES_HOME/cache/uv"
+    export UV_TOOL_DIR="$HERMES_HOME/uv/tools"
 fi
 
 # ============================================================================

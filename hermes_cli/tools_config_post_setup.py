@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -45,8 +44,15 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
     else:
         for line in str(message).splitlines():
             _print_warning(f"    {line[:200]}")
-        _print_info("    Falling back to zero-install runs via `uvx browser-use`" if shutil.which("uvx")
-                    else "    Install manually: uv tool install browser-use  (https://docs.astral.sh/uv/)")
+        # The managed uvx (private dir) is the zero-install runner of record; a user uvx on PATH
+        # would need their tool store to hold browser-use, which isolation must not assume.
+        from hermes_cli.managed_uv import managed_uvx_path
+
+        managed_uvx = managed_uvx_path()
+        if managed_uvx.is_file() and os.access(managed_uvx, os.X_OK):
+            _print_info("    Falling back to zero-install runs via `uvx browser-use`")
+        else:
+            _print_info("    Install manually: uv tool install browser-use  (https://docs.astral.sh/uv/)")
     if verbose_hints:
         _info_lines("Local Chrome needs remote debugging: chrome://inspect/#remote-debugging",
                     "Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")

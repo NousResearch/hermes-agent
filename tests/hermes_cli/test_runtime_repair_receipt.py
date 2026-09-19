@@ -24,7 +24,7 @@ def test_runtime_repair_outcome_reaches_persisted_receipt(tmp_path, monkeypatch,
         status, "candidate dependency sync failed (rc=1): error: lockfile stale", "3.50.4", "3.53.1")
     monkeypatch.setattr(uv, "repair_vulnerable_runtime", lambda _: result)
     monkeypatch.setattr(uv, "resolve_uv", lambda: "uv")
-    monkeypatch.setattr(uv, "_uv_self_update_is_fresh", lambda: True)
+    monkeypatch.setattr(uv, "_managed_uv_refresh_is_fresh", lambda: True)
     observed = []
 
     receipts.begin_update_receipt()

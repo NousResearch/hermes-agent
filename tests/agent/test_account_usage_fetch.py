@@ -201,3 +201,79 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+_GO_USAGE_PAYLOAD = {
+    "usage": {
+        "rolling": {"status": "ok", "percent": 3, "resetsAt": "2026-09-16T21:44:55.176Z"},
+        "weekly": {"status": "ok", "percent": 2, "resetsAt": "2026-09-21T00:00:00.176Z"},
+        "monthly": {"status": "ok", "percent": 2, "resetsAt": "2026-10-13T02:13:38.176Z"},
+    }
+}
+
+
+class _UrlCapturingClient:
+    def __init__(self, payload, seen):
+        self._payload = payload
+        self._seen = seen
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, headers=None):
+        self._seen.append((url, dict(headers or {})))
+        return _Response(self._payload)
+
+
+def test_fetch_account_usage_opencode_go_heals_stripped_v1(monkeypatch):
+    """anthropic_messages routing strips /v1 from the runtime base; /usage still resolves under /v1."""
+    seen: list = []
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "opencode-go",
+            "base_url": "https://opencode.ai/zen/go",
+            "api_key": "sk-test",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _UrlCapturingClient(_GO_USAGE_PAYLOAD, seen),
+    )
+
+    snapshot = fetch_account_usage("opencode-go")
+
+    assert seen and seen[0][0] == "https://opencode.ai/zen/go/v1/usage"
+    assert seen[0][1]["Authorization"] == "Bearer sk-test"
+    assert snapshot is not None
+    assert [(w.label, w.used_percent) for w in snapshot.windows] == [
+        ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0),
+    ]
+    assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=timezone.utc)
+    assert "97% remaining (3% used)" in render_account_usage_lines(snapshot)[2]
+
+
+def test_fetch_account_usage_opencode_go_honors_custom_relay_host(monkeypatch):
+    """A custom OPENCODE_GO_BASE_URL relay keeps its host; only the /v1 segment is restored."""
+    seen: list = []
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "opencode-go",
+            "base_url": "https://relay.example.com/zen/go",
+            "api_key": "sk-test",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _UrlCapturingClient(_GO_USAGE_PAYLOAD, seen),
+    )
+
+    snapshot = fetch_account_usage("opencode-go")
+
+    assert seen and seen[0][0] == "https://relay.example.com/zen/go/v1/usage"
+    assert snapshot is not None
+    assert snapshot.provider == "opencode-go"

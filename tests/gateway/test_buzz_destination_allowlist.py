@@ -20,6 +20,41 @@ pytest_plugins = ["tests.gateway.buzz_forward_support"]
 
 class TestDestinationAllowlist:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["reaction", "delete"])
+    @pytest.mark.parametrize("extra", [
+        {"allowed_destinations": [CHANNEL]},
+        {"allowed_destinations": []},
+        {"forward_only": True},
+    ])
+    async def test_event_writes_refuse_disallowed_destination(self, operation, extra):
+        adapter = _make_adapter(extra)
+        adapter.cli_path = "/synthetic/buzz"
+        adapter._run_cli = _ScriptedCli()
+        if operation == "reaction":
+            result = await adapter.send_reaction(DM_CHANNEL, "event-1", "eyes")
+        else:
+            result = await adapter.delete_message(DM_CHANNEL, "event-1")
+        assert result is False
+        assert adapter._run_cli.calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["reaction", "delete"])
+    @pytest.mark.parametrize("extra", [{}, {"allowed_destinations": [CHANNEL]}])
+    async def test_event_writes_preserve_allowed_and_default_behavior(self, operation, extra):
+        adapter = _make_adapter(extra)
+        adapter.cli_path = "/synthetic/buzz"
+        cli = adapter._run_cli = _ScriptedCli()
+        group, command = ("reactions", "add") if operation == "reaction" else ("messages", "delete")
+        cli.script(group, command, {"accepted": True})
+        if operation == "reaction":
+            result = await adapter.send_reaction(CHANNEL, "event-1", "eyes")
+        else:
+            result = await adapter.delete_message(CHANNEL, "event-1")
+        assert result is True
+        assert len(cli.calls) == 1
+        assert cli.calls[0][0][:2] == [group, command]
+
+    @pytest.mark.asyncio
     async def test_send_refuses_empty_allowlist(self, caplog):
         adapter = _make_adapter({"allowed_destinations": []})
         adapter._run_cli = _ScriptedCli()

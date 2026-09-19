@@ -1033,6 +1033,8 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Best-effort reaction via buzz-cli; failures are logged, never raised."""
+        if self._destination_error(chat_id):
+            return False
         if not self.cli_path or not emoji or not message_id:
             return False
         # The event id IS the dispatched message_id; channel is not a parameter here.
@@ -1062,6 +1064,8 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a sent message (stream consumer's fresh-final cleanup path)."""
+        if self._destination_error(chat_id):
+            return False
         if not message_id:
             return False
         code, out, _err = await self._run_cli(["messages", "delete", "--event", str(message_id)])
@@ -1811,9 +1815,6 @@ class BuzzAdapter(BasePlatformAdapter):
             reply_to_is_own_message=reply_to_is_own, media_urls=[attachment.path for attachment in attachments],
             media_types=[attachment.media_type for attachment in attachments], message_type=message_type, raw_message=event,
         )
-        if delay_cursor and not self._forward_delivery_unknown:
-            self._commit_event_cursor(state, event_id, created_at)
-
     # ── DM classification: DMs leak in via ``channels list`` as "group"; a real channel's p-tag is only addressing ──
 
     # ── DM classification (issue #68871) ────────────────────────────────── ``buzz dms list`` returns [] on

@@ -1118,19 +1118,27 @@ def _log_safe_path(path: str) -> str:
     return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
-def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional[str]:
-    """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning. A path the
-    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466)."""
+def _validated_delivery_path_with_reason(
+    raw_path, session_key: str, label: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return the accepted path and, when rejected, the caller-visible reason."""
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
         from gateway.media_fetch import fetch_remote_media
         safe_path = fetch_remote_media(raw)
-    if not safe_path:
-        # Say WHY: a path that does not exist on the host is the common case (a model hallucinated or
-        # a sandbox path failed to translate) and is not a security rejection.
-        reason = "not found on this host" if not _existing_regular_file(raw) else "denied by the delivery policy"
-        logger.warning("Skipping %s (%s): %s", label, reason, _log_safe_path(raw))
+    if safe_path:
+        return safe_path, None
+    # Say WHY: a path that does not exist on the host is the common case (a model hallucinated or
+    # a sandbox path failed to translate) and is not a security rejection.
+    reason = "not found on this host" if not _existing_regular_file(raw) else "denied by the delivery policy"
+    logger.warning("Skipping %s (%s): %s", label, reason, _log_safe_path(raw))
+    return None, reason
+
+
+def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional[str]:
+    """``validate_media_delivery_path`` plus the shared rejection warning."""
+    safe_path, _reason = _validated_delivery_path_with_reason(raw_path, session_key, label)
     return safe_path
 
 
@@ -3074,9 +3082,23 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
         """Drop unsafe MEDIA paths and normalize accepted paths."""
-        return [
-            (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
-            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path"))]
+        accepted, _dropped = BasePlatformAdapter.partition_media_delivery_paths(
+            media_files, session_key=session_key)
+        return accepted
+
+    @staticmethod
+    def partition_media_delivery_paths(media_files, session_key: str = "") -> Tuple[List[Tuple[str, bool]], List[dict]]:
+        """Normalize accepted MEDIA paths and retain caller-visible rejection details."""
+        accepted: List[Tuple[str, bool]] = []
+        dropped: List[dict] = []
+        for media_path, is_voice in media_files or []:
+            safe_path, reason = _validated_delivery_path_with_reason(
+                media_path, session_key, "MEDIA directive path")
+            if safe_path:
+                accepted.append((safe_path, bool(is_voice)))
+            else:
+                dropped.append({"path": str(media_path), "reason": reason})
+        return accepted, dropped
 
     @staticmethod
     def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:

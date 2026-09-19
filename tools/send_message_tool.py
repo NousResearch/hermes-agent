@@ -229,8 +229,8 @@ def _handle_send(args):
     from gateway.platforms.base import BasePlatformAdapter
     # Capture [[as_document]] before extract_media strips it (images keep original bytes via send_document).
     force_document_attachments = "[[as_document]]" in message
-    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    requested_media, cleaned_message = BasePlatformAdapter.extract_media(message)
+    media_files, media_dropped = BasePlatformAdapter.partition_media_delivery_paths(requested_media)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
     used_home_channel = not chat_id
     if used_home_channel:
@@ -277,6 +277,22 @@ def _handle_send(args):
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
             if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
                 result["mirrored"] = True
+            if media_dropped:
+                dropped_count = len(media_dropped)
+                requested_count = len(requested_media)
+                noun = "attachment was" if dropped_count == 1 else "attachments were"
+                result.update({
+                    "success": False,
+                    "partial_success": True,
+                    "media_dropped": media_dropped,
+                    "error": (
+                        f"Delivery incomplete: {dropped_count} of {requested_count} requested MEDIA "
+                        f"{noun} dropped before delivery"
+                    ),
+                })
+                result.setdefault("warnings", []).append(result["error"])
+        elif isinstance(result, dict) and media_dropped:
+            result["media_dropped"] = media_dropped
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])
         return json.dumps(result)

@@ -16,7 +16,6 @@ from tui_gateway.contracts.server_requests import (
     VaultUnlockRequestParams)
 
 from .method_ctx import bind_module
-from .contracts.common import SessionLiveInfo
 from .contracts.connectors_operation import ConnectionRequestPayload
 from .contracts.events import (
     MessageCompletePayload,

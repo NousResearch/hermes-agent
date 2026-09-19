@@ -11,6 +11,9 @@ import logging
 
 import dataclasses
 
+from .contracts.events import (
+    ErrorPayload, MessageCompletePayload, MessageInterimPayload, SessionTitlePayload, StatusUpdatePayload,
+    StreamDeltaPayload)
 from .method_ctx import HandlerRegistry, bind_module
 from .user_messages import AGENT_MISSING_FOR_TURN
 from typing import Any
@@ -120,7 +123,6 @@ def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
     display_metadata: dict | None) -> tuple[list[str], Any] | None:
-    from tui_gateway.contracts.events import ErrorPayload
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -337,7 +339,6 @@ def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, 
 
 def _goal_followup_after_turn(
     sid: str, session: dict, result: Any, status: str, raw: Any) -> str | None:
-    from tui_gateway.contracts.events import StatusUpdatePayload
     """/goal continuation (mirrors gateway/run._post_turn_goal_continuation): the prompt to
     chain once ``running`` is released, or None.  Compression failures are never judge
     input: the error text is not work toward the goal, and judging it spends a turn."""
@@ -380,7 +381,6 @@ def _goal_followup_after_turn(
 
 
 def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> None:
-    from tui_gateway.contracts.events import StatusUpdatePayload
     """Hooks for a ``complete`` turn: /loop tick evaluation, pending title, voice fallback."""
     try:
         from hermes_cli.loops import LoopManager
@@ -502,7 +502,6 @@ class _TurnRun:
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
-    from tui_gateway.contracts.events import ErrorPayload
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
     Scopes fill field by field so a failure midway still leaves every bound token for the
@@ -581,7 +580,6 @@ def _invoke_agent(
     turn_author: dict | None = None, text: Any = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``.
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
-    from tui_gateway.contracts.events import MessageInterimPayload, SessionTitlePayload, StreamDeltaPayload
     agent = st.agent
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
@@ -774,7 +772,6 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
 
 
 def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseException) -> None:
-    from tui_gateway.contracts.events import ErrorPayload
     """Except-path of the turn: crash log, history restore, terminal error frame."""
     import traceback
     with contextlib.suppress(Exception):
@@ -893,7 +890,6 @@ def _run_prompt_submit(
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
-    from tui_gateway.contracts.events import MessageCompletePayload
     admitted = srv._admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
     if admitted is None:

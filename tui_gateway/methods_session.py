@@ -404,7 +404,7 @@ def _(rid, params: SessionCreateParams) -> SessionCreateResult | dict:
             "explicit_cwd": explicit_cwd,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
-            "cwd": srv._completion_cwd({"cwd": params.cwd, "profile": params.profile}), "inflight_turn": None, "last_active": now,
+            "cwd": srv._completion_cwd(cwd=params.cwd, profile=params.profile), "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,

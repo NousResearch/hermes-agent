@@ -14,12 +14,13 @@ import subprocess
 import sys
 import threading
 import time
+import typing
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 # Several of these look unused here but are reached as ``srv.<name>`` by the split modules —
 # deleting one breaks a handler at call time, not import time.
@@ -836,7 +837,10 @@ def _image_meta(path: Path) -> dict:
 def register_method(name: str, fn) -> None:
     """Install one declared method with its model boundary around the raw handler."""
     contract = _contracts.METHODS[name]
-    adapter = TypeAdapter(contract.result)
+    # ``Union[A, B]`` results accept any member class; pydantic never revalidates a same-class instance,
+    # so an explicit class check is the real boundary here.
+    result_types = tuple(
+        t for t in (typing.get_args(contract.result) or (contract.result,)) if isinstance(t, type))
 
     def wrapper(rid, params, *extras):
         try:
@@ -863,11 +867,9 @@ def register_method(name: str, fn) -> None:
             return response
         if not isinstance(response, Result):
             raise TypeError(f"RPC handler {name!r} must return a Result instance")
-        try:
-            result = adapter.validate_python(response)
-        except ValidationError as exc:
-            raise TypeError(f"RPC handler {name!r} returned an invalid result") from exc
-        return _ok(rid, result)
+        if not isinstance(response, result_types):
+            raise TypeError(f"RPC handler {name!r} returned an invalid result")
+        return _ok(rid, response)
 
     wrapper._hermes_raw_handler = fn
     _methods[name] = wrapper
@@ -1096,12 +1098,10 @@ def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
         seed_credits_at_session_start(agent)
     _start_session_services(sid, key, current)
     info = _session_info(agent, current)
-    config_warning = None
-    if cfg_warn := _probe_config_health(_load_cfg()):
-        config_warning = cfg_warn
-        logger.warning(cfg_warn)
-    _emit("session.info", sid, SessionInfoPayload(
-        **info.model_dump(mode="json"), config_warning=config_warning))
+    config_warning = _probe_config_health(_load_cfg()) or None
+    if config_warning:
+        logger.warning(config_warning)
+    _emit("session.info", sid, SessionInfoPayload.of(info, config_warning=config_warning))
     _schedule_mcp_late_refresh(sid, agent)  # servers slower than the bounded discovery wait land here
 
 

@@ -56,7 +56,6 @@ def _catch(fail_code: int):
 
 @method("paste.collapse")
 def _(rid, params: PasteCollapseParams) -> PasteCollapseResult | dict:
-    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import PasteCollapseResult
     text = params.text
     if not text:
         return srv._err(rid, 4004, "empty paste")
@@ -240,7 +239,6 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
 @method("complete.path")
 @_catch(5021)
 def _(rid, params: CompletePathParams) -> CompletionItemsResult | dict:
-    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import CompletionItemsResult
     word = params.word
     if not word:
         return CompletionItemsResult(items=[])
@@ -248,7 +246,7 @@ def _(rid, params: CompletePathParams) -> CompletionItemsResult | dict:
     local = srv._effective_terminal_backend() == "local"
     # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
     # session cwd (Desktop sends it) or the session's terminal cwd as-is.
-    root = srv._completion_cwd({"cwd": params.cwd, "session_id": params.session_id, "profile": params.profile}) if local else (params.cwd or srv._terminal_task_cwd(session))
+    root = srv._completion_cwd(cwd=params.cwd, session_id=params.session_id, profile=params.profile) if local else (params.cwd or srv._terminal_task_cwd(session))
     session_key = session.get("session_key") if session else None
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
@@ -286,7 +284,6 @@ def _(rid, params: CompletePathParams) -> CompletionItemsResult | dict:
 @method("complete.slash")
 @_catch(5020)
 def _(rid, params: CompleteSlashParams) -> CompleteSlashResult | dict:
-    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import CompleteSlashResult
     text = params.text or ""
     if not text.startswith("/"):
         return CompleteSlashResult(items=[])
@@ -297,7 +294,7 @@ def _(rid, params: CompleteSlashParams) -> CompleteSlashResult | dict:
     from agent.skill_bundles import get_skill_bundles
     # Skill/bundle lookups are home- and cwd-keyed: bind the calling session's profile and workspace so
     # the popup offers the project-local skills ``command.dispatch`` accepts for that session (#114359).
-    with srv._session_home_scope(srv._sessions.get(params.session_id or ""), cwd=srv._completion_cwd(params.model_dump())):
+    with srv._session_home_scope(srv._sessions.get(params.session_id or ""), cwd=srv._completion_cwd(session_id=params.session_id, profile=params.profile)):
         skill_commands, skill_bundles = dict(get_skill_commands()), dict(get_skill_bundles())
     completer = SlashCommandCompleter(
         skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)
@@ -347,7 +344,6 @@ def _session_agent(params):
 @_profile_scoped
 @_catch(5033)
 def _(rid, params: ModelOptionsParams) -> ModelOptionsResult | dict:
-    from tui_gateway.contracts.config_free_tier_control import ModelOptionsResult
     from hermes_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must
     # NOT clobber disk config (with_overrides is truthy-only).
@@ -360,7 +356,6 @@ def _(rid, params: ModelOptionsParams) -> ModelOptionsResult | dict:
 @_catch(5034)
 def _(rid, params: ModelSaveKeyParams) -> ModelSaveKeyResult | dict:
     """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
-    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ModelSaveKeyResult
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import is_managed
     slug, api_key = params.slug.strip(), params.api_key.strip()
@@ -399,7 +394,6 @@ def _(rid, params: ModelSaveKeyParams) -> ModelSaveKeyResult | dict:
 @_catch(5035)
 def _(rid, params: ModelDisconnectParams) -> ModelDisconnectResult | dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
-    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ModelDisconnectResult
     from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
     from hermes_cli.credential_lifecycle import remove_provider_env_credential
     if not (slug := params.slug.strip()):

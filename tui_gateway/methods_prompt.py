@@ -718,7 +718,6 @@ def _attached_image_result(session, image_path, **extra) -> dict:
 
 @method("clipboard.paste")
 def _(rid, params: ClipboardPasteParams) -> AttachedImageResult | dict:
-    from tui_gateway.contracts.prompt_voice import AttachedImageResult
     session, err = srv._sess_building(params, rid)
     if err:
         return err
@@ -743,7 +742,6 @@ def _(rid, params: ClipboardPasteParams) -> AttachedImageResult | dict:
 
 @method("image.attach")
 def _(rid, params: ImageAttachParams) -> AttachedImageResult | dict:
-    from tui_gateway.contracts.prompt_voice import AttachedImageResult
     session, err = srv._sess_building(params, rid)
     if err:
         return err
@@ -774,7 +772,6 @@ def _(rid, params: ImageAttachParams) -> AttachedImageResult | dict:
 def _(rid, params: ImageAttachBytesParams) -> AttachedImageResult | dict:
     """Attach an image from base64 bytes (remote client); reply mirrors ``image.attach``.
     ``filename``/``ext`` hint the extension, else magic bytes decide (fallback ``.png``)."""
-    from tui_gateway.contracts.prompt_voice import AttachedImageResult
     session, err = srv._sess_building(params, rid)
     if err:
         return err
@@ -975,13 +972,15 @@ def _final_response_text(result) -> str:
     return (result.get("final_response", str(result)) if isinstance(result, dict) else str(result))
 
 
+_SIDE_AGENT_COMPLETE_PAYLOADS = {
+    "background.complete": BackgroundCompletePayload,
+    "btw.complete": BtwCompletePayload,
+    "preview.restart.complete": PreviewRestartCompletePayload,
+}
+
+
 def _spawn_side_agent(
     rid, session, task_id, parent, event, body, *, cwd="", extra=None, cleanup=None):
-    from tui_gateway.contracts.events import BackgroundCompletePayload, BtwCompletePayload, PreviewRestartCompletePayload
-    from tui_gateway.contracts.prompt_voice import TaskIdResult
-    from tui_gateway.contracts.events import (
-        BackgroundCompletePayload, BtwCompletePayload, PreviewRestartCompletePayload)
-    from tui_gateway.contracts.prompt_voice import TaskIdResult
     """Run ``body()`` on a daemon thread under the session's profile home (the ContextVar
     doesn't propagate across threads) and cwd; its text — or ``error: <exc>`` — lands on
     ``parent`` as ``event`` with ``task_id`` (+ ``extra``).  Replies ``{task_id}``."""
@@ -997,12 +996,13 @@ def _spawn_side_agent(
         # agent through task-wide process cleanup — the whole point of preview.restart is to leave a
         # background server running under this task_id, and AIAgent.close() would kill every process for
         # the task_id and tear down the very server the restart just started.
+        payload_cls = _SIDE_AGENT_COMPLETE_PAYLOADS[event]
         try:
             with srv._session_profile_runtime_scope(session):
                 text = body()
-            srv._emit(event, parent, {"background.complete": BackgroundCompletePayload, "btw.complete": BtwCompletePayload, "preview.restart.complete": PreviewRestartCompletePayload}[event](task_id=task_id, text=text, **extra))
+            srv._emit(event, parent, payload_cls(task_id=task_id, text=text, **extra))
         except Exception as e:
-            srv._emit(event, parent, {"background.complete": BackgroundCompletePayload, "btw.complete": BtwCompletePayload, "preview.restart.complete": PreviewRestartCompletePayload}[event](task_id=task_id, text=f"error: {e}", **extra))
+            srv._emit(event, parent, payload_cls(task_id=task_id, text=f"error: {e}", **extra))
         finally:
             if cleanup is not None:
                 cleanup()

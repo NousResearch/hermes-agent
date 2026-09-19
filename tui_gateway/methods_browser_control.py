@@ -64,12 +64,11 @@ def _broker_event_writer(transport: object, session_id: str):
 
     def send(frame: dict) -> None:
         try:
-            payload = frame.get("params")
             accepted = transport.write({
                 "jsonrpc": "2.0", "method": "event",
                 "params": {
                     "type": frame.get("method"), "session_id": session_id,
-                    "payload": payload.model_dump(mode="json") if payload is not None else None,
+                    "payload": frame.get("params"),  # broker already serialised to a JSON dict
                 }})
         except Exception:
             logger.exception(

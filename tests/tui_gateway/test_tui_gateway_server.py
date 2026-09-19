@@ -110,7 +110,7 @@ def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_pa
         server._cfg_path = None
         _clear_server_sessions()
         monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
-        monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+        monkeypatch.setattr(server, "_completion_cwd", lambda **_kw: str(tmp_path))
 
         # Opening a chat must NOT take a slot. Every tile paint and every
         # background reconnect-resume calls session.create, and an unprompted
@@ -998,9 +998,9 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
 
-    assert server._completion_cwd({"profile": "ef-design"}) == str(profile_b)
+    assert server._completion_cwd(profile="ef-design") == str(profile_b)
     # No profile and no launch config → fallback to the launch env var.
-    assert server._completion_cwd({}) == str(stale)
+    assert server._completion_cwd() == str(stale)
 
 
 def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_path):
@@ -1021,7 +1021,7 @@ def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_pa
     monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
     monkeypatch.setattr(server, "_profile_home", lambda _name: None)
 
-    assert server._completion_cwd({}) == str(configured)
+    assert server._completion_cwd() == str(configured)
 
 
 def test_default_session_cwd_prefers_launch_config(monkeypatch, tmp_path):
@@ -1052,7 +1052,7 @@ def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
     home = _write_profile_cfg(tmp_path / "home-c", str(profile_b))
 
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
-    result = server._completion_cwd({"cwd": str(explicit), "profile": "ef-design"})
+    result = server._completion_cwd(cwd=str(explicit), profile="ef-design")
     assert result == str(explicit)
 
 
@@ -15806,7 +15806,7 @@ def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+    monkeypatch.setattr(server, "_completion_cwd", lambda **_kw: str(tmp_path))
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))

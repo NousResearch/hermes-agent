@@ -27,13 +27,12 @@ def _normalize_completion_path(path_part: str) -> str:
     return expanded
 
 
-def _completion_cwd(params: dict | None = None) -> str:
-    params = params or {}
+def _completion_cwd(*, cwd: str | None = None, session_id: str | None = None, profile: str | None = None) -> str:
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
-    raw = (params.get("cwd") or srv._sessions.get(params.get("session_id") or "", {}).get("cwd")
-           or srv._profile_configured_cwd(srv._profile_home(params.get("profile"))) or srv._launch_configured_cwd()
+    raw = (cwd or srv._sessions.get(session_id or "", {}).get("cwd")
+           or srv._profile_configured_cwd(srv._profile_home(profile)) or srv._launch_configured_cwd()
            or os.environ.get("TERMINAL_CWD") or os.getcwd())
     with contextlib.suppress(Exception):
         resolved = os.path.abspath(os.path.expanduser(str(raw)))

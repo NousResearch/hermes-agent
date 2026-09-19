@@ -504,7 +504,7 @@ def _(rid, params) -> CommandsCatalogResult:
         warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
     try:
-        with srv._session_home_scope(srv._sessions.get(params.session_id or ""), cwd=srv._completion_cwd(params.model_dump())):
+        with srv._session_home_scope(srv._sessions.get(params.session_id or ""), cwd=srv._completion_cwd(session_id=params.session_id, profile=params.profile)):
             collision_note = srv._catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
         warning = warning or collision_note
     except Exception as e:
@@ -1243,7 +1243,7 @@ def _skills_install(rid, params, query):
 
 
 def _skills_browse(rid, params, query):
-    pg = int(params.page or 0 or 0) or (int(query) if query.isdigit() else 1)
+    pg = int(params.page or 0) or (int(query) if query.isdigit() else 1)
     browse = _tools_mod("hermes_cli.skills_hub").browse_skills
     return SkillsManageResult.model_validate(browse(page=pg, page_size=int(params.page_size or 20)))
 
@@ -1273,7 +1273,7 @@ def _(rid, params) -> SkillsManageResult | dict:
 def _(rid, params) -> SkillsReloadResult:
     # Bound like ``commands.catalog``: an unbound rescan runs against the launch env, reports the session's
     # project skills as "Removed" and republishes a registry without them (#114359).
-    with srv._session_home_scope(srv._sessions.get(params.session_id or ""), cwd=srv._completion_cwd(params.model_dump())):
+    with srv._session_home_scope(srv._sessions.get(params.session_id or ""), cwd=srv._completion_cwd(session_id=params.session_id, profile=params.profile)):
         result = _tools_mod("agent.skill_commands").reload_skills()
     added, removed = result.get("added") or [], result.get("removed") or []
     lines = ["Reloading skills..."] + ([] if added or removed else ["No new skills detected."])

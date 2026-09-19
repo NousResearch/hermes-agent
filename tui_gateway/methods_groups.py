@@ -20,7 +20,7 @@ from .contracts.groups_bot_relay import (
     GroupsPeerRegisterParams, GroupsPeerRegisterResult, GroupsPeerRevokeParams,
     GroupsPeerRevokeResult, GroupsPromoteParams, GroupsPromoteResult, GroupsReplicateParams,
     GroupsReplicateResult, GroupsReplicaStateParams, GroupsReplicaStateResult, GroupsRenameParams,
-    GroupsRenameResult, GroupsRetryParams, GroupsRetryResult, GroupsSendParams, GroupsSendResult,
+    GroupsRenameResult, GroupsRetryParams, GroupsRetryResult, GroupsSendParams, GroupsSendPayload, GroupsSendResult,
     GroupsStateParams, GroupsStateResult, GroupsStopParams, GroupsStopResult,
 )
 
@@ -358,7 +358,7 @@ def _(rid, params: GroupsSendParams, service) -> GroupsSendResult:
     """Append one typed event idempotently (inert ``message.user`` only; actor is server-owned)."""
     from gateway.hosted_rooms import user_event_id
     client_event_id = params.event_id
-    payload = params.payload.model_dump(mode="json") if hasattr(params.payload, "model_dump") else params.payload
+    payload = params.payload.model_dump(mode="json") if isinstance(params.payload, GroupsSendPayload) else params.payload
     event = service.send(room_id=params.room_id, event_id=user_event_id(client_event_id), payload=payload)
     return GroupsSendResult(event=event, client_event_id=client_event_id, accepted=True, driver_started=True)
 

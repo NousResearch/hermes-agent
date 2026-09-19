@@ -143,7 +143,7 @@ def _(rid, params: ProjectsSetActiveParams, pdb, conn) -> ActiveIdResult | dict:
 
 @_projects_method("projects.for_cwd")
 def _(rid, params: ProjectsForCwdParams, pdb, conn) -> ProjectsForCwdResult | dict:
-    cwd = srv._completion_cwd({"cwd": params.cwd.strip()} if params.cwd else {})
+    cwd = srv._completion_cwd(cwd=params.cwd.strip() if params.cwd else None)
     proj = pdb.project_for_path(conn, cwd)
     return ProjectsForCwdResult(
         project=srv._project_info(proj) if proj else None, cwd=cwd, branch=srv.git_probe.branch(cwd))

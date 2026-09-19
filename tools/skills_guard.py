@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v5"
+SCANNER_VERSION = "skills-guard-v6"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -306,6 +306,44 @@ THREAT_PATTERNS = [
      "remote_fetch", "medium", "supply_chain", "fetches remote resource at runtime"),
     (r'git\s+clone\s+', "git_clone", "medium", "supply_chain", "clones a git repository at runtime"),
     (r'docker\s+pull\s+', "docker_pull", "medium", "supply_chain", "pulls a Docker image at runtime"),
+    # ── Windows / PowerShell / batch / VBScript ──
+    # Mirrors the shell patterns above for the Windows toolchain: download-and-execute, encoded payloads,
+    # policy bypass, LOLBins, autostart persistence, Defender tampering. Secret-exfil shares the loopback
+    # exemption used by env_exfil_*.
+    (r'(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|DownloadString|DownloadFile|Net\.WebClient)[^\n]*\|\s*(?:iex|Invoke-Expression)\b',
+     "ps_download_execute", "critical", "supply_chain", "PowerShell download piped to Invoke-Expression (download-and-execute)"),
+    (r'(?:iex|Invoke-Expression)\s*\(?\s*\(?\s*(?:New-Object\s+(?:System\.)?Net\.WebClient|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b',
+     "ps_download_execute", "critical", "supply_chain", "PowerShell Invoke-Expression over a downloaded string (download-and-execute)"),
+    (r'(?:iex|Invoke-Expression)[^\n]*FromBase64String|FromBase64String[^\n]*(?:iex|Invoke-Expression)\b',
+     "ps_base64_execute", "critical", "obfuscation", "PowerShell executes a base64-decoded payload"),
+    (r'(?:powershell|pwsh)(?:\.exe)?\s+[^\n]*-(?:e|ec|en|enc|encodedcommand)\s+[A-Za-z0-9+/=]{20,}',
+     "ps_encoded_command", "critical", "obfuscation", "PowerShell -EncodedCommand with inline base64 payload"),
+    (r'-(?:ExecutionPolicy|ep|ex)\s+(?:Bypass|Unrestricted)\b',
+     "ps_execution_policy_bypass", "high", "execution", "PowerShell execution policy bypass"),
+    (r'-(?:WindowStyle|w)\s+Hidden\b',
+     "ps_hidden_window", "medium", "obfuscation", "PowerShell launched with hidden window"),
+    (r'(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|Net\.WebClient)(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$env:\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
+     "ps_env_exfil", "critical", "exfiltration", "PowerShell web request interpolating secret environment variable"),
+    (r'\$env:(?:USERPROFILE|HOME|HOMEPATH)[\\/]+\.(?:ssh|aws|gnupg|kube)\b',
+     "ps_credential_dir", "high", "exfiltration", "references user credential directory via PowerShell env var"),
+    (r'certutil(?:\.exe)?\s+[^\n]*-(?:urlcache|decode)\b',
+     "certutil_lolbin", "high", "supply_chain", "certutil used to download or decode a payload (LOLBin)"),
+    (r'bitsadmin(?:\.exe)?\s+[^\n]*/transfer\b',
+     "bitsadmin_lolbin", "medium", "supply_chain", "bitsadmin file transfer (LOLBin download)"),
+    (r'mshta(?:\.exe)?\s+[^\n]*(?:https?:|vbscript:|javascript:)',
+     "mshta_execute", "critical", "execution", "mshta executing remote or inline script"),
+    (r'rundll32(?:\.exe)?\s+[^\n]*javascript:',
+     "rundll32_javascript", "critical", "execution", "rundll32 JavaScript execution trick"),
+    (r'(?:Software\\+Microsoft\\+Windows\\+CurrentVersion\\+Run(?:Once)?\b|schtasks(?:\.exe)?\s+[^\n]*/create\b|Register-ScheduledTask\b|New-ScheduledTask(?:Action)?\b)',
+     "windows_autostart", "medium", "persistence", "Windows autostart via Run key or scheduled task"),
+    (r'(?:Set-MpPreference\s+[^\n]*-Disable\w+|Add-MpPreference\s+[^\n]*-Exclusion\w+)',
+     "defender_tamper", "critical", "persistence", "modifies Windows Defender protection (disable/exclusion)"),
+    (r'Start-Process\s+[^\n]*-Verb\s+RunAs\b',
+     "ps_runas_elevation", "high", "privilege_escalation", "PowerShell self-elevation via Start-Process -Verb RunAs"),
+    (r'CreateObject\s*\(\s*["\'](?:WScript\.Shell|Shell\.Application|MSXML2\.(?:Server)?XMLHTTP|ADODB\.Stream)',
+     "vbs_shell_object", "high", "execution", "VBScript/JScript COM object for shell execution or download"),
+    (r'(?:[A-Za-z]\^){3,}[A-Za-z]',
+     "cmd_caret_obfuscation", "medium", "obfuscation", "batch caret-obfuscated command"),
     # ── Privilege escalation ──
     # `allowed-tools:` is REQUIRED frontmatter per the agent-skill spec — informational (low) only.
     (r'^allowed-tools\s*:',
@@ -403,7 +441,8 @@ _PATH_REFERENCE_PATTERN_IDS = frozenset({"ssh_dir_access", "aws_dir_access", "gp
                                          "docker_dir_access", "ssh_backdoor", "system_passwd_access"})
 _COMMENT_PREFIX = {'.py': '#', '.sh': '#', '.bash': '#', '.rb': '#', '.pl': '#', '.r': '#', '.jl': '#', '.yaml': '#',
                    '.yml': '#', '.toml': '#', '.conf': '#', '.cfg': ('#', ';'), '.ini': ('#', ';'), '.js': '//',
-                   '.ts': '//', '.php': ('//', '#')}
+                   '.ts': '//', '.php': ('//', '#'), '.ps1': '#', '.psm1': '#', '.psd1': '#',
+                   '.bat': ('REM ', 'rem ', '::'), '.cmd': ('REM ', 'rem ', '::'), '.vbs': "'"}
 # `NAME = ...`, `NAME: Type = ...`, `const NAME = ...` or a mapping key `name:` whose name says "not these".
 _DENYLIST_OWNER_RE = re.compile(
     r'^\s*(?:(?:const|let|var|export)\s+)?[\w.\-]*(?:deny|black|block|skip|exclu|ignor|forbid|refus|reject|never'
@@ -450,7 +489,8 @@ MAX_FILE_COUNT, MAX_TOTAL_SIZE_KB, MAX_SINGLE_FILE_KB = 50, 5120, 256
 # Text extensions to scan; known binary extensions that should NOT be in a skill; script types allowed +x.
 SCANNABLE_EXTENSIONS = {
     '.md', '.txt', '.py', '.sh', '.bash', '.js', '.ts', '.rb', '.yaml', '.yml', '.json', '.toml',
-    '.cfg', '.ini', '.conf', '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php'}
+    '.cfg', '.ini', '.conf', '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php',
+    '.ps1', '.psm1', '.psd1', '.bat', '.cmd', '.vbs'}
 SUSPICIOUS_BINARY_EXTENSIONS = {
     '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.com', '.msi', '.dmg', '.app', '.deb', '.rpm'}
 _SCRIPT_EXTENSIONS = {'.sh', '.bash', '.py', '.rb', '.pl'}

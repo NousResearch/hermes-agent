@@ -369,6 +369,10 @@ _EXPLICIT_API_MODES = {
     "codex_app_server",
 }
 
+# Serializes the OpenRouter pre-warm claim below; the Event alone cannot make
+# "test it, then set it" one step.
+_OPENROUTER_PREWARM_LOCK = threading.Lock()
+
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
@@ -493,12 +497,16 @@ def _finalize_routing(agent, api_mode, credential_pool):
 
     # Pre-warm the OpenRouter metadata cache (1h TTL) off-thread so the first pricing estimate
     # doesn't block. Process-level Event guard: an unguarded spawn leaks a thread per message.
-    if (agent.provider == "openrouter" or agent._is_openrouter_url()) and \
-            not _ra()._openrouter_prewarm_done.is_set():
-        _ra()._openrouter_prewarm_done.set()
-        threading.Thread(
-            target=fetch_model_metadata, daemon=True, name="openrouter-prewarm",
-        ).start()
+    # ``is_set()`` then ``set()`` is two steps, so concurrent inits (gateway sessions, batch
+    # runner, in-process subagents) could all observe it clear and each spawn a prewarm thread;
+    # the lock makes the claim atomic while leaving the Event as the readable "warmed" flag.
+    if agent.provider == "openrouter" or agent._is_openrouter_url():
+        with _OPENROUTER_PREWARM_LOCK:
+            if not _ra()._openrouter_prewarm_done.is_set():
+                _ra()._openrouter_prewarm_done.set()
+                threading.Thread(
+                    target=fetch_model_metadata, daemon=True, name="openrouter-prewarm",
+                ).start()
 
 
 def _set_defaults(agent, table: Dict[str, Any]) -> None:

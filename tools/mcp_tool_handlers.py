@@ -23,6 +23,7 @@ from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
+_MCP_PROGRESS_MAX_TIMEOUT_FACTOR = 4
 
 _NEEDS_REAUTH_MSG = (
     "MCP server '{s}' requires re-authentication. Run `hermes mcp login {s}` (or delete the tokens file under "
@@ -303,7 +304,8 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
 
 
 def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float, recoverers,
-              on_final_failure: Callable[[BaseException], None], record_outcome: bool = False) -> str:
+              on_final_failure: Callable[[BaseException], None], record_outcome: bool = False,
+              progress_aware: bool = False) -> str:
     """Mark the call started on *server* (doubles may lack ``mark_tool_call``), run coroutine function *call*
     on the MCP loop and, on failure, walk ``recoverers`` (``(server_name, exc, retry_call, op) -> Optional[str]``,
     None = not its kind; order matters). Unrecovered exceptions go through ``on_final_failure`` and become the
@@ -312,6 +314,15 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
         server.mark_tool_call()
 
     def call_once():
+        if progress_aware:
+            absolute_timeout = tool_timeout * _MCP_PROGRESS_MAX_TIMEOUT_FACTOR
+            progress_state = _loop._McpProgressState(tool_timeout, absolute_timeout)
+            return _loop._run_on_mcp_loop(
+                lambda: call(progress_state),
+                timeout=tool_timeout,
+                deadline_provider=progress_state.deadline,
+                absolute_timeout=absolute_timeout,
+            )
         return _loop._run_on_mcp_loop(call, timeout=tool_timeout)
 
     try:
@@ -357,7 +368,9 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
+async def _call_tool_racing_stdio_death(
+    server, server_name: str, tool_name: str, args: dict, *, progress_callback=None
+):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -371,7 +384,11 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
             f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
             in_flight=False,
         )
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    _call_coro = server.session.call_tool(
+        tool_name,
+        arguments=args,
+        progress_callback=progress_callback,
+    )
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.
@@ -529,11 +546,21 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         # pre-dispatch so the auth recoverer keeps its retry for every tool.
         read_only = _tool_is_read_only(server_name, tool_name)
 
-        async def _call():
+        async def _call(progress_state):
+            async def _progress_callback(progress, total, message):
+                del progress, total, message
+                progress_state.touch()
+
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+                    result = await _call_tool_racing_stdio_death(
+                        server,
+                        server_name,
+                        tool_name,
+                        args,
+                        progress_callback=_progress_callback,
+                    )
                 finally:
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
@@ -547,7 +574,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
-            _on_failure, record_outcome=True)
+            _on_failure, record_outcome=True, progress_aware=True)
     return _handler
 
 

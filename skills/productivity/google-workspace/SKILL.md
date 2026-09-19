@@ -254,7 +254,21 @@ $GAPI drive delete FILE_ID --permanent
 
 ```bash
 $GAPI contacts list --max 20
+
+# Upcoming birthdays (default: next 30 days); this reads Google Contacts via People API.
+$GAPI contacts birthdays
+$GAPI contacts birthdays --days 365 --max 100
+$GAPI contacts birthdays --name "Ada"
 ```
+
+With `--name`, the default window expands to the next year; pass `--days` to
+request a narrower or wider window. The unnamed feed remains a 30-day view.
+
+For birthday questions, use `contacts birthdays` rather than searching for a
+Calendar named "Birthdays". Google Calendar's UI Birthdays calendar is not
+always exposed through CalendarList or regular event queries. Feb 29 birthdays
+are observed on Feb 28 in non-leap years. Birthday values use `DD.MM.YYYY`; a
+contact without a birth year is represented as `DD.MM.` and has no `turningAge`.
 
 ### Sheets
 
@@ -306,6 +320,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Drive share**: `{status: "shared", permissionId, fileId, role, type}`
 - **Drive delete**: `{status: "trashed" | "deleted", fileId, permanent}`
 - **Contacts list**: `[{name, emails: [...], phones: [...]}]`
+- **Contacts birthdays**: `[{name, birthday, nextDate, daysUntil, turningAge?}]`
 - **Sheets get**: `[[cell, cell, ...], ...]`
 - **Sheets create**: `{status: "created", spreadsheetId, title, spreadsheetUrl}`
 - **Docs create**: `{status: "created", documentId, title, url}`

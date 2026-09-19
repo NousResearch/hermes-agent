@@ -215,7 +215,8 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
 def _marker_only_restart_obsolete() -> bool:
     """Settle only the inventory stored with this marker's target SHA.
 
-    Historical receipts cannot narrow this obligation. Legacy, malformed or unsupported inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
+    Historical receipts cannot narrow this obligation. Malformed or unsupported inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
+    An inventory-less marker records no obligation (#115638), so it discharges when the live fleet provably serves the marker's expected SHA.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -228,23 +229,27 @@ def _marker_only_restart_obsolete() -> bool:
             fields[key] = value
         expected_sha = fields.get("expected_sha", "").strip()
         inventory = json.loads(fields.get("inventory", "null"))
-        if not isinstance(inventory, dict) or inventory.get("version") != 1:
-            return False
-        runtimes = inventory.get("runtimes")
-        if not isinstance(runtimes, list) or not runtimes:
-            return False
-        owed = set()
-        for runtime in runtimes:
-            if not isinstance(runtime, dict):
+        owed: set[tuple[str, str]] | None = None
+        if inventory is None:
+            pass  # inventory-less marker: no recorded obligation; live-fleet evidence alone settles it
+        else:
+            if not isinstance(inventory, dict) or inventory.get("version") != 1:
                 return False
-            if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
-                continue
-            if runtime.get("kind") != "gateway":
+            runtimes = inventory.get("runtimes")
+            if not isinstance(runtimes, list) or not runtimes:
                 return False
-            profile = runtime.get("profile")
-            if not isinstance(profile, str) or not profile.strip() or profile == "unknown":
-                return False
-            owed.add(("gateway", profile))
+            owed = set()
+            for runtime in runtimes:
+                if not isinstance(runtime, dict):
+                    return False
+                if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
+                    continue
+                if runtime.get("kind") != "gateway":
+                    return False
+                profile = runtime.get("profile")
+                if not isinstance(profile, str) or not profile.strip() or profile == "unknown":
+                    return False
+                owed.add(("gateway", profile))
     except (OSError, UnicodeError, ValueError):
         return False
     if not expected_sha:
@@ -266,7 +271,7 @@ def _marker_only_restart_obsolete() -> bool:
     for row in fleet:
         if row.get("state") != "current" or str(row.get("code_sha")) != expected_sha:
             return False  # stale / down / unknown-identity row still owes the restart
-    if not owed <= covered:
+    if owed is not None and not owed <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
     _clear_fleet_restart_pending_marker()
     logger.debug(

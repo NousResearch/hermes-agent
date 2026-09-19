@@ -124,8 +124,7 @@ def test_probe_exception_does_not_hide_manual_warning(monkeypatch, capsys, marke
 
 
 @pytest.mark.parametrize("completed_restart", [False, True])
-@pytest.mark.parametrize("legacy", [False, True], ids=["owned-inventory", "legacy-marker"])
-def test_new_marker_cannot_borrow_old_alpha_receipt(monkeypatch, capsys, legacy, completed_restart):
+def test_new_marker_cannot_borrow_old_alpha_receipt(monkeypatch, capsys, completed_restart):
     """N owns alpha; N+1 owns alpha and beta but dies before writing its receipt."""
     old = {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}
     if completed_restart:
@@ -133,9 +132,8 @@ def test_new_marker_cannot_borrow_old_alpha_receipt(monkeypatch, capsys, legacy,
     live = [CURRENT]
     target = seed(monkeypatch, old, "new", live)
     marker = fleet._fleet_restart_pending_marker_path()
-    if not legacy:
-        with marker.open("a") as stream:
-            stream.write("inventory=" + json.dumps({"version": 1, "runtimes": [GATEWAY, dict(GATEWAY, profile="beta")]}) + "\n")
+    with marker.open("a") as stream:
+        stream.write("inventory=" + json.dumps({"version": 1, "runtimes": [GATEWAY, dict(GATEWAY, profile="beta")]}) + "\n")
     receipt_before, marker_before = target.read_bytes(), marker.read_bytes()
     fleet._warn_pending_fleet_restart_on_startup()
     assert "hermes gateway restart" in capsys.readouterr().err
@@ -145,12 +143,35 @@ def test_new_marker_cannot_borrow_old_alpha_receipt(monkeypatch, capsys, legacy,
     assert marker.read_bytes() == marker_before
     assert target.read_bytes() == receipt_before
     live.append(dict(CURRENT, profile="beta"))
-    assert fleet._pending_fleet_restart_needed() is legacy
-    assert marker.exists() is legacy
+    assert not fleet._pending_fleet_restart_needed()
+    assert not marker.exists()
     assert target.read_bytes() == receipt_before
 
 
-@pytest.mark.parametrize("inventory", [None, {}, [], {"version": 2, "runtimes": [GATEWAY]}, {"version": 1, "runtimes": []}, {"version": 1, "runtimes": [GATEWAY, dict(MANUAL, detail={})]}, {"version": 1, "runtimes": [None]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": "unknown"}]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": []}]}])
+@pytest.mark.parametrize("completed_restart", [False, True])
+def test_legacy_marker_discharges_on_live_fleet_evidence_without_receipt(monkeypatch, capsys, completed_restart):
+    """An inventory-less N+1 marker settles on live-fleet evidence alone (#115638).
+
+    It never borrows the old receipt's ownership: the receipt is left intact and the
+    marker discharges only because every live row is current at its expected SHA.
+    """
+    old = {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}
+    if completed_restart:
+        old.update(post_update={"sha": "new"}, gateway_restart={"incomplete": False})
+    live = [CURRENT]
+    target = seed(monkeypatch, old, "new", live)
+    marker = fleet._fleet_restart_pending_marker_path()
+    receipt_before = target.read_bytes()
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert "hermes gateway restart" not in capsys.readouterr().err
+    assert not fleet._pending_fleet_restart_needed()
+    assert not marker.exists()
+    assert target.read_bytes() == receipt_before
+
+
+# Explicit `inventory=null` records no obligation either, so it settles on live-fleet
+# evidence like a missing line (#115638); the variants below stay fail-closed.
+@pytest.mark.parametrize("inventory", [{}, [], {"version": 2, "runtimes": [GATEWAY]}, {"version": 1, "runtimes": []}, {"version": 1, "runtimes": [GATEWAY, dict(MANUAL, detail={})]}, {"version": 1, "runtimes": [None]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": "unknown"}]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": []}]}])
 def test_unverified_marker_inventory_stays_pending(monkeypatch, inventory):
     seed(monkeypatch, {"outcome": "success", "plan": {"runtimes": [GATEWAY]}}, "new", [CURRENT])
     marker = fleet._fleet_restart_pending_marker_path()

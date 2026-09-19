@@ -1320,6 +1320,8 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `browse` | Paginated browser for skill registries. |
+| `trust [path]` | Trust a project so its repo-local skills (`./.hermes/skills`, `./.agents/skills`) load. Defaults to the enclosing git checkout of the current directory. |
+| `untrust [path]` | Revoke project-skill trust for a repo. |
 | `search` | Search skill registries. |
 | `install` | Install a skill. |
 | `inspect` | Preview a skill without installing it. |
@@ -1327,8 +1329,11 @@ Subcommands:
 | `check` | Check installed hub skills for upstream updates. |
 | `update` | Reinstall hub skills with upstream changes when available. |
 | `audit` | Re-scan installed hub skills. |
+| `repair-official <name\|all> [--restore]` | Backfill or restore official optional skills from the repo source. By default only backfills hub metadata for exact matches; `--restore` replaces missing or mutated active copies from `optional-skills/`, moving existing copies to a restore backup first. |
 | `uninstall` | Remove a hub-installed skill. |
 | `reset` | Un-stick a bundled skill flagged as `user_modified` by clearing its manifest entry. With `--restore`, also replaces the user copy with the bundled version. |
+| `list-modified [--json]` | List bundled skills you've edited — the ones `hermes update` reports as user-modified and keeps. `--json` emits machine-readable output. |
+| `diff <name>` | Show a unified diff between your local copy of a bundled skill and the current stock version, so you can confirm what changed before `hermes skills reset`. |
 | `opt-out` | Stop bundled skills from being seeded into the active profile. Writes a `.no-bundled-skills` marker so the installer, `hermes update`, and any sync skip bundled-skill seeding. Safe by default — nothing on disk is touched. With `--remove`, also deletes already-present bundled skills that are **unmodified** (user-edited, hub-installed, and hand-written skills are never removed; previews and confirms first, `--yes` to skip). |
 | `opt-in` | Undo `opt-out` by removing the `.no-bundled-skills` marker so bundled skills are seeded again on the next `hermes update`. With `--sync`, re-seed immediately. |
 | `publish` | Publish a skill to a registry. |

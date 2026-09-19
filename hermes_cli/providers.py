@@ -21,6 +21,7 @@ class HermesOverlay:
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
+    env_priority: Tuple[str, ...] = ()    # these sort ahead of models.dev's list (documented precedence)
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
 
@@ -62,7 +63,8 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "huggingface": HermesOverlay(is_aggregator=True, base_url_env_var="HF_BASE_URL"),
     "novita": HermesOverlay(is_aggregator=True, base_url_env_var="NOVITA_BASE_URL"),
     "io-net": HermesOverlay(is_aggregator=True, base_url_override="https://api.intelligence.io.solutions/api/v1",
-                            base_url_env_var="IONET_BASE_URL", extra_env_vars=("IONET_API_KEY", "IOINTELLIGENCE_API_KEY")),
+                            base_url_env_var="IONET_BASE_URL", extra_env_vars=("IONET_API_KEY", "IOINTELLIGENCE_API_KEY"),
+                            env_priority=("IONET_API_KEY",)),
     "xai": HermesOverlay(transport="codex_responses", base_url_override="https://api.x.ai/v1", base_url_env_var="XAI_BASE_URL"),
     "nvidia": HermesOverlay(base_url_override="https://integrate.api.nvidia.com/v1", base_url_env_var="NVIDIA_BASE_URL"),
     "xiaomi": HermesOverlay(base_url_env_var="XIAOMI_BASE_URL"),
@@ -204,6 +206,12 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
         for ev in ov.extra_env_vars:
             if ev not in env_vars:
                 env_vars.append(ev)
+        if ov.env_priority:
+            # models.dev's env list may order an alias first (io-net: IOINTELLIGENCE_API_KEY);
+            # a provider whose documented precedence differs pins it here so every surface
+            # agrees with the runtime resolver.
+            env_vars = [ev for ev in ov.env_priority if ev in env_vars] + \
+                [ev for ev in env_vars if ev not in ov.env_priority]
         return _overlay_pdef(canonical, ov, mdev_info.name, tuple(env_vars), ov.base_url_override or mdev_info.api,
                              mdev_info.doc, "models.dev")
     if overlay is not None:

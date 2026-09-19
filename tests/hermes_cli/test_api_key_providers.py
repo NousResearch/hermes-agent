@@ -1340,10 +1340,18 @@ class TestIonetProvider:
 
     def test_ionet_models_dev_env_var_honored(self, monkeypatch):
         monkeypatch.setenv("IOINTELLIGENCE_API_KEY", "io-key")
+        monkeypatch.delenv("IONET_BASE_URL", raising=False)
         from hermes_cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="ionet")
         assert result["provider"] == "io-net"
         assert result["api_key"] == "io-key"
+
+    def test_ionet_provider_def_env_order(self):
+        from hermes_cli.providers import get_provider
+        pdef = get_provider("io-net")
+        assert pdef is not None
+        # Documented precedence: IONET_API_KEY outranks models.dev's IOINTELLIGENCE_API_KEY.
+        assert pdef.api_key_env_vars == ("IONET_API_KEY", "IOINTELLIGENCE_API_KEY")
 
     def test_ionet_static_aliases_registered(self):
         from hermes_cli.models import _KNOWN_PROVIDER_NAMES

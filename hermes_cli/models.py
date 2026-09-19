@@ -1252,11 +1252,15 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     from hermes_cli.codex_models import get_codex_model_ids
 
     # Live OAuth token so the picker matches what ChatGPT lists for this account; hardcoded
-    # catalog without a token / when unreachable.
+    # catalog without a token / when unreachable. Read-only (#68004): a picker never imports,
+    # refreshes or persists a credential, so an expired stored token means the hardcoded catalog
+    # until the runtime lease refreshes it.
     try:
-        from hermes_cli.auth import resolve_codex_runtime_credentials
+        from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
 
-        access_token = resolve_codex_runtime_credentials(refresh_if_expiring=True).get("api_key")
+        access_token = resolve_codex_runtime_credentials(read_only=True).get("api_key")
+        if _codex_access_token_is_expiring(access_token, 0):
+            access_token = None
     except Exception:
         access_token = None
     return get_codex_model_ids(access_token=access_token)

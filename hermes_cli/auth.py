@@ -1726,10 +1726,13 @@ def _codex_pool_rate_limited_status() -> Optional[Dict[str, Any]]:
 
 
 def get_codex_auth_status() -> Dict[str, Any]:
-    """Status snapshot for Codex auth (pool first, then legacy provider state)."""
+    """Status snapshot for Codex auth (pool first, then legacy provider state).
+
+    Read-only by contract: status/doctor must never adopt, refresh or persist a credential (#68004)."""
     return _pool_first_oauth_status(
         "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
-        resolve=resolve_codex_runtime_credentials, on_pool_miss=_codex_pool_rate_limited_status)
+        resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
+        on_pool_miss=_codex_pool_rate_limited_status)
 
 
 def get_xai_oauth_auth_status() -> Dict[str, Any]:
@@ -1737,7 +1740,7 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
     # unconditionally (auth.json may still carry a legacy ``oauth_pkce`` label).
     return _pool_first_oauth_status(
         "xai-oauth", is_expiring=_xai_access_token_is_expiring, auth_mode="oauth_device_code",
-        resolve=resolve_xai_oauth_runtime_credentials)
+        resolve=lambda: resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False))
 
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:

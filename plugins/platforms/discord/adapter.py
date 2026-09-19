@@ -4708,6 +4708,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         await self.handle_message(event)
 
+    def toolsets_for_source(self, source) -> list[str] | None:
+        from gateway.platforms.base import resolve_channel_toolsets
+        extra = getattr(self.config, "extra", None)
+        if not isinstance(extra, dict):
+            return None
+        channel_id = str(getattr(source, "chat_id", "") or "")
+        parent_id = str(getattr(source, "parent_chat_id", "") or "") or None
+        return resolve_channel_toolsets(extra, channel_id, parent_id)
+
     def _resolve_channel_skills(self, channel_id: str, parent_id: str | None = None) -> list[str] | None:
         """Look up auto-skill bindings for a channel (parent_id lets forum threads inherit).
 

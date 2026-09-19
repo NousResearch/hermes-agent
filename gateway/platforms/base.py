@@ -1767,6 +1767,31 @@ def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str |
     return None
 
 
+def resolve_channel_toolsets(
+    config_extra: dict, channel_id: str, parent_id: str | None = None
+) -> list[str] | None:
+    """Resolve a per-channel toolset override from channel_toolset_bindings.
+
+    Exact channel IDs are checked before parent IDs so one thread can be more
+    restricted than its parent. An explicit empty toolsets list means zero tools;
+    None means there is no override.
+    """
+    bindings = config_extra.get("channel_toolset_bindings") or []
+    if not isinstance(bindings, list) or not bindings:
+        return None
+    keys = [str(key) for key in (channel_id, parent_id) if key]
+    for key in keys:
+        for entry in bindings:
+            if not isinstance(entry, dict) or str(entry.get("id", "")) != key:
+                continue
+            if "toolsets" not in entry:
+                return None
+            raw = entry.get("toolsets")
+            if not isinstance(raw, list):
+                return None
+            return [str(item).strip() for item in raw if str(item).strip()]
+    return None
+
 def resolve_channel_skills(
     config_extra: dict, channel_id: str, parent_id: str | None = None) -> list[str] | None:
     """Auto-loaded skill(s) for a channel/thread from ``channel_skill_bindings`` (entries

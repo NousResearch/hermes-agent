@@ -46,7 +46,8 @@ def _standalone_send(
         # notify: the live lane's metadata["notify"] (cron.delivery.notify), so a brief rings either way.
         return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files, notify=t.notify_delivery, force_document=t.force_document),
+            media_files=media_files, notify=t.notify_delivery, force_document=t.force_document,
+            subject=_delivery._cron_display_name(job)),
             timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:

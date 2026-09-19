@@ -45,6 +45,11 @@ DEFAULT_CONFIG = {
         # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
         # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
+        # branch_mode: "spine" copies only user/assistant turns with visible text (legacy
+        # TUI/Desktop). "full" copies the complete transcript including tool_calls and tool
+        # results so the child can reuse the parent's prompt cache. Unknown/missing values
+        # fail-open to "spine".
+        "branch_mode": "spine",
     },
     "agent": {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int

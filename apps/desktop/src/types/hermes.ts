@@ -434,6 +434,10 @@ export interface HermesConfig {
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
   }
+  session?: {
+    branch_mode?: string
+    terminal_continue?: boolean
+  }
   terminal?: {
     cwd?: string
     font_family?: string

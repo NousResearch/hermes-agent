@@ -56,9 +56,16 @@ def _read_failed_error(path: Path) -> Dict[str, Any]:
 
 
 def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int], bool]:
-    """``(index, ambiguous)`` for entries containing *old_text*. Exact-duplicate
-    matches are safe (first wins); distinct matches → ``(None, True)``."""
+    """``(index, ambiguous)`` for entries containing *old_text*. An entry that IS
+    *old_text* is the most specific match and wins outright: without that rule an
+    entry whose text also appears inside another entry has no handle at all — even
+    its own full text matches both — so it could never be replaced or removed.
+    Otherwise exact-duplicate matches are safe (first wins); distinct matches →
+    ``(None, True)``."""
     matches = [i for i, e in enumerate(entries) if old_text in e]
+    for i in matches:
+        if entries[i] == old_text:
+            return i, False
     if len({entries[i] for i in matches}) > 1:
         return None, True
     return (matches[0] if matches else None), False
@@ -284,7 +291,8 @@ class MemoryStore:
         def _apply(entries, limit):
             idx, ambiguous = _find_unique_match(entries, old_text)
             if ambiguous:
-                return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
+                return _error(f"Multiple entries matched '{old_text}'. Be more specific — or pass the "
+                              f"target entry's full text, which is never ambiguous.",
                               matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
             if idx is None:
                 return self._consolidation_failure(_error(
@@ -319,7 +327,8 @@ class MemoryStore:
             return f"{pos}: content is required (use action='remove' to delete)."
         idx, ambiguous = _find_unique_match(working, old_text)
         if ambiguous:
-            return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific."
+            return (f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific, "
+                    f"or pass the target entry's full text.")
         if idx is None:
             return f"{pos}: no entry matched '{old_text}'."
         working[idx:idx + 1] = [content] if act == "replace" else []

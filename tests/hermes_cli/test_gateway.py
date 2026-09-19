@@ -1365,14 +1365,19 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
     owned = run(FakeService("gw", r'"C:\hermes\hermes-agent\venv\Scripts\hermes.exe" gateway run'))
     assert [(s.name, s.service_pid, s.gateway_pid) for s in owned] == [("gw", 2360, 18480)]
 
-    # QueryServiceConfig denied to this user (hardened third-party service): not Hermes's, and never a
-    # reason to abort the whole enumeration; a Hermes-NAMED service is settled without asking binpath.
-    class DeniedConfigService(FakeService):
-        def binpath(self):
-            raise psutil.AccessDenied(2360, self._name)
+    # QueryServiceConfig unreadable to this user (hardened or malformed third-party service): not
+    # Hermes's, and never a reason to abort; a Hermes-NAMED service is settled without asking binpath.
+    class UnreadableConfigService(FakeService):
+        def __init__(self, name, error):
+            super().__init__(name, "")
+            self._error = error
 
-    assert run(DeniedConfigService("Hardened", "")) == []
-    named = run(DeniedConfigService("HermesGateway", ""))
+        def binpath(self):
+            raise self._error
+
+    assert run(UnreadableConfigService("Hardened", psutil.AccessDenied(2360, "Hardened"))) == []
+    assert run(UnreadableConfigService("BrokenMui", OSError(15100, "MUI file missing"))) == []
+    named = run(UnreadableConfigService("HermesGateway", OSError(15100, "MUI file missing")))
     assert [(s.name, s.service_pid, s.gateway_pid) for s in named] == [("HermesGateway", 2360, 18480)]
 
 

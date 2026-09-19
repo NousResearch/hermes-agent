@@ -829,7 +829,7 @@ def find_windows_gateway_services(
                 if not owned:
                     try:
                         service_binpath = str(_scm_service_field(service, "binpath") or "")
-                    except psutil_module.AccessDenied:
+                    except (psutil_module.AccessDenied, OSError):
                         continue
                     owned = hermes_owns_windows_service(service_name, service_binpath, hermes_roots)
                 if not owned:

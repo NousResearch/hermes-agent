@@ -225,17 +225,24 @@ def _resolve_child_credential_pool(
     if not effective_provider:
         return parent_pool
     parent_provider = getattr(parent_agent, "provider", None) or ""
+    parent_base_url = _inherit_parent_base_url(
+        parent_agent, getattr(parent_agent, "base_url", None),
+    )
     try:
         if effective_provider == "custom":
             from agent.credential_pool import get_custom_provider_pool_key
             child_key = get_custom_provider_pool_key(effective_base_url)
             if child_key is None:
                 return None
-            parent_key = get_custom_provider_pool_key(getattr(parent_agent, "base_url", None))
+            parent_key = get_custom_provider_pool_key(parent_base_url)
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
             return _loaded_pool(child_key)
-        if parent_pool is not None and effective_provider == parent_provider:
+        same_endpoint = (
+            effective_base_url is None
+            or _same_custom_delegation_endpoint(parent_base_url, effective_base_url)
+        )
+        if parent_pool is not None and effective_provider == parent_provider and same_endpoint:
             return parent_pool
         return _loaded_pool(effective_provider)
     except Exception as exc:
@@ -286,7 +293,115 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
         "request_overrides": request_overrides, **extra,
     }
 
-def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
+def _canonicalize_delegation_provider(provider: str) -> str:
+    """Map provider aliases to a canonical id for credential-boundary checks."""
+    value = (provider or "").strip().lower()
+    if not value:
+        return ""
+    if value == "moa":
+        return "moa"
+    if value in {"nous", "nous-portal", "nousresearch"}:
+        return "nous"
+    try:
+        from hermes_cli.models import normalize_provider
+        return normalize_provider(value)
+    except Exception:
+        return value
+
+def _same_custom_delegation_endpoint(
+    parent_base_url: Optional[str], configured_base_url: Optional[str],
+) -> bool:
+    """Return whether two direct runtimes share one credential-pool identity."""
+    parent_url = str(parent_base_url or "").strip().rstrip("/")
+    configured_url = str(configured_base_url or "").strip().rstrip("/")
+    if not parent_url or not configured_url:
+        return False
+    try:
+        from agent.credential_pool import get_custom_provider_pool_key
+        parent_key = get_custom_provider_pool_key(parent_url)
+        child_key = get_custom_provider_pool_key(configured_url)
+        if parent_key is not None and child_key is not None:
+            return parent_key == child_key
+    except Exception:
+        pass
+    return parent_url == configured_url
+
+def _same_effective_delegation_provider(
+    parent_provider: str,
+    configured_provider: str,
+    *,
+    parent_base_url: Optional[str] = None,
+    configured_base_url: Optional[str] = None,
+) -> bool:
+    """Return whether inheriting the parent's credential is safe."""
+    parent = _canonicalize_delegation_provider(parent_provider)
+    configured = _canonicalize_delegation_provider(configured_provider)
+    if not parent or not configured or parent == "moa" or configured == "moa":
+        return False
+    if not _same_custom_delegation_endpoint(parent_base_url, configured_base_url):
+        return False
+    if parent == "custom" or configured == "custom":
+        return True
+    return parent == configured
+
+def _resolve_direct_endpoint_api_key(v: dict, parent_agent) -> Optional[str]:
+    """Resolve a direct endpoint key without crossing provider boundaries."""
+    if v["api_key"]:
+        return v["api_key"]
+
+    parent_provider = str(getattr(parent_agent, "provider", "") or "").strip().lower()
+    configured_provider = v["provider"]
+    parent_base_url = _inherit_parent_base_url(
+        parent_agent, getattr(parent_agent, "base_url", None),
+    )
+    same_endpoint = _same_custom_delegation_endpoint(parent_base_url, v["base_url"])
+    if parent_provider == "moa" and not configured_provider:
+        raise ValueError(
+            "Delegation from a MoA session cannot inherit the virtual-provider "
+            "credential. Set delegation.provider to the real endpoint provider "
+            "or set delegation.api_key."
+        )
+    if not configured_provider:
+        if same_endpoint:
+            return None
+        raise ValueError(
+            "A direct delegation endpoint cannot inherit the parent credential "
+            "across endpoints. Set delegation.provider or delegation.api_key."
+        )
+    if _same_effective_delegation_provider(
+        parent_provider,
+        configured_provider,
+        parent_base_url=parent_base_url,
+        configured_base_url=v["base_url"],
+    ):
+        return None
+
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider(
+            requested=configured_provider,
+            explicit_base_url=v["base_url"],
+            target_model=v["model"],
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot resolve delegation provider '{configured_provider}' credentials "
+            f"for direct-endpoint delegation: {exc}. Set delegation.api_key "
+            "explicitly or configure the provider credential."
+        ) from exc
+    api_key = None if (
+        runtime.get("provider") == "moa"
+        or runtime.get("source") == "moa-virtual-provider"
+    ) else runtime.get("api_key")
+    if not api_key:
+        raise ValueError(
+            f"Delegation provider '{configured_provider}' resolved but has no real "
+            "API key for direct-endpoint delegation. Set delegation.api_key or "
+            "configure the provider credential."
+        )
+    return api_key
+
+def _direct_endpoint_credentials(v: dict, explicit_request_overrides, parent_agent) -> dict:
     """``delegation.base_url`` branch: provider/api_mode from URL heuristics."""
     # Shared URL-based api_mode detector so Anthropic-compatible direct endpoints (/anthropic suffix: Azure AI
     # Foundry, MiniMax, Zhipu, LiteLLM) get the Messages transport instead of 404ing on chat_completions.
@@ -320,9 +435,9 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
                 "delegation.base_url: runtime resolution for provider '%s' failed; proceeding without request_overrides: %s",
                 v["provider"], exc,
             )
-    # api_key None → inherited from parent in _build_child_agent
+    api_key = _resolve_direct_endpoint_api_key(v, parent_agent)
     return _credential_bundle(
-        v["model"], provider, v["base_url"], v["api_key"], api_mode,
+        v["model"], provider, v["base_url"], api_key, api_mode,
         _merge_request_overrides(request_overrides, explicit_request_overrides),
     )
 
@@ -374,7 +489,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 
     if values["base_url"] and not is_native_sdk_provider:
-        return _direct_endpoint_credentials(values, explicit_request_overrides)
+        return _direct_endpoint_credentials(values, explicit_request_overrides, parent_agent)
     if not values["provider"]:
         # Pure inherit; explicit request_overrides still merge OVER the parent's.
         return _credential_bundle(

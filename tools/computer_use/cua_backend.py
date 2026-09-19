@@ -316,19 +316,95 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
-    def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
+    def launch_app(self, app: Optional[str] = None, *, bundle_id: Optional[str] = None,
+                   name: Optional[str] = None, path: Optional[str] = None,
+                   launch_path: Optional[str] = None, aumid: Optional[str] = None,
                    urls: Optional[List[str]] = None, additional_arguments: Optional[List[str]] = None,
-                   creates_new_application_instance: bool = False) -> Dict[str, Any]:
-        """Idempotent launch returning ``{pid, bundle_id, name, windows[]}``. ``creates_new_application_instance=True``
-        forces a fresh instance so concurrent runs touching the same app get isolated windows."""
-        if not bundle_id and not name:
+                   creates_new_application_instance: bool = False, **kwargs: Any) -> ActionResult:
+        """Idempotent launch returning ActionResult. Handles packaged apps (AUMID / shell:appsFolder),
+        executables (path), and names."""
+        target = str(app).strip() if app is not None else ""
+        if target:
+            if target.lower().startswith("shell:appsfolder"):
+                launch_path = target
+            elif "!" in target:
+                aumid = target
+            elif sys.platform == "win32" and (os.sep in target or (os.altsep and os.altsep in target) or (target.lower().endswith(".exe") and os.path.isabs(target))):
+                path = target
+            elif sys.platform == "darwin" and "." in target and not target.endswith(".app"):
+                bundle_id = target
+            else:
+                name = target
+
+        if not target and not bundle_id and not name and not path and not launch_path and not aumid:
             raise ValueError("launch_app requires either bundle_id or name")
-        args: Dict[str, Any] = {"session": self._session_id, **{k: v for k, v in (
-            ("bundle_id", bundle_id), ("name", name), ("urls", urls and list(urls)),
-            ("additional_arguments", additional_arguments and list(additional_arguments)),
-            ("creates_new_application_instance", creates_new_application_instance or None)) if v}}
-        out = self._session.call_tool("launch_app", args)
-        return out["structuredContent"] or {"data": out["data"]}
+
+        args: Dict[str, Any] = {"session": self._session_id}
+        if aumid:
+            args["aumid"] = aumid
+        if bundle_id:
+            args["bundle_id"] = bundle_id
+        if name:
+            args["name"] = name
+        if path:
+            args["path"] = path
+        if launch_path:
+            args["launch_path"] = launch_path
+        if urls:
+            args["urls"] = list(urls)
+        if additional_arguments:
+            args["additional_arguments"] = list(additional_arguments)
+        if creates_new_application_instance:
+            args["creates_new_application_instance"] = True
+        for k, v in kwargs.items():
+            if v is not None:
+                args[k] = v
+
+        try:
+            out = self._session.call_tool("launch_app", args)
+        except Exception as e:
+            logger.exception("cua-driver launch_app call failed")
+            return ActionResult(ok=False, action="launch", message=f"cua-driver error: {e}")
+
+        is_error = bool(out.get("isError"))
+        structured = out.get("structuredContent") or {}
+        data = out.get("data") or {}
+        meta = {k: v for part in (data, structured) if isinstance(part, dict) for k, v in part.items()}
+
+        if is_error:
+            err_msg = (
+                (structured.get("error") or structured.get("message")) if isinstance(structured, dict) else None
+            ) or (
+                (data.get("error") or data.get("message")) if isinstance(data, dict) else str(data) if data else ""
+            ) or f"Failed to launch app '{target or name or bundle_id or path or aumid}'"
+            return ActionResult(ok=False, action="launch", message=err_msg, meta=meta)
+
+        pid = structured.get("pid") if isinstance(structured, dict) else None
+        if pid is None and isinstance(data, dict):
+            pid = data.get("pid")
+        app_name = (
+            structured.get("name") if isinstance(structured, dict) else None
+        ) or (
+            data.get("name") if isinstance(data, dict) else None
+        ) or target or name or bundle_id or ""
+
+        windows = structured.get("windows") if isinstance(structured, dict) else None
+        if windows is None and isinstance(data, dict):
+            windows = data.get("windows")
+
+        if isinstance(pid, int) and pid > 0:
+            if isinstance(windows, list) and windows and isinstance(windows[0], dict) and "window_id" in windows[0]:
+                self._set_active_target({"pid": pid, "window_id": windows[0]["window_id"], "app_name": app_name})
+                self._last_app = app_name
+            else:
+                self._active_pid = pid
+                self._last_app = app_name
+
+        message = (str(data.get("message", "")) if isinstance(data, dict) else "") \
+            or (str(structured.get("message", "")) if isinstance(structured, dict) else "") \
+            or (f"Launched '{app_name}' (pid {pid})" if pid else f"Launched '{app_name}'")
+
+        return ActionResult(ok=True, action="launch", message=message, meta=meta)
 
     def bring_to_front(self, *, pid: int, window_id: Optional[int] = None) -> ActionResult:
         """Activate a window so subsequent foreground-dispatched input lands on it."""

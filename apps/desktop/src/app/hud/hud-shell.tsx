@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { ComputerUseStatusPill } from '@/components/computer-use-pill'
 import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { chatMessageText } from '@/lib/chat-messages'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
@@ -347,6 +348,11 @@ export function HudShell() {
           without the app's chat surface having to know about it. FIRST child so
           it paints behind the transcript. */}
       <div aria-hidden data-hud-glass />
+
+      {/* Floating live computer use indicator in HUD window */}
+      <div className="pointer-events-none absolute top-2 left-1/2 z-50 -translate-x-1/2 select-none">
+        <ComputerUseStatusPill className="pointer-events-auto" variant="floating" />
+      </div>
 
       <WiredPane part="chatRoutes" />
 

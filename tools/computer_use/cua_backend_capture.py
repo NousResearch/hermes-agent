@@ -188,9 +188,16 @@ class _CaptureMixin:
                     exact_pids.add(pid)
                 elif any(app_lower in alias for alias in aliases):
                     partial_pids.add(pid)
+        # Windows UWP windows can belong to ApplicationFrameHost while list_apps reports the packaged
+        # app as stopped (pid=0). Only a unique, exact title on that host is an app identity; keep it
+        # on the target so the input guard accepts the same app on the following click.
+        hosted_exact = [dict(w, app_name=str(w.get("title", "")).strip()) for w in windows
+                        if sys.platform == "win32" and _name(w).strip() in ("applicationframehost.exe", "applicationframehost")
+                        and str(w.get("title", "")).strip().lower() == app_lower]
         # Some X11 backends expose a title but no app name. Restrict the final fallback to nameless rows so
         # a localized app name is not overridden merely because its title happens to be in the caller's language.
         tiers = ([w for w in windows if w.get("pid") in exact_pids],
+                 hosted_exact if len(hosted_exact) == 1 else [],
                  [w for w in windows if app_lower in _name(w)],
                  [w for w in windows if w.get("pid") in partial_pids],
                  [w for w in windows if not _name(w).strip() and app_lower in str(w.get("title", "")).lower()])
@@ -199,6 +206,16 @@ class _CaptureMixin:
     def _resolve_capture_windows(self, mode: str, app: Optional[str], pid: Optional[int],
                                  window_id: Optional[int]) -> "List[Dict[str, Any]] | CaptureResult":
         """Candidate windows for capture(), or a failed CaptureResult."""
+        if window_id is not None and pid is None:
+            # Bind by Win32 HWND directly via window_id alone (without requiring pid)
+            if (target_window_id := _positive_int(window_id)) is None:
+                return self._failed_capture(mode, "<capture targeting requires positive integer window_id>")
+            with self._disarming():
+                windows = self.list_windows()
+            matched = [w for w in windows if w.get("window_id") == target_window_id]
+            if len(matched) == 1:
+                return matched
+            return self._failed_capture(mode, f"<window_id {target_window_id} not found in active windows>")
         if pid is not None or window_id is not None:
             # An exact pid/window pair is both the stable capture_after target and the escape hatch when
             # discovery is unavailable on X11.
@@ -290,7 +307,12 @@ class _CaptureMixin:
         windows = self._resolve_capture_windows(mode, app, pid, window_id)
         if isinstance(windows, CaptureResult):
             return windows
-        self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
+        target = _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target)
+        if (sys.platform == "win32"
+                and str(target.get("app_name", "")).strip().lower() in ("applicationframehost.exe", "applicationframehost")
+                and target.get("title")):
+            target["app_name"] = str(target["title"]).strip()
+        self._set_active_target(target)
         app_name = target["app_name"]
         # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
         # to the frontmost window.
@@ -340,7 +362,7 @@ class _CaptureMixin:
                              image_mime_type=image_mime_type, note=_FULL_SCREEN_NOTE)
 
     def list_apps(self) -> List[Dict[str, Any]]:
-        out = self._session.call_tool("list_apps", {"session": self._session_id})
+        out = self._call_capture_tool("list_apps", {"session": self._session_id})
         structured, data = out.get("structuredContent"), out.get("data")
         # structuredContent is canonical; empty lists fall through so a populated compatibility envelope
         # (older drivers, CLI fallback) can still recover, then apps derived from the windows payload.

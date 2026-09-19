@@ -13,7 +13,7 @@ stubResizeObserver()
 // accessor shadows jsdom's Storage and every `localStorage.getItem(...)` in a
 // test throws "Cannot read properties of undefined". Install a real in-memory
 // Storage when the global resolves to nothing, before any test module reads it.
-if (typeof (globalThis as any).localStorage === 'undefined') {
+if (typeof (globalThis as any).localStorage?.getItem !== 'function') {
   const store = new Map<string, string>()
 
   const storage: Storage = {

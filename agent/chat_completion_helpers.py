@@ -1808,9 +1808,74 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     return False
 
 
+def _fallback_entry_declared_context_length(fb: dict) -> int:
+    """Return the fallback entry's declared context window (0 if none).
+
+    Reads ``context_length`` from the chain entry itself; the cache in
+    ``~/.hermes/context_length_cache.yaml`` is consulted as a secondary source when the
+    entry omits it and provider+base_url+model form a resolvable cache key. We intentionally
+    do NOT probe the network for a context length here — this runs on every fallback attempt
+    and the skip decision must be side-effect-free.
+    """
+    try:
+        raw = fb.get("context_length")
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+            return int(raw)
+    except Exception:
+        pass
+    try:
+        from agent.model_metadata import get_cached_context_length
+        base_url = str(fb.get("base_url") or "").strip()
+        model = str(fb.get("model") or "").strip()
+        if base_url and model:
+            cached = get_cached_context_length(model, base_url)
+            if isinstance(cached, int) and cached > 0:
+                return int(cached)
+    except Exception:
+        pass
+    return 0
+
+
+def _current_prompt_token_estimate(agent) -> int:
+    """Best-effort estimate of the prompt-token cost of the CURRENT context.
+
+    Prefers the exact usage-anchored count (last provider ``prompt_tokens`` + measured delta of
+    what was appended since); falls back to the compressor's last measured ``prompt_tokens``;
+    finally falls back to the same heuristic ``/context`` uses. Returns 0 when nothing can be
+    estimated — callers must treat 0 as "unknown, don't skip on this signal".
+    """
+    try:
+        messages = list(getattr(agent, "messages", None) or [])
+        # anchored_context_tokens lives in agent.usage_anchor; estimate_messages_tokens_rough
+        # stays in agent.model_metadata. Kept as inline imports so the module has no new
+        # import-time coupling.
+        from agent.usage_anchor import anchored_context_tokens
+        from agent.model_metadata import estimate_messages_tokens_rough
+        for anchor_attr in ("_turn_base_usage_anchor", "_usage_anchor"):
+            anchor = getattr(agent, anchor_attr, None)
+            if anchor is not None:
+                anchored = anchored_context_tokens(messages, anchor)
+                if isinstance(anchored, int) and anchored > 0:
+                    return int(anchored)
+        comp = getattr(agent, "context_compressor", None)
+        measured = int(getattr(comp, "last_prompt_tokens", 0) or 0) if comp else 0
+        if measured > 0:
+            return measured
+        rough = estimate_messages_tokens_rough(messages)
+        if isinstance(rough, int) and rough > 0:
+            return int(rough)
+    except Exception:
+        # Estimation is a courtesy for skip logic; NEVER let a bug here block real fallback.
+        logger.debug("_current_prompt_token_estimate: failed to estimate", exc_info=True)
+    return 0
+
+
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
-    """True when the entry is already unavailable, malformed, locally unusable, or resolves
-    to the backend that just failed (falling back to it would loop the failure)."""
+    """True when the entry is already unavailable, malformed, locally unusable, resolves
+    to the backend that just failed (falling back to it would loop the failure), or has a
+    declared context window smaller than the current session's estimated prompt tokens
+    (dispatching would 400 with ``prompt token count of X exceeds the limit of Y`` and wedge
+    the retry state — see the Copilot GPT-4.1 (64k) case reported by users)."""
     if fb_key in unavailable:
         logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
         return True
@@ -1837,6 +1902,22 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         logger.warning(
             "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
             fb_provider, fb_model, current_ident.base_url or current_ident.provider)
+        return True
+    # Pre-size the payload against the entry's known context window. A too-small provider
+    # would 400 (`prompt token count of X exceeds the limit of Y`) and leave the retry state
+    # wedged — so skip it BEFORE dispatch. Only skip when BOTH numbers are known and the
+    # entry's declared window is smaller with margin; leave undecidable cases to the network.
+    declared_ctx = _fallback_entry_declared_context_length(fb)
+    prompt_tokens = _current_prompt_token_estimate(agent) if declared_ctx > 0 else 0
+    # 1.05x safety margin: rough estimators undercount tool schemas / thinking / cache blocks;
+    # OpenAI-family providers reserve headroom for the output tokens too.
+    if declared_ctx > 0 and prompt_tokens > 0 and prompt_tokens * 105 // 100 > declared_ctx:
+        # Not permanently unavailable — a later smaller-context turn should retry this entry —
+        # so DO NOT add to `unavailable`. Just skip this one activation attempt.
+        logger.warning(
+            "Fallback skip: %s/%s context window %d < estimated prompt tokens %d (would 400 mid-turn)",
+            fb_provider, fb_model, declared_ctx, prompt_tokens,
+        )
         return True
     return False
 

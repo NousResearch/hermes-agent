@@ -104,3 +104,18 @@ async def test_clarify_embed_is_header_only_card():
     assert "Which environment should I deploy to?" in sent["content"]
     assert "Pick one below" in sent["content"]
     assert "Which environment should I deploy to?" not in _embed_text(sent["embed"])
+
+
+@pytest.mark.asyncio
+async def test_update_prompt_embed_is_header_only_card():
+    """Same rule as the other prompt cards: content carries the payload once, the embed is a
+    header card — send_update_prompt kept description=... (duplicating into the embed too)
+    after its siblings were converted to header-only."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    await adapter.send_update_prompt(
+        chat_id="555", prompt="Continue the update?", default="yes", session_key="discord:555")
+
+    assert "Continue the update?" in sent["content"]
+    assert "Continue the update?" not in _embed_text(sent["embed"])

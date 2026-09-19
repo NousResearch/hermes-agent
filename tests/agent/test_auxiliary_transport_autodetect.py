@@ -34,8 +34,10 @@ def _clean_env(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("url,expected,label", [
-    ("https://api.kimi.com/coding/v1", True, "Kimi Coding Plan /v1"),
-    ("https://api.kimi.com/coding", True, "Kimi Coding Plan no /v1"),
+    ("https://api.kimi.com/coding", True, "Kimi Coding Plan bare /coding"),
+    ("https://api.kimi.com/coding/", True, "Kimi Coding Plan trailing slash"),
+    ("https://api.kimi.com/coding/v1", False, "Kimi Coding Plan OpenAI-compatible /coding/v1"),
+    ("https://api.kimi.com/coding/v1/", False, "Kimi /coding/v1 trailing slash"),
     ("https://api.moonshot.ai/v1", False, "Moonshot legacy"),
     ("https://api.minimax.io/anthropic", True, "MiniMax /anthropic"),
     ("https://litellm.example.com/v1/anthropic", True, "/anthropic suffix"),

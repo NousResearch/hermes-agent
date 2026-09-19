@@ -144,7 +144,16 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
                f"{_DHH}/memories/ not found")
     for fname in [n for on, n in ((_memory_enabled, "MEMORY.md"), (_user_profile_enabled, "USER.md")) if on and existed]:
         if (memories_dir / fname).exists():
-            check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8').strip())} chars)")
+            try:
+                size = len((memories_dir / fname).read_text(encoding="utf-8").strip())
+            except (OSError, UnicodeDecodeError) as exc:
+                # read_text(encoding="utf-8") raises UnicodeDecodeError (a
+                # ValueError subclass, not OSError) on corrupt/binary content;
+                # both must warn instead of crashing run_doctor. UnicodeDecodeError
+                # has no .strerror, so fall back to its message.
+                check_warn(f"{fname} exists but is unreadable", f"({getattr(exc, 'strerror', None) or exc})")
+            else:
+                check_ok(f"{fname} exists ({size} chars)")
         else:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
 

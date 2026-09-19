@@ -1835,3 +1835,77 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     doctor_tools._check_docker_backend("docker", False, [])
 
     assert calls == [["/usr/bin/docker", "version"]]
+
+
+class TestDoctorMemoryFileReadGuard:
+    """Unreadable memory files warn and continue instead of crashing the whole doctor run."""
+
+    def _run_doctor_and_capture(self, monkeypatch, tmp_path, *, memory_content=b"some memory", user_content="some user"):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        import yaml
+        (home / "config.yaml").write_text(
+            yaml.dump({"memory": {"memory_enabled": True, "user_profile_enabled": True}}),
+            encoding="utf-8",
+        )
+        memories = home / "memories"
+        memories.mkdir()
+        if memory_content is not None:
+            (memories / "MEMORY.md").write_bytes(memory_content)
+        if user_content is not None:
+            (memories / "USER.md").write_text(user_content, encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+
+        # Stub tool availability (returns empty) so doctor runs past it
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth checks to avoid real API calls
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_doctor_warns_on_unreadable_memory_file(self, monkeypatch, tmp_path):
+        """An unreadable MEMORY.md must warn and continue, not crash the whole doctor."""
+        import pathlib
+
+        orig_read_text = pathlib.Path.read_text
+
+        def permission_denied_read_text(self, encoding="utf-8", errors=None, **kwargs):
+            if self.name == "MEMORY.md" and "memories" in str(self):
+                raise PermissionError(13, "Permission denied")
+            return orig_read_text(self, encoding=encoding, errors=errors, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", permission_denied_read_text)
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path)
+        assert "MEMORY.md exists but is unreadable" in out
+        assert "Permission denied" in out
+        # The loop continued to USER.md after the failed read.
+        assert "USER.md exists" in out
+
+    def test_doctor_warns_on_binary_memory_file(self, monkeypatch, tmp_path):
+        """A corrupt/binary MEMORY.md raises UnicodeDecodeError (a ValueError
+        subclass, not OSError) from read_text(encoding='utf-8'); doctor must
+        warn and continue instead of crashing."""
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, memory_content=b"\xff\xfe\x00binary\x81")
+        assert "MEMORY.md exists but is unreadable" in out
+        # The warning detail must not itself crash on UnicodeDecodeError's
+        # missing .strerror attribute.
+        assert "can't decode" in out or "byte" in out
+        # The loop continued to USER.md after the failed read.
+        assert "USER.md exists" in out

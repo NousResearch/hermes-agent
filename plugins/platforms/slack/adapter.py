@@ -875,6 +875,18 @@ def _slack_dedup_ttl_seconds() -> float:
     return 3600.0  # 1 hour — covers Slack reconnect redelivery windows
 
 
+def _slack_dedup_state_path() -> _Path:
+    """Where Slack's inbound-event dedupe outlives the process.
+
+    Slack re-routes events that were in flight when the gateway stopped, and the in-memory cache
+    that would have caught them died with that process — so the redelivered event ran a second
+    turn. The seen-set lives in the profile's own home: each profile's bot has its own event
+    stream, so two profiles must not share one file. See #4777.
+    """
+    from hermes_constants import get_hermes_home
+    return _Path(get_hermes_home()) / "slack_seen_event_ids.json"
+
+
 # Audio mimetype → extension matching the container bytes: Slack voice clips are MP4/AAC, and
 # OpenAI STT sniffs the container from the extension, so MP4 bytes cached as ``.ogg`` fail.
 _SLACK_AUDIO_MIME_TO_EXT = {
@@ -1054,7 +1066,8 @@ class SlackAdapter(BasePlatformAdapter):
         # redelivery gap (max_size bounds memory, so a long window is safe).
         # Dedup cache: prevents duplicate bot responses when Socket Mode reconnects redeliver events
         # (#4777).
-        self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
+        self._dedup = MessageDeduplicator(
+            ttl_seconds=_slack_dedup_ttl_seconds(), persist_path=_slack_dedup_state_path())
         # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
         self._processed_message_ts: Dict[str, float] = {}
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.

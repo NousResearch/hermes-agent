@@ -1237,6 +1237,54 @@ class TestLocalModelLock:
         assert load_count == 1
 
 
+class TestConfiguredBaseUrlHonoredWithEnvKey:
+    """A stt.openai.base_url in config must be honored on EVERY direct-credential
+    return path, including the env-credential ladder: a key from
+    VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY paired with a configured
+    OpenAI-compatible base_url (Venice, llama.cpp, etc.) must hit THAT url,
+    not api.openai.com."""
+
+    def test_env_key_uses_configured_base_url(self):
+        from tools.transcription_cloud import _direct_openai_credentials
+        # resolve_openai_audio_api_key is consulted only when cfg_api_key is
+        # empty — patch it so the test doesn't depend on the host env.
+        with patch(
+            "tools.tool_backend_helpers.resolve_openai_audio_api_key",
+            return_value="sk-env-key",
+        ):
+            result = _direct_openai_credentials(
+                cfg_api_key="",
+                cfg_base_url="https://api.venice.ai/api/v1",
+            )
+        assert result is not None
+        api_key, base_url = result
+        assert api_key == "sk-env-key"
+        assert base_url == "https://api.venice.ai/api/v1"
+
+    def test_env_key_without_configured_base_url_defaults_to_openai(self):
+        from tools.transcription_cloud import _direct_openai_credentials
+        with patch(
+            "tools.tool_backend_helpers.resolve_openai_audio_api_key",
+            return_value="sk-env-key",
+        ):
+            result = _direct_openai_credentials(cfg_api_key="", cfg_base_url="")
+        assert result is not None
+        api_key, base_url = result
+        assert api_key == "sk-env-key"
+        assert base_url == "https://api.openai.com/v1"
+
+    def test_config_key_takes_precedence_and_honors_base_url(self):
+        from tools.transcription_cloud import _direct_openai_credentials
+        result = _direct_openai_credentials(
+            cfg_api_key="sk-config-key",
+            cfg_base_url="https://api.venice.ai/api/v1",
+        )
+        assert result is not None
+        api_key, base_url = result
+        assert api_key == "sk-config-key"
+        assert base_url == "https://api.venice.ai/api/v1"
+
+
 class TestLocalBaseUrlNoApiKey:
     """#25193 — empty api_key with a local base_url should not raise."""
 

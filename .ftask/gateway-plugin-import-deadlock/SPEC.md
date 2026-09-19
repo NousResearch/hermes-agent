@@ -56,6 +56,7 @@ Format: 'user does X → observe Y' (use → to separate action from outcome)
 - Gateway runtime still discovers and registers enabled plugins before platform startup.
 - Chat startup latency optimization and TUI ownership remain unchanged.
 - No plugin-specific special case or new configuration flag is introduced.
+- The canonical full-suite and E2E jobs run once through the CI orchestrator; the direct PR discovery path must not duplicate or cancel them.
 
 ### Targeted tests (repo-relative paths; one per bullet, or `full-suite`)
 > The direction model lists only tests affected by this task. Invalid/missing targets block; full-suite is CI-only.

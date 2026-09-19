@@ -71,6 +71,45 @@ moa:
     assert calls[1]["tools"] is not None
 
 
+def test_moa_solo_turn_skips_references_and_keeps_aggregator(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(), encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    agent = AIAgent(
+        api_key="moa-virtual-provider", base_url="moa://local", model="review",
+        provider="moa", quiet_mode=True, skip_context_files=True, skip_memory=True,
+        enabled_toolsets=["file"], max_iterations=1,
+    )
+
+    result = agent.run_conversation("convert this markdown to PDF", moa_skip_references=True)
+
+    assert result["final_response"] == "aggregator acted"
+    assert [(call["task"], call["provider"], call["model"]) for call in calls] == [
+        ("moa_aggregator", "openrouter", "anthropic/claude-opus-4.8"),
+    ]
+
+
 def test_moa_runtime_provider_uses_virtual_endpoint():
     from hermes_cli.runtime_provider import resolve_runtime_provider
 

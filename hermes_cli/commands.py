@@ -131,6 +131,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[task]"),
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>", busy_policy="reject", busy_handler="moa"),
+    CommandDef("solo", "Run one prompt with the active MoA aggregator without reference fan-out", "Session",
+               args_hint="<prompt>", busy_policy="reject", busy_handler="solo"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]", busy_policy="dispatch"),
     CommandDef("status", "Show session, model, token, and context info", "Session",

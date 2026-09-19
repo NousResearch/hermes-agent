@@ -129,4 +129,57 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
     expect($voicePlayback.get().status).toBe('idle')
     expect(playSpeechText).toHaveBeenCalledTimes(1)
   })
+
+  it('does not double-speak when $messages and idle fire for the same reply (#102960)', async () => {
+    $autoSpeakReplies.set(true)
+
+    const $messages = atom<ChatMessage[]>([])
+
+    const pendingReply = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+      const spoken = resolveSpokenReply(SESSION_ID, messages)
+
+      if (!last || last.id === spoken?.id) {
+        return null
+      }
+
+      return { id: last.id, pending: Boolean(last.pending), text: chatMessageText(last) }
+    }
+
+    const markSpoken = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+      if (last) {
+        markAssistantIdSpoken(SESSION_ID, messages, last.id)
+      }
+    }
+
+    vi.mocked(playSpeechText).mockResolvedValue(true)
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    act(() => {
+      $messages.set([assistantMessage('a1', 'hello there')])
+      setVoicePlaybackState({ ...IDLE_STATE })
+    })
+
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
+    expect(playSpeechText).toHaveBeenCalledTimes(1)
+  })
 })

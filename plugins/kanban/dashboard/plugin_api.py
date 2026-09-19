@@ -739,7 +739,10 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             terminations.append((prev["worker_pid"], prev["claim_lock"], prev["worker_started_at"]))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, ?, 'status', ?, ?)",
-            (task_id, run_id, json.dumps({"status": effective_status, "requested_status": new_status}), int(time.time())))
+            (task_id, run_id, json.dumps({
+                "status": effective_status, "requested_status": new_status,
+                "previous_status": prev["status"],
+            }), int(time.time())))
         if reopening_satisfied_parent:
             # Domain-layer invalidation composes via a savepoint inside our txn and hands
             # back worker terminations to perform post-commit.

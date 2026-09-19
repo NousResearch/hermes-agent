@@ -485,7 +485,10 @@ def held_selected_route(runner=None):
 
 def session_store_guard(runner):
     b = held_selected_route(runner)
-    return nullcontext() if b is not None else runner.session_store._lock
+    material = b._material if b is not None else None
+    owns_store = (material is not None and material.key and material.override is None
+                  and not material.local_policy)
+    return nullcontext() if owns_store else runner.session_store._lock
 
 
 @contextmanager

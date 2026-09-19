@@ -53,6 +53,7 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.tool_result_compaction import compact_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -1065,6 +1066,7 @@ def _commit_tool_result(
             env=get_active_env(effective_task_id),
             config=budget,
         )
+        persisted_result = compact_tool_result(persisted_result, function_name)
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
 
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)

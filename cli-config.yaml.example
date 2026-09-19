@@ -785,6 +785,18 @@ compression:
 # tool_budget:
 #   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
 
+# Optional lossless JSON compaction for new tool results, across all task types.
+# Removes only whitespace outside strings; no fields or text are summarized.
+# Off by default. Observe logs character counts without changing context;
+# compact applies the reduction. Existing history, schemas and prompts are not
+# rewritten. Spill files and UI previews keep the original formatting.
+# tool_output:
+#   json_compaction:
+#     mode: "off"               # off | observe | compact (quote "off" in YAML)
+#     min_chars: 1024           # minimum 1024; results over 1M chars are skipped
+#     min_savings_ratio: 0.1    # require at least 10% fewer characters
+#     exclude_tools: [read_file] # exact names or globs, e.g. mcp_verbatim_*
+
 # =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================

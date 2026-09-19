@@ -865,6 +865,50 @@ file_read_max_chars: 30000
 
 The agent also deduplicates file reads automatically — if the same file region is read twice and the file hasn't changed, a lightweight stub is returned instead of re-sending the content. This resets on context compression so the agent can re-read files after their content is summarized away.
 
+## JSON Tool Result Compaction
+
+Pretty-printed JSON from tools can carry redundant whitespace through later model
+requests. Optional compaction removes whitespace **outside string literals** when
+new tool results enter the conversation. It applies across task types and both
+sequential and concurrent execution, including MCP and inline agent tools.
+
+```yaml
+tool_output:
+  json_compaction:
+    mode: "compact" # "off" (default), "observe", or "compact"
+    min_chars: 1024
+    min_savings_ratio: 0.1
+    exclude_tools: [read_file, "mcp_verbatim_*"]
+```
+
+`observe` records original and compact character counts for qualifying reductions
+in the local log without changing the result. `compact` applies a reduction only when it meets
+`min_savings_ratio` (strictly between 0 and 1). `min_chars` must be an integer of at
+least 1024. Invalid settings disable compaction for that result. Quote `"off"` in
+YAML; unquoted `off` is also safely treated as disabled.
+
+Only valid JSON objects and arrays up to 1,000,000 characters are eligible. Plain
+text, invalid JSON, multimodal results and already compact output pass through.
+String contents (including code and document text), numeric spellings, key order
+and duplicate keys are preserved. `read_file` is excluded by default for exact
+formatting inspection; `exclude_tools` accepts exact tool names and glob patterns.
+
+Compaction runs after per-result spillover, leaving saved files and UI output in
+their original format; the aggregate turn budget sees the compact result. Policy
+changes apply only to future results. Existing messages, system prompts and tool
+schemas are never rewritten, and no auxiliary model or recovery tool is called.
+
+Character savings are not a token or cost estimate. Tokenizer choice, prompt-cache
+pricing, payload shape and later tool calls determine the actual benefit. Use
+`observe` first when evaluating a workload; compact JSON and long prose stored in
+JSON strings usually offer little or no saving.
+
+The repository includes a synthetic benchmark runnable with
+`python -m scripts.benchmark_tool_result_compaction --encoding cl100k_base` (install
+the optional `tiktoken` package in your development environment first). It reports
+body token counts and local processing time, including fixtures that do not
+benefit. It does not measure production task quality or end-to-end spending.
+
 ## Tool Output Truncation Limits
 
 Three related caps control how much raw output a tool can return before Hermes truncates it:

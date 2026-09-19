@@ -661,6 +661,56 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
 # ---- Main entry point ----
 
 
+def _protected_config_snapshot() -> Dict[str, Optional[str]]:
+    """sha256 of the active profile's config.yaml keyed by resolved path (None = absent).
+
+    ``write_file`` / ``patch`` hard-deny writes to this file ("Agent cannot modify
+    security-sensitive configuration" — approvals.mode and hooks live there), but arbitrary
+    Python inside execute_code reaches the same file with a plain text-mode write and no
+    gate (#113421). Content hashing, not mtime, is the contract: a read-modify-write that
+    lands identical content passes; only a real policy change trips the post-hoc check.
+    An unresolvable config path yields an empty snapshot — the same fail-open surface the
+    file_tools guards use when they cannot establish the active profile's config."""
+    try:
+        from tools.file_tools_write_guards import _get_hermes_config_resolved
+        protected = _get_hermes_config_resolved()
+    except Exception:
+        return {}
+    if not protected:
+        return {}
+    import hashlib
+    try:
+        with open(protected, "rb") as fh:
+            return {protected: hashlib.sha256(fh.read()).hexdigest()}
+    except FileNotFoundError:
+        return {protected: None}
+    except OSError:
+        # Unreadable now (permissions/locking): record a sentinel so a later readable,
+        # different digest — the script changed it AND made it readable — still trips.
+        return {protected: "<unreadable>"}
+
+
+def _protected_config_violation(before: Dict[str, Optional[str]]) -> Optional[str]:
+    """Error text when the run changed a file from the pre-run snapshot, else None.
+
+    The rewrite already happened, so failing loudly is the honest outcome: the result must
+    tell the model and the owner exactly which protected file was rewritten, that this is
+    the same policy file write_file / patch refuse to touch, and what the supported paths
+    are — not pass the script's output back as if the call had been clean."""
+    after = _protected_config_snapshot()
+    changed = sorted(p for p, digest in before.items() if after.get(p) != digest)
+    if not changed:
+        return None
+    return (
+        "execute_code rewrote a protected Hermes configuration file: " + ", ".join(changed)
+        + '. write_file / patch refuse this write ("Agent cannot modify security-sensitive'
+        " configuration\") and a script may not bypass that guard: approvals.mode and hooks"
+        " live in this file, so a silent rewrite is a persistence risk. The script's output"
+        " is withheld. Review the change, restore the file if unintended, and make intended"
+        " changes with `hermes config set` or by editing the file directly."
+    )
+
+
 def execute_code(
     code: str,
     task_id: Optional[str] = None,
@@ -740,22 +790,33 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+    # Post-hoc integrity tripwire around the dispatched run (#113421): the script guards
+    # above approve the code as a whole and never inspect write targets, so the protected
+    # config can only be defended at the filesystem boundary — hash it before/after both
+    # dispatch paths (a host-mounted Docker remote can reach it too) and fail the call
+    # loudly when the script, not its owner, rewrote the security policy.
+    _protected_before = _protected_config_snapshot()
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
-    from tools.interrupt import is_interrupted as _is_interrupted
-    # Session kernels are always on locally (one interpreter per conversation); the guards above
-    # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
-    from tools.code_kernel import execute_in_session_kernel
-    _cfg = _load_config()
-    _mode = _get_execution_mode()
-    return execute_in_session_kernel(
-        code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
-        child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
-        sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
-        timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
-        max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
-        reset=bool(reset), is_interrupted=_is_interrupted,
-    )
+        _result = _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
+    else:
+        from tools.interrupt import is_interrupted as _is_interrupted
+        # Session kernels are always on locally (one interpreter per conversation); the guards above
+        # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
+        from tools.code_kernel import execute_in_session_kernel
+        _cfg = _load_config()
+        _mode = _get_execution_mode()
+        _result = execute_in_session_kernel(
+            code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
+            child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
+            sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
+            timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
+            max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+            reset=bool(reset), is_interrupted=_is_interrupted,
+        )
+    _violation = _protected_config_violation(_protected_before)
+    if _violation:
+        return _error_result(_violation)
+    return _result
 
 
 def _kill_process_group(proc, escalate: bool = False):

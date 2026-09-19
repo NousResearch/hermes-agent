@@ -1518,6 +1518,35 @@ test('buildSpawnCommand lockfile publication is POSIX sh (no bash substitution)'
   assert.ok(cmd.includes('sed "s/__PID__/${child}/"'), 'pid substitution must use sed')
 })
 
+test('buildSpawnCommand scopes umask 077 to the mkdir subshell (no leak into serve)', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    reservationNonce: SPAWN_NONCE,
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
+    lockMetadata: { ownershipId: OWNERSHIP_ID, pid: '__PID__' }
+  })
+
+  // umask 077 must apply only to the reservation-parent mkdir. A bare
+  // umask call at the top level leaks 077 into the rest of the payload,
+  // so the detached setsid backend inherits 077 instead of the login umask.
+  assert.ok(
+    cmd.includes('(umask 077 && mkdir -p'),
+    'umask 077 must be scoped to a mkdir subshell'
+  )
+  assert.doesNotMatch(
+    cmd,
+    /(^|[^(])umask 077/,
+    'no bare umask 077 may leak into the spawn chain'
+  )
+  assert.ok(
+    cmd.indexOf('(umask 077') < cmd.indexOf('serve --isolated'),
+    'scoped mkdir must still precede the serve spawn'
+  )
+})
+
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {
   const failure = new Error('channel closed')
 

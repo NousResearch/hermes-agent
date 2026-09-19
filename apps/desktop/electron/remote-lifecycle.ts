@@ -1125,7 +1125,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const reservationNonce = validateSpawnNonce(opts.reservationNonce || crypto.randomBytes(8).toString('hex'))
 
   return withRemoteUpdateMutex(
-    `umask 077 && mkdir -p "$(dirname ${reservation})"; ` +
+    `(umask 077 && mkdir -p "$(dirname ${reservation})"); ` +
       // reservation/lockPath/ownerPath are expandRemotePath() output — already
       // shell-quoted fragments ("$HOME"'/…'). Embed raw so the assignment
       // expands $HOME; shq() here would store the quote characters literally

@@ -534,6 +534,7 @@ def custom_provider_pool_key_candidates(
         return []
     normalized_url = _norm_url(base_url)
     requested_aliases = _requested_custom_name_aliases(provider_name) if provider_name else set()
+    keys: List[str] = []
 
     if requested_aliases:
         for norm_name, entry in _iter_custom_providers():
@@ -543,8 +544,8 @@ def custom_provider_pool_key_candidates(
     for norm_name, entry in _iter_custom_providers():
         entry_url = _norm_url(entry.get("base_url"))
         if entry_url and entry_url == normalized_url:
-            return _pool_keys_for_custom_entry(norm_name, entry)
-    return []
+            keys.extend(_pool_keys_for_custom_entry(norm_name, entry))
+    return keys
 
 
 def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:

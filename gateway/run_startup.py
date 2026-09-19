@@ -186,7 +186,7 @@ class GatewayStartupMixin:
         done, pending = await asyncio.wait(tasks, timeout=timeout)
         if pending:
             args = (timeout, len(pending)) if warn_fmt.count("%") > 1 else (timeout,)
-            logger.warning(warn_fmt, *args)
+            await asyncio.to_thread(logger.warning, warn_fmt, *args)
             late = self._late_failure_callback(late_msg, level=level)
             for task in pending:
                 task.add_done_callback(late)

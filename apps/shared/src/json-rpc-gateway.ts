@@ -125,8 +125,6 @@ export class JsonRpcGatewayClient {
   private lastSeenSeq = new Map<string, number>()
   /** Set while a post-reconnect replay fetch is in flight (dedup guard). */
   private replayInFlight = false
-  /** Invalidates an interrupted replay so its async cleanup cannot own a replacement socket. */
-  private replayGeneration = 0
   /**
    * While a replay fetch is in flight, live seq'd frames for the sessions
    * being replayed are parked here instead of dispatching immediately.
@@ -189,7 +187,7 @@ export class JsonRpcGatewayClient {
 
     const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
     this.socket = socket
-    this.channel.stopHeartbeat()
+    this.stopHeartbeat()
 
     socket.addEventListener('message', message => {
       if (this.socket !== socket) {
@@ -210,7 +208,7 @@ export class JsonRpcGatewayClient {
       }
 
       this.socket = null
-      this.channel.stopHeartbeat()
+      this.stopHeartbeat()
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
     })
@@ -296,7 +294,7 @@ export class JsonRpcGatewayClient {
       socket.close()
     } finally {
       this.socket = null
-      this.channel.stopHeartbeat()
+      this.stopHeartbeat()
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
     }
@@ -313,13 +311,7 @@ export class JsonRpcGatewayClient {
       return
     }
 
-    this.dropSocket(new Error(message))
-
-    try {
-      socket.close()
-    } catch {
-      // The generation was already invalidated; the reconnect owner can redial.
-    }
+    this.invalidateSocket(socket, new Error(message))
   }
 
   on<P = unknown>(type: GatewayEventName, handler: (event: GatewayEvent<P>) => void): () => void {
@@ -473,8 +465,12 @@ export class JsonRpcGatewayClient {
 
     if (frame.method === 'event' && frame.params?.type) {
       if (frame.params.type === 'gateway.ready') {
-        if (frame.params.payload?.heartbeat === true) {
-          this.channel.startHeartbeat()
+        if (this.gatewayReadyAdvertisesHeartbeat(frame.params.payload)) {
+          const socket = this.socket
+
+          if (socket) {
+            this.startHeartbeat(socket)
+          }
         }
 
         const epoch = (frame.params.payload as { replay_epoch?: unknown } | undefined)?.replay_epoch
@@ -537,7 +533,6 @@ export class JsonRpcGatewayClient {
     }
 
     this.replayInFlight = true
-    const replayGeneration = ++this.replayGeneration
     // Park live frames for the sessions we're about to replay so a frame
     // racing the replay response can't dispatch ahead of (or duplicate) the
     // gap events. Sessions without watermarks are unaffected.
@@ -562,13 +557,6 @@ export class JsonRpcGatewayClient {
           )
         )
       )
-
-      // The socket that owned this replay was dropped while its requests were
-      // settling. Its results and cleanup must not consume the replacement
-      // socket's replay window.
-      if (this.replayGeneration !== replayGeneration) {
-        return
-      }
 
       for (const result of results) {
         if (result.status !== 'fulfilled' || !Array.isArray(result.value?.events)) {
@@ -601,10 +589,8 @@ export class JsonRpcGatewayClient {
     } catch {
       // Replay is an optimization over lossy-reconnect; never surface errors.
     } finally {
-      if (this.replayGeneration === replayGeneration) {
-        this.flushReplayHold()
-        this.replayInFlight = false
-      }
+      this.flushReplayHold()
+      this.replayInFlight = false
     }
   }
 
@@ -662,17 +648,67 @@ export class JsonRpcGatewayClient {
     }
   }
 
-  /** Forget the current socket generation, fail its calls, and go 'closed'. */
-  private dropSocket(error: Error): void {
-    // A replay belongs to the socket that started it. Detaching that socket
-    // rejects its requests asynchronously, so clear its ownership now; the
-    // next open can immediately schedule a replay of its own.
-    this.replayGeneration += 1
-    this.replayInFlight = false
-    this.replayHold = null
+  private gatewayReadyAdvertisesHeartbeat(payload: unknown): boolean {
+    return Boolean(payload && typeof payload === 'object' && (payload as { heartbeat?: unknown }).heartbeat === true)
+  }
+
+  private startHeartbeat(socket: WebSocketLike): void {
+    this.stopHeartbeat()
+    this.lastInboundAt = Date.now()
+
+    if (this.options.heartbeatIntervalMs <= 0 || this.options.heartbeatDeadlineMs <= 0) {
+      return
+    }
+
+    this.heartbeatTimer = setInterval(() => {
+      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) {
+        return
+      }
+
+      if (Date.now() - this.lastInboundAt >= this.options.heartbeatDeadlineMs) {
+        this.invalidateSocket(socket, new Error('WebSocket heartbeat acknowledgement timed out'))
+
+        return
+      }
+
+      try {
+        socket.send(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: `heartbeat-${++this.heartbeatSequence}`,
+            method: 'gateway.ping',
+            params: {}
+          })
+        )
+      } catch (error) {
+        this.invalidateSocket(socket, error instanceof Error ? error : new Error(String(error)))
+      }
+    }, this.options.heartbeatIntervalMs)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
+  }
+
+  private invalidateSocket(socket: WebSocketLike, error: Error): void {
+    if (this.socket !== socket) {
+      return
+    }
+
     this.socket = null
-    this.channel.detach(error)
+    this.stopHeartbeat()
+
+    try {
+      socket.close()
+    } catch {
+      // The generation was already invalidated; the reconnect owner can redial.
+    }
+
     this.setState('closed')
+    this.rejectAllPending(error)
   }
 
   private clearPending(id: GatewayRequestId): void {

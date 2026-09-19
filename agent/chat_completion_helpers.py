@@ -449,7 +449,8 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     model each get their own pins without any surface re-plumbing the kwargs)."""
     flat = {"only": agent.providers_allowed, "ignore": agent.providers_ignored, "order": agent.providers_order,
         "sort": agent.provider_sort, "require_parameters": agent.provider_require_parameters,
-        "data_collection": agent.provider_data_collection}
+        "data_collection": agent.provider_data_collection,
+        "allow_fallbacks": getattr(agent, "provider_allow_fallbacks", None)}
     per_model = {}
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly
@@ -459,7 +460,9 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     merged = {**flat, **{k: v for k, v in per_model.items() if k in flat}}
     merged["sort"] = _validated_openrouter_provider_sort(merged["sort"])
     merged["require_parameters"] = True if merged["require_parameters"] else None
-    return {key: value for key, value in merged.items() if value}
+    # Drop only UNSET keys (None). Explicit falsy values like allow_fallbacks=False
+    # must survive to the wire object; a truthiness filter would silently discard them.
+    return {key: value for key, value in merged.items() if value is not None}
 
 
 def _prompt_cache_scope_for_agent(agent) -> "str | None":

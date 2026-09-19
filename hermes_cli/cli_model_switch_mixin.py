@@ -140,7 +140,9 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             raise
         ctx = None
     if ctx:
-        _cprint(f"    Context: {ctx:,} tokens")
+        from agent.context_pin import context_pin_suffix
+        _cprint(f"    Context: {ctx:,} tokens"
+                f"{context_pin_suffix(ctx, getattr(agent, '_config_context_length', None) if agent else None)}")
     if mi:
         if mi.max_output:
             _cprint(f"    Max output: {mi.max_output:,} tokens")

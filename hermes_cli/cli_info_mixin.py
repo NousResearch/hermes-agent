@@ -97,6 +97,8 @@ class CLIInfoMixin:
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
+        from agent.context_pin import is_context_pinned
+        ctx_pinned = is_context_pinned(ctx_len, getattr(getattr(self, "agent", None), "_config_context_length", None))
 
         # Auto-compact for narrow terminals — the full banner needs ~80 columns to avoid wrapping.
         if self.compact or shutil.get_terminal_size().columns < 80:
@@ -117,7 +119,7 @@ class CLIInfoMixin:
             banner_kw = dict(
                 console=self.console, model=self.model, cwd=cwd,
                 enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider)
+                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
             if snapshot is not None:
                 self._defer_tool_warnings = True
@@ -726,7 +728,9 @@ class CLIInfoMixin:
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)")
+        from agent.context_pin import context_pin_suffix
+        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)"
+              f"{context_pin_suffix(ctx_len, getattr(agent, '_config_context_length', None))}")
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
 

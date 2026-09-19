@@ -224,7 +224,16 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fres
     selection_key = {"tts": "provider", "web": "backend", "browser": "cloud_provider"}.get(ts_key)
     if selection_key:
         section = config.get(ts_key, {})
-        return not isinstance(section, dict) or selection_key not in section
+        if not isinstance(section, dict):
+            return True
+        if selection_key in section:
+            return False
+        # Browser's "Browser Use" provider row writes config[ts_key]["backend"]
+        # (via the browser_backend marker), not "cloud_provider" — recognize
+        # an already-set backend so the provider picker doesn't re-appear.
+        if ts_key == "browser" and "backend" in section:
+            return False
+        return True
     if ts_key == "image_gen":  # in-tree FAL backend OR any available plugin image gen provider satisfies
         return not fal_key_is_configured() and not _any_plugin_provider_available("agent.image_gen_registry")
     if ts_key == "video_gen":  # no in-tree fallback — every video backend is a plugin

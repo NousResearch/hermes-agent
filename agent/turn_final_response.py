@@ -162,7 +162,15 @@ def finish_text_response(
             or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
         )
     )
-    if _stall_continue_intent or (
+    # Durable todos catch status-only endings that have no future-tense tail.
+    # One reconciliation per turn, sharing (not extending) the ack/run budget.
+    from agent.turn_stop_gates import todo_continuation_nudge
+    _todo_nudge = None
+    if (bool(getattr(agent, "_stall_guards", True)) and agent.valid_tool_names
+            and codex_ack_continuations < 2
+            and not getattr(agent, "_todo_continuation_nudged", False)):
+        _todo_nudge = todo_continuation_nudge(agent, messages, final_response or "")
+    if _todo_nudge or _stall_continue_intent or (
         _ack_mode != "off"
         and agent.valid_tool_names
         and codex_ack_continuations < 2
@@ -178,6 +186,8 @@ def finish_text_response(
                 "(%d/2)", codex_ack_continuations + 1,
             )
         codex_ack_continuations += 1
+        if _todo_nudge:
+            agent._todo_continuation_nudged = True
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
         if _promoted:
             # Same sidecar as the final row: the wire copy must carry the promoted text, not only
@@ -185,7 +195,7 @@ def finish_text_response(
             interim_msg["api_content"] = final_response
         append_message(messages, interim_msg)
         agent._emit_interim_assistant_message(interim_msg)
-        append_message(messages, {"role": "user", "content": _CODEX_ACK_CONTINUATION_NUDGE})
+        append_message(messages, {"role": "user", "content": _todo_nudge or _CODEX_ACK_CONTINUATION_NUDGE})
         agent._session_messages = messages
         # An acknowledgment is non-final: its text must not suppress iteration-limit
         # summarization if the continuation exhausts budget.

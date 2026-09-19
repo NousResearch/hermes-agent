@@ -23,11 +23,47 @@ def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
 def test_refresh_reports_registration_outcome(tmp_path, monkeypatch, capsys):
     _stale_plist(tmp_path, monkeypatch, registered=False)
     assert gw.refresh_launchd_plist_if_needed() is False
-    assert "Updated" not in capsys.readouterr().out
+    failed = capsys.readouterr().out
+    assert "Updated gateway launchd service definition" not in failed
+    assert "did not re-register" in failed
 
     _stale_plist(tmp_path, monkeypatch, registered=True)
     assert gw.refresh_launchd_plist_if_needed() is True
-    assert "Updated" in capsys.readouterr().out
+    assert "Updated gateway launchd service definition" in capsys.readouterr().out
+
+
+def test_launchd_start_skips_kickstart_after_successful_refresh(tmp_path, monkeypatch):
+    """A plist refresh already bootstraps (RunAtLoad/KeepAlive). A second
+    kickstart races another local gateway into existence (#5109)."""
+    plist_path = tmp_path / "com.hermes.plist"
+    plist_path.write_text("<current/>", encoding="utf-8")
+    monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(gw, "get_launchd_label", lambda: "com.hermes.agent")
+    monkeypatch.setattr(gw, "refresh_launchd_plist_if_needed", lambda: True)
+
+    kickstarts = []
+    monkeypatch.setattr(gw, "_launchctl_kickstart_current", lambda label: kickstarts.append(label))
+    monkeypatch.setattr(gw, "_launchd_ok", lambda msg: None)
+
+    gw.launchd_start()
+
+    assert kickstarts == []
+
+
+def test_launchd_start_kickstarts_when_refresh_is_noop(tmp_path, monkeypatch):
+    plist_path = tmp_path / "com.hermes.plist"
+    plist_path.write_text("<current/>", encoding="utf-8")
+    monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(gw, "get_launchd_label", lambda: "com.hermes.agent")
+    monkeypatch.setattr(gw, "refresh_launchd_plist_if_needed", lambda: False)
+
+    kickstarts = []
+    monkeypatch.setattr(gw, "_launchctl_kickstart_current", lambda label: kickstarts.append(label))
+    monkeypatch.setattr(gw, "_launchd_ok", lambda msg: None)
+
+    gw.launchd_start()
+
+    assert kickstarts == ["com.hermes.agent"]
 
 
 def test_install_repair_warns_instead_of_claiming_success(tmp_path, monkeypatch, capsys):

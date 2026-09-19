@@ -2,6 +2,7 @@
 
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { createContext, type FC, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -51,28 +52,37 @@ export const PendingApprovalStack: FC = () => {
   const sessionId = useStore(useSessionView().$runtimeId)
   const requests = useStore(useMemo(() => sessionApprovalRequests(sessionId), [sessionId]))
   const total = useStore(useMemo(() => sessionApprovalStackSize(sessionId), [sessionId]))
+  const reduced = useReducedMotion()
 
   return (
-    <section
+    <motion.section
+      animate={{ paddingBlock: requests.length ? 8 : 0 }}
       aria-label={t.assistant.approval.jumpToApproval}
       className={cn(
-        'min-w-0 has-[[data-stack-key]]:py-2',
+        'min-w-0',
         placement === 'floating' ? 'sticky bottom-4 z-10 mt-auto w-full max-w-xl self-center' : 'w-full max-w-xl'
       )}
       data-approval-placement={placement}
       data-approval-stack=""
       data-slot="tool-approval-stack"
+      initial={false}
+      transition={reduced || requests.length ? { duration: 0 } : { duration: 0.22, ease: 'easeInOut' }}
     >
-      {requests.length > 0 && <ApprovalActivity floating={placement === 'floating'} />}
+      <ApprovalActivity floating={placement === 'floating'} visible={requests.length > 0} />
       <ApprovalQueue floating={placement === 'floating'} requests={requests} total={total} />
-    </section>
+    </motion.section>
   )
 }
 
-function ApprovalActivity({ floating }: { floating: boolean }) {
+function ApprovalActivity({ floating, visible }: { floating: boolean; visible: boolean }) {
   const { t } = useI18n()
+  const reduced = useReducedMotion()
 
   const summary = useAuiState(state => {
+    if (!visible) {
+      return ''
+    }
+
     const start = state.thread.messages.findLastIndex(message => message.role === 'user')
 
     const tools = state.thread.messages
@@ -89,6 +99,10 @@ function ApprovalActivity({ floating }: { floating: boolean }) {
   })
 
   const disclosureIds = useAuiState(state => {
+    if (!visible) {
+      return ''
+    }
+
     const start = state.thread.messages.findLastIndex(message => message.role === 'user')
 
     return state.thread.messages
@@ -104,27 +118,40 @@ function ApprovalActivity({ floating }: { floating: boolean }) {
   })
 
   return (
-    <div
-      className={cn('mb-1 min-w-0', floating && 'rounded bg-(--ui-chat-surface-background)')}
-      data-approval-activity=""
-      data-glass-opaque={floating ? '' : undefined}
-      data-tool-summary=""
-    >
-      <ScaffoldRow
-        onToggle={
-          disclosureIds
-            ? () => {
-                for (const id of disclosureIds.split('\n')) {
-                  setToolDisclosureOpen(id, true)
-                }
+    <AnimatePresence initial={false}>
+      {visible && (
+        <motion.div
+          animate={{ height: 'auto', opacity: 1 }}
+          className="overflow-hidden"
+          exit={{ height: 0, opacity: 0 }}
+          initial={{ height: 0, opacity: 0 }}
+          key="activity"
+          transition={{ duration: reduced ? 0 : 0.22, ease: 'easeInOut' }}
+        >
+          <div
+            className={cn('mb-1 min-w-0', floating && 'rounded bg-(--ui-chat-surface-background)')}
+            data-approval-activity=""
+            data-glass-opaque={floating ? '' : undefined}
+            data-tool-summary=""
+          >
+            <ScaffoldRow
+              onToggle={
+                disclosureIds
+                  ? () => {
+                      for (const id of disclosureIds.split('\n')) {
+                        setToolDisclosureOpen(id, true)
+                      }
+                    }
+                  : undefined
               }
-            : undefined
-        }
-        open={false}
-      >
-        <span className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>{summary || t.assistant.approval.jumpToApproval}</span>
-      </ScaffoldRow>
-    </div>
+              open={false}
+            >
+              <span className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>{summary || t.assistant.approval.jumpToApproval}</span>
+            </ScaffoldRow>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   )
 }
 
@@ -209,6 +236,35 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
 
   const present = stack.active
   const busy = submitting !== null || !present || stack.busy
+  // Answering with the pointer moves focus onto the card, and the card then
+  // unmounts, which parks focus on <body> — where type-to-focus routes the next
+  // keystrokes into the chat composer. For a computer_use flow the agent may
+  // have just aimed its input at another pane (terminal, preview), so the
+  // approval hands focus back to whatever held it before the press (#113839).
+  const focusOrigin = useRef<HTMLElement | null>(null)
+  const cardRef = useRef<HTMLElement | null>(null)
+
+  const rememberFocusOrigin = useCallback(() => {
+    const active = document.activeElement
+
+    if (active instanceof HTMLElement && active !== document.body && !cardRef.current?.contains(active)) {
+      focusOrigin.current = active
+    }
+  }, [])
+
+  const restoreFocusOrigin = useCallback(() => {
+    const origin = focusOrigin.current
+    const active = document.activeElement
+
+    focusOrigin.current = null
+
+    // Only when the answer itself is what stranded focus — never steal from a
+    // surface the user moved to while the reply was in flight.
+    if (origin?.isConnected && (!active || active === document.body || cardRef.current?.contains(active))) {
+      origin.focus({ preventScroll: true })
+    }
+  }, [])
+
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
   const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
@@ -236,6 +292,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
 
       try {
         await stack.depart(() => sendApproval(request, choice))
+        restoreFocusOrigin()
       } catch (error) {
         releaseApprovalKey()
         notifyError(error, copy.sendFailed)
@@ -243,7 +300,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
         setSubmitting(null)
       }
     },
-    [copy.gatewayDisconnected, copy.sendFailed, gateway, request, stack]
+    [copy.gatewayDisconnected, copy.sendFailed, gateway, request, restoreFocusOrigin, stack]
   )
 
   return (
@@ -253,6 +310,8 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
       data-request-id={request.requestId}
       data-slot="tool-approval-card"
       inert={!present}
+      onPointerDownCapture={rememberFocusOrigin}
+      ref={cardRef}
     >
       <div className="flex items-center gap-2 px-2.5 pt-2 text-xs text-(--ui-text-secondary)">
         <Codicon name="terminal" size="0.875rem" />

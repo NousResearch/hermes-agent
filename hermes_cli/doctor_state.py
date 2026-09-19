@@ -3,6 +3,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from hermes_cli.doctor_report import (
@@ -118,6 +119,7 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
     for subdir_name in ["cron", "sessions", "logs", "skills"] + (["memories"] if memory_on else []):
         ensure_dir(f, should_fix, hermes_home / subdir_name, f"{_DHH}/{subdir_name}/ exists",
                    f"Created {_DHH}/{subdir_name}/", f"{_DHH}/{subdir_name}/ not found")
+    _check_scratch_dir(hermes_home, _DHH)
     # SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
     if soul_path.exists():
@@ -147,6 +149,18 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
             check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8').strip())} chars)")
         else:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
+
+
+def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
+    """Report the scratch dir (TMPDIR target) and its size; a user-set TMPDIR elsewhere is shown, not judged."""
+    from hermes_constants import (
+        SCRATCH_DIR_MARKER_ENV, SCRATCH_MAX_AGE_HOURS, get_scratch_dir, scratch_dir_usage_bytes)
+    scratch = get_scratch_dir(hermes_home, prune=False)
+    size = _human_bytes(scratch_dir_usage_bytes(scratch))
+    check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {size}, pruned after {SCRATCH_MAX_AGE_HOURS}h)")
+    tmpdir = os.environ.get("TMPDIR", "")
+    if tmpdir and tmpdir != os.environ.get(SCRATCH_DIR_MARKER_ENV, ""):
+        check_info(f"TMPDIR={tmpdir} is set by you or the OS, so Hermes leaves it alone")
 
 
 def _session_count(state_db_path: Path):
@@ -298,24 +312,26 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
     with warn_on_error(""):
         size = wal_size()
         if size > 50 * 1024 * 1024:  # 50 MB
-            check_warn(f"WAL file is large ({size // (1024*1024)} MB)", "(may indicate missed checkpoints)")
-            if not should_fix:
-                return f.issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
             # Checkpoint-lock premise (#40177, #103339): a bare connect runs WAL recovery and the checkpoint
             # joins the live WAL — under a running gateway that second-writer handling corrupts state.db.
             # Holder scan first (any other process holding the DB, or an unknown, fails closed), then run the
             # checkpoint on the exclusive repair guard so an opener arriving in between is refused, not joined.
-            from hermes_state_holders import live_writer_holds_db
-            from hermes_state_repair import _connect_repair_durable, _exclusive_repair_db_guard
+            from hermes_state_repair import _exclusive_repair_db_guard, _live_writer_holds_db
+            title = f"WAL file is large ({size // (1024*1024)} MB)"
             _SKIP = ("Large WAL file — cannot prove state.db is quiet (stop the profile's gateway first, then "
-                     "re-run 'hermes doctor --fix' to checkpoint)")
-            if live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable):
-                # Honest disjunction (gate C1): a True here means "held OR unprovable" — never assert a live
-                # writer as fact.
-                check_warn("WAL checkpoint skipped: cannot prove state.db is quiet",
-                           "(another process holds it, or it is unreadable — stop the profile's gateway "
-                           "and re-run 'hermes doctor --fix')")
+                     "run 'hermes doctor --fix' to checkpoint)")
+            # Honest disjunction (gate C1): a True here means "held OR unprovable" — never assert a live
+            # writer as fact.
+            if _live_writer_holds_db(state_db_path):
+                # A large WAL is normal while Desktop or the gateway is running; a bare "run --fix" here sent
+                # users straight into the second-writer trap (#110054).
+                check_warn(title, "(normal while Desktop or the gateway is running, or state.db cannot be "
+                                  "inspected — checkpoint only with them stopped)")
                 return f.issues.append(_SKIP)
+            check_warn(title, "(may indicate missed checkpoints)")
+            if not should_fix:
+                return f.issues.append(
+                    "Large WAL file — stop the profile's gateway, then run 'hermes doctor --fix' to checkpoint")
             with _exclusive_repair_db_guard(state_db_path) as (guard, guard_error):
                 if guard is None:
                     check_warn("WAL checkpoint skipped: could not take exclusive ownership of state.db",
@@ -328,11 +344,33 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             check_info(f"WAL file is {size // (1024*1024)} MB (normal for active sessions)")
 
 
+def _retired_wal_holders(f: Finding, state_db_path: Path, _DHH: str) -> bool:
+    """Name the processes holding a retired -wal/-shm generation (#110054). Every SessionDB open is
+    refused while they live, and the current inode has no holders, so the plain holder count says
+    "0 holding the DB open" beside a green state.db line — the opposite of the truth."""
+    from hermes_constants import profile_cli_selector
+    from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+    from hermes_state_holders import describe_holder_pid
+    pids = list(dict.fromkeys(pid for pid, _ in iter_deleted_sqlite_sidecar_holders(state_db_path)))
+    if not pids:
+        return False
+    rendered = ", ".join(describe_holder_pid(pid) for pid in pids)
+    check_warn(f"{_DHH}/state.db: {len(pids)} process(es) still hold a retired WAL generation ({rendered})",
+               "(every new session refuses to open until they exit; health/stats probes skipped)")
+    f.issues.append(f"state.db retired WAL generation held by {rendered} — stop the gateway, dashboard and "
+                    f"cron writers among them ('hermes {profile_cli_selector()}gateway stop', quit the Desktop "
+                    "app), do not delete the WAL yourself, then rerun 'hermes doctor'")
+    return True
+
+
 @doctor_check()
 def _check_state_db(should_fix: bool, f: Finding) -> None:
     """state.db session count, FTS write health, schema repair, stats snapshot, WAL size."""
     from hermes_cli.doctor import HERMES_HOME, _DHH
     state_db_path = HERMES_HOME / "state.db"
+    # A read-only connect on the new generation is itself another opener, so nothing below may run.
+    if _retired_wal_holders(f, state_db_path, _DHH):
+        return
     if state_db_path.exists():
         _state_db_health(f, should_fix, state_db_path, _DHH)
         _state_db_stats(f.issues, state_db_path)

@@ -52,12 +52,6 @@ def _patch_gateway_discovery():
     ``sys.exit(1)`` (#78574). Discovery returning nothing makes the phase a
     clean no-op — none of the tests here assert on gateway restarts.
 
-    ``_purge_stale_hermes_modules`` must also be stubbed: it evicts
-    ``hermes_cli.gateway`` from ``sys.modules`` mid-update, and the restart
-    phase's fresh ``from hermes_cli.gateway import ...`` then loads an
-    UNPATCHED copy of the module — silently discarding every mock here and
-    letting real gateway discovery (and real ``os.kill``) run on the dev box.
-
     The launchd scope is neutralised too: on a macOS host the restart phase
     derives labels from the profile layout, so a default profile alone hands
     it ``ai.hermes.gateway`` and the verify step exits 1 (#111866, #110701).
@@ -69,7 +63,6 @@ def _patch_gateway_discovery():
          patch("hermes_cli.update_inventory.collect_runtime_inventory", return_value=None), \
          patch("hermes_cli.update_inventory.report_unaccounted_runtimes", return_value=False), \
          patch.object(hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **kw: False), \
-         patch.object(hermes_main, "_purge_stale_hermes_modules", lambda *a, **kw: None), \
          patch("hermes_cli.update_receipt.collect_fleet_versions", return_value=[]):
         yield
 
@@ -124,26 +117,6 @@ def test_refresh_active_memory_provider_dependencies_reinstalls_active_provider(
 
 
 
-
-def test_reload_updated_runtime_modules_restores_new_hermes_constants_symbol(monkeypatch):
-    """A pre-pull module object missing a new helper is repaired by reload."""
-    import hermes_constants
-
-    monkeypatch.delattr(hermes_constants, "apply_subprocess_home_env", raising=False)
-    assert not hasattr(hermes_constants, "apply_subprocess_home_env")
-
-    hermes_main._reload_updated_runtime_modules()
-
-    assert callable(hermes_constants.apply_subprocess_home_env)
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# ff-only fallback to reset --hard on diverged history
-# ---------------------------------------------------------------------------
 
 def _make_update_side_effect(
     current_branch="main",

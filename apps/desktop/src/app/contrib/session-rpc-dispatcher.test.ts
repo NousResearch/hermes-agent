@@ -44,7 +44,7 @@ const { _resetSessionOwnerHintsForTests, setCronSessions, setMessagingSessions, 
   await import('@/store/session')
 
 const { isSessionOwnerResolutionError } = await import('@/store/session-owner-resolution')
-const { $sessionTiles } = await import('@/store/session-states')
+const { $sessionTiles, recordSessionEventScope } = await import('@/store/session-states')
 const { makeSessionInfo } = await import('@/test/session-info')
 
 function dispatcher(
@@ -205,6 +205,41 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
       session_id: 'stored-tg',
       text: 'hi'
     })
+  })
+})
+
+describe('createSessionRpcDispatcher: routes by the session OWNING connection when two connections share a profile name', () => {
+  // Two registered connections, both exposing `default` (the default install:
+  // this device + a remote gateway), and the window's primary is the OTHER
+  // connection. A bare profile name carries no connection identity, and the
+  // profile door (requestGatewayForProfile -> gatewayForProfile) resolves a
+  // bare name equal to the primary profile against the PRIMARY socket — a
+  // different machine than the one holding the session. The inbound event
+  // already proved which socket owns the runtime, so that exact owner has to
+  // outrank the connection-blind row profile: otherwise the 2nd prompt of a
+  // `This device` chat is answered by the remote backend with
+  // `4001 session not found`.
+  function twoConnections(): void {
+    $connectionsRegistry.set({ connections: [{ id: 'local' }, { id: 'homelab' }] } as never)
+  }
+
+  it('routes a session that lives on the LOCAL connection back to that connection', async () => {
+    gatewayMocks.activeConnectionId = 'homelab'
+    twoConnections()
+    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-local' })
+    setSessions([makeSessionInfo({ id: 'rt-local', profile: 'default' })])
+    const { ambientRequest, request } = dispatcher()
+
+    await expect(request('prompt.submit', { session_id: 'rt-local', text: 'again' })).resolves.toEqual({
+      routed: true
+    })
+
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'default', 'prompt.submit', {
+      session_id: 'rt-local',
+      text: 'again'
+    })
+    expect(gatewayMocks.requestGatewayForProfile).not.toHaveBeenCalled()
+    expect(ambientRequest).not.toHaveBeenCalled()
   })
 })
 

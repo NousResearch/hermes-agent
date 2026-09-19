@@ -204,7 +204,9 @@ method("skills.manage", params=SkillsManageParams, result=SkillsManageResult,
 
 
 class SkillsReloadParams(Params):
-    pass
+    """``session_id`` binds the rescan to that session's profile and workspace (project skills)."""
+
+    session_id: str | None = None
 
 
 class SkillCommandRef(Result):
@@ -604,6 +606,7 @@ class AgentPluginRow(Result):
     catalog_tier: str | None = None
     installed_sha: str | None = None
     catalog_sha: str | None = None
+    catalog_version: str | None = None
     update_available: bool | None = None
     pinned_sha: str | None = None
 

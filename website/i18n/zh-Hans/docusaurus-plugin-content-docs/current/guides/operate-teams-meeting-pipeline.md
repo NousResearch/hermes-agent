@@ -5,7 +5,7 @@ description: "Microsoft Teams 会议流水线的运行手册、上线检查清�
 
 # 操作 Teams 会议流水线
 
-本指南适用于已通过 [Teams Meetings](/user-guide/messaging/teams-meetings) 启用该功能之后的操作阶段。
+本指南适用于已通过 [Teams Meetings](../user-guide/messaging/teams-meetings.md) 启用该功能之后的操作阶段。
 
 本页内容：
 - 操作员 CLI 流程
@@ -284,5 +284,5 @@ hermes teams-pipeline show <job-id>
 
 ## 相关文档
 
-- [Teams Meetings 设置](/user-guide/messaging/teams-meetings)
-- [Microsoft Teams bot 设置](/user-guide/messaging/teams)
+- [Teams Meetings 设置](../user-guide/messaging/teams-meetings.md)
+- [Microsoft Teams bot 设置](../user-guide/messaging/teams.md)

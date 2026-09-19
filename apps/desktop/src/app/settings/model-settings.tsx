@@ -1,5 +1,5 @@
 import type { ModelOptionProvider } from '@hermes/shared'
-import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, isReasoningEffort, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -1136,8 +1136,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                           {' · '}
                           {current.reasoning_effort === 'none'
                             ? `${m.reasoning} ${m.reasoningOff}`
-                            : (t.shell.modelOptions[current.reasoning_effort as keyof typeof t.shell.modelOptions] ??
-                              current.reasoning_effort)}
+                            : (isReasoningEffort(current.reasoning_effort)
+                                ? t.shell.modelOptions[current.reasoning_effort]
+                                : current.reasoning_effort)}
                         </span>
                       )}
                     </span>
@@ -1157,10 +1158,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       {moa && currentMoaPreset && (
         <section>
           <SectionHeading icon={Cpu} title={m.moaTitle} />
-          <p className="mb-2 text-xs text-muted-foreground">
-            Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
-            acting model.
-          </p>
+          <p className="mb-2 text-xs text-muted-foreground">{m.moaDescription}</p>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
@@ -1349,7 +1347,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   </span>
                 }
                 key={`${selectedMoaPreset}-${index}`}
-                title={`Reference ${index + 1}`}
+                title={
+                  <span className="flex items-baseline gap-2">
+                    {`Reference ${index + 1}`}
+                    <Pill>{m.moaReferenceHint}</Pill>
+                  </span>
+                }
               />
             ))}
             <Button
@@ -1425,7 +1428,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
                 </span>
               }
-              title={m.moaAggregator}
+              title={
+                <span className="flex items-baseline gap-2">
+                  {m.moaAggregator}
+                  <Pill>{m.moaAggregatorBilled}</Pill>
+                </span>
+              }
             />
           </div>
         </section>

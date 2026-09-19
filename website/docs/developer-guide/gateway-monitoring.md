@@ -189,13 +189,13 @@ spans, logs, and resource attributes remain content-free.
 ```bash
 # terminal 1: capture collector on :4318
 python scripts/observability/otel_capture_collector.py \
-  --host 127.0.0.1 --port 4318 --log /tmp/hermes_otel_capture.jsonl
+  --host 127.0.0.1 --port 4318 --log ~/.hermes/cache/scratch/hermes_otel_capture.jsonl
 
 # terminal 2: drive the real exporter through lifecycle transitions,
 # a fatal platform, and a structured warning event, then flush
 python scripts/observability/gateway_health_export_probe.py \
   --endpoint http://127.0.0.1:4318/v1/traces \
-  --log /tmp/hermes_otel_capture.jsonl --wait 8
+  --log ~/.hermes/cache/scratch/hermes_otel_capture.jsonl --wait 8
 # exit 0 prints: {"requests": 6, "paths": ["/v1/logs", "/v1/metrics", "/v1/traces"]}
 ```
 
@@ -288,7 +288,7 @@ values with no error:
 hermes monitoring status                 # posture
 python scripts/observability/gateway_health_export_probe.py \
   --endpoint http://127.0.0.1:4318/v1/traces \
-  --log /tmp/cap.jsonl --wait 8          # drive the real exporter
+  --log ~/.hermes/cache/scratch/cap.jsonl --wait 8          # drive the real exporter
 ```
 
 Decode the captured OTLP payload and assert the new name/attribute is present

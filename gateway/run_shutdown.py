@@ -16,7 +16,7 @@ import shlex
 import sys
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -156,6 +156,9 @@ class GatewayShutdownMixin:
         active_agents: dict = dataclasses.field(default_factory=dict)
         timed_out: bool = False
         drain_elapsed: float = 0.0
+        # API-server runs still live when the adapters were released; the adapter map is empty by the
+        # time the SessionDB close gate runs, so the count has to be taken before ``adapters.clear()``.
+        api_live: int = 0
 
         def elapsed(self) -> float:
             return time.monotonic() - self.started_at
@@ -248,7 +251,7 @@ class GatewayShutdownMixin:
 
     def _interrupt_deferred_agent_workers(self, reason: str) -> int:
         """Request cancellation of detached executor-backed agent work."""
-        from gateway.run import request_hard_interrupt
+        from gateway.run import _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
         workers = getattr(self, "_deferred_agent_workers", None)
         if not isinstance(workers, dict):
             return 0
@@ -259,7 +262,7 @@ class GatewayShutdownMixin:
                 continue
             seen.add(id(agent))
             try:
-                request_hard_interrupt(agent, reason)
+                request_hard_interrupt(agent, reason, tool_reason=_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN)
                 interrupted += 1
             except Exception as exc:
                 logger.debug("Failed interrupting deferred agent worker during shutdown: %s", exc)
@@ -330,21 +333,45 @@ class GatewayShutdownMixin:
         )
 
     def _scale_to_zero_active_messaging_platforms(self) -> list:
-        """ENABLED MESSAGING platforms for the relay-only arm gate.
+        """Return every enabled or live messaging platform across served profiles.
 
-        config.platforms is pre-seeded with disabled placeholders, and the api_server is force-enabled
-        on every hosted container (counting it silently disarmed the feature everywhere).
+        ``self.config`` belongs to the launch profile, while ``_profile_adapters`` holds
+        live adapters for multiplexed secondary profiles. A direct secondary connection
+        must block suspension just like a direct primary connection. A secondary adapter
+        parked in ``_profile_failed_platforms`` (popped from ``_profile_adapters`` while a
+        retryable fatal reconnects) is still served: suspending mid-reconnect would leave
+        that reconnect unable to complete, so pending reconnects count as active too.
+
+        config.platforms is pre-seeded with disabled placeholders, and the api_server is
+        force-enabled on every hosted container (counting it silently disarmed the feature).
         """
-        if not self.config:
-            return []
         non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
+        active = []
+
+        def add_platform(platform: Platform) -> None:
+            if platform not in non_messaging and platform not in active:
+                active.append(platform)
+
         try:
-            return [
-                p for p, pc in self.config.platforms.items()
-                if getattr(pc, "enabled", False) and p not in non_messaging
-            ]
-        except Exception:  # noqa: BLE001
-            return []
+            if self.config:
+                for platform, platform_config in self.config.platforms.items():
+                    if getattr(platform_config, "enabled", False):
+                        add_platform(platform)
+            for platform in getattr(self, "adapters", {}) or {}:
+                add_platform(platform)
+            for profile_adapters in (getattr(self, "_profile_adapters", {}) or {}).values():
+                for platform in profile_adapters:
+                    add_platform(platform)
+            for profile_pending in (getattr(self, "_profile_failed_platforms", {}) or {}).values():
+                for platform in profile_pending or {}:
+                    add_platform(platform)
+        except Exception:  # noqa: BLE001 - unreadable state must keep the gateway awake
+            logger.debug(
+                "scale-to-zero: active messaging platforms unreadable — staying awake",
+                exc_info=True,
+            )
+            return ["<unavailable>"]
+        return active
 
     @staticmethod
     def _relay_wake_url_or_none():
@@ -415,7 +442,7 @@ class GatewayShutdownMixin:
         """
         self._last_inbound_at = time.time()
         if getattr(self, "_scale_to_zero_cooldown_until", 0.0) > 0:
-            self._scale_to_zero_status("running", "scale-to-zero: status restore failed")
+            self._scale_to_zero_status(self._serving_state(), "scale-to-zero: status restore failed")
             self._scale_to_zero_cooldown_until = 0.0
 
     def _scale_to_zero_status(self, state: str, fail_msg: str) -> None:
@@ -436,6 +463,7 @@ class GatewayShutdownMixin:
         sees only INBOUND connections and would freeze mid-job. Without a flaps socket NAS brokers
         the stop through the stamped GATEWAY_RELAY_SLEEP_URL; with no lever at all the watcher
         abstains."""
+        from gateway.scale_to_zero import messaging_is_relay_only_or_absent
         await asyncio.sleep(min(interval, 30.0))  # let startup settle
         while self._running:
             try:
@@ -444,6 +472,22 @@ class GatewayShutdownMixin:
                     return
                 if time.time() < self._scale_to_zero_cooldown_until or not self._scale_to_zero_is_idle():
                     continue
+                # The arm gate ran once at boot. A direct adapter that came up since (profile
+                # reconcile hot-adding a secondary, a re-enabled platform) owns a socket no wake
+                # URL can revive, so the same gate is re-asked before every dormant sequence.
+                active = self._scale_to_zero_active_messaging_platforms()
+                if not messaging_is_relay_only_or_absent(active):
+                    if not self._scale_to_zero_direct_platform_logged:
+                        self._scale_to_zero_direct_platform_logged = True
+                        logger.info(
+                            "scale-to-zero: idle, but directly connected messaging platform(s) %s "
+                            "hold a live socket that a suspended instance cannot wake from — staying "
+                            "awake. Route them through the relay connector or disable them to allow "
+                            "suspend.",
+                            ", ".join(str(getattr(p, "value", p)) for p in active),
+                        )
+                    continue
+                self._scale_to_zero_direct_platform_logged = False
                 go_dormant = getattr(self._relay_adapter_for_dormancy(), "go_dormant", None)
                 if not callable(go_dormant):
                     continue
@@ -585,7 +629,7 @@ class GatewayShutdownMixin:
         # Same guard as _exit_external_drain: a real shutdown drain must win, so never resurrect
         # a stopping gateway to `running`.
         if not getattr(self, "_draining", False) and self._running:
-            self._scale_to_zero_status("running", "scale-to-zero: status restore failed")
+            self._scale_to_zero_status(self._serving_state(), "scale-to-zero: status restore failed")
         # An abort before the cooldown is set would otherwise retry every tick.
         self._scale_to_zero_cooldown_until = max(
             self._scale_to_zero_cooldown_until, time.time() + 60.0
@@ -635,9 +679,9 @@ class GatewayShutdownMixin:
             return
         logger.info(
             "External drain RELEASED (.drain_request.json removed) — "
-            "re-accepting new turns; gateway_state -> running."
+            "re-accepting new turns; gateway_state -> %s.", self._serving_state(),
         )
-        self._update_runtime_status("running")
+        self._update_runtime_status(self._serving_state())
 
     async def _drain_control_watcher(self, interval: float = 1.0) -> None:
         """Poll ``.drain_request.json`` at 1s: present -> enter drain, absent -> exit; a stale epoch = absent."""
@@ -760,12 +804,12 @@ class GatewayShutdownMixin:
         return snapshot, timed_out
 
     def _interrupt_running_agents(self, reason: str) -> None:
-        from gateway.run import _AGENT_PENDING_SENTINEL, request_hard_interrupt
+        from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
         for session_key, agent in list(self._running_agents.items()):
             if agent is _AGENT_PENDING_SENTINEL:
                 continue
             with _log_suppressed(logging.DEBUG, "Failed interrupting agent during shutdown: %s"):
-                request_hard_interrupt(agent, reason)
+                request_hard_interrupt(agent, reason, tool_reason=_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN)
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
         # API-server / desk turns are adapter-owned and never enter _running_agents, so the loop above
         # cannot see them even though _drain_active_agents() waited for them.
@@ -868,11 +912,14 @@ class GatewayShutdownMixin:
                     continue
                 with _log_suppressed(logging.DEBUG, "Cron interrupt notice to %s:%s raised: %s", platform.value, chat_id):
                     metadata = self._thread_metadata_for_target(platform, chat_id, thread_id, adapter=adapter)
-                    if await self._send_notice_logged(
-                        adapter, chat_id, msg, platform.value, "Cron interrupt notice to %s:%s failed: %s",
-                        "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
-                    ):
-                        notified.add(dedup_key)
+                    async def send_notice():
+                        if await self._send_notice_logged(
+                            adapter, chat_id, msg, platform.value, "Cron interrupt notice to %s:%s failed: %s",
+                            "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
+                        ):
+                            notified.add(dedup_key)
+                    from gateway.warning_notifications import present_notification
+                    await present_notification(send_notice, platform=platform)
         if notified:
             logger.info("Shutdown: delivered %d interrupted-cron-job notice(s)", len(notified))
         return len(notified)
@@ -961,7 +1008,7 @@ class GatewayShutdownMixin:
                 # The session's OWN profile's bot (transport ref → profile map), never a bare
                 # self.adapters hit: under multiplex that is the default bot, so a secondary session's
                 # "Gateway shutting down" would land in the user's chat with the wrong bot.
-                adapter = self._adapter_for_source(source) if source is not None else None
+                adapter = self._delivery_adapter_for(source) if source is not None else None
                 if adapter is None:
                     adapter = self._authorization_adapter(platform, profile)
                 if not adapter:
@@ -978,8 +1025,21 @@ class GatewayShutdownMixin:
             except Exception as e:
                 logger.debug("Failed to send shutdown notification to %s:%s: %s", platform_str, chat_id, e)
                 continue
-            if await self._send_shutdown_notice(adapter, chat_id, msg, "active chat", platform_str, metadata=metadata):
-                notified.add(dedup_key)
+            # Automatic interrupt diagnostic, resolved under the session's own profile scope (same
+            # shape as the stall watcher). The requester's own chat on an in-chat /restart is the
+            # requested outcome of that command and is never suppressed.
+            async def _send_active(adapter=adapter, chat_id=chat_id, platform_str=platform_str,
+                                   metadata=metadata, dedup_key=dedup_key):
+                if await self._send_shutdown_notice(adapter, chat_id, msg, "active chat", platform_str, metadata=metadata):
+                    notified.add(dedup_key)
+            from gateway.warning_notifications import present_notification
+            from gateway.run import _async_profile_runtime_scope
+            scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
+                     if source is not None else nullcontext())
+            async with scope:
+                presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
+            if not presented:
+                notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
         if self._restart_requested and restart_source is not None:
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
@@ -1011,11 +1071,14 @@ class GatewayShutdownMixin:
                 )
                 continue
             # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
-            if await self._send_shutdown_notice(
-                adapter, str(home.chat_id), msg, "home channel", platform.value,
-                **({"metadata": metadata} if metadata else {}),
-            ):
-                notified.add(dedup_key)
+            async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
+                if await self._send_shutdown_notice(
+                    adapter, str(home.chat_id), msg, "home channel", platform.value,
+                    **({"metadata": metadata} if metadata else {}),
+                ):
+                    notified.add(dedup_key)
+            from gateway.warning_notifications import present_notification
+            await present_notification(_send_home, platform=platform)
 
     # Agent finalization / resource cleanup
     @staticmethod
@@ -1777,6 +1840,7 @@ class GatewayShutdownMixin:
         # CancelledError into this _stop_impl and skip _shutdown_event.set() / _exit_code = 75 (#12875). It
         # self-terminates anyway.
         self._background_tasks.clear()
+        ctx.api_live = self._active_api_run_count()
         self.adapters.clear()
         for _session_key in list(self._running_agents):
             self._release_running_agent_state(_session_key)
@@ -1847,6 +1911,20 @@ class GatewayShutdownMixin:
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
+        # Cron jobs (scheduler pool), API-server runs and deferred hygiene workers (both on the loop's
+        # default executor) never touch self._executor, so the join above cannot see them. A writer that
+        # outlived the drain is mid-write for the same #101093 reasons; the drain already spent its
+        # budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
+        # taken before the adapters were released; a run whose handler task was cancelled at disconnect
+        # has already left it, so this term under-counts rather than over-counts.
+        _cron_live, _api_live, _deferred_live = self._active_cron_job_count(), ctx.api_live, ctx.deferred_count()
+        if _cron_live or _api_live or _deferred_live:
+            logger.warning(
+                "Shutdown phase: %d cron job(s) / %d API-server run(s) / %d deferred worker(s) still running "
+                "after the executor quiesce — skipping the SessionDB close/checkpoint, leaving state.db open "
+                "for the live writer (#102198)", _cron_live, _api_live, _deferred_live,
+            )
+            return
         _step = GatewayShutdownMixin._quiet_step
         # Close SQLite session DBs so --replace's new gateway does not hit 'database is locked'.
         # ``_session_db`` is an AsyncSessionDB facade — unwrap; ``session_store`` holds ``_db``.

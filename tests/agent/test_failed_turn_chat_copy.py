@@ -53,11 +53,11 @@ class _Http(Exception):
         self.status_code = status_code
 
 
-def _nonretryable(status, message, provider="openrouter", model="gpt-5-turbo"):
+def _nonretryable(status, message, provider="openrouter", model="gpt-5-turbo", agent=None):
     error = _Http(status, message)
     classified = classify_api_error(error, provider=provider, model=model)
     return nonretryable_client_error_result(
-        _Agent(), error, classified, status_code=status, api_kwargs=None, api_messages=[], messages=[],
+        agent or _Agent(), error, classified, status_code=status, api_kwargs=None, api_messages=[], messages=[],
         conversation_history=None, api_call_count=1, approx_tokens=10, provider=provider,
         base_url="https://openrouter.ai/api/v1", model=model,
     )
@@ -80,6 +80,33 @@ def test_api_key_rejection_chat_text_names_the_fix_and_the_provider_label():
     assert text.index("hermes setup") < text.index("Provider said:")
 
 
+def test_oauth_rejection_chat_text_names_the_provider_slug_and_the_failing_profile(tmp_path, monkeypatch):
+    """A revoked Codex grant must send the user to THAT profile's own sign-in (profiles are
+    islands, 93889b770da) and put the provider slug in the text the goal judge reads (#114012)."""
+    profile_home = tmp_path / ".hermes" / "profiles" / "codex"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    hints = []
+
+    class _Recorder(_Agent):
+        def _vprint(self, msg, **_kw):
+            hints.append(msg)
+
+    result = _nonretryable(
+        401, "HTTP 401: Encountered invalidated oauth token for user, failing request (code: token_revoked)",
+        provider="openai-codex", model="gpt-5.6-sol", agent=_Recorder(),
+    )
+    text = result["final_response"]
+    assert "`hermes -p codex auth add openai-codex --type oauth`" in text
+    assert "<provider>" not in text
+    assert "token_revoked" in text  # the raw error survives for the judge to quote
+    # The CLI 💡 hint names the same command; it no longer sends the user to a bare `hermes auth`.
+    cli_hint = "\n".join(hints)
+    assert "`hermes -p codex auth add openai-codex --type oauth`" in cli_hint, cli_hint
+    assert "`hermes auth`" not in cli_hint, cli_hint
+
+
 def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():
     error = _Http(503, "HTTP 503: upstream unavailable")
     classified = classify_api_error(error, provider="openrouter", model="m")
@@ -93,6 +120,40 @@ def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():
     assert not text.startswith("API call failed")
     assert result["failure_reason"] == classified.reason.value
     assert result["failure_retryable"] is True
+
+
+def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
+    """The real usage-limit envelope: ``_summarize_api_error`` reduces the body to ``HTTP 429: The
+    usage limit has been reached``, so the reset must travel through the classifier, not the text (#89401)."""
+    import httpx
+    import openai
+    from agent.api_error_summary import ApiErrorSummaryMixin
+
+    body = {"error": {"type": "usage_limit_reached", "message": "The usage limit has been reached",
+                      "resets_in_seconds": 30995, "plan_type": "pro"}}
+    response = httpx.Response(429, json=body, request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"))
+    error = openai.RateLimitError(f"Error code: 429 - {body}", response=response, body=body)
+    classified = classify_api_error(error, provider="openai-codex", model="gpt-5.3-codex")
+    agent = _Agent()
+    agent._summarize_api_error = ApiErrorSummaryMixin._summarize_api_error
+    result = max_retries_exhausted_result(
+        agent, error, classified, max_retries=3, is_rate_limited=True, error_msg=str(error).lower(),
+        api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=3,
+        approx_tokens=10, provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex", model="gpt-5.3-codex",
+    )
+    text = result["final_response"]
+    assert result["error"] == "HTTP 429: The usage limit has been reached"
+    assert "resets in ~9h" in text and "/retry" in text and "/model" in text
+    assert "Wait a minute" not in text
+    # A throttle with no reset window keeps the short-wait copy.
+    short = _Http(429, "HTTP 429: Rate limit exceeded")
+    plain = max_retries_exhausted_result(
+        _Agent(), short, classify_api_error(short, provider="openrouter", model="m"), max_retries=3,
+        is_rate_limited=True, error_msg=str(short).lower(), api_kwargs=None, api_messages=[], messages=[],
+        conversation_history=None, api_call_count=3, approx_tokens=10, provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", model="m",
+    )
+    assert "Wait a minute" in plain["final_response"] and "resets in" not in plain["final_response"]
 
 
 def test_invalid_response_stamps_reason_from_embedded_provider_code():

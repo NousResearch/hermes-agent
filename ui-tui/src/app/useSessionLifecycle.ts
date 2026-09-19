@@ -58,7 +58,14 @@ export const writeActiveSessionFile = (sessionId: null | string, file = process.
 export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg[] => {
   const user = String(inflight?.user ?? '').trim()
 
-  return user ? [{ role: 'user', text: user }] : []
+  return user
+    ? toTranscriptMessages([{
+        role: 'user',
+        text: user,
+        ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
+        ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
+      }])
+    : []
 }
 
 export const hydrateLiveSessionInflight = (inflight?: null | InflightTurn) => {

@@ -42,6 +42,9 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    # Exact decoded provider response body (no headers/credentials) for integrations that need
+    # fields Hermes does not normalize yet. Only populated by providers that fetch a JSON body.
+    raw: Optional[dict] = None
 
     @property
     def available(self) -> bool:
@@ -186,9 +189,11 @@ def _nous_logged_in() -> bool:
 def _fetch_portal_account(timeout: float):
     """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout)."""
     import concurrent.futures
+    import contextvars
     from hermes_cli.nous_account import get_nous_portal_account_info
+    context = contextvars.copy_context()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+        return pool.submit(context.run, get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
 
 
 def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list[str]:
@@ -350,8 +355,10 @@ def _codex_banked_resets(payload: dict) -> int:
 
 
 def _codex_headers(token: str, account_id: Optional[str]) -> dict[str, str]:
+    """auth.json's ``account_id`` wins over the JWT claim; the JWT still supplies the residency header."""
+    from agent.codex_headers import codex_account_headers
     return {"Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "codex-cli",
-            **({"ChatGPT-Account-Id": account_id} if account_id else {})}
+            **codex_account_headers(token), **({"ChatGPT-Account-ID": account_id} if account_id else {})}
 
 
 def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
@@ -378,6 +385,28 @@ def _usage_windows(
     return windows
 
 
+# Published Codex quota windows by ``limit_window_seconds``: 5h session and 7-day weekly.
+_CODEX_WINDOW_LABELS_BY_SECONDS = {18000: "Session", 604800: "Weekly"}
+_CODEX_WINDOW_POSITIONAL_LABELS = (("primary_window", "Session"), ("secondary_window", "Weekly"))
+
+
+def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str], ...]:
+    """Label Codex windows by their published duration, not response position (#65387).
+
+    The usage API keys windows ``primary_window``/``secondary_window`` by position; when only the
+    weekly limit is returned it occupies ``primary_window`` and the positional mapping mislabeled it
+    ``Session``. Windows whose ``limit_window_seconds`` is missing or unrecognized keep the legacy
+    positional label so duration-less payloads render exactly as before.
+    """
+    labels = []
+    for key, fallback in _CODEX_WINDOW_POSITIONAL_LABELS:
+        window = rate_limit.get(key) or {}
+        seconds = window.get("limit_window_seconds") if isinstance(window, dict) else None
+        label = _CODEX_WINDOW_LABELS_BY_SECONDS.get(int(seconds), fallback) if _is_num(seconds) else fallback
+        labels.append((key, label))
+    return tuple(labels)
+
+
 def _plural(count: int) -> str:
     return "s" if count != 1 else ""
 
@@ -399,8 +428,8 @@ def _fetch_codex_account_usage(
         payload = _get_json(
             _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
         )
-    windows = _usage_windows(payload.get("rate_limit") or {}, (("primary_window", "Session"), ("secondary_window", "Weekly")),
-                             "used_percent", "reset_at")
+    rate_limit = payload.get("rate_limit") or {}
+    windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at")
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:
@@ -410,7 +439,8 @@ def _fetch_codex_account_usage(
         details.append(f"Credits balance: ${float(balance):.2f}")
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
-    return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")))
+    return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
+                     raw=payload)
 
 
 @dataclass(frozen=True)

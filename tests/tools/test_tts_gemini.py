@@ -162,6 +162,49 @@ class TestGenerateGeminiTts:
         )
         assert voice == "Puck"
 
+    def test_quota_exhausted_429_raises_immediately_without_backoff(
+        self, tmp_path, monkeypatch
+    ):
+        """A quota-exhausted 429 is deterministic for the rest of the day: fail fast
+        (raise on the first attempt) rather than burning the backoff budget. In the
+        default retry budget (3 attempts) a retry would otherwise call ``requests.post``
+        a second time; assert it stays at one and that ``time.sleep`` never fires.
+        """
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        resp = MagicMock()
+        resp.status_code = 429
+        resp.json.return_value = {"error": {"message": "quota exceeded for today"}}
+
+        with patch("requests.post", return_value=resp) as mock_post, patch(
+            "tools.tts_tool_providers.time.sleep"
+        ) as mock_sleep:
+            with pytest.raises(RuntimeError, match="quota"):
+                _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+        assert mock_post.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_safety_block_reason_never_retries(self, tmp_path, monkeypatch):
+        """A SAFETY blockReason is a deterministic refusal, not a transient error: it must
+        raise immediately (never enter the retry path), so ``requests.post`` is called once.
+        """
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "promptFeedback": {"blockReason": "SAFETY"},
+            "candidates": [],
+        }
+
+        with patch("requests.post", return_value=resp) as mock_post:
+            with pytest.raises(RuntimeError, match="blockReason"):
+                _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+        assert mock_post.call_count == 1
 
     def test_audio_tag_rewrite_failure_falls_back_to_original_text(
         self, tmp_path, monkeypatch, mock_gemini_response, caplog

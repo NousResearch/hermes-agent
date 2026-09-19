@@ -272,9 +272,15 @@ def _write_wav_bytes_as(wav_bytes: bytes, output_path: str) -> str:
     try:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
-            opus = _OPUS_VOICE_ARGS if output_path.lower().endswith(".ogg") else []
+            if output_path.lower().endswith(".ogg"):
+                enc_args = _OPUS_VOICE_ARGS
+            else:
+                # Explicit high-quality encoding: lame's default for 24kHz mono
+                # is a brutal 32kbps. Upsample to 44.1kHz and force 192kbps so
+                # Gemini's lossless PCM survives to delivery.
+                enc_args = ["-b:a", "192k", "-ar", "44100"]
             result = _ffmpeg_run(
-                ffmpeg, ["-i", wav_path, *opus, "-y", "-loglevel", "error", output_path])
+                ffmpeg, ["-i", wav_path, *enc_args, "-y", "-loglevel", "error", output_path])
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
                 raise RuntimeError(f"ffmpeg conversion failed: {stderr}")

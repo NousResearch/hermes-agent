@@ -832,6 +832,61 @@ def test_bootstrap_disabled_is_noop(tmp_path, monkeypatch):
     assert bootstrap.ensure_local_runtime(None) is None
 
 
+def test_bootstrap_concurrent_calls_start_one_supervisor(tmp_path, monkeypatch):
+    """Concurrent callers share the first in-flight managed-runtime boot."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap
+    from hermes_cli.local_runtime import binaries, endpoint, supervisor
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(bootstrap, "staged_models", lambda: [tmp_path / "model.gguf"])
+    monkeypatch.setattr(endpoint, "_state_endpoint", lambda: None)
+    monkeypatch.setattr(binaries, "default_tag", lambda: "test-tag")
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["test-tag"])
+    monkeypatch.setattr(binaries, "ensure_runtime_installed", lambda *args: tmp_path / "runtime")
+    monkeypatch.setattr(binaries, "select_backend", lambda *args: "cpu")
+    monkeypatch.setattr(bootstrap, "_generate_presets", lambda *args: None)
+
+    construction_barrier = threading.Barrier(2, timeout=1)
+    first_start_entered = threading.Event()
+    allow_first_start = threading.Event()
+
+    class FakeSupervisor:
+        instances: list["FakeSupervisor"] = []
+
+        def __init__(self, *args, **kwargs):
+            self.base_url = "http://127.0.0.1:8080/v1"
+            self.proc = None
+            type(self).instances.append(self)
+            try:
+                construction_barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+
+        def start(self):
+            first_start_entered.set()
+            allow_first_start.wait(timeout=5)
+
+    monkeypatch.setattr(supervisor, "LlamaServerSupervisor", FakeSupervisor)
+    results = []
+
+    first = threading.Thread(target=lambda: results.append(
+        bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})))
+    first.start()
+    second = threading.Thread(target=lambda: results.append(
+        bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})))
+    second.start()
+    assert first_start_entered.wait(timeout=5)
+    allow_first_start.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(FakeSupervisor.instances) == 1
+    assert results == [FakeSupervisor.instances[0], FakeSupervisor.instances[0]]
+
+
 def test_bootstrap_reuses_running_server(tmp_path, monkeypatch, stub_server):
     """A live state file (another process supervising) short-circuits the
     install/spawn path entirely."""

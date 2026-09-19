@@ -38,7 +38,8 @@ import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
-import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { installPtyBrowserInput } from "@/lib/pty-browser-input";
+import { shouldDropPtyMouseReport } from "@/lib/pty-mouse";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
@@ -60,12 +61,12 @@ import {
   shouldFinishResumeHydrationOnChunk,
   shouldShowResumeLoadingOverlay,
 } from "@/lib/pty-resume-loading";
-import {
-  MOBILE_REPLACEMENT_WINDOW_MS,
-  normalizePtyMobileInput,
-  shouldTreatInputAsMobileReplacement,
-} from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
+import {
+  composerTextareaBox,
+  preparePtyTextareaForDictation,
+  watchPtyTextareaLayout,
+} from "@/lib/pty-ios-textarea";
 import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
@@ -265,8 +266,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the async ticket/URL await gap where wsRef.current is not yet assigned.
   const connectInFlightRef = useRef(false);
   const connectingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ptyInputLineRef = useRef("");
-  const mobileReplacementInputUntilRef = useRef(0);
   const [ptyState, setPtyState] =
     useState<PtyConnectionState>("connecting");
   const ptyStateRef = useRef<PtyConnectionState>("connecting");
@@ -296,8 +295,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
-    ptyInputLineRef.current = "";
-    mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
     setBannerAction(null);
     setReconnectGaveUp(false);
@@ -309,8 +306,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
-    ptyInputLineRef.current = "";
-    mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
     setBannerAction(null);
     setReconnectGaveUp(false);
@@ -325,8 +320,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
-    ptyInputLineRef.current = "";
-    mobileReplacementInputUntilRef.current = 0;
     setSearchParams(next, { replace: true });
     setBanner(null);
     setBannerAction(null);
@@ -334,14 +327,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer, searchParams, setSearchParams]);
-  // Clear mobile-input tracking refs when the tab is hidden so stale state
-  // from a previous /chat visit doesn't cause the mobile-replacement logic
-  // to misfire on the next activation (#106403: repeated last character).
+  // Stop a pending reconnect when the tab is hidden so a backoff timer from
+  // a previous /chat visit can't fire against a torn-down terminal.
+  //
+  // Upstream also reset the mobile-input tracking refs here (#106403:
+  // repeated last character). Those refs are gone: this branch hands text
+  // input to the browser at the boundary (pty-browser-input), so there is
+  // no replacement-window state left to go stale.
   useEffect(() => {
     if (!isActive) {
       clearReconnectTimer();
-      ptyInputLineRef.current = "";
-      mobileReplacementInputUntilRef.current = 0;
     }
   }, [clearReconnectTimer, isActive]);
   // Raw state for the mobile side-sheet + a derived value that force-
@@ -862,73 +857,34 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.loadAddon(new WebLinksAddon());
 
-    let mobileInputCleanup: (() => void) | null = null;
-    // xterm occasionally drops committed dead-key/IME text instead of emitting
-    // onData. The compositionend event supplies the authoritative text.
-    let sendComposedText: (data: string) => void = () => undefined;
-    const compositionForwarder = createPtyCompositionForwarder((data) => {
-      sendComposedText(data);
-    });
     term.open(host);
+    // Own native edits at the browser boundary, before xterm's own key,
+    // composition and input listeners can emit. iOS dictation and autocorrect
+    // replace the whole helper value on every update; xterm forwards that
+    // verbatim, so the PTY sees each snapshot appended to the last. This
+    // adapter diffs against the acknowledged value and emits the real edit.
+    const browserInput = installPtyBrowserInput(
+      term,
+      () =>
+        wsRef.current?.readyState === WebSocket.OPEN &&
+        !shouldBlockPtyInput(ptyStateRef.current),
+      (data) => sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, data),
+    );
 
-    // IME composition guard (fixes #52111).
-    //
-    // React 18's root-level event delegation intercepts keydown events with
-    // keyCode 229 (the "composition in progress" signal sent by the browser
-    // during non-Latin IME input) and synthesises an onCompositionStart
-    // event.  That synthetic path sets internal composing state that
-    // interferes with xterm.js's own IME handling on its hidden textarea,
-    // causing the first keystroke of each composition chunk to be silently
-    // dropped — most visible with Cyrillic (Ukrainian/Russian) on
-    // Firefox-based browsers, but affects any locale that uses composition
-    // events (CJK, Arabic, Hebrew).
-    //
-    // xterm.js relies on native compositionstart/compositionend on its
-    // internal textarea, not on keydown, so blocking the keyCode-229
-    // keydown from reaching React's delegation layer is safe.  The listener
-    // sits in the *capture* phase on the terminal host so it fires before
-    // the event bubbles up to the React root.
-    const _imeCompositionGuard = (e: KeyboardEvent) => {
-      if (e.keyCode === 229 || e.key === "Process") {
-        e.stopPropagation();
-      }
-    };
-    host.addEventListener("keydown", _imeCompositionGuard, true);
 
     const textarea = term.textarea;
     if (textarea) {
-      textarea.setAttribute("autocomplete", "off");
-      textarea.setAttribute("autocorrect", "off");
-      textarea.setAttribute("autocapitalize", "off");
-      textarea.setAttribute("spellcheck", "false");
-
-      const isMobileLike =
-        typeof navigator !== "undefined" &&
-        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-      const markReplacementInput = (ev: Event) => {
-        const input = ev as InputEvent;
-        if (
-          shouldTreatInputAsMobileReplacement(
-            input.inputType,
-            input.data,
-            isMobileLike,
-          )
-        ) {
-          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        }
-      };
-      const markCompositionEnd = (ev: CompositionEvent) => {
-        mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        compositionForwarder.onCompositionEnd(ev.data);
-      };
-
-      textarea.addEventListener("beforeinput", markReplacementInput, true);
-      textarea.addEventListener("compositionend", markCompositionEnd, true);
-      mobileInputCleanup = () => {
-        textarea.removeEventListener("beforeinput", markReplacementInput, true);
-        textarea.removeEventListener("compositionend", markCompositionEnd, true);
-      };
+      preparePtyTextareaForDictation(textarea);
     }
+
+    // xterm re-positions the helper on every render; re-apply the composer box
+    // each time so Safari's autocorrect overlay cannot drift across the screen.
+    const stopWatchingTextarea = textarea
+      ? watchPtyTextareaLayout(textarea, () => {
+          const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+          return composerTextareaBox(term.rows, screen?.clientHeight ?? host.clientHeight);
+        })
+      : () => {};
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -1511,13 +1467,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // mouse reporting, so we drop SGR mouse reports entirely instead of
     // forwarding them into Hermes. Keyboard input, paste, and resize still
     // behave normally.
-      // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
-      const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
-      const forwardPtyData = (data: string, useMobileReplacement = true) => {
-        // Mouse reports (scroll wheel etc.) are not typed input — swallow
-        // them before the blocked-input check so scrolling a disconnected
-        // terminal doesn't trip the "reconnecting" notice.
-        if (SGR_MOUSE_RE.test(data)) {
+      const forwardPtyData = (data: string) => {
+        // Wheel and motion reports are not typed input — swallow them before
+        // the blocked-input check so scrolling a disconnected terminal doesn't
+        // trip the "reconnecting" notice. Left-click press/release must pass,
+        // so Ink can move its caret to the tapped column.
+        if (shouldDropPtyMouseReport(data)) {
           return;
         }
 
@@ -1534,27 +1489,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
-        const normalized = normalizePtyMobileInput(
-          data,
-          ptyInputLineRef.current,
-          useMobileReplacement && Date.now() <= mobileReplacementInputUntilRef.current,
-        );
-        ptyInputLineRef.current = normalized.nextLine;
-        if (normalized.normalized) {
-          mobileReplacementInputUntilRef.current = 0;
-        }
-        ws.send(normalized.data);
+        // Native edits already have a single owner at the browser boundary.
+        // This transport must not reinterpret text by equality or elapsed time.
+        ws.send(data);
       };
-      // The deferred composition fallback is already committed text, so it
-      // must not consume the mobile replacement window intended for xterm's
-      // normal onData path.
-      sendComposedText = (data) => forwardPtyData(data, false);
-      onDataDisposable = term.onData((data) => {
-        if (!SGR_MOUSE_RE.test(data)) {
-          compositionForwarder.noteTerminalData(data);
-        }
-        forwardPtyData(data);
-      });
+      onDataDisposable = term.onData(forwardPtyData);
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -1582,8 +1521,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
-      mobileInputCleanup?.();
-      compositionForwarder.dispose();
+      browserInput.dispose();
+      stopWatchingTextarea();
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
@@ -1612,10 +1551,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
-      host.removeEventListener("keydown", _imeCompositionGuard, true);
       // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
       // context alive on dispose, so a reconnect storm hits the browser's
       // context cap and blanks the live terminal (#111909).
+      //
+      // Upstream also detached `_imeCompositionGuard` here. That guard is
+      // gone on this branch: composition is owned by the browser-side input
+      // layer (pty-browser-input), which installs and removes its own
+      // listeners via its returned disposer.
       loseWebglContexts(host);
       term.dispose();
       termRef.current = null;

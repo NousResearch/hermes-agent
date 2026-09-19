@@ -67,13 +67,50 @@ class FakeTerminal {
 
   get buffer() {
     // Minimal active-buffer surface for the resume follow-scroll pin
-    // (isViewportPinnedToBottom reads viewportY/baseY).
-    return { active: { baseY: 0, viewportY: 0 } };
+    // (isViewportPinnedToBottom reads viewportY/baseY) plus the cursor cells
+    // the native caret mirror reads.
+    return {
+      active: {
+        baseY: 0,
+        viewportY: 0,
+        cursorX: 0,
+        cursorY: 0,
+        getLine: () => undefined,
+      },
+    };
   }
 
   scrollToBottom() {}
 
-  open() {}
+  // The native input adapter attaches to real nodes: a host to capture on and
+  // xterm's helper textarea to own edits for.
+  element?: HTMLElement;
+
+  textarea?: HTMLTextAreaElement;
+
+  open(host: HTMLElement) {
+    const screen = document.createElement("div");
+    screen.className = "xterm-screen";
+    const textarea = document.createElement("textarea");
+    textarea.className = "xterm-helper-textarea";
+    host.append(screen, textarea);
+    this.element = host;
+    this.textarea = textarea;
+  }
+
+  onRender() {
+    return { dispose() {} };
+  }
+
+  onSelectionChange() {
+    return { dispose() {} };
+  }
+
+  hasSelection() {
+    return false;
+  }
+
+  input() {}
 
   paste() {}
 

@@ -3,6 +3,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
+  folderLinks: {
+    localConnectionRequired: '資料夾連結需要此工作階段目前的本機連線。',
+    unavailable: '無法使用系統的資料夾開啟功能。',
+    openFailed: '無法開啟資料夾。',
+    openFailedWithMessage: message => `無法開啟資料夾：${message}`
+  },
   sessionImport: {
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',

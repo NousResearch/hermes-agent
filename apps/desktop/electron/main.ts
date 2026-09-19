@@ -202,6 +202,7 @@ import {
   stopFind
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
+import { openExistingDirectory } from './folder-links'
 import { registerFsIpc } from './fs-ipc'
 import {
   filenameFromContentDisposition,
@@ -17538,6 +17539,11 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
 
 // Local filesystem + plugin-root IPC (readDir/reveal/rename/trash/…) — see fs-ipc.ts.
 registerFsIpc({
+  openExistingDirectory: (senderId, request) => openExistingDirectory(senderId, request, {
+    getRoute: id => windowConnectionRoutes.get(id),
+    ensureBackend: ensureTerminalBackend,
+    openPath: target => shell.openPath(target)
+  }),
   hermesHome: HERMES_HOME,
   readActiveDesktopProfile,
   expandUserPath,

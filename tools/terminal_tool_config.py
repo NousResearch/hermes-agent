@@ -116,3 +116,30 @@ def _tenv(name: str, default: str = "") -> str:
 def _tenv_bool(name: str, default: str) -> bool:
     """Scope-aware boolean ``TERMINAL_*`` read: true/1/yes (case-insensitive)."""
     return _tenv(name, default).lower() in {"true", "1", "yes"}
+
+
+def effective_terminal_timeout(default: int = 180) -> int:
+    """Timeout the terminal tool will actually enforce — for readers that only *report* it.
+
+    ``TERMINAL_TIMEOUT<=0`` is the documented "0 = no timeout" misunderstanding: it does not
+    disable the timeout, every command fails instantly with ``timed out after 0s`` (#85809). The
+    tool's own read path guards the value; reporters (the CLI ``/config`` pane, a kanban worker's
+    task context) used to echo the raw env value instead, so the user was shown a timeout the
+    runtime never applied — the kind of false signal that turns a config typo into a months-long
+    misdiagnosis. Same rule here: warn, name the legal range and the default, return the default.
+    """
+    raw = _tenv("TERMINAL_TIMEOUT", str(default))
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        logger.warning(
+            "TERMINAL_TIMEOUT=%r is invalid (must be > 0; 0 means 'time out instantly', not "
+            "'no timeout') — the terminal tool uses the %ss default. Check ~/.hermes/.env or "
+            "config.yaml terminal.timeout.",
+            raw,
+            default,
+        )
+        return default
+    return value

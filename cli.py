@@ -3146,7 +3146,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         """Display current configuration with kawaii ASCII art."""
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
+        # Resolve the way the terminal tool does, so an invalid TERMINAL_TIMEOUT is reported for
+        # what it is (a fallback to the default, loudly logged) instead of echoed as the effective
+        # value — printing "0s" is how #85809 went months without a diagnosis.
+        from tools.terminal_tool_config import effective_terminal_timeout
+
+        terminal_timeout = effective_terminal_timeout()
 
         config_path = _hermes_home / 'config.yaml'
         if not config_path.exists():

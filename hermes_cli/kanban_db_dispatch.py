@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import signal
@@ -30,6 +31,9 @@ from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
+# Log-record parity with the origin module (``hermes_cli.kanban_db``).
+logger = logging.getLogger("hermes_cli.kanban_db")
+
 
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
@@ -49,6 +53,13 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 # a run's retained worker is only reaped once ended_at is at least this old
 # (two default dispatch ticks).
 TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
+
+# Effective defaults of the two variables below (tools/terminal_tool.py, terminal_tool_config.py):
+# the baseline a worker's unset var resolves to, so a short max_runtime can never lower it.
+_WORKER_TERMINAL_TIMEOUT_DEFAULTS = {
+    "TERMINAL_TIMEOUT": 180,
+    "TERMINAL_MAX_FOREGROUND_TIMEOUT": 600,
+}
 
 # ---------------------------------------------------------------------------
 # Respawn guard constants
@@ -2534,12 +2545,20 @@ def _resolve_hermes_argv() -> list[str]:
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],
+    default_seconds: int = 180,
 ) -> Optional[str]:
     """Return a worker-scoped TERMINAL_TIMEOUT override, if needed.
 
     When ``max_runtime_seconds`` exceeds the terminal tool's default timeout,
     raise only the child's default so a long command isn't killed by the
     generic terminal default first.
+
+    ``default_seconds`` is the variable's EFFECTIVE default (180 for
+    ``TERMINAL_TIMEOUT``, 600 for ``TERMINAL_MAX_FOREGROUND_TIMEOUT``). An unset child variable
+    means "the tool's default", not zero: comparing against zero used to LOWER the worker's
+    timeout, so a task with a 30s runtime cap dispatched ``TERMINAL_TIMEOUT=1`` and every command
+    in that worker died with a misleading "timed out after 1s" (same class as #85809). Lowering
+    was never intended — an explicit value below the target is the only thing this raises.
     """
     if max_runtime_seconds is None:
         return None
@@ -2552,10 +2571,19 @@ def _worker_terminal_timeout_env(
 
     desired = max(1, runtime - KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS)
     try:
-        existing = int(str(current_timeout).strip()) if current_timeout else 0
+        existing = int(str(current_timeout).strip()) if current_timeout else default_seconds
     except (TypeError, ValueError):
-        existing = 0
+        existing = default_seconds
     if existing >= desired:
+        if runtime <= KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS:
+            # No usable timeout fits inside this cap; say so rather than dispatching a
+            # one-second timeout that quietly breaks every command the worker runs.
+            logger.warning(
+                "kanban task max_runtime_seconds=%s is at or below the %ss terminal grace: the "
+                "worker keeps its %ss terminal timeout (no override), so the dispatcher's runtime "
+                "cap, not the terminal tool, will cut long commands.",
+                runtime, KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS, default_seconds,
+            )
         return None
     return str(desired)
 
@@ -2807,8 +2835,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_KANBAN_GOAL_MODE"] = "1"
         if task.goal_max_turns is not None:
             env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
-    for var in ("TERMINAL_TIMEOUT", "TERMINAL_MAX_FOREGROUND_TIMEOUT"):
-        override = _worker_terminal_timeout_env(task.max_runtime_seconds, env.get(var))
+    for var, var_default in _WORKER_TERMINAL_TIMEOUT_DEFAULTS.items():
+        override = _worker_terminal_timeout_env(
+            task.max_runtime_seconds, env.get(var), default_seconds=var_default,
+        )
         if override is not None:
             env[var] = override
     # Pin the board DB + workspaces root so the worker's kanban paths still

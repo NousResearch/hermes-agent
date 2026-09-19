@@ -155,3 +155,45 @@ def test_full_compaction_preserves_active_request_and_tool_pairs(
     ) == 1
     assert len(compressed) < len(messages)
     _assert_tool_pairs_are_complete(compressed)
+
+
+def test_n_user_tail_guarantee_outranks_the_split() -> None:
+    """compression.min_tail_user_messages is a user-facing promise (#70250).
+
+    The oversized-turn exception must not void it: with N > 1 the N-user tail
+    anchor wins even when one turn alone exceeds the soft ceiling.
+    """
+    with patch(
+        "agent.context_compressor.get_model_context_length",
+        return_value=100_000,
+    ):
+        compressor = ContextCompressor(
+            model="test/model",
+            threshold_percent=0.85,
+            protect_first_n=1,
+            protect_last_n=3,
+            quiet_mode=True,
+            min_tail_user_messages=3,
+        )
+    compressor.tail_token_budget = _TOKEN_BUDGET
+
+    user_turns = ["first request", "second request", _ACTIVE_REQUEST]
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "earlier request"},
+        {"role": "assistant", "content": "earlier request completed"},
+    ]
+    for text in user_turns:
+        messages.append({"role": "user", "content": text})
+        messages.append({"role": "assistant", "content": f"{text} completed"})
+    for index in range(10):
+        messages.extend(_tool_group(index))
+
+    cut = compressor._find_tail_cut_by_tokens(
+        messages,
+        compressor._protect_head_size(messages),
+        token_budget=_TOKEN_BUDGET,
+    )
+
+    tail = messages[cut:]
+    assert [m["content"] for m in tail if m.get("role") == "user"] == user_turns

@@ -4445,14 +4445,21 @@ Write only the summary body. Do not include any preamble or prefix."""
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)
         cut_idx = self._align_boundary_backward(messages, cut_idx)
-        # Latest user message must stay in the tail (active task). Latest assistant reply must stay too;
-        # anchors only walk backward, so chaining is monotonic.
-        # Ensure the most recent user message is always in the tail so the active task is never lost to
-        # compression (fixes #10896) — EXCEPT when one in-progress turn alone exceeds the soft ceiling:
-        # then the anchor would retain the entire oversized turn and blow the budget by design, so the
-        # clean tool-group boundary above wins and the turn-opening request rides the handoff (#80449).
+        # Anchors below keep the most recent user turn (active task, #10896) and the latest visible
+        # assistant reply (#29824) in the tail; each only walks the cut backward, so chaining them is
+        # normally monotonic. One bounded exception: when a single in-progress turn alone exceeds the
+        # soft ceiling, anchoring its opening request retains the whole turn and blows the budget by
+        # design — then the clean tool-group boundary above wins and that request rides the handoff
+        # (#80449). The N-user promise (#70250) is never relaxed.
         last_user_idx = self._find_last_user_message_idx(messages, head_end)
         user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+        # getattr: plugin engines and __new__ doubles skip __init__.
+        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
+        _multi_user_guarantee = (
+            isinstance(_min_tail_users, int)
+            and not isinstance(_min_tail_users, bool)
+            and _min_tail_users > 1
+        )
         split_oversized_turn = False
         if (
             allow_split_turn
@@ -4464,6 +4471,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             and _estimate_msg_budget_tokens(messages[last_user_idx]) <= soft_ceiling
             and len(_content_text_for_contains(messages[last_user_idx].get("content")).strip())
             <= _ACTIVE_TASK_MAX_CHARS
+            # Only split when there is real turn body to summarize: if the oversized weight is the
+            # active turn's own newest group, the pre-anchor cut retains it anyway, so taking the
+            # active request out of the tail buys no reclaim and loses the #10896 anchor.
+            and any(message.get("tool_calls") for message in messages[last_user_idx:cut_idx])
             and sum(
                 _estimate_msg_budget_tokens(message) for message in messages[user_anchored_cut:]
             ) > soft_ceiling
@@ -4485,15 +4496,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             cut_idx = assistant_anchored_cut
 
         # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
-        # the assistant anchor could re-trigger its forward turn-pair push. getattr: __new__ doubles skip __init__.
-        # Skipped entirely under the split exception, which would otherwise undo the bounded cut.
-        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
-        if (
-            not split_oversized_turn
-            and isinstance(_min_tail_users, int)
-            and not isinstance(_min_tail_users, bool)
-            and _min_tail_users > 1
-        ):
+        # the assistant anchor could re-trigger its forward turn-pair push. Runs even under the split: the
+        # N-user promise (#70250) is a user-facing setting and must outrank the budget, so it pulls the cut
+        # back to the Nth user turn — which is why the split only ever relaxes the single-user anchor.
+        if _multi_user_guarantee:
             cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
 
         # Floor guarantees progress (>= 1 message claimed); re-align FORWARD only so a raised cut

@@ -59,6 +59,13 @@ def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: lis
         logger.debug("Skipping fleet-restart-pending marker under pytest (live checkout)")
         return
     try:
+        if runtimes is None:
+            with suppress(Exception):
+                from hermes_cli.update_receipt import read_latest_receipt
+                receipt = read_latest_receipt() or {}
+                plan_runtimes = (receipt.get("plan") or {}).get("runtimes")
+                if isinstance(plan_runtimes, list) and plan_runtimes:
+                    runtimes = plan_runtimes
         lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
         if expected_sha:
             lines.append(f"expected_sha={expected_sha}")
@@ -215,7 +222,11 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
 def _marker_only_restart_obsolete() -> bool:
     """Settle only the inventory stored with this marker's target SHA.
 
-    Historical receipts cannot narrow this obligation. Legacy, malformed or unsupported inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
+    Historical receipts cannot narrow this obligation. Legacy, malformed or unsupported
+    inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
+    However, when an inventory line is missing (updater crash mid-cleanup or legacy format),
+    the obligation can be discharged either via receipt-reconciled owed runtimes or when all
+    live fleet rows are current at expected_sha matching checkout HEAD (#115638).
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -227,24 +238,40 @@ def _marker_only_restart_obsolete() -> bool:
                 return False
             fields[key] = value
         expected_sha = fields.get("expected_sha", "").strip()
-        inventory = json.loads(fields.get("inventory", "null"))
-        if not isinstance(inventory, dict) or inventory.get("version") != 1:
-            return False
-        runtimes = inventory.get("runtimes")
-        if not isinstance(runtimes, list) or not runtimes:
-            return False
         owed = set()
-        for runtime in runtimes:
-            if not isinstance(runtime, dict):
+        has_inventory = False
+        if "inventory" in fields:
+            inventory = json.loads(fields["inventory"])
+            if not isinstance(inventory, dict) or inventory.get("version") != 1:
                 return False
-            if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
-                continue
-            if runtime.get("kind") != "gateway":
+            runtimes = inventory.get("runtimes")
+            if not isinstance(runtimes, list):
                 return False
-            profile = runtime.get("profile")
-            if not isinstance(profile, str) or not profile.strip() or profile == "unknown":
-                return False
-            owed.add(("gateway", profile))
+            if runtimes:
+                for runtime in runtimes:
+                    if not isinstance(runtime, dict):
+                        return False
+                    if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
+                        continue
+                    if runtime.get("kind") != "gateway":
+                        return False
+                    profile = runtime.get("profile")
+                    if not isinstance(profile, str) or not profile.strip() or profile == "unknown":
+                        return False
+                    owed.add(("gateway", profile))
+                has_inventory = True
+        else:
+            # Issue #115638: Marker written without an inventory= line (updater crash
+            # mid-cleanup or legacy breadcrumb). Attempt recovery of owed runtimes from
+            # the latest update receipt if it was targeting the same expected_sha.
+            from hermes_cli.update_receipt import read_latest_receipt
+            receipt = read_latest_receipt() or {}
+            post_sha = (receipt.get("post_update") or {}).get("sha")
+            if post_sha and post_sha == expected_sha:
+                receipt_owed = _receipt_owed_gateways(receipt, [])
+                if receipt_owed is not None and receipt_owed:
+                    owed = receipt_owed
+                    has_inventory = True
     except (OSError, UnicodeError, ValueError):
         return False
     if not expected_sha:
@@ -266,7 +293,7 @@ def _marker_only_restart_obsolete() -> bool:
     for row in fleet:
         if row.get("state") != "current" or str(row.get("code_sha")) != expected_sha:
             return False  # stale / down / unknown-identity row still owes the restart
-    if not owed <= covered:
+    if has_inventory and not owed <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
     _clear_fleet_restart_pending_marker()
     logger.debug(
@@ -1549,119 +1576,124 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     from hermes_cli.update_cmd import (
         _finish_dashboard_update_cleanup, _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
     )
-    with _best_effort('Legacy unit check during update failed: %s'):
-        _print_legacy_units_warning()
+    try:
+        with _best_effort('Legacy unit check during update failed: %s'):
+            _print_legacy_units_warning()
 
-    # Restart a managed dashboard via systemd or stop stale manual ones (raw-killing
-    # a systemd-owned PID reads as clean stop and leaves the Cloudflare origin dead).
-    # Failed Node refresh leaves it untouched; already-restarted units aren't redone.
-    _finish_dashboard_update_cleanup(node_failures, already_restarted_units=set(restart.restarted_services))
+        # Restart a managed dashboard via systemd or stop stale manual ones (raw-killing
+        # a systemd-owned PID reads as clean stop and leaves the Cloudflare origin dead).
+        # Failed Node refresh leaves it untouched; already-restarted units aren't redone.
+        with _best_effort('Dashboard cleanup during update failed: %s'):
+            _finish_dashboard_update_cleanup(node_failures, already_restarted_units=set(restart.restarted_services))
 
-    # Success-path twin of the abort-recovery probe: the restart phase only touches
-    # units, so a unit-less `hermes serve` keeps stale sys.modules. Runs AFTER
-    # dashboard cleanup so a respawned manual dashboard isn't a survivor. Rows feed
-    # reconciliation (survivor → exit 1); ``None`` = probe failed, stays fail-closed.
-    # Check if any pre-update serve/dashboard runtimes survived on pre-update code generations (#100479).
-    # This is the SUCCESS-path twin of the abort-recovery probe above: the restart phase only restarts
-    # units, so an sshd-spawned `serve --isolated` or a manual `hermes serve` (no unit) is left running its
-    # pre-update sys.modules graph — and its cron ticker keeps firing agent jobs that ImportError on every
-    # symbol added in the pulled range. The rows also feed the plan-vs-execution reconciliation below, so a
-    # survivor is escalated (exit 1) instead of merely printed.
-    _stale_serve_rows: "list | None" = None
-    with _best_effort('Failed to check for surviving serve runtimes: %s'):
-        _stale_serve_rows = _surviving_pre_update_serve_runtimes(_pre_update_plan)
-        if _stale_serve_rows:
-            _warn_stale_serve_runtimes(_stale_serve_rows)
+        # Success-path twin of the abort-recovery probe: the restart phase only touches
+        # units, so a unit-less `hermes serve` keeps stale sys.modules. Runs AFTER
+        # dashboard cleanup so a respawned manual dashboard isn't a survivor. Rows feed
+        # reconciliation (survivor → exit 1); ``None`` = probe failed, stays fail-closed.
+        # Check if any pre-update serve/dashboard runtimes survived on pre-update code generations (#100479).
+        # This is the SUCCESS-path twin of the abort-recovery probe above: the restart phase only restarts
+        # units, so an sshd-spawned `serve --isolated` or a manual `hermes serve` (no unit) is left running its
+        # pre-update sys.modules graph — and its cron ticker keeps firing agent jobs that ImportError on every
+        # symbol added in the pulled range. The rows also feed the plan-vs-execution reconciliation below, so a
+        # survivor is escalated (exit 1) instead of merely printed.
+        _stale_serve_rows: "list | None" = None
+        with _best_effort('Failed to check for surviving serve runtimes: %s'):
+            _stale_serve_rows = _surviving_pre_update_serve_runtimes(_pre_update_plan)
+            if _stale_serve_rows:
+                _warn_stale_serve_runtimes(_stale_serve_rows)
 
-    print()
-    print("Tip: You can now select a provider and model:")
-    print("  hermes model              # Select provider and model")
+        print()
+        print("Tip: You can now select a provider and model:")
+        print("  hermes model              # Select provider and model")
 
-    # Compare every live gateway's stamped code_sha against the fresh checkout
-    # instead of assuming the restart phase worked.
-    # Phase 1 (#91277): post-update fleet version verification.
-    _fleet_snapshot: list = []
-    with _best_effort('Fleet version verification failed: %s'):
-        from hermes_cli.update_receipt import print_fleet_version_matrix
-        # Cross-platform "rows expected" signal: (restarted_services or killed_pids)
-        # never fires on Windows (pause/resume populates neither), so a healthy
-        # resumed gateway yielded zero rows and exit 0.
-        # See #93406.
-        # A gateway stopped WITHOUT a successor ("Restart manually") publishes no row by design,
-        # so it must not count as an expected one — otherwise an update whose only live gateways
-        # were unmapped exits 1 with "no rows" after correctly stopping them.
-        _pre_restart, _killed = restart.fleet_probe_signals()
-        _fleet_rows_expected = _m()._fleet_probe_expected_runtimes(
-            _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
-        )
-        _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
-        if print_fleet_version_matrix(_fleet_snapshot):
-            restart.incomplete = True
-        elif not _fleet_snapshot and _fleet_rows_expected:
-            # collect_fleet_versions() swallows every failure, so zero rows with
-            # expected runtimes is indistinguishable from health — fail (partial, exit 1).
-            print(
-                # Fleet probe returned zero rows even though at least one gateway runtime was (or may have
-                # been) live pre-update — POSIX restart bookkeeping, the pre-restart PID snapshot, the
-                # pre-update plan inventory, or the Windows pause/resume token all count as that signal.
-                # Every failure path inside collect_fleet_versions() is swallowed via logger.debug(), so an
-                # empty list is indistinguishable from a healthy fleet in the current output. Treat it as
-                # verification failure so the receipt records "partial" and the exit code is 1 (#93406).
-                "\n⚠ Fleet version check returned no rows even though"
-                " gateway runtimes were expected — verification incomplete."
+        # Compare every live gateway's stamped code_sha against the fresh checkout
+        # instead of assuming the restart phase worked.
+        # Phase 1 (#91277): post-update fleet version verification.
+        _fleet_snapshot: list = []
+        with _best_effort('Fleet version verification failed: %s'):
+            from hermes_cli.update_receipt import print_fleet_version_matrix
+            # Cross-platform "rows expected" signal: (restarted_services or killed_pids)
+            # never fires on Windows (pause/resume populates neither), so a healthy
+            # resumed gateway yielded zero rows and exit 0.
+            # See #93406.
+            # A gateway stopped WITHOUT a successor ("Restart manually") publishes no row by design,
+            # so it must not count as an expected one — otherwise an update whose only live gateways
+            # were unmapped exits 1 with "no rows" after correctly stopping them.
+            _pre_restart, _killed = restart.fleet_probe_signals()
+            _fleet_rows_expected = _m()._fleet_probe_expected_runtimes(
+                _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
             )
-            restart.incomplete = True
-
-    # Every runtime the PLAN saw must appear in restart bookkeeping; an
-    # unaccounted one is a silent miss and escalates like a STALE/DOWN row.
-    with _best_effort('Runtime-outcome reconciliation failed: %s'):
-        # An unaccounted runtime is the silent-miss class (a platform branch re-discovered its own targets
-        # and skipped one the inventory knew about) — escalate it exactly like a STALE/DOWN fleet row. See
-        # #91277.
-        if _pre_update_plan is not None and _pre_update_plan.runtimes:
-            from hermes_cli.update_inventory import (match_runtime_outcomes, report_unaccounted_runtimes)
-            _runtime_outcomes = match_runtime_outcomes(
-                _pre_update_plan,
-                restarted_services=restart.restarted_services,
-                relaunched_profiles=restart.relaunched_profiles,
-                externally_supervised_profiles=restart.externally_supervised_profiles,
-                killed_pids=restart.killed_pids,
-                failed_units=restart.failed_or_stale_units,
-                # Serve/dashboard reconcile by incarnation liveness, not unit names.
-                # See #100479.
-                stale_serve_pids=(
-                    {row.get("pid") for row in _stale_serve_rows}
-                    if _stale_serve_rows is not None
-                    else None
-                ),
-            )
-            from dataclasses import asdict
-            from hermes_cli.update_serve_obligations import defer_manual_serve
-
-            for runtime, outcome in zip(_pre_update_plan.runtimes, _runtime_outcomes):
-                if outcome["outcome"] == "unaccounted" and defer_manual_serve(asdict(runtime), require_alive=True):
-                    outcome["outcome"] = "deferred"
-            if report_unaccounted_runtimes(_runtime_outcomes):
+            _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
+            if print_fleet_version_matrix(_fleet_snapshot):
                 restart.incomplete = True
-            with suppress(Exception):
-                import hermes_cli.update_receipt as _ur
-                if _ur._current is not None:
-                    _ur._current.data["runtime_outcomes"] = _runtime_outcomes
+            elif not _fleet_snapshot and _fleet_rows_expected:
+                # collect_fleet_versions() swallows every failure, so zero rows with
+                # expected runtimes is indistinguishable from health — fail (partial, exit 1).
+                print(
+                    # Fleet probe returned zero rows even though at least one gateway runtime was (or may have
+                    # been) live pre-update — POSIX restart bookkeeping, the pre-restart PID snapshot, the
+                    # pre-update plan inventory, or the Windows pause/resume token all count as that signal.
+                    # Every failure path inside collect_fleet_versions() is swallowed via logger.debug(), so an
+                    # empty list is indistinguishable from a healthy fleet in the current output. Treat it as
+                    # verification failure so the receipt records "partial" and the exit code is 1 (#93406).
+                    "\n⚠ Fleet version check returned no rows even though"
+                    " gateway runtimes were expected — verification incomplete."
+                )
+                restart.incomplete = True
 
-    with _best_effort('Update receipt finalize failed: %s'):
-        from hermes_cli.update_receipt import finalize_update_receipt
-        _receipt_path = finalize_update_receipt(
-            "partial" if restart.incomplete or not update_complete else "success",
-            fleet=_fleet_snapshot,
-        )
-        if _receipt_path is not None:
-            logger.info("Update receipt written: %s", _receipt_path)
+        # Every runtime the PLAN saw must appear in restart bookkeeping; an
+        # unaccounted one is a silent miss and escalates like a STALE/DOWN row.
+        with _best_effort('Runtime-outcome reconciliation failed: %s'):
+            # An unaccounted runtime is the silent-miss class (a platform branch re-discovered its own targets
+            # and skipped one the inventory knew about) — escalate it exactly like a STALE/DOWN fleet row. See
+            # #91277.
+            if _pre_update_plan is not None and _pre_update_plan.runtimes:
+                from hermes_cli.update_inventory import (match_runtime_outcomes, report_unaccounted_runtimes)
+                _runtime_outcomes = match_runtime_outcomes(
+                    _pre_update_plan,
+                    restarted_services=restart.restarted_services,
+                    relaunched_profiles=restart.relaunched_profiles,
+                    externally_supervised_profiles=restart.externally_supervised_profiles,
+                    killed_pids=restart.killed_pids,
+                    failed_units=restart.failed_or_stale_units,
+                    # Serve/dashboard reconcile by incarnation liveness, not unit names.
+                    # See #100479.
+                    stale_serve_pids=(
+                        {row.get("pid") for row in _stale_serve_rows}
+                        if _stale_serve_rows is not None
+                        else None
+                    ),
+                )
+                from dataclasses import asdict
+                from hermes_cli.update_serve_obligations import defer_manual_serve
 
-    if restart.incomplete:
-        # Code updated but a gateway may still run stale modules: fail so automation
-        # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
-        sys.exit(1)
-    _clear_fleet_restart_pending_marker()
+                for runtime, outcome in zip(_pre_update_plan.runtimes, _runtime_outcomes):
+                    if outcome["outcome"] == "unaccounted" and defer_manual_serve(asdict(runtime), require_alive=True):
+                        outcome["outcome"] = "deferred"
+                if report_unaccounted_runtimes(_runtime_outcomes):
+                    restart.incomplete = True
+                with suppress(Exception):
+                    import hermes_cli.update_receipt as _ur
+                    if _ur._current is not None:
+                        _ur._current.data["runtime_outcomes"] = _runtime_outcomes
+
+        with _best_effort('Update receipt finalize failed: %s'):
+            from hermes_cli.update_receipt import finalize_update_receipt
+            _receipt_path = finalize_update_receipt(
+                "partial" if restart.incomplete or not update_complete else "success",
+                fleet=_fleet_snapshot,
+            )
+            if _receipt_path is not None:
+                logger.info("Update receipt written: %s", _receipt_path)
+
+        if restart.incomplete:
+            # Code updated but a gateway may still run stale modules: fail so automation
+            # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
+            sys.exit(1)
+        _clear_fleet_restart_pending_marker()
+    finally:
+        if not getattr(restart, "incomplete", True) and update_complete:
+            _clear_fleet_restart_pending_marker()
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
     with _best_effort('Multiplex auto-migration after update failed: %s'):

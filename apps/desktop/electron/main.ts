@@ -16671,7 +16671,7 @@ async function dispatchRegistryApiRequest(
   desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)
 
   return (request?.method || 'GET').toUpperCase() === 'GET'
-    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
+    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId, routeProfile)
     : response
 }
 

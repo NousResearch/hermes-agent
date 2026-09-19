@@ -231,3 +231,69 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+# A stand-in `op` reproducing the service-account contract: `item get <id>` without an explicit
+# vault is rejected outright (real op: "a vault query must be provided when this command is called
+# by a service account"). It records argv so the test can prove where the vault query travelled.
+_FAKE_OP = r'''#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv[1:]
+log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "op.log"), "a")
+log.write(json.dumps(argv) + "\n")
+if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+    sys.stderr.write("[ERROR] not signed in\n"); sys.exit(1)
+if argv[:2] == ["item", "list"]:
+    print(json.dumps([{"id": "itemA", "title": "Example", "created_at": "2026-01-01T00:00:00Z",
+                       "vault": {"id": "vaultA", "name": "Agents"},
+                       "urls": [{"href": "https://example.com"}]}])); sys.exit(0)
+if argv[:2] == ["item", "get"]:
+    if "--vault" not in argv:
+        sys.stderr.write("[ERROR] a vault query must be provided when this command is called by a "
+                         "service account. Please specify one either through the --vault flag or "
+                         "through piped input\n")
+        sys.exit(1)
+    if "--otp" in argv:
+        print("123456"); sys.exit(0)
+    print("correct horse battery staple"); sys.exit(0)
+sys.exit(2)
+'''
+
+
+@pytest.fixture
+def fake_op(tmp_path, monkeypatch):
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_faketoken")
+    return exe, tmp_path / "op.log"
+
+
+def test_onepassword_service_account_resolve_carries_the_items_vault(fake_op):
+    """A service account cannot resolve a bare item id, so every `op item get` the backend
+    issues for a known item must carry that item's own vault from the listing."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe, log = fake_op
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    handle = backend.list_items()[0].id
+
+    assert backend.resolve_password(handle) == "correct horse battery staple"
+    assert backend.resolve_otp(handle) == "123456"
+
+    gets = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    gets = [a for a in gets if a[:2] == ["item", "get"]]
+    assert len(gets) == 2
+    for argv in gets:
+        assert argv[argv.index("--vault") + 1] == "vaultA"
+
+
+def test_onepassword_service_account_resolves_an_item_it_has_not_listed(fake_op):
+    """A fill may arrive on a fresh backend instance (no listing in this process yet); the vault
+    query still has to be found rather than the resolve failing."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe, _log = fake_op
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+
+    assert backend.resolve_password("op:itemA") == "correct horse battery staple"

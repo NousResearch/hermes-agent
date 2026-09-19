@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+
 logger = logging.getLogger(__name__)
 
 
@@ -425,9 +427,9 @@ def migrate(
     if default_permission_profile:
         report.wrote_permissions_default = default_permission_profile
     if expose_hermes_tools:
-        translated["hermes-tools"] = _build_hermes_tools_mcp_entry()
-        if "hermes-tools" not in report.migrated:
-            report.migrated.append("hermes-tools")
+        translated[HERMES_TOOLS_MCP_SERVER_NAME] = _build_hermes_tools_mcp_entry()
+        if HERMES_TOOLS_MCP_SERVER_NAME not in report.migrated:
+            report.migrated.append(HERMES_TOOLS_MCP_SERVER_NAME)
     managed_block = render_codex_toml_section(
         translated, plugins=plugins, default_permission_profile=default_permission_profile)
     new_text = managed_block

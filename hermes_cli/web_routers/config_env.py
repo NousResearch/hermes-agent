@@ -543,7 +543,10 @@ def list_custom_endpoints(profile: Optional[str] = None):
 def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     with http_failure("POST /api/providers/custom-endpoints failed", 500, detail="Failed to save custom endpoint"):
-        with _config_profile_scope(profile):
+        # Sync-def endpoints run on worker threads: the load→mutate→save span
+        # holds _CONFIG_MUTATION_LOCK so a concurrent config autosave cannot
+        # drop this write (or vice versa).
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             cfg = load_config()
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
@@ -560,7 +563,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         f"POST /api/providers/custom-endpoints/{endpoint_id}/activate failed", 500,
         detail="Failed to activate custom endpoint",
     ):
-        with _config_profile_scope(profile):
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
             provider_key = _custom_endpoint_id(endpoint_id)
             _stored, entry = find_provider_entry(cfg.get("providers"), provider_key)
@@ -601,7 +604,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         f"DELETE /api/providers/custom-endpoints/{endpoint_id} failed", 500,
         detail="Failed to delete custom endpoint",
     ):
-        with _config_profile_scope(profile):
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
             provider_key = _custom_endpoint_id(endpoint_id)
             providers = cfg.get("providers")

@@ -132,21 +132,36 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
 
 
 def _load_hermes_env() -> None:
-    """Populate ``os.environ`` from ``~/.hermes/.env`` AND bridge top-level ``config.yaml`` keys into
-    the environment so the gateway config loader sees platform credentials and home channels."""
+    """Populate the credential environment from ``~/.hermes/.env`` AND bridge top-level ``config.yaml``
+    keys into it so the gateway config loader sees platform credentials and home channels.
+
+    The target is ``os.environ`` for the standalone CLI. Inside a multi-profile host (dashboard console
+    running ``send`` for profile B under its secret scope) it is the installed scope mapping: writing B's
+    ``.env`` into the shared process env would hand every other profile's later reads B's tokens
+    (``gateway.config._getenv`` reads the scope first, so the loader sees the same values either way).
+    The installed scope is already ``build_profile_secret_scope``'s composition — user ``.env``, then
+    the profile's external secret sources over it — so it is authoritative as-is; replaying raw
+    ``.env`` over it would let a stale user value beat the secret-manager one for this request.
+    """
     import os
     try:
         from hermes_cli.config import get_hermes_home
         home = get_hermes_home()
     except Exception:
         return
-    env_path = home / ".env"
-    if env_path.exists():
-        try:
-            from hermes_cli.env_loader import _load_dotenv_with_fallback
-            _load_dotenv_with_fallback(env_path, override=True)
-        except Exception:
-            pass
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    scope = current_secret_scope() if is_multiplex_active() else None
+    if isinstance(scope, dict):
+        target: dict = scope
+    else:
+        target = os.environ
+        env_path = home / ".env"
+        if env_path.exists():
+            try:
+                from hermes_cli.env_loader import _load_dotenv_with_fallback
+                _load_dotenv_with_fallback(env_path, override=True)
+            except Exception:
+                pass
 
     # Bridge top-level scalars the user (or the managed layer) actually wrote — never DEFAULT_CONFIG —
     # into the environment, without overriding existing values.
@@ -159,8 +174,8 @@ def _load_hermes_env() -> None:
     except Exception:
         return
     for key, val in cfg.items():
-        if isinstance(val, (str, int, float, bool)) and key not in os.environ:
-            os.environ[key] = str(val)
+        if isinstance(val, (str, int, float, bool)) and key not in target:
+            target[key] = str(val)
 
 
 def cmd_send(args: argparse.Namespace) -> None:

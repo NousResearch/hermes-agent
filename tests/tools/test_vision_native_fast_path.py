@@ -114,6 +114,23 @@ class TestSupportsMediaInToolResults:
         finally:
             clear_runtime_main()
 
+    def test_openrouter_xiaomi_route_vetoes_native_fast_path(self):
+        """A vision-capable catalog entry cannot override a routed Xiaomi veto."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("openrouter", "xiaomi/mimo-v2.5")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch.object(
+                image_routing, "_lookup_supports_vision", return_value=True
+            ):
+                assert _should_use_native_vision_fast_path() is False
+        finally:
+            clear_runtime_main()
+
 
 # ─── _build_native_vision_tool_result ────────────────────────────────────────
 

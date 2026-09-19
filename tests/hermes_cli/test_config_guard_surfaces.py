@@ -35,7 +35,7 @@ class TestGatewayGuard:
             _guard_corrupt_user_config()
 
         assert exc_info.value.code == 2
-        assert "Refusing non-interactive startup" in capsys.readouterr().err
+        assert "Hermes stopped because your settings file" in capsys.readouterr().err
 
     def test_gateway_allows_valid_config(self, tmp_path):
         from gateway.run import _guard_corrupt_user_config
@@ -85,7 +85,7 @@ class TestCronRunJobGuard:
             "cron_job": self._job(), "extra_prompt": None, "request_id": "guard-fire"}))
         previous = current_execution()
         try:
-            with pytest.raises(RuntimeError, match="Refusing non-interactive startup"):
+            with pytest.raises(RuntimeError, match="Hermes stopped because your settings file"):
                 await execute(owner, ref, admission, policy)
             success, output_doc, final_response, error = owner.pending_results["guard-fire"]["result"]["cron_result"]
             assert current_execution() is previous
@@ -95,7 +95,7 @@ class TestCronRunJobGuard:
 
         assert success is False
         assert error is not None
-        assert "Refusing non-interactive startup" in error
+        assert "Hermes stopped because your settings file" in error
         assert "config.yaml" in error
         assert final_response == ""
 
@@ -112,7 +112,7 @@ class TestCronRunJobGuard:
         success, output_doc, final_response, error = run_job(
             self._job(no_agent=True, script="true", deliver="none")
         )
-        assert "Refusing non-interactive startup" not in (error or "")
+        assert "Hermes stopped because your settings file" not in (error or "")
 
     def test_run_job_no_agent_exempt(self, tmp_path):
         from cron.scheduler import run_job
@@ -122,7 +122,7 @@ class TestCronRunJobGuard:
         success, output_doc, final_response, error = run_job(
             self._job(no_agent=True, script="true", deliver="none")
         )
-        assert "Refusing non-interactive startup" not in (error or "")
+        assert "Hermes stopped because your settings file" not in (error or "")
 
 
 class TestServeGuard:
@@ -146,7 +146,7 @@ class TestServeGuard:
             main_mod.cmd_dashboard(args)
 
         assert exc_info.value.code == 2
-        assert "Refusing non-interactive startup" in capsys.readouterr().err
+        assert "Hermes stopped because your settings file" in capsys.readouterr().err
 
     def test_serve_escape_hatch_passes_guard(self, tmp_path, monkeypatch):
         """--ignore-user-config lets serve get past the corrupt-config guard."""

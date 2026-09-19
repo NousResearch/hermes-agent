@@ -94,9 +94,12 @@ discord:
   websocket_liveness_failure_threshold: 2
   websocket_heartbeat_ack_max_age_seconds: 60
   websocket_max_latency_seconds: 30
+  websocket_event_max_silence_seconds: 14400
 ```
 
 旧的 `liveness_interval_seconds` / `liveness_failure_threshold` 仅作为迁移别名保留，不再表示 REST probe。
+
+`websocket_event_max_silence_seconds` 是唯一的例外：它只守护"事件分发"这一个维度，设为 `0` 仅停用该检查——ready/ACK/延迟检测继续生效。一条连接可以在保持 ESTABLISHED 并正常应答心跳的同时，不再投递任何 Gateway 事件（心跳 ACK 是不带事件类型的帧，任何传输层检查都看不到这种状态）。默认值 4 小时对应实际故障的观察窗口；安静的服务器可能数小时没有任何事件，除非明确了解自身流量，否则请保持该阈值宽松。
 
 ## 第一步：创建 Discord 应用
 

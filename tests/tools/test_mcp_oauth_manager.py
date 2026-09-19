@@ -539,3 +539,440 @@ async def test_refresh_response_with_new_refresh_token_rotates(tmp_path, monkeyp
 
     on_disk = json.loads((tmp_path / "mcp-tokens" / "srv.json").read_text(encoding="utf-8"))
     assert provider.context.current_tokens.refresh_token == "rt-new" == on_disk["refresh_token"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-process refresh-token rotation (single-use refresh tokens)
+#
+# Two Hermes backends routinely share one HERMES_HOME (desktop `serve` +
+# `gateway run`). With a provider that rotates refresh tokens, the loser of the
+# race POSTs a token the winner already consumed and gets 400 — while a valid
+# replacement sits on disk. Clearing state there forces an interactive browser
+# reauth that a cron/background context cannot satisfy.
+# ---------------------------------------------------------------------------
+
+
+def _token(access, refresh, expires_in=3600):
+    from mcp.shared.auth import OAuthToken
+
+    return OAuthToken(
+        access_token=access,
+        token_type="Bearer",
+        expires_in=expires_in,
+        refresh_token=refresh,
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_400_recovers_token_rotated_by_peer(tmp_path, monkeypatch):
+    """A peer rotated the refresh token: recover from disk instead of clearing."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    # We hold R1 in memory and are about to fail with it.
+    provider.context.current_tokens = _token("A1", "R1")
+    # The peer process already persisted its replacement.
+    await provider.context.storage.set_tokens(_token("A2", "R2"))
+
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
+    )
+    result = await provider._handle_refresh_response(resp)
+
+    assert result is True, "a rotated-token race must be recoverable"
+    assert provider.context.current_tokens.access_token == "A2"
+    assert provider.context.current_tokens.refresh_token == "R2"
+
+
+@pytest.mark.asyncio
+async def test_refresh_400_rejects_disk_token_without_refresh_token(
+    tmp_path, monkeypatch
+):
+    """A disk token with no refresh token is a dead end, not a recovery.
+
+    Its access token may still be inside its TTL, so the naive "is it
+    different and currently valid?" test says yes — but adopting it only
+    defers the reauth to expiry, with no way to refresh in between. Recovery
+    must require a refresh token to recover *onto*.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    provider.context.current_tokens = _token("A1", "R1")
+    # Different access token, still valid, but nothing to refresh with later.
+    await provider.context.storage.set_tokens(_token("A2", None))
+
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
+    )
+    result = await provider._handle_refresh_response(resp)
+
+    assert result is False, "a token with no refresh token must not be adopted"
+    assert provider.context.current_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_400_does_not_strand_a_rejected_token_in_the_context(
+    tmp_path, monkeypatch
+):
+    """A rejected candidate must not be left installed on the context.
+
+    is_token_valid() reads the context, so the candidate has to be published
+    to be tested. This asserts on the state the recovery helper itself leaves
+    behind, because the caller's clear_tokens() would otherwise mask the
+    difference: without the restore, current_tokens still points at the
+    rejected candidate when the helper returns.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    stale = _token("A1", "R1")
+    provider.context.current_tokens = stale
+    await provider.context.storage.set_tokens(_token("A2", "R2"))
+
+    seen = []
+    provider.context.is_token_valid = lambda: (
+        seen.append(provider.context.current_tokens) or False
+    )
+
+    recovered = await provider._hermes_reload_tokens_after_refresh_failure()
+
+    assert recovered is False
+    assert seen and seen[0].access_token == "A2", "candidate must be testable"
+    assert provider.context.current_tokens is stale, (
+        "a rejected candidate must not be left on the context"
+    )
+
+
+
+@pytest.mark.asyncio
+async def test_refresh_400_still_clears_when_disk_is_same_token(tmp_path, monkeypatch):
+
+    """No peer wrote anything: the credential really is dead — clear it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    provider.context.current_tokens = _token("A1", "R1")
+    await provider.context.storage.set_tokens(_token("A1", "R1"))
+
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
+    )
+    result = await provider._handle_refresh_response(resp)
+
+    assert result is False
+    assert provider.context.current_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_400_does_not_recover_expired_disk_token(tmp_path, monkeypatch):
+    """A *different* but already-expired disk token is not a recovery."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    provider.context.current_tokens = _token("A1", "R1")
+    await provider.context.storage.set_tokens(_token("A2", "R2", expires_in=-60))
+
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
+    )
+    result = await provider._handle_refresh_response(resp)
+
+    assert result is False
+    assert provider.context.current_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_400_does_not_recover_tokenless_disk_entry(
+    tmp_path, monkeypatch
+):
+    """A disk entry without an access token is not a recovery."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    provider.context.current_tokens = _token("A1", "R1")
+    # Rotated refresh token, but the access token is empty — recovering here
+    # would ship an Authorization header with no credential.
+    await provider.context.storage.set_tokens(_token("", "R2"))
+
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
+    )
+    result = await provider._handle_refresh_response(resp)
+
+    assert result is False
+    assert provider.context.current_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_400_recovery_never_logs_token_material(
+    tmp_path, monkeypatch, caplog
+):
+    """The recovery path must not leak secrets into logs."""
+    import logging
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    provider.context.current_tokens = _token("access-secret", "refresh-secret")
+    await provider.context.storage.set_tokens(
+        _token("rotated-access-secret", "rotated-refresh-secret")
+    )
+
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_grant"}'
+    )
+    with caplog.at_level(logging.DEBUG):
+        result = await provider._handle_refresh_response(resp)
+
+    assert result is True
+    assert "refresh-secret" not in caplog.text
+    assert "rotated-refresh-secret" not in caplog.text
+    assert "rotated-access-secret" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Refresh fence: one refresh generation is consumed by exactly one holder
+# ---------------------------------------------------------------------------
+
+
+def _fenced_provider(tmp_path, monkeypatch, endpoint):
+    """A real provider holding an EXPIRED (A1, R1) pair, ready to refresh.
+
+    The SDK only refreshes when ``can_refresh_token()`` sees client_info, and
+    ``_store_tokens`` reads ``oauth_metadata.issuer``: both need real models.
+    """
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthMetadata
+
+    provider = _provider_with_token_endpoint(tmp_path, {}, endpoint, monkeypatch)
+    provider.context.oauth_metadata = OAuthMetadata(
+        issuer="https://idp.example.com",
+        authorization_endpoint="https://idp.example.com/authorize",
+        token_endpoint=endpoint,
+    )
+    provider.context.client_info = OAuthClientInformationFull.model_validate(
+        {"client_id": "client-id", "redirect_uris": ["http://localhost/cb"]}
+    )
+    provider.context.current_tokens = _token("A1", "R1")
+    provider.context.token_expiry_time = time.time() - 10
+    return provider
+
+
+async def _drive_flow(provider, responder):
+    """Pump the auth flow the way httpx does: one asend(response) per yielded request.
+
+    Yields to the event loop before answering so a concurrent flow gets to
+    contend for the fence while this one is "on the wire".
+    """
+    import httpx2
+
+    gen = provider.async_auth_flow(httpx2.Request("GET", "https://mcp.example.com/mcp"))
+    out = await gen.asend(None)
+    while True:
+        await asyncio.sleep(0)
+        try:
+            out = await gen.asend(responder(out))
+        except StopAsyncIteration:
+            return
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_presents_single_use_token_exactly_once(tmp_path, monkeypatch):
+    """Two providers on one token store: R1 is POSTed once, both end on the rotated pair."""
+    from urllib.parse import parse_qs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    a = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    b = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    assert a is not b
+    await a.context.storage.set_tokens(_token("A1", "R1"))
+
+    presented = []
+
+    def responder(request):
+        if request.method != "POST":
+            return _fake_response(200, str(request.url), b"{}")
+        refresh = parse_qs(request.content.decode())["refresh_token"][0]
+        presented.append(refresh)
+        if presented == ["R1"]:
+            body = json.dumps(_token("A2", "R2").model_dump(mode="json", exclude_none=True)).encode()
+            return _fake_response(200, endpoint, body)
+        # A single-use provider rejects any second presentation.
+        return _fake_response(400, endpoint, b'{"error":"invalid_grant"}')
+
+    await asyncio.gather(_drive_flow(a, responder), _drive_flow(b, responder))
+
+    assert presented == ["R1"], presented
+    assert (a.context.current_tokens.access_token, a.context.current_tokens.refresh_token) == ("A2", "R2")
+    assert (b.context.current_tokens.access_token, b.context.current_tokens.refresh_token) == ("A2", "R2")
+    assert a._hermes_fence is None and b._hermes_fence is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_fails_closed_while_a_peer_holds_the_fence(tmp_path, monkeypatch):
+    """A fence held elsewhere past the deadline aborts the refresh: no POST, tokens kept."""
+    import functools
+
+    import tools.mcp_oauth as mcp_oauth
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    await provider.context.storage.set_tokens(_token("A1", "R1"))
+    monkeypatch.setattr(
+        mcp_oauth, "acquire_refresh_fence", functools.partial(mcp_oauth.acquire_refresh_fence, timeout=0.2)
+    )
+
+    sent = []
+
+    peer_fd = await mcp_oauth.acquire_refresh_fence(provider.context.storage._tokens_path())
+    try:
+        with pytest.raises(mcp_oauth.RefreshFenceTimeout):
+            await _drive_flow(provider, sent.append)
+    finally:
+        mcp_oauth.release_refresh_fence(peer_fd)
+
+    assert sent == []
+    assert provider.context.current_tokens.refresh_token == "R1"
+    assert (await provider.context.storage.get_tokens()).refresh_token == "R1"
+    assert provider._hermes_fence is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_adopts_expired_peer_pair_and_posts_its_refresh_token(tmp_path, monkeypatch):
+    """A peer rotated to (A2, R2) but A2 already expired: we must POST R2, never R1.
+
+    The adopt path installs the rotated pair even without a live access
+    token, because the POST we are about to build needs the new grant.
+    """
+    from urllib.parse import parse_qs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    await provider.context.storage.set_tokens(_token("A2", "R2", expires_in=0))
+
+    presented = []
+
+    def responder(request):
+        if request.method != "POST":
+            return _fake_response(200, str(request.url), b"{}")
+        presented.append(parse_qs(request.content.decode())["refresh_token"][0])
+        body = json.dumps(_token("A3", "R3").model_dump(mode="json", exclude_none=True)).encode()
+        return _fake_response(200, endpoint, body)
+
+    await _drive_flow(provider, responder)
+
+    assert presented == ["R2"], presented
+    assert provider.context.current_tokens.refresh_token == "R3"
+
+
+@pytest.mark.asyncio
+async def test_refresh_adopts_peer_pair_without_expiry_and_skips_the_post(tmp_path, monkeypatch):
+    """A peer rotated to (A2, R2) with no ``expires_in`` (RFC 6749 optional): that pair is live.
+
+    Treating a missing expiry as expired would POST R2 needlessly and burn a
+    generation on a single-use provider.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    await provider.context.storage.set_tokens(_token("A2", "R2", expires_in=None))
+
+    posted = []
+
+    def responder(request):
+        if request.method == "POST":
+            posted.append(request)
+        return _fake_response(200, str(request.url), b"{}")
+
+    await _drive_flow(provider, responder)
+
+    assert posted == [], "a live peer pair must be adopted without presenting a refresh token"
+    assert (provider.context.current_tokens.access_token, provider.context.current_tokens.refresh_token) == ("A2", "R2")
+
+
+@pytest.mark.asyncio
+async def test_refresh_restarts_flow_when_disk_pair_is_from_another_issuer(tmp_path, monkeypatch):
+    """A disk pair bound to a different issuer loses its refresh token on adoption.
+
+    With nothing left to refresh, _refresh_token must restart the SDK flow
+    (401 -> full auth) instead of building a POST from the foreign grant or
+    raising OAuthTokenError, and it must not keep the fence.
+    """
+    from tools.mcp_oauth_provider import _RefreshCompletedByPeer
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    storage = provider.context.storage
+    storage.bind_issuer("https://other-idp.example.com")
+    await storage.set_tokens(_token("A2", "R2"))
+
+    with pytest.raises(_RefreshCompletedByPeer):
+        await provider._refresh_token()
+
+    assert not provider.context.current_tokens.refresh_token, "foreign refresh token must be stripped"
+    assert (await storage.get_tokens()).refresh_token is None, "strip must reach disk"
+    assert provider._hermes_fence is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_fence_surfaces_non_contention_lock_errors_immediately(tmp_path, monkeypatch):
+    """A lock syscall failing for a reason other than contention must not spin to the deadline."""
+    import errno
+
+    import tools.mcp_oauth as mcp_oauth
+
+    if mcp_oauth.fcntl is None:
+        pytest.skip("flock-based fence only")
+
+    def broken_flock(fd, op):
+        if op & mcp_oauth.fcntl.LOCK_UN:
+            return None
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(mcp_oauth.fcntl, "flock", broken_flock)
+    started = time.monotonic()
+    with pytest.raises(mcp_oauth.RefreshFenceTimeout, match="unavailable on this filesystem"):
+        await mcp_oauth.acquire_refresh_fence(tmp_path / "srv.json", timeout=5.0)
+    assert time.monotonic() - started < 1.0, "must fail fast, not wait out the deadline"
+
+
+@pytest.mark.asyncio
+async def test_refresh_400_recovery_rejects_disk_pair_from_another_issuer(tmp_path, monkeypatch):
+    """A 400 must not be "recovered" with a disk pair bound to a different issuer.
+
+    The enforcer strips that pair's refresh token on install; a stripped pair
+    is not a recovery, so the session is cleared as on any dead grant and the
+    foreign refresh token never survives on disk.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    storage = provider.context.storage
+    storage.bind_issuer("https://other-idp.example")
+    await storage.set_tokens(_token("A2", "R2"))
+
+    recovered = await provider._handle_refresh_response(
+        _fake_response(400, endpoint, b'{"error":"invalid_grant"}')
+    )
+
+    assert recovered is False
+    assert provider.context.current_tokens is None
+    assert (await storage.get_tokens()).refresh_token is None, "foreign refresh token must not survive on disk"

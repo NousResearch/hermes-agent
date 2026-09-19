@@ -199,7 +199,9 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
         return None
     header = summary.strip() or "Save to memory?"
     try:
-        choice = callback(detail.strip() or header, f"Save to memory: {header}", allow_permanent=False)
+        from tools.approval_prompt import callback_accepts
+        extra = {"title": "Save to memory?"} if callback_accepts(callback, "title") else {}
+        choice = callback(detail.strip() or header, f"Save to memory: {header}", allow_permanent=False, **extra)
     except Exception as e:
         logger.error("Inline memory approval prompt failed: %s", e)
         return None

@@ -155,14 +155,14 @@ def test_context_overflow_exception_persists_nothing(tmp_path):
             err, MessageEvent(text="x", source=source, message_id="m-overflow"), source, entry, entry.session_key, prepared,
         )
         assert db.message_count() == before
-        assert reply.startswith("⚠️ Session too large for the model's context window.")
+        assert "/compress" in reply and "/new" in reply
         db.close()
 
     asyncio.run(check())
 
 
 def test_context_overflow_error_reply_carries_no_partial_effect_notice():
-    """Overflow is a deterministic rejection (#107567); the reply must stay the /compact
+    """Overflow is a deterministic rejection (#107567); the reply must stay the /compress
     guidance alone rather than inherit the indeterminate "actions may have run" warning."""
     import asyncio
     from gateway.config import Platform
@@ -185,8 +185,8 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
         err, MessageEvent(text="x", source=source), source, None, "k", prepared,
     ))
 
-    assert reply.startswith("⚠️ Session too large for the model's context window.")
-    assert reply.endswith("or /reset to start fresh.")
+    from gateway.run import _CONTEXT_OVERFLOW_REPLY
+    assert reply == _CONTEXT_OVERFLOW_REPLY
     assert runner._PARTIAL_FAILED_TURN_NOTICE not in reply
 
 

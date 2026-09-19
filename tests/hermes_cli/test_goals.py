@@ -454,6 +454,20 @@ class TestWaitBarrier:
             proc.terminate()
             proc.wait(timeout=10)
 
+    def test_wait_on_rejects_a_pid_not_alive_on_this_host(self, hermes_home, monkeypatch):
+        """Regression for #110826: do not persist a barrier for remote/dead PIDs."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        monkeypatch.setattr(goals, "_pid_alive", lambda pid: False)
+        mgr = GoalManager(session_id="wb-dead")
+        mgr.set("ship it")
+
+        with pytest.raises(ValueError, match="not alive on this host"):
+            mgr.wait_on(4242, reason="remote CI")
+
+        assert mgr.state.waiting_on_pid is None
+
 
     def test_stop_waiting_clears_barrier(self, hermes_home):
         from hermes_cli.goals import GoalManager
@@ -526,6 +540,45 @@ class TestJudgeDrivenWait:
     def _spawn_sleeper():
         import subprocess, sys
         return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+
+    def test_judge_wait_on_dead_pid_continues_instead_of_parking(self, hermes_home):
+        """#110826: a judge ``wait_on_pid`` naming a pid this host cannot observe (remote, or
+        already exited) must not park — the barrier would lift and re-park every turn."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="jw-dead-pid", default_max_turns=10)
+        mgr.set("ship the PR")
+        with patch.object(goals, "_pid_alive", return_value=False), patch.object(
+            goals, "judge_goal",
+            return_value=("wait", "remote job still running", False, {"pid": 4242}, False),
+        ):
+            decision = mgr.evaluate_after_turn("Started the job over ssh (pid 4242).")
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert mgr.state.waiting_on_pid is None
+        assert mgr.is_waiting() is False
+
+    def test_judge_wait_on_pid_dying_between_check_and_park_continues(self, hermes_home):
+        """The pid may exit between the judge path's liveness probe and ``wait_on``'s own
+        re-check; that race must land on the same continue decision, not raise out of
+        ``evaluate_after_turn`` (callers swallow the error and the continuation is lost)."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="jw-toctou-pid", default_max_turns=10)
+        mgr.set("ship the PR")
+        with patch.object(goals, "_pid_alive", return_value=True), patch.object(
+            GoalManager, "wait_on", side_effect=ValueError("pid is not alive on this host"),
+        ), patch.object(
+            goals, "judge_goal",
+            return_value=("wait", "job still running", False, {"pid": 4242}, False),
+        ):
+            decision = mgr.evaluate_after_turn("Started the job (pid 4242).")
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert mgr.state.waiting_on_pid is None
+        assert mgr.is_waiting() is False
 
     def test_judge_wait_pid_parks_loop(self, hermes_home):
         from hermes_cli import goals

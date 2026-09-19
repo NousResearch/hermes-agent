@@ -60,7 +60,7 @@ def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, status):
         if status == 200:
             auth_commands.auth_refresh_command(args)
         else:
-            with pytest.raises(SystemExit, match="Refresh failed"):
+            with pytest.raises(SystemExit, match="Could not renew"):
                 auth_commands.auth_refresh_command(args)
         after = {e["id"]: e for e in read_credential_pool("openai-codex")}
         assert requests == [{"grant_type": ["refresh_token"], "refresh_token": ["fixture-refresh-1"],

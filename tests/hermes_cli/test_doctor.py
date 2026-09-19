@@ -1146,6 +1146,23 @@ class TestGitHubTokenCheck:
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
 
+    def test_gh_authenticated_on_gh_without_authenticated_json_field(self, monkeypatch):
+        """gh 2.98+ dropped the `authenticated` field from `gh auth status --json`,
+        so that invocation exits 1 even for a logged-in user. A logged-in user on
+        such a gh must still be reported as authenticated."""
+        from hermes_cli import doctor_state
+
+        def gh_2_98(cmd, **kwargs):
+            assert cmd[:3] == ["gh", "auth", "status"], cmd
+            if "--json" in cmd and "authenticated" in cmd:
+                return types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"unknown JSON field")
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"Logged in to github.com")
+
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", gh_2_98)
+        assert doctor_state._gh_authenticated() is True
+
+
 def _run_doctor_with_healthy_oauth_fallback(
     monkeypatch,
     tmp_path,

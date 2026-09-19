@@ -28,7 +28,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
@@ -756,6 +756,18 @@ class PluginContext:
         from hermes_cli.dashboard_auth.registry import register_global_provider, unregister_global_provider
         if self._wrong_type(provider, DashboardAuthProvider, "dashboard-auth provider"):
             return
+        launch_scope = hermes_home_key(get_process_hermes_home())
+        if self._manager.scope_key != launch_scope:
+            logger.warning(
+                "Plugin '%s' tried to register dashboard-auth provider %r "
+                "from profile scope %s; ignoring it because dashboard auth "
+                "is owned by launch scope %s.",
+                self.manifest.name,
+                provider.name,
+                self._manager.scope_key,
+                launch_scope,
+            )
+            return
         registry_name = provider.name
         # The auth registry is process-global (lifetime = web server). Disposing it on a routine
         # per-home manager teardown emptied it for the WHOLE process and disabled sign-in until
@@ -1162,12 +1174,15 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_queue: queue.Queue[Any] = queue.Queue(maxsize=_EVENT_PENDING_CAP)
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
-        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb)) so a stuck
-        # policy hook cannot spawn a new abandoned thread on every fire.
+        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb), call_identity)
+        # so a stuck policy hook cannot spawn a new abandoned thread on every fire.
         self._hook_running_callbacks: Dict[tuple, object] = {}
+        self._hook_abandoned: Dict[tuple, set] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+        # (hook_name, id(cb), repr(exc)) already reported at WARNING; identical repeats go to DEBUG.
+        self._hook_failures_reported: set = set()
         # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-
         # global registries are shared across profiles while several managers coexist, so the ledger
         # is keyed per (hermes_home, plugin_id) and every inverse is identity-conditional — one

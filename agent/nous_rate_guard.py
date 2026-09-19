@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 # Reset windows shorter than this are transient upstream jitter, not a quota
 # exhaustion worth a cross-session breaker trip.
 _MIN_RESET_FOR_BREAKER_SECONDS = 60.0
+# The welcome tier's structured ``rate_limited`` refusal: a reset at or above this is an exhausted
+# allowance (stop, tell the user when it refreshes and that signing in lifts it); below it the
+# turn simply waits it out. The gateway's fairshare bucket names honest resets from a few seconds
+# up to a minute, so the split sits where a quiet wait stops being quiet.
+WELCOME_LONG_WAIT_SECONDS = 20.0
 
 format_remaining = _fmt_seconds
 
@@ -129,6 +134,19 @@ def is_genuine_nous_rate_limit(
     if _has_exhausted_bucket(_parse_buckets_from_headers(headers)):
         return True
     return last_known_state is not None and _has_exhausted_bucket_in_object(last_known_state)
+
+
+def is_long_welcome_rate_limit(error_context: Any) -> bool:
+    """True for a Nous welcome-tier ``rate_limited`` refusal whose reset is long enough to be an
+    exhausted allowance (``WELCOME_LONG_WAIT_SECONDS``), as parsed into ``error_context``
+    (``welcome_refusal`` from ``hermes_cli.anon_auth.parse_welcome_refusal``). Capacity refusals
+    (``at_capacity`` / ``admission_closed``) are never this: they are retried in place."""
+    if not isinstance(error_context, dict):
+        return False
+    refusal = error_context.get("welcome_refusal")
+    if not isinstance(refusal, dict) or refusal.get("reason") != "rate_limited":
+        return False
+    return _safe_float(refusal.get("retry_after"), 0.0) >= WELCOME_LONG_WAIT_SECONDS
 
 
 def _parse_buckets_from_headers(

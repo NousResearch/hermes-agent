@@ -11,7 +11,7 @@ import logging
 import pytest
 
 from agent.tool_dispatch_helpers import _peel_bridge_call
-from tools.tool_gateway.bridge import connector_describe
+from tools.connectors.gateway.bridge import connector_describe
 from tools.tool_search import (
     CONNECTOR_BATCH_SENTINEL,
     ToolSearchConfig,
@@ -278,7 +278,7 @@ def test_search_keeps_only_the_twin_a_colliding_name_reaches(order, caplog):
             },
         }
 
-    with caplog.at_level(logging.WARNING, logger="tools.connector_search"):
+    with caplog.at_level(logging.WARNING, logger="tools.connectors.search"):
         out = json.loads(dispatch_tool_search(
             {"queries": ["gmail fetch profile"]},
             current_tool_defs=_local_defs(),
@@ -459,7 +459,7 @@ def test_peel_keeps_mixed_and_local_batches_as_sequential_barrier():
 
 def _connectors_on(monkeypatch, client_factory):
     from tools.registry import invalidate_check_fn_cache
-    from tools.tool_gateway import bridge, config
+    from tools.connectors.gateway import bridge, config
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
@@ -568,7 +568,7 @@ class _RecordingTransport:
 
 
 def _recording_client_factory(transport):
-    from tools.tool_gateway.client import ConnectorClient
+    from tools.connectors.gateway.client import ConnectorClient
 
     return lambda: ConnectorClient(
         transport=transport,

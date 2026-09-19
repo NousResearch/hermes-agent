@@ -74,6 +74,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
@@ -492,7 +493,7 @@ function SessionRow({
         if (!cancelled) setMessages(resp.messages);
       })
       .catch((err) => {
-        if (!cancelled) setError(String(err));
+        if (!cancelled) setError(errorMessage(err));
       });
     return () => {
       cancelled = true;
@@ -1084,7 +1085,7 @@ export default function SessionsPage() {
         loadStats();
         refreshEmptyCount();
       } catch (error) {
-        showToast(`Import failed: ${error}`, "error");
+        showToast(`Import failed: ${errorMessage(error)}`, "error");
       } finally {
         setImportingSessions(false);
         if (importInputRef.current) importInputRef.current.value = "";
@@ -1495,7 +1496,9 @@ export default function SessionsPage() {
                 .__HERMES_SESSION_TOKEN__ ?? "",
           },
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), res.url);
+        }
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");

@@ -10,7 +10,17 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from hermes_cli import main as cli_main
 from hermes_cli import update_cmd
+
+
+@pytest.fixture(autouse=True)
+def _no_stale_module_purge(monkeypatch):
+    """The migration step evicts every cached Hermes module first (#111271); a real purge
+    would discard the ``hermes_cli.config`` object these tests patch."""
+    monkeypatch.setattr(cli_main, "_purge_stale_hermes_modules", lambda: None)
 
 
 def test_repair_node_deps_runs_config_migration_on_version_bump(capsys):

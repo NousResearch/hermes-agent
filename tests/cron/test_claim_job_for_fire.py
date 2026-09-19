@@ -284,6 +284,53 @@ def test_manual_claim_does_not_stamp_a_future_occurrence(temp_home):
         f"manual fire stamped the future occurrence {pending}")
 
 
+def test_unclassified_off_tick_claim_does_not_stamp_a_future_occurrence(temp_home, monkeypatch):
+    from datetime import datetime, timedelta
+
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="off-tick")
+    pending = jobs.get_job(job["id"])["next_run_at"]
+    monkeypatch.setattr(
+        jobs, "_hermes_now", lambda: datetime.fromisoformat(pending) - timedelta(minutes=1))
+
+    claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
+
+    assert isinstance(claimed, dict)
+    assert claimed["_scheduled_instant"] is None
+
+
+def test_claim_seconds_before_the_slot_owns_it_once(temp_home, monkeypatch):
+    """A hosted fire arriving seconds early (provider clock skew) IS the fire for the armed
+    slot: it must carry the slot identity so the misfire backstop cannot run the slot again."""
+    from datetime import datetime, timedelta, timezone
+
+    import cron.executions as executions
+    import cron.jobs as jobs
+    from cron.occurrences import scheduled_instant
+
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", temp_home / "cron" / "executions.db")
+    job = jobs.create_job(prompt="x", schedule="0 19 * * *", name="skew")
+    slot = jobs.get_job(job["id"])["next_run_at"]
+    slot_dt = datetime.fromisoformat(slot)
+
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: slot_dt - timedelta(seconds=2))
+    monkeypatch.setattr(executions, "_hermes_now", lambda: slot_dt - timedelta(seconds=2))
+    claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
+    assert claimed["_scheduled_instant"] == scheduled_instant(slot)
+    row = executions.create_execution(
+        job["id"], source="chronos", scheduled_instant=claimed["_scheduled_instant"])
+    executions.finish_execution(row["id"], success=True)
+    jobs.mark_job_run(job["id"], True)
+
+    backstop = slot_dt.astimezone(timezone.utc) + timedelta(minutes=11)
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: backstop)
+    monkeypatch.setattr(executions, "_hermes_now", lambda: backstop)
+    assert jobs.claim_job_for_fire(job["id"], return_job=True) is False, (
+        "misfire backstop re-ran the slot a skewed early fire already completed")
+    assert datetime.fromisoformat(jobs.get_job(job["id"])["next_run_at"]) > slot_dt
+
+
 def test_manual_claim_still_refuses_a_paused_job(temp_home):
     """``manual=True`` suppresses only the occurrence stamp — unlike ``force=True`` it
     must not resume a paused job, which the run-now tool relies on to refuse it."""

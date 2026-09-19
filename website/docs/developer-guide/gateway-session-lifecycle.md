@@ -538,8 +538,10 @@ resident (agents that took a turn within the TTL are never idle-swept), so RSS c
 the cgroup throttles and SIGTERM can no longer flush inside systemd's stop timeout
 (#80764).
 
-`_sweep_agent_cache_under_pressure()` is the valve. Each watcher tick it compares the
-process's anonymous RSS against `memory_high_mb`; over budget, it evicts LRU agents
+`_sweep_agent_cache_under_pressure()` is the valve. Each watcher tick it compares anonymous
+memory against `memory_high_mb` — the cgroup's own `memory.stat` `anon` when the gateway runs
+under a cgroup limit (the scope the budget is charged against, so same-unit children such as
+`execute_code` kernels count; #110549), otherwise the process's own anonymous RSS; over budget, it evicts LRU agents
 through the same soft path the cap enforcer uses (`_commit_then_release_soft`), then
 runs `malloc_trim` so the freed arenas actually return to the OS. Evicted sessions
 rebuild their transcript from the persisted session on the next turn.

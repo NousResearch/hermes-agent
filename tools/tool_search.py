@@ -22,8 +22,8 @@ from tools.tool_search_catalog import (
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import normalize_tool_call_entries, validate_deferred_call_args
-from tools.connector_search import connections_in_scope, connector_entries_by_group, remote_schemas_for
-from tools.tool_gateway.names import CONNECTOR_BATCH_SENTINEL, is_connector_name
+from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
+from tools.connectors.search import connections_in_scope, connector_entries_by_group, remote_schemas_for
 
 logger = logging.getLogger("tools.tool_search")
 # Bound the work one bridge call requests. Search is capped at the gateway's
@@ -135,7 +135,7 @@ _DEFAULT_DEFERRED_TOOLS = frozenset({
     "todo_list", "process_manage", "cronjob_manage",
     # Desktop GUI surface (desktop_ui + project toolsets)
     "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
-    "show_tip", "setup_mcp", "desktop_project", "close_terminal",
+    "show_tip", "desktop_project", "close_terminal",
     "apply_layout", "read_terminal", "read_window_below", "focus_pane"})
 
 

@@ -162,6 +162,28 @@ def test_lock_owned_serve_pids_reads_valid_backend_lock(tmp_path):
     assert _lock_owned_serve_pids(base_dir=lock_root) == {7777}
 
 
+def test_lock_owned_serve_pids_sees_root_home_locks_from_a_profile_home(tmp_path, monkeypatch):
+    """A profile backend (``HERMES_HOME=<root>/profiles/<name>``) must still see the Desktop's SSH
+    locks, which live under ``<root>/desktop-ssh`` — otherwise its reaper kills the sibling
+    profile's live SSH backend on every profile switch (#89811)."""
+    import hermes_constants
+
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "flocki"
+    profile_home.mkdir(parents=True)
+    oid = "f" * 32
+    nonce = "d" * 16
+    (root / "desktop-ssh" / oid).mkdir(parents=True)
+    (root / "desktop-ssh" / oid / "backend.lock.json").write_text(
+        json.dumps(_valid_lock_payload(7777, oid, nonce))
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root)
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None, raising=False)
+
+    assert _lock_owned_serve_pids() == {7777}
+
+
 def test_valid_lockfile_payload_rejects_wrong_owner_and_shape():
     oid = "f" * 32
     nonce = "d" * 16

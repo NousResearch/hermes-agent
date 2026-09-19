@@ -3,10 +3,8 @@ import { Tip } from '@/components/ui/tooltip'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 
-// The live-catalog slugs the first-run picker shows, in this order. The catalog
-// decides what can be connected; this list picks the everyday apps out of it
-// (decision D89). A slug the catalog no longer carries is not shown, and a slug
-// the catalog gains is not shown until it is added here.
+// Curated leaders for the first-run picker. Other enabled catalog entries
+// remain searchable, so newly deployed connectors need no client list update.
 export const CONNECTOR_LEAD_ORDER = [
   'gmail',
   'googlecalendar',
@@ -35,7 +33,7 @@ export function orderConnectorPicks<T extends { connector: string; enabled?: boo
   const rank = new Map(CONNECTOR_LEAD_ORDER.map((slug, index) => [slug, index]))
 
   return rows
-    .filter(row => rank.has(row.connector) && row.enabled !== false && !CONNECTOR_PICKER_HIDDEN.has(row.connector))
+    .filter(row => row.enabled !== false && !CONNECTOR_PICKER_HIDDEN.has(row.connector))
     .sort((a, b) => {
       const ra = rank.get(a.connector) ?? Number.POSITIVE_INFINITY
       const rb = rank.get(b.connector) ?? Number.POSITIVE_INFINITY

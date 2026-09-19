@@ -43,6 +43,7 @@ import {
 } from '@/store/session'
 import { $sessionStates, isSessionRemote } from '@/store/session-states'
 import { clearSessionSubagents } from '@/store/subagents'
+import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
@@ -625,6 +626,14 @@ export function usePromptActions({
       if (cleanup?.state === 'completed') {
         return markCompleted()
       }
+
+      // The messaging service can be started from the app — offer it here
+      // instead of asking a desktop user a CLI question (desktop-17).
+      notify({
+        kind: 'error',
+        message: copy.handoff.timedOut,
+        action: { label: copy.handoff.startMessaging, onClick: () => void runGatewayRestart() }
+      })
 
       return { error: copy.handoff.timedOut, ok: false }
     },

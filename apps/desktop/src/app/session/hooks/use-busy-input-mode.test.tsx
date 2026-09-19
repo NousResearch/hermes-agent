@@ -8,6 +8,8 @@ import { $connection, $gatewayState } from '@/store/session'
 import { useBusyInputMode } from './use-busy-input-mode'
 
 vi.mock('@/store/session-request-router', () => ({
+  isSessionOwnerRoute: (owner: unknown) =>
+    typeof owner === 'object' && owner !== null && 'profile' in (owner as object),
   requestForSessionProfile: (
     _owner: unknown,
     request: (method: string, params: unknown) => Promise<unknown>,

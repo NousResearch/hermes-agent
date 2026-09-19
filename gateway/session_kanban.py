@@ -149,9 +149,16 @@ def bind_worker_context(frame):
             if (task is None or task.status != 'running' or task.current_run_id != context['run_id']
                     or task.claim_lock != context['claim_lock']):
                 raise RuntimeStoreError('stale_kanban_claim')
-            # Reclaim/timeout must track the executing interpreter, not its disposable viewer.
-            conn.execute('UPDATE tasks SET worker_pid=? WHERE id=?', (os.getpid(), task.id))
-            conn.execute('UPDATE task_runs SET worker_pid=? WHERE id=?', (os.getpid(), context['run_id']))
+            # Reclaim/timeout must track the executing interpreter, not its disposable viewer. The
+            # fingerprint moves with the pid: the dispatcher's liveness/kill checks compare the live
+            # process against ``worker_started_at``, so a launcher fingerprint left beside our pid
+            # would read as a recycled PID and reclaim a running worker.
+            from hermes_cli.kanban_db_dispatch import UNVERIFIED_WORKER_FINGERPRINT, _process_fingerprint
+            fingerprint = _process_fingerprint(os.getpid()) or UNVERIFIED_WORKER_FINGERPRINT
+            conn.execute('UPDATE tasks SET worker_pid=?, worker_started_at=? WHERE id=?',
+                         (os.getpid(), fingerprint, task.id))
+            conn.execute('UPDATE task_runs SET worker_pid=?, worker_started_at=? WHERE id=?',
+                         (os.getpid(), fingerprint, context['run_id']))
             kb._append_event(conn, task.id, 'worker_bound', {'pid': os.getpid(), 'claim_lock': context['claim_lock']}, run_id=context['run_id'])
     os.environ.update(env)
     os.chdir(context['workspace'])
@@ -162,7 +169,9 @@ def bind_worker_context(frame):
 def run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
-        return agent.run_conversation(frame['text'], conversation_history=history)
+        author = frame.get('turn_author')
+        return agent.run_conversation(frame['text'], conversation_history=history,
+                                      **({'turn_author': author} if author is not None else {}))
     from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
     code = 1
     try:

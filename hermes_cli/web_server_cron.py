@@ -319,11 +319,10 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     import os as _os
     multiplex = False
     try:
-        from gateway.config import _env_multiplex_profiles_override
-        multiplex = bool(cfg_get(load_config(), "gateway", "multiplex_profiles", default=False))
-        env_flag = _env_multiplex_profiles_override()
-        if env_flag is not None:
-            multiplex = env_flag
+        # The live default gateway's own record, else the explicit flag — never the merged default:
+        # an unset gateway.multiplex_profiles is settled by the gateway at boot, not by this process.
+        from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+        multiplex = default_gateway_multiplexes()
     except Exception:
         _log.debug("cron fire: multiplex detection failed; assuming single-profile", exc_info=True)
 

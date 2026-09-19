@@ -56,6 +56,16 @@ def _refresh_bindings_against_live_module():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_real_launchd_jobs():
+    """The kill path now scans the host's launchd jobs on macOS; a developer's own LaunchAgents
+    must never leak into these tests. Tests that need jobs patch the scan themselves; the one
+    test that exercises the real scan takes this fixture explicitly to get the original back."""
+    original = main_dashboard._loaded_launchd_backend_jobs
+    with patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=[]):
+        yield original
+
+
 def _ps_line(pid: int, cmd: str) -> str:
     """Format a line as it would appear in ``ps -A -o pid=,command=`` output."""
     return f"{pid:>7} {cmd}"
@@ -929,3 +939,157 @@ class TestPostUpdateStaleModuleReload:
 
         assert "hermes_cli._subprocess_compat" in reloaded
         assert "hermes_cli.dashboard_procs" in reloaded
+
+    def test_cleanup_failure_is_isolated_and_recorded(self, capsys):
+        """#112604 class: the cleanup runs pulled ``dashboard_procs`` in the pre-pull interpreter,
+        so a symbol gap raises AttributeError from inside the scan. That exception used to
+        propagate out of ``_finish_dashboard_update_cleanup`` and abort the fleet-verification
+        tail (matrix, reconciliation, inner receipt finalize). It must be contained, made
+        visible, and recorded as a failed step on the open receipt."""
+        import hermes_cli.update_receipt as ur
+        from hermes_cli import update_cmd
+
+        ur._current = None
+        try:
+            ur.begin_update_receipt()
+            with patch.object(update_cmd, "_reload_process_scan_modules"), patch(
+                "hermes_cli.main._kill_stale_dashboard_processes",
+                side_effect=AttributeError(
+                    "module 'hermes_cli.main_dashboard' has no attribute '_loaded_launchd_backend_jobs'"
+                ),
+            ):
+                update_cmd._finish_dashboard_update_cleanup([])  # must not raise
+
+            steps = {s["name"]: s for s in ur._current.data["steps"]}
+        finally:
+            ur._current = None
+
+        assert steps["dashboard_cleanup"]["ok"] is False
+        assert "_loaded_launchd_backend_jobs" in steps["dashboard_cleanup"]["detail"]
+        assert "_loaded_launchd_backend_jobs" in capsys.readouterr().out
+
+
+class TestLaunchdSupervisedBackends:
+    """macOS (#111689): a backend supervised by a launchd job must come back through launchd. Respawning
+    its argv detached leaves a copy holding the job's port, so every KeepAlive restart of the job
+    fails with "port already in use" and the backend that IS running is no longer supervised."""
+
+    ARGV = [
+        "/opt/hermes/venv/bin/python", "-m", "hermes_cli.main",
+        "dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--skip-build",
+    ]
+
+    @staticmethod
+    def _fake_kill(pid, sig):
+        if sig == 0:
+            raise ProcessLookupError
+
+    def _run(self, pid, jobs, *, restart_ok=True, restart_managed=True):
+        live = main_dashboard
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[pid]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=list(self.ARGV)), \
+             patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=jobs), \
+             patch.object(main_dashboard, "_restart_launchd_job", return_value=restart_ok) as restart, \
+             patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
+             patch("os.kill", side_effect=self._fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=restart_managed)
+        return result, restart, respawn
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_launchd_owned_backend_restarts_through_launchd_never_as_a_detached_respawn(self, capsys):
+        """The reporter's state: the job is loaded but has no live process (it keeps failing on the
+        port) and a detached copy runs its exact ProgramArguments. The copy is stopped and the JOB
+        is kickstarted; an argv respawn would recreate the port conflict. A failed kickstart counts
+        the PID as unrecovered and prints the manual command; a loaded job with a different argv
+        and PID leaves the manual-backend respawn untouched (control)."""
+        job = ("system", "ai.hermes.dashboard", list(self.ARGV), None)
+        result, restart, respawn = self._run(9102, [job])
+        respawn.assert_not_called()
+        restart.assert_called_once_with("system", "ai.hermes.dashboard", None)
+        assert result["killed"] == [9102] and result["unrecovered"] == []
+        out = capsys.readouterr().out
+        assert "✓ restarted launchd job system/ai.hermes.dashboard" in out
+        assert "when you're ready" not in out
+
+        result, restart, respawn = self._run(9103, [("gui/501", "ai.hermes.dashboard", list(self.ARGV), 9103)],
+                                             restart_ok=False)
+        respawn.assert_not_called()
+        assert result["unrecovered"] == [9103]
+        assert "run: launchctl kickstart -k gui/501/ai.hermes.dashboard" in capsys.readouterr().out
+
+        # A LaunchDaemon lives in the system domain: kickstart needs root, so a non-root hint says sudo.
+        with patch("hermes_cli.dashboard_procs.os.geteuid", return_value=501, create=True):  # windows-footgun: ok — patch target string, create=True
+            self._run(9105, [("system", "ai.hermes.serve", list(self.ARGV), None)], restart_ok=False)
+        assert "run: sudo launchctl kickstart -k system/ai.hermes.serve" in capsys.readouterr().out
+
+        other = ("gui/501", "ai.hermes.other", ["hermes", "dashboard", "--port", "8300"], 777)
+        result, restart, respawn = self._run(9104, [other])
+        restart.assert_not_called()
+        respawn.assert_called_once_with([list(self.ARGV)])
+        assert result["unrecovered"] == []
+
+    def test_loaded_backend_jobs_scans_plists_and_attributes_pids_host_independently(
+            self, tmp_path, monkeypatch, _no_real_launchd_jobs):
+        """Pure plist scan + attribution, runnable off macOS (platform forced): only LOADED jobs whose
+        ProgramArguments are a dashboard/serve backend are returned (gateway plists are never probed,
+        unloaded backends dropped, unreadable plists skipped, LaunchDaemons resolve to the system
+        domain); a PID is attributed by launchd's live PID, by a live-PID ancestor (exec-less
+        ``/bin/sh -c`` wrapper plist) or by exact argv (the detached copy), never otherwise."""
+        import plistlib
+
+        agents, daemons = tmp_path / "LaunchAgents", tmp_path / "LaunchDaemons"
+        agents.mkdir()
+        daemons.mkdir()
+        backend_argv = ["/opt/hermes/venv/bin/python", "-m", "hermes_cli.main", "dashboard", "--port", "9119"]
+        serve_argv = ["/opt/hermes/venv/bin/python", "-m", "hermes_cli.main", "serve", "--port", "8642"]
+        gateway_argv = ["/opt/hermes/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run"]
+        for path, label, argv in (
+            (agents / "ai.hermes.dashboard.plist", "ai.hermes.dashboard", backend_argv),
+            (agents / "ai.hermes.gateway.plist", "ai.hermes.gateway", gateway_argv),
+            (agents / "ai.hermes.serve-old.plist", "ai.hermes.serve-old", serve_argv),
+            (daemons / "ai.hermes.serve.plist", "ai.hermes.serve", serve_argv),
+        ):
+            with open(path, "wb") as f:
+                plistlib.dump({"Label": label, "ProgramArguments": argv}, f)
+        (agents / "broken.plist").write_bytes(b"not a plist")
+
+        uid = 501
+        probed: list[tuple[str, str]] = []
+
+        def fake_print(domain, label):
+            probed.append((domain, label))
+            if (domain, label) == (f"user/{uid}", "ai.hermes.dashboard"):
+                return (True, 4242)
+            if (domain, label) == ("system", "ai.hermes.serve"):
+                return (True, None)
+            return (False, None)
+
+        monkeypatch.setattr(main_dashboard.sys, "platform", "darwin")
+        monkeypatch.setattr(main_dashboard.os, "getuid", lambda: uid, raising=False)
+        with patch("hermes_cli.gateway._launchd_print_service_pid", side_effect=fake_print):
+            jobs = _no_real_launchd_jobs([("agent", agents), ("daemon", daemons)])
+
+        assert jobs == [
+            (f"user/{uid}", "ai.hermes.dashboard", backend_argv, 4242),
+            ("system", "ai.hermes.serve", serve_argv, None),
+        ]
+        assert not any(label == "ai.hermes.gateway" for _domain, label in probed)
+        assert probed[:2] == [(f"gui/{uid}", "ai.hermes.dashboard"), (f"user/{uid}", "ai.hermes.dashboard")]
+        assert not any(domain == "system" and label != "ai.hermes.serve" for domain, label in probed)
+
+        owning = main_dashboard._launchd_job_owning_backend
+        assert owning(4242, ["something", "else"], jobs) == (f"user/{uid}", "ai.hermes.dashboard", 4242)
+        assert owning(9999, ["python"], jobs, ancestors=[4242, 1]) == (f"user/{uid}", "ai.hermes.dashboard", 4242)
+        assert owning(9999, serve_argv, jobs) == ("system", "ai.hermes.serve", None)
+        # An earlier detached respawn runs the plist argv plus the ``--no-open`` the respawn path
+        # appends; it must still be attributed to the job, or every update respawns it again.
+        assert owning(9999, backend_argv + ["--no-open"], jobs) == (f"user/{uid}", "ai.hermes.dashboard", 4242)
+        assert owning(9999, serve_argv[:-1] + ["8643"], jobs) is None
+        assert owning(9999, None, jobs) is None
+        assert owning(4242, None, []) is None

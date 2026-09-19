@@ -23,10 +23,10 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
-    get_hermes_home, get_hermes_home_override, profile_name_for_home,
+    get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import is_truthy_value
+from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import canonicalize_replay_history
@@ -36,12 +36,17 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: 
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
+from tui_gateway.contracts import registry as _contracts
+# User-facing copy shared with the split method modules (they close over this namespace).
+from tui_gateway.user_messages import (  # noqa: F401
+    AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
+    resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
 logger = logging.getLogger(__name__)
 
-_hermes_home = get_hermes_home()
+_hermes_home = _HERMES_HOME_AT_IMPORT = get_hermes_home()
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
 
 
@@ -83,13 +88,6 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
-_pending: dict[str, tuple[str, threading.Event]] = {}
-_pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
-_answers: dict[str, str] = {}
-# Batch clarify accumulators: rid → {"qids": [...], "answers": {qid: answer}}. Written by
-# clarify.respond (per-question lock, update-in-place), read out by _block on resolution/timeout
-# so locked answers survive the deadline.
-_batch_clarify: dict[str, dict] = {}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -98,9 +96,8 @@ _cfg_lock = threading.Lock()
 # compare/check/write transaction needs its own lock, not the unrelated config cache lock.
 _profile_ui_meta_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
-_prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
-_cfg_mtime: float | None = None
+_cfg_sig: tuple | None = None
 _cfg_path = None
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
@@ -171,7 +168,7 @@ _LONG_HANDLERS = frozenset({
     "profiles.list", "profiles.set_asset", "bot_relay.roster.sync", "bot_relay.outbox.drain",
     "bot_relay.deliver", "bot_relay.reply", "image.generate", "projects.discover_repos",
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
-    "setup.runtime_check", "setup.status", "voice.toggle", "voice.record", "voice.tts", "wake.start",
+    "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
@@ -240,16 +237,14 @@ class _SlashWorker:
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
         # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
         # worker must resolve config/skills/state against the session's profile home, not the gateway's
-        # launch HERMES_HOME (#40677). The override goes through the build_subprocess_env factory's `extra`
-        # (applied last, always wins) instead of a hand-rolled env["HERMES_HOME"] assignment.
-        from tools.environments.local import build_subprocess_env
+        # launch HERMES_HOME (#40677).
+        from tools.environments.local import served_profile_child_env
 
         # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
-        # infra) are still stripped. Multi-profile sessions resolve against the session's profile
-        # home via `extra` (applied last, always wins); the base already carries the HOME contract.
-        env = _prepend_tool_paths(build_subprocess_env(
-            hermes_subprocess_env(inherit_credentials=True), scrub_secrets=False,
-            inherit_profile_home=False, extra={"HERMES_HOME": str(profile_home)} if profile_home else None))
+        # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and
+        # none of the launch profile's .env / TERMINAL_* residue, exactly what a standalone
+        # `hermes -p X` would load itself.
+        env = _prepend_tool_paths(served_profile_child_env(target_home=profile_home, inherit_credentials=True))
         # Internal slash workers must import the same checkout as their parent.
         module_root = str(Path(__file__).resolve().parent.parent)
         env["PYTHONPATH"] = os.pathsep.join(
@@ -381,16 +376,25 @@ _start_idle_reaper()
 # ── Plumbing ──────────────────────────────────────────────────────────
 
 
+def _launch_state_db_path() -> Path:
+    """Launch profile's ``state.db`` at call time: the patched ``_hermes_home`` when a test changed
+    it, else the live process home — resolved through :func:`get_process_hermes_home`, which honours
+    ``HERMES_HOME`` but ignores the context-local override. The desktop multiplex cron ticker sets
+    that override per profile at startup, and a first touch inside a foreign window would bind this
+    process-wide handle to another profile's ``state.db`` (#102526). Resolving here rather than at
+    import time lets a harness that redirects ``HERMES_HOME`` after import be honoured (#112692)."""
+    home = _hermes_home if _hermes_home != _HERMES_HOME_AT_IMPORT else get_process_hermes_home()
+    return Path(home) / "state.db"
+
+
 def _get_db():
     global _db, _db_error
     if _db is None:
         from hermes_state_registry import acquire
         try:
-            # Pin to import-time launch home (#102526). A bare acquire() follows
-            # get_hermes_home(), which the desktop multiplex cron ticker temporarily
-            # overrides per profile at startup — first touch inside a foreign window
-            # permanently binds this process-wide handle to the wrong state.db.
-            _db, _db_error = acquire(Path(_hermes_home) / "state.db"), None
+            # Launch home, never the context-local override (#102526); resolved at first
+            # use, not import time (#112692). See _launch_state_db_path.
+            _db, _db_error = acquire(_launch_state_db_path()), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)
@@ -432,9 +436,13 @@ def _open_profile_session_db(profile_home):
 
 
 @contextlib.contextmanager
-def _profile_db(params: dict | None = None):
+def _profile_db(params: dict | None = None, *, writer: bool = False):
     """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
-    profile handles, leaves the launch-profile shared handle open."""
+    profile handles, leaves the launch-profile shared handle open.
+
+    Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
+    gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
+    hermes_cli.web_routers.profiles._read_profile_db."""
     profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
@@ -442,8 +450,13 @@ def _profile_db(params: dict | None = None):
         db, owns = _get_db(), False
     else:
         try:
-            from hermes_state_registry import acquire
-            db, owns = acquire(Path(profile_home) / "state.db"), True
+            if writer:
+                from hermes_state_registry import acquire
+                db = acquire(Path(profile_home) / "state.db")
+            else:
+                from hermes_cli.web_server_sessions import _open_session_db_at_path
+                db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
+            owns = True
         except Exception as exc:
             logger.warning("TUI profile session store unavailable for %s: %s", profile, exc)
             db, owns = None, False
@@ -483,7 +496,12 @@ def _response_profile_name(profile: str | None = None) -> str:
 
 
 def _db_unavailable_error(rid, *, code: int):
-    return _err(rid, code, f"state.db unavailable: {_db_error or 'state.db unavailable'}")
+    from hermes_state_user_copy import describe_storage_failure, storage_failure_details
+    failure = describe_storage_failure(_db_error)
+    return _err(
+        rid, code,
+        f"Session storage is unavailable: {failure.gloss}. {failure.action}",
+        data={"code": failure.code, "cause": failure.cause, "details": storage_failure_details(_db_error)})
 
 
 # ── Per-session profile scoping: the desktop's app-global remote mode points every profile at this
@@ -509,10 +527,12 @@ def _profile_home(profile: str | None) -> Path | None:
     if home.resolve() == Path(_hermes_home).resolve():
         return None  # already the launch profile (no override needed)
     if home not in _served_profile_homes:
-        # Last moment ambient TERMINAL_* is provably the launch profile's own: freeze it for
-        # launch-profile turns before any secondary code runs (tui_gateway/launch_terminal_policy.py).
-        from tui_gateway.launch_terminal_policy import capture_launch_terminal_env
-        capture_launch_terminal_env()
+        # This process now hosts a second profile home: freeze the launch env as the launch
+        # profile's own and flip get_secret() to fail closed, so an unscoped read for a
+        # secondary raises instead of returning the launch profile's os.environ value
+        # (tui_gateway/launch_profile_policy.py). Must run before any secondary code.
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+        activate_multi_profile_hosting()
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
 
@@ -523,25 +543,21 @@ _served_profile_homes: set[Path] = set()
 
 
 def _profile_scoped(handler):
-    """Bind ``params['profile']``'s HERMES_HOME around a handler (pets/projects resolve via
-    ``get_hermes_home``, so app-global remote mode still hits the focused profile). No-op for launch.
+    """Bind ``params['profile']``'s full runtime scope (HERMES_HOME + secrets + terminal policy) around a
+    handler, so config.yaml ``${VAR}`` refs, provider credential checks and ``.env`` writes resolve to
+    THAT profile (app-global remote mode hits the focused profile). Home alone left ``get_secret`` on the
+    launch process's ``os.environ``: ``config.get full`` for a secondary shipped the default profile's
+    expanded secrets and ``config.set`` published a secondary's ``.env`` edit into the shared process env.
 
-    Secondary-profile adapters are constructed inside ``_profile_runtime_scope`` (secret scope installed +
-    multiplex active) — the same discriminator the Buzz/SimpleX adapters use for this bug class (#98738).
-    Once multiplexing is active, launch-profile *turns* bind their own terminal scope
-    (``prompt_turn._prepare_turn_input``) so they never depend on ambient ``os.environ``
-    that a secondary context might have poisoned (#107422). Single-profile processes stay
-    unscoped and keep legacy ``os.environ`` precedence.
+    Launch profile: unscoped while this is a single-profile process (legacy ``os.environ`` precedence,
+    systemd / ``op run`` injection); once multiplexing is active it binds its own scope from the env
+    frozen at activation (``_session_profile_runtime_scope``), never ambient state a secondary context
+    might have poisoned (#107422).
     """
     def wrapper(rid, params):
         home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-        if home is None:
+        with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
             return handler(rid, params)
-        token = set_hermes_home_override(home)
-        try:
-            return handler(rid, params)
-        finally:
-            reset_hermes_home_override(token)
     return wrapper
 
 
@@ -600,10 +616,12 @@ def write_json(obj: dict) -> bool:
     from tui_gateway.event_replay import _stamp_event
     from tui_gateway.hosted_room_member_activity import project_room_member_activity
     _stamp_event(obj)
-    if obj.get("method") == "event":
-        # A room member's hidden session has no transport: its frames would die at stdio below.
+    params = obj.get("params")
+    if obj.get("method") == "event" or (isinstance(obj.get("id"), str) and "method" in obj):
+        # Event notifications AND server→client requests carry ``params.session_id``; both route to the
+        # owning session's transport. A room member's hidden session has no transport: its frames would
+        # die at stdio below.
         project_room_member_activity(obj, _sessions)
-        params = obj.get("params")
         sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
             return t.write(obj)
@@ -611,12 +629,18 @@ def write_json(obj: dict) -> bool:
 
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
+    _contracts.check_payload(event, payload)
     params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
 def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
+
+
+from tui_gateway import server_requests as _server_requests  # noqa: E402
+
+_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -669,25 +693,30 @@ def _approval_request_payload(data: dict | None) -> dict:
     return payload
 
 
-def _pending_clarify_request_payload(sid: str) -> dict | None:
-    """Read-only snapshot of the clarify prompt still blocking a session: a client detached when
-    `clarify.request` was emitted would otherwise never see it (agent parked until timeout). Same replay
-    contract as `pending_approval`: the registry stays authoritative; `clarify.respond` resolves by request_id."""
-    with _prompt_lock:
-        for rid, (owner_sid, _ev) in _pending.items():
-            event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
-            if owner_sid != sid or event != "clarify.request":
-                continue
-            snapshot = dict(prompt_payload)
-            # Batch clarify: replay the answers locked so far so a reconnecting client restores its ✓ state.
-            if (batch := _batch_clarify.get(rid)) is not None and batch["answers"]:
-                snapshot["answers"] = dict(batch["answers"])
-            return snapshot
+def _open_requests(sid: str) -> list[dict]:
+    """Server→client requests still waiting on *sid*'s renderer, for reconnect snapshots (``session.resume`` /
+    ``session.activate`` / ``session.events.since``). A client detached when the request frame was written would
+    otherwise never see it (agent parked until timeout). Under turn isolation the compute-host child owns the
+    request; the parent mirrors it from the relayed frame (compute_host_bridge)."""
+    from tui_gateway import server_requests
+    reqs = server_requests.open_requests(sid)
+    if reqs:
+        return reqs
     if (session := _sessions.get(sid)) is not None:
         with session.get("history_lock", threading.Lock()):
-            pending = session.get("_compute_host_pending_clarify")
-            return dict(pending) if isinstance(pending, dict) else None
-    return None
+            mirrored = session.get("_compute_host_open_request")
+            return [dict(mirrored)] if isinstance(mirrored, dict) else []
+    return []
+
+
+def _pending_connection_request_payload(sid: str) -> dict | None:
+    """The open connection operation on *sid* as its ``connection.request`` payload, so a client
+    that missed the event (or restarted) restores the card with the server's deadline."""
+    from tools.connectors import live
+
+    session = _sessions.get(sid)
+    operation = live.current(str(session.get("session_key") or "")) if session else None
+    return operation.request_payload() if operation is not None else None
 
 
 def _pending_approval_request_payload(session_key: str) -> dict | None:
@@ -702,12 +731,29 @@ def _pending_approval_request_payload(session_key: str) -> dict | None:
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
-    """Emit ``approval.request`` with the command redacted: a credential-shaped value Tirith flagged would
-    otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
+    """Send an ``approval`` server request with the command redacted: a credential-shaped value Tirith flagged
+    would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
+    See #48456, #50767.
 
-    Reuse the shared gateway See #48456, #50767.
-    """
-    _emit("approval.request", sid, _approval_request_payload(data))
+    The wait is owned by ``tools.approval``'s queue (its own timeout, ``/approve all``, coalescing), so the request
+    is queue-backed: the response resolves the queue entry, and the entry's own resolution (any surface, timeout,
+    interrupt) withdraws the request with ``request.cancel``."""
+    from tui_gateway import server_requests
+    from tools import approval as _approval
+    payload = _approval_request_payload(data)
+    request_id = str(payload.get("request_id") or "")
+    session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
+
+    def on_result(result: dict | None) -> None:
+        if result is None:  # withdrawn: the queue entry resolves on its own path
+            return
+        choice = str(result.get("choice") or "deny")
+        _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
+                                           request_id=request_id or None)
+
+    settle = server_requests.send_async("approval", sid, payload, on_result)
+    if request_id:
+        _approval.register_gateway_settle(session_key, request_id, settle)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -745,9 +791,16 @@ def _err(rid, code: int, msg: str, data=None) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": error}
 
 
+def register_method(name: str, fn) -> None:
+    """The ONE registration seam (``@method`` here and ``HandlerRegistry.install`` for the split
+    modules). ``tests/tui_gateway/contracts/test_generated.py::test_every_method_has_a_contract`` and the
+    generator's ``assert_complete`` fail when a registered name has no contract."""
+    _methods[name] = fn
+
+
 def method(name: str):
     def dec(fn):
-        _methods[name] = fn
+        register_method(name, fn)
         return fn
     return dec
 
@@ -771,14 +824,26 @@ def handle_request(req: dict) -> dict | None:
         return normalized
     rid, method, params = normalized
     if not (fn := _methods.get(method)):
-        return _err(rid, -32601, f"unknown method: {method}")
+        return _err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
+                    "(different versions); run `hermes update` and restart both")
+    # Test doubles register straight into ``_methods`` without a contract; every production
+    # handler comes through ``register_method`` and therefore has one.
+    contract = _contracts.METHODS.get(method)
+    if contract is not None:
+        params, problem = _contracts.validate_params(contract, params)
+        if problem is not None:
+            return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
     try:
-        return fn(rid, params)
+        response = fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
     finally:
         _current_rpc_method.reset(token)
+    if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
+        _contracts.check_params_accepted(contract, params)
+        _contracts.check_result(contract, response["result"])
+    return response
 
 
 def _current_session_steer_authority(session_id: str) -> tuple[Transport | None, dict | None]:
@@ -809,6 +874,12 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     t = transport or _stdio_transport
     token = bind_transport(t)
     try:
+        from tui_gateway import server_requests
+        if server_requests.is_response_frame(req):
+            # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
+            if not server_requests.resolve_response(req) and not _relay_compute_host_response(req):
+                logger.debug("dropping response for unknown server request id=%r", req.get("id"))
+            return None
         normalized = _normalize_request(req)
         if isinstance(normalized, dict):
             return normalized
@@ -875,17 +946,17 @@ def _load_cfg_raw() -> dict:
     read→mutate→``_save_cfg`` round-trips and raw inspection (defaults / managed overlay / ``${VAR}``
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
-    global _cfg_cache, _cfg_mtime, _cfg_path
+    global _cfg_cache, _cfg_sig, _cfg_path
     with contextlib.suppress(Exception):
         p = _active_config_path()
-        mtime = p.stat().st_mtime if p.exists() else None
+        sig = file_signature(p.stat()) if p.exists() else None
         with _cfg_lock:
-            if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
+            if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         from hermes_cli.config import read_user_config_raw
         data = read_user_config_raw(p) if p.exists() else {}
         with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
-            _cfg_cache, _cfg_mtime, _cfg_path = copy.deepcopy(data), mtime, p
+            _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
         return data
     return {}
 
@@ -902,7 +973,7 @@ def _load_cfg() -> dict:
 
 
 def _save_cfg(cfg: dict):
-    global _cfg_cache, _cfg_mtime, _cfg_path
+    global _cfg_cache, _cfg_sig, _cfg_path
     from utils import atomic_roundtrip_yaml_save
     path = _active_config_path()
     # Comment-, ordering- and Unicode-preserving write (a plain safe_dump clobbered hand-written configs);
@@ -911,9 +982,9 @@ def _save_cfg(cfg: dict):
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
-            _cfg_mtime = path.stat().st_mtime
+            _cfg_sig = file_signature(path.stat())
         except Exception:
-            _cfg_mtime = None
+            _cfg_sig = None
 
 
 def _session_for_key(session_key: str) -> dict | None:
@@ -964,55 +1035,14 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-# Blocking bridges whose `*.respond` tolerates a late reply (allow_expired=True): on timeout the tool
-# returns empty, but a slow renderer could still answer and hit a raw 4009 — `.expire` tears the card down.
-_EXPIRING_REQUESTS = frozenset({
-    "secret.request", "sudo.request", "vault.unlock.request", "vault.save_login.request", "vault.code.request", "clarify.request",
-    "terminal.read.request",
-    "preview.read.request", "preview.act.request", "window.read.request", "mcp.setup.request",
-    "tour.request",
-})
+def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> str:
+    """Server→client request whose answer is one string under ``value`` (sudo, secret, vault prompts, GUI reads,
+    MCP setup). Empty string when the renderer skipped, timed out, or was cancelled."""
+    from tui_gateway import server_requests
+    result = server_requests.send(method, sid, params, timeout=timeout)
+    value = (result or {}).get("value", "")
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
-
-def _block(event: str, sid: str, payload: dict, timeout: float | None = 300, batch_qids: list[str] | None = None) -> str:
-    rid = uuid.uuid4().hex[:8]
-    ev = threading.Event()
-    with _prompt_lock:
-        _pending[rid] = (sid, ev)
-        payload["request_id"] = rid
-        _pending_prompt_payloads[rid] = (event, dict(payload))
-        if batch_qids:
-            # Multi-question clarify: per-question answers accumulate here (update-in-place until every
-            # qid is locked); locked answers survive a timeout — see the batch read-out below.
-            _batch_clarify[rid] = {"qids": list(batch_qids), "answers": {}}
-    answered, batch_answers = False, None
-    try:
-        _emit(event, sid, payload)
-        # Event semantics: None → wait forever (clarify_timeout <= 0; released only by a real answer or
-        # session.interrupt), 0 → return immediately, > 0 → bounded wait.
-        answered = ev.wait(timeout)
-    finally:
-        with _prompt_lock:
-            _pending.pop(rid, None)
-            _pending_prompt_payloads.pop(rid, None)
-            answer_present = rid in _answers
-            answer = _answers.pop(rid, "")
-            if (batch_state := _batch_clarify.pop(rid, None)) is not None:
-                batch_answers = dict(batch_state["answers"])
-    expire = lambda: _emit(f"{event.removesuffix('.request')}.expire", sid, {"request_id": rid})
-    if batch_qids is not None:
-        # Cancel-all (respond with no question_id) resolves via _answers with "" — a plain cancel, not a partial result.
-        if answer_present:
-            return answer
-        result: dict[str, object] = {"answers": batch_answers or {}}
-        if not answered:
-            # Deadline hit: keep what was locked, report the rest as absences (not skips), still expire live cards.
-            result["timed_out"] = True
-            expire()
-        return json.dumps(result, ensure_ascii=False)
-    if not answered and not answer_present and event in _EXPIRING_REQUESTS:
-        expire()
-    return answer
 
 
 def _clarify_timeout_seconds() -> float | None:
@@ -1026,16 +1056,23 @@ def _clarify_timeout_seconds() -> float | None:
 
 
 def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
-    """Bridge the clarify tool callback onto _block. Single-question payloads keep their historical shape
-    (``multi_select`` only when True — older renderers never see a new field); batch calls emit one
-    clarify.request with only the wire fields (the tool-side entries carry result-assembly keys too)."""
+    """Bridge the clarify tool callback onto a ``clarify`` server request. Single question: the response is
+    ``{"answer"}`` ("" = skip). Batch: one request with only the wire fields (tool-side entries carry
+    result-assembly keys too); answers lock one at a time through ``clarify.lock`` and the tool gets
+    ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
+    from tui_gateway import server_requests
     if questions:
         wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
                 for e in questions]
-        return _block("clarify.request", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                      batch_qids=[e["qid"] for e in questions])
-    payload = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    return _block("clarify.request", sid, payload, timeout=_clarify_timeout_seconds())
+        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+                                      qids=[e["qid"] for e in questions])
+        if not result or "answers" not in result:
+            return ""
+        return json.dumps(result, ensure_ascii=False)
+    params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
+    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
+    answer = (result or {}).get("answer", "")
+    return answer if isinstance(answer, str) else ""
 
 
 # A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
@@ -1053,12 +1090,12 @@ _TOUR_BRIDGE_UNAVAILABLE = json.dumps({
 
 
 def _tour_request(sid: str, payload: dict) -> str:
-    """Bridge the tour tool callback onto _block without paying for a client that cannot answer: against
-    an older app nobody calls ``tour.respond`` and each action would block the full deadline, stacking per
+    """Bridge the tour tool callback onto a ``tour`` server request without paying for a client that cannot answer: against
+    an older app nobody answers ``tour`` and each action would block the full deadline, stacking per
     turn. First action per session gets the short probe deadline; unanswered → bridge marked unavailable
     for that session; once answered, the full deadline. Verdict lives on the record, so a new session re-probes.
 
-    The renderer's ``tour.request`` handler ships in the desktop bundle, but the tool is offered by this
+    The renderer's ``tour`` handler ships in the desktop bundle, but the tool is offered by this
     backend — and the two update on different clocks. The model then does what the schema tells it to and
     tries the next action, so a single "give me a tour" turn stacks those waits (the timeouts reported
     against #89620).
@@ -1069,8 +1106,8 @@ def _tour_request(sid: str, payload: dict) -> str:
     state = session.get("tour_bridge")
     if state == "unanswered":
         return _TOUR_BRIDGE_UNAVAILABLE
-    answer = _block("tour.request", sid, dict(payload),
-                    timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S)
+    answer = _ask("tour", sid, dict(payload),
+                  timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S)
     if answer:
         session["tour_bridge"] = "answered"
     elif state != "answered":
@@ -1079,13 +1116,10 @@ def _tour_request(sid: str, payload: dict) -> str:
 
 
 def _clear_pending(sid: str | None = None) -> None:
-    """Release pending prompts with an empty answer: only *sid*'s (session.interrupt must not cancel other
-    sessions' prompts), or every one when *sid* is None (shutdown)."""
-    with _prompt_lock:
-        for rid, (owner_sid, ev) in list(_pending.items()):
-            if sid is None or owner_sid == sid:
-                _answers[rid] = ""
-                ev.set()
+    """Withdraw open server→client requests: only *sid*'s (session.interrupt must not cancel other sessions'
+    prompts), or every one when *sid* is None (process exit). Each one gets a ``request.cancel``."""
+    from tui_gateway import server_requests
+    server_requests.cancel(sid, reason="interrupted" if sid else "shutdown")
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -1109,22 +1143,19 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     if live is None or not hasattr(live[0], "_build_system_prompt") or not hasattr(live[2], "update_system_prompt"):
         return
     agent, session_key, db = live
-    # Re-bind the session's profile HERMES_HOME (the build's finally reset it → root profile's SOUL.md/skills)
-    # and session context (on the RPC thread _SESSION_CWD is unset → the process TERMINAL_CWD would persist).
-    # Without this, _start_agent_build's finally block has already reset the override and the rebuilt prompt
-    # silently uses the root profile's SOUL.md and skills. See issue #50233.
-    profile_home = session.get("profile_home")
-    home_token = set_hermes_home_override(profile_home) if profile_home else None
+    # Re-bind the session's profile runtime scope (the build's finally reset it → root profile's SOUL.md/skills,
+    # #50233) and session context (on the RPC thread _SESSION_CWD is unset → the process TERMINAL_CWD would
+    # persist). The full scope, not HERMES_HOME alone: the external memory provider's system_prompt_block()
+    # reads its credential through get_secret, which fails closed once this process multiplexes (#112927).
     session_tokens = _set_session_context(session_key, cwd=_session_cwd(session))
     try:
-        prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
+        with _session_profile_runtime_scope(session):
+            prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
         db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
     except Exception:
         logger.warning("failed to persist live session system prompt for session %s", session_key, exc_info=True)
     finally:
         _clear_session_context(session_tokens)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
 
 
 # Stable leading text of the model-switch marker (builder + dedup); only the newest marker is meaningful.
@@ -1316,8 +1347,10 @@ def _current_profile_name() -> str:
 # Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
 # one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
 # v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
-# v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key.
-DESKTOP_BACKEND_CONTRACT = 6
+# v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
+# v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
+# backend still emits `<kind>.request` notifications the renderer no longer listens for.
+DESKTOP_BACKEND_CONTRACT = 7
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -1816,31 +1849,6 @@ def _start_usage_ticker(sid: str, agent, interval: float = 1.0) -> tuple[threadi
     return stop, thread
 
 
-# ── Methods: respond ─────────────────────────────────────────────────
-
-
-def _respond(rid, params, key, *, allow_expired=False):
-    r = params.get("request_id", "")
-    question_id = str(params.get("question_id") or "")
-    with _prompt_lock:
-        entry = _pending.get(r)
-        if not entry:
-            return _ok(rid, {"status": "expired"}) if allow_expired and r else _err(rid, 4009, f"no pending {key} request")
-        _, ev = entry
-        batch = _batch_clarify.get(r)
-        if batch is not None and question_id:
-            # Per-question lock; update-in-place so an answer stays editable until every qid is locked (Confirm).
-            if question_id not in batch["qids"]:
-                return _err(rid, 4002, f"unknown question_id {question_id!r}")
-            batch["answers"][question_id] = params.get(key, "")
-            if not (remaining := [qid for qid in batch["qids"] if qid not in batch["answers"]]):
-                ev.set()
-            return _ok(rid, {"status": "ok", "remaining": remaining})
-        _answers[r] = params.get(key, "")
-        ev.set()
-    return _ok(rid, {"status": "ok"})
-
-
 # ── Methods: tools & system ──────────────────────────────────────────
 
 
@@ -1932,10 +1940,8 @@ def _resolve_name(name: str) -> str:
 _paste_counter = 0
 
 
-# mcp.servers.* handlers (methods_tools) resolve these BARE through this namespace.
-from .mcp_rpc_helpers import (  # noqa: E402, F401
-    reset_profile as _mcp_reset_profile,
-    summarize_server as _mcp_summarize_server)
+# mcp.servers.* handlers (methods_tools) resolve this BARE through this namespace.
+from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server  # noqa: E402, F401
 
 
 # ── Split @method handler modules (see method_ctx.py): imported last so every global the handlers close

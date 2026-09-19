@@ -87,6 +87,33 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     return profile
 
 
+def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool:
+    """Whether an active route or its aggregator-targeted model rejects image tool parts.
+
+    Routing aggregators such as ``openrouter`` send vendor-prefixed model IDs
+    (for example, ``xiaomi/mimo-v2.5``), but their own profile cannot describe
+    every routed provider's tool-message compatibility. Preserve the transport
+    profile as the default and consult a registered target profile only for
+    routing aggregators. Missing or unrecognized identities deliberately fail open.
+    """
+    provider_name = str(provider or "").strip().lower()
+    profile = get_provider_profile(provider_name)
+    if profile is not None and profile.supports_vision_tool_messages is False:
+        return True
+    # Routing aggregators accept a ``vendor/model`` identifier while the request is sent
+    # to the aggregator; the target provider can have stricter message-shape support than
+    # the aggregator's generic OpenAI-compatible transport profile.
+    from hermes_cli.providers import is_routing_aggregator
+    if not is_routing_aggregator(provider_name):
+        return False
+
+    target_name, separator, _ = str(model or "").strip().partition("/")
+    if not separator or not target_name:
+        return False
+    target_profile = get_provider_profile(target_name.strip().lower())
+    return target_profile is not None and target_profile.supports_vision_tool_messages is False
+
+
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
     from agent.safe_worker_policy import safe_worker_enabled

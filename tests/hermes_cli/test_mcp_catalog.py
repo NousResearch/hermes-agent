@@ -144,6 +144,57 @@ class TestManifestParsing:
         assert sg.keywords == ["jira", "confluence"]
         assert sg.hosts == ["atlassian.net", "atlassian.com"]
 
+    def test_suggest_onboarding_metadata_is_additive(self, catalog_dir):
+        from hermes_cli.mcp_catalog import _build_server_config, _parse_manifest
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        triggers = {"keywords": ["Demo "], "hosts": [".Example.com"]}
+        path = _write_manifest(catalog_dir, "demo", _basic_manifest(suggest=triggers))
+        legacy = _parse_manifest(path)
+        enriched = {**triggers, "applications": ["Blender", "Visual Studio Code"],
+                    "examples": ["Create a scene from this sketch."], "future_hint": "ignored"}
+        _write_manifest(catalog_dir, "demo", _basic_manifest(suggest=enriched))
+        entry = _parse_manifest(path)
+        assert entry.suggest is not None and legacy.suggest is not None
+        assert entry.suggest.applications == enriched["applications"]
+        assert entry.suggest.examples == enriched["examples"]
+        assert entry.suggest.keywords == legacy.suggest.keywords == ["demo"]
+        assert entry.suggest.hosts == legacy.suggest.hosts == ["example.com"]
+        assert legacy.suggest.applications == legacy.suggest.examples == []
+        assert _catalog_entry_json(entry, False, False)["suggest"] == {
+            "keywords": ["demo"], "hosts": ["example.com"],
+            "applications": enriched["applications"], "examples": enriched["examples"],
+            "requires_app": False,
+        }
+        assert _build_server_config(entry, None) == _build_server_config(legacy, None)
+        _write_manifest(catalog_dir, "demo", _basic_manifest(suggest={"applications": ["Blender"]}))
+        assert _parse_manifest(path).suggest.applications == ["Blender"]
+
+    def test_suggest_discovery_metadata_is_bounded_data(self, catalog_dir):
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        def parse(**metadata):
+            path = _write_manifest(catalog_dir, "demo", _basic_manifest(
+                suggest={"keywords": ["demo"], **metadata}))
+            return _parse_manifest(path)
+
+        entry = parse(applications=["Blender"], requires_app=True)
+        assert entry.suggest is not None and entry.suggest.requires_app is True
+        assert _catalog_entry_json(entry, False, False)["suggest"]["requires_app"] is True
+        assert parse().suggest.requires_app is False
+        for metadata in (
+            {"applications": "Blender"}, {"applications": [None]}, {"applications": ["/Applications/Blender.app"]},
+            {"applications": ["../blender"]}, {"applications": ["C:\\Blender"]}, {"applications": [".*"]},
+            {"applications": ["blender; id"]}, {"applications": ["--help"]}, {"applications": ["x" * 81]},
+            {"applications": ["Blender"] * 17}, {"applications": [" Blender"]}, {"applications": ["\n"]},
+            {"examples": "example"}, {"examples": [""]}, {"examples": ["x" * 241]},
+            {"examples": ["x"] * 7}, {"examples": ["one\ntwo"]}, {"requires_app": "true"},
+            {"requires_app": 1}, {"requires_app": True},
+        ):
+            with pytest.raises(CatalogError, match="suggest"):
+                parse(**metadata)
+
     def test_suggest_keywords_only_is_valid(self, catalog_dir):
         _write_manifest(catalog_dir, "demo", _basic_manifest(suggest={"keywords": ["demo"]}))
         from hermes_cli.mcp_catalog import list_catalog

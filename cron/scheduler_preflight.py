@@ -329,10 +329,18 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
                if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]
     if not missing:
         return None
+    # The reason is what the operator reads in the gateway log and the alert. It must say the
+    # block is not sticky: a server that is merely unreachable for a minute (router reboot, DNS
+    # blip) is parked and self-probed by the MCP layer, and this check re-runs on every dispatch,
+    # so the job resumes on its own — two operators misread the old text as a config error to
+    # repair by hand (#112871).
     return (
         f"MCP server(s) {', '.join(sorted(missing))} named in this job's enabled_toolsets "
         "resolved to zero tools for this profile (not connected, or connected for another "
-        "profile only). Fix the server or remove it from the job's toolsets.")
+        "profile only). If the server is only temporarily unreachable this clears by itself — "
+        "the check re-runs on every dispatch and the job resumes once the server reconnects. "
+        "If the name is wrong or belongs to another profile, fix the server or remove it from "
+        "the job's toolsets.")
 
 
 def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:

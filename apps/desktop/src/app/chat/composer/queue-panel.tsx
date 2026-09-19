@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { CornerDownLeft, iconSize, Pencil, SteeringWheel, Trash2 } from '@/lib/icons'
+import { CornerDownLeft, iconSize, Pencil, SteeringWheel } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { isSteerableEntry, type QueuedPromptEntry } from '@/store/composer-queue'
 
@@ -84,10 +84,11 @@ export function QueuePanel({
         return (
           <StatusRow
             className={cn(
-              'border border-transparent',
-              isEditing && 'border-[color-mix(in_srgb,var(--dt-composer-ring)_40%,transparent)] bg-accent/25'
+              isEditing && 'ring-1 ring-inset ring-[color-mix(in_srgb,var(--dt-composer-ring)_40%,transparent)] bg-accent/25'
             )}
+            dismiss={{ label: c.queueDelete, onDismiss: () => onDelete(entry.id) }}
             key={entry.id}
+            leading={<Codicon className="text-muted-foreground/70" name="comment" size="0.8rem" />}
             trailing={
               lost && onDiscardLost ? (
                 <Tip label={c.queueLostDiscardTip}>
@@ -143,18 +144,6 @@ export function QueuePanel({
                     variant="ghost"
                   >
                     <CornerDownLeft className={iconSize.xs} />
-                  </Button>
-                </Tip>
-                <Tip label={c.queueDelete}>
-                  <Button
-                    aria-label={c.queueDelete}
-                    className="size-5 rounded-md"
-                    onClick={() => onDelete(entry.id)}
-                    size="icon-xs"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Trash2 className={iconSize.xs} />
                   </Button>
                 </Tip>
               </>

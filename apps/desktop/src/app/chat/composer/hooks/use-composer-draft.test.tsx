@@ -441,4 +441,46 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     expectForegroundSelectionPreserved(foreground)
     foreground.editor.remove()
   })
+
+  it.each([false, true])('a late callback preserves another editor’s selection (hidden=%s)', hidden => {
+    let draft!: ReturnType<typeof useComposerDraft>
+
+    function Draft() {
+      draft = useComposerDraft({
+        activeQueueSessionKey: 'late-reject',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: 'late-reject'
+      })
+
+      return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+    }
+
+    const { rerender } = render(
+      <PaneVisibleContext value={true}>
+        <Draft />
+      </PaneVisibleContext>
+    )
+
+    const lateRestore = draft.loadIntoComposer
+    const lateFocus = draft.focusInput
+    rerender(
+      <PaneVisibleContext value={!hidden}>
+        <Draft />
+      </PaneVisibleContext>
+    )
+    const foreground = createForegroundSelection()
+    markActiveComposer('tile:foreground')
+
+    act(() => {
+      lateRestore('rejected draft', [])
+
+      if (hidden) {lateFocus()}
+    })
+
+    expect(composerPlainText(draft.editorRef.current!)).toBe('rejected draft')
+    expectForegroundSelectionPreserved(foreground)
+    foreground.editor.remove()
+  })
 })

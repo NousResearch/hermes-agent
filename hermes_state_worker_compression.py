@@ -294,7 +294,9 @@ def worker_archive(db, conn, sid, payload):
     _fields(payload, ('messages', 'model_config_patch', 'watermark', 'lock_holder', 'tail_count'))
     _handoff_messages(conn, sid, payload['messages'])
     _watermarks(payload)
-    _text(payload['lock_holder'])
+    # Micro-compaction and proactive prune archive in place without a lease, like the owner path.
+    if payload['lock_holder'] is not None:
+        _text(payload['lock_holder'])
     patch = payload['model_config_patch']
     if patch is not None and (not isinstance(patch, dict) or set(patch) - SIDECAR_KEYS):
         raise RuntimeStoreError('invalid_params')

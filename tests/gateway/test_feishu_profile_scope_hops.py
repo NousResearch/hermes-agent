@@ -123,8 +123,11 @@ def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope
             _ws_ping_interval=None, _ws_ping_timeout=None, _ws_client=None, _ws_future=None,
             _prepare_client=lambda: "feishu-domain", _hydrate_bot_identity=AsyncMock(),
         )
+        # The WS thread runs on the adapter-owned pool, never the loop default executor.
+        stub._get_sdk_executor = fa.FeishuAdapter._get_sdk_executor.__get__(stub)
         await fa.FeishuAdapter._connect_websocket(stub)
         await stub._ws_future
+        stub._sdk_executor.shutdown(wait=True)
 
     asyncio.run(scenario())
     assert seen == {"ws_thread": ("routed", "routed-value"), "loop_callback": ("routed", "routed-value")}

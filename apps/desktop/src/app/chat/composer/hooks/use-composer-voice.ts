@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
@@ -16,9 +16,10 @@ import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from 
 import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
+import { pinFloatingComposerCapture } from '../floating-target'
 import type { ComposerTarget } from '../focus'
 import { onComposerVoiceToggleRequest } from '../focus'
-import { useComposerScope } from '../scope'
+import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
@@ -86,6 +87,15 @@ export function useComposerVoice({
     onTranscript: insertText,
     onTranscribeAudio
   })
+
+  const surfaceId = useComposerSurfaceId()
+  const capturing = voiceConversationActive || voiceStatus !== 'idle'
+
+  useLayoutEffect(() => {
+    if (surfaceId && capturing) {
+      return pinFloatingComposerCapture(surfaceId)
+    }
+  }, [capturing, surfaceId])
 
   /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
   const pendingResponse = () => {

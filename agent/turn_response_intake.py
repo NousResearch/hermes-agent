@@ -173,6 +173,7 @@ def normalize_model_response(
         _codex_result = continue_codex_incomplete(
             agent, assistant_message, finish_reason, messages=messages,
             conversation_history=conversation_history, api_call_count=api_call_count,
+            response=response,
         )
         if _codex_result is not None:
             return _verdict("return", _codex_result)

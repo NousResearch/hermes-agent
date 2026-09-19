@@ -199,6 +199,27 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
         _notif_loop_status(sid, decision["message"])
 
 
+def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
+    """Whether the gateway's heartbeat poller owns this session's due tick.
+
+    Desktop/TUI can attach to a messaging conversation, but its session-owner poller has no adapter
+    route for the reply. Ownership is the gateway's LIVE routing index, not the row's immutable
+    ``source``: ``gateway/run_heartbeat_restore.py`` only registers watches for a non-suspended,
+    origin-bearing key whose current ``session_id`` is this one, so a row archived by /reset,
+    auto-reset or compression rotation belongs to nobody there and must keep firing here. The index
+    lives in the gateway's home store (the launch handle for a multiplexed gateway, the profile's
+    own store for a per-profile gateway), so both are consulted; no entry is fail-open.
+    """
+    try:
+        with _session_db(session) as db:
+            for store in {id(d): d for d in (db, _get_db()) if d is not None}.values():
+                if (entry := store.gateway_routing_entry_for_session(session_key)) is not None:
+                    return bool(entry.get("origin")) and not entry.get("suspended")
+        return False
+    except Exception:
+        return False
+
+
 def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     """Fire a due /heartbeat prompt for an idle TUI/Desktop/dashboard session (#102056, #103044).
 
@@ -216,8 +237,10 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = HeartbeatManager(session_id=sid_key)
-    if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
-        return  # not due, or busy — the tick coalesces to the next idle poll
+    if not mgr.is_active() or not mgr.state.is_due() or _notif_gateway_owns_heartbeat(session, sid_key):
+        return  # not due, or the gateway poller owns the routed conversation — stays due there
+    if not _notif_claim_turn(session):
+        return  # busy — the tick coalesces to the next idle poll
     if not (prompt := mgr.due_prompt()):
         _notif_release_turn(session)
         return
@@ -234,6 +257,14 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
             mgr.abandon_fire()
 
 
+def _loop_route_is_gateway_chat(state) -> bool:
+    """A /loop set from a messaging chat carries the gateway's ``route`` (platform + chat_id); its wakeup scanner
+    (``gateway/run_goals.py::_loop_wakeup_fire_one``) fires those and skips route-less CLI/TUI loops. Mirror it here
+    so a Desktop viewer of the same session never consumes the tick and strands the reply off the chat."""
+    route = getattr(state, "route", None) or {}
+    return bool(route.get("platform") and route.get("chat_id"))
+
+
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
@@ -244,7 +275,9 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = LoopManager(session_id=sid_key)
-    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not _notif_claim_turn(session):
+    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or _loop_route_is_gateway_chat(mgr.state):
+        return  # not due, or the gateway's wakeup scanner owns the routed chat — stays due there
+    if not _notif_claim_turn(session):
         return  # busy — stays due, next poll retries
     if not (wakeup := mgr.fire_tick()):
         _notif_release_turn(session)

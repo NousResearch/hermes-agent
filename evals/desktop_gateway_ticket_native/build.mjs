@@ -5,7 +5,7 @@ const directory = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(path.resolve(directory, '../../apps/desktop/package.json'))
 const { build } = require('esbuild')
 await build({
-  entryPoints: [path.join(directory, 'electron-main.ts')], outfile: process.argv[2],
+  entryPoints: [process.argv[3] ? path.resolve(process.argv[3]) : path.join(directory, 'electron-main.ts')], outfile: process.argv[2],
   bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'],
   nodePaths: [path.resolve(directory, '../../node_modules'), path.resolve(directory, '../../apps/desktop/node_modules')]
 })

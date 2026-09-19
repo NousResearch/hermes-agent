@@ -20,7 +20,7 @@
  *   { type: 'manifest',  stages: [{name, title, category, needs_user_input}, ...] }
  *   { type: 'stage',     name, state: 'running'|'succeeded'|'skipped'|'failed',
  *                        json?, durationMs?, error? }
- *   { type: 'log',       stage?, line, stream: 'stdout'|'stderr' } // raw line from install.ps1
+ *   { type: 'log',       stage?, line, stream: 'stdout'|'stderr' } // one installer line, escapes stripped
  *   { type: 'complete',  marker: <written marker payload> }
  *   { type: 'failed',    stage?, error }     // bootstrap aborted
  *
@@ -37,6 +37,10 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import https from 'node:https'
 import path from 'node:path'
+
+// Relative, not `@hermes/shared/ansi`: the electron bundle is built by esbuild
+// with no tsconfig path resolution (see scripts/bundle-electron-main.mjs).
+import { stripAnsi } from '../../shared/src/ansi'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
@@ -456,6 +460,18 @@ function resolveWindowsPowerShell() {
   return 'powershell.exe'
 }
 
+// install.sh (and the git/curl/uv children it drives) writes SGR colours,
+// cursor/erase sequences, OSC titles and \r progress redraws into the pipe as
+// if it were a TTY. The install overlay renders each line as plain text, so
+// strip them ONCE here, at the emitter: the main-process log ring, the
+// renderer's Details panel and "Copy output" all read the same clean line
+// (#112675). \r redraws collapse to the last frame a terminal would show.
+function cleanInstallerLogLine(raw: string): string {
+  const frames = raw.split('\r').map(stripAnsi).filter(Boolean)
+
+  return frames.length ? frames[frames.length - 1] : ''
+}
+
 function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
@@ -508,7 +524,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       let nl
 
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
-        const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
+        const line = cleanInstallerLogLine(stdoutBuf.slice(0, nl))
         stdoutBuf = stdoutBuf.slice(nl + 1)
 
         if (line) {
@@ -524,7 +540,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       let nl
 
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
-        const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
+        const line = cleanInstallerLogLine(stderrBuf.slice(0, nl))
         stderrBuf = stderrBuf.slice(nl + 1)
 
         if (line) {
@@ -547,12 +563,15 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       }
 
       // Flush any trailing bytes
-      if (stdoutBuf) {
-        emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' } as any)
+      const stdoutTail = cleanInstallerLogLine(stdoutBuf)
+      const stderrTail = cleanInstallerLogLine(stderrBuf)
+
+      if (stdoutTail) {
+        emit && emit({ type: 'log', stage: stageName, line: stdoutTail, stream: 'stdout' } as any)
       }
 
-      if (stderrBuf) {
-        emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' } as any)
+      if (stderrTail) {
+        emit && emit({ type: 'log', stage: stageName, line: stderrTail, stream: 'stderr' } as any)
       }
 
       resolve({ stdout, stderr, code, signal, killed } as any)
@@ -602,7 +621,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       let nl
 
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
-        const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
+        const line = cleanInstallerLogLine(stdoutBuf.slice(0, nl))
         stdoutBuf = stdoutBuf.slice(nl + 1)
 
         if (line) {
@@ -618,7 +637,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       let nl
 
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
-        const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
+        const line = cleanInstallerLogLine(stderrBuf.slice(0, nl))
         stderrBuf = stderrBuf.slice(nl + 1)
 
         if (line) {
@@ -640,12 +659,15 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
         abortSignal.removeEventListener('abort', onAbort)
       }
 
-      if (stdoutBuf) {
-        emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      const stdoutTail = cleanInstallerLogLine(stdoutBuf)
+      const stderrTail = cleanInstallerLogLine(stderrBuf)
+
+      if (stdoutTail) {
+        emit && emit({ type: 'log', stage: stageName, line: stdoutTail, stream: 'stdout' })
       }
 
-      if (stderrBuf) {
-        emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
+      if (stderrTail) {
+        emit && emit({ type: 'log', stage: stageName, line: stderrTail, stream: 'stderr' })
       }
 
       resolve({ stdout, stderr, code, signal, killed })
@@ -715,9 +737,11 @@ async function fetchManifest({
   })
 
   if (result.code !== 0) {
-    throw new Error(
-      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${result.stderr || result.stdout}`
-    )
+    // The tail lands in the Setup failure banner, not the log ring, so strip
+    // the installer's colour/OSC bytes here too (#112675).
+    const tail = stripAnsi(result.stderr || result.stdout).trim()
+
+    throw new Error(`${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${tail}`)
   }
 
   // The manifest is the LAST JSON line on stdout (install.ps1 may print
@@ -1045,6 +1069,7 @@ export {
   buildPinArgs,
   buildPosixPinArgs,
   cachedScriptPath,
+  cleanInstallerLogLine,
   hasExistingGitCheckout,
   installedAgentInstallScript,
   installRefForStamp,

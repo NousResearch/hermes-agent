@@ -211,20 +211,23 @@ class FileToolsIntegrationTests(unittest.TestCase):
             f.write(content)
         return p
 
-    def test_sibling_agent_write_surfaces_warning_through_handler(self):
+    def test_sibling_agent_write_refuses_stale_overwrite_through_handler(self):
         p = self._write_seed("shared.txt")
         r = json.loads(read_file_tool(path=p, task_id="agentA"))
         self.assertNotIn("error", r)
 
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="agentB")))
         w_b = json.loads(write_file_tool(path=p, content="B wrote\n", task_id="agentB"))
         self.assertNotIn("error", w_b)
 
         w_a = json.loads(write_file_tool(path=p, content="A stale\n", task_id="agentA"))
-        warn = w_a.get("_warning", "")
-        self.assertTrue(warn, f"expected warning, got: {w_a}")
-        # The cross-agent message names the sibling task_id.
-        self.assertIn("agentB", warn)
-        self.assertIn("sibling", warn.lower())
+        err = w_a.get("error", "")
+        self.assertTrue(w_a.get("stale_write_blocked"), f"expected stale write refusal, got: {w_a}")
+        # The cross-agent message names the sibling task_id; B's write survives.
+        self.assertIn("agentB", err)
+        self.assertIn("sibling", err.lower())
+        with open(p) as f:
+            self.assertEqual(f.read(), "B wrote\n")
 
 
     def test_net_new_file_no_warning(self):

@@ -513,15 +513,38 @@ function Discard-LockfileChurn {
         )
         foreach ($path in $diff) {
             if ($path -like "*package.json") {
-                $null = $dirtyPackageDirs.Add((Split-Path $path -Parent))
+                $null = $dirtyPackageDirs.Add(((Split-Path $path -Parent) -replace '\\', '/'))
+            }
+        }
+
+        # The single root lockfile records every workspace's specs (root package.json
+        # "workspaces" globs), so a dirty workspace manifest such as
+        # apps/desktop/package.json protects it; reverting it there desyncs spec and
+        # lock and every later npm ci fails (#112378). A manifest outside the graph
+        # (website/) has its own lockfile and does not protect the root one.
+        $rootLockProtected = $dirtyPackageDirs.Contains("")
+        if (-not $rootLockProtected -and $dirtyPackageDirs.Count -gt 0) {
+            $workspaceGlobs = @()
+            try {
+                $rootPkg = Get-Content (Join-Path $Repo "package.json") -Raw | ConvertFrom-Json
+                $ws = $rootPkg.workspaces
+                if ($ws -and $ws.PSObject.Properties["packages"]) { $ws = $ws.packages }
+                $workspaceGlobs = @($ws | Where-Object { $_ })
+            } catch { }
+            foreach ($dir in $dirtyPackageDirs) {
+                foreach ($glob in $workspaceGlobs) {
+                    if ($dir -like ([string]$glob)) { $rootLockProtected = $true }
+                }
             }
         }
 
         $dirtyLocks = [System.Collections.Generic.List[string]]::new()
         foreach ($path in $diff) {
             if ($path -notlike "*package-lock.json") { continue }
-            $lockDir = Split-Path $path -Parent
-            if ($dirtyPackageDirs.Contains($lockDir)) { continue }
+            $lockDir = (Split-Path $path -Parent) -replace '\\', '/'
+            if ($lockDir -eq "") {
+                if ($rootLockProtected) { continue }
+            } elseif ($dirtyPackageDirs.Contains($lockDir)) { continue }
             $dirtyLocks.Add($path)
         }
 

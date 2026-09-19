@@ -6,6 +6,8 @@ gateway, sessions, …) is built by ``hermes_cli/subcommands/<group>.py`` and wi
 """
 
 import argparse
+import difflib
+import re
 from functools import lru_cache
 
 # `--profile` / `-p` is consumed by ``main._apply_profile_override`` before argparse runs
@@ -22,6 +24,19 @@ _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-r", "--resume", "-s", "--skills", "--usage-file", "--in",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
+
+
+def _cfg_path() -> str:
+    """``~/.hermes/config.yaml`` spelled for the active profile, for help text.
+
+    ``main._apply_profile_override`` builds this parser (via ``top_level_value_flag_sets``) BEFORE
+    it re-homes the process to the sticky ``active_profile``; ``get_hermes_home()`` would emit the
+    "[HERMES_HOME fallback] ... wrong profile" warning on every ``hermes`` command for that
+    throwaway help string. Read the process home directly: after the override it IS the profile home.
+    """
+    from hermes_constants import display_hermes_home, get_process_hermes_home
+
+    return f"{display_hermes_home(get_process_hermes_home())}/config.yaml"
 
 
 @lru_cache(maxsize=1)
@@ -163,7 +178,7 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
     inherited(parser, "--pass-session-id", action="store_true", default=False,
               help="Include the session ID in the agent's system prompt")
     inherited(parser, "--ignore-user-config", action="store_true", default=False,
-              help="Ignore ~/.hermes/config.yaml and fall back to built-in defaults (credentials in .env are still loaded)")
+              help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded)")
     inherited(parser, "--ignore-rules", action="store_true", default=False,
               help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills")
     inherited(parser, "--safe-mode", action="store_true", default=False,
@@ -230,6 +245,9 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     add("-v", "--verbose", action="store_true", default=SUPPRESS, help="Verbose output")
     add("-Q", "--quiet", action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.")
+    add("--format", choices=["text", "stream-json"], default="text", dest="output_format", help=(
+        "Output format for single-query mode (-q). 'text' prints the final response as plain text (default). "
+        "'stream-json' emits newline-delimited JSON events (JSONL), implies --quiet, and cannot be combined with --tui."))
     add("--resume", "-r", metavar="SESSION_ID", default=SUPPRESS, help=(
         "Resume a previous session by ID (shown on exit), or 'latest' "
         "for the most recent session"))
@@ -267,7 +285,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     inherited(chat_parser, "--pass-session-id", action="store_true", default=SUPPRESS,
               help="Include the session ID in the agent's system prompt")
     inherited(chat_parser, "--ignore-user-config", action="store_true", default=SUPPRESS,
-              help="Ignore ~/.hermes/config.yaml and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.")
+              help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.")
     inherited(chat_parser, "--ignore-rules", action="store_true", default=SUPPRESS,
               help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.")
     inherited(chat_parser, "--safe-mode", action="store_true", default=SUPPRESS,
@@ -283,6 +301,28 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     return chat_parser
 
 
+class HermesArgumentParser(argparse.ArgumentParser):
+    """argparse parser whose unknown-subcommand error is three short lines, not a 70-name dump.
+
+    Stock argparse prints the full usage block plus ``(choose from 'chat', 'model', …)`` when
+    the first positional is not a registered subcommand. That buries the only useful fact
+    (the word is not a command) and offers no closest match. Every other error keeps the
+    stock usage + message shape.
+    """
+
+    def _check_value(self, action, value):
+        if isinstance(action, argparse._SubParsersAction) and value not in action.choices:
+            # ``self.prog`` is "hermes" at the top level and "hermes gateway" for a nested group
+            # (argparse hands add_parser() the parent's class), so the copy stays correct for both.
+            lines = [f"{self.prog}: '{value}' is not a `{self.prog}` command."]
+            close = difflib.get_close_matches(str(value), list(action.choices), n=3, cutoff=0.6)
+            if close:
+                lines.append(f"Did you mean: {', '.join(close)}?")
+            lines.append(f"Run `{self.prog} --help` to see all commands.")
+            self.exit(2, "\n".join(lines) + "\n")
+        super()._check_value(action, value)
+
+
 def build_top_level_parser():
     """Build the top-level parser, the subparsers action, and the ``chat`` subparser.
 
@@ -290,9 +330,11 @@ def build_top_level_parser():
     ``chat_parser.set_defaults(func= cmd_chat)`` and registers further subparsers via
     ``subparsers.add_parser(...)``.
     """
-    parser = argparse.ArgumentParser(
+    parser = HermesArgumentParser(
         prog="hermes", description="Hermes Agent - AI assistant with tool-calling capabilities",
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=_EPILOGUE)
     _add_top_level_flags(parser)
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    # metavar keeps the usage line to ``hermes [...] <command>`` instead of the brace list of
+    # every subcommand name; ``hermes --help`` still lists each command with its help row.
+    subparsers = parser.add_subparsers(dest="command", help="Command to run", metavar="<command>")
     return parser, subparsers, _build_chat_parser(subparsers)

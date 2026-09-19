@@ -163,17 +163,20 @@ class Platform(Enum):
     YOUR_PLATFORM = "your_platform"
 ```
 
-Add env var loading in `_apply_env_overrides()`:
+Add a row to `_ENV_STEPS` in `gateway/config_env.py` (source order = application order);
+`_Cred` enables the platform when the named env vars resolve and copies them into `extra`:
 
 ```python
-# Your Platform
-your_token = os.getenv("YOUR_PLATFORM_TOKEN")
-if your_token:
-    if Platform.YOUR_PLATFORM not in config.platforms:
-        config.platforms[Platform.YOUR_PLATFORM] = PlatformConfig()
-    config.platforms[Platform.YOUR_PLATFORM].enabled = True
-    config.platforms[Platform.YOUR_PLATFORM].token = your_token
+_Cred(Platform.YOUR_PLATFORM, ("YOUR_PLATFORM_TOKEN",), token="YOUR_PLATFORM_TOKEN"),
+_Home(Platform.YOUR_PLATFORM, "YOUR_PLATFORM_HOME_CHANNEL"),
 ```
+
+Every read goes through `gateway/config.py::_getenv` (the active profile's secret scope when one
+is bound, `os.environ` otherwise). **Never `os.getenv` here and never write `os.environ`**: under
+`gateway.multiplex_profiles` the process env is the DEFAULT profile's, so a raw read enables your
+platform for the wrong profile with the wrong credentials, and a write pins one profile's policy
+process-wide (first profile wins). Adapter-side reads use `gateway.platforms._shared.get_scoped_secret`
+/ `extra_or_secret`.
 
 Update `get_connected_platforms()` if your platform doesn't use token/api_key
 (e.g., WhatsApp uses `enabled` flag, Signal uses `extra` dict).
@@ -200,20 +203,22 @@ before `connect()`.
 
 ---
 
-## 4. Authorization Maps (`gateway/run.py`)
+## 4. Authorization Maps (`gateway/pairing.py`, `gateway/authz_mixin.py`)
 
-Add to BOTH dicts in `_is_user_authorized()`:
+Add the allowlist var to `_PLATFORM_ALLOWLIST_ENV` in `gateway/pairing.py`;
+`authz_mixin.py` derives `_ALLOWED_USERS_ENV` / `_ALLOW_ALL_ENV` from it (the `*_ALLOW_ALL_USERS`
+name is computed, not hand-listed):
 
 ```python
-platform_env_map = {
+_PLATFORM_ALLOWLIST_ENV = {
     ...
-    Platform.YOUR_PLATFORM: "YOUR_PLATFORM_ALLOWED_USERS",
-}
-platform_allow_all_map = {
-    ...
-    Platform.YOUR_PLATFORM: "YOUR_PLATFORM_ALLOW_ALL_USERS",
+    "your_platform": "YOUR_PLATFORM_ALLOWED_USERS",
 }
 ```
+
+Plugin adapters declare `allowed_users_env` / `allow_all_env` on `ctx.register_platform` instead.
+`_is_user_authorized()` reads every gate through `_shared.platform_gate_env` (`_auth_env`), which
+answers from the routed profile's secret scope under multiplex — never add an `os.getenv` here.
 
 ---
 

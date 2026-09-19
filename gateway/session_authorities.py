@@ -39,6 +39,15 @@ class SessionAuthorities:
             raise RuntimeError(f'no reserved session authority slot for {home}')
         self._by_key[key] = authority
 
+    def remove(self, home):
+        """Drop *home*'s slot (a parked boot, a hot-unserved profile); returns the authority or None.
+        The launch slot is never removed."""
+        key = hermes_home_key(home)
+        if key == self.launch_key:
+            raise RuntimeError('the launch session authority cannot be removed')
+        self._names.pop(key, None)
+        return self._by_key.pop(key, None)
+
     def profile_name(self, authority):
         """Served profile name for *authority*; None for the launch profile (its adapters are
         ``runner.adapters``, its session keys the historical ``agent:main`` namespace)."""

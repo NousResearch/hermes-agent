@@ -3,6 +3,20 @@ import { groupSpeakerLabel } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
 
+// Openers of Hermes' own control frames (the mid-turn steer marker, the compaction
+// handoff, runtime/system notes). A member reply is republished to every peer inside
+// a role=user prompt, so a reply reproducing one of these reads as harness input to
+// the peers; the opener is relabelled visibly (the words stay, the exact trusted
+// shape does not). Genuine user lines are never touched. Keep in sync with
+// agent/prompt_builder.py::CONTROL_FRAME_OPENERS (the source of
+// gateway/hosted_room_discussion.py::_MEMBER_CONTROL_FRAME_RE).
+const MEMBER_CONTROL_FRAME_RE =
+  /\[(?=\/?OUT-OF-BAND USER MESSAGE|CONTEXT COMPACTION|CONTEXT SUMMARY\]|PRIOR CONTEXT|Runtime note:|System note:|System:|SYSTEM\]|IMPORTANT:|Planning state preserved|ASYNC DELEGATION)/gi
+
+function relabelMemberControlFrames(text: string) {
+  return text.replace(MEMBER_CONTROL_FRAME_RE, '[member-quoted ')
+}
+
 /** Viewer identity for a room-log line. A bare string is the local, unsourced
  *  profile name (legacy call sites and single-connection jobs). */
 export type GroupChatLineViewer =
@@ -33,7 +47,7 @@ export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineVi
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
+  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${relabelMemberControlFrames(entry.text)}${attached}`
 }
 
 function viewerNameOf(viewer: GroupChatLineViewer): string {

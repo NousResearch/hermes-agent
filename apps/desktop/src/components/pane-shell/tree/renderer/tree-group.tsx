@@ -12,7 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
@@ -48,6 +48,7 @@ import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
+  $mainTileZoneCount,
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -258,6 +259,9 @@ export function TreeGroup({
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
+  // A count that moves only when a main zone appears or goes — NOT the tree
+  // itself (see the note above `targetPane` on why zones never subscribe to it).
+  const mainTileZoneCount = useStore($mainTileZoneCount)
   const workspaceMode = useStore($workspaceMode)
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
   const newSessionTabAction = useStore($newSessionTabAction)
@@ -342,7 +346,8 @@ export function TreeGroup({
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,
-    shown
+    shown,
+    siblingMainZone: mainTileZoneCount > (shown.some(id => paneChrome(paneFor(id)).placement === 'main') ? 1 : 0)
   })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
@@ -691,11 +696,23 @@ export function TreeGroup({
               </PaneTabStrip>
             </ZoneMenu>
           ) : null}
-          {topEdge && (!headerVisible || tabsBelowControls) && (
+          {/* Tabs sharing the titlebar band are all `no-drag` and the strip's
+              list scrolls, so a crowded strip can cover every draggable pixel
+              (#112964). Keep one fixed handle OUTSIDE the list. When the tabs
+              drop below the controls the band above them is free — the handle
+              stays flexible and the whole row moves the window. */}
+          {topEdge && (
             <div
-              className="min-w-0 flex-1 self-start [-webkit-app-region:drag]"
+              aria-hidden="true"
+              className={cn(
+                'self-start [-webkit-app-region:drag]',
+                headerVisible && tabsInTitlebar ? 'shrink-0' : 'min-w-0 flex-1'
+              )}
               data-window-drag-handle=""
-              style={{ height: TITLEBAR_HEIGHT }}
+              style={{
+                height: TITLEBAR_HEIGHT,
+                width: headerVisible && tabsInTitlebar ? TITLEBAR_DRAG_HANDLE_WIDTH : undefined
+              }}
             />
           )}
           {topEdge && (

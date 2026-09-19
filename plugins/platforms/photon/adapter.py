@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:  # type checkers see httpx as always-imported; runtime keeps it optional
@@ -84,6 +84,18 @@ _DEFAULT_MENTION_PATTERNS = [r"(?<![\w@])@?hermes\s+agent\b[,:\-]?", r"(?<![\w@]
 _TARGET_NOT_ALLOWED_MESSAGE = (
     "shared/free-tier Photon lines cannot initiate outbound sends to new "
     "targets — upgrade to a dedicated line or use another delivery channel")
+
+
+async def _aiter_ndjson_lines(response: Any) -> AsyncIterator[str]:
+    """Split the sidecar stream on its protocol delimiter, LF, and nothing else."""
+    pending = ""
+    async for chunk in response.aiter_text():
+        lines = (pending + chunk).split("\n")
+        pending = lines.pop()
+        for line in lines:
+            yield line
+    if pending:
+        yield pending
 
 
 # -- Sidecar runtime record ----------------------------------------------------
@@ -621,7 +633,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     if resp.status_code != 200:
                         raise RuntimeError(f"/inbound returned {resp.status_code}")
                     backoff = 1.0
-                    async for line in resp.aiter_lines():
+                    async for line in _aiter_ndjson_lines(resp):
                         if not self._inbound_running:
                             break
                         line = line.strip()

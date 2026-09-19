@@ -13,11 +13,14 @@ import { build } from 'esbuild'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
+import { buildCommandScreenshotMonitor } from './build-command-screenshot-monitor.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const distDir = resolve(root, 'dist')
 mkdirSync(distDir, { recursive: true })
+// Stage for both --dev and release bundles; non-mac hosts skip this helper.
+buildCommandScreenshotMonitor({ distDir })
 
 const mainEntry = resolve(root, 'electron/main.ts')
 const mainOut = resolve(distDir, 'electron-main.mjs')

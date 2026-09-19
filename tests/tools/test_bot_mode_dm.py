@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import bot_mode_dm, bot_mode_probe
+from tools import bot_mode_dm, bot_mode_probe, bot_relay
 
 
 @pytest.fixture(autouse=True)
@@ -272,6 +272,9 @@ def _runner_author(command):
 
 def test_local_delivery_admits_canonically_and_acks(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
+    # These assertions target the -p/turn-args shape; pin the entrypoint resolution
+    # so the test stays hermetic across venvs that do/don't expose a sibling script.
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     home = _managed_home(tmp_path, teammates=("researcher",))
     target = home / "profiles" / "researcher"
     authority = _canonical_target(monkeypatch, target)
@@ -333,6 +336,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     tool-side roster (read from the machine-root config) validated the
     target."""
     calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     home = _managed_home(tmp_path, peers=("spark",))
     # A reviewer-profile gateway context: the agent's session db lives under
     # that profile's home, so _agent_home() resolves there while the
@@ -354,6 +358,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
 
 def test_peer_delivery_command(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
     home = _managed_home(tmp_path, peers=("spark",))
     agent = _FakeAgent(home, title="Bot Chat")
@@ -377,6 +382,43 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     mode, _dm_file, transport_argv, _home = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
+
+
+def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, monkeypatch):
+    """A background delivery must not rely on PATH: the runner's service context
+    lacks the gateway's venv bin dir, so a bare ``hermes`` resolves to a system
+    install whose shebang picks the wrong interpreter and dies on import (#108628).
+    Both transports must invoke the entrypoint beside this interpreter instead."""
+    venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
+    venv_bin.mkdir(parents=True)
+    hermes_entry = venv_bin / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    hermes_entry.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "executable", str(venv_bin / "python3"))
+
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))
+    _canonical_target(monkeypatch, home / "profiles" / "researcher")
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    # A local teammate is admitted through the profile authority (no inference child), but the
+    # runner argv still names the pinned entrypoint so its basename-matched helpers stay compatible.
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent)
+    )
+    assert result["status"] == "queued"
+    mode, _dm_file, transport_argv, _profile_home = _runner_parts(calls[0]["command"])
+    assert mode == "query-file"
+    assert transport_argv[0] == str(hermes_entry)
+    # Local delivery is admitted through the authority; the argv only names the profile.
+    assert transport_argv[1:] == ["-p", "researcher"]
+
+    result2 = json.loads(
+        bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
+    )
+    assert result2["status"] == "sent"
+    mode, _dm_file, transport_argv, _profile_home = _runner_parts(calls[1]["command"])
+    assert mode == "stdin"
+    assert transport_argv == [str(hermes_entry), "-p", "default", "peer", "dm", "spark"]
 
 
 def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(tmp_path, monkeypatch):
@@ -651,7 +693,7 @@ def test_local_runner_sends_only_argv_author_to_authority(tmp_path, monkeypatch,
     monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no local inference child"))
     waited = []
-    monkeypatch.setattr(bot_mode_dm, "_wait_live_dm", lambda home, key: waited.append((home, key)) or 0)
+    monkeypatch.setattr(bot_mode_dm, "_wait_live_dm", lambda home, key, **_kw: waited.append((home, key)) or 0)
     command = bot_mode_dm._delivery_command(
         ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False,
         profile_home=target, author=author,
@@ -926,3 +968,85 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+def test_cleanup_sweeps_stale_live_intents_and_keeps_fresh_ones(tmp_path, monkeypatch):
+    """``<dm file>.live.json`` holds the DM plaintext and outlives its runner for retries; the
+    housekeeping sweep must reap the orphans like it reaps the dm files themselves."""
+    import os
+
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    stale = tmp_path / "dm-old.txt.live.json"
+    stale.write_text("{}", encoding="utf-8")
+    os.utime(stale, (1, 1))
+    fresh = tmp_path / "dm-new.txt.live.json"
+    fresh.write_text("{}", encoding="utf-8")
+
+    assert bot_mode_dm.cleanup_bot_dm_cache() >= 1
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    dm_file = tmp_path / "dm-x.txt"
+    dm_file.write_text("secret plaintext", encoding="utf-8")
+    intent = tmp_path / "dm-x.txt.live.json"
+    intent.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+
+    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
+    assert intent.exists(), "a pending delivery may still be retried from the same intent"
+    assert dm_file.exists()
+
+    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "settled", "reply": "ok"})
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
+    assert not intent.exists()
+    assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
+
+
+def test_pending_approval_spawn_names_the_approval_and_reclaims_the_dm_file(tmp_path, monkeypatch):
+    """terminal_tool's approval gate answers pending_approval with an EMPTY error and no session_id;
+    a local delivery must say the runner needs approval (nothing was sent), not blame the spawn."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    import tools.terminal_tool as terminal_tool_module
+
+    pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
+                                               command="python3 runner", description="command flagged")
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
+
+    result = json.loads(bot_mode_dm._spawn_delivery("unused", "@researcher", dm_file=str(dm_file),
+                                                    task_id=None, agent=None))
+
+    assert "approval" in result["error"] and "nothing was sent" in result["error"]
+    assert "no process id" not in result["error"]
+    assert not dm_file.exists()
+
+
+def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monkeypatch):
+    """The relay envelope is queued before the reply waiter spawns and the Desktop drains it on its
+    own: a waiter that cannot start is a lost wake-up, not a failed delivery (a hard error makes the
+    sender resend and deliver twice)."""
+    from tools import bot_relay
+
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "default").mkdir(parents=True)
+    bot_relay.write_remote_roster(root, [{"profile": "researcher", "handle": "researcher",
+                                          "connection_id": "laptop-1", "connection_label": "laptop"}])
+    import tools.terminal_tool as terminal_tool_module
+
+    pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
+                                               command="python3 waiter", description="command flagged")
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
+
+    result = json.loads(bot_mode_dm._try_relay_delivery(root, "researcher", "hello", "default",
+                                                        task_id=None, agent=None))
+
+    assert result["status"] == "queued"
+    assert "error" not in result
+    assert "Do NOT resend" in result["detail"]
+    assert "approval" in result["notification_error"]
+    assert list((bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR).glob("*.json")), "envelope still queued"

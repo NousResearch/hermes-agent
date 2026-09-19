@@ -2,6 +2,7 @@
 
 import asyncio
 import gc
+import uuid
 import warnings
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -265,3 +266,47 @@ class TestSendUpdate:
             and "_session_update" in str(w.message)
         ]
         assert runtime_warnings == []
+
+
+class TestAssistantMessageIds:
+    """Streamed chunks carry a per-message ACP messageId; the None flush sentinel starts a new one."""
+
+    def test_deltas_share_one_uuid_until_flush(self, mock_conn, event_loop_fixture):
+        from acp_adapter.events import AssistantMessageIdAllocator
+
+        ids = AssistantMessageIdAllocator()
+        cb = make_message_cb(mock_conn, "s", event_loop_fixture, ids)
+        sent = []
+        with patch("acp_adapter.events._send_update",
+                   side_effect=lambda c, s, l, u: sent.append(u)):
+            cb("Hello ")
+            cb("")  # empty delta is ignored, not a flush
+            cb("world")
+            cb(None)  # flush sentinel — closes the message
+            cb("next turn")
+        assert sent[0].message_id == sent[1].message_id
+        assert sent[2].message_id != sent[0].message_id
+        # ACP requires UUID-format message ids.
+        assert uuid.UUID(sent[0].message_id) and uuid.UUID(sent[2].message_id)
+
+    def test_thought_chunks_carry_id(self, mock_conn, event_loop_fixture):
+        from acp_adapter.events import AssistantMessageIdAllocator
+
+        ids = AssistantMessageIdAllocator()
+        think = make_thinking_cb(mock_conn, "s", event_loop_fixture, ids)
+        msg = make_message_cb(mock_conn, "s", event_loop_fixture, ids)
+        sent = []
+        with patch("acp_adapter.events._send_update",
+                   side_effect=lambda c, s, l, u: sent.append(u)):
+            think("pondering")
+            msg("answer")
+        # Reasoning and answer of the same reply share one message id.
+        assert sent[0].message_id == sent[1].message_id
+
+    def test_no_allocator_keeps_legacy_shape(self, mock_conn, event_loop_fixture):
+        cb = make_message_cb(mock_conn, "s", event_loop_fixture)
+        sent = []
+        with patch("acp_adapter.events._send_update",
+                   side_effect=lambda c, s, l, u: sent.append(u)):
+            cb("text")
+        assert sent[0].message_id is None

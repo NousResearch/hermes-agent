@@ -13,6 +13,21 @@ GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
 # See #51228.
 GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 
+
+def map_fatal_config_exit_for_launchd(returncode: int) -> int:
+    """Translate gateway EX_CONFIG so launchd can park the job.
+
+    systemd uses ``RestartPreventExitStatus=78``; s6 maps 78→125. launchd cannot
+    gate on a specific status, and unconditional ``KeepAlive=true`` respawns 78
+    forever (#89477). The generated plist uses ``KeepAlive.SuccessfulExit=false``;
+    mapping 78→0 is a deliberate stop. Exit 75 (please restart) and other
+    failures pass through so KeepAlive still relaunches them. Negative ``wait()``
+    codes (signals) are left to the caller.
+    """
+    if returncode == GATEWAY_FATAL_CONFIG_EXIT_CODE:
+        return 0
+    return returncode
+
 # Set by ``hermes gateway run --external-supervisor``. Unlike systemd's INVOCATION_ID
 # and launchd's XPC_SERVICE_NAME, this survives wrappers that replace the child
 # environment (e.g. ``sudo env -i``).

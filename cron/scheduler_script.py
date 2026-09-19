@@ -288,7 +288,13 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
             f"({scripts_dir_resolved}): {script_path!r}"
         )
     if not path.exists():
-        return None, f"Script not found: {path}"
+        # Scripts resolve against THIS profile's scripts/ dir by design (profiles never share files),
+        # which is the usual reason a copied job cannot find a script that exists elsewhere (#94821).
+        return None, (
+            f"Script not found: {path}. Cron scripts are looked up only in this profile's folder "
+            f"({scripts_dir_resolved}); if the job was copied from another profile, copy the script "
+            f"there too, or edit the job with `hermes cron edit`."
+        )
     if not path.is_file():
         return None, f"Script path is not a file: {path}"
     return path, None

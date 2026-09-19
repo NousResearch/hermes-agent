@@ -29,10 +29,12 @@ from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
+from hermes_cli.profiles import ProfileIdentitySettlementPending
 from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _normalize_main_model_assignment, _validated_main_model_selection,
 )
 from hermes_cli.web_server_gateway import _strip_session_list_rows
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
 from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
 )
@@ -86,6 +88,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "description": attr("description", "") or "",
         "description_auto": bool(attr("description_auto", False)),
         "display_name": attr("display_name", "") or "",
+        "bot_title": attr("bot_title", "") or "",
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
@@ -110,7 +113,7 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_
     with _hermes_home_scope(validate_in or profile_dir):
         provider, model = _normalize_main_model_assignment(provider, model)
         result = _validated_main_model_selection(load_config(), provider, model)
-    with _hermes_home_scope(profile_dir):
+    with _hermes_home_scope(profile_dir), _CONFIG_MUTATION_LOCK:  # RMW span
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         save_config(cfg)
@@ -124,7 +127,7 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
     from hermes_cli.config import load_config
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
     keep_set = {s.strip() for s in keep if s and s.strip()}
-    with _hermes_home_scope(profile_dir):
+    with _hermes_home_scope(profile_dir), _CONFIG_MUTATION_LOCK:  # RMW span
         skills_root = profile_dir / "skills"
         installed = ([md.parent.name for md in skills_root.rglob("SKILL.md")]
                      if skills_root.is_dir() else [])
@@ -148,7 +151,9 @@ _MISSING = object()
 def _profile_errors(log_msg: str, *args, not_found=(FileNotFoundError,),
                     bad_request=(ValueError,)):
     """Map hermes_cli.profiles exceptions to HTTP: ``not_found`` -> 404, ``bad_request`` -> 400
-    (in that order), anything else is logged with ``log_msg`` -> 500. HTTPException passes."""
+    (in that order), anything else is logged with ``log_msg`` -> 500. HTTPException passes, and so
+    does ``ProfileIdentitySettlementPending`` — a typed partial success the calling endpoint (the
+    delete route) owns; it must not flatten into the generic 500."""
     try:
         yield
     except HTTPException:
@@ -157,6 +162,8 @@ def _profile_errors(log_msg: str, *args, not_found=(FileNotFoundError,),
         raise HTTPException(status_code=404, detail=str(e))
     except bad_request as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except ProfileIdentitySettlementPending:
+        raise
     except Exception as e:
         _log.exception(log_msg, *args)
         raise HTTPException(status_code=500, detail=str(e))
@@ -827,12 +834,21 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
 @router.delete("/api/profiles/{name}")
 async def delete_profile_endpoint(name: str):
     """The dashboard collects the user's confirmation in its own dialog, so ``yes=True``
-    always skips the CLI's interactive prompt."""
+    always skips the CLI's interactive prompt.
+
+    A delete whose identity settlement stays pending answers ``ok`` with ``settlement_pending``
+    and the retry command: the profile directory is already gone, and folding that state into
+    the generic 500 made a dashboard client read a completed delete as a failure (its retry
+    then 404'd)."""
     from hermes_cli import profiles as profiles_mod
-    with _profile_errors("DELETE /api/profiles/%s failed", name):
-        # Polls a running gateway's PID for up to 10 s, then rmtree()s the directory; on the
-        # loop that parks every request past the desktop's 10 s WebSocket ready-probe.
-        path = await run_in_threadpool(profiles_mod.delete_profile, name, yes=True)
+    try:
+        with _profile_errors("DELETE /api/profiles/%s failed", name):
+            # Polls a running gateway's PID for up to 10 s, then rmtree()s the directory; on the
+            # loop that parks every request past the desktop's 10 s WebSocket ready-probe.
+            path = await run_in_threadpool(profiles_mod.delete_profile, name, yes=True)
+    except ProfileIdentitySettlementPending as exc:
+        return {"ok": True, "path": str(exc.path), "identity_settled": False,
+                "settlement_pending": True, "retry_command": exc.retry_command}
     return {"ok": True, "path": str(path)}
 
 

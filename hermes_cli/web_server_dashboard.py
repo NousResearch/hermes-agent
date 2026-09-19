@@ -540,21 +540,28 @@ def _discover_dashboard_plugins() -> list:
     plugins = []
     seen_names: set = set()
     for plugins_root, source in _dashboard_plugin_search_dirs():
-        if not plugins_root.is_dir():
+        try:
+            if not plugins_root.is_dir():
+                continue
+            with os.scandir(plugins_root) as scan:
+                children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        except OSError as exc:
+            _log.warning("Skipping unreadable dashboard plugin root %s: %s", plugins_root, exc)
             continue
-        with os.scandir(plugins_root) as scan:
-            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
         for child in children:
             manifest_file = child / "dashboard" / "manifest.json"
-            if not child.is_dir() or not manifest_file.exists():
-                continue
             try:
+                if not child.is_dir() or not manifest_file.exists():
+                    continue
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
                 if name in seen_names:
                     continue
                 seen_names.add(name)
                 plugins.append(_dashboard_plugin_entry(data, name, child / "dashboard", source))
+            except OSError as exc:
+                _log.warning("Skipping unreadable dashboard plugin %s: %s", manifest_file, exc)
+                continue
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
                 continue

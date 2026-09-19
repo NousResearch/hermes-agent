@@ -17,13 +17,15 @@ from typing import Dict, Optional
 
 import yaml
 
+from utils import file_signature
+
 logger = logging.getLogger(__name__)
 
 # POSIX default. Other-platform locations belong ONLY inside get_managed_dir().
 _DEFAULT_MANAGED_DIR = Path("/etc/hermes")
 
 _CACHE_LOCK = threading.Lock()
-# path_key -> (mtime_ns, size, parsed)
+# path_key -> (*file_signature, parsed)
 _CONFIG_CACHE: Dict[str, tuple] = {}
 _ENV_CACHE: Dict[str, tuple] = {}
 
@@ -59,7 +61,7 @@ def invalidate_managed_cache() -> None:
 
 
 def _cached_read(path: Path, cache: Dict[str, tuple], parse):
-    """Shared (mtime_ns, size)-keyed read; returns a deepcopy of the parsed value.
+    """Shared stat-signature-keyed read; returns a deepcopy of the parsed value.
 
     ``None`` when the file is absent or fails to parse (fail-open). A parse failure is logged
     LOUDLY — the admin needs to know their policy isn't applied — but never raises, so a malformed
@@ -69,12 +71,12 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
         st = path.stat()
     except OSError:
         return None  # absent
-    key = (st.st_mtime_ns, st.st_size)
+    key = file_signature(st)
     path_key = str(path)
     with _CACHE_LOCK:
         hit = cache.get(path_key)
-        if hit is not None and hit[:2] == key:
-            return copy.deepcopy(hit[2])
+        if hit is not None and hit[:len(key)] == key:
+            return copy.deepcopy(hit[len(key)])
     try:
         parsed = parse(path)
     except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD

@@ -6,13 +6,7 @@ import { sharedControlParams } from '../canonicalGateway.js'
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
-import type {
-  ApprovalRespondResponse,
-  ConfigSetResponse,
-  SecretRespondResponse,
-  SudoRespondResponse,
-  VoiceRecordResponse
-} from '../gatewayTypes.js'
+import type { ConfigSetResponse, SharedControlRespondResponse, VoiceRecordResponse } from '../gatewayTypes.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -28,6 +22,7 @@ import {
   type OverlayState
 } from './interfaces.js'
 import { $isBlocked, $overlayState, capturePromptResponseGuard, patchOverlayState } from './overlayStore.js'
+import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
@@ -154,7 +149,9 @@ export function dismissSensitivePrompt(
     patchOverlayState({ sudo: null })
     sys('sudo cancelled')
 
-    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
+    respondToServerRequest(requestId, { value: '' })
+
+    return
   }
 
   if (overlay.secret) {
@@ -163,7 +160,9 @@ export function dismissSensitivePrompt(
     patchOverlayState({ secret: null })
     sys('secret entry cancelled')
 
-    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+    respondToServerRequest(requestId, { value: '' })
+
+    return
   }
 
   if (overlay.vaultUnlock) {
@@ -172,7 +171,7 @@ export function dismissSensitivePrompt(
     patchOverlayState({ vaultUnlock: null })
     sys(`${overlay.vaultUnlock.displayName} stays locked`)
 
-    return rpc<SecretRespondResponse>('vault.unlock.respond', { password: '', request_id: requestId })
+    respondToServerRequest(requestId, { value: '' })
   }
 }
 
@@ -235,9 +234,23 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      return gateway
-        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid, ...sharedControlParams(overlay.approval) })
-        .then(r => r && fresh() && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+      const settle = () => {
+        patchOverlayState({ approval: null })
+        patchTurnState({ outcome: 'denied' })
+      }
+
+      // Canonical shared controls deny through the generation-bound RPC; a
+      // legacy server→client request resolves its response frame locally.
+      if (overlay.approval.sharedControl) {
+        return gateway
+          .rpc<SharedControlRespondResponse>('approval.respond', { choice: 'deny', ...sharedControlParams(overlay.approval) })
+          .then(r => r && fresh() && settle())
+      }
+
+      respondToServerRequest(overlay.approval.requestId, { choice: 'deny' })
+      settle()
+
+      return
     }
 
     if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {

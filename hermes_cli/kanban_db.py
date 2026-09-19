@@ -1945,6 +1945,32 @@ def _append_event(
     )
 
 
+def _merge_run_metadata(
+    conn: sqlite3.Connection, run_id: int, incoming: Optional[dict], *, incoming_wins: bool,
+) -> None:
+    """Fold ``incoming`` into a run's ``metadata`` column. Caller holds the write txn.
+
+    A run's metadata ACCUMULATES; it is never replaced wholesale. The column is the only
+    home for a run's provenance and check results — ``worker_session_id``, ``verdict``,
+    ``changed_files``, ``ac_status`` — written by whoever learned them, at different times.
+    A writer that substitutes its own payload for the column destroys every key it does not
+    itself carry.
+
+    ``incoming_wins`` picks the direction on a key collision: a writer describing the run's
+    ending wins, while a periodic writer passes False so repeated writes don't churn the row.
+    """
+    if not incoming:
+        return
+    row = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        return
+    existing = _json_dict(row["metadata"])
+    merged = {**existing, **incoming} if incoming_wins else {**incoming, **existing}
+    if merged != existing:
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?", (_json_or_null(merged), run_id))
+
+
 def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
@@ -3099,11 +3125,7 @@ def edit_completed_task_result(
         else:
             run_id = int(run["id"])
             conn.execute("UPDATE task_runs SET summary = ? WHERE id = ?", (handoff_summary, run_id))
-            if metadata is not None:
-                conn.execute(
-                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
-                    (json.dumps(metadata, ensure_ascii=False), run_id),
-                )
+            _merge_run_metadata(conn, run_id, metadata, incoming_wins=True)
         _append_event(
             conn, task_id, "edited",
             {

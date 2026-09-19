@@ -31,18 +31,11 @@ _registry = HandlerRegistry()
 
 
 def method(name: str):
-    """``@method(name)`` with ``params.profile`` bound (home + secret scope) around the handler."""
+    """``@method(name)`` under server.py's ``@_profile_scoped`` — the one scoping path every RPC uses,
+    so the launch profile (no ``params.profile``) gets its secret scope bound once the process
+    multiplexes instead of its manager-token reads raising ``UnscopedSecretError``."""
     def deco(fn):
-        def scoped(rid, params: dict) -> dict:
-            try:
-                home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-            except FileNotFoundError as e:
-                return _err(rid, 5095, str(e))
-            if home is None:
-                return fn(rid, params)
-            with _session_profile_runtime_scope({"profile_home": str(home)}):
-                return fn(rid, params)
-        return _registry.method(name)(scoped)
+        return _registry.method(name)(_registry.profile_scoped(fn))
     return deco
 
 # JSON-RPC error code 5095 = vault failure (validation + store errors).

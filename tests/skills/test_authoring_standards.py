@@ -181,3 +181,72 @@ def test_grandfather_entries_still_needed():
     """A grandfather entry whose violation is fixed must be removed."""
     for rel in GRANDFATHER:
         assert (REPO / rel / "SKILL.md").exists(), f"stale grandfather entry: {rel}"
+
+
+# ---------------------------------------------------------------------------
+# The documented SKILL.md examples are themselves skills.
+# ---------------------------------------------------------------------------
+# A reader copies these templates verbatim out of the docs. If they fail the same
+# standards every real skill is held to, following the documentation produces skills
+# that the linter warns on and this file rejects — the docs contradicting the code.
+# Not a source-shape check: the assertion is the linter's verdict on the documented
+# artifact, which is the contract a reader relies on.
+
+SKILLS_DOC = REPO / "website" / "docs" / "user-guide" / "features" / "skills.md"
+_FENCED_MD = re.compile(r"```markdown\n(.*?)```", re.S)
+
+
+def _documented_skill_templates():
+    """Every fenced example in the Skills docs that is a full SKILL.md."""
+    return [b for b in _FENCED_MD.findall(SKILLS_DOC.read_text(encoding="utf-8"))
+            if b.lstrip().startswith("---")]
+
+
+def _template_name(template: str) -> str:
+    """The dir a template must be written into — the linter requires name == dir name."""
+    m = re.search(r"^name:\s*(\S+)", template, re.M)
+    return m.group(1).strip().strip("'\"") if m else "templated"
+
+
+def _documented_skill_params():
+    out = []
+    for t in _documented_skill_templates():
+        m = re.search(r"^name:\s*(\S+)", t, re.M)
+        out.append(pytest.param(t, id=m.group(1) if m else "template"))
+    return out
+
+
+def test_documentation_still_ships_skill_templates():
+    # sanity: the extraction found the examples, so the param list is never silently empty
+    assert _documented_skill_templates(), f"no SKILL.md templates found in {SKILLS_DOC}"
+
+
+@pytest.mark.parametrize("template", _documented_skill_params())
+def test_documented_skill_template_passes_linter(template, tmp_path):
+    """Copying the docs must not produce linter findings."""
+    from tools.skill_linter import lint_skill
+
+    d = tmp_path / _template_name(template)
+    d.mkdir()
+    f = d / "SKILL.md"
+    f.write_text(template, encoding="utf-8")
+    findings = lint_skill(f) or []
+    assert not findings, (
+        f"documented SKILL.md template produces "
+        f"{[(x.rule, x.message) for x in findings]}"
+    )
+
+
+@pytest.mark.parametrize("template", _documented_skill_params())
+def test_documented_skill_template_meets_frontmatter_hardline(template, tmp_path):
+    """...and must satisfy the same frontmatter rules enforced on every real skill."""
+    d = tmp_path / _template_name(template)
+    d.mkdir()
+    f = d / "SKILL.md"
+    f.write_text(template, encoding="utf-8")
+    fm, _ = _frontmatter(f)
+    missing = [k for k in ("name", "description", "version", "author", "license") if k not in fm]
+    assert not missing, f"documented template missing frontmatter fields: {missing}"
+    desc = str(fm["description"])
+    assert len(desc) <= 60, f"documented template description is {len(desc)} chars (hardline 60)"
+    assert desc.rstrip().endswith("."), "documented template description must end with a period"

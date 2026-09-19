@@ -1,6 +1,7 @@
 import { type ComponentProps, useEffect, useState } from 'react'
 
 import { prefersReducedMotion } from '@/hooks/use-media-query'
+import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 import { cn } from '@/lib/utils'
 
 /**
@@ -74,30 +75,51 @@ export function DecodeText({
 
     let resolved = 0
     let hold = 0
+    let id = 0
+    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
-    const id = window.setInterval(() => {
+    const tick = () => {
       if (resolved >= tailText.length) {
-        hold += 1
-
-        if (hold > HOLD_TICKS) {
-          if (loop) {
-            resolved = 0
-            hold = 0
-          } else {
-            window.clearInterval(id)
-          }
+        // The resolved text is already on screen. A one-shot decode is done;
+        // a looping one only counts hold ticks — no state update per tick.
+        if (!loop) {
+          stop()
+        } else if (++hold > HOLD_TICKS) {
+          resolved = 0
+          hold = 0
         }
-
-        setTail(tailText)
 
         return
       }
 
       resolved += 0.5
-      setTail(scrambled(tailText, Math.floor(resolved)))
-    }, TICK_MS)
+      setTail(resolved >= tailText.length ? tailText : scrambled(tailText, Math.floor(resolved)))
+    }
 
-    return () => window.clearInterval(id)
+    const stop = () => {
+      if (id !== 0) {
+        window.clearInterval(id)
+        id = 0
+      }
+    }
+
+    // A looping decode is a 22Hz React update loop. Like the other renderer
+    // loops, park it while the window is hidden/minimized and resume on return.
+    const sync = () => {
+      if (pauseController?.isPaused()) {
+        stop()
+      } else if (id === 0 && (loop || resolved < tailText.length)) {
+        id = window.setInterval(tick, TICK_MS)
+      }
+    }
+
+    pauseController = createRendererLoopPauseController(sync)
+    sync()
+
+    return () => {
+      stop()
+      pauseController?.dispose()
+    }
   }, [active, loop, tailText])
 
   return (

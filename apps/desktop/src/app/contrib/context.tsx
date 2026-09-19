@@ -27,7 +27,7 @@ export const WiredPane = memo(function WiredPane({ part }: { part: keyof WiringA
 
     return (
       <div className="grid h-full place-items-center">
-        <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="HERMES" />
+        <DecodeText className="text-(--ui-text-quaternary)" cursor loop={false} prefix={1} text="HERMES" />
       </div>
     )
   }

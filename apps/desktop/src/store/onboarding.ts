@@ -232,9 +232,16 @@ async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string):
 }
 
 function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
-  // Non-authoritative transport fallback only — keep a previously verified
-  // configured state instead of forcing the blocking onboarding overlay.
-  return runtime.source === 'fallback' && state.configured === true && !state.requested
+  // Non-authoritative transport fallback only: NEITHER probe answered, so the
+  // round carries no evidence either way and must never be written down as
+  // "unconfigured". This used to require an in-memory `configured === true`,
+  // which on a cold launch can only come from the onboarded cache — the very
+  // cache an earlier fallback had already deleted. One readiness round that
+  // lost the race to a cold/queued backend therefore re-armed the blocking
+  // first-run picker on EVERY launch afterwards, on installs with a perfectly
+  // good provider. `configured === null` (still unknown) now also holds: the
+  // overlay keeps its "starting" header until a probe actually answers.
+  return runtime.source === 'fallback' && state.configured !== false && !state.requested
 }
 
 function notifyReady(provider: string) {
@@ -429,7 +436,7 @@ async function completeWithModelConfirm(
   if (!defaults) {
     // Couldn't get a sensible default — proceed without confirm step.
     notifyReady(providerLabel)
-    completeDesktopOnboarding()
+    completeDesktopOnboarding(true)
     ctx.onCompleted?.()
 
     return
@@ -628,12 +635,20 @@ export function closeManualOnboarding() {
   })
 }
 
-export function completeDesktopOnboarding() {
+/** `connected` marks the completion paths where a provider sign-in / key save
+ *  in THIS flow is what finished onboarding. Only those make an earlier
+ *  "choose later" moot. A passive readiness round must leave the skip alone:
+ *  clearing it there erased the user's explicit decision, so the next round
+ *  that came back not-ready was free to raise the blocking picker again — the
+ *  set/clear flip-flop behind "the setup screen returns on every launch". */
+export function completeDesktopOnboarding(connected = false) {
   clearPoll()
   writeCachedConfigured(true)
-  // A real provider is now connected, so any earlier "choose later" skip is
-  // moot — clear it so the flag never lingers in a configured install.
-  writeCachedSkipped(false)
+
+  if (connected) {
+    writeCachedSkipped(false)
+  }
+
   $desktopOnboarding.set({
     configured: true,
     flow: { status: 'idle' },
@@ -641,7 +656,7 @@ export function completeDesktopOnboarding() {
     providers: null,
     reason: null,
     requested: false,
-    firstRunSkipped: false,
+    firstRunSkipped: connected ? false : readCachedSkipped(),
     manual: false,
     localEndpoint: false,
     freeTierReady: false
@@ -705,17 +720,21 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   const state = $desktopOnboarding.get()
 
   if (shouldPreserveConfiguredOnFallback(runtime, state)) {
-    // Gateway probes timed out but the user was already configured — don't
-    // downgrade to the blocking onboarding overlay. Surface a non-blocking
-    // notification with a stable id so repeated calls during an outage dedup
-    // instead of stacking toasts.
-    notify({
-      id: 'runtime-not-ready',
-      kind: 'error',
-      title: 'Runtime not ready',
-      message:
-        'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
-    })
+    // Gateway probes timed out — don't downgrade to the blocking onboarding
+    // overlay. Only a previously VERIFIED install losing its backend is worth
+    // telling the user about; an unknown state is just a round that landed
+    // before the backend could answer, and a toast on every cold launch would
+    // be noise. Stable id so repeated calls during an outage dedup instead of
+    // stacking toasts.
+    if (state.configured === true) {
+      notify({
+        id: 'runtime-not-ready',
+        kind: 'error',
+        title: 'Runtime not ready',
+        message:
+          'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
+      })
+    }
 
     return false
   }
@@ -1156,7 +1175,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     }
 
     notifyReady('Local / custom endpoint')
-    completeDesktopOnboarding()
+    completeDesktopOnboarding(true)
     ctx.onCompleted?.()
 
     return { ok: true }
@@ -1227,6 +1246,6 @@ export function confirmOnboardingModel(ctx: OnboardingContext) {
   // No success toast here: the confirm-model screen already showed "<provider>
   // connected." notifyReady is reserved for completion paths that SKIP this
   // screen (no-default fallthrough, local endpoint) so feedback isn't lost.
-  completeDesktopOnboarding()
+  completeDesktopOnboarding(true)
   ctx.onCompleted?.()
 }

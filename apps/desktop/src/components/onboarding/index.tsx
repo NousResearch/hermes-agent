@@ -298,8 +298,13 @@ export function DesktopOnboardingOverlay({
           const current = $desktopOnboarding.get()
 
           return (
+            // `!== true` rather than `=== false`: an UNRESOLVED readiness state
+            // (a boot round whose probes both timed out) is left at `null`
+            // instead of being written down as unconfigured, and it needs this
+            // tick to settle too — otherwise the overlay sits on its
+            // "starting" header with nothing left to re-check it.
             !current.manual &&
-            current.configured === false &&
+            current.configured !== true &&
             current.flow.status === 'idle' &&
             current.mode === 'oauth' &&
             !current.localEndpoint
@@ -364,7 +369,17 @@ export function DesktopOnboardingOverlay({
   // The user chose "I'll choose a provider later" on first run. Stay out of the
   // way on every subsequent launch — they re-enter via Settings → Providers
   // (manual mode), which sets manual=true and bypasses this gate.
-  if (onboarding.firstRunSkipped && !onboarding.manual && !onboarding.freeTierReady) {
+  // `requested` also outranks the skip: it is only ever set when the user hit a
+  // REAL credential wall (the submit-time deferred warning, a stream that
+  // reported a provider setup error), never by a passive readiness round. Now
+  // that the skip is durable, without this a genuinely broken provider could
+  // leave the user with a prompt that silently refuses to send and no picker.
+  if (
+    onboarding.firstRunSkipped &&
+    !onboarding.requested &&
+    !onboarding.manual &&
+    !onboarding.freeTierReady
+  ) {
     return null
   }
 

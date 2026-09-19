@@ -7,6 +7,7 @@ import type { OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
+  completeDesktopOnboarding,
   type DesktopOnboardingState,
   type OnboardingContext,
   refreshOnboarding,
@@ -267,6 +268,45 @@ describe('refreshOnboarding', () => {
       })
     )
     expect($desktopOnboarding.get().configured).toBe(true)
+  })
+
+  it('leaves configured unknown on a boot fallback instead of erasing the cache', async () => {
+    const notifySpy = vi.spyOn(notifications, 'notify')
+
+    installApiMock(vi.fn())
+    // Cold launch, no onboarded cache yet: `configured` is UNKNOWN, not false.
+    // A round that loses the race to a cold/queued backend answers neither
+    // probe, and recording that as "no provider" deleted the cache — which
+    // re-armed the blocking first-run picker on every launch afterwards.
+    $desktopOnboarding.set(baseState({ configured: null, providers: null, requested: false }))
+
+    const ready = await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+
+    expect(ready).toBe(false)
+    expect($desktopOnboarding.get().configured).toBeNull()
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    // Nothing was ever verified, so there is no outage worth a toast.
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps a persisted "choose later" when a passive round completes onboarding', () => {
+    window.localStorage.setItem('hermes-onboarding-skipped-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: null, firstRunSkipped: true }))
+
+    completeDesktopOnboarding()
+
+    expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBe('1')
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(true)
+  })
+
+  it('clears the skip only when the user actually connected a provider', () => {
+    window.localStorage.setItem('hermes-onboarding-skipped-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: null, firstRunSkipped: true }))
+
+    completeDesktopOnboarding(true)
+
+    expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBeNull()
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(false)
   })
 
   it('enters setup when the selected OpenRouter credential is genuinely empty', async () => {

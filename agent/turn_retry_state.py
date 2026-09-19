@@ -42,6 +42,11 @@ class TurnRetryState:
     # Transport / rate-limit recovery
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False
+    # Machine-level outage accounting (see agent/local_network.py): seconds already spent waiting
+    # for connectivity, and the seconds this attempt reserved to sleep — the outage, unlike a
+    # provider fault, does not spend the normal retry budget, so its delay needs its own ledger.
+    network_outage_waited: float = 0.0
+    network_outage_sleep: float = 0.0
     # Persistent 401/403 already escalated to the fallback chain once this attempt.
     auth_failover_attempted: bool = False
 

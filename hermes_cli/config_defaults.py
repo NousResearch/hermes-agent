@@ -107,6 +107,11 @@ DEFAULT_CONFIG = {
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
+        # Seconds a turn may wait for connectivity when the machine itself is offline (DNS/routing
+        # dead, confirmed by a reachability probe — agent/local_network.py). While offline the turn
+        # keeps retrying the primary route instead of switching providers: a fallback cannot work
+        # when every route is down, and it would outlive the outage. 0 = fail fast while offline.
+        "network_outage_max_wait_seconds": 120,
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).

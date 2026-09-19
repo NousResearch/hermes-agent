@@ -117,6 +117,24 @@ The fallback activates automatically when the primary model fails with:
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately
 - **Invalid responses** — when the API returns malformed or empty responses repeatedly. A streamed refusal (the model declining with an explanation on the refusal channel) is a terminal `content_filter` result, not an empty response, so it is surfaced rather than retried. On the native Anthropic wire a `stop_reason: refusal` arrives with an empty body; Hermes reports the reason from the response's `stop_details` (category and, when present, explanation) in the refusal message and in the log line (`native_stop_reason=… stop_details=…`).
+- **Connection failures** (DNS, routing, connect timeouts) — after two failed attempts
+
+It deliberately does **not** switch to another route that needs the external network while the
+machine itself has no working network — a dropped Wi-Fi/hotspot route, a dead resolver, a link
+that is down. Every *external* provider is equally unreachable in that state, so such a switch
+could not recover the turn; it would just strand the session on the fallback model (cold prompt
+cache, different price and capabilities) and report your own outage as a provider fault. Hermes
+instead **holds the primary route** and waits for connectivity — retries back off 5s → 10s →
+20s → 30s, and the moment the link returns the turn continues on the primary model. A brief
+dropout therefore costs nothing but the wait, and a longer one ends with an honest offline error
+instead of a false "provider unavailable".
+
+Fallback entries that do **not** need that network stay eligible: a local route (`provider:
+custom` with a loopback `base_url`, LM Studio, Ollama on this machine) can still take over while
+the WAN is down, and it will.
+
+The wait is bounded by `agent.network_outage_max_wait_seconds` (default `120` seconds). Set it
+to `0` to fail immediately while offline instead of waiting.
 
 When triggered, Hermes:
 

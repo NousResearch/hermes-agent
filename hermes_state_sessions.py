@@ -2,6 +2,7 @@
 flags (end/reopen/archive/pin/hide/read), model_config patching, listing and
 counting, delete cascades, and the auto-archive sweep."""
 
+import contextlib
 import json
 import logging
 import re
@@ -1512,6 +1513,8 @@ class SessionSessionsMixin:
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
             )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            with contextlib.suppress(Exception):
+                conn.execute("DELETE FROM compaction_events WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.append(session_id)
@@ -1568,6 +1571,8 @@ class SessionSessionsMixin:
                     f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk,
                 )
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                with contextlib.suppress(Exception):
+                    conn.execute(f"DELETE FROM compaction_events WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(existing)
@@ -1606,6 +1611,8 @@ class SessionSessionsMixin:
                 # DELETE FROM messages: a row inserted between the SELECT and here
                 # would otherwise dangle (clean FK state).
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                with contextlib.suppress(Exception):
+                    conn.execute(f"DELETE FROM compaction_events WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)

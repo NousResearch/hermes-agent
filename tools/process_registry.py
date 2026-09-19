@@ -96,6 +96,11 @@ _SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+# Bound on swap spill-over for a worker scope: without it, a worker that outgrew
+# MemoryMax kept running on host swap — on a 32 GiB host one pytest worker filled
+# 3.9 GiB of an 8 GiB swap file and dragged the whole user slice into a file-backed
+# refault livelock while ~11 GiB RAM sat free.
+_WORKER_MEMORY_SWAP_MAX_BYTES = 512 * 1024 * 1024
 
 
 def _worker_memory_max_bytes() -> int:
@@ -137,14 +142,22 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
+def _worker_memory_swap_max_bytes() -> int:
+    """Swap bound for a worker scope; never wider than its RAM bound."""
+    return min(_WORKER_MEMORY_SWAP_MAX_BYTES, _worker_memory_max_bytes())
+
+
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
     ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
+    ``MemorySwapMax`` bounds swap spill-over: a worker that outgrows ``MemoryMax``
+    fails fast instead of filling the host's swap file.
     No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486)."""
     return [
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
+        "--property", f"MemorySwapMax={_worker_memory_swap_max_bytes()}",
         "--", *argv,
     ]
 

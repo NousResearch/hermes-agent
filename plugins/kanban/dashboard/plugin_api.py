@@ -13,6 +13,7 @@ import asyncio
 import importlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -1356,15 +1357,36 @@ def _board_counts(slug: str) -> dict[str, int]:
         return {}
 
 
+_WORKSPACE_KIND_CACHE_TTL_SECONDS = 300.0
+_workspace_kind_cache: dict[str, tuple[float, int, str]] = {}
+
+
 def _default_workspace_kind(board: dict[str, Any]) -> str:
-    """Recommend a non-destructive task workspace from board metadata."""
+    """Recommend a non-destructive task workspace from board metadata.
+
+    Resolving a Git root launches ``git rev-parse``. Cache the recommendation
+    briefly because the board switcher polls this endpoint and otherwise runs
+    one subprocess per configured board on every request. The directory's
+    mtime is part of the key: ``git init`` or a clone into it creates ``.git``
+    and re-probes at once, so new tasks never inherit a stale in-place default.
+    """
     workdir = str(board.get("default_workdir") or "").strip()
     if not workdir:
         return "scratch"
     try:
-        return "worktree" if kbw._git_toplevel(Path(workdir)) else "dir"
+        mtime_ns = os.stat(workdir).st_mtime_ns
+    except OSError:
+        mtime_ns = -1
+    now = time.monotonic()
+    cached = _workspace_kind_cache.get(workdir)
+    if cached is not None and cached[1] == mtime_ns and now - cached[0] < _WORKSPACE_KIND_CACHE_TTL_SECONDS:
+        return cached[2]
+    try:
+        kind = "worktree" if kbw._git_toplevel(Path(workdir)) else "dir"
     except (OSError, ValueError):
-        return "dir"
+        kind = "dir"
+    _workspace_kind_cache[workdir] = (now, mtime_ns, kind)
+    return kind
 
 
 def _annotate_board_meta(meta: dict) -> dict:

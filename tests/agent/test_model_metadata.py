@@ -1046,10 +1046,9 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):
-        """Model in API but without context_length → defaults to the top
-        probe tier (currently 256K)."""
+        """Model in API but without context_length → fail-closed default (#115637)."""
         mock_fetch.return_value = {"test/model": {"name": "Test"}}
-        assert get_model_context_length("test/model") == CONTEXT_PROBE_TIERS[0]
+        assert get_model_context_length("test/model") == DEFAULT_FALLBACK_CONTEXT
 
 
     @patch("agent.model_metadata.fetch_model_metadata")
@@ -1059,9 +1058,9 @@ class TestGetModelContextLength:
         cache_file = tmp_path / "cache.yaml"
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length("custom/model", "http://local", 32768)
-            # No base_url → cache skipped → falls to probe tier
+            # No base_url → cache skipped → falls to the fail-closed default
             result = get_model_context_length("custom/model")
-            assert result == CONTEXT_PROBE_TIERS[0]
+            assert result == DEFAULT_FALLBACK_CONTEXT
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.models_dev.lookup_models_dev_context", return_value=None)

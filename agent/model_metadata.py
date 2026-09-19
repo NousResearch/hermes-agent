@@ -294,9 +294,15 @@ def _endpoint_disk_cache_put(normalized: str, cache: Dict[str, Dict[str, Any]]) 
         ts_key="at", value_key="models", what="endpoint model metadata disk cache", ts_first=True)
 
 
-# Descending probe tiers for unknown models; tier[0] is also the default fallback.
+# Descending probe tiers for unknown models.
 CONTEXT_PROBE_TIERS = [256_000, 128_000, 64_000, 32_000, 16_000, 8_000]
-DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
+# Fail closed (#115637): a probe failure assumes the smallest tier at/above
+# MINIMUM_CONTEXT_LENGTH. The largest tier fires compression at ~80% of a
+# window the endpoint may not have, so the run sails past the real ceiling
+# and only compresses reactively, with no room left. Tiers below the minimum
+# would trip _enforce_minimum_context and refuse to start, so 64K is the
+# cheapest assumption the agent can actually run on.
+DEFAULT_FALLBACK_CONTEXT = 64_000
 _FALLBACK_WARNED: set = set()  # the fallback is never cached, so dedupe its warning per (model, base_url)
 
 
@@ -1244,6 +1250,19 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
     return next((tier for tier in CONTEXT_PROBE_TIERS if tier < current_length), None)
 
 
+def step_down_assumed_context_length(current_length: int) -> Optional[int]:
+    """One probe-tier step down for an UNVERIFIED fallback assumption after a
+    size rejection, else None (#115637). An explicitly quoted provider limit
+    always wins (see get_context_length_from_provider_error); this is only the
+    no-evidence step for a window we merely assumed. The step-down is a working
+    estimate and must never be persisted: guessed tiers in the cache turn a
+    real window into 32K forever (cf. test_ctx_halving_fix). Configured,
+    probed, catalog and already-minimum windows yield None."""
+    if current_length != DEFAULT_FALLBACK_CONTEXT:
+        return None
+    return get_next_probe_tier(current_length)
+
+
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any.
 
@@ -1534,7 +1553,9 @@ def _stale_pre_catalog_cache_entry(model: str, cached: int) -> bool:
     if specific_key not in _PRE_CATALOG_STALE_KEYS or cached >= specific_value:
         return False
     shorter_values = [v for k, v in matches if len(k) < len(specific_key)]
-    return cached <= max(shorter_values, default=DEFAULT_FALLBACK_CONTEXT)
+    # Pinned to the pre-#115637 256K default: these rows were persisted when the
+    # fallback was 256K, so the threshold must not move with it.
+    return cached <= max(shorter_values, default=256_000)
 
 
 def _model_name_suggests_minimax(model: str) -> bool:
@@ -2098,7 +2119,7 @@ def get_model_context_length(
     Studio, Codex OAuth bypass it) and Bedrock; 2-3 custom endpoints (/models, local
     probe, Ollama); 4 Anthropic /v1/models (API keys only); 5 provider-aware (Copilot,
     Nous, Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
-    unknown providers; 7 local server; 8 hardcoded defaults; 9 256K fallback."""
+    unknown providers; 7 local server; 8 hardcoded defaults; 9 64K fail-closed fallback."""
     # 0. Explicit config override — user knows best
     if isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
@@ -2188,7 +2209,7 @@ def get_model_context_length(
     hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
     if hit:
         return hit[1]
-    # 9. Default fallback — warn (deduped) so small-context models don't silently get 256K.
+    # 9. Default fallback — fail closed at 64K and warn (deduped) so the assumed window is visible.
     _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
 

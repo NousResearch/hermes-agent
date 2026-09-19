@@ -291,7 +291,7 @@ async def test_status_command_resolves_window_of_session_only_model_switch():
 @pytest.mark.asyncio
 async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
     """A model the resolver cannot size falls to DEFAULT_FALLBACK_CONTEXT; /status must not present
-    that invented number as the window (a catalog-listed model of the same size still counts)."""
+    that invented number as the window (a catalog-listed model still counts)."""
     from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
 
     runner = _runner_with_session_override(
@@ -311,7 +311,8 @@ async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
         "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
     ):
         result = await runner._handle_message(_make_event("/status"))
-    assert f"**Context:** 4,321 / {DEFAULT_FALLBACK_CONTEXT:,} (2%)" in result
+    expected_pct = min(100, round(4_321 / DEFAULT_FALLBACK_CONTEXT * 100))
+    assert f"**Context:** 4,321 / {DEFAULT_FALLBACK_CONTEXT:,} ({expected_pct}%)" in result
 
 
 @pytest.mark.asyncio

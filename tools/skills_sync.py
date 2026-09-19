@@ -23,7 +23,7 @@ for _stream in (sys.stdout, sys.stderr):
         with suppress(ValueError, TypeError):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
-from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
+from agent.skill_utils import is_excluded_skill_path
 from tools.skill_usage import _read_skill_name, read_suppressed_names
 from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
@@ -66,8 +66,8 @@ def _manifest_file() -> Path:
     return _live(MANIFEST_FILE, _MANIFEST_FILE_AT_IMPORT, lambda: _skills_dir() / ".bundled_manifest")
 
 
-# Written by `hermes profile create --no-skills` / installer `--no-skills`: sync seeds only
-# essential skills. Mirrors hermes_cli.profiles.NO_BUNDLED_SKILLS_MARKER (no CLI import here).
+# Written by `hermes profile create --no-skills` / installer `--no-skills`: sync seeds no
+# bundled skills. Mirrors hermes_cli.profiles.NO_BUNDLED_SKILLS_MARKER (no CLI import here).
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
 
@@ -363,11 +363,10 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[Set[Path]
 
 def sync_skills(quiet: bool = False) -> dict:
     """Sync bundled skills into ~/.hermes/skills/ using the manifest; returns the per-category
-    result dict. Opted-out profiles seed ONLY ESSENTIAL_SKILLS (the system prompt always
-    points at ``hermes-agent``)."""
+    result dict. Opted-out profiles seed no bundled skills."""
     essential_only = (_hermes_home() / NO_BUNDLED_SKILLS_MARKER).exists()
     if essential_only and not quiet:
-        print("  (profile opted out of bundled skills via .no-bundled-skills — seeding essential skills only)")
+        print("  (profile opted out of bundled skills via .no-bundled-skills — skipping bundled skill seeding)")
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
@@ -375,14 +374,14 @@ def sync_skills(quiet: bool = False) -> dict:
     _skills_dir().mkdir(parents=True, exist_ok=True)
     bundled_skills = _discover_bundled_skills(bundled_dir)
     if essential_only:
-        bundled_skills = [(name, src) for name, src in bundled_skills if name in ESSENTIAL_SKILLS]
+        bundled_skills = []
     suppressed = _read_suppressed_names()
     external_index = _build_external_skill_index()
     st = _SyncState(manifest=_read_manifest(), quiet=quiet)
 
     for skill_name, skill_src in bundled_skills:
-        # Curator-pruned built-ins must not resurrect on every update; essentials are exempt.
-        if skill_name in suppressed and skill_name not in ESSENTIAL_SKILLS:
+        # Curator-pruned built-ins must not resurrect on every update.
+        if skill_name in suppressed:
             st.suppressed.append(skill_name)
             continue
         dest = _compute_relative_dest(skill_src, bundled_dir)

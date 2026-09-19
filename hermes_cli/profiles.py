@@ -1169,7 +1169,7 @@ def _live_default_multiplexer() -> bool:
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
     """Seed bundled skills into a profile via subprocess (sync_skills() caches HERMES_HOME at
     module level). Returns the sync result dict, or None on failure. ``--no-skills`` profiles
-    still run the sync: ``sync_skills()`` detects the marker and seeds only essentials."""
+    still run the sync: ``sync_skills()`` detects the marker and seeds no bundled skills."""
     project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(

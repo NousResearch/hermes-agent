@@ -886,13 +886,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
             tool_call_meta: dict[str, dict[str, Any]] = {}
             cbs.tool_call_ids, cbs.tool_call_meta = tool_call_ids, tool_call_meta
-            # Shared with the step callback so a runtime that projects
-            # ``tool.completed`` closes each call once, not twice.
-            turn_state: dict[str, Any] = {}
             policy_getter = lambda: self._edit_approval_policy_for_state(state)  # noqa: E731
             cbs.tool_progress_cb = make_tool_progress_cb(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter,
-                turn_state=turn_state,
             )
             # Per-session allocator: a new turn must never reuse a previous turn's
             # assistant messageId (ACP clients replace the bubble with that id).
@@ -900,7 +896,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.message_ids = AssistantMessageIdAllocator()
             state.message_ids.close()  # new turn -> next chunk opens a fresh id
             cbs.reasoning_cb = make_thinking_cb(conn, session_id, loop, state.message_ids)
-            cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta, turn_state)
+            cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop, state.message_ids)
 
             def stream_delta_cb(text: str) -> None:

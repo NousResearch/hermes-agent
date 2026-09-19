@@ -1465,6 +1465,15 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         # live-first, so it filters them out here (#111749).
         live = [m for m in live if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
     if not live:
+        # No live catalog (missing key, offline, or an endpoint that stalls past the fetch timeout):
+        # a maintained static entry is authoritative AND correctly ordered, so it leads over the
+        # profile's short ``fallback_models`` tuple. That tuple exists for plugin providers with no
+        # static entry and goes stale silently — ``zai``'s still said glm-5.2/glm-5/glm-4-9b long
+        # after glm-5.3 shipped, hiding the newest models from the picker exactly when the live
+        # endpoint was unreachable (the case the fallback is supposed to cover).
+        static_curated = list(_PROVIDER_MODELS.get(normalized, []))
+        if static_curated:
+            return static_curated
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
     if not curated:

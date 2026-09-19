@@ -1653,7 +1653,7 @@ class TestGatewaySessionDbRecovery:
                 store.append_to_transcript("s-dead", {"role": "user", "content": f"m{i}"})
         assert store._transcript_append_failures["s-dead"] == threshold
         assert [r.levelno for r in caplog.records if "transcript append failed" in r.getMessage()][-1] == logging.ERROR
-        spooled = sorted(json.loads(p.read_text())["data"]["message"]["content"]
+        spooled = sorted(json.loads(p.read_text(encoding="utf-8"))["data"]["message"]["content"]
                          for p in (tmp_path / "pending_messages").glob("pending-*.json"))
         assert spooled == [f"m{i}" for i in range(threshold)]  # durable before the cap
         assert "s-dead" not in store._dirty_transcripts

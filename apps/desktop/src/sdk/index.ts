@@ -113,27 +113,50 @@ import { planPluginOpenSession } from './plugin-open-session-plan'
 const readonlyAtom = <T>(atomLike: ReadableAtom<T>): ReadableAtom<T> => atomLike
 
 /**
- * Turn flag for the FOCUSED chat — same semantics as the statusbar's busy
- * pulse. While the focused surface is the primary workspace (or a draft with
- * no runtime slice yet) this reads the primary view, which itself falls back
- * to the global draft atoms. Once a session TILE holds focus, the tile's own
- * state slice is authoritative — a background session can never leak in.
+ * One field of the FOCUSED chat, read off the slice the UI already renders
+ * from. While the focused surface is the primary workspace (or a draft with no
+ * runtime slice yet) this reads the primary view, which itself falls back to
+ * the global draft atoms. Once a session TILE holds focus, the tile's own state
+ * slice is authoritative — a background session can never leak in. `absent`
+ * is what a focused tile without a slice yet reports.
  */
+const focusedField = <T>(
+  select: (state: ClientSessionState) => T,
+  $primary: ReadableAtom<T>,
+  absent: T
+): ReadableAtom<T> =>
+  computed(
+    [$focusedStoredSessionId, $selectedStoredSessionId, $focusedSessionState, $primary],
+    (focused, selected, state, primary) => (!focused || focused === selected ? primary : state ? select(state) : absent)
+  )
+
+/** Turn flag for the FOCUSED chat — same semantics as the statusbar's busy pulse. */
 const focusedTurnFlag = (
   select: (state: ClientSessionState) => boolean,
   $primary: ReadableAtom<boolean>
-): ReadableAtom<boolean> =>
-  computed(
-    [$focusedStoredSessionId, $selectedStoredSessionId, $focusedSessionState, $primary],
-    (focused, selected, state, primary) =>
-      !focused || focused === selected ? primary : Boolean(state && select(state))
-  )
+): ReadableAtom<boolean> => focusedField(state => Boolean(select(state)), $primary, false)
 
 const $focusedBusy = focusedTurnFlag(state => state.busy, PRIMARY_SESSION_VIEW.$busy)
 
 const $focusedAwaitingResponse = focusedTurnFlag(
   state => state.awaitingResponse,
   PRIMARY_SESSION_VIEW.$awaitingResponse
+)
+
+// What the focused chat is running. `state.model` is the composer DRAFT atom:
+// global rather than per session, never written by a tile pick, and stale for
+// a resumed session whose slice carries its own model. There was no provider
+// at all, so a plugin had to rebuild the pair from localStorage keys plus
+// `session.info` and got it wrong on every seam (#85776). These read the same
+// resolved value the model pill paints.
+const $focusedModel = focusedField<string>(state => state.model, PRIMARY_SESSION_VIEW.$model, '')
+
+const $focusedProvider = focusedField<string>(state => state.provider, PRIMARY_SESSION_VIEW.$provider, '')
+
+const $focusedReasoningEffort = focusedField<string>(
+  state => state.reasoningEffort,
+  PRIMARY_SESSION_VIEW.$reasoningEffort,
+  ''
 )
 
 export interface PluginFocusedSessionOwner {
@@ -655,6 +678,16 @@ export const host = {
     connectionId: readonlyAtom<null | string>($activeConnectionId),
     /** Active workspace cwd ('' when detached). */
     cwd: readonlyAtom<string>($currentCwd),
+    /** Model the FOCUSED chat is on — the value its model pill shows, following
+     *  the user between tiles (unlike `model`, which is the composer draft). */
+    focusedModel: readonlyAtom<string>($focusedModel),
+    /** Provider the FOCUSED chat is on. A named custom endpoint can read as its
+     *  config key (`my-endpoint`) right after a pick and as the canonical
+     *  identity (`custom:my-endpoint`) once the backend reports — normalize
+     *  before comparing two of these. */
+    focusedProvider: readonlyAtom<string>($focusedProvider),
+    /** Reasoning effort of the FOCUSED chat ('' when the model has none). */
+    focusedReasoningEffort: readonlyAtom<string>($focusedReasoningEffort),
     /** Runtime id of the FOCUSED chat session — the interacted tile, else the
      *  primary. Prefer this over `activeSessionId` for any readout that
      *  should follow the user between tiles (context, tokens, cost). */

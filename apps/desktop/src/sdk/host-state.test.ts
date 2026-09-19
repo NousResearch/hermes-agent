@@ -127,6 +127,88 @@ describe('host.state focused-session atoms', () => {
     tree.noteActiveTreeGroup('grp-main')
     expect(host.state.focusedStoredSessionId.get()).toBe(primarySelection)
   })
+
+  it('exposes readonly atoms for the focused model / provider / reasoning effort', async () => {
+    const { host } = await setup()
+
+    for (const key of ['focusedModel', 'focusedProvider', 'focusedReasoningEffort'] as const) {
+      const store = host.state[key]
+      expect(store, key).toBeDefined()
+      expect(typeof store.get, key).toBe('function')
+      expect(typeof store.listen, key).toBe('function')
+      expect(typeof store.subscribe, key).toBe('function')
+    }
+  })
+
+  it('falls back to the composer draft while no session has a slice', async () => {
+    const { host, session } = await setup()
+
+    session.$activeSessionId.set(null)
+    session.setCurrentModel('draft/model')
+    session.setCurrentProvider('openrouter')
+
+    expect(host.state.focusedModel.get()).toBe('draft/model')
+    expect(host.state.focusedProvider.get()).toBe('openrouter')
+  })
+
+  it("prefers the active session's own slice over the draft", async () => {
+    const { host, session, states } = await setup()
+
+    // A resumed session's slice carries its own model while the draft globals
+    // still hold whatever the last draft was. The slice is what the pane
+    // renders, so it is what a plugin has to see.
+    session.setCurrentModel('stale-draft-model')
+    session.setCurrentProvider('stale-draft-provider')
+    states.$sessionStates.set({
+      'runtime-primary': { model: 'session/model', provider: 'anthropic', reasoningEffort: 'high' } as never
+    })
+    session.$activeSessionId.set('runtime-primary')
+
+    expect(host.state.focusedModel.get()).toBe('session/model')
+    expect(host.state.focusedProvider.get()).toBe('anthropic')
+    expect(host.state.focusedReasoningEffort.get()).toBe('high')
+  })
+
+  it("follows a focused tile onto that tile's own model and provider", async () => {
+    const { host, session, states } = await setup()
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+
+    for (const id of ['workspace', 'session-tile:tile-a']) {
+      registry.register({
+        area: 'panes',
+        data: id === 'workspace' ? { placement: 'main', uncloseable: true } : { placement: 'main' },
+        id,
+        render: () => null,
+        title: id
+      })
+    }
+
+    tree.declareDefaultTree(
+      model.split('row', [
+        model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+        model.group(['session-tile:tile-a'], { active: 'session-tile:tile-a', id: 'grp-side' })
+      ])
+    )
+
+    session.setCurrentModel('primary/model')
+    session.setCurrentProvider('openrouter')
+    states.$sessionTiles.set([{ storedSessionId: 'tile-a', runtimeId: 'runtime-tile-a' }])
+    states.$sessionStates.set({
+      'runtime-tile-a': { storedSessionId: 'tile-a', model: 'session/model', provider: 'anthropic' } as never
+    })
+
+    // A tile pick never touches the composer's global keys, so this slice is
+    // the ONLY place the tile's choice exists.
+    tree.noteActiveTreeGroup('grp-side')
+    expect(host.state.focusedModel.get()).toBe('session/model')
+    expect(host.state.focusedProvider.get()).toBe('anthropic')
+
+    tree.noteActiveTreeGroup('grp-main')
+    expect(host.state.focusedModel.get()).toBe('primary/model')
+    expect(host.state.focusedProvider.get()).toBe('openrouter')
+  })
 })
 
 describe('host.state.focusedSessionProfile', () => {

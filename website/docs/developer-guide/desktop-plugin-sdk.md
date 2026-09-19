@@ -490,13 +490,16 @@ host.state.activeSessionId  // ReadableAtom<string | null>
 host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assistant payload
 host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
 host.state.busyBySession    // ReadableAtom<Record<string, boolean>>  runtime id → mid-turn
+host.state.focusedModel     // ReadableAtom<string>  (model the FOCUSED chat is on — what its model pill shows; tile-aware, unlike `model`)
+host.state.focusedProvider  // ReadableAtom<string>  (provider the FOCUSED chat is on; a named custom endpoint may read as `name` or `custom:name`)
+host.state.focusedReasoningEffort // ReadableAtom<string>  ('' when the model has none)
 host.state.focusedSessionId // ReadableAtom<string | null>  (runtime id of the FOCUSED session — tile-aware; prefer for session.* RPC)
 host.state.focusedSessionProfile // ReadableAtom<string>  (owner profile of the focused chat — prefer over `profile` for per-bot/profile readouts)
 host.state.focusedStoredSessionId // ReadableAtom<string | null>  (durable id — navigation / session-list matching)
 host.state.focusedUsage     // ReadableAtom<UsageStats | null>  (live streamed usage of the focused session, no RPC needed)
 host.state.cwd              // ReadableAtom<string>
 host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'connecting' | 'open' | …)
-host.state.model            // ReadableAtom<string>
+host.state.model            // ReadableAtom<string>  (composer draft — global, not per session; prefer `focusedModel` for readouts)
 host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
 ```

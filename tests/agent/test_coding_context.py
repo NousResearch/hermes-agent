@@ -333,6 +333,28 @@ class TestProfiles:
         general = cc.resolve_runtime_mode(platform="telegram", cwd=tmp_path, config={})
         assert general.compact_skill_categories() == frozenset()
 
+    def test_configured_compact_categories_apply_regardless_of_posture(self, tmp_path):
+        # skills.compact_categories opts a category into names-only on every
+        # surface and posture (a mounted shared library must not dominate the
+        # prompt on Telegram either). Focus-mode demotions are unioned in, and
+        # malformed values are ignored rather than raising.
+        _git_init(tmp_path)
+        cfg = {"skills": {"compact_categories": ["resynant", " ", 7]}}
+        assert cc.coding_compact_skill_categories(
+            platform="telegram", cwd=tmp_path, config=cfg
+        ) == frozenset({"resynant"})
+        focus = cc.coding_compact_skill_categories(
+            platform="cli", cwd=tmp_path,
+            config={"agent": {"coding_context": "focus"}, **cfg},
+        )
+        assert {"resynant", "social-media"} <= focus
+        assert cc.coding_compact_skill_categories(
+            platform="cli", cwd=tmp_path, config={"skills": {"compact_categories": "solo"}}
+        ) == frozenset({"solo"})
+        assert cc.coding_compact_skill_categories(
+            platform="cli", cwd=tmp_path, config={"skills": {"compact_categories": {"x": 1}}}
+        ) == frozenset()
+
 
 # ── detection signals ───────────────────────────────────────────────────────
 

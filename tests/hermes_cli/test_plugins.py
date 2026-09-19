@@ -1774,6 +1774,17 @@ class TestGetPreVerifyContinueMessage:
 class TestThreadToolWhitelist:
     """Tests for the thread-local tool whitelist used by background review forks."""
 
+    def test_default_deny_message_is_compatible(self):
+        from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
+
+        set_thread_tool_whitelist(set())
+        try:
+            assert get_pre_tool_call_block_message("terminal", {}) == (
+                "Tool 'terminal' denied: not in this thread's tool whitelist"
+            )
+        finally:
+            clear_thread_tool_whitelist()
+
     def test_allowed_tool_passes_through_to_hooks(self, monkeypatch):
         from hermes_cli.plugins import (
             set_thread_tool_whitelist,

@@ -842,7 +842,7 @@ class TestBackgroundReviewDeleteGate:
         assert result["staged"] is True
         assert result["proposal_staged"] is True
         assert result["pending_id"]
-        assert "staged for your approval" in result["message"]
+        assert "set aside for your OK" in result["message"]
         # Fail-closed: the standing rule is still on disk.
         assert "never create records without permission" in store._entries_for("memory")
         # The proposal itself landed in the pending store for the user to approve or discard.

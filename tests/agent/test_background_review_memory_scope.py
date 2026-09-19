@@ -154,7 +154,7 @@ class TestConsolidationProposalSurfaces:
             {"role": "tool", "tool_call_id": "c1", "content": raw},
         ]
         actions = bg.summarize_background_review_actions(review_messages, [])
-        assert any("staged for your approval" in a for a in actions)
+        assert any("set aside for your OK" in a for a in actions)
 
     def test_near_limit_denial_end_to_end(self, tmp_path, monkeypatch):
         """add rejected by the budget -> fork follows the 'consolidate now' hint with a
@@ -196,4 +196,4 @@ class TestConsolidationProposalSurfaces:
             {"role": "tool", "tool_call_id": "c2", "content": replace_raw},
         ]
         actions = bg.summarize_background_review_actions(review_messages, [])
-        assert any("staged for your approval" in a for a in actions)
+        assert any("set aside for your OK" in a for a in actions)

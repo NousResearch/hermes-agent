@@ -148,9 +148,10 @@ class TestBusyHandlerDemotesInterruptForCompression:
 
         adapter._send_with_retry.assert_called_once()
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        assert "Compressing context" in content
-        assert "queued" in content.lower()
-        assert "/stop" in content
+        # The demotion shows up as "handled after this run", with no machinery words.
+        assert "get to it as soon as this finishes" in content
+        assert "/stop" not in content
+        assert "Compressing" not in content
         assert "Interrupting" not in content
 
 

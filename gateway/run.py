@@ -5082,7 +5082,7 @@ def _start_gateway_claim_pid_file() -> bool:
 
 
 async def _start_gateway_start_control_socket(runner):
-    """Start the gateway control socket (identify/status/pause-for-update); None when unavailable."""
+    """Start the gateway control socket (identify/status/lifecycle/MCP reload); None when unavailable."""
     import atexit
     _control_server = None
     try:
@@ -5138,11 +5138,25 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        def _reload_mcp_handler() -> dict:
+            """Schedule MCP rediscovery on the gateway loop without manufacturing a chat event."""
+            future = asyncio.run_coroutine_threadsafe(runner._execute_mcp_reload(), _main_loop)
+
+            def _log_failure(completed) -> None:
+                try:
+                    completed.result()
+                except Exception:
+                    logger.warning("Control-socket MCP reload failed", exc_info=True)
+
+            future.add_done_callback(_log_failure)
+            return {"reloading": True, "pid": os.getpid()}
+
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
-                           "purge-profile-identity": purge_profile_identity_verb(runner)})
+                           "purge-profile-identity": purge_profile_identity_verb(runner),
+                           "reload-mcp": _reload_mcp_handler})
         if not await _control_server.start():
             _control_server = None
         else:

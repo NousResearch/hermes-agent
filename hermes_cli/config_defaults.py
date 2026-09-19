@@ -1400,6 +1400,13 @@ DEFAULT_CONFIG = {
         # "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"). Informational, never
         # blocking; secrets-class findings shown red. No-op without it.
         "tier1_advisory": True,
+        # Query-relevance rerank of `hermes skills search` merged results (TypeSafe Jev Score).
+        # Off by default: the trust-sorted merge is kept as-is and no network call is made.
+        # When enabled, every merged candidate is scored 0-10 against the query and the
+        # trust-sorted list is stably re-ordered before the limit cut; any scorer failure
+        # fails open to trust order. The key is read from TYPESAFE_API_KEY in ~/.hermes/.env
+        # (profile-scoped like the other provider keys).
+        "hub_relevance_rerank": {"enabled": False},
         # Approval gate for skill_manage mutations on BOTH foreground turns and the background
         # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
         # pending, /skills diff <id>, /skills approve|reject <id>.

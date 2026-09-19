@@ -818,6 +818,45 @@ class TestUnifiedSearchDedup:
         assert len(results) == 1
 
 
+class TestUnifiedSearchRelevanceRerank:
+    def _make_source(self, source_id, results):
+        """Create a mock SkillSource that returns fixed results."""
+        src = MagicMock()
+        src.source_id.return_value = source_id
+        src.search.return_value = results
+        return src
+
+    def test_relevance_beats_finish_order_and_limit_cut(self):
+        # Same trust rank, least-relevant source finishes first: the injected
+        # scorer must promote the relevant hit so the limit cut drops the
+        # least-relevant instead of the slowest source's hit.
+        lo = SkillMeta(name="zzz", description="nothing relevant", source="a",
+                       identifier="a/zzz", trust_level="community")
+        hi = SkillMeta(name="cuda", description="gpu kernels", source="b",
+                       identifier="b/cuda", trust_level="community")
+        src_a = self._make_source("a", [lo])
+        src_b = self._make_source("b", [hi])
+        scores = {"a/zzz": 1.0, "b/cuda": 9.0}
+        results = unified_search("cuda gpu kernels", [src_a, src_b], limit=1,
+                                 relevance_scorer=lambda _q, _c: scores)
+        assert [r.identifier for r in results] == ["b/cuda"]
+
+    def test_relevance_scorer_failure_falls_back_to_trust_order(self):
+        # A failing scorer must fail open to the trust-sorted merge, never error.
+        official = SkillMeta(name="s", description="", source="official",
+                             identifier="official/s", trust_level="builtin")
+        community = SkillMeta(name="s2", description="", source="x",
+                              identifier="x/s2", trust_level="community")
+
+        def boom(_query, _candidates):
+            raise RuntimeError("jev down")
+
+        results = unified_search("s", [self._make_source("x", [community]),
+                                       self._make_source("official", [official])],
+                                 relevance_scorer=boom)
+        assert [r.identifier for r in results] == ["official/s", "x/s2"]
+
+
 # ---------------------------------------------------------------------------
 # GitHub tap provider labeling + index search/filter
 # ---------------------------------------------------------------------------

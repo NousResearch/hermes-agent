@@ -191,6 +191,7 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
 # Vendor/model slugs are valid on aggregators and any custom provider; Fireworks' native IDs are slash-form
 # (accounts/fireworks/models/...) and DeepInfra's catalog is exclusively vendor/model.
 _VENDOR_SLUG_PROVIDERS = {
+    "merge-gateway",
     "openrouter", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "lmstudio", "nous", "nvidia",
     "fireworks", "deepinfra",
 }

@@ -1319,12 +1319,15 @@ def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
 
 
 def _api_key_credentials(normalized: str) -> tuple[str, str]:
-    """``(api_key, base_url)`` from ``resolve_api_key_provider_credentials``; empty strings on any miss."""
+    """API-key credentials with the same provider-scoped URL override as inference."""
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
+        from hermes_cli.runtime_provider import _config_base_url_for_provider
 
         creds = resolve_api_key_provider_credentials(normalized)
-        return str(creds.get("api_key") or "").strip(), str(creds.get("base_url") or "").strip()
+        base_url = (_config_base_url_for_provider(_get_model_config_dict(), normalized)
+                    or str(creds.get("base_url") or "").strip())
+        return str(creds.get("api_key") or "").strip(), base_url
     except Exception:
         return "", ""
 
@@ -1591,8 +1594,10 @@ def _credential_fingerprint(provider: str) -> str:
     base-url env vars from ``PROVIDER_REGISTRY`` plus the mtimes of ``auth.json`` and external
     credential files (OAuth re-auth busts the cache without parsing every file shape)."""
     import hashlib
+    from hermes_cli.runtime_provider import _config_base_url_for_provider
 
-    parts: list[str] = []
+    configured_base = _config_base_url_for_provider(_get_model_config_dict(), provider)
+    parts: list[str] = [f"configured_base={configured_base}"]
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         pcfg = PROVIDER_REGISTRY.get(provider)

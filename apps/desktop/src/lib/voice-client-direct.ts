@@ -66,6 +66,9 @@ const CONFIG_TTL_MS = 60_000
 // Per-request cap on a direct STT upload; the gateway's stt timeout is not part of the
 // client config, so this mirrors its 60s default rather than hanging dictation forever.
 const STT_REQUEST_TIMEOUT_MS = 60_000
+// Per-request cap on a direct TTS call; the gateway's own TTS relay clients
+// (tools/tts_tool_providers.py, tools/tts_tool.py) use a fixed 60s timeout too.
+const TTS_REQUEST_TIMEOUT_MS = 60_000
 
 let cached: { key: string; at: number; config: VoiceClientConfig } | null = null
 let inflight: { key: string; promise: Promise<null | VoiceClientConfig> } | null = null
@@ -322,6 +325,30 @@ export async function directTtsConfig(): Promise<DirectTtsConfig | null> {
   return config?.tts && config.tts.mode === 'direct' ? config.tts : null
 }
 
+/**
+ * `fetch` with the TTS deadline. A slow or wedged endpoint otherwise leaves
+ * `voice-playback.ts`'s playback pump awaiting this call forever — the
+ * browser applies no timeout of its own to a POST that never answers.
+ */
+async function ttsFetch(tts: DirectTtsConfig, url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TTS_REQUEST_TIMEOUT_MS)
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `Speech synthesis timed out after ${TTS_REQUEST_TIMEOUT_MS / 1000}s (${tts.provider} did not answer)`
+      )
+    }
+
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** Synthesize one text segment to audio bytes (mp3). Throws on provider rejection. */
 export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: string): Promise<ArrayBuffer> {
   if (tts.wire === 'openai-speech') {
@@ -337,7 +364,7 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
       body.speed = tts.speed
     }
 
-    const response = await fetch(`${tts.base_url.replace(/\/+$/, '')}/audio/speech`, {
+    const response = await ttsFetch(tts, `${tts.base_url.replace(/\/+$/, '')}/audio/speech`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${tts.api_key}`,
@@ -354,7 +381,8 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
   }
 
   if (tts.wire === 'elevenlabs-tts') {
-    const response = await fetch(
+    const response = await ttsFetch(
+      tts,
       `${tts.base_url.replace(/\/+$/, '')}/text-to-speech/${encodeURIComponent(tts.voice || '')}`,
       {
         method: 'POST',

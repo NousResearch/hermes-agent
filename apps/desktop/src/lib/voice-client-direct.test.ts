@@ -338,6 +338,63 @@ describe('synthesizeSpeechClientDirect', () => {
 
     await expect(synthesizeSpeechClientDirect(openaiTts, 'Hi.')).rejects.toThrow(/openai TTS error.*429/)
   })
+
+  /** A fetch that only settles when its AbortSignal fires — a wedged TTS endpoint. */
+  function hangingFetch() {
+    return vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        })
+    )
+  }
+
+  it('aborts a hanging openai-speech synthesis at 60s instead of stalling playback forever', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const fetchMock = hangingFetch()
+      vi.stubGlobal('fetch', fetchMock)
+
+      const pending = synthesizeSpeechClientDirect(openaiTts, 'Hello there.')
+      const settled = vi.fn()
+
+      pending.then(settled, settled)
+      await vi.advanceTimersByTimeAsync(0)
+
+      const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+      expect(init.signal).toBeInstanceOf(AbortSignal)
+
+      await vi.advanceTimersByTimeAsync(59_000)
+      expect(settled).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expect(pending).rejects.toThrow(/Speech synthesis timed out after 60s/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('aborts a hanging elevenlabs-tts synthesis at 60s instead of stalling playback forever', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const fetchMock = hangingFetch()
+      vi.stubGlobal('fetch', fetchMock)
+
+      const pending = synthesizeSpeechClientDirect(
+        { ...openaiTts, wire: 'elevenlabs-tts', provider: 'elevenlabs', base_url: 'https://api.elevenlabs.io/v1' },
+        'Hi.'
+      )
+      const settled = vi.fn()
+
+      pending.then(settled, settled)
+      await vi.advanceTimersByTimeAsync(60_000)
+      await expect(pending).rejects.toThrow(/Speech synthesis timed out after 60s \(elevenlabs did not answer\)/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('transcriptFromOpenAiMultipartBody', () => {

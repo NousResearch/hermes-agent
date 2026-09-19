@@ -528,7 +528,8 @@ def _file_lock(
             holder.depth -= 1
         return
 
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(lock_path.parent)
     with ExitStack() as stack:
         lock_file = None
         if fcntl is not None or msvcrt is not None:
@@ -2045,7 +2046,8 @@ def _update_config_for_provider(
         _save_auth_store(auth_store)
 
     config_path = get_config_path()
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(config_path.parent)
     require_readable_config_before_write(config_path)
     config = read_raw_config()
     current_model = config.get("model")

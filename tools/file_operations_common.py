@@ -189,6 +189,18 @@ _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
 
 
+_CONFLICT_OPEN = re.compile(r"^\s*\d+\|<<<<<<< ", re.M)
+_CONFLICT_CLOSE = re.compile(r"^\s*\d+\|>>>>>>> ", re.M)
+
+
+def count_conflict_blocks(formatted_content: str) -> int:
+    """Unresolved git merge-conflict blocks in a ``LINE|CONTENT`` read; 0 when the page has no
+    balanced ``<<<<<<< `` / ``>>>>>>> `` pair (a lone marker in prose or a test fixture is not a
+    conflict). Reported on read so the model resolves the conflict instead of editing around it."""
+    opens = len(_CONFLICT_OPEN.findall(formatted_content))
+    return min(opens, len(_CONFLICT_CLOSE.findall(formatted_content))) if opens else 0
+
+
 def _strip_terminal_fence_leaks(text: str) -> str:
     """Strip leaked terminal fence wrappers (OSC sequences, fence markers) from
     command output; drops lines that were nothing but wrapper."""

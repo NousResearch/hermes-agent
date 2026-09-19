@@ -27,7 +27,7 @@ from xml.etree import ElementTree as ET
 __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_bytes",
            "extract_document_text", "is_extractable_document"]
 
-EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
+EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".db", ".sqlite", ".sqlite3"})
 ANYDOC_EXTENSIONS = frozenset({
     ".doc", ".docm", ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
     ".xls", ".xlsm", ".xlsb", ".odt", ".ods", ".odp", ".rtf", ".epub", ".pdf"})
@@ -552,9 +552,70 @@ def _cell_value(cell: ET.Element, shared: list[str], s: str) -> str:
     return (value or "#ERROR") if typ == "e" else value
 
 
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+_SQLITE_PREVIEW_ROWS = 5
+_SQLITE_MAX_TABLES = 200
+_SQLITE_CELL_CHARS = 80
+
+
+def _extract_sqlite(path: str) -> str:
+    """Render a SQLite file as a schema overview: per table the CREATE statement, row count and the
+    first rows. A ``.db`` that is not SQLite raises ExtractionError so read_file reports the real type."""
+    import sqlite3
+
+    with open(path, "rb") as fh:
+        if fh.read(len(_SQLITE_MAGIC)) != _SQLITE_MAGIC:
+            raise ExtractionError("not a SQLite database (magic bytes do not match)")
+    # Read-only URI: never create or mutate; immutable=1 also skips WAL/journal sidecars so a live
+    # database that another process has open is still readable without taking locks.
+    uri = Path(path).resolve().as_uri() + "?mode=ro&immutable=1"
+    con = sqlite3.connect(uri, uri=True)
+    try:
+        objs = con.execute(
+            "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type DESC, name"
+        ).fetchall()
+        out = ["# SQLite database", ""]
+        tables = [o for o in objs if o[0] == "table"]
+        others = [o for o in objs if o[0] != "table"]
+        out.append(f"{len(tables)} table(s), {len(others)} index/view/trigger(s)")
+        for _, name, sql in tables[:_SQLITE_MAX_TABLES]:
+            quoted = '"' + name.replace('"', '""') + '"'
+            count = con.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0]
+            out += ["", f"## {name}  ({count:,} rows)", sql.strip()]
+            cur = con.execute(f"SELECT * FROM {quoted} LIMIT {_SQLITE_PREVIEW_ROWS}")
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            if rows:
+                out.append("| " + " | ".join(cols) + " |")
+                out.append("|" + "---|" * len(cols))
+                for row in rows:
+                    cells = [_sqlite_cell(v) for v in row]
+                    out.append("| " + " | ".join(cells) + " |")
+        if len(tables) > _SQLITE_MAX_TABLES:
+            out.append(f"\n... {len(tables) - _SQLITE_MAX_TABLES} more tables omitted")
+        if others:
+            out += ["", "## Indexes / views / triggers"] + [f"- {t} {n}" for t, n, _ in others]
+        out += ["", "Query it with the terminal: sqlite3 <path> 'SELECT ...'  (or Python's sqlite3 module)."]
+        return "\n".join(out)
+    except sqlite3.DatabaseError as exc:
+        raise ExtractionError(f"SQLite read failed: {exc}") from exc
+    finally:
+        con.close()
+
+
+def _sqlite_cell(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, (bytes, bytearray)):
+        return f"<blob {len(value)} bytes>"
+    text = str(value).replace("|", "\\|").replace("\n", " ")
+    return text if len(text) <= _SQLITE_CELL_CHARS else text[:_SQLITE_CELL_CHARS - 1] + "…"
+
+
 # Extension -> stdlib extractor; anydoc formats fall through in extract_document_text.
 _STDLIB_EXTRACTORS: dict[str, Callable[[str], str]] = {
-    ".ipynb": _extract_notebook, ".docx": _extract_docx, ".xlsx": _extract_xlsx}
+    ".ipynb": _extract_notebook, ".docx": _extract_docx, ".xlsx": _extract_xlsx,
+    ".db": _extract_sqlite, ".sqlite": _extract_sqlite, ".sqlite3": _extract_sqlite}
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

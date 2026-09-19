@@ -457,7 +457,7 @@ class TestNotebookExtraction(unittest.TestCase):
              "outputs": [{"output_type": "stream",
                           "text": "x" * (_MAX_OUTPUT_CHARS + 5000)}]},
         ]}], "nbformat": 3}
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             json.dump(nb, fh)
         text = extract_document_text(p)
         self.assertIn("output chars truncated", text)
@@ -470,7 +470,7 @@ class TestNotebookExtraction(unittest.TestCase):
             {"cell_type": "code", "source": "1+1",
              "outputs": [{"output_type": "pyout", "text": ["2"]}]},
         ]}], "nbformat": 3}
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             json.dump(nb, fh)
         text = extract_document_text(p)
         self.assertIn("Output (cell 1)", text)
@@ -905,3 +905,34 @@ class TestPdfCoverageNote(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSqliteExtraction(unittest.TestCase):
+    def test_sqlite_reads_as_schema_overview_and_non_sqlite_db_is_refused(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as d:
+            db = os.path.join(d, "shop.db")
+            con = sqlite3.connect(db)
+            con.executescript(
+                "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, blob BLOB);"
+                "CREATE INDEX ix_name ON users(name);"
+                "INSERT INTO users VALUES(1,'ann|pipe',x'0011'),(2,'bob',NULL);")
+            con.commit()
+            con.close()
+
+            result = json.loads(read_file_tool(db))
+            content = result["content"]
+            self.assertTrue(result.get("extracted_document"))
+            self.assertIn("## users  (2 rows)", content)
+            self.assertIn("CREATE TABLE users", content)
+            self.assertIn("<blob 2 bytes>", content)  # blobs never enter context raw
+            self.assertIn("ann\\|pipe", content)  # table cell escaping keeps the markdown table intact
+            self.assertIn("index ix_name", content)
+
+            fake = os.path.join(d, "notdb.db")
+            with open(fake, "wb") as fh:
+                fh.write(b"hello, not a database")
+            refused = json.loads(read_file_tool(fake))
+            self.assertIn("not a SQLite database", refused["error"])
+

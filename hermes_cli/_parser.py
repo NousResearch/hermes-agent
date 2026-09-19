@@ -114,6 +114,7 @@ Examples:
     hermes logs -f                Follow agent.log in real time
     hermes logs errors            View errors.log
     hermes logs --since 1h        Lines from the last hour
+    hermes runs watch RUN_ID --api-key KEY  Watch an API run and answer approvals
     hermes debug share             Upload debug report for support
     hermes console                Open the safe Hermes command console
     hermes update                 Update to latest version

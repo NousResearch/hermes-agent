@@ -5,6 +5,7 @@ import { test } from 'vitest'
 
 import {
   assertWindowsRemoteInstallUpdateClear,
+  atomicWindowsSpawnCommand,
   buildAtomicWindowsSpawnScript,
   buildUpdateMarkerScript,
   buildWindowsInteractiveCommand,

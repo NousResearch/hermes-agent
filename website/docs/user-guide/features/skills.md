@@ -691,6 +691,68 @@ hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 ```
 
+### Export selected skill contents
+
+To back up or share local skill files without exporting a whole profile:
+
+```bash
+hermes skills export writing/notes coding/review -o /path/to/selected-skills.tar.gz
+```
+
+Arguments are directory paths relative to the active profile's `skills/` directory,
+not frontmatter names or registry identifiers. Each selected directory must contain
+`SKILL.md`. The archive preserves supporting files, empty directories and file
+permissions, with a `manifest.json` containing the selected paths and SHA-256 hashes
+of every archived file. It does not contain profile settings, session history or
+Hub installation/ownership records. Hashes verify content, not publisher identity.
+
+Unlike `hermes skills snapshot export`, which records registry references for
+reinstallation, this command includes the selected files themselves, including local
+edits. Snapshot import and profile import do not accept this format; use
+`hermes skills import` (below) to add a reviewed archive to another installation,
+or unpack it into a separate directory and copy manually. Do not extract directly
+over live skills.
+
+The output parent directory must already exist, support hard links, and be outside
+the profile's `skills/` tree. An existing output is never overwritten. Detected
+symlinks and special files in selected skills cause the entire export to fail.
+Use a quiescent, trusted local source tree; this is not a filesystem snapshot or a
+sandbox for directories being modified by another process during export.
+
+**Review before sharing.** Skill content is not secret- or PII-scrubbed. Files named
+`.env` or `auth.json` are refused, but secrets or personal information may appear in
+other files. Nothing is uploaded, and no skill code is executed by the exporter.
+
+### Import selected skill contents
+
+To add the contents of an exported archive to the active profile:
+
+```bash
+hermes skills import /path/to/selected-skills.tar.gz
+hermes skills import /path/to/selected-skills.tar.gz --dry-run   # integrity preview only
+```
+
+Applying an import:
+
+- Runs every archived file through the native Skills Guard scanner first; a blocked or
+  confirmation-required verdict refuses the import before anything is written.
+- Installs ordinary local copies — no Hub lock-file update ownership is recorded, and
+  installed skills are never automatically refreshed from the archive. Re-importing
+  fails while the destination exists, so repeat imports never overwrite local edits.
+- Never merges into an existing skill or category: any existing destination, nested
+  target, or symlink on the path refuses the import before installation starts.
+- Publishes each root `SKILL.md` atomically after its supporting files, so an
+  interrupted import does not leave a half-written skill for discovery. A failed import
+  may leave a reserved directory with supporting files behind; remove it manually
+  before retrying.
+- Treats nested `SKILL.md` files as scanned support content; like any `SKILL.md` under
+  the skills tree, Hermes may also discover them as separate skills.
+
+Manifest hashes verify integrity, not publisher authenticity, and the scanner is a
+pattern scan, not a sandbox: import only archives you trust. Normal CLI startup may
+initialize profile directories and logs even during `--dry-run`; no skill contents are
+installed by a preview.
+
 ### Supported hub sources
 
 | Source | Example | Notes |

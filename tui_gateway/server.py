@@ -2850,7 +2850,7 @@ def _pet_row_frame_counts(spritesheet) -> dict:
         from agent.pet import constants, render
         with Image.open(spritesheet) as opened:
             image = opened.convert("RGBA")
-        W, H = constants.FRAME_W, constants.FRAME_H
+        W, H = constants.infer_frame_size(image.width, image.height)
         cols = max(1, image.width // W)
         row_count = max(1, image.height // H)
         rows = constants.state_rows_for_grid(row_count)
@@ -2896,9 +2896,15 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
             cached = _pet_payload_cache.get(cache_key)
         if cached is not None:
             return _clone_pet_payload(cached)
+    try:  # 2x atlases carry bigger cells; derive geometry from the sheet grid itself
+        from PIL import Image
+        with Image.open(pet.spritesheet) as _sheet:
+            frame_w, frame_h = constants.infer_frame_size(_sheet.width, _sheet.height)
+    except Exception:  # noqa: BLE001
+        frame_w, frame_h = constants.FRAME_W, constants.FRAME_H
     try:  # real (padding-trimmed) frame count per state; {} → the canvas uses the static framesPerState
         from agent.pet import render
-        frames_by_state = render.state_frame_counts(str(pet.spritesheet))
+        frames_by_state = render.state_frame_counts(str(pet.spritesheet), frame_w=frame_w, frame_h=frame_h)
     except Exception:  # noqa: BLE001
         frames_by_state = {}
     raw = pet.spritesheet.read_bytes()
@@ -2906,8 +2912,8 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
     payload = {
         "slug": pet.slug, "displayName": pet.display_name, "mime": mime,
         "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
-        "spritesheetRevision": _pet_sheet_revision(pet.spritesheet), "frameW": constants.FRAME_W,
-        "frameH": constants.FRAME_H, "framesPerState": constants.FRAMES_PER_STATE,
+        "spritesheetRevision": _pet_sheet_revision(pet.spritesheet), "frameW": frame_w,
+        "frameH": frame_h, "framesPerState": constants.FRAMES_PER_STATE,
         "framesByState": frames_by_state,
         "framesByRow": _pet_row_frame_counts(pet.spritesheet), "loopMs": constants.LOOP_MS,
         "scale": scale, "stateRows": _pet_state_rows(pet.spritesheet),

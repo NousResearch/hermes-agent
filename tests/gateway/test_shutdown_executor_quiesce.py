@@ -78,8 +78,10 @@ class _FakeGateway:
     def _active_cron_job_count(self):
         return 0
 
-    def _active_api_run_count(self):
-        return 0
+    # Real hook + counter: 0 while ``adapters`` is empty, the API-server count once a fake adapter is in.
+    _api_server_hook = gw_mod.GatewayShutdownMixin._api_server_hook
+    _active_api_run_count = gw_mod.GatewayShutdownMixin._active_api_run_count
+    _active_deferred_agent_worker_count = gw_mod.GatewayShutdownMixin._active_deferred_agent_worker_count
 
     def _update_runtime_status(self, *_a, **_kw):
         pass
@@ -213,12 +215,38 @@ async def test_stuck_worker_skips_the_session_db_close():
     assert "worker_write" in events, "worker never finished"
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("counter", ["_active_cron_job_count", "_active_api_run_count"])
-async def test_live_writer_outside_the_executor_skips_the_session_db_close(monkeypatch, counter):
-    """A cron job or API-server run that outlived the drain must not have state.db closed under it (#102198).
+def _arm_cron(gw):
+    gw._active_cron_job_count = lambda: 1
 
-    Both run outside ``self._executor`` (scheduler pool / loop default executor), so the executor
+
+def _arm_api(gw):
+    # Through the real hook: the adapter map is cleared one phase before the close gate, so the
+    # gate must use the count taken before the clear, not a live lookup.
+    from gateway.config import Platform
+
+    class _ApiAdapter:
+        def active_agent_work_count(self):
+            return 1
+
+    async def _teardown(adapter, platform, *, profile=None):
+        pass  # the run keeps going on the default executor after the transport is torn down
+
+    gw.adapters[Platform.API_SERVER] = _ApiAdapter()
+    gw._bounded_adapter_teardown = _teardown
+
+
+def _arm_deferred(gw):
+    # A hygiene worker on the loop's default executor, never finished.
+    gw._deferred_agent_workers = {asyncio.get_event_loop().create_future(): object()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arm", [_arm_cron, _arm_api, _arm_deferred], ids=["cron", "api", "deferred"])
+async def test_live_writer_outside_the_executor_skips_the_session_db_close(monkeypatch, arm):
+    """A cron job, API-server run or deferred worker that outlived the drain must not have state.db
+    closed under it (#102198).
+
+    None of them run on ``self._executor`` (scheduler pool / loop default executor), so the executor
     join above the close block never sees them; the close has to consult their counters too.
     The executor must still be sealed on this path (#101118).
     """
@@ -226,7 +254,7 @@ async def test_live_writer_outside_the_executor_skips_the_session_db_close(monke
 
     events = []
     gw = _FakeGateway(events)
-    monkeypatch.setattr(gw, counter, lambda: 1)
+    arm(gw)
     monkeypatch.setattr(
         hermes_state_registry, "close_all", lambda: events.append("close_all") or 0
     )
@@ -234,7 +262,7 @@ async def test_live_writer_outside_the_executor_skips_the_session_db_close(monke
     await gw_mod.GatewayRunner.stop(gw)
 
     assert "close:session_db" not in events and "close_all" not in events, (
-        f"SessionDB closed despite a live {counter} writer: {events}"
+        f"SessionDB closed despite a live {arm.__name__[5:]} writer: {events}"
     )
     assert gw._executor_closing is True, "executor left unsealed on the outside-writer path"
 

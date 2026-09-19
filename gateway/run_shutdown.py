@@ -156,6 +156,9 @@ class GatewayShutdownMixin:
         active_agents: dict = dataclasses.field(default_factory=dict)
         timed_out: bool = False
         drain_elapsed: float = 0.0
+        # API-server runs still live when the adapters were released; the adapter map is empty by the
+        # time the SessionDB close gate runs, so the count has to be taken before ``adapters.clear()``.
+        api_live: int = 0
 
         def elapsed(self) -> float:
             return time.monotonic() - self.started_at
@@ -1837,6 +1840,7 @@ class GatewayShutdownMixin:
         # CancelledError into this _stop_impl and skip _shutdown_event.set() / _exit_code = 75 (#12875). It
         # self-terminates anyway.
         self._background_tasks.clear()
+        ctx.api_live = self._active_api_run_count()
         self.adapters.clear()
         for _session_key in list(self._running_agents):
             self._release_running_agent_state(_session_key)
@@ -1907,15 +1911,18 @@ class GatewayShutdownMixin:
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
-        # Cron jobs run on the scheduler's own pool and API-server runs on the loop's default executor,
-        # not self._executor, so the join above never sees them. A writer that outlived the drain is
-        # mid-write for the same #101093 reasons; the drain already spent its budget, so no second wait —
-        # leave the handles open (#102198).
-        _outside_live = self._active_cron_job_count() + self._active_api_run_count()
-        if _outside_live:
+        # Cron jobs (scheduler pool), API-server runs and deferred hygiene workers (both on the loop's
+        # default executor) never touch self._executor, so the join above cannot see them. A writer that
+        # outlived the drain is mid-write for the same #101093 reasons; the drain already spent its
+        # budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
+        # taken before the adapters were released; a run whose handler task was cancelled at disconnect
+        # has already left it, so this term under-counts rather than over-counts.
+        _cron_live, _api_live, _deferred_live = self._active_cron_job_count(), ctx.api_live, ctx.deferred_count()
+        if _cron_live or _api_live or _deferred_live:
             logger.warning(
-                "Shutdown phase: %d cron/API-server job(s) still running after the drain — skipping the "
-                "SessionDB close/checkpoint, leaving state.db open for the live writer (#102198)", _outside_live,
+                "Shutdown phase: %d cron job(s) / %d API-server run(s) / %d deferred worker(s) still running "
+                "after the executor quiesce — skipping the SessionDB close/checkpoint, leaving state.db open "
+                "for the live writer (#102198)", _cron_live, _api_live, _deferred_live,
             )
             return
         _step = GatewayShutdownMixin._quiet_step

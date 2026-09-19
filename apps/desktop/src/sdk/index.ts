@@ -1564,7 +1564,9 @@ export {
   type ComposerAtCompletionItem,
   type ComposerAtCompletionSource,
   type ComposerAttachmentProvider,
-  type ComposerMiddleware
+  type ComposerMiddleware,
+  type ComposerModelPillContext,
+  type ComposerModelPillProvider
 } from '@/app/chat/composer/contrib'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree

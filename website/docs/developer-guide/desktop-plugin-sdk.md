@@ -406,6 +406,13 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
 
+`COMPOSER_AREAS.modelPill` overrides the model pill's **label** — a provider
+(`{ label: (ctx: ComposerModelPillContext) => string | null }`) receives
+`{ model, reasoningEffort, compact }` and returns the text to show, or `null` to
+let the next provider (then the core label) win. The pill keeps its chrome, pin
+dot, and menu; only the label changes — the sanctioned replacement for the
+MutationObserver text-rewriting plugins do today.
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.

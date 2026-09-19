@@ -10,7 +10,7 @@ import {
   startLocalRuntimeInstall
 } from '@/store/local-runtime-jobs'
 import { $connection } from '@/store/session'
-import { $activeTip, $retiredTips, $tipsEnabled, $tipShownAt, dismissTip, showTip } from '@/store/tips'
+import { $activeTip, $retiredTips, $tipsEnabled, $tipShownAt, dismissTip, retireActiveTip, showTip } from '@/store/tips'
 import type { LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 let snapshot: { readAt: number; status: LocalModelsStatus | null; jobs: LocalRuntimeJob[] } | null = null
@@ -18,8 +18,9 @@ let pending = false
 let generation = 0
 
 const closeUpdateTip = () => {
-  if ($activeTip.get()?.tipId?.startsWith('local-runtime-update:')) {
-    dismissTip()
+  const active = $activeTip.get()
+  if (active?.tipId?.startsWith('local-runtime-update:')) {
+    retireActiveTip()
   }
 }
 
@@ -130,6 +131,12 @@ export function offerLocalRuntimeUpdateTip(copy: Translations['tips'], openLocal
           return
         }
 
+        // Mark the tip as retired for this engine version so it doesn't
+        // reappear on every launch when status.update_available is sticky.
+        // (The dismissTip() call below handles the current-session dismiss;
+        // retireActiveTip() persists the suppression in $retiredTips so
+        // offerLocalRuntimeUpdateTip returns false on next startup.)
+        retireActiveTip()
         dismissTip()
         openLocalModels()
         void startLocalRuntimeInstall()

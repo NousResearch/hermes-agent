@@ -98,6 +98,32 @@ def test_gateway_eviction_reload_keeps_prune_and_durable_runway(tmp_path: Path) 
     stored_runway = _model_config(db, session_id)[_REARM_KEY]
     assert _model_config(db, session_id)["keep"] == "value"
     assert stored_runway > sum(map(_estimate_msg_budget_tokens, durable))
+    changed_persisted = sum(
+        1
+        for original, replacement in zip(before, pruned)
+        if {
+            key: value
+            for key, value in original.items()
+            if key not in {"_db_persisted", "_row_id"}
+        }
+        != {
+            key: value
+            for key, value in replacement.items()
+            if key not in {"_db_persisted", "_row_id"}
+        }
+    )
+    archived_searchable = db._conn.execute(
+        "SELECT COUNT(*) FROM messages "
+        "WHERE session_id = ? AND active = 0 AND compacted = 1",
+        (session_id,),
+    ).fetchone()[0]
+    archived_superseded = db._conn.execute(
+        "SELECT COUNT(*) FROM messages "
+        "WHERE session_id = ? AND active = 0 AND compacted = 0",
+        (session_id,),
+    ).fetchone()[0]
+    assert archived_searchable == changed_persisted
+    assert archived_superseded == len(before) - changed_persisted
 
     # Simulate gateway cache eviction / process restart: construct a wholly
     # new AIAgent and load the active transcript from SQLite.
@@ -173,17 +199,89 @@ def test_prune_persistence_failure_is_a_noop(tmp_path: Path) -> None:
 
     with patch.object(
         db, "archive_and_compact", side_effect=RuntimeError("disk full"),
-    ):
+    ) as archive:
         result, count = agent.context_compressor.prune_tool_results_only(
+            messages, current_tokens=120_000,
+        )
+        repeated, repeated_count = agent.context_compressor.prune_tool_results_only(
+            messages, current_tokens=120_000,
+        )
+        messages.append({"role": "user", "content": "next turn"})
+        next_turn, next_turn_count = agent.context_compressor.prune_tool_results_only(
             messages, current_tokens=120_000,
         )
 
     assert result is messages
     assert count == 0
+    assert repeated is messages
+    assert repeated_count == 0
+    assert next_turn is messages
+    assert next_turn_count == 0
+    assert archive.call_count == 2
     assert agent.context_compressor._proactive_prune_rearm_tokens == 0
-    assert [message["content"] for message in messages] == original_contents
+    assert [message["content"] for message in messages[:-1]] == original_contents
     assert [message["content"] for message in db.get_messages_as_conversation(session_id)] == original_contents
     assert _REARM_KEY not in _model_config(db, session_id)
+
+
+def test_prune_aborts_when_active_transcript_changes_before_commit(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_STALE_TRANSCRIPT"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id)
+    original_contents = [message["content"] for message in messages]
+
+    original_archive = db.archive_and_compact
+
+    def append_then_archive(*args, **kwargs):
+        db.append_message(session_id, "assistant", "concurrent row")
+        return original_archive(*args, **kwargs)
+
+    with patch.object(
+        db, "archive_and_compact", side_effect=append_then_archive,
+    ) as archive:
+        result, count = agent.context_compressor.prune_tool_results_only(
+            messages, current_tokens=120_000,
+        )
+        repeated, repeated_count = agent.context_compressor.prune_tool_results_only(
+            messages, current_tokens=120_000,
+        )
+
+    assert result is messages
+    assert count == 0
+    assert repeated is messages
+    assert repeated_count == 0
+    assert archive.call_count == 1
+    durable = db.get_messages_as_conversation(session_id)
+    assert [message["content"] for message in durable[:-1]] == original_contents
+    assert durable[-1]["content"] == "concurrent row"
+
+
+@pytest.mark.parametrize(
+    "roles",
+    [(), ("session_meta",), ("user", "user"), ("user", 1)],
+)
+def test_archive_rejects_invalid_deterministic_rewrite_roles(
+    tmp_path: Path, roles,
+) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "INVALID_PRUNE_ROLE_SET"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, [{"role": "user", "content": "original"}])
+
+    with pytest.raises(ValueError, match="unique conversational roles"):
+        db.archive_and_compact(
+            session_id,
+            [{"role": "user", "content": "replacement"}],
+            searchable_original_positions=[],
+            expected_active_count=1,
+            rewrite_active_roles=roles,
+        )
+
+    assert db.get_messages_as_conversation(session_id)[0]["content"] == "original"
 
 
 def test_archive_model_config_patch_rolls_back_with_transcript(tmp_path: Path) -> None:

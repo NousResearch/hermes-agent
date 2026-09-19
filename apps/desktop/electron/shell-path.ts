@@ -26,8 +26,15 @@ import { appendUniquePathEntries, delimiterForPlatform, pathEnvKey } from './bac
 
 const PATH_START = '__HERMES_LOGIN_PATH_START__'
 const PATH_END = '__HERMES_LOGIN_PATH_END__'
-const PROBE_COMMAND = "printf '%s' \"" + PATH_START + '${PATH}' + PATH_END + '"'
 const ATTEMPT_TIMEOUT_MS = 5000
+
+export function probeCommandForShell(shellPath: string): string {
+  const name = String(shellPath || '').toLowerCase()
+  if (name.endsWith('fish') || name.includes('/fish')) {
+    return `printf '%s' "${PATH_START}"; printenv PATH; printf '%s' "${PATH_END}"`
+  }
+  return "printf '%s' \"" + PATH_START + '${PATH}' + PATH_END + '"'
+}
 
 function loginShellExecutable(env: any = process.env, platform = process.platform) {
   const shell = typeof env?.SHELL === 'string' ? env.SHELL.trim() : ''
@@ -86,9 +93,10 @@ function runProbe(shell, flags, execFileFn, timeoutMs): Promise<string | null> {
     }
 
     try {
+      const probeCmd = probeCommandForShell(shell)
       const child = execFileFn(
         shell,
-        [...flags, PROBE_COMMAND],
+        [...flags, probeCmd],
         { encoding: 'utf8', timeout: timeoutMs, windowsHide: true },
         (_error, stdout) => {
           // A profile script may exit nonzero after the sentinel already

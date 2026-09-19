@@ -9,6 +9,7 @@ import {
   extractSentinelPath,
   loginShellExecutable,
   mergeLoginShellPath,
+  probeCommandForShell,
   resetLoginShellPathForTests
 } from './shell-path'
 
@@ -186,3 +187,24 @@ test('ensureLoginShellPath never rejects', async () => {
   const result = await ensureLoginShellPath({ env: { SHELL: '/bin/zsh' }, platform: 'darwin', execFileFn })
   assert.equal(result.applied, false)
 })
+
+test('probeCommandForShell returns fish-safe command for fish shells', () => {
+  assert.ok(probeCommandForShell('/usr/local/bin/fish').includes('printenv PATH'))
+  assert.ok(!probeCommandForShell('/usr/local/bin/fish').includes('${PATH}'))
+  assert.ok(probeCommandForShell('/bin/zsh').includes('${PATH}'))
+})
+
+test('applyLoginShellPath supports fish shell probe', async () => {
+  const env: any = { SHELL: '/usr/local/bin/fish', PATH: '/usr/bin:/bin' }
+  const calls: any[] = []
+  const execFileFn = fakeExecFile({ '-ilc': `${START}/opt/homebrew/bin:/Users/u/.cargo/bin:/usr/bin${END}` }, { calls })
+
+  const result = await applyLoginShellPath({ env, platform: 'darwin', execFileFn })
+
+  assert.equal(result.applied, true)
+  assert.equal(env.PATH, '/opt/homebrew/bin:/Users/u/.cargo/bin:/usr/bin:/bin')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].file, '/usr/local/bin/fish')
+  assert.ok(calls[0].args[1].includes('printenv PATH'))
+})
+

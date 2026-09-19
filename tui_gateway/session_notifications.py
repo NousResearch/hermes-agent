@@ -438,6 +438,8 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
                             platform="tui", diagnostic=isinstance(text, DiagnosticText))
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
+    if session.get("agent") is None:
+        return
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
         return
     with session["history_lock"]:

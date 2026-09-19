@@ -1383,7 +1383,8 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         # ANOTHER provider (the per-turn config sync adopting ``provider: custom``) the configured
         # endpoint wins, or the new model is paired with the old provider's host and key (#73680).
         # With nothing configured the resolver either raises (st.* keep the session values) or
-        # lands on OpenRouter's default (#74143) — the session endpoint is kept in both cases.
+        # lands on OpenRouter's default or the ``OPENROUTER_BASE_URL`` mirror (#74143, #10622) —
+        # the session endpoint is kept in all three cases.
         key, url = st.current_api_key, st.current_base_url
         if st.current_provider != "custom":
             with suppress(Exception):
@@ -1457,10 +1458,27 @@ def _creds_for_current_provider(st: _Switch) -> None:
 
 
 def _fell_back_to_openrouter_default(st: _Switch) -> bool:
-    """The bare-``custom`` resolver ended on OpenRouter's default host while the session was
-    elsewhere: no trusted ``model.base_url`` existed, so the URL is one the user never picked."""
+    """The bare-``custom`` resolver ended on an OpenRouter endpoint that is not a custom endpoint
+    the user configured: the built-in default host, or the ``OPENROUTER_BASE_URL`` mirror — the
+    credential ladder's last rung (#10622), which ``provider: custom`` reaches whenever no
+    trusted ``model.base_url`` / ``CUSTOM_BASE_URL`` exists."""
+    mirror = _openrouter_mirror_base_url()
+    if mirror and st.base_url.rstrip("/") == mirror:
+        return True
     return (base_url_host_matches(st.base_url, "openrouter.ai")
             and not base_url_host_matches(st.current_base_url, "openrouter.ai"))
+
+
+def _openrouter_mirror_base_url() -> str:
+    """``OPENROUTER_BASE_URL``, read the way the resolver reads it (env, or the profile's secret
+    scope). A guard read, not a credential fetch: a read that fails — unscoped under multiplexing —
+    must leave the mirror undetected so its caller keeps the session endpoint, rather than raising
+    out of ``switch_model`` where the resolver's own read of the same name is suppressed."""
+    from agent.secret_scope import get_secret_str
+    try:
+        return (get_secret_str("OPENROUTER_BASE_URL", "") or "").strip().rstrip("/")
+    except Exception:
+        return ""
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:

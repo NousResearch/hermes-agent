@@ -561,6 +561,52 @@ def test_switch_to_bare_custom_with_no_configured_endpoint_keeps_the_current_one
     assert (result.base_url, result.api_key) == ("https://api.anthropic.com", "sk-ant")
 
 
+def test_openrouter_mirror_read_never_raises_without_a_secret_scope(monkeypatch):
+    """The mirror guard reads ``OPENROUTER_BASE_URL`` through the profile secret scope: with
+    multiplexing on and no scope installed that read raises ``UnscopedSecretError``. A guard read
+    must degrade to 'no mirror detected' (the caller then keeps the session endpoint) instead of
+    propagating out of ``switch_model``, where the resolver's own read of the same name is
+    suppressed."""
+    from agent import secret_scope
+    from hermes_cli.model_switch import _openrouter_mirror_base_url
+
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example.com/v1")
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert _openrouter_mirror_base_url() == ""
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+
+def test_switch_to_bare_custom_ignores_an_openrouter_mirror(monkeypatch, tmp_path):
+    """#115661 follow-up: with ``OPENROUTER_BASE_URL`` set to a mirror and nothing configured for
+    ``custom``, the ladder's last rung hands back that mirror — a host the user configured for
+    OpenRouter — with the ``no-key-required`` placeholder. It must not replace the session's own
+    endpoint and key (the switched arm used to adopt it, dropping a working credential)."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  default: m\n  provider: custom\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example.com/v1")
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="m2",
+        current_provider="anthropic",
+        current_model="m",
+        current_base_url="https://api.anthropic.com",
+        current_api_key="sk-ant",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert (result.base_url, result.api_key) == ("https://api.anthropic.com", "sk-ant")
+
+
 def test_is_aggregator_recognizes_named_custom_provider():
     assert providers_mod.is_aggregator("custom:hpc-ai") is True
     assert providers_mod.is_aggregator("custom:litellm") is True

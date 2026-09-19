@@ -287,11 +287,21 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       setError('')
       setSkewRestart(false)
 
+      // Load auxiliary config independently — fast config-file read that must
+      // not block on provider connectivity checks (e.g. minimax-cn timeout).
+      getAuxiliaryModels(scopeProfile)
+        .then(auxModels => {
+          // Only paint aux for the profile this refresh belongs to.
+          if (profileEpoch.current === epoch) {
+            setAuxiliary(auxModels)
+          }
+        })
+        .catch(() => {})
+
       try {
-        const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
+        const [modelInfo, modelOptions, moaModels] = await Promise.all([
           getGlobalModelInfo(scopeProfile),
           getGlobalModelOptions(undefined, scopeProfile),
-          getAuxiliaryModels(scopeProfile),
           getMoaModels(scopeProfile).catch(() => null)
         ])
 
@@ -310,7 +320,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           setSelectedModel(prev => prev || modelInfo.model)
         }
 
-        setAuxiliary(auxiliaryModels)
         setMoa(moaModels)
 
         if (moaModels) {
@@ -849,7 +858,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     }
   }, [m.restartFailed, refresh, scopeProfile, setCaughtError])
 
-  if (loading && !mainModel) {
+  if (loading && !mainModel && !auxiliary) {
     return <ModelSettingsSkeleton />
   }
 

@@ -1904,6 +1904,7 @@ class GatewayTurnMixin:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
             from gateway.run import _CONTEXT_OVERFLOW_REPLY
+            await self._hmwa_finish_agent_error_reply(source, session_entry, prepared, _CONTEXT_OVERFLOW_REPLY)
             return _CONTEXT_OVERFLOW_REPLY
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
@@ -1943,12 +1944,41 @@ class GatewayTurnMixin:
                 status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
         elif status_code == 400:
             status_hint = " The AI model service rejected the request."
-        return self._hmwa_add_failed_turn_notice(
-            f"⚠️ Something went wrong and I couldn't finish this reply.{status_hint}\n"
-            "Use /retry to try again, or /new to start a fresh conversation. "
-            "Technical details are in the gateway log (`hermes logs`).",
-            PARTIAL_FAILED_TURN_NOTICE,
+        return await self._hmwa_finish_agent_error_reply(
+            source, session_entry, prepared,
+            self._hmwa_add_failed_turn_notice(
+                f"⚠️ Something went wrong and I couldn't finish this reply.{status_hint}\n"
+                "Use /retry to try again, or /new to start a fresh conversation. "
+                "Technical details are in the gateway log (`hermes logs`).",
+                PARTIAL_FAILED_TURN_NOTICE,
+            ),
         )
+
+    async def _hmwa_finish_agent_error_reply(self, source, session_entry, prepared, reply):
+        """Pair the ``agent:start`` fired at the top of the turn with its terminal event.
+
+        Without this, an exception between ``agent:start`` and the normal ``agent:end`` leaves
+        hook observers with an unpaired start for exactly the failed turns they most want to
+        see (#113057). ``model``/``provider`` are unknown on this path; ``error`` marks the
+        turn as failed. The payload reuses the sanitized user-facing reply — never the raw
+        exception, which must not leak to hook consumers any more than to end users.
+        """
+        hooks = getattr(self, "hooks", None)
+        if hooks is not None:
+            await hooks.emit("agent:end", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "chat_id": source.chat_id or "",
+                "thread_id": str(source.thread_id) if getattr(source, "thread_id", None) else "",
+                "chat_type": getattr(source, "chat_type", "") or "",
+                "session_id": session_entry.session_id if session_entry is not None else "",
+                "message": (prepared.message_text or "")[:500],
+                "response": str(reply or "")[:500],
+                "model": "",
+                "provider": "",
+                "error": True,
+            })
+        return reply
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
         """A newer run generation superseded this turn: drop its deferred post-delivery callback."""

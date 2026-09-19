@@ -160,6 +160,18 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     return _transport_is_dead(session.get("transport"))
 
 
+def _sessions_quiescent(exclude: str | None = None) -> bool:
+    """No session but ``exclude`` is mid-turn, building, awaiting input, holding live delegations, or on a live
+    transport. A non-forced memory trim holds the GIL (gc.collect) and every glibc arena lock (malloc_trim) for
+    its whole duration — 20-50 s on multi-GB heaps — which stalls the event loop, drops WS clients past the
+    write deadline and interrupts their turns (#58576); this is the moment it costs no other session. The
+    predicate is advisory (a turn can start right after), so the per-session checks — one may read state.db —
+    run outside ``_sessions_lock``."""
+    with _sessions_lock:
+        others = [(sid, s) for sid, s in _sessions.items() if sid != exclude]
+    return all(_session_is_lru_evictable(sid, s) for sid, s in others)
+
+
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     """TTL eviction: the LRU exemptions plus idle-for-TTL AND older-than-TTL."""
     if not _session_is_lru_evictable(sid, session):
@@ -185,7 +197,11 @@ def _reap_idle_sessions() -> None:
     _enforce_session_cap()
     _reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
-    # every scan to prevent unbounded RSS growth over days/weeks.
+    # every quiescent scan to prevent unbounded RSS growth over days/weeks. Forced trims (agent close, cache
+    # pressure) are unaffected.
+    if not _sessions_quiescent():
+        logger.debug("idle reaper periodic trim deferred: a session is busy or attached")
+        return
     try:
         from hermes_cli.mem_trim import trim_memory
         trim_memory(reason="idle reaper periodic trim")
@@ -290,7 +306,7 @@ def _schedule_session_cap_enforcement() -> None:
 # conservative. Disable via `dashboard.startup_orphan_sweep: false`.
 # This is the startup complement every other resource type already has (docker_orphan_reaper, compression
 # orphans). See #65194.
-_ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent")
+_ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent", "unknown")
 _startup_orphan_sweep_ran = False
 _startup_orphan_sweep_lock = threading.Lock()
 

@@ -7,26 +7,21 @@ lazily per function so ``hermes_cli.auth.<helper>`` patches still intercept and 
 from __future__ import annotations
 
 import logging
-import base64
-import hashlib
-import os
-import threading
-import time
 import uuid
 import webbrowser
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import urlencode, urlparse
 from hermes_cli.auth_constants import (
     AuthError, DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL, DEFAULT_SPOTIFY_API_BASE_URL, DEFAULT_SPOTIFY_REDIRECT_URI,
     DEFAULT_SPOTIFY_SCOPE, SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, SPOTIFY_DASHBOARD_URL, SPOTIFY_DOCS_URL,
     _spotify_err, httpx,
 )
+from hermes_cli.auth_device_flow import (
+    _bind_loopback_callback_server, _make_loopback_callback_handler, _pkce_code_challenge,
+    _pkce_code_verifier, _serve_loopback_callback)
 
 logger = logging.getLogger("hermes_cli.auth")
-
-_CALLBACK_HTML = "<html><body><h1>Spotify authorization {}.</h1>You can close this tab.</body></html>"
 
 
 def _clean(value: Any) -> str:
@@ -89,15 +84,6 @@ def _spotify_accounts_base_url(state: Optional[Dict[str, Any]] = None) -> str:
     )
 
 
-def _spotify_code_verifier(length: int = 64) -> str:
-    return base64.urlsafe_b64encode(os.urandom(length)).decode("ascii").rstrip("=")[:128]
-
-
-def _spotify_code_challenge(code_verifier: str) -> str:
-    digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-
-
 def _spotify_build_authorize_url(
     *, client_id: str, redirect_uri: str, scope: str, state: str, code_challenge: str,
     accounts_base_url: str,
@@ -124,60 +110,13 @@ def _spotify_validate_redirect_uri(redirect_uri: str) -> tuple[str, int, str]:
     return host, parsed.port, parsed.path or "/"
 
 
-def _make_spotify_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequestHandler], dict[str, Any]]:
-    result: dict[str, Any] = {"code": None, "state": None, "error": None, "error_description": None}
-
-    class _SpotifyCallbackHandler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
-            parsed = urlparse(self.path)
-            if parsed.path != expected_path:
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b"Not found.")
-                return
-
-            params = parse_qs(parsed.query)
-            for key in result:
-                result[key] = params.get(key, [None])[0]
-
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(_CALLBACK_HTML.format("failed" if result["error"] else "received").encode("utf-8"))
-
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
-            return
-
-    return _SpotifyCallbackHandler, result
-
-
 def _spotify_wait_for_callback(redirect_uri: str, *, timeout_seconds: float = 180.0) -> dict[str, Any]:
     host, port, path = _spotify_validate_redirect_uri(redirect_uri)
-    handler_cls, result = _make_spotify_callback_handler(path)
-
-    class _ReuseHTTPServer(HTTPServer):
-        allow_reuse_address = True
-
-    try:
-        server = _ReuseHTTPServer((host, port), handler_cls)
-    except OSError as exc:
-        raise _spotify_err(
-            f"Could not bind Spotify callback server on {host}:{port}: {exc}", "spotify_callback_bind_failed",
-        ) from exc
-
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + max(5.0, timeout_seconds)
-    try:
-        while time.monotonic() < deadline:
-            if result["code"] or result["error"]:
-                return result
-            time.sleep(0.1)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=1.0)
-    raise _spotify_err("Spotify authorization timed out waiting for the local callback.", "spotify_callback_timeout")
+    handler_cls, result = _make_loopback_callback_handler(path, display_name="Spotify")
+    server = _bind_loopback_callback_server(
+        host, port, handler_cls, err=_spotify_err, bind_failed_code="spotify_callback_bind_failed")
+    return _serve_loopback_callback(
+        server, result, timeout_seconds=timeout_seconds, err=_spotify_err, timeout_code="spotify_callback_timeout")
 
 
 def _spotify_token_payload_to_state(
@@ -392,11 +331,11 @@ def login_spotify_command(args) -> None:
     api_base_url = _spotify_api_base_url(existing_state)
     open_browser = not getattr(args, "no_browser", False)
 
-    code_verifier = _spotify_code_verifier()
+    code_verifier = _pkce_code_verifier()
     state_nonce = uuid.uuid4().hex
     authorize_url = _spotify_build_authorize_url(
         client_id=client_id, redirect_uri=redirect_uri, scope=scope, state=state_nonce,
-        code_challenge=_spotify_code_challenge(code_verifier), accounts_base_url=accounts_base_url,
+        code_challenge=_pkce_code_challenge(code_verifier), accounts_base_url=accounts_base_url,
     )
 
     print(

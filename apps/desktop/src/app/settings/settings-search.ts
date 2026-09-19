@@ -11,6 +11,7 @@ import type { DesktopConfigSection, SettingsView } from './types'
 export type CredentialSettingsView = 'settings' | 'tools'
 
 export const APPEARANCE_SETTING_IDS = {
+  appActions: 'appearance.app-actions',
   backdrop: 'appearance.backdrop',
   embeds: 'appearance.embeds',
   introSplash: 'appearance.intro-splash',

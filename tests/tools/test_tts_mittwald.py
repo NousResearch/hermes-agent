@@ -70,11 +70,10 @@ def test_defaults_are_a_hosted_model_and_a_real_voice(tmp_path, captured_speech)
 
 
 def test_provider_wide_base_url_uses_the_env_accessor(monkeypatch, tmp_path, captured_speech):
-    from tools import tts_tool
     from tools.tts_tool import _generate_mittwald_tts
 
     monkeypatch.setattr(
-        tts_tool, "get_env_value",
+        "hermes_cli.config.get_env_value",
         lambda name: "https://proxy.example/v1/" if name == "MITTWALD_BASE_URL" else None)
 
     _generate_mittwald_tts("hallo", str(tmp_path / "out.mp3"), {})

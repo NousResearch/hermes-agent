@@ -3,8 +3,8 @@
 OpenAI-SDK-shaped backends (groq, openai, deepinfra), Mistral Voxtral, REST multipart
 backends (xAI, ElevenLabs), and OpenAI audio credential resolution (config > keyless
 local server > env > managed Nous gateway). Facade-owned state and helpers
-(``_HAS_OPENAI``, ``_resolve_provider_key``, ``_resolve_stt_language``, ``_load_stt_config``,
-``get_env_value``) are read lazily from ``tools.transcription_tools``.
+(``_HAS_OPENAI``, ``_resolve_provider_key``, ``_resolve_stt_language``, ``_load_stt_config``)
+are read lazily from ``tools.transcription_tools``.
 """
 
 from __future__ import annotations
@@ -228,7 +228,8 @@ def _transcribe_xai(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe via xAI ``POST /v1/stt`` (multipart). Supports ITN, diarization, word timestamps."""
-    from tools.transcription_tools import _load_stt_config, _resolve_stt_language, get_env_value
+    from hermes_cli.config import get_env_value
+    from tools.transcription_tools import _load_stt_config, _resolve_stt_language
     from tools.xai_http import resolve_xai_http_credentials
     if prompt:
         _log_prompt_unsupported("STT provider 'xai'")
@@ -296,7 +297,8 @@ def _transcribe_elevenlabs(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe using ElevenLabs Scribe STT API."""
-    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language, get_env_value
+    from hermes_cli.config import get_env_value
+    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
     if prompt:
         _log_prompt_unsupported("STT provider 'elevenlabs'")
     api_key = _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
@@ -355,9 +357,10 @@ def _transcribe_mittwald(
     everything but ``whisper-1``, so no per-provider response-format handling is needed. The
     endpoint caps uploads at 10 minutes of audio, tighter than Hermes' own 25 MB ceiling.
     """
-    from tools.transcription_tools import _load_stt_config, get_env_value
+    from hermes_cli.config import get_env_value
+    from tools.transcription_tools import _load_stt_config
     from tools.tool_backend_helpers import resolve_mittwald_api_key
-    api_key = resolve_mittwald_api_key(env_getter=get_env_value)
+    api_key = resolve_mittwald_api_key()
     if not api_key:
         return _error_result("MITTWALD_LLM_API_KEY not set")
     section = _get_stt_section(_load_stt_config(), "mittwald")

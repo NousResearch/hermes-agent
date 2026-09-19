@@ -21,7 +21,7 @@ import {
   type SettingsSearchEntry
 } from './settings-search'
 
-/** An installed plugin row, deep-linkable as `/skills?tab=plugins&plugin=<id>`. */
+/** An installed plugin row, deep-linkable as `/capabilities?tab=plugins&plugin=<id>`. */
 export interface PluginSearchEntry {
   context: string
   description?: string
@@ -197,6 +197,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       keywords: ['tool display', 'technical'],
       label: appearance.toolViewTitle,
       target: { setting: APPEARANCE_SETTING_IDS.toolView, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
+      description: appearance.appActionsDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.appActions}`,
+      keywords: ['titlebar', 'settings gear', 'layout', 'HUD', 'left', 'right', 'tabs'],
+      label: appearance.appActionsTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.appActions, view: 'config:appearance' }
     },
     {
       context: appearanceContext,

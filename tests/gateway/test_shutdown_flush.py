@@ -98,6 +98,46 @@ def test_recover_inserts_via_append_message_and_deletes_file(tmp_path, monkeypat
     assert not flush_file.exists()
 
 
+def test_recover_payload_without_session_id_uses_resolver_and_deletes_file(
+    tmp_path, monkeypatch
+):
+    """A str-pending payload carries session_key but no session_id; a resolver
+    maps key→id so the message replays and the file is removed."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    ts = int(time.time())
+    payload = {
+        "session_key": "agent:main:whatsapp:dm:15551234567",
+        "reason": "shutdown",
+        "ts": ts,
+        "data": {"text": "lost message"},
+    }
+    flush_file = flush_dir / "no_sid.json"
+    flush_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    mock_db = MagicMock()
+    routed_db = MagicMock()  # the store owning the key, as the resolver reports it
+    resolver = MagicMock(return_value=("sid-resolved", routed_db))
+    count = recover_pending_to_db(mock_db, session_resolver=resolver)
+
+    assert count == 1
+    resolver.assert_called_once_with("agent:main:whatsapp:dm:15551234567", not_after=ts)
+    routed_db.append_message.assert_called_once_with(
+        session_id="sid-resolved", role="user", content="lost message", timestamp=ts
+    )
+    # The resolver's db is authoritative: the owned default store never sees a resolved payload.
+    mock_db.append_message.assert_not_called()
+    assert not flush_file.exists()
+
+    # A resolver that names an id but no store (fail-closed profile home) preserves the file
+    # instead of appending to the owned root store.
+    flush_file.write_text(json.dumps(payload), encoding="utf-8")
+    resolver = MagicMock(return_value=("sid-resolved", None))
+    assert recover_pending_to_db(mock_db, session_resolver=resolver) == 0
+    mock_db.append_message.assert_not_called()
+    assert flush_file.exists()
+
+
 def test_recover_closes_owned_db_when_unexpected_exception_escapes(
     tmp_path, monkeypatch
 ):
@@ -132,6 +172,55 @@ def test_recover_closes_owned_db_when_unexpected_exception_escapes(
         recover_pending_to_db()
 
     assert db.released is True
+
+
+def _write_flush_file(flush_dir: Path, name: str, session_id: str, text: str) -> Path:
+    """Write one well-formed pending-message flush file."""
+    path = flush_dir / name
+    path.write_text(
+        json.dumps(
+            {
+                "session_key": "agent:main:telegram:supergroup:123",
+                "reason": "shutdown",
+                "ts": 1700000000,
+                "data": {"text": text, "session_id": session_id},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_recover_skips_failing_payload_and_continues(tmp_path, monkeypatch):
+    """One unrecoverable file must not abort recovery of the others.
+
+    Recovery walks ``sorted(glob("*.json"))``, so a file that raises an
+    ordinary exception used to propagate out of the whole pass.  Because
+    that file is never unlinked it would then re-poison every subsequent
+    boot, stranding a different subset of messages each time.
+    """
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+    bad = _write_flush_file(flush_dir, "pending-a.json", "sid-bad", "first")
+    good = _write_flush_file(flush_dir, "pending-b.json", "sid-good", "second")
+
+    class PartiallyFailingDB:
+        def __init__(self):
+            self.appended = []
+
+        def append_message(self, **kwargs):
+            if kwargs["session_id"] == "sid-bad":
+                raise RuntimeError("session is closed")
+            self.appended.append(kwargs["session_id"])
+
+    db = PartiallyFailingDB()
+    assert recover_pending_to_db(db) == 1
+    assert db.appended == ["sid-good"]
+    # The good file is consumed; the bad one is preserved for a retry.
+    assert not good.exists()
+    assert bad.exists()
 
 
 def test_serialise_object_with_text():
@@ -238,3 +327,18 @@ def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeyp
 def test_flush_overflow_noop_on_empty():
     assert flush_overflow_to_file({}) == 0
     assert flush_overflow_to_file({"k": []}) == 0
+
+
+def test_drain_transcript_spool_skips_parseable_non_dict_payload(tmp_path, monkeypatch):
+    """A scalar/list JSON spool file must not abort the drain; the healthy payload still replays."""
+    from gateway.shutdown_flush import drain_transcript_spool, spool_dropped_transcript_message
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    (flush_dir / "pending-00-scalar.json").write_text("42", encoding="utf-8")
+    (flush_dir / "pending-01-list.json").write_text("[1, 2]", encoding="utf-8")
+    spool_dropped_transcript_message("sess-1", {"role": "user", "content": "hi"})
+
+    replayed = []
+    assert drain_transcript_spool("sess-1", replayed.append) == (1, 0)
+    assert replayed == [{"role": "user", "content": "hi"}]

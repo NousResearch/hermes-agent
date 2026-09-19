@@ -35,12 +35,15 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
@@ -190,25 +193,6 @@ class RequestCache:
         self._transition(request_id, {State.READY, State.ERROR}, State.DELIVERED)
 
 
-class _MessageDeduplicator:
-    """Bounded LRU of LINE webhook event IDs to ignore at-least-once retries."""
-
-    def __init__(self, max_size: int = 1000) -> None:
-        self._seen: Dict[str, float] = {}
-        self._max = max_size
-
-    def is_duplicate(self, event_id: str) -> bool:
-        if not event_id:
-            return False
-        if event_id in self._seen:
-            return True
-        if len(self._seen) >= self._max:  # drop the oldest 10% so we don't trim every insert
-            cutoff = sorted(self._seen.values())[len(self._seen) // 10 or 1]
-            self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
-        self._seen[event_id] = time.time()
-        return False
-
-
 # LINE source type → (id key, normalized chat_type)
 _SOURCE_KINDS = {"group": ("groupId", "group"), "room": ("roomId", "room"), "user": ("userId", "dm")}
 
@@ -345,7 +329,8 @@ def _csv_set(value: str) -> Set[str]:
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
+    # Scoped read: under multiplex os.environ is the DEFAULT profile's allow-all flag.
+    v = _get_scoped_secret(name)
     return default if v is None else v.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -377,21 +362,24 @@ _OUTBOUND_MEDIA = {
 _INBOUND_MEDIA_EXT = {"image": ".jpg", "audio": ".m4a", "video": ".mp4", "file": ".bin"}
 _INBOUND_AV_CACHERS = {"audio": cache_audio_from_bytes_async, "video": cache_video_from_bytes_async}
 _LIFECYCLE_EVENTS = frozenset({"follow", "unfollow", "join", "leave"})
-_ENV_SEED_KEYS = (("LINE_HOST", "host"), ("LINE_PUBLIC_URL", "public_url"), ("LINE_HOME_CHANNEL", "home_channel"))
+_ENV_SEED_KEYS = (("LINE_PORT", "port", int), ("LINE_HOST", "host", None), ("LINE_PUBLIC_URL", "public_url", None))
 
 
 class LineAdapter(BasePlatformAdapter):
     """LINE Messaging API gateway adapter (no message editing → REQUIRES_EDIT_FINALIZE stays False)."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("line"))
         extra = getattr(config, "extra", {}) or {}
 
         def env_or(env: str, key: str, default: Any = "") -> Any:
-            return os.getenv(env) or extra.get(key, default)
+            return _get_scoped_secret(env) or extra.get(key, default)
 
         def allowlist(env: str, key: str) -> Set[str]:
-            return _csv_set(os.getenv(env, "")) | set(extra.get(key, []))
+            # Scoped read: under multiplex os.environ is the DEFAULT profile's allowlist.
+            return _csv_set(_get_scoped_secret(env, "")) | set(extra.get(key, []))
 
         self.channel_access_token, self.channel_secret = _credentials(config)
         # Host ``None`` → dual-stack bind (see DEFAULT_HOST); empty string collapses to None.
@@ -419,9 +407,9 @@ class LineAdapter(BasePlatformAdapter):
         self._app = self._runner = self._site = None  # aiohttp web.Application / AppRunner / TCPSite
         self._reply_tokens: Dict[str, Tuple[str, float]] = {}  # chat_id → (token, expiry)
         self._cache = RequestCache()
-        self._dedup = _MessageDeduplicator()
+        # LINE redelivers webhooks for up to a day on non-2xx; no TTL, just a size bound.
+        self._dedup = MessageDeduplicator(max_size=1000, ttl_seconds=float("inf"))
         self._bot_user_id: Optional[str] = None
-        self._lock_key: Optional[str] = None
         self._media_tokens: Dict[str, Tuple[str, float]] = {}  # token → (path, expiry)
         self._media_temp_paths: Set[str] = set()
         self._media_ttl = MEDIA_TOKEN_TTL_SECONDS
@@ -435,14 +423,9 @@ class LineAdapter(BasePlatformAdapter):
         if not self.channel_access_token or not self.channel_secret:
             return self._fail("config_missing", "LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET must be set")
         # One profile per channel token; lock on a hash so the secret never hits disk.
-        try:
-            from gateway.status import acquire_scoped_lock
-            tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
-            if not acquire_scoped_lock("line", tok_hash):
-                return self._fail("lock_conflict", "LINE channel already in use by another profile")
-            self._lock_key = tok_hash
-        except ImportError:
-            self._lock_key = None
+        tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
+        if not self._acquire_platform_lock("line", tok_hash, "LINE channel"):
+            return False
         self._client = _LineClient(self.channel_access_token)
         try:  # best-effort self-userId for self-echo filtering (LINE rarely echoes anyway)
             self._bot_user_id = await self._client.get_bot_user_id()
@@ -459,15 +442,14 @@ class LineAdapter(BasePlatformAdapter):
         self._app.router.add_get(f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}", self._handle_media)
         # Plugin-registered routes must be wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(self._app)
-        self._runner = web.AppRunner(self._app)
+        from gateway.platforms.shared_ingress import bind_listener
         try:
-            await self._runner.setup()
             # SO_REUSEADDR: on macOS/BSD two sockets with it can silently split traffic →
             # disable; on Linux it only allows rebinding past TIME_WAIT → keep default.
-            self._site = web.TCPSite(
-                self._runner, self.webhook_host, self.webhook_port,
+            # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/line/webhook.
+            self._runner = await bind_listener(
+                self, self._app, self.webhook_host, self.webhook_port, self.webhook_path,
                 reuse_address=False if sys.platform == "darwin" else None)
-            await self._site.start()
         except OSError as exc:
             return self._fail(
                 "bind_failed",
@@ -475,12 +457,13 @@ class LineAdapter(BasePlatformAdapter):
                 f"{self.webhook_port}: {exc}",
                 retryable=True)
         self._mark_connected()
-        logger.info(
-            "LINE: webhook listening on %s:%s%s%s",
-            self.webhook_host or "* (all interfaces, IPv4+IPv6)",
-            self.webhook_port,
-            self.webhook_path,
-            f" (public: {self.public_base_url})" if self.public_base_url else "")
+        if self._runner is not None:
+            logger.info(
+                "LINE: webhook listening on %s:%s%s%s",
+                self.webhook_host or "* (all interfaces, IPv4+IPv6)",
+                self.webhook_port,
+                self.webhook_path,
+                f" (public: {self.public_base_url})" if self.public_base_url else "")
         return True
 
     async def disconnect(self) -> None:
@@ -496,11 +479,8 @@ class LineAdapter(BasePlatformAdapter):
             _unlink_quietly(path)
         self._media_temp_paths.clear()
         self._media_tokens.clear()
-        if self._lock_key:
-            with contextlib.suppress(Exception):
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("line", self._lock_key)
-            self._lock_key = None
+        with contextlib.suppress(Exception):
+            self._release_platform_lock()
 
     async def _handle_health(self, request) -> Any:
         from aiohttp import web
@@ -578,7 +558,8 @@ class LineAdapter(BasePlatformAdapter):
         if chat_type == "dm" and self._client:  # best-effort typing indicator (DM only)
             asyncio.create_task(self._client.loading(chat_id))
         source_obj = self.build_source(
-            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id)
+            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id,
+            message_id=message_id)
         await self.handle_message(MessageEvent(
             text=text, message_type=_LINE_MESSAGE_TYPES.get(msg_type, MessageType.TEXT), source=source_obj,
             raw_message=event, message_id=message_id, media_urls=media_urls, media_types=media_types))
@@ -732,10 +713,7 @@ class LineAdapter(BasePlatformAdapter):
         try:
             await super()._keep_typing(chat_id, *args, **kwargs)
         finally:
-            if not post_task.done():
-                post_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await post_task
+            await cancel_task(post_task)
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Resolve any orphan PENDING postback so the button doesn't loop."""
@@ -763,6 +741,8 @@ class LineAdapter(BasePlatformAdapter):
     def _media_url(self, token: str, filename: str) -> str:
         if self.public_base_url:
             base = self.public_base_url
+        elif getattr(self, "_shared_ingress_base", None):
+            base = self._shared_ingress_base  # default listener's /p/<profile> prefix (multiplex secondary)
         else:
             # Wildcard/dual-stack binds have no fetchable hostname (the _missing_public_url
             # guard should have fired); fall back to localhost so the URL is well-formed.
@@ -775,7 +755,9 @@ class LineAdapter(BasePlatformAdapter):
 
     def _missing_public_url(self) -> bool:
         """True when no LINE_PUBLIC_URL is set and the bind host is wildcard/dual-stack ``None``."""
-        return not self.public_base_url and (self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS)
+        if self.public_base_url or getattr(self, "_shared_ingress_base", None):
+            return False
+        return self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS
 
     def _check_media_file(self, kind: str, file_path: str) -> Tuple[Optional[Path], Optional[SendResult]]:
         """Shared preflight for send_image_file/send_voice/send_video → ``(path, error)``."""
@@ -930,15 +912,11 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> Optional[Dict[str, Any]]:
-    """Seed PlatformConfig.extra from env-only setups so ``hermes status`` sees them."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from env-only setups so ``hermes status`` sees them."""
     if not _env_credentials_present():
         return None
-    seeded: Dict[str, Any] = {}
-    if os.getenv("LINE_PORT"):
-        with contextlib.suppress(ValueError):
-            seeded["port"] = int(os.environ["LINE_PORT"])
-    seeded.update({key: os.environ[env] for env, key in _ENV_SEED_KEYS if os.getenv(env)})
-    return seeded
+    return _seed_extra_from_env(_ENV_SEED_KEYS, home_env="LINE_HOME_CHANNEL")
+
 
 
 async def _standalone_send(
@@ -950,7 +928,7 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     token = _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token", "")
     if not token or not chat_id:
-        return {"error": "LINE standalone send: missing token or chat_id"}
+        return send_error("LINE standalone send: missing token or chat_id")
     messages = _text_messages(message or "") or [_text_message("")]
     if media_files:  # tell the recipient media was generated but not delivered
         messages.append(_text_message(f"[{len(media_files)} attachment(s) generated; not deliverable from cron]"))
@@ -959,7 +937,7 @@ async def _standalone_send(
         await _LineClient(token).push(chat_id, messages)
         return {"success": True, "message_id": None}
     except Exception as exc:
-        return {"error": str(exc)}
+        return send_error(str(exc))
 
 
 _SETUP_PROMPTS = (  # (env var, prompt, masked)
@@ -970,30 +948,20 @@ _SETUP_PROMPTS = (  # (env var, prompt, masked)
 
 
 def interactive_setup() -> None:
-    """Minimal stdin wizard for ``hermes setup line`` (writes ``~/.hermes/.env``)."""
-    print("\nLINE Messaging API setup\n------------------------\n"
-          "Create a Messaging API channel at https://developers.line.biz/console/\nthen copy the values below.\n")
-    try:
-        from hermes_cli.config import get_env_value as _get_env, save_env_value as _set_env
-    except ImportError:
-        print("hermes_cli.config not available; set LINE_* vars manually in ~/.hermes/.env")
+    """``hermes setup line`` wizard (writes ``~/.hermes/.env``); CLI helpers are lazy-imported."""
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import print_header, print_info, prompt
+    from hermes_cli.setup_platforms import declines_reconfigure
+    print_header("LINE Messaging API")
+    if declines_reconfigure("LINE", "Reconfigure LINE?", "LINE_CHANNEL_ACCESS_TOKEN"):
         return
-
-    for var, prompt, secret in _SETUP_PROMPTS:
-        existing = _get_env(var) if callable(_get_env) else None
-        suffix = " [keep current]" if existing else ""
-        try:
-            if secret:
-                from hermes_cli.secret_prompt import masked_secret_prompt
-                value = masked_secret_prompt(f"{prompt}{suffix}: ")
-            else:
-                value = input(f"{prompt}{suffix}: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            continue
+    print_info("Create a Messaging API channel at https://developers.line.biz/console/ then copy the values below.")
+    for var, question, secret in _SETUP_PROMPTS:
+        suffix = " [keep current]" if get_env_value(var) else ""
+        value = prompt(f"{question}{suffix}", password=secret)
         if value:
-            _set_env(var, value)
-    print("Done. Set the webhook URL in the LINE console to <your-public-url>/line/webhook and enable 'Use webhook'.")
+            save_env_value(var, value)
+    print_info("Done. Set the webhook URL in the LINE console to <your-public-url>/line/webhook and enable 'Use webhook'.")
 
 
 def register(ctx) -> None:

@@ -22,7 +22,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
 import { $settingsScopeProfile } from '@/store/settings-scope'
@@ -62,6 +62,7 @@ interface VaultItem {
   identifier?: null | string
   identifier_type?: null | string
   backend?: VaultSourceName
+  has_otp?: boolean
 }
 
 /** Add-dialog prefill from a deep link (`/settings?tab=vault&kind=…`). NEVER secrets. */
@@ -92,6 +93,7 @@ const EMPTY_FORM = {
   identifierType: 'email' as IdentifierType,
   identifier: '',
   password: '',
+  otpSecret: '',
   cardNumber: '',
   cardName: '',
   expMonth: '',
@@ -114,7 +116,8 @@ function buildSecret(form: VaultForm): Record<string, string> {
     return {
       identifier_type: form.identifierType,
       identifier: form.identifier.trim(),
-      password: form.password
+      password: form.password,
+      ...(form.otpSecret.trim() ? { otp_secret: form.otpSecret.trim() } : {})
     }
   }
 
@@ -153,17 +156,22 @@ export function VaultSettings() {
   const gatewayState = useStore($gatewayState)
   const queryClient = useQueryClient()
   // The owner this panel edits: every RPC below goes through the owner's socket with an explicit
-  // profile — never the ambient foreground gateway. The mount site keys the panel by this same
-  // owner, so a profile switch / connection swap remounts it: dialogs close and drafts (including a
-  // typed master password) are gone by construction rather than by cleanup code.
+  // (connection, profile) — never the ambient foreground gateway, and never a bare profile name:
+  // a bare name equal to the primary profile resolves onto the PRIMARY socket, so two connections
+  // both serving `default` would have this device's panel answered by the other machine (#94811).
+  // The mount site keys the panel by this same owner, so a profile switch / connection swap
+  // remounts it: dialogs close and drafts (including a typed master password) are gone by
+  // construction rather than by cleanup code.
   const scopeProfile = useStore($settingsScopeProfile)
   const connectionId = useStore($activeConnectionId)
   const owner = vaultOwnerKey(connectionId, scopeProfile)
 
   const requestGateway = useCallback(
     <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForProfile<T>(scopeProfile, method, params),
-    [scopeProfile]
+      requestGatewayForAgent<T>(connectionId, scopeProfile, method, params, undefined, undefined, {
+        spawnPriority: 'foreground'
+      }),
+    [connectionId, scopeProfile]
   )
 
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
@@ -185,6 +193,10 @@ export function VaultSettings() {
   const { data: sourcesData } = useQuery({
     enabled: gatewayState === 'open',
     queryKey: VAULT_SOURCES_QUERY_KEY,
+    // Manager detection can change while this settings page is closed. Mark this
+    // metadata query immediately stale so remount and closed-to-open recovery
+    // refetch instead of honouring the shared 60s cache.
+    staleTime: 0,
     queryFn: async () => {
       const result = await requestGateway<{ sources: VaultSource[] }>('vault.sources', {})
 
@@ -434,6 +446,7 @@ export function VaultSettings() {
             <span className="flex items-center gap-2">
               <span className="truncate">{item.label}</span>
               <Pill tone={item.kind === 'login' ? 'primary' : 'muted'}>{kindLabel(item.kind)}</Pill>
+              {item.has_otp && <Pill tone="muted">{v.twoFactorBadge}</Pill>}
             </span>
           }
         />
@@ -644,6 +657,17 @@ export function VaultSettings() {
                     type="password"
                     value={form.password}
                   />
+                </Field>
+                <Field htmlFor="vault-otp" label={v.otpField} optional optionalLabel={v.optional}>
+                  <Input
+                    autoComplete="off"
+                    id="vault-otp"
+                    onChange={e => setForm(f => ({ ...f, otpSecret: e.target.value }))}
+                    placeholder={v.otpPlaceholder}
+                    type="password"
+                    value={form.otpSecret}
+                  />
+                  <p className="text-xs text-muted-foreground">{v.otpHint}</p>
                 </Field>
               </>
             )}

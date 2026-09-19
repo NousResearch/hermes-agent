@@ -43,6 +43,10 @@
   margin-bottom: 0.75rem;
 }
 
+[data-theme="light"] .heroEyebrow {
+  color: #a8860a;
+}
+
 .heroTitle {
   font-size: 3rem;
   font-weight: 700;
@@ -94,32 +98,56 @@
   color: #ffd700;
 }
 
-.statsRow {
+/* Inline "submit your plugin" link under the hero subtitle. */
+.heroLink {
+  color: #ffd700;
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 215, 0, 0.35);
+  transition: border-color 0.15s;
+}
+
+.heroLink:hover {
+  color: #ffd700;
+  text-decoration: none;
+  border-bottom-color: #ffd700;
+}
+
+.heroMeta {
+  font-size: 0.85rem;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  opacity: 0.8;
+  margin: -0.75rem 0 1.5rem;
+}
+
+/* Three promises every listing carries; replaces the registry-style counters. */
+.trustRow {
   display: flex;
   justify-content: center;
-  gap: 2.5rem;
+  gap: 0.6rem;
   flex-wrap: wrap;
+  list-style: none;
+  margin: 0 -6rem;
+  padding: 0;
 }
 
-.stat {
-  display: flex;
-  flex-direction: column;
+.trustChip {
+  display: inline-flex;
   align-items: center;
-  gap: 0.2rem;
+  gap: 0.5rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 215, 0, 0.18);
+  background: rgba(255, 215, 0, 0.05);
+  font-size: 0.88rem;
+  color: var(--ifm-font-color-base);
 }
 
-.statValue {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 1.6rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.statLabel {
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ifm-font-color-secondary, #9a968e);
+.trustIcon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  color: #ffd700;
 }
 
 .controlsBar {
@@ -159,12 +187,16 @@
   padding: 0.7rem 2.5rem 0.7rem 2.6rem;
   font-size: 0.95rem;
   font-family: "DM Sans", sans-serif;
-  border: 1px solid rgba(255, 215, 0, 0.12);
+  border: 1px solid rgba(255, 215, 0, 0.18);
   border-radius: 10px;
-  background: rgba(15, 15, 24, 0.6);
+  background: var(--ifm-background-surface-color, #fff);
   color: var(--ifm-font-color-base, #e8e4dc);
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+[data-theme="dark"] .searchInput {
+  background: rgba(15, 15, 24, 0.6);
 }
 
 .searchInput:focus {
@@ -244,6 +276,164 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* ── Category pills + grouped sections ─────────────────────────────────── */
+.categoryPills {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: 100%;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.categoryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.categoryBtn:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--ifm-font-color-base);
+}
+
+.categoryBtnActive {
+  border-color: rgba(125, 211, 252, 0.7);
+  background: rgba(125, 211, 252, 0.14);
+  color: #bae6fd;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.35), 0 0 14px rgba(125, 211, 252, 0.18);
+}
+
+.categoryBtnActive .tierCount {
+  background: rgba(125, 211, 252, 0.2);
+}
+
+/* Header shown above the flat grid when a category filter or search is active */
+.resultsBar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 0.9rem;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.resultsBar strong {
+  color: var(--ifm-font-color-base);
+  font-weight: 650;
+}
+
+.resultsClear {
+  margin-left: auto;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--ifm-color-emphasis-700);
+  border-radius: 14px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.resultsClear:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--ifm-font-color-base);
+}
+
+.categorySection {
+  margin-bottom: 2.25rem;
+}
+
+.categoryHeader {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "title view" "blurb view";
+  align-items: center;
+  gap: 0.1rem 1rem;
+  margin-bottom: 0.9rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.categoryTitle {
+  grid-area: title;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.categoryBlurb {
+  grid-area: blurb;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--ifm-color-emphasis-600);
+}
+
+.categoryViewAll {
+  grid-area: view;
+  border: none;
+  background: transparent;
+  color: #7dd3fc;
+  font-size: 0.82rem;
+  cursor: pointer;
+  padding: 0.25rem 0;
+  white-space: nowrap;
+}
+
+.categoryViewAll:hover {
+  text-decoration: underline;
+}
+
+.starPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid rgba(255, 215, 0, 0.25);
+  border-radius: 10px;
+  background: rgba(255, 215, 0, 0.06);
+  color: #ffd700;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.starPill:hover {
+  background: rgba(255, 215, 0, 0.14);
+  text-decoration: none;
+  color: #ffd700;
+}
+
+.categoryChip {
+  border: 1px solid rgba(125, 211, 252, 0.25);
+  background: rgba(125, 211, 252, 0.07);
+  color: #7dd3fc;
+  border-radius: 6px;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.categoryChip:hover {
+  background: rgba(125, 211, 252, 0.14);
+}
+
 .main {
   max-width: 1200px;
   margin: 0 auto;
@@ -306,6 +496,15 @@
   opacity: 1;
 }
 
+.cardImage {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  object-fit: cover;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+
 .cardInner {
   padding: 1rem 1rem 0.85rem 1.15rem;
 }
@@ -353,6 +552,20 @@
   padding: 0.15rem 0.45rem;
   border-radius: 4px;
   border: 1px solid;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.versionPill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  background: rgba(96, 165, 250, 0.12);
+  color: rgba(96, 165, 250, 0.95);
   white-space: nowrap;
   flex-shrink: 0;
   margin-top: 0.1rem;
@@ -669,12 +882,13 @@
     font-size: 2rem;
   }
 
-  .statsRow {
-    gap: 1.5rem;
+  .trustRow {
+    gap: 0.4rem;
   }
 
-  .statValue {
-    font-size: 1.25rem;
+  .trustChip {
+    font-size: 0.8rem;
+    padding: 0.35rem 0.7rem;
   }
 
   .controlsBar {

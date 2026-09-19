@@ -205,13 +205,14 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, A
 def _generate_mittwald_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio via mittwald AI Hosting (Qwen3-TTS), then delegate to the OpenAI-compatible handler."""
     origin = _origin()
-    api_key = resolve_mittwald_api_key(env_getter=origin.get_env_value)
+    api_key = resolve_mittwald_api_key()
     if not api_key:
         raise ValueError("MITTWALD_LLM_API_KEY not set. Run `hermes setup` to configure, or set the env var directly.")
     mw_config = _section(tts_config, "mittwald")
+    from hermes_cli.config import get_env_value
     from tools.transcription_common import MITTWALD_STT_BASE_URL
     base_url = str(
-        mw_config.get("base_url") or origin.get_env_value("MITTWALD_BASE_URL") or MITTWALD_STT_BASE_URL
+        mw_config.get("base_url") or get_env_value("MITTWALD_BASE_URL") or MITTWALD_STT_BASE_URL
     ).strip().rstrip("/")
     language = _mittwald_tts_language(
         mw_config.get("language") or (tts_config.get("language") if isinstance(tts_config, dict) else None))

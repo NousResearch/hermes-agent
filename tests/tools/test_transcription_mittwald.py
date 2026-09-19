@@ -100,8 +100,7 @@ def test_base_url_precedence(monkeypatch, tmp_path, fake_openai, section, env_va
     audio = tmp_path / "speech.wav"
     audio.write_bytes(b"\x00" * 16)
     module, captured = fake_openai
-    import tools.transcription_tools as tt
-    monkeypatch.setattr(tt, "get_env_value", lambda name: env_values.get(name))
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda name: env_values.get(name))
 
     with patch.dict("sys.modules", {"openai": module}), \
          patch("tools.transcription_tools._load_stt_config", return_value={"mittwald": section}):
@@ -140,7 +139,7 @@ def test_direct_client_config_uses_mittwald_response_format_only(monkeypatch):
     monkeypatch.setattr(tt, "_get_provider", lambda _config: config["provider"])
     monkeypatch.setattr(tt, "_is_local_stt_provider", lambda *_args: False)
     monkeypatch.setattr(tt, "_resolve_stt_language", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(tt, "get_env_value", lambda _name: None)
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda _name: None)
 
     assert _resolve_stt_client_config()["response_format"] == "json"
 

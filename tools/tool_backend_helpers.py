@@ -35,7 +35,8 @@ def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gatew
         from hermes_cli.nous_account import (
             format_nous_portal_entitlement_message, get_nous_portal_account_info)
         message = format_nous_portal_entitlement_message(
-            get_nous_portal_account_info(force_fresh=force_fresh), capability=capability)
+            get_nous_portal_account_info(force_fresh=force_fresh), capability=capability,
+            in_chat=True)
         if message:
             return message
     except Exception:
@@ -60,8 +61,10 @@ normalize_modal_mode = coerce_modal_mode
 
 
 def has_direct_modal_credentials() -> bool:
-    """Return True when direct Modal credentials/config are available."""
-    if os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"):
+    """Return True when direct Modal credentials/config are available. The token pair is a
+    profile credential: read it through the secret scope so the default profile's Modal
+    account never selects the direct backend for a multiplexed secondary."""
+    if _scoped_credential("MODAL_TOKEN_ID") and _scoped_credential("MODAL_TOKEN_SECRET"):
         return True
     try:
         return (Path.home() / ".modal.toml").exists()
@@ -145,12 +148,11 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
     return ""
 
 
-def resolve_mittwald_api_key(config_value: str = "", env_getter=None) -> str:
+def resolve_mittwald_api_key(config_value: str = "") -> str:
     """Resolve mittwald's preferred API-key name before its documented alias."""
     return (
-        resolve_provider_secret(
-            "MITTWALD_LLM_API_KEY", "mittwald", config_value=config_value, env_getter=env_getter)
-        or resolve_provider_secret("MITTWALD_AI_API_KEY", "mittwald", env_getter=env_getter)
+        resolve_provider_secret("MITTWALD_LLM_API_KEY", "mittwald", config_value=config_value)
+        or resolve_provider_secret("MITTWALD_AI_API_KEY", "mittwald")
     )
 
 

@@ -195,9 +195,10 @@ async def test_picker_tap_global_flag_persists(tmp_path, monkeypatch, seed_model
     )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
-    assert "base_url" not in written["model"]
+    # The resolved aggregator endpoint is persisted (same shape as CLI/TUI --global, #25106).
+    assert written["model"]["base_url"] == "https://openrouter.ai/api/v1"
     assert "api_key" not in written["model"]
-    assert "api_mode" not in written["model"]
+    assert written["model"]["api_mode"] == "chat_completions"
     assert "context_length" not in written["model"]
 
 

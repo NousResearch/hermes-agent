@@ -29,7 +29,8 @@ def _callback_api():
     return ((tt._get_approval_callback, tt.set_approval_callback),
             (tt._get_sudo_password_callback, tt.set_sudo_password_callback),
             (vault_unlock.get_unlock_prompt_callback, vault_unlock.set_unlock_prompt_callback),
-            (vault_unlock.get_save_login_prompt_callback, vault_unlock.set_save_login_prompt_callback))
+            (vault_unlock.get_save_login_prompt_callback, vault_unlock.set_save_login_prompt_callback),
+            (vault_unlock.get_code_prompt_callback, vault_unlock.set_code_prompt_callback))
 
 
 def propagate_context_to_thread(target: Callable) -> Callable:

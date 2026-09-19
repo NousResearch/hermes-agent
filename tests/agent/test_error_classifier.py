@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+
 from agent.error_classifier import (
     ClassifiedError,
     FailoverReason,
@@ -13,6 +14,7 @@ from agent.error_classifier import (
     _extract_error_code,
     _classify_402,
 )
+from tests.hermes_cli.anon_portal import make_jwt
 
 
 # ── Helper: mock API errors ────────────────────────────────────────────
@@ -62,7 +64,7 @@ class TestFailoverReason:
             "ssl_cert_verification",
             "context_overflow", "payload_too_large", "image_too_large",
             "image_corrupt",
-            "model_not_found", "format_error",
+            "model_not_found", "format_error", "role_alternation",
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
             "reasoning_mandatory",
@@ -390,6 +392,34 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "credit_balance_exhausted",
+            "organization_spend_limit_exceeded",
+            "project_spend_limit_exceeded",
+            "organization_usage_limit_exceeded",
+        ],
+    )
+    @pytest.mark.parametrize("status_code", [None, 429])
+    def test_openai_spend_usage_limit_codes_are_billing(self, code, status_code):
+        # OpenAI documents these structured codes on HTTP 429 when a credit
+        # balance or org/project spend/usage cap is exhausted. They must
+        # classify as billing (rotate + fallback) on the 429 path AND on the
+        # status-less path (SSE/stream-surfaced errors carry only the body),
+        # never as a retryable rate limit. (clean-room port of
+        # zed-industries/zed#63208)
+        e = MockAPIError(
+            "request rejected",
+            status_code=status_code,
+            body={"error": {"code": code, "message": "request rejected"}},
+        )
+        result = classify_api_error(e, provider="openai", model="gpt-5")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
     def test_429_rate_limit_phrase_never_promotes_to_billing(self):
         # The exclusion guard: "Rate limit exceeded" contains the
         # "limit exceeded" usage-limit substring, but an explicit rate-limit
@@ -538,6 +568,30 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="zai")
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
+
+    def test_429_with_structured_terminal_quota_code_is_billing(self):
+        """LiteLLM stamps ``terminal_quota_exhausted`` on a hard-cap 429. The
+        429 handler always returns a verdict, so the structured billing code
+        must be honored inside it — otherwise the exhausted key is retried
+        (upstream this respawned duplicate subagents; ported from
+        code-yeongyu/oh-my-openagent#6677)."""
+        e = MockAPIError(
+            "request failed", status_code=429,
+            body={"error": {"code": "terminal_quota_exhausted", "message": "request failed"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_429_hard_billing_limit_text_is_billing(self):
+        """The free-text twin: "hard billing limit" is exhaustion wording, not
+        throttling, even though it contains no reset signal to disambiguate."""
+        result = classify_api_error(
+            MockAPIError("hard billing limit reached for this key", status_code=429)
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
 
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
@@ -767,6 +821,18 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_opencode_zen_wrapped_replay_rejection_reaches_replay_strip(self):
+        """OpenCode Zen wraps the rejected encrypted replay in a generic 400."""
+        e = MockAPIError(
+            "HTTP 400: Error from provider (Console): Upstream request failed: "
+            "[invalid_request_error] reasoning `encrypted_content` was not issued to this caller",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="opencode-zen", model="muse-spark-1.3-contributor-free")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     # ── Codex masked encrypted-reasoning replay rejection (#92353) ──
 
     _CODEX_MASKED = {"message": "Request blocked.", "type": "invalid_request_error", "param": None, "code": "invalid_prompt"}
@@ -792,17 +858,20 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
-    def test_azure_conflicting_continuation_identities_is_invalid_encrypted_content(self):
-        """Azure Foundry's wording for a rejected encrypted-reasoning replay (#105369); ``code`` is the
-        generic ``invalid_value``, so the message decides."""
-        message = "Conflicting authenticated continuation identities."
+    @pytest.mark.parametrize(("provider", "model", "message", "code"), [
+        ("azure-foundry", "gpt-6-astra", "Conflicting authenticated continuation identities.", "invalid_value"),
+        # Custom Responses endpoint wraps the replay rejection in a generic bad_request (#95834).
+        ("custom", "gpt-5.6", "The encrypted content could not be decrypted or parsed.", "bad_request"),
+    ], ids=["azure-continuation-identities", "custom-decrypted-or-parsed"])
+    def test_message_only_replay_rejection_is_invalid_encrypted_content(self, provider, model, message, code):
+        """Endpoints whose ``code`` is generic; the message wording alone must decide."""
         e = MockAPIError(
             f"Error code: 400 - {{'error': {{'message': '{message}', 'type': 'invalid_request_error', "
-            "'param': 'input', 'code': 'invalid_value'}}",
+            f"'param': 'input', 'code': '{code}'}}",
             status_code=400,
-            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": "invalid_value"}},
+            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": code}},
         )
-        result = classify_api_error(e, provider="azure-foundry", model="gpt-6-astra")
+        result = classify_api_error(e, provider=provider, model=model)
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False
@@ -821,6 +890,24 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
         assert result.should_compress is False
+
+    def test_reasoning_field_rejection_is_reasoning_mandatory(self):
+        """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'
+        unsupported; use ...", #114460) or forward ("Unrecognized request argument supplied:
+        reasoning_effort") — takes the drop-the-disable rung, not the format_error abort; a
+        model-id segment (kimi-k2-thinking) stays route gating."""
+        for msg in (
+            "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
+            "Unrecognized request argument supplied: reasoning_effort",
+        ):
+            result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
+            assert result.reason == FailoverReason.reasoning_mandatory, msg
+            assert result.retryable is True and result.should_fallback is False
+        gated = classify_api_error(
+            MockAPIError("The model kimi-k2-thinking is not supported when using this account", status_code=400),
+            provider="custom", model="kimi-k2-thinking",
+        )
+        assert gated.reason != FailoverReason.reasoning_mandatory
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 
@@ -1712,3 +1799,101 @@ class TestServerInjectedParameterRejection:
         assert result.retryable is False
 
 
+
+
+# ── Test: Nous welcome tier (free tier) refusals ───────────────────────
+
+class TestNousWelcomeTier:
+    """The Nous gateway's welcome-tier contract: a structured 429 body carries ``reason`` /
+    ``retry_after`` / ``alternates`` / ``upgrade_url``; a 400/403 names the wrong host or a
+    dark tier in its message. The parsed refusal rides ``error_context``."""
+
+    @staticmethod
+    def _refusal(reason, retry_after=0, **extra):
+        body = {"status": 429, "message": "refused", "reason": reason, "retry_after": retry_after, **extra}
+        return MockAPIError(f"Error code: 429 - {body}", status_code=429, body=body,
+                            headers={"retry-after": str(retry_after)})
+
+    def test_model_not_free_is_a_non_retryable_gate_with_fallback(self):
+        err = self._refusal("model_not_free", alternates=["nous/welcome"], upgrade_url="https://portal.example/upgrade")
+        result = classify_api_error(err, provider="nous", api_key=make_jwt(), model="gpt-5")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False
+        refusal = result.error_context["welcome_refusal"]
+        assert refusal["reason"] == "model_not_free"
+        assert refusal["alternates"] == ["nous/welcome"]
+        assert refusal["upgrade_url"] == "https://portal.example/upgrade"
+
+    def test_feature_not_free_is_the_same_gate(self):
+        result = classify_api_error(self._refusal("feature_not_free"), provider="nous", api_key=make_jwt())
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+
+    @pytest.mark.parametrize("reason", ["at_capacity", "admission_closed", "rate_limited"])
+    def test_capacity_refusals_are_rate_limits_that_honour_retry_after(self, reason):
+        result = classify_api_error(self._refusal(reason, retry_after=30), provider="nous", api_key=make_jwt(), model="nous/welcome")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_fallback is True
+        ctx = result.error_context
+        assert ctx["welcome_refusal"]["retry_after"] == 30
+        assert ctx["reset_at"] > 0
+
+    def test_retry_after_zero_carries_no_reset(self):
+        result = classify_api_error(self._refusal("at_capacity", retry_after=0), provider="nous", api_key=make_jwt())
+        assert "reset_at" not in result.error_context
+
+    def test_unknown_reason_is_not_the_welcome_shape(self):
+        err = MockAPIError("Error code: 429", status_code=429,
+                           body={"status": 429, "message": "x", "reason": "something_else", "retry_after": 5})
+        result = classify_api_error(err, provider="nous", api_key=make_jwt())
+        assert "welcome_refusal" not in result.error_context
+
+    def test_anonymous_jwt_on_the_paid_host_is_deterministic(self):
+        body = {"status": 400, "message": "Anonymous accounts must use https://welcome-api.nousresearch.com for inference."}
+        err = MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body)
+        result = classify_api_error(err, provider="nous", api_key=make_jwt(), model="nous/welcome")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False and result.should_fallback is True
+        assert result.error_context["welcome_route"] == "anon_on_paid_host"
+
+    def test_named_caller_on_the_welcome_host_is_deterministic(self):
+        body = {"status": 400, "message": "This endpoint serves anonymous Hermes Agent accounts only. Use https://inference-api.nousresearch.com with your API key or signed-in account."}
+        err = MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body)
+        result = classify_api_error(err, provider="nous", api_key=make_jwt(account_tier="free"))
+        assert result.error_context["welcome_route"] == "named_on_welcome_host"
+        assert result.retryable is False
+
+    def test_dark_tier_403_never_triggers_a_credential_refresh(self):
+        body = {"status": 403, "message": "Anonymous accounts are not accepted by this API right now."}
+        err = MockAPIError(f"Error code: 403 - {body}", status_code=403, body=body)
+        result = classify_api_error(err, provider="nous", api_key=make_jwt(), model="nous/welcome")
+        assert result.reason == FailoverReason.auth_permanent
+        assert result.retryable is False and result.should_fallback is True
+        assert result.should_rotate_credential is False
+        assert result.error_context["welcome_route"] == "tier_disabled"
+
+    def test_ordinary_403_is_untouched(self):
+        result = classify_api_error(MockAPIError("forbidden", status_code=403, body={"message": "forbidden"}), provider="nous", api_key=make_jwt())
+        assert result.reason == FailoverReason.auth
+        assert "welcome_route" not in result.error_context
+
+
+class TestAuthErrorNamesOffRouteEndpoint:
+    """#113719: an auth refusal from a route that is not the provider's own endpoint names the host."""
+
+    _BODY = {"error": {"code": "api_key_not_supported", "message": "API keys are not supported by this endpoint."}}
+
+    def test_stale_base_url_names_contacted_host(self):
+        e = MockAPIError("Unauthorized", status_code=401, body=self._BODY)
+        result = classify_api_error(e, provider="anthropic", model="claude", base_url="https://chatgpt.com/backend-api/codex")
+        assert result.reason == FailoverReason.auth
+        assert result.message == "API keys are not supported by this endpoint. (endpoint: chatgpt.com)"
+
+    def test_stock_endpoint_and_no_base_url_keep_plain_message(self):
+        e = MockAPIError("Unauthorized", status_code=401, body=self._BODY)
+        for base_url in ("", "https://api.anthropic.com/v1"):
+            result = classify_api_error(e, provider="anthropic", model="claude", base_url=base_url)
+            assert result.message == "API keys are not supported by this endpoint.", base_url

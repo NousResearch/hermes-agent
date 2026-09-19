@@ -1,8 +1,8 @@
 """Guided tour (highlight + narrate UI elements) in the Hermes desktop GUI: the agent discovers
 targets (``action="targets"``), then highlights one step at a time (``show``) or hands over a
 step list the user pages (``start``). Round-trips through the gateway blocking-prompt bridge
-(``tour.request``/``tour.respond``) so the agent learns whether the selector matched. Lives in
-``desktop_ui`` and withdraws itself when tours are off: a tour takes the whole screen, so "off"
+(``tour.request``/``tour.respond``) so the agent learns whether the selector matched. Registered in
+``desktop_ui`` and hidden from the model when tours are off: a tour covers the whole screen, so "off"
 must mean the model is never told the tool exists rather than offered a call that fails."""
 
 import json

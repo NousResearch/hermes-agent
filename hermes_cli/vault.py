@@ -70,12 +70,15 @@ def _cmd_add(args) -> None:
             password = ""
             while not password:
                 password = getpass.getpass("Password (hidden): ")
+            otp_secret = getpass.getpass(
+                "Authenticator key (optional, hidden; the 2FA \"setup key\" or otpauth:// link — Enter to skip): ")
             # identifier_type/identifier are stored as metadata (not secret);
             # add_item moves them out of the encrypted payload.
             secret = {
                 "identifier_type": id_type,
                 "identifier": identifier,
                 "password": password,
+                **({"otp_secret": otp_secret} if otp_secret.strip() else {}),
             }
             meta = get_vault_store().add_item(
                 kind="login", label=label, secret=secret, origin=origin

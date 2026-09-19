@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
-from agent.secret_scope import get_secret as _get_secret
+from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from agent.credential_persistence import (
     fingerprint_secret_value,
@@ -294,6 +294,11 @@ class PooledCredential:
     def runtime_base_url(self) -> Optional[str]:
         if self.provider == "nous":
             return self.inference_base_url or self.base_url
+        if self.provider == "openai-codex":
+            # Pool rows keep the canonical ChatGPT URL; the profile-scoped proxy override must win
+            # for every reader of the row — initial resolution AND a 401/429 rotation
+            # (client_lifecycle._swap_credential), or a rotation silently leaves the proxy.
+            return get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or self.base_url
         return self.base_url
 
 

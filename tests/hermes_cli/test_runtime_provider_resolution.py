@@ -110,6 +110,33 @@ def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
     assert resolved["base_url"] == "http://127.0.0.1:8787/v1"
 
 
+def test_codex_pool_honors_model_base_url(monkeypatch):
+    """#40913: model.base_url under provider openai-codex is the secondary proxy override; the
+    canonical URL stored on the pool row must not shadow it."""
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://chatgpt.com/backend-api/codex"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self, **_kwargs):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openai-codex", "default": "gpt-5.3-codex", "base_url": "http://127.0.0.1:8400/backend-api/codex/"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["base_url"] == "http://127.0.0.1:8400/backend-api/codex"
+    assert resolved["api_mode"] == "codex_responses"
+
+
 class TestCustomProviderPoolLoopbackNoKeyExemption:
     """Regression for issue #86864: legacy custom_providers configs often
     used short/placeholder api_keys ('123', 'm') for local no-auth

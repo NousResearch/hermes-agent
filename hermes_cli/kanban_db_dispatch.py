@@ -1024,6 +1024,26 @@ class _DeadWorker:
         return "rate_limited" if self.rate_limited else "crashed"
 
 
+def _classify_no_pid_worker(
+    claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
+) -> _DeadWorker:
+    """Book a ``running`` row whose spawn never recorded a PID as dead.
+
+    With no PID there is no process to probe, so liveness is unknowable and
+    the row can never be reclaimed by a pid-keyed sweep; leaving it ``running``
+    holds a ``max_in_progress`` slot forever. The worker's last output (when
+    any) still reaches the error text so the retry worker sees WHY (#113610).
+    """
+    error_text = "running task had no worker pid recorded"
+    payload: dict = {"pid": None, "claimer": claimer}
+    if task_id:
+        worker_output = _worker_final_output(task_id, board=board)
+        if worker_output:
+            error_text += f" Worker's last output: {worker_output!r}"
+            payload["worker_output"] = worker_output
+    return _DeadWorker("no_pid", None, error_text, "crashed", payload)
+
+
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
 ) -> _DeadWorker:
@@ -1105,20 +1125,26 @@ class _CrashSweep:
     rate_limited: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
     # after the txn via ``_record_task_failure`` (needs its own write_txn).
-    crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
+    # pid is None for rows whose spawn never recorded one (#113610).
+    crash_details: list[tuple[str, Optional[int], str, bool, str]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
-    """Release every host-local ``running`` task whose worker PID is dead."""
+    """Release every host-local ``running`` task whose worker is gone.
+
+    Covers both dead-PID rows and rows that never recorded a PID: a spawn
+    that reported no PID leaves ``worker_pid IS NULL`` and can never be
+    probed, so after the launch grace it is treated as dead (#113610).
+    """
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
             "FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+            "WHERE status = 'running'"
         ).fetchall()
         host_prefix = _kb._host_prefix()
         for row in rows:
@@ -1126,23 +1152,30 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             if not lock.startswith(host_prefix):
                 continue
             # Launch-window grace so a freshly-spawned worker isn't reclaimed
-            # before its PID is visible on /proc.
+            # before its PID is visible on /proc (or persisted at all).
             started_at = _kb._row_get(row, "started_at")
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
-            if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
-                continue
-
-            pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            pid = row["worker_pid"]
+            if pid is None:
+                dead = _classify_no_pid_worker(row["claim_lock"], task_id=row["id"], board=board)
+            else:
+                if _worker_alive(pid, _kb._row_get(row, "worker_started_at")):
+                    continue
+                pid = int(pid)
+                dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
+            pid_guard = "worker_pid IS NULL" if pid is None else "worker_pid = ?"
+            params: list = [retry_status, row["id"], row["claim_lock"]]
+            if pid is not None:
+                params.insert(2, pid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
                 "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, row["id"], pid, row["claim_lock"]),
+                f"  AND {pid_guard} AND claim_lock IS ?",
+                tuple(params),
             )
             if cur.rowcount != 1:
                 continue
@@ -1248,10 +1281,12 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
 
 
 def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> list[str]:
-    """Reclaim ``running`` tasks whose worker PID is no longer alive.
+    """Reclaim ``running`` tasks whose worker is gone (dead PID or no PID recorded).
 
     Restores the source phase immediately (no waiting for the claim TTL), for
     tasks claimed by *this host* only — other hosts' PIDs are meaningless.
+    A row whose spawn never recorded a PID is dead by definition: there is no
+    process to probe, so after the launch grace it is closed too (#113610).
     Clean exit while ``running`` is a protocol violation with a bounded
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the

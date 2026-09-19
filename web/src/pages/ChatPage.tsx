@@ -697,9 +697,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       term.focus();
     };
-    const uploadAndAttachImages = (files: File[]) => {
-      if (!files.length) return;
-      void (async () => {
+    const uploadAndAttachImages = (files: File[]): Promise<void> => {
+      if (!files.length) return Promise.resolve();
+      return (async () => {
         const paths: string[] = [];
         for (const file of files) {
           const uploaded = await uploadChatImage(file, scopedProfile);
@@ -740,14 +740,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         insertUploadedPaths(paths);
       })().catch(reportFileUploadError);
     };
+    // Images and non-image files share one PTY socket (`/image <path>` needs
+    // an untouched window before its `\r`), so the file flow must not start
+    // until the image flow has fully finished typing and sending — otherwise
+    // a file-path write can land mid-command and corrupt both (#115451 review).
+    const uploadAndAttachThenInsert = (images: File[], files: File[]) => {
+      void uploadAndAttachImages(images).then(() => {
+        if (imageUploadDisposed) return;
+        uploadAndInsertFiles(files);
+      });
+    };
     const handleBrowserPaste = (ev: ClipboardEvent) => {
       const images = imageFilesFromTransfer(ev.clipboardData);
       const files = nonImageFilesFromTransfer(ev.clipboardData);
       if (!images.length && !files.length) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(images);
-      uploadAndInsertFiles(files);
+      uploadAndAttachThenInsert(images, files);
     };
     const handleBrowserDragOver = (ev: DragEvent) => {
       if (!transferMayContainFile(ev.dataTransfer)) return;
@@ -760,8 +769,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (!images.length && !files.length) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(images);
-      uploadAndInsertFiles(files);
+      uploadAndAttachThenInsert(images, files);
     };
     host.addEventListener("paste", handleBrowserPaste, { capture: true });
     host.addEventListener("dragover", handleBrowserDragOver, { capture: true });

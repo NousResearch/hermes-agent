@@ -1,11 +1,11 @@
 name: afterforge
 repo: https://github.com/ussyverse/afterforge
-sha: fa876d66df48fae3409737ea6a2f488f4358701f
+sha: 4754b761257128d312ac393d8c96f11b5fe8c8c7
 description: Local-first regression workbench turning agent failures and corrections into reviewed, evidence-backed checks.
 maintainer: ussyverse
 tier: community
 category: tools
-docs_url: https://github.com/ussyverse/afterforge/blob/fa876d66df48fae3409737ea6a2f488f4358701f/README.md
+docs_url: https://github.com/ussyverse/afterforge/blob/4754b761257128d312ac393d8c96f11b5fe8c8c7/README.md
 platforms: [linux]
 capabilities:
   provides_tools:

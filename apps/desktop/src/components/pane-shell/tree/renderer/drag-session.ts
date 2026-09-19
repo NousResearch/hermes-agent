@@ -36,7 +36,16 @@ import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { reorderCommitHaptic, reorderStepHaptic } from '@/lib/reorder'
 
 import type { DropPosition } from '../model'
-import { $dropHint, $treeDragging, type DropHint, mergeTreeZones, moveTreePanes, reorderTreePanes } from '../store'
+import {
+  $dropHint,
+  $treeDragging,
+  type DropHint,
+  isDockEnforced,
+  mergeTreeZones,
+  moveTreePanes,
+  notifyEnforcedDockLocked,
+  reorderTreePanes
+} from '../store'
 import { clearTabSelection } from '../tab-selection'
 import { type EngineZone, HighlightedZones, primaryZone, type ZoneRect } from '../zones-engine'
 
@@ -436,6 +445,8 @@ export function startPaneDrag(
   // The moving block: the selection when the pressed tab rides one, else just
   // the pressed tab. Order is strip order (selectionFor guarantees it).
   const moving: readonly string[] = selection && selection.length > 1 ? selection : [paneId]
+  const dockLocked = moving.some(isDockEnforced)
+  let zoneRefused = false
 
   const highlighted = new HighlightedZones()
   let zones: EngineZone[] = []
@@ -457,13 +468,24 @@ export function startPaneDrag(
     }
   }
 
-  const enterZoneMode = () => {
+  const enterZoneMode = (): boolean => {
+    if (dockLocked) {
+      if (!zoneRefused) {
+        zoneRefused = true
+        notifyEnforcedDockLocked()
+      }
+
+      return false
+    }
+
     mode = 'zone'
     // The layout never restructures mid-drag, so zone/strip rects are stable.
     zones = snapshotZones()
     strips = snapshotStrips()
     $treeDragging.set(paneId)
     markSource()
+
+    return true
   }
 
   // The reorder strip's geometry, snapshotted on first use (same fixed-layout
@@ -511,7 +533,10 @@ export function startPaneDrag(
         }
 
         // Tear-off: the tab leaves the strip and becomes a zone move.
-        enterZoneMode()
+        // Enforced docks stay in-strip — disclose once, do not silently no-op.
+        if (!enterZoneMode()) {
+          return null
+        }
       }
 
       // A strip is an exact target. Resolve it before the fuzzy zone engine:

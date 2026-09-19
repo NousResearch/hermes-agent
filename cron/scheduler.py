@@ -2349,7 +2349,7 @@ def run_job(
         # tail can schedule a bounded automatic re-run instead of waiting a full period.
         try:
             from cron.unreachable_retry import is_model_unreachable_failure
-            if is_model_unreachable_failure(e, agent):
+            if is_model_unreachable_failure(e, agent, job=job):
                 job["_model_unreachable"] = True
         except Exception:  # classification must never mask the real failure
             logger.debug("Job '%s': unreachable-failure classification failed", job_id)

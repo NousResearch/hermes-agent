@@ -432,8 +432,10 @@ a single model call was made — the classic case is a fire right after the
 computer wakes, while the VPN or Wi-Fi is still reconnecting — does not sit
 out a whole period. The scheduler re-runs it automatically after **5, 15, and
 30 minutes** (inspired by Claude Cowork's scheduled-task re-runs), then falls
-back to the normal schedule. Because zero API calls were made, the re-run is
-spend-neutral and cannot duplicate any side effect.
+back to the normal schedule. Jobs with a pre-run `script` or `monitor_script`
+are excluded: these scripts run before the model connection and may already
+have side effects. They keep their normal schedule and failure notices.
+For eligible jobs, zero API calls makes the re-run spend-neutral.
 
 While a re-run is pending, the interim failure notice is suppressed — you get
 the real result when a re-run succeeds, or a normal failure alert once the

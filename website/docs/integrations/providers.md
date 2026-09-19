@@ -1223,6 +1223,46 @@ ClawRouter requires a USDC-funded wallet on Base or Solana for payment. All requ
 
 ---
 
+### OpenLLM — Local Multi-Provider Gateway with Fallback
+
+[OpenLLM](https://openllm.sh) is a local daemon that exposes an OpenAI-compatible `/v1` at `127.0.0.1:8787` and fans out to the providers you already use, with fallback between them. Best for: one Hermes config across many upstreams, an alias (`ultra`, `plus`, `lite`) that keeps answering when one provider rate-limits, and the same alias reused in other clients. Hermes talks only to loopback; the daemon holds all credentials.
+
+```bash
+# Install and start (macOS / Linux)
+curl -fsSL https://www.openllm.sh/install | bash
+# starts openllmd on 127.0.0.1:8787
+```
+
+Then configure Hermes with `hermes model` → Custom endpoint → `http://127.0.0.1:8787/v1` → model name `ultra` (or `plus` / `lite`, or any id from `GET http://127.0.0.1:8787/v1/models`).
+
+Or in `config.yaml`:
+```yaml
+model:
+  default: ultra
+  provider: custom
+  base_url: http://127.0.0.1:8787/v1
+```
+
+No API key in Hermes. If Hermes cannot reach the endpoint, `openllmd` is not running.
+
+OpenLLM already does fallback internally. You can still layer Hermes fallback in front of it; keep OpenLLM as primary:
+```yaml
+fallback_providers:
+  - provider: custom
+    model: plus
+    base_url: http://127.0.0.1:8787/v1
+```
+
+:::tip Production usage
+We run Hermes → OpenLLM on a production host daily, including a pipeline that researches on one model and writes on another through the same endpoint.
+:::
+
+:::info OpenLLM vs Hermes's own API server
+Hermes can also expose `http://localhost:8642/v1` via `hermes gateway`. OpenLLM sits *upstream* of Hermes (Hermes is the client). Don't point Hermes at its own gateway.
+:::
+
+---
+
 ### Other Compatible Providers
 
 Any service with an OpenAI-compatible API works. Some popular options:

@@ -16,6 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
@@ -115,6 +116,22 @@ def _set_cdp_env(env: dict, cdp: str) -> None:
 
 def _has_cdp_env(env: dict) -> bool:
     return bool(env.get("BU_CDP_WS") or env.get("BU_CDP_URL"))
+
+
+def _bypass_proxy_for_loopback_cdp(env: dict) -> None:
+    """Keep Browser Use's CDP connection local when a system proxy is configured."""
+    cdp = str(env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or "")
+    if urlparse(cdp).hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return
+
+    for key in ("NO_PROXY", "no_proxy"):
+        entries = [entry.strip() for entry in env.get(key, "").split(",") if entry.strip()]
+        known = {entry.lower() for entry in entries}
+        for host in ("127.0.0.1", "localhost", "::1"):
+            if host not in known:
+                entries.append(host)
+                known.add(host)
+        env[key] = ",".join(entries)
 
 
 def _export_session_cdp(env: dict, get_session_info: Callable[[str], Any], cache_key: str,
@@ -630,6 +647,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
+    _bypass_proxy_for_loopback_cdp(env)
     _attach_vault_supervisor(env, task_id)
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see

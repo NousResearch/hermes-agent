@@ -454,6 +454,30 @@ class TestBackendCdpResolution:
     def _env(self):
         return {}
 
+    def test_loopback_cdp_bypasses_proxy_in_both_env_spellings(self):
+        env = {
+            "BU_CDP_WS": "ws://127.0.0.1:9222/devtools/browser/abc",
+            "NO_PROXY": "corp.internal,localhost",
+            "no_proxy": "metadata.internal",
+        }
+
+        bu_cli._bypass_proxy_for_loopback_cdp(env)
+
+        assert env["NO_PROXY"].split(",") == ["corp.internal", "localhost", "127.0.0.1", "::1"]
+        assert env["no_proxy"].split(",") == ["metadata.internal", "127.0.0.1", "localhost", "::1"]
+
+    def test_remote_cdp_keeps_proxy_configuration_unchanged(self):
+        env = {
+            "BU_CDP_WS": "wss://browser.example/cdp/abc",
+            "NO_PROXY": "corp.internal",
+            "no_proxy": "metadata.internal",
+        }
+
+        bu_cli._bypass_proxy_for_loopback_cdp(env)
+
+        assert env["NO_PROXY"] == "corp.internal"
+        assert env["no_proxy"] == "metadata.internal"
+
     def test_existing_bu_env_wins(self, monkeypatch):
         env = {"BU_CDP_WS": "ws://operator-override:9222"}
         assert bu_cli._resolve_backend_cdp(env, "t1") is None

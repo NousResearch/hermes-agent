@@ -473,7 +473,7 @@ def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, 
     delivered.assert_called_once()
     finished.assert_called_once_with(
         "self-removal-heartbeat-execution",
-        success=True, error=None, delivery_outcome="delivered")
+        success=True, error=None, delivery_outcome="delivered", delivery_error=None)
     with jobs.use_cron_store(tmp_path):
         assert jobs.load_jobs() == []
 
@@ -510,7 +510,7 @@ def test_self_removed_job_crash_skips_mark_job_run(tmp_path, monkeypatch):
     marked.assert_not_called()
     finished.assert_called_once_with(
         "self-removal-crash-execution", success=False,
-        error="boom after self-removal", delivery_outcome="delivered")
+        error="boom after self-removal", delivery_outcome="delivered", delivery_error=None)
 
 
 def test_self_removal_followed_by_replacement_record_stays_fail_closed(tmp_path, monkeypatch):
@@ -721,4 +721,5 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
         "execution-cas",
         success=False,
         error="Fire claim ownership lost before terminal completion.",
+        delivery_error=None,
     )

@@ -175,6 +175,7 @@ def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
                 "success": False,
                 "error": "Gemini HTTP 503 (UNAVAILABLE)",
                 "delivery_outcome": "delivered",
+                "delivery_error": None,
             },
         )
     ]
@@ -371,9 +372,58 @@ def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch)
                 "success": False,
                 "error": "KeyboardInterrupt",
                 "delivery_outcome": "suppressed",
+                "delivery_error": None,
             },
         )
     ]
+
+
+_INJECTED_DELIVERY_FAILURE = (
+    "bot-chat delivery to profile 'default' failed (exit 1): "
+    "↻ Resumed session 20260916_174020_f797c2 \"Bot Chat\""
+)
+
+
+def _run_one_job_against_a_real_ledger(monkeypatch, tmp_path, *, delivery_error):
+    """Drive the real run → deliver → finish path with the ledger pointed at a tmp DB, injecting
+    ``delivery_error`` as ``_deliver_result``'s return value (the live bot-chat failure is
+    intermittent and cannot be forced on demand). Returns the persisted execution row."""
+    import cron.executions as executions
+
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
+    monkeypatch.setattr(s, "run_job", lambda *_a, **_kw: (True, "out", "final response", None))
+    monkeypatch.setattr(s, "save_job_output", lambda jid, _out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: delivery_error)
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: None)
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+
+    assert s.run_one_job({"id": "ledger-job", "name": "worklog", "deliver": "bot-chat:default"})
+    rows = executions.list_executions(job_id="ledger-job")
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_failed_delivery_records_its_reason_in_the_ledger(monkeypatch, tmp_path):
+    """A delivery failure on a run that itself succeeded used to leave the ledger with
+    ``delivery_outcome='failed'`` and nothing else — no reason, nothing to diagnose from."""
+    row = _run_one_job_against_a_real_ledger(
+        monkeypatch, tmp_path, delivery_error=_INJECTED_DELIVERY_FAILURE)
+
+    assert row["delivery_outcome"] == "failed"
+    assert row["delivery_error"] == _INJECTED_DELIVERY_FAILURE
+    # The job itself succeeded: conflating the two would mislabel the run as a failure.
+    assert row["status"] == "completed"
+    assert row["error"] is None
+
+
+def test_successful_delivery_leaves_the_ledger_reason_empty(monkeypatch, tmp_path):
+    """The success path is unchanged: nothing failed, so there is no reason to record."""
+    row = _run_one_job_against_a_real_ledger(monkeypatch, tmp_path, delivery_error=None)
+
+    assert row["delivery_outcome"] == "delivered"
+    assert row["delivery_error"] is None
+    assert row["status"] == "completed"
+    assert row["error"] is None
 
 
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):

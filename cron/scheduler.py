@@ -2831,7 +2831,8 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
                 "Failed recording delivery_error for interrupted job %s: %s", job["id"], _rec_err)
     finish_execution(
         execution_id, success=False,
-        error="Interrupted by gateway shutdown before terminal completion.")
+        error="Interrupted by gateway shutdown before terminal completion.",
+        delivery_error=delivery_error)
 
 
 def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_id: str) -> bool:
@@ -2858,7 +2859,8 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if fire_owner is not None and not marked:
         finish_execution(
             execution_id, success=False,
-            error="Fire claim ownership lost before terminal completion.")
+            error="Fire claim ownership lost before terminal completion.",
+            delivery_error=d.delivery_error)
         return True
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,
@@ -2875,7 +2877,8 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
     finish_execution(
-        execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
+        execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome,
+        delivery_error=d.delivery_error)
     return True
 
 
@@ -3127,7 +3130,8 @@ def _run_one_job_body(
             logger.error("Failed to record interrupted run for job %s: %s", job["id"], record_err)
         try:
             finish_execution(
-                execution_id, success=False, error=_err_text, delivery_outcome=delivery_outcome)
+                execution_id, success=False, error=_err_text, delivery_outcome=delivery_outcome,
+                delivery_error=delivery_error)
         except Exception as record_err:
             logger.error("Failed to finish execution record for job %s: %s", job["id"], record_err)
         if not isinstance(e, Exception):

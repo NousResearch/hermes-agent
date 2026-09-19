@@ -5368,12 +5368,17 @@ class TelegramAdapter(BasePlatformAdapter):
             return _ph(f'*{_escape_mdv2(inner)}*')
 
         text = re.sub(r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE)
-        # 5) Bold **text** → *text*; 6) Italic *text* → _text_ ([^*\n]+ keeps matches on one line, or *
-        # bullet lists corrupt); 7) Strikethrough ~~text~~ → ~text~; 8) Spoiler ||text|| kept as-is.
-        text = re.sub(r'\*\*(.+?)\*\*', _ph_wrap('*', '*'), text)
-        text = re.sub(r'\*([^*\n]+)\*', _ph_wrap('_', '_'), text)
-        text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
-        text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
+        # 4b) Normalize bullet lists starting with * so they don't collide with italic *
+        text = re.sub(r'^(\s*)\*\s+', r'\1• ', text, flags=re.MULTILINE)
+        # 5) Bold+Italic ***text*** → *_text_*; Bold **text** → *text*
+        text = re.sub(r'\*\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*\*', lambda m: _ph(f"*_{_escape_mdv2(m.group(1))}_*"), text)
+        text = re.sub(r'\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*', _ph_wrap('*', '*'), text)
+        # 6) Italic *text* / _text_ → _text_ (non-whitespace boundary check)
+        text = re.sub(r'(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)', _ph_wrap('_', '_'), text)
+        text = re.sub(r'(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)', _ph_wrap('_', '_'), text)
+        # 7) Strikethrough ~~text~~ → ~text~; 8) Spoiler ||text|| kept as-is.
+        text = re.sub(r'~~(?!\s)(.+?)(?<!\s)~~', _ph_wrap('~', '~'), text)
+        text = re.sub(r'\|\|(?!\s)(.+?)(?<!\s)\|\|', _ph_wrap('||', '||'), text)
         # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).
         def _convert_blockquote(m):
             prefix, content = m.group(1), m.group(2)  # prefix: >, >>, >>>, **>, **>> …

@@ -228,8 +228,18 @@ class TestItalicNewlineBug:
         assert "Item one" in result
         assert "Item two" in result
         assert "Item three" in result
-        # Should NOT contain _ (italic markers) wrapping list items
-        assert "_" not in result or "Item" not in result.split("_")[1] if "_" in result else True
+        # Leading * bullet should be normalized to unicode bullet •
+        assert "• Item one" in result
+        assert "• Item two" in result
+        assert "• Item three" in result
+
+    def test_bullet_list_with_inline_italic_and_bold(self, adapter):
+        """Bullet lists containing italic or bold elements must parse cleanly."""
+        text = "* Item one with *italic* words\n* Item two with **bold** words\n   * Nested item with ***bolditalic***"
+        result = adapter.format_message(text)
+        assert "• Item one with _italic_ words" in result
+        assert "• Item two with *bold* words" in result
+        assert "   • Nested item with *_bolditalic_*" in result
 
 
 # =========================================================================

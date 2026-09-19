@@ -1182,6 +1182,18 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     expect(states.sessionTileOwnerRoute('closed')).toEqual(ownerRoute)
   })
 
+  it('retains ownerProfile (no ownerRoute) across close/reopen', async () => {
+    // A tab-strip draft on a named local profile carries ownership via
+    // ownerProfile alone (no ownerRoute) — session.control.read and the
+    // gateway keep-alive scopes both key off it when ownerRoute is absent.
+    const { states, tree } = await setup()
+    states.patchSessionTile('closed', { ownerProfile: 'writer' })
+    states.closeSessionTile('closed')
+    tree.noteActiveTreeGroup(null)
+    states.reopenLastClosedTile()
+    expect(states.$sessionTiles.get().find(t => t.storedSessionId === 'closed')?.ownerProfile).toBe('writer')
+  })
+
   it('fronts a palette-opened tab from sidebar focus without replacing main', async () => {
     const { states, tree } = await setup()
     const { openSession } = await import('@/app/open-session')

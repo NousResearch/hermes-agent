@@ -23,8 +23,8 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
-    KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_LIST_SCHEMA, KANBAN_RECORD_COMPLETION_STATE_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA,
+    KANBAN_REQUEST_REVIEW_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -330,7 +330,8 @@ def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
     "created_at started_at completed_at result current_run_id model_override "
-    "provider_override completion_contract last_failure_error".split())
+    "provider_override completion_contract completion_state completion_evidence "
+    "requires_live_verification verification_owner_id last_failure_error".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
     "created_at started_at completed_at current_run_id model_override provider_override".split())
@@ -771,6 +772,20 @@ def _handle_request_changes(args: dict, **kw) -> str:
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 
 
+@_kanban_handler("kanban_record_completion_state")
+def _handle_record_completion_state(args: dict, **kw) -> str:
+    """Persist precisely one evidence-backed delivery label without inference."""
+    tid = _worker_guard("kanban_record_completion_state", args)
+    state = _require_text(args, "state", "state is required")
+    evidence = args.get("evidence")
+    _check(isinstance(evidence, dict), "evidence must be an object containing a non-empty 'proof' string")
+    with _board(args.get("board")) as (kb, conn):
+        _check(kb.record_completion_state(conn, tid, state, evidence),
+               f"could not record completion state for {tid} (unknown task)")
+        task = kb.get_task(conn, tid)
+        return _ok(task_id=tid, **_fields(task, ("completion_state", "completion_evidence")))
+
+
 @_kanban_handler("kanban_heartbeat")
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal liveness: extend the claim TTL AND record a heartbeat event.
@@ -982,6 +997,8 @@ def _handle_create(args: dict, **kw) -> str:
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
+            requires_live_verification=_parse_bool_arg(args, "requires_live_verification"),
+            verification_owner_id=args.get("verification_owner_id"),
             initial_status=str(args.get("initial_status") or "running"),
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
@@ -1106,6 +1123,8 @@ _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
+    ("kanban_record_completion_state", KANBAN_RECORD_COMPLETION_STATE_SCHEMA,
+     _handle_record_completion_state, "🏷"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),

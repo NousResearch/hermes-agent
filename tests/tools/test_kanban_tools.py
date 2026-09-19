@@ -113,6 +113,33 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert tenant_ids == [c]
 
 
+def test_record_completion_state_keeps_labels_explicit_and_returns_evidence(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_record_completion_state({
+        "state": "tested",
+        "evidence": {"proof": "scripts/run_tests.sh: 42 passed"},
+    })
+    data = json.loads(out)
+    assert data["ok"] is True
+    assert data["task_id"] == worker_env
+    assert data["completion_state"] == "tested"
+    assert data["completion_evidence"] == {"proof": "scripts/run_tests.sh: 42 passed"}
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.completion_state == "tested"
+        assert task.completion_evidence == {"proof": "scripts/run_tests.sh: 42 passed"}
+        states = [event.payload["state"] for event in kb.list_events(conn, worker_env)
+                  if event.kind == "completion_state_recorded"]
+        assert states == ["tested"]
+    finally:
+        conn.close()
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({

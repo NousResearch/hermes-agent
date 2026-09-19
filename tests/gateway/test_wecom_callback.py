@@ -212,3 +212,78 @@ class TestWecomCallbackBodySizeLimit:
         assert response.status == 413
 
 
+class TestWecomCallbackSendChunking:
+    """Regression: callback-mode send() silently truncated at 2048 chars
+    (content[:2048]). It must chunk like the AI Bot adapter."""
+
+    @pytest.mark.asyncio
+    async def test_long_content_sent_as_multiple_posts(self):
+        from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "tok", "expires_at": 9999999999}
+
+        content = "\n".join(f"row {i}: {'z' * 60}" for i in range(80))
+        assert len(content) > 2048
+
+        posted = []
+
+        class FakeClient:
+            async def post(self, url, json=None, **kw):
+                posted.append(json["text"]["content"])
+
+                class R:
+                    def json(inner):
+                        return {"errcode": 0, "msgid": f"msg-{len(posted)}"}
+                return R()
+
+        adapter._http_client = FakeClient()
+        result = await adapter.send("ww1234567890:alice", content)
+
+        assert result.success is True
+        assert len(posted) >= 2
+        assert all(len(c) <= 2048 for c in posted)
+        rejoined = "".join(posted)
+        for line in content.splitlines():
+            assert line in rejoined
+
+    def test_declares_native_chunking(self):
+        from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+
+        assert WecomCallbackAdapter.splits_long_messages is True
+        assert WecomCallbackAdapter.MAX_MESSAGE_LENGTH == 2048
+
+    @pytest.mark.asyncio
+    async def test_chunk_failure_error_names_chunk_index(self):
+        """A failed chunk must surface WHICH chunk failed, not just the
+        raw WeCom error string."""
+        from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "tok", "expires_at": 9999999999}
+
+        content = "\n".join(f"row {i}: {'z' * 60}" for i in range(80))
+        assert len(content) > 2048
+
+        posts = {"n": 0}
+
+        class FakeClient:
+            async def post(self, url, json=None, **kw):
+                posts["n"] += 1
+
+                class R:
+                    def json(inner):
+                        if posts["n"] == 2:
+                            return {"errcode": 81013, "errmsg": "no permission"}
+                        return {"errcode": 0, "msgid": f"msg-{posts['n']}"}
+                return R()
+
+        adapter._http_client = FakeClient()
+        result = await adapter.send("ww1234567890:alice", content)
+
+        assert result.success is False
+        assert "chunk 2/" in (result.error or "")
+        assert "81013" in (result.error or "")
+        assert posts["n"] == 2  # no further chunks after failure
+
+

@@ -1220,6 +1220,46 @@ def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
     assert "t_ffff00001234" in row["diagnostics"][0]["data"]["phantom_ids"]
 
 
+@pytest.mark.parametrize("config, expected", [
+    ("", "any"),
+    ("kanban:\n  dispatch_profiles: [researcher, sage]\n", "researcher, sage"),
+    ("kanban:\n  dispatch_profiles: []\n", "none (fail-closed"),
+], ids=["absent", "listed", "empty_list"])
+def test_diagnostics_endpoint_reports_resolved_allowlist(client, kanban_home, config, expected):
+    """The dashboard's own diagnostics endpoint must show what this home believes it may
+    claim (#113620), same as `hermes kanban diagnostics` (test_diagnostics_reports_resolved_allowlist
+    in tests/hermes_cli/test_kanban_dispatch_claim_allowlist.py) — an operator using only the
+    dashboard previously had no way to see this fail-closed state. Checked on the empty-board
+    response path (no active diagnostics)."""
+    if config:
+        (kanban_home / "config.yaml").write_text(config, encoding="utf-8")
+
+    r = client.get("/api/plugins/kanban/diagnostics")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["diagnostics"] == []
+    assert data["dispatch_profiles"].startswith(expected)
+
+
+def test_diagnostics_endpoint_reports_allowlist_alongside_active_diagnostics(client):
+    """The resolved allowlist rides alongside real diagnostic rows too (not just the
+    empty-board short-circuit)."""
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+        with pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(conn, parent, summary="phantom", created_cards=[real, "t_ffff00001235"])
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/diagnostics")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 1
+    assert data["dispatch_profiles"] == "any"
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks/:id/specify — triage specifier endpoint
 # ---------------------------------------------------------------------------

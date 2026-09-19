@@ -847,6 +847,11 @@ def list_diagnostics(
     """Tasks with an active diagnostic, highest severity first then most recent; also
     consumed by ``hermes kanban diagnostics`` when the dashboard runs."""
     with _board_conn(board) as (board, conn):
+        # What this home believes it may claim on a shared board (#113620) — same shared
+        # resolver `hermes kanban diagnostics` uses, so the CLI and the dashboard can never
+        # disagree. An operator using only the dashboard had no way to see this fail-closed
+        # state before.
+        dispatch_profiles = kbd.dispatch_profile_allowlist_summary()
         diags_by_task = _compute_task_diagnostics(conn, task_ids=None)
         if severity and diags_by_task:
             diags_by_task = {
@@ -854,7 +859,7 @@ def list_diagnostics(
                 for tid, dl in diags_by_task.items()
                 if (keep := [d for d in dl if kd.severity_at_or_above(d.get("severity"), severity)])}
         if not diags_by_task:
-            return {"diagnostics": [], "count": 0}
+            return {"diagnostics": [], "count": 0, "dispatch_profiles": dispatch_profiles}
         ids = list(diags_by_task.keys())
         rows = {r["id"]: r for r in conn.execute(
             f"SELECT id, title, status, assignee FROM tasks WHERE id IN ({_placeholders(ids)})", tuple(ids)).fetchall()}
@@ -867,7 +872,9 @@ def list_diagnostics(
         sev_idx = {s: i for i, s in enumerate(kd.SEVERITY_ORDER)}
         out.sort(key=lambda row: (
             -sev_idx.get(row["diagnostics"][0].get("severity"), -1), -(row["diagnostics"][0].get("last_seen_at") or 0)))
-        return {"diagnostics": out, "count": sum(len(d["diagnostics"]) for d in out)}
+        return {
+            "diagnostics": out, "count": sum(len(d["diagnostics"]) for d in out),
+            "dispatch_profiles": dispatch_profiles}
 
 
 # --- Worker visibility — active-worker list, per-run inspect/terminate -------

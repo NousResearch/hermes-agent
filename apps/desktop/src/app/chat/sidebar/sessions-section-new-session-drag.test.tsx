@@ -333,6 +333,25 @@ describe('project-associated new-session drag sources', () => {
     })
   })
 
+  it('renders declared repo headers before the project has any sessions', () => {
+    const repo = (id: string, label: string) => ({ groups: [], id, label, path: id, sessionCount: 0 })
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        emptyState={<div>No sessions in this project</div>}
+        projectContent={project({
+          repos: [repo('/repo/a', 'Repo A'), repo('/repo/b', 'Repo B')],
+          sessionCount: 0
+        })}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: 'New session in Repo A' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'New session in Repo B' })).toBeTruthy()
+    expect(screen.queryByText('No sessions in this project')).toBeNull()
+  })
+
   it('drags profile-group add buttons to start a session in that profile', async () => {
     const onNewSessionSplit = vi.fn()
 

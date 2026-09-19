@@ -163,6 +163,68 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+class _OutboundWindowCounter:
+    """24h sliding-window counter of *real* sends to iLink, persisted to disk.
+
+    Tracks the monotonic timestamps of every message that actually left the adapter (text
+    chunks, media files, the interact prompt). ``remaining()`` prunes entries older than the
+    window on read. Every method is fail-open: on read/write/parse error it degrades to
+    "unlimited" (``remaining() -> quota``) and never raises, so a corrupt counter file can
+    never block outbound delivery. Persistence uses ``atomic_json_write`` (fsync); a disk
+    failure only loses durability, never the in-memory count.
+    """
+
+    def __init__(self, hermes_home: str, account_id: str, *, quota: int, window_seconds: float):
+        self._path = _account_dir(hermes_home) / f"{account_id}.outbound-window.json"
+        self._quota = max(1, int(quota))
+        self._window_seconds = max(60.0, float(window_seconds))
+        self._timestamps: List[float] = []
+        self._lock = asyncio.Lock()  # protects the in-memory list; persistence is offloaded
+        self._restore()
+
+    def _restore(self) -> None:
+        try:
+            data = _read_json(self._path)
+            raw = data.get("timestamps") if isinstance(data, dict) else None
+            if isinstance(raw, list):
+                self._timestamps = [float(ts) for ts in raw if isinstance(ts, (int, float))]
+        except Exception as exc:
+            logger.warning("weixin: outbound counter restore failed (fail-open): %s", exc)
+            self._timestamps = []
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self._window_seconds
+        self._timestamps = [ts for ts in self._timestamps if ts >= cutoff]
+
+    def remaining(self) -> int:
+        """Slots left in the window; fail-open returns the full quota on any error."""
+        try:
+            now = time.time()
+            self._prune(now)
+            return max(0, self._quota - len(self._timestamps))
+        except Exception as exc:
+            logger.warning("weixin: outbound counter remaining() failed (fail-open): %s", exc)
+            return self._quota
+
+    async def record(self) -> bool:
+        """Record one real send. True on success; False when persistence failed (caller ignores)."""
+        async with self._lock:
+            try:
+                now = time.time()
+                self._prune(now)
+                self._timestamps.append(now)
+                payload = {"timestamps": self._timestamps}
+            except Exception as exc:
+                logger.warning("weixin: outbound counter record() failed (fail-open): %s", exc)
+                return False
+        # Persist off the event loop; a disk failure only loses durability, not the in-memory count.
+        try:
+            await asyncio.to_thread(atomic_json_write, self._path, payload)
+            return True
+        except Exception as exc:
+            logger.warning("weixin: outbound counter persist failed (non-fatal): %s", exc)
+            return False
+
 def save_weixin_account(hermes_home: str, *, account_id: str, token: str, base_url: str, user_id: str = "") -> None:
     path = _account_dir(hermes_home) / f"{account_id}.json"
     saved_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -728,6 +790,25 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # trigger a separate agent run. 3s / 5s (after a ~2048-char split chunk) suit iLink's cadence.
         self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 3.0)
         self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 5.0)
+        # Outbound pacing + 24h quota budget ("simple" local patch, two parts):
+        #  1) ``_sent_since_user_msg`` counts chunks this turn; on the 9th it emits an interact
+        #     prompt (slot 10) and waits for the user, whose reply resets the iLink passive-reply
+        #     window. 2) ``_outbound_counter`` is the single account of EVERY real send (final
+        #     reply, interim/status, heartbeat, media) in a rolling 24h window, persisted to disk
+        #     so a gateway restart doesn't forget the quota. Both are fail-open: a counter error
+        #     must NEVER block a send.
+        self._outbound_interact_every = self._coerce_int_setting("outbound_interact_every", 9)
+        self._sent_since_user_msg = 0
+        self._waiting_interact_reply = False
+        self._interact_resume_event = asyncio.Event()
+        self._interact_reply_timeout = self._coerce_num_setting("outbound_interact_timeout", 300.0)
+        self._interact_prompt_template = str(_extra_or_secret(
+            extra, "outbound_interact_prompt",
+            "Sent {sent} messages here; reply anything and I'll continue."))
+        self._outbound_daily_quota = self._coerce_int_setting("rate_limit_daily_quota", 10)
+        self._outbound_window_seconds = max(60.0, self._coerce_num_setting("rate_limit_window_seconds", 86400.0))
+        self._outbound_counter = _OutboundWindowCounter(
+            hermes_home, self._account_id, quota=self._outbound_daily_quota, window_seconds=self._outbound_window_seconds)
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:
             self._token = str(persisted.get("token") or "").strip()
@@ -742,6 +823,24 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         except (TypeError, ValueError):
             return float(default)
         return parsed if math.isfinite(parsed) and parsed >= 0 else float(default)
+
+    def _coerce_num_setting(self, key: str, default: float) -> float:
+        """Numeric tunable from ``config.extra[key]`` / env ``WEIXIN_<KEY>``; unparseable → default.
+
+        Same tolerance contract as ``_coerce_float_extra``: a blank/garbage value must degrade to
+        the default rather than raise out of ``__init__`` and take the whole adapter down.
+        """
+        import math
+        raw = _extra_or_secret(self.config.extra or {}, key, str(default))
+        try:
+            parsed = float(raw) if raw not in (None, "") else float(default)
+        except (TypeError, ValueError):
+            return float(default)
+        return parsed if math.isfinite(parsed) and parsed >= 0 else float(default)
+
+    def _coerce_int_setting(self, key: str, default: int) -> int:
+        """Integer tunable (same source as ``_coerce_num_setting``), clamped to >= 1."""
+        return max(1, int(self._coerce_num_setting(key, float(default))))
 
     @staticmethod
     def _coerce_list(value: Any) -> List[str]:
@@ -903,6 +1002,19 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 await self._collect_media(candidate, media_paths, media_types)
         if not text and not media_paths:
             return
+        # While the interact prompt is outstanding, the next inbound message is either the user's
+        # "continue" acknowledgement (short reply -> resume the parked send, do NOT route to the
+        # agent: the prompt never entered the LLM context) or a genuine new question.
+        if self._waiting_interact_reply:
+            self._waiting_interact_reply = False
+            self._sent_since_user_msg = 0
+            self._interact_resume_event.set()
+            is_full_question = (bool(media_paths) or "?" in text or "？" in text or len(text) > 15)
+            if not is_full_question:
+                logger.info("[%s] interact reply treated as resume signal from %s", self.name, _safe_id(sender_id))
+                return
+        else:
+            self._sent_since_user_msg = 0
         source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
         event = MessageEvent(
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
@@ -961,6 +1073,36 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     def _rate_limit_cooldown_remaining(self) -> float:
         return max(0.0, self._rate_limit_circuit_until - time.monotonic())
+
+    # ── 24h outbound quota: priority budget ─────────────────────────────────────────
+    # iLink enforces an undocumented 24h send quota (community-reported ~10 messages). Once it is
+    # spent, every send fails and the circuit above parks outbound for minutes — including the
+    # turn's final reply. So every real send is recorded, and the droppable ones are shed first:
+    #   "final"     — the user-facing turn reply (send() without _interim_send)
+    #   "status"    — interim/progress text (send() with _interim_send)
+    #   "heartbeat" — long-running "Working N min" pings (gateway marks _heartbeat)
+    #   "media"     — image/voice/document/video sends
+    # A floor is the number of slots that must REMAIN for that priority to still send.
+    _OUTBOUND_PRIORITY_FLOOR = {"final": 0, "status": 1, "heartbeat": 2, "media": 1}
+
+    @staticmethod
+    def _outbound_priority_of(metadata: Optional[Dict[str, Any]]) -> str:
+        meta = metadata or {}
+        if meta.get("_heartbeat"):
+            return "heartbeat"
+        if meta.get("_interim_send"):
+            return "status"
+        return "final"
+
+    def _outbound_budget_ok(self, priority: str) -> bool:
+        """True when this priority may still send. Fail-open: a counter error allows the send."""
+        floor = self._OUTBOUND_PRIORITY_FLOOR.get(priority, 0)
+        return self._outbound_counter.remaining() > floor
+
+    async def _record_outbound(self, label: str) -> None:
+        """Best-effort account of one real send; never raises."""
+        logger.debug("[%s] outbound quota: recording %s send", self.name, label)
+        await self._outbound_counter.record()
 
     def _record_rate_limit_event(self) -> bool:
         now = time.monotonic()
@@ -1034,6 +1176,14 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
+        priority = self._outbound_priority_of(metadata)
+        # Droppable sends (heartbeat/status) are skipped when the 24h quota is nearly spent, so the
+        # final reply keeps its slot. This is a successful no-op for the caller — NOT a failure:
+        # the heartbeat caller treats a non-success as "nothing was sent, try again next tick" and
+        # would otherwise re-send forever. success=True with message_id=None signals "nothing sent".
+        if priority in ("heartbeat", "status") and not self._outbound_budget_ok(priority):
+            logger.debug("[%s] outbound quota nearly spent; skipping %s send to %s", self.name, priority, _safe_id(chat_id))
+            return SendResult(success=True)
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
@@ -1053,8 +1203,21 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     logger.warning("[%s] %s delivery failed for %s: %s", self.name, label, path, exc)
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
+                # BEFORE sending, check whether the turn has already put 9 chunks on the wire. If so,
+                # emit the interact prompt (it takes slot 10) and park until the user replies: their
+                # reply reopens iLink's passive-reply window, and pushing an 11th business message
+                # would be rejected outright. The prompt itself is not counted here (it is slot 10).
+                if self._sent_since_user_msg >= self._outbound_interact_every:
+                    await self._send_interact_prompt(chat_id=chat_id, context_token=context_token)
+                    self._waiting_interact_reply = True
+                    await self._wait_for_interact_resume()
+                    # Restart the batch count: this round has already been acknowledged (or timed
+                    # out), so the remaining chunks must not each re-emit another prompt.
+                    self._sent_since_user_msg = 0
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+                await self._record_outbound("text")
+                self._sent_since_user_msg += 1
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
@@ -1062,6 +1225,34 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
+
+    async def _send_interact_prompt(self, chat_id: str, context_token: Optional[str]) -> None:
+        """Emit the "already sent N, reply anything to continue" prompt (fills slot 10, not counted).
+
+        The text is a template so a deployment can localize it via
+        ``extra.outbound_interact_prompt``; ``{sent}`` is the slot this prompt occupies.
+        """
+        try:
+            prompt = self._interact_prompt_template.format(sent=self._sent_since_user_msg + 1)
+        except (KeyError, IndexError, ValueError):
+            prompt = f"Sent {self._sent_since_user_msg + 1} messages here; reply anything and I'll continue."
+        client_id = f"hermes-weixin-{uuid.uuid4().hex}"
+        await self._send_text_chunk(chat_id=chat_id, chunk=prompt, context_token=context_token, client_id=client_id)
+
+    async def _wait_for_interact_resume(self) -> None:
+        """Park until the user acknowledges the interact prompt, or the timeout releases the turn.
+
+        Without the timeout an unresponsive user would hold this turn (and its delivery slot) open
+        forever; on timeout the remaining chunks are simply sent, and the next inbound message
+        resets the counter as usual.
+        """
+        try:
+            await asyncio.wait_for(self._interact_resume_event.wait(), timeout=self._interact_reply_timeout)
+        except asyncio.TimeoutError:
+            logger.info("[%s] interact prompt not acknowledged within %.0fs; resuming delivery",
+                        self.name, self._interact_reply_timeout)
+        finally:
+            self._interact_resume_event.clear()
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —
@@ -1107,8 +1298,16 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _send_file_result(self, chat_id: str, path: str, caption: str, label: str, **kwargs: Any) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
+        # Media is droppable under the 24h quota: refuse (not "fail") when only the final-reply slot
+        # is left, so a burst of attachments can't eat the reply's budget. Callers treat a refusal
+        # as a skip.
+        if not self._outbound_budget_ok("media"):
+            logger.info("[%s] outbound quota nearly spent; refusing %s send to %s", self.name, label, _safe_id(chat_id))
+            return SendResult(success=False, error="outbound quota exhausted (media skipped)")
         try:
-            return SendResult(success=True, message_id=await self._send_file(chat_id, path, caption, **kwargs))
+            result = SendResult(success=True, message_id=await self._send_file(chat_id, path, caption, **kwargs))
+            await self._record_outbound("media")
+            return result
         except Exception as exc:
             logger.error("[%s] %s failed to=%s: %s", self.name, label, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))

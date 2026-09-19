@@ -516,7 +516,9 @@ export function TreeGroup({
                     side={railSide}
                     vertical
                   >
-                    <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
+                    <PaneTabLabel className="normal-case tracking-normal" title={paneFor(paneId)?.title ?? paneId}>
+                      {tabLabel(paneId)}
+                    </PaneTabLabel>
                   </PaneTab>
                 )
               })}
@@ -690,7 +692,9 @@ export function TreeGroup({
                           </TabKeyHint>
                         </span>
                       ) : null}
-                      <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
+                      <PaneTabLabel className="normal-case tracking-normal" title={title}>
+                        {tabLabel(paneId)}
+                      </PaneTabLabel>
                     </PaneTab>
                   )
 

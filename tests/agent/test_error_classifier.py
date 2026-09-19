@@ -494,6 +494,26 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
 
+    def test_503_auth_unavailable_rotates_instead_of_overloaded(self):
+        """CLIProxy / xAI credential-pool 503 must not look like overload.
+
+        ``auth_unavailable: no auth available`` arrives as HTTP 503. Treating
+        it as generic overload lets every ``delegate_task`` child burn its
+        retry budget on the same empty pool, so a whole batch dies at
+        dispatch. Classify it as auth (rotate/fallback, not retryable) so
+        the batch fails fast instead of retrying the identical call.
+        """
+        e = MockAPIError(
+            "HTTP 503: auth_unavailable: no auth available "
+            "(providers=claude,openai-codex,gemini,codex)",
+            status_code=503,
+        )
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
 
     def test_408_request_timeout_is_retryable_timeout(self):
         """HTTP 408 Request Timeout is a transient timing failure the server

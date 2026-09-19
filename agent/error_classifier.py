@@ -350,6 +350,14 @@ _AUTH_PATTERNS = (
     "forbidden", "invalid token", "token expired", "token revoked", "access denied",
 )
 
+# CLIProxy / xAI credential-pool exhaustion arrives as HTTP 503
+# ("auth_unavailable: no auth available (providers=...)"). It reads like
+# overload but retrying the same empty pool cannot succeed, so classify as
+# auth (rotate/fallback) before the generic 503 overloaded path. Otherwise
+# every delegate_task child burns its retry budget and the batch dies at
+# dispatch.
+_AUTH_UNAVAILABLE_PATTERNS = ("auth_unavailable", "no auth available")
+
 # Empty-response advisories (OpenRouter / nano-gpt). Checked before overflow
 # because the text often mentions "max_tokens" (caused compression spirals).
 _EMPTY_PROVIDER_RESPONSE_PATTERNS = (
@@ -1022,6 +1030,13 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR
 
 
+def _status_503(c: _Ctx) -> Verdict:
+    # Credential-pool exhaustion (CLIProxy/xAI "auth_unavailable: no auth available")
+    # before generic overload/overflow: retrying the same empty pool cannot succeed.
+    if any(p in c.msg for p in _AUTH_UNAVAILABLE_PATTERNS):
+        return _V_AUTH_ROTATE
+    return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED
+
 # 401 not retryable on its own: rotation/refresh run before the retryability
 # check, then the client-error abort path (fallback first) is correct. 408 is
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
@@ -1031,7 +1046,7 @@ _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
-    503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
+    503: _status_503,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
 }
 

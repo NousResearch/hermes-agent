@@ -7,7 +7,8 @@ order the runtime guard (``check_all_command_guards``) applies them:
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
 bypassable, fires before yolo/off), 3. sudo-stdin guard (unconditional), 4. user ``approvals.deny``
 rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
-``command_allowlist``, 7. dangerous-pattern detection (would prompt).
+``command_allowlist``, 7. tirith scan + dangerous-pattern detection, minus already-approved keys
+(would prompt).
 """
 
 from __future__ import annotations
@@ -103,14 +104,42 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     if approval_floors._command_matches_permanent_allowlist(command):
         return result("allow", detail="matches command_allowlist in config.yaml (permanently approved)")
 
-    # 7. Dangerous-pattern detection → would prompt.
+    # 7. Tirith scan + dangerous-pattern detection. The runtime accumulates BOTH into one
+    #    warning list, drops any warning whose key is already approved, and prompts only if
+    #    something survives (check_all_command_guards). Mirroring that shape — rather than
+    #    checking the pattern key alone — keeps the dry-run honest in both directions: a
+    #    tirith-only finding still predicts a prompt, and an approved key still predicts allow.
+    session_key = approval_context.get_current_session_key()
+    warnings: list[tuple[str, str]] = []
+
+    tirith_result = approval._tirith_scan(command)
+    if tirith_result["action"] in {"block", "warn"}:
+        findings = tirith_result.get("findings") or []
+        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+        tirith_key = f"tirith:{rule_id}"
+        if not approval.is_approved(session_key, tirith_key):
+            warnings.append((tirith_key, approval._format_tirith_description(tirith_result)))
+
     is_dangerous, pattern_key, description = approval_detection.detect_dangerous_command(command)
+    approved_key = None
     if is_dangerous:
+        if approval.is_approved(session_key, pattern_key):
+            approved_key = pattern_key
+        else:
+            warnings.append((pattern_key, description))
+
+    if warnings:
         return result(
-            "ask-approval", rule=description,
-            detail="matches a dangerous-command pattern; the runtime would "
-                   f"raise an interactive approval prompt (pattern key: "
-                   f"{pattern_key!r})",
+            "ask-approval", rule="; ".join(desc for _, desc in warnings),
+            detail="matches a dangerous-command pattern or security-scan finding; the runtime "
+                   "would raise an interactive approval prompt (pattern keys: "
+                   f"{[key for key, _ in warnings]})",
+        )
+    if approved_key is not None:
+        return result(
+            "allow",
+            detail=f"dangerous-pattern class key {approved_key!r} (or a legacy alias) is "
+                   "already approved for this session or in command_allowlist",
         )
 
     return result("allow", detail="no guard matched; would run without a prompt")

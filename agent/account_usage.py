@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
 
+import hermes_time
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -75,7 +76,10 @@ def _parse_dt(value: Any) -> Optional[datetime]:
 def _format_reset(dt: Optional[datetime]) -> str:
     if not dt:
         return "unknown"
-    stamp = dt.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    try:
+        stamp = dt.astimezone(hermes_time.get_timezone()).strftime("%Y-%m-%d %H:%M %Z")
+    except Exception:
+        stamp = dt.astimezone().strftime("%Y-%m-%d %H:%M %Z")
     total_seconds = int((dt - _utc_now()).total_seconds())
     if total_seconds <= 0:
         return f"now ({stamp})"
@@ -384,6 +388,17 @@ def _plural(count: int) -> str:
     return "s" if count != 1 else ""
 
 
+_CODEX_WEEKLY_WINDOW_SECONDS = 6 * 86400
+
+
+def _codex_window_label(key: str, window: dict) -> str:
+    """Use the published duration when it identifies a weekly Codex window."""
+    duration = window.get("limit_window_seconds")
+    if _is_num(duration) and duration >= _CODEX_WEEKLY_WINDOW_SECONDS:
+        return "Weekly"
+    return "Session" if key == "primary_window" else "Weekly"
+
+
 def _fetch_codex_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
@@ -401,8 +416,15 @@ def _fetch_codex_account_usage(
         payload = _get_json(
             _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
         )
-    windows = _usage_windows(payload.get("rate_limit") or {}, (("primary_window", "Session"), ("secondary_window", "Weekly")),
-                             "used_percent", "reset_at")
+    rate_limit = payload.get("rate_limit") or {}
+    windows = _usage_windows(
+        rate_limit,
+        tuple(
+            (key, _codex_window_label(key, rate_limit.get(key) or {}))
+            for key in ("primary_window", "secondary_window")
+        ),
+        "used_percent", "reset_at",
+    )
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:

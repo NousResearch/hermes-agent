@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from agent.account_usage import (
     AccountUsageSnapshot,
@@ -116,6 +117,39 @@ def test_render_account_usage_lines_includes_reset_and_provider():
     assert "openai-codex (Pro)" in lines[1]
     assert "Session: 75% remaining (25% used)" in lines[2]
     assert "Credits balance: $9.99" in lines[3]
+
+
+def test_format_reset_uses_configured_timezone_and_falls_back_to_host_timezone(monkeypatch):
+    from agent.account_usage import _format_reset
+
+    reset_at = datetime(2030, 1, 2, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr("agent.account_usage.hermes_time.get_timezone", lambda: ZoneInfo("Asia/Tokyo"))
+    assert "2030-01-02 21:00 JST" in _format_reset(reset_at)
+
+    def unavailable_timezone():
+        raise RuntimeError("configuration unavailable")
+
+    monkeypatch.setattr("agent.account_usage.hermes_time.get_timezone", unavailable_timezone)
+    assert reset_at.astimezone().strftime("%Y-%m-%d %H:%M %Z") in _format_reset(reset_at)
+
+
+def test_fetch_account_usage_codex_labels_weekly_only_primary_window(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {"base_url": "https://chatgpt.com/backend-api/codex", "api_key": "access-token"},
+    )
+    monkeypatch.setattr("agent.account_usage._read_codex_tokens", lambda: {"tokens": {}})
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client({
+            "rate_limit": {"primary_window": {"used_percent": 40, "limit_window_seconds": 6 * 86400}},
+        }),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert [window.label for window in snapshot.windows] == ["Weekly"]
 
 
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):

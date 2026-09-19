@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
+import { resetServerRequestsForTests } from '@/store/server-requests'
 import { onScrollToBottomRequest } from '@/store/thread-scroll'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
@@ -58,6 +59,7 @@ function seedHydratedMessages(messages: ChatMessage[]) {
 describe('clarify request stream hydration', () => {
   beforeEach(() => {
     clearClarifyRequest()
+    resetServerRequestsForTests()
     scrollToBottom.mockClear()
     stopScrollListener = onScrollToBottomRequest(scrollToBottom, SID)
   })
@@ -65,6 +67,7 @@ describe('clarify request stream hydration', () => {
   afterEach(() => {
     cleanup()
     clearClarifyRequest()
+    resetServerRequestsForTests()
     stopScrollListener?.()
     stopScrollListener = null
     vi.restoreAllMocks()
@@ -277,6 +280,24 @@ describe('clarify request stream hydration', () => {
     expect(clarifyParts()).toHaveLength(1)
     expect(clarifyParts()[0]).toHaveProperty('result')
     expect(stream.state().needsInput).toBe(false)
+  })
+
+  it.each(['message.complete', 'error'] as const)('keeps a live clarify card through a spurious %s', type => {
+    mountStream()
+    clarifyRequest({ choices: ['a', 'b'], question: 'Pick', request_id: 'req-live' })
+
+    act(() =>
+      stream.handleEvent({
+        payload: type === 'error' ? { message: 'spurious error' } : { text: '' },
+        session_id: SID,
+        type
+      })
+    )
+
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-live')
+
+    clarifyExpire('req-live')
+    expect($clarifyRequests.get()[SID]).toBeUndefined()
   })
 
   it('merges a BATCH tool.start row with its clarify.request (no top-level question)', () => {

@@ -1581,13 +1581,23 @@ class GatewayTurnMixin:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""
 
-    async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
-        """agent:end hook, process-watcher scheduling, and watch-notification drain."""
+    async def _hmwa_emit_abandoned_agent_end(self, hook_ctx):
+        """The agent:end that pairs an agent:start whose turn never reached the normal end, with
+        the documented keys present but empty and ``failed: True``."""
+        await self.hooks.emit("agent:end", {
+            **hook_ctx, "response": "", "model": "", "provider": "", "failed": True,
+        })
+
+    async def _hmwa_emit_agent_end(self, hook_ctx, agent_result, response):
+        """Emit the terminal event paired with agent:start; callers record the attempt before
+        this call, since hook handlers are awaited and can be cancelled."""
         await self.hooks.emit("agent:end", {
             **hook_ctx, "response": (response or "")[:500], "model": agent_result.get("model", ""),
             "provider": agent_result.get("provider", ""),
         })
 
+    async def _hmwa_post_turn_side_effects(self):
+        """Process-watcher scheduling and watch-notification drain after a turn."""
         # Pending process watchers (check_interval on background processes)
         try:
             from tools.process_registry import process_registry
@@ -2086,6 +2096,11 @@ class GatewayTurnMixin:
             return prepared
         history, message_text = prepared.history, prepared.message_text
 
+        # agent:end pairs agent:start: an attempted start must be closed exactly once. Both flags
+        # are set BEFORE their emit — hook handlers are awaited, so cancellation can land inside.
+        _hook_ctx: Optional[Dict[str, Any]] = None
+        _agent_end_attempted = False
+
         try:
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
@@ -2096,6 +2111,7 @@ class GatewayTurnMixin:
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }
+            _hook_ctx = hook_ctx
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Capture the launch session id so post-run compression publication is identity-guarded
@@ -2153,7 +2169,9 @@ class GatewayTurnMixin:
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
-            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
+            _agent_end_attempted = True
+            await self._hmwa_emit_agent_end(hook_ctx, agent_result, response)
+            await self._hmwa_post_turn_side_effects()
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
@@ -2180,6 +2198,10 @@ class GatewayTurnMixin:
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+            # Close a start whose turn never reached the paired terminal event (raise,
+            # cancellation, superseded generation, heartbeat owner change).
+            if _hook_ctx is not None and not _agent_end_attempted:
+                await self._hmwa_emit_abandoned_agent_end(_hook_ctx)
 
     def _profile_scope_for_source(self, source: SessionSource):
         """``_profile_runtime_scope`` for ``source``'s profile when a secret scope is required.

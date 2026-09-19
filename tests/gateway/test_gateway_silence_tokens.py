@@ -1,5 +1,6 @@
-"""Gateway intentional-silence token behavior."""
+"""Gateway intentional-silence token behavior and agent:start/agent:end pairing."""
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -43,6 +44,7 @@ def _runner(monkeypatch, tmp_path):
     runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
+    runner._clear_session_env = MagicMock()
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
     runner._session_db = MagicMock()
     runner._recover_telegram_topic_thread_id = lambda _source: None
@@ -311,3 +313,121 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
+
+
+# --- agent:start / agent:end pairing (regression for #113057) ---
+# Every attempted agent:start must be closed by exactly one agent:end, including turns that never
+# reach the normal end (raise, cancellation, superseded generation, heartbeat owner change).
+
+_SESSION_KEY = "agent:main:telegram:group:-1001:12345"
+_DONE = {"final_response": "done", "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+         "api_calls": 1, "failed": False,
+         "messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "done"}]}
+
+
+def _end_contexts(runner):
+    return [call.args[1] for call in runner.hooks.emit.await_args_list if call.args[0] == "agent:end"]
+
+
+def _cancel_on(event_type):
+    """Handlers are awaited, so a cancellation can land inside an ``agent:*`` emit."""
+    def _emit(emitted_type, _context):
+        if emitted_type == event_type:
+            raise asyncio.CancelledError()
+    return _emit
+
+
+def _assert_closed_pair(runner):
+    starts = [call.args[1] for call in runner.hooks.emit.await_args_list if call.args[0] == "agent:start"]
+    ends = _end_contexts(runner)
+    assert len(starts) == 1
+    assert len(ends) == 1
+    assert ends[0]["session_id"] == starts[0]["session_id"]
+    assert ends[0]["failed"] is True
+    assert (ends[0]["response"], ends[0]["model"], ends[0]["provider"]) == ("", "", "")
+
+
+@pytest.mark.asyncio
+async def test_raising_turn_closes_its_agent_start(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(side_effect=RuntimeError("backend exploded"))
+    await runner._handle_message_with_agent(_event(), _source(), _SESSION_KEY, 1)
+    _assert_closed_pair(runner)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_closes_its_agent_start(monkeypatch, tmp_path):
+    """Cancelling inside the abandoned emit must not skip the session-context restore."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(side_effect=asyncio.CancelledError())
+    runner.hooks.emit = AsyncMock(side_effect=_cancel_on("agent:end"))
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._handle_message_with_agent(_event(), _source(), _SESSION_KEY, 1)
+    _assert_closed_pair(runner)
+    runner._clear_session_env.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_abandoned_run_closes_its_agent_start(monkeypatch, tmp_path):
+    """A discarded turn still announced a start, so it must still end (both abandon paths)."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_DONE)
+    runner._is_session_run_current = MagicMock(return_value=False)
+    runner._hmwa_discard_stale_result = MagicMock()
+
+    await runner._handle_message_with_agent(_event(), _source(), _SESSION_KEY, 1)
+    _assert_closed_pair(runner)
+    runner._hmwa_discard_stale_result.assert_called_once()
+
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_DONE)
+    monkeypatch.setattr(
+        "gateway.run_heartbeat_acceptance.heartbeat_owner_is_current", lambda *_a, **_kw: False
+    )
+
+    await runner._handle_message_with_agent(_event(), _source(), _SESSION_KEY, 1)
+    _assert_closed_pair(runner)
+    runner._run_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_post_turn_side_effects_do_not_add_a_second_end(monkeypatch, tmp_path):
+    """The watcher drain runs after agent:end: cancelling it must not add a second end."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_DONE)
+    runner._drain_watch_notifications = AsyncMock(side_effect=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._handle_message_with_agent(_event(), _source(), _SESSION_KEY, 1)
+    ends = _end_contexts(runner)
+    assert len(ends) == 1
+    assert ends[0]["response"] == "done"
+    assert "failed" not in ends[0]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_an_emit_keeps_exactly_one_pair(monkeypatch, tmp_path):
+    """Hook handlers are awaited, so a cancellation can land inside either emit: it must leave one
+    terminal event for the start, never a duplicate one."""
+    # Cancel inside the agent:start emit: the attempted start is still closed, once.
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_DONE)
+    runner.hooks.emit = AsyncMock(side_effect=_cancel_on("agent:start"))
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._handle_message_with_agent(_event(), _source(), _SESSION_KEY, 1)
+    _assert_closed_pair(runner)
+
+    # Cancel inside the agent:end emit: no second, failed end for the turn that was ending.
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_DONE)
+    runner._drain_watch_notifications = AsyncMock()
+    runner.hooks.emit = AsyncMock(side_effect=_cancel_on("agent:end"))
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._handle_message_with_agent(_event(), _source(), _SESSION_KEY, 1)
+    ends = _end_contexts(runner)
+    assert len(ends) == 1
+    assert "failed" not in ends[0]
+    runner._drain_watch_notifications.assert_not_awaited()

@@ -25,7 +25,7 @@ scenarios:
     observed: |
       The TUI/gateway discovery regression suite passed all 3 tests.
     verdict: pass
-code_diff_hash: 88c134b569e2bfaaa2830327a8e9f1d50e549becf9ec828278e4b995d62b72e0
+code_diff_hash: 31aec9c8f7aa2a455aaf24d3ee445ad4df46ab008701f84216aa0aab50d5c64c
 ---
 
 # Simulation trace — gateway-plugin-import-deadlock
@@ -46,11 +46,11 @@ Verdict legend:
 ## Captured runs (ftask --capture audit trail; do NOT hand-edit — re-run --capture to refresh)
 
 - scenario_id: 1
-  at: 2026-09-19T05:18:20.281Z
+  at: 2026-09-19T05:23:57.225Z
   command: "zsh -lc hermes gateway status && tail -200 ~/.hermes/logs/gateway.log | rg 'Gateway running with 2 platform|Connected in websocket mode' | tail -10"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 2450
+  duration_ms: 2946
   stdout_tail: |
     Launchd plist: /Users/kesun/Library/LaunchAgents/ai.hermes.gateway.plist
     ✓ Service definition matches the current Hermes install
@@ -68,38 +68,38 @@ Verdict legend:
     (empty)
 
 - scenario_id: 2
-  at: 2026-09-19T05:18:23.542Z
+  at: 2026-09-19T05:23:58.485Z
   command: "zsh -lc ./scripts/run_tests.sh tests/hermes_cli/test_mcp_startup.py"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 1595
+  duration_ms: 1189
   stdout_tail: |
     ▶ running per-file parallel test suite via run_tests_parallel.py
       (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
     ▶ pre-compiling bytecode cache
     ▶ launching test runner
     Discovered 1 test files (~11 tests) under ['tests/hermes_cli/test_mcp_startup.py']; running with -j 20
-    [100.0% |    11/~11 | ✓17 | ✗ 0] ✓ tests/hermes_cli/test_mcp_startup.py (17✓, 0.5s)
+    [100.0% |    11/~11 | ✓17 | ✗ 0] ✓ tests/hermes_cli/test_mcp_startup.py (17✓, 0.4s)
 
-    === Summary: 1 files, 17 tests passed, 0 failed (100% complete) in 0.5s (20 workers) ===
+    === Summary: 1 files, 17 tests passed, 0 failed (100% complete) in 0.4s (20 workers) ===
       Durations cached to test_durations.json (1 files)
 
     === Per-file subprocess time distribution ===
       Files:   1
-      Total subprocess CPU-wall: 0.5s  (runner wall: 0.5s, parallelism: 20x)
-      P50: 0.52s  P90: 0.52s  P95: 0.52s  P99: 0.52s  Max: 0.52s
+      Total subprocess CPU-wall: 0.4s  (runner wall: 0.4s, parallelism: 20x)
+      P50: 0.44s  P90: 0.44s  P95: 0.44s  P99: 0.44s  Max: 0.44s
       <1s: 1 files (100%)  <2s: 1 files (100%)
       Top 10 slowest:
-          0.52s  tests/hermes_cli/test_mcp_startup.py
+          0.44s  tests/hermes_cli/test_mcp_startup.py
   stderr_tail: |
     (empty)
 
 - scenario_id: 3
-  at: 2026-09-19T05:18:25.907Z
+  at: 2026-09-19T05:23:59.213Z
   command: "zsh -lc ./scripts/run_tests.sh tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 669
+  duration_ms: 657
   stdout_tail: |
     ▶ running per-file parallel test suite via run_tests_parallel.py
       (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
@@ -114,9 +114,10 @@ Verdict legend:
     === Per-file subprocess time distribution ===
       Files:   1
       Total subprocess CPU-wall: 0.3s  (runner wall: 0.3s, parallelism: 20x)
-      P50: 0.34s  P90: 0.34s  P95: 0.34s  P99: 0.34s  Max: 0.34s
+      P50: 0.33s  P90: 0.33s  P95: 0.33s  P99: 0.33s  Max: 0.33s
       <1s: 1 files (100%)  <2s: 1 files (100%)
       Top 10 slowest:
-          0.34s  tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py
+          0.33s  tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py
   stderr_tail: |
     (empty)
+

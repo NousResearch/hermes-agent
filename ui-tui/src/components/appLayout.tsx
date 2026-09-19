@@ -9,6 +9,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
+import { syncPluginCardSession } from '../app/pluginCardStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
@@ -34,6 +35,7 @@ import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
 import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
+import { PluginCardHost } from './pluginCard.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
@@ -538,6 +540,7 @@ export const AppLayout = memo(function AppLayout({
   const cursorSnapshotRef = useRef<InputCursorSnapshot | null>(null)
   useEffect(() => {
     cursorSnapshotRef.current = null
+    syncPluginCardSession(ui.sid)
   }, [ui.sid])
 
   // Inline mode skips AlternateScreen so the host terminal's native
@@ -599,6 +602,7 @@ export const AppLayout = memo(function AppLayout({
         )}
 
         {!overlay.agents && <PetPane />}
+        {ui.sid ? <PluginCardHost sessionId={ui.sid} theme={ui.theme} /> : null}
       </Box>
 
       <ActiveWidgetSlot />

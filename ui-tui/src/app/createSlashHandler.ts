@@ -6,6 +6,7 @@ import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
+import { activatePluginCard } from './pluginCardStore.js'
 import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
@@ -107,6 +108,16 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
       if (d.type === 'exec' || d.type === 'plugin') {
         return sys(d.output || '(no output)')
+      }
+
+      if (d.type === 'plugin_card') {
+        if (sid) {
+          activatePluginCard(sid, d.card)
+        } else {
+          sys(`${d.card.title}\n\n${d.card.body}`)
+        }
+
+        return
       }
 
       if (d.type === 'alias') {

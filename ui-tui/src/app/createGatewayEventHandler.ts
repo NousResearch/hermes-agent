@@ -31,6 +31,7 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
+import { publishPluginCard } from './pluginCardStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
@@ -795,6 +796,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     switch (ev.type) {
       case 'gateway.ready':
         handleReady(ev.payload?.skin)
+        void rpc('client.capabilities', { plugin_cards: true, server_requests: true })
 
         return
 
@@ -962,6 +964,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // Key-matched clear only — a stale/late clear must not wipe a newer
         // notice (turnController guards the key match).
         turnController.clearNotice(ev.payload?.key)
+
+        return
+
+      case 'plugin.card.show':
+        if (sid && ev.payload) {
+          publishPluginCard(sid, ev.payload)
+        }
 
         return
       case 'billing.step_up.verification': {

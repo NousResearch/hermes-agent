@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { getPluginCardState, resetPluginCards } from '../app/pluginCardStore.js'
 import { resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
@@ -78,6 +79,7 @@ const serverRequest = (method: string, params: Record<string, unknown>, id = `sr
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     resetOverlayState()
+    resetPluginCards()
     resetUiState()
     resetTurnState()
     resetServerRequestsForTests()
@@ -127,6 +129,26 @@ describe('createGatewayEventHandler', () => {
     } as any)
     expect(getUiState().storedSid).toBe('durable-2')
     expect(getUiState().info?.stored_session_id).toBe('durable-2')
+  })
+
+  it('queues an ambient plugin card without opening it', () => {
+    patchUiState({ sid: 'focused' })
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        actions: [],
+        body: 'Checks passed.',
+        id: 'ready',
+        plugin_id: 'build-tools',
+        plugin_name: 'Build Tools',
+        title: 'Build ready'
+      },
+      type: 'plugin.card.show'
+    } as any)
+
+    expect(getPluginCardState()).toMatchObject({ activeKey: null, sessionId: 'focused' })
+    expect(getPluginCardState().cards).toHaveLength(1)
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import type { OverlayState } from './interfaces.js'
+import { $pluginCards } from './pluginCardStore.js'
 import { $uiState } from './uiStore.js'
 
 const buildOverlayState = (): OverlayState => ({
@@ -28,7 +29,7 @@ const buildOverlayState = (): OverlayState => ({
 export const $overlayState = atom<OverlayState>(buildOverlayState())
 
 export const $isBlocked = computed(
-  $overlayState,
+  [$overlayState, $pluginCards],
   ({
     agents,
     approval,
@@ -47,8 +48,9 @@ export const $isBlocked = computed(
     sudo,
     vaultUnlock,
     widget
-  }) =>
+  }, pluginCards) =>
     Boolean(
+      pluginCards.activeKey ||
       agents ||
       approval ||
       billing ||

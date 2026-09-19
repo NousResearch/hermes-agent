@@ -11,6 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
+from .plugin_cards import PluginCardWire
 from .registry import method
 
 
@@ -247,9 +248,32 @@ class DispatchType(WireEnum):
     exec = "exec"
     alias = "alias"
     plugin = "plugin"
+    plugin_card = "plugin_card"
     send = "send"
     skill = "skill"
     prefill = "prefill"
+
+
+class PluginCardActionParams(Params):
+    session_id: str
+    plugin_id: str
+    command: str
+    args: str = ""
+
+
+class PluginCardResultKind(WireEnum):
+    card = "card"
+    text = "text"
+
+
+class PluginCardActionResult(Result):
+    kind: PluginCardResultKind
+    text: str | None = None
+    card: PluginCardWire | None = None
+
+
+method("plugin.card.action", params=PluginCardActionParams, result=PluginCardActionResult,
+       doc="Run one card action through the exact command currently registered by its originating plugin.")
 
 
 class CommandDispatchParams(Params):
@@ -265,6 +289,7 @@ class CommandDispatchResult(Result):
 
     type: DispatchType
     output: str | None = None
+    card: PluginCardWire | None = None
     target: str | None = None
     message: str | None = None
     notice: str | None = None
@@ -290,6 +315,7 @@ class SlashExecResult(Result):
     output: str | None = None
     warning: str | None = None
     type: DispatchType | None = None
+    card: PluginCardWire | None = None
     target: str | None = None
     message: str | None = None
     notice: str | None = None

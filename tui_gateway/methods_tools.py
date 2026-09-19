@@ -520,15 +520,44 @@ def _dispatch_quick(rid, params, session, name, arg):
     return _ok(rid, {"type": "alias", "target": qc.get("target", "")}) if qc.get("type") == "alias" else None
 
 
-def _plugin_command_handler(name: str):
+def _plugin_command_entry(name: str):
     try:
-        return _tools_mod("hermes_cli.plugins").get_plugin_command_handler(name)
+        entry = (_tools_mod("hermes_cli.plugins").get_plugin_commands() or {}).get(name)
+        return entry if isinstance(entry, dict) else None
     except Exception:
         return None
 
 
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+def _run_plugin_command(handler, arg: str, *, sid: str = ""):
+    cards = _tools_mod("hermes_cli.plugin_cards")
+    publisher = (lambda payload: _publish_plugin_card(sid, payload)) if sid else None
+    scope = cards.card_publisher_scope(publisher) if publisher is not None else contextlib.nullcontext()
+    with scope:
+        return _tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg))
+
+
+def _plugin_card_result(result, entry: dict) -> dict:
+    cards = _tools_mod("hermes_cli.plugin_cards")
+    if isinstance(result, cards.PluginCard):
+        return {
+            "kind": "card",
+            "card": cards.attributed_card(str(entry.get("plugin_key") or ""), str(entry.get("plugin") or ""), result),
+            "text": result.text_fallback(),
+        }
+    return {"kind": "text", "text": str(result or "")}
+
+
+@_rpc("plugin.card.action", 5036, "plugin card action: ", live_session=True)
+def _(rid, params: dict, session) -> dict:
+    """Dispatch only the exact command owned by the card's originating plugin."""
+    with _session_profile_runtime_scope(session):
+        entry = _plugin_command_entry(_str_arg(params, "command"))
+        plugin_id = _str_arg(params, "plugin_id")
+        if entry is None or str(entry.get("plugin_key") or "") != plugin_id:
+            return _err(rid, 4046, "plugin card action is no longer available")
+        result = _run_plugin_command(
+            entry["handler"], str(params.get("args") or ""), sid=str(params.get("session_id") or ""))
+        return _ok(rid, _plugin_card_result(result, entry))
 
 
 @contextlib.contextmanager
@@ -567,9 +596,16 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 
 
 def _dispatch_plugin(rid, params, session, name, arg):
-    if handler := _plugin_command_handler(name):
+    if entry := _plugin_command_entry(name):
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
+            result = _run_plugin_command(entry["handler"], arg, sid=str(params.get("session_id") or ""))
+            if (normalized := _plugin_card_result(result, entry))["kind"] == "card":
+                if not _plugin_cards_supported(str(params.get("session_id") or "")):
+                    return _ok(rid, {"type": "plugin", "output": normalized["text"]})
+                return _ok(
+                    rid, {"type": "plugin_card", "card": normalized["card"], "output": normalized["text"]}
+                )
+            return _ok(rid, {"type": "plugin", "output": normalized["text"]})
     return None
 
 
@@ -903,9 +939,17 @@ def _(rid, params: dict) -> dict:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     if _is_profile_skill_command(session, base):
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
-    if plugin_handler := _plugin_command_handler(base) if base else None:
+    if plugin_entry := _plugin_command_entry(base) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
+            normalized = _plugin_card_result(
+                _run_plugin_command(plugin_entry["handler"], arg, sid=sid), plugin_entry)
+            if normalized["kind"] == "card":
+                if not _plugin_cards_supported(sid):
+                    return _ok(rid, {"output": normalized["text"]})
+                return _ok(
+                    rid, {"type": "plugin_card", "card": normalized["card"], "output": normalized["text"]}
+                )
+            return _ok(rid, {"output": normalized["text"] or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")

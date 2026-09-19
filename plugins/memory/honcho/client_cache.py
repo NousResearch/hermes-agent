@@ -20,7 +20,7 @@ from plugins.plugin_utils import SingletonSlot
 if TYPE_CHECKING:
     from honcho import Honcho
 
-    from plugins.memory.honcho.client import HonchoClientConfig
+    from .client import HonchoClientConfig
 
 logger = logging.getLogger("plugins.memory.honcho.client")
 
@@ -51,7 +51,7 @@ def _credential_fingerprint(config: HonchoClientConfig | None) -> str:
     """Stable identity for the credential a client will be built with, or ''. Must NOT change
     on in-place access-token rotation, but must change on account switch so
     'hermes honcho setup' yields a NEW cache identity."""
-    from plugins.memory.honcho.client import _host_block
+    from .client import _host_block
 
     try:
         if config is not None:
@@ -70,7 +70,7 @@ def _credential_fingerprint(config: HonchoClientConfig | None) -> str:
 
 def _ambient_host_block() -> tuple[dict | None, dict]:
     """(raw honcho.json, active host block) for the ambient profile; (None, {}) when absent."""
-    from plugins.memory.honcho.client import _host_block, resolve_active_host, resolve_config_path
+    from .client import _host_block, resolve_active_host, resolve_config_path
 
     path = resolve_config_path()
     if not path.exists():
@@ -84,7 +84,7 @@ def _client_cache_key(config: HonchoClientConfig | None) -> tuple:
     provenance paths, effective timeout, and the credential fingerprint (the access token itself
     is NOT in the key — in-place rotation must stay within one slot). Ambient callers
     (config=None) key on what from_global_config() would resolve."""
-    from plugins.memory.honcho.client import resolve_active_host, resolve_config_path
+    from .client import resolve_active_host, resolve_config_path
 
     if config is not None:
         return ("explicit", config.host, config.workspace_id, config.base_url or "", config.environment,
@@ -121,7 +121,7 @@ def _slot_for(key: tuple) -> SingletonSlot:
 
 def _config_yaml_timeout() -> float | None:
     """Read honcho.timeout / honcho.request_timeout via the cached config loader."""
-    from plugins.memory.honcho.client import _resolve_optional_float
+    from .client import _resolve_optional_float
 
     try:
         from hermes_cli.config import load_config_readonly
@@ -135,7 +135,7 @@ def _config_yaml_timeout() -> float | None:
 
 def _honcho_json_timeout() -> float | None:
     """Read timeout/requestTimeout from honcho.json (host block wins), memoized on mtime."""
-    from plugins.memory.honcho.client import _HostLookup, _resolve_optional_float, resolve_config_path
+    from .client import _HostLookup, _resolve_optional_float, resolve_config_path
 
     try:
         path = resolve_config_path()
@@ -160,7 +160,7 @@ def _honcho_json_timeout() -> float | None:
 def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
     """Mirror the build path's timeout resolution exactly: any skew makes the staleness check
     disagree with the built client forever and rebuild it on every call."""
-    from plugins.memory.honcho.client import _resolve_optional_float
+    from .client import _resolve_optional_float
 
     if config is not None:
         timeout = config.timeout
@@ -180,10 +180,10 @@ def _refresh_oauth(config: HonchoClientConfig | None, client: Honcho | None = No
     rebuilds. No-op for static keys or on failure (the first 401 triggers session.py's forced rotation).
     Refreshes against the config's BOUND path: the ambient resolver on daemon threads lands on the
     default profile."""
-    from plugins.memory.honcho.client import resolve_active_host, resolve_config_path
+    from .client import resolve_active_host, resolve_config_path
 
     try:
-        from plugins.memory.honcho import oauth
+        from . import oauth
         if config is not None:
             host, path = config.host, config.bound_config_path()
         else:

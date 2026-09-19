@@ -21,13 +21,13 @@ from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from agent.coding_context import INTERACTIVE_CODING_PLATFORMS as _LOCAL_PLATFORMS
 from agent.turn_author import a2a_key
-from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-from plugins.memory.honcho.client import _host_block, _HostLookup
-from plugins.memory.honcho.client import join_plugin_threads, spawn_context_thread
-from plugins.memory.honcho.dialectic import DialecticMixin
-from plugins.memory.honcho.session_peers import assistant_peer_id_for, sanitize_peer_id
-from plugins.memory.honcho.session_context import usable_honcho_summary
-from plugins.memory.honcho.tool_schemas import ALL_TOOL_SCHEMAS
+from .client import HonchoClientConfig, resolve_config_path
+from .client import _host_block, _HostLookup
+from .client import join_plugin_threads, spawn_context_thread
+from .dialectic import DialecticMixin
+from .session_peers import assistant_peer_id_for, sanitize_peer_id
+from .session_context import usable_honcho_summary
+from .tool_schemas import ALL_TOOL_SCHEMAS
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -187,7 +187,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def is_available(self) -> bool:
         """Check if Honcho is configured. No network calls."""
         try:
-            from plugins.memory.honcho.client import HonchoClientConfig
+            from .client import HonchoClientConfig
             return _cfg_usable(HonchoClientConfig.from_global_config())
         except Exception:
             return False
@@ -197,7 +197,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         Holds the token refresh locks so a rotation cannot land between the read and the write."""
         from pathlib import Path
         from utils import atomic_json_write
-        from plugins.memory.honcho.oauth import _config_refresh_lock, _read_config_strict, _refresh_lock
+        from .oauth import _config_refresh_lock, _read_config_strict, _refresh_lock
         config_path = Path(hermes_home) / "honcho.json"
         with _refresh_lock, _config_refresh_lock(config_path):
             existing = _read_config_strict(config_path)
@@ -212,7 +212,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def post_setup(self, hermes_home: str, config: dict) -> None:
         """Run the full Honcho setup wizard after provider selection."""
         import types
-        from plugins.memory.honcho.cli import cmd_setup
+        from .cli import cmd_setup
         cmd_setup(types.SimpleNamespace())
 
     # ----- Session lifecycle -----
@@ -228,8 +228,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 self._cron_skipped = True
                 return
 
-            from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client  # noqa: F401 — ImportError probe
-            from plugins.memory.honcho.session import HonchoSessionManager  # noqa: F401
+            from .client import HonchoClientConfig, get_honcho_client  # noqa: F401 — ImportError probe
+            from .session import HonchoSessionManager  # noqa: F401
 
             cfg = HonchoClientConfig.from_global_config()
             if not _cfg_usable(cfg):
@@ -291,8 +291,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def _run_session_init(self, label: str) -> bool:
         """Run _do_session_init with the deferred kwargs; on failure discard the manager
         and (for auth or unresolved-peer failures) keep the detail for the one-time notice."""
-        from plugins.memory.honcho.session import HonchoAuthError
-        from plugins.memory.honcho.session_peers import HonchoPeerUnresolvedError
+        from .session import HonchoAuthError
+        from .session_peers import HonchoPeerUnresolvedError
 
         init_kwargs = self._lazy_init_kwargs
         if init_kwargs is None:  # another init path already consumed the deferred kwargs
@@ -351,8 +351,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def _do_session_init(self, cfg, session_id: str, **kwargs) -> None:
         """Shared session initialization for both eager and lazy paths."""
-        from plugins.memory.honcho.client import get_honcho_client
-        from plugins.memory.honcho.session import HonchoSessionManager
+        from .client import get_honcho_client
+        from .session import HonchoSessionManager
 
         self._manager = HonchoSessionManager(
             honcho=get_honcho_client(cfg), config=cfg, context_tokens=cfg.context_tokens,
@@ -564,7 +564,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return self._log_injection("cron-or-tools-mode")
 
         if self._recall_sync:
-            from plugins.memory.honcho.recall_sync import prefetch_sync
+            from .recall_sync import prefetch_sync
             notice = self._pop_auth_notice() or self._pop_peer_notice()
             payload = "\n\n".join(part for part in (notice, prefetch_sync(self, query)) if part)
             return self._log_injection("injected" if payload else "recall-sync-empty", payload)
@@ -935,7 +935,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         return json.dumps({"result": result or "No relevant context found."})
 
     def _tool_reasoning(self, args: dict) -> str:
-        from plugins.memory.honcho.session import HonchoAuthError
+        from .session import HonchoAuthError
 
         if not (query := (args.get("query") or "").strip()):
             return tool_error("Missing required parameter: query")
@@ -1004,7 +1004,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a Honcho tool call, lazily initializing the session in tools-only mode."""
-        from plugins.memory.honcho.session import HonchoAuthError
+        from .session import HonchoAuthError
 
         if self._cron_skipped:
             return tool_error("Honcho is not active (cron context).")
@@ -1036,7 +1036,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def _shutdown_join_budget(self) -> float:
         """The floor, or the configured HTTP timeout when longer, so a thread blocked in a Honcho call can finish."""
-        from plugins.memory.honcho.client_cache import _resolve_timeout_from_sources
+        from .client_cache import _resolve_timeout_from_sources
         return max(self._SHUTDOWN_JOIN_FLOOR, _resolve_timeout_from_sources(self._config))
 
     def shutdown(self) -> None:

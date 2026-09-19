@@ -32,7 +32,7 @@ from hermes_cli.profiles import _get_default_hermes_home
 from hermes_constants import get_hermes_home
 from hermes_state_common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM
 
-from plugins.memory.honcho.client_cache import (
+from .client_cache import (
     _DEFAULT_HTTP_TIMEOUT, _client_cache_key, _client_slots, _client_slots_lock,
     _honcho_json_timeout_memo, _refresh_oauth, _slot_for,
 )

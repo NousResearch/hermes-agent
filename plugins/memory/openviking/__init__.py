@@ -552,7 +552,7 @@ def _default_ovcli_config_path() -> Path:
 
 
 def _resolve_ovcli_config_path(config_path: str = "") -> Path:
-    chosen = os.environ.get(_OVCLI_CONFIG_ENV, "").strip() or config_path
+    chosen = (get_secret(_OVCLI_CONFIG_ENV, "") or "").strip() or config_path
     return Path(chosen).expanduser() if chosen else _default_ovcli_config_path()
 
 

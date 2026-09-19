@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from plugins.memory.honcho.session_auth import HonchoAuthError
+from .session_auth import HonchoAuthError
 
 logger = logging.getLogger("plugins.memory.honcho.session")
 

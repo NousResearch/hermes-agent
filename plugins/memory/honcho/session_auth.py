@@ -79,14 +79,14 @@ class SessionAuthMixin:
         """Config path for OAuth checks, bound to this manager's profile: background threads can't
         see the ContextVar-backed ambient profile, so the bound path keeps them on THIS profile's
         honcho.json; ambient resolution is only the fallback for configless managers (tests)."""
-        from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+        from .client import HonchoClientConfig, resolve_config_path
 
         return self._config.bound_config_path() if isinstance(self._config, HonchoClientConfig) else resolve_config_path()
 
     def _reauth_required(self) -> bool:
         """True when the grant is dead and only a new login can fix it (no network call)."""
         try:
-            from plugins.memory.honcho import oauth
+            from . import oauth
 
             # Fast path: runs before every SDK call, so skip path resolution when nothing is dead.
             host = getattr(self._config, "host", "") or ""
@@ -99,8 +99,8 @@ class SessionAuthMixin:
         grant, or a failed exchange. ``failed_access_token`` is the bearer the operation sent; sibling
         waiters rotate the live client's ``api_key`` in place, so it cannot be read back here."""
         try:
-            from plugins.memory.honcho import oauth
-            from plugins.memory.honcho.client import reset_honcho_client
+            from . import oauth
+            from .client import reset_honcho_client
 
             host = getattr(self._config, "host", "") or ""
             if not host:

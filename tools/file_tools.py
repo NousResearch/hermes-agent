@@ -21,6 +21,8 @@ from pathlib import Path
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
+from agent.source_provenance_tools import issue_active_read_provenance
+from agent.source_provenance import SourceProvenanceRegistry
 from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)

@@ -1,7 +1,7 @@
 name: githermes
 repo: https://github.com/claudioorjunior/githermes
 sha: 09d5b566da650290dc0d639ea1e77def4bcdab31
-description: GitHub PRs and issues as a right workspace pane in Hermes Desktop, via the connected gh CLI.
+description: GitHub PRs and issues as a right workspace pane in Hermes Desktop, via the connected gh CLI. Disclosure — shells out to your logged-in gh CLI; the in-pane update pill only runs `hermes plugins update githermes` (no fetch-and-replace) and currently compares against upstream main rather than the pinned sha.
 maintainer: claudioorjunior
 tier: community
 category: desktop

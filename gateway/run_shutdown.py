@@ -833,7 +833,8 @@ class GatewayShutdownMixin:
             if _agent is _AGENT_PENDING_SENTINEL:
                 continue
             with _log_suppressed(logging.DEBUG, "%s failed for %s: %s", log_prefix, _sk):
-                await self.async_session_store.mark_resume_pending(_sk, reason)
+                await self.async_session_store.mark_resume_pending(
+                    _sk, reason, source=self._get_cached_session_source(_sk))
                 marked.append(_sk)
         return marked
 

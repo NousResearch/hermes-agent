@@ -196,12 +196,19 @@ class SessionLifecycleMixin:
             return True
         return self._update_all_entries_locked(_discard)
 
-    def mark_resume_pending(self, session_key: str, reason: str = "restart_timeout") -> bool:
+    def mark_resume_pending(self, session_key: str, reason: str = "restart_timeout", *,
+                            source: Optional["SessionSource"] = None) -> bool:
         """Mark a session resumable after a restart interruption (keeps the session_id/transcript,
-        unlike ``suspend_session``). True if marked."""
+        unlike ``suspend_session``). True if marked. ``source`` snapshots the active turn's exact
+        delivery route so a shared channel session resumes in its current thread, not its origin."""
         def _apply(entry: SessionEntry):
             if entry.suspended:  # never override an explicit ``suspended`` (hard forced-wipe)
                 return False
+            if source is not None:
+                from dataclasses import replace
+                entry.origin = replace(source)
+                entry.platform = source.platform
+                entry.chat_type = source.chat_type
             entry.resume_pending = True
             entry.resume_reason = reason
             entry.last_resume_marked_at = _now()

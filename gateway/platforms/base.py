@@ -3923,7 +3923,10 @@ class BasePlatformAdapter(ABC):
             try:
                 from tools import clarify_gateway as _clarify_mod
                 _has_text_clarify = _clarify_mod.get_pending_for_session(
-                    session_key, include_choice_prompts=True) is not None
+                    session_key, include_choice_prompts=True,
+                    route_scope=_clarify_mod.build_route_scope(
+                        platform=event.source.platform, chat_id=event.source.chat_id, chat_type=event.source.chat_type,
+                        thread_id=event.source.thread_id, message_id=event.message_id)) is not None
             except Exception:
                 _has_text_clarify = False
             if _has_text_clarify:

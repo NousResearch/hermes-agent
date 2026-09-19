@@ -1787,7 +1787,11 @@ class BuzzAdapter(BasePlatformAdapter):
             message_type = MessageType.DOCUMENT
         source = self.build_source(
             chat_id=chat_id, chat_name=self._channel_names.get(chat_id, chat_id), chat_type=chat_type,
-            user_id=user_id, user_name=user_name, thread_id=thread_id, message_id=message_id,
+            user_id=user_id, user_name=user_name, message_id=message_id,
+            # Buzz channel replies are flat under the initiating event: a top-level channel event is
+            # its own root, so the initiating message and its replies share one thread-scoped
+            # session. DMs keep conversation-wide session semantics.
+            thread_id=thread_id or (message_id if chat_type == "group" else None),
         )
         event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message, message_id=message_id,

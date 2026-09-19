@@ -1,0 +1,18 @@
+{
+  "pattern_id": "tarkovsky_water_reflection",
+  "title": "Water and Reflection as Memory Boundary",
+  "version": "0.11.5",
+  "domain": "cinematic",
+  "source_tier": "SCHOLARLY",
+  "source_refs": [{"author": "Andrei Tarkovsky", "title": "Mirror / Stalker and related films", "date": "20th century"}],
+  "observed_structure": ["A reflective or liquid surface separates present action from unstable memory, identity, or perception.", "Distortion, duration, and sound make the reflected state diverge from the physical source."],
+  "dramatic_operations": ["memory bleeding into reality", "distortion of identity"],
+  "transformation_grammars": ["transfer", "mirror"],
+  "cinematic_affordances": ["long take on reflective surface", "distorted reflection", "water sound outlasting image"],
+  "misuse_risks": ["decorative puddle imagery", "slow cinema imitation without causal function", "reflection used as a fixed identity symbol"],
+  "mutation_requirements": {"required": true, "variables": ["surface", "distortion", "sound duration", "reflected subject", "memory consequence"]},
+  "transferable_structure": "Use a reflective or liquid boundary whose distortion and duration alter how present action relates to memory or identity.",
+  "non_transferable_surface": "Do not copy specific Russian locations, Orthodox imagery, shot durations, or compositions from Tarkovsky's films.",
+  "production_cost": "medium",
+  "confidence": 0.85
+}

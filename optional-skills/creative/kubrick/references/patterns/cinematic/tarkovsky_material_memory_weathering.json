@@ -1,0 +1,23 @@
+{
+  "pattern_id": "tarkovsky_material_memory_weathering",
+  "title": "Material Memory / Weathering Carries Time",
+  "version": "0.11.2",
+  "domain": "cinematic",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Andrei Tarkovsky","title":"Mirror; Stalker; Nostalghia","date":"1975-1983","cultural_context":"Soviet and European art cinema"}],
+  "observed_structure": ["a material surface records prior contact or duration", "weather, moisture, corrosion, or wear changes object behavior", "memory is inferred from persistent physical evidence rather than exposition"],
+  "dramatic_operations": ["materialize memory", "make duration visible", "bind environment to prior action"],
+  "transformation_grammars": ["weathering-to-memory", "trace-persistence"],
+  "cinematic_affordances": ["water or dust revealing old contours", "surface wear repeated after time shift", "environmental sound preceding recognition", "slow observation of changed material state"],
+  "applicable_genres": ["drama", "science fiction", "mystery", "art film"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["film-derived formal pattern; cite Tarkovsky and avoid copying signature tableaux"],
+  "misuse_risks": ["rain equals sadness", "decorative decay", "slow imagery without causal trace"],
+  "mutation_requirements": {"required":true,"variables":["surface material","trace source","weather condition","recognition timing","functional consequence"]},
+  "transferable_structure": "material alteration preserves evidence of absent action and makes elapsed time causally present",
+  "non_transferable_surface": "direct recreations of flooded rooms, burning structures, levitation, or Tarkovsky-specific compositions",
+  "production_cost": {"location_dependency":0.5,"prop_dependency":0.4,"lighting_dependency":0.4,"VFX_dependency":0.1},
+  "lexicon_links": ["salt", "anamnesis", "world_soul", "resonance"],
+  "confidence": 0.84
+}

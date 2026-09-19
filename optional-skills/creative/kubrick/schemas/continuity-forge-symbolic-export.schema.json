@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ContinuityForgeSymbolicExport",
+  "type": "object",
+  "properties": {
+    "symbolic_architecture": { "$ref": "symbolic-architecture.schema.json" },
+    "forge_mappings": {
+      "type": "object",
+      "properties": {
+        "ledger_motifs": { "type": "array" },
+        "shot_contracts": { "type": "object" }
+      }
+    },
+    "provenance_summary": { "type": "object" },
+    "mutation_history": { "type": "array" }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "pattern_id": "alchemical_separation_signal_from_noise",
+  "title": "Separation / Signal From Noise",
+  "version": "0.11.0",
+  "domain": "alchemical",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"European alchemical tradition","title":"Separation operation","date":"early modern","cultural_context":"European alchemy"}],
+  "observed_structure": ["a crowded field contains one causally decisive element", "selection changes behavior rather than merely explaining meaning", "removed material leaves visible or sonic residue"],
+  "dramatic_operations": ["isolate decisive evidence", "sever contaminating allegiance", "distinguish motive from performance"],
+  "transformation_grammars": ["separation", "discernment"],
+  "cinematic_affordances": ["selective focus against an established deep field", "soundtrack subtraction", "frames within frames dividing agents", "sorting gestures with irreversible consequence"],
+  "applicable_genres": ["mystery", "thriller", "drama", "procedural"],
+  "applicable_formats": ["feature", "pilot", "short", "episode"],
+  "cultural_scope": ["European alchemical source; transferable as discernment and material sorting"],
+  "misuse_risks": ["expository clue close-up", "binary purity language", "arbitrary visual isolation"],
+  "mutation_requirements": {"required":true,"variables":["selected element","discarded residue","focus depth","sound density","ownership"]},
+  "transferable_structure": "a mixed field is divided so one operative element can produce a consequential choice",
+  "non_transferable_surface": "literal purification rites or moral claims of purity",
+  "production_cost": {"location_dependency":0.1,"prop_dependency":0.4,"lighting_dependency":0.4,"VFX_dependency":0.0},
+  "lexicon_links": ["separation", "albedo", "salt"],
+  "confidence": 0.84
+}

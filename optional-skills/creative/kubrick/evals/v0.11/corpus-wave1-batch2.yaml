@@ -1,0 +1,52 @@
+suite: corpus-wave1-batch2
+runtime: standalone-hermes
+cases:
+  - id: conjunction_third_state
+    brief:
+      dramatic_problem: two opposed characters must combine incompatible functions without becoming interchangeable
+      desired_state_change: opposition becomes a third operative alliance
+      observable_evidence: [separate blocking lines, shared contact site, exchanged object function]
+    expected_primary: alchemical_conjunction_opposed_forces
+  - id: distillation_refinement
+    brief:
+      dramatic_problem: repeated encounters must lose noise while preserving one volatile motive
+      desired_state_change: repetition becomes concentrated clarity
+      observable_evidence: [fewer props each pass, shorter dialogue, narrowing camera path]
+    expected_primary: alchemical_distillation_iterative_refinement
+  - id: coagulation_consequence
+    brief:
+      dramatic_problem: a realization must become irreversible through body and object state
+      desired_state_change: insight becomes durable action
+      observable_evidence: [changed gait, altered object, persistent environmental trace]
+    expected_primary: alchemical_coagulation_embodied_consequence
+  - id: resnais_memory_substitution
+    brief:
+      dramatic_problem: a remembered scene repeats with one changed participant and object clue
+      desired_state_change: memory revises present interpretation
+      observable_evidence: [same framing, changed occupant, contradictory object evidence]
+    expected_primary: resnais_temporal_recurrence_substitution
+  - id: montage_third_meaning
+    brief:
+      dramatic_problem: adjacent shots of labor and automated control must expose a systemic relation
+      desired_state_change: contrast becomes a readable third proposition
+      observable_evidence: [scale mismatch, rhythmic cut, institutional machine]
+    expected_primary: soviet_montage_collision_thesis
+  - id: silence_revelation
+    brief:
+      dramatic_problem: environmental normality must collapse before visual recognition
+      desired_state_change: removed ambience reveals false safety
+      observable_evidence: [established room tone, threshold choice, one bodily sound remains]
+    expected_primary: sonic_silence_withdrawal_revelation
+  - id: tala_displaced_return
+    brief:
+      dramatic_problem: a repeating action cycle must shift its emphasis and delay convergence
+      desired_state_change: expectation becomes reweighted agency
+      cultural_context: South Asian rhythmic provenance retained without surface imitation
+      observable_evidence: [stable cycle, displaced action beat, later synchronized return]
+    expected_primary: indian_tala_accent_displacement
+fail_closed_cases:
+  - id: ungrounded_temporal_mysticism
+    brief:
+      dramatic_problem: make time feel mystical
+      observable_evidence: []
+    expected_status: NOT_COMPUTABLE

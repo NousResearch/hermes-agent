@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import utf16_len
 
 
 def _make_adapter():
@@ -110,3 +111,35 @@ async def test_split_queue_command_merges_with_continuation():
     assert "y" * 500 in dispatched.text
     # One merged event — the continuation never dispatched on its own.
     assert not adapter._pending_text_batches
+
+
+def _emoji_near_utf16_split(prefix: str = "/queue ") -> str:
+    """Chunk with Python len() < 4000 but UTF-16 >= 4000 (Telegram's split unit)."""
+    emoji = "\U0001F600"  # 1 Python char, 2 UTF-16 units
+    text = prefix + emoji * 2000
+    assert len(text) < 4000
+    assert utf16_len(text) >= 4000
+    return text
+
+
+@pytest.mark.asyncio
+async def test_emoji_near_utf16_limit_command_is_batched_not_dispatched():
+    adapter = _make_adapter()
+
+    await adapter._handle_command(_make_update(_emoji_near_utf16_split()), SimpleNamespace())
+
+    adapter.handle_message.assert_not_awaited()
+    assert len(adapter._pending_text_batches) == 1
+
+
+@pytest.mark.asyncio
+async def test_emoji_chunk_records_utf16_last_chunk_len():
+    adapter = _make_adapter()
+    text = "\U0001F600" * 2000
+    assert len(text) == 2000
+    assert utf16_len(text) == 4000
+
+    await adapter._handle_text_message(_make_update(text), SimpleNamespace())
+
+    pending = next(iter(adapter._pending_text_batches.values()))
+    assert pending._last_chunk_len == utf16_len(text)

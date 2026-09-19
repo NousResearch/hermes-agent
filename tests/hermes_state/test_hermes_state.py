@@ -4564,6 +4564,206 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_optimize_heals_partial_trigram_without_markers(self, tmp_path):
+        """Stamped-complete v23 with a truncated trigram index must still
+        be offered by optimize-storage and restored to source parity.
+
+        Empty-index detection only probes base EXISTS, so this field shape
+        (complete messages_fts_docsize, tiny messages_fts_trigram_docsize,
+        fts_storage_version stamped, no rebuild markers) used to print
+        "already on the compact layout" and leave historical substring
+        coverage missing.
+        """
+        db = SessionDB(db_path=tmp_path / "partial-tri.db")
+        try:
+            if not db._trigram_available:
+                pytest.skip("trigram tokenizer unavailable")
+            db.create_session(session_id="s1", source="cli")
+            for i, role in enumerate(("user", "assistant", "tool") * 4):
+                db.append_message(
+                    "s1",
+                    role=role,
+                    content=f"trigram-history-{role}-{i}",
+                )
+            n_msg = db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            n_src = db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_src"
+            ).fetchone()[0]
+            n_tri = db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_docsize"
+            ).fetchone()[0]
+            assert n_tri == n_src
+            assert n_src < n_msg
+
+            db._conn.execute(
+                "INSERT INTO messages_fts_trigram(messages_fts_trigram) "
+                "VALUES('delete-all')"
+            )
+            keep_id = db._conn.execute(
+                "SELECT id FROM messages WHERE role <> 'tool' ORDER BY id LIMIT 1"
+            ).fetchone()[0]
+            later_id = db._conn.execute(
+                "SELECT id FROM messages WHERE role <> 'tool' AND id <> ? "
+                "ORDER BY id DESC LIMIT 1",
+                (keep_id,),
+            ).fetchone()[0]
+            db._conn.execute(
+                "INSERT INTO messages_fts_trigram"
+                "(rowid, content, tool_name) "
+                "SELECT id, content, tool_name FROM messages "
+                "WHERE id = ?",
+                (keep_id,),
+            )
+            db._conn.commit()
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_docsize"
+            ).fetchone()[0] == 1
+            assert db._fts_external_index_empty_with_messages(db._conn) is False
+            assert db._fts_projection_incomplete(db._conn) is True
+            assert db.get_meta("fts_rebuild_high_water") is None
+            assert db.fts_optimize_available() is True
+
+            result = db.optimize_fts_storage(vacuum=False)
+            assert result["ok"] is True
+            assert db.get_meta("fts_rebuild_high_water") is None
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_docsize"
+            ).fetchone()[0] == n_msg
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_docsize"
+            ).fetchone()[0] == n_src
+            assert db.fts_optimize_available() is False
+            assert db.get_meta("fts_storage_version") == str(
+                hermes_state_common.FTS_STORAGE_VERSION
+            )
+            assert db._conn.execute(
+                "SELECT 1 FROM messages_fts_trigram_docsize WHERE id = ?",
+                (keep_id,),
+            ).fetchone() is not None
+            assert db._conn.execute(
+                "SELECT 1 FROM messages_fts_trigram_docsize WHERE id = ?",
+                (later_id,),
+            ).fetchone() is not None
+        finally:
+            db.close()
+
+    @staticmethod
+    def _fts_match_rowids(db, token):
+        return [
+            row[0]
+            for row in db._conn.execute(
+                "SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?",
+                (token,),
+            ).fetchall()
+        ]
+
+    def _trigram_shortfall_db(self, db, token="secrettokenbefore"):
+        """13 complete rows, then drop one trigram entry so only that
+        projection is short. Base index stays complete."""
+        if not db._trigram_available:
+            pytest.skip("trigram tokenizer unavailable")
+        db.create_session(session_id="s1", source="cli")
+        for i in range(12):
+            db.append_message("s1", "user", f"filler payload {i}")
+        db.append_message("s1", "user", f"{token} redaction target")
+        target_id = db._conn.execute("SELECT MAX(id) FROM messages").fetchone()[0]
+        drop_id = db._conn.execute(
+            "SELECT MIN(id) FROM messages WHERE id <> ?",
+            (target_id,),
+        ).fetchone()[0]
+        dropped = db._conn.execute(
+            "SELECT id, content, tool_name FROM messages WHERE id = ?",
+            (drop_id,),
+        ).fetchone()
+        db._conn.execute(
+            "INSERT INTO messages_fts_trigram("
+            "messages_fts_trigram, rowid, content, tool_name) "
+            "VALUES ('delete', ?, ?, ?)",
+            tuple(dropped),
+        )
+        db._conn.commit()
+        n_msg = db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        n_base = db._conn.execute(
+            "SELECT COUNT(*) FROM messages_fts_docsize"
+        ).fetchone()[0]
+        n_tri = db._conn.execute(
+            "SELECT COUNT(*) FROM messages_fts_trigram_docsize"
+        ).fetchone()[0]
+        assert n_msg == 13
+        assert n_base == n_msg
+        assert n_tri == n_msg - 1
+        return target_id
+
+    def test_partial_trigram_repair_does_not_keep_redacted_tokens(self, tmp_path):
+        """Seeding rebuild markers over a populated base index made
+        UPDATE triggers skip those ids. Redacting a row in
+        (progress, high_water] left the old term searchable after
+        optimize reported success."""
+        db = SessionDB(db_path=tmp_path / "redact.db")
+        try:
+            token = "secrettokenbefore"
+            target_id = self._trigram_shortfall_db(db, token)
+            assert target_id in self._fts_match_rowids(db, token)
+
+            db._repair_optimize_bookkeeping()
+            assert db.get_meta("fts_rebuild_progress") == "0"
+            assert int(db.get_meta("fts_rebuild_high_water")) >= target_id
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_docsize"
+            ).fetchone()[0] == 0
+
+            db._conn.execute(
+                "UPDATE messages SET content = '' WHERE id = ?",
+                (target_id,),
+            )
+            db._conn.commit()
+
+            result = db.optimize_fts_storage(vacuum=False)
+            assert result["ok"] is True
+            assert target_id not in self._fts_match_rowids(db, token)
+            assert db.search_messages(token) == []
+        finally:
+            db.close()
+
+    def test_partial_trigram_repair_delete_leaves_no_orphan_docsize(self, tmp_path):
+        """DELETE in the seeded gap must not leave a docsize row behind."""
+        db = SessionDB(db_path=tmp_path / "delete-gap.db")
+        try:
+            token = "secrettokenbefore"
+            target_id = self._trigram_shortfall_db(db, token)
+            db._repair_optimize_bookkeeping()
+            db._conn.execute(
+                "DELETE FROM messages WHERE id = ?",
+                (target_id,),
+            )
+            db._conn.commit()
+
+            result = db.optimize_fts_storage(vacuum=False)
+            assert result["ok"] is True
+            assert db._conn.execute(
+                "SELECT 1 FROM messages_fts_docsize WHERE id = ?",
+                (target_id,),
+            ).fetchone() is None
+            assert db._conn.execute(
+                "SELECT 1 FROM messages_fts_trigram_docsize WHERE id = ?",
+                (target_id,),
+            ).fetchone() is None
+            n_msg = db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            n_base = db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_docsize"
+            ).fetchone()[0]
+            n_src = db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_src"
+            ).fetchone()[0]
+            n_tri = db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_docsize"
+            ).fetchone()[0]
+            assert n_base == n_msg
+            assert n_tri == n_src
+            assert target_id not in self._fts_match_rowids(db, token)
+        finally:
+            db.close()
+
     def test_repair_bookkeeping_reseeds_missing_progress(self, tmp_path):
         """Unit: high_water without progress gets progress='0' without
         forcing a full marker reset when a real backfill is already claimed."""

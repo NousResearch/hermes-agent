@@ -174,6 +174,21 @@ class RunIdempotencyStore:
         return dict(_record(*row[2:]), fingerprint=row[1],
                     room_policy=json.loads(row[0]) if row[0] is not None else None)
 
+    def confirm_replay(self, scope: str, key: str, fingerprint: str, run_id: str, *, retention_until: float):
+        """Compare the previously read identity and extend only its verified horizon.
+
+        No prune or reservation can interleave with this comparison. A lost or
+        replaced row stays a refusal at the caller; it is never a NEW result.
+        """
+        until = max(0.0, float(retention_until or 0))
+        with self._immediate_txn():
+            changed = self._conn.execute(
+                _EXTEND_RETENTION_BY_KEY + ' AND run_id=?',
+                (until, scope, key, fingerprint, run_id)).rowcount
+            row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone() if changed == 1 else None
+            self._conn.commit()
+        return _record(*row[1:]) if row is not None else None
+
     def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0):
         """Return ``missing``, ``reused`` or ``conflict`` without reserving."""
         now = time.time()

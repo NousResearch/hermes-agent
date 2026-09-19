@@ -274,10 +274,10 @@ def _owner_alive(owner_pid: int, owner_started: int) -> bool:
         return False
 
 
-def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, Any] | None:
+def _durable_run_status(self, request: "web.Request", run_id: str, *, receipt_identity=None) -> Dict[str, Any] | None:
     """Hydrate a scoped run status and fail stale owners closed."""
     from gateway.platforms.api_server_authority_runs import run_projection
-    canonical = run_projection(self, run_id)
+    canonical = run_projection(self, run_id, receipt_identity=receipt_identity)
     if canonical is not None:
         return canonical
     status = self._run_statuses.get(run_id)
@@ -360,14 +360,17 @@ def _run_fingerprint(body, gateway_session_key):
     ).encode()).hexdigest()
 
 
-def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> "web.Response":
+def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error, *,
+                        receipt_identity=None) -> "web.Response":
     """409 for a fingerprint conflict, else a 202 replay of the already-admitted run."""
     if outcome == "conflict":
         return _json_error(
             _openai_error, "Idempotency-Key was already used with a different request payload",
             code="idempotency_key_conflict", status=409)
     original_id = str(record["run_id"])
-    status = self._durable_run_status(request, original_id) or record["status"]
+    status = (_durable_run_status(self, request, original_id, receipt_identity=receipt_identity)
+              if receipt_identity is not None else self._durable_run_status(request, original_id))
+    status = status or record["status"]
     return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
 
 

@@ -191,7 +191,9 @@ _STOPPER_CHILD = textwrap.dedent(
     snapshot = dp._posix_descendants([backend])
     killed, failed = [], []
     dp._kill_pids_posix([backend], killed, failed)
-    marker.write_text(f"{os.getpid() in snapshot} {killed} {failed}")
+    tmp = marker.with_suffix(".tmp")
+    tmp.write_text(f"{os.getpid() in snapshot} {killed} {failed}")
+    os.replace(tmp, marker)
     """
 )
 
@@ -216,11 +218,14 @@ def test_stopper_running_as_backend_descendant_survives_the_sweep(tmp_path):
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
+        # The marker is the stopper's LAST act, written after its post-kill descendant sweep; the
+        # backend's SIGKILL is observable before that, so wait for the marker, not the exit.
         deadline = time.monotonic() + 30.0
-        while backend.poll() is None and time.monotonic() < deadline:
+        while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert backend.returncode == -signal.SIGKILL, "the stopper never SIGKILLed the wedged backend"
         assert marker.exists(), "stopper died before finishing the stop: it swept itself"
+        backend.wait(timeout=10)
+        assert backend.returncode == -signal.SIGKILL, "the stopper never SIGKILLed the wedged backend"
         in_snapshot, _, rest = marker.read_text().partition(" ")
         assert in_snapshot == "False"
         assert rest == f"[{backend.pid}] []"

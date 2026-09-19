@@ -49,6 +49,19 @@ class TestGetSubprocessHome:
         from hermes_constants import get_subprocess_home
         assert get_subprocess_home() is None
 
+    def test_host_auto_repairs_missing_home(self, tmp_path, monkeypatch):
+        """A systemd system unit with no HOME at all should still get real HOME repaired."""
+        self._host_mode(monkeypatch)
+        real_home = tmp_path / "real-home"
+        hermes_home = real_home / ".hermes" / "profiles" / "coder"
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        from hermes_constants import get_subprocess_home
+        assert get_subprocess_home() == str(real_home)
+
     def test_container_auto_uses_profile_home_when_home_dir_exists(self, tmp_path, monkeypatch):
         self._container_mode(monkeypatch)
         hermes_home = tmp_path / ".hermes"

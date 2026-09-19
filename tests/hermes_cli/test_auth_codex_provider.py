@@ -638,3 +638,59 @@ def test_pool_only_force_refresh_rotates_the_pool_entry(tmp_path, monkeypatch):
     assert resolved["api_key"] == "pool-fresh"
     assert resolved["source"] == "credential_pool"
     assert hints == ["pool-revoked"]
+
+
+def test_pool_only_expiring_token_refreshes_its_own_pool_entry(tmp_path, monkeypatch):
+    """Pool-only OAuth entries must refresh before their access JWT expires.
+
+    The singleton is deliberately absent: a manual:device_code entry can belong
+    to an independent account, so the resolver must refresh that exact pool row
+    rather than adopting an unrelated singleton credential.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    expiring = _jwt_with_exp(int(time.time()) + 60)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+        "credential_pool": {"openai-codex": [{
+            "source": "manual:device_code", "access_token": expiring, "refresh_token": "pool-refresh",
+            "last_status": "ok", "auth_type": "oauth"}]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    hints = []
+
+    class Pool:
+        def try_refresh_matching(self, api_key_hint=None, credential_id=None):
+            hints.append(api_key_hint)
+            return SimpleNamespace(runtime_api_key="pool-fresh")
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+
+    resolved = resolve_codex_runtime_credentials()
+    assert resolved["api_key"] == "pool-fresh"
+    assert resolved["source"] == "credential_pool"
+    assert hints == [expiring]
+
+
+def test_pool_only_expiring_token_honors_refresh_opt_out(tmp_path, monkeypatch):
+    """Callers can explicitly defer proactive refresh for a pool-only entry."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    expiring = _jwt_with_exp(int(time.time()) + 60)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+        "credential_pool": {"openai-codex": [{
+            "source": "manual:device_code", "access_token": expiring, "refresh_token": "pool-refresh",
+            "last_status": "ok", "auth_type": "oauth"}]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class Pool:
+        def try_refresh_matching(self, **_kwargs):
+            raise AssertionError("proactive refresh was explicitly disabled")
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+
+    resolved = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+    assert resolved["api_key"] == expiring
+    assert resolved["source"] == "credential_pool"

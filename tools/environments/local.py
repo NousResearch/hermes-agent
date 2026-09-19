@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
@@ -22,7 +22,7 @@ from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-    _is_hermes_internal_secret, _is_terminal_first_party_env,
+    _is_hermes_internal_secret, _is_routed_profile_sdk_credential, _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
 from tools.environments.local_gitbash_probe import (
     _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
@@ -202,7 +202,7 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
 
 # --- Child-process environment construction ---
-def _apply_profile_home(env: dict) -> None:
+def _apply_profile_home(env: dict, *, allow_process_fallback: bool = True) -> None:
     """Bridge the context-local HERMES_HOME override, then the subprocess HOME contract."""
     from hermes_constants import apply_subprocess_home_env, get_hermes_home_override
     try:
@@ -210,7 +210,7 @@ def _apply_profile_home(env: dict) -> None:
             env["HERMES_HOME"] = value
     except Exception:
         pass
-    apply_subprocess_home_env(env)
+    apply_subprocess_home_env(env, allow_process_fallback=allow_process_fallback)
 
 
 def _inject_session_context_env(env: dict) -> None:
@@ -264,11 +264,11 @@ def _filter_secret_env(
             out[key] = value
 
 
-def _finalize_child_env(env: dict) -> dict:
+def _finalize_child_env(env: dict, *, allow_process_fallback: bool = True) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
     Kanban scrub. Returns the (possibly new) dict."""
-    _apply_profile_home(env)
+    _apply_profile_home(env, allow_process_fallback=allow_process_fallback)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
@@ -276,7 +276,9 @@ def _finalize_child_env(env: dict) -> dict:
     return delegated_child_subprocess_env(env)
 
 
-def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
+def _scrubbed_env(
+    parts, plugin_strip: frozenset, fix_path, *, allow_process_fallback: bool = True
+) -> dict:
     """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
     *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
@@ -295,26 +297,39 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     # already applies this invariant; Cron scripts use this sanitizer directly (#92998).
     if path_key is not None:
         out[path_key] = _prepend_hermes_bin_dir(fix_path(out.get(path_key, "")))
-    return _finalize_child_env(out)
+    return _finalize_child_env(out, allow_process_fallback=allow_process_fallback)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+def _sanitize_subprocess_env(
+    base_env: dict | None, extra_env: dict | None = None, *,
+    allow_process_fallback: bool = True,
+) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment (background/PTY
     spawn path, search workers, computer-use driver, user-script runners)."""
-    return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
-                         _plugin_terminal_env_strip_keys(), lambda p: p)
+    return _scrubbed_env(
+        [(base_env or {}, False), (extra_env or {}, True)],
+        _plugin_terminal_env_strip_keys(),
+        lambda p: p,
+        allow_process_fallback=allow_process_fallback,
+    )
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+def hermes_subprocess_env(
+    base: "Mapping[str, str] | None" = None, *, inherit_credentials: bool = False
+) -> dict[str, str]:
     """Sanitized env for the **non-terminal** spawn surface (browser, ACP/CLI executors,
     computer-use driver, TUI Node host). Tier 1 (``_ALWAYS_STRIP_KEYS``, plugin keys,
     force-prefixed hints, dynamic internal secrets) is always removed; Tier 2 (the
     provider/tool blocklist) unless ``inherit_credentials`` — pass that **only** for
     children that legitimately need LLM credentials (user-blessed claude/codex/gemini
-    CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
-    env = _scrub_credentials(os.environ.copy(), inherit_credentials=inherit_credentials)
+    CLI, TUI Node host). ``base`` supplies an authoritative snapshot instead of rereading
+    live ``os.environ``. Terminal/execute_code use ``_sanitize_subprocess_env``."""
+    env = _scrub_credentials(
+        dict(base) if base is not None else os.environ.copy(),
+        inherit_credentials=inherit_credentials,
+    )
     env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
-    return _finalize_child_env(env)
+    return _finalize_child_env(env, allow_process_fallback=base is None)
 
 
 def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
@@ -345,9 +360,13 @@ def build_subprocess_env(
     if strip_launch_profile:
         strip_launch_profile_env(env)
     if scrub_secrets:
-        return _sanitize_subprocess_env(env, dict(extra) if extra else None)
+        return _sanitize_subprocess_env(
+            env,
+            dict(extra) if extra else None,
+            allow_process_fallback=base is None,
+        )
     if inherit_profile_home:
-        _apply_profile_home(env)
+        _apply_profile_home(env, allow_process_fallback=base is None)
     if extra:
         env.update(extra)
     from agent.delegation_context import delegated_child_subprocess_env
@@ -356,7 +375,8 @@ def build_subprocess_env(
 
 def served_profile_child_env(
     base: "Mapping[str, str] | None" = None, *, target_home: "str | Path | None" = None,
-    inherit_credentials: bool = False,
+    inherit_credentials: bool = False, launch_home: "str | Path | None" = None,
+    credential_env_names: "Iterable[str]" = (),
 ) -> dict[str, str]:
     """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
     workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
@@ -380,9 +400,22 @@ def served_profile_child_env(
     target = str(target_home or get_hermes_home_override() or "")
     if target:
         env["HERMES_HOME"] = target
-        if _is_routed_home(target):
-            strip_launch_profile_env(env, target)
+        if _is_routed_home(target, launch_home=launch_home):
+            strip_launch_profile_env(env, target, launch_home=launch_home)
             _scrub_credentials(env, inherit_credentials=False)
+            for key in list(env):
+                if _is_routed_profile_sdk_credential(key):
+                    env.pop(key, None)
+            for key in credential_env_names:
+                env.pop(key, None)
+            # Keep the AWS default chain inside the selected profile. Explicit
+            # target dotenv values below may replace these fail-closed defaults.
+            aws_home = Path(target) / ".aws"
+            env["AWS_SHARED_CREDENTIALS_FILE"] = str(aws_home / "credentials")
+            env["AWS_CONFIG_FILE"] = str(aws_home / "config")
+            env["BOTO_CONFIG"] = str(Path(target) / ".boto")
+            env["AWS_LOGIN_CACHE_DIRECTORY"] = str(aws_home / "login" / "cache")
+            env["AWS_EC2_METADATA_DISABLED"] = "true"
     if inherit_credentials:
         if target:
             secrets = build_profile_secret_scope(Path(target))
@@ -397,16 +430,26 @@ def served_profile_child_env(
     return env
 
 
-def _is_routed_home(target_home: "str | Path") -> bool:
-    """True when ``target_home`` is not the process's own (launch) home."""
-    from hermes_constants import get_process_hermes_home
+def _is_routed_home(
+    target_home: "str | Path", *, launch_home: "str | Path | None" = None
+) -> bool:
+    """True when ``target_home`` is not the captured launch-profile home."""
+    if launch_home is None:
+        from tui_gateway.launch_profile_policy import launch_home as authoritative_launch_home
+
+        launch_home = authoritative_launch_home()
     try:
-        return Path(target_home).resolve() != get_process_hermes_home().resolve()
+        return Path(target_home).resolve() != Path(launch_home).resolve()
     except OSError:
         return True
 
 
-def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None) -> dict:
+def strip_launch_profile_env(
+    env: dict,
+    target_home: "str | Path | None" = None,
+    *,
+    launch_home: "str | Path | None" = None,
+) -> dict:
     """Drop the LAUNCH profile's residue from a child env built for another served profile.
     ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
     the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
@@ -417,13 +460,17 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
     installing a HERMES_HOME override without that flag."""
     from agent.secret_scope import _is_global_env, load_env_file
-    from hermes_constants import get_hermes_home_override, get_process_hermes_home
+    from hermes_constants import get_hermes_home_override
     target = target_home or get_hermes_home_override()
-    if not target or not _is_routed_home(target):
+    if launch_home is None:
+        from tui_gateway.launch_profile_policy import launch_home as authoritative_launch_home
+
+        launch_home = authoritative_launch_home()
+    if not target or not _is_routed_home(target, launch_home=launch_home):
         return env
-    launch_home = get_process_hermes_home()
+    launch_owner = Path(launch_home)
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
-    for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
+    for key in set(load_env_file(launch_owner / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
         if not _is_global_env(key) or key.startswith("TERMINAL_"):
             env.pop(key, None)
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``

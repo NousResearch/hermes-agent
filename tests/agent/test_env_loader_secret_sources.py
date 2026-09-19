@@ -748,12 +748,14 @@ def test_env_shadowed_reapply_keeps_home_snapshot(tmp_path, monkeypatch, _fresh_
 
     env_loader.load_hermes_dotenv(hermes_home=home)
     assert env_loader.get_secret_source_values(home) == {"GLM_API_KEY": "vault-value"}
+    assert env_loader.get_secret_source_owned_names(home) == frozenset({"GLM_API_KEY"})
 
     # cron per-fire / plugin-discovery re-pull: reset + reload with the key now shadowing itself.
     env_loader.reset_secret_source_cache()
     env_loader.load_hermes_dotenv(hermes_home=home)
 
     assert str(home.resolve()) in env_loader._APPLIED_HOMES
+    assert env_loader.get_secret_source_owned_names(home) == frozenset({"GLM_API_KEY"})
     assert env_loader.hydrate_profile_secret_sources(home) == {"GLM_API_KEY": "vault-value"}
     assert build_profile_secret_scope(home)["GLM_API_KEY"] == "vault-value"
 

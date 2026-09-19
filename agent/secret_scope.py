@@ -338,8 +338,8 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
 
 
 def _is_process_home(hermes_home: Path) -> bool:
-    from hermes_constants import get_process_hermes_home
+    from tui_gateway.launch_profile_policy import launch_home
     try:
-        return Path(hermes_home).resolve() == get_process_hermes_home().resolve()
+        return Path(hermes_home).resolve() == launch_home().resolve()
     except OSError:
         return False

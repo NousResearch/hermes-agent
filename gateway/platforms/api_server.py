@@ -209,7 +209,13 @@ def listen_address(extra: Dict[str, Any]) -> tuple[str, int]:
     Shared with the CLI restart path, which must wait on the SAME address the replacement will
     bind — an env-only reading missed every config.yaml port (#91547).
     """
-    host = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
+    # A ``host:`` key with no value parses as None, and ``dict.get``'s default only fires on a
+    # MISSING key -- so the env fallback and DEFAULT_HOST were both skipped and aiohttp bound
+    # every interface. Same explicit None handling the port already uses. An empty string is
+    # left alone: that is a deliberate wildcard.
+    host = extra.get("host")
+    if host is None:
+        host = os.getenv("API_SERVER_HOST", DEFAULT_HOST)
     raw_port = extra.get("port")
     if raw_port is None:
         raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))

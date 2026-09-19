@@ -185,6 +185,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
+import { proxyAgentFor } from './env-proxy'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import {
   buildTerminalScript,
@@ -3459,7 +3460,12 @@ function fetchGitHubApiOnce(url, accept, token) {
           },
           token
         ),
-        timeout: 10_000
+        timeout: 10_000,
+        // Node's https does not read the proxy environment, so without this
+        // the request dials api.github.com directly and times out behind a
+        // corporate proxy even when HTTP_PROXY/HTTPS_PROXY are set (#114736).
+        // Undefined when no proxy applies: Node's default agent, unchanged.
+        agent: proxyAgentFor(url, process.env)
       },
       res => {
         const chunks = []

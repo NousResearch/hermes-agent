@@ -96,7 +96,7 @@ describe('statusbar item visibility', () => {
     expect(screen.getByText('Plugin thing')).toBeTruthy()
   })
 
-  it('starts the per-turn session readouts hidden and restores them from the menu', async () => {
+  it('starts the per-turn session readouts hidden (context meter visible) and restores them from the menu', async () => {
     const statusbar = bar([
       item('running-timer', 'Turn timer', { variant: 'text' }),
       item('context-usage', 'Context meter', { variant: 'menu' }),
@@ -106,9 +106,14 @@ describe('statusbar item visibility', () => {
       item('gateway-health', 'Gateway')
     ])
 
-    for (const label of ['Turn timer', 'Context meter', 'Cache hit rate', 'Tokens per second', 'Session timer']) {
+    for (const label of ['Turn timer', 'Cache hit rate', 'Tokens per second', 'Session timer']) {
       expect(screen.queryByText(label)).toBeNull()
     }
+
+    // The context meter ships visible: it is the one per-turn readout whose
+    // answer can cost a session (context about to overflow), #93280.
+    expect(within(statusbar).getByText('Context meter')).toBeTruthy()
+    expect($statusbarHiddenIds.get()).not.toContain('context-usage')
 
     openContextMenu(statusbar)
 

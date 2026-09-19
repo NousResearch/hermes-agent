@@ -19406,7 +19406,12 @@ def test_restart_slash_worker_noop_without_worker(monkeypatch):
 def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
     """With eager pre-warm removed, slash.exec is the only spawn path — two
     concurrent worker-routed commands on a fresh session must not each fork a
-    full MCP-fleet worker. The per-session spawn lock serializes first use."""
+    full MCP-fleet worker. The per-session spawn lock serializes first use.
+
+    The probe is an unregistered command so it is not answered live, pending-input,
+    bundle, skill, or plugin — it falls through to the worker spawn (the path under
+    test). ``/context`` was the original probe but is now answered in-process for a
+    local session (the #93280 fix), so it no longer reaches the worker."""
     import time as _time
 
     spawned = []
@@ -19436,7 +19441,7 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
             {
                 "id": str(n),
                 "method": "slash.exec",
-                "params": {"command": "/context", "session_id": "race-spawn"},
+                "params": {"command": "/frobnicate-probe", "session_id": "race-spawn"},
             }
         )
         results.append(resp)

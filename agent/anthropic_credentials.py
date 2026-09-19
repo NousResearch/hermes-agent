@@ -209,6 +209,52 @@ def _claude_oauth_record(data: Any, source: str) -> Optional[Dict[str, Any]]:
     }
 
 
+_KEYCHAIN_ATTR = r'(?:0x(?P<hex>[0-9A-Fa-f]+)\b.*|"(?P<text>.*)")'
+
+
+def _decode_keychain_attr(match: Optional["re.Match[str]"]) -> str:
+    """``security`` prints an attribute as ``"text"`` when it is plain printable ASCII and as
+    ``0x<HEX>  "<octal-escaped echo>"`` otherwise; the quoted form is NOT escaped (an embedded
+    ``"`` appears raw), so the text group must run to the last quote on the line."""
+    if match is None:
+        return ""
+    if match.group("hex"):
+        try:
+            return bytes.fromhex(match.group("hex")).decode("utf-8")
+        except ValueError:
+            return ""
+    return match.group("text") or ""
+
+
+def _find_claude_code_keychain_item() -> Optional[tuple[str, Dict[str, Any]]]:
+    """``(account, payload)`` of the ``Claude Code-credentials`` login Keychain item, or None.
+
+    One ``find-generic-password -g`` call: attributes on stdout, ``password: …`` on stderr. The
+    account matters because ``add-generic-password -U`` matches on account AND service — writing
+    under another account would create a second item instead of updating the one Claude Code reads.
+    """
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-g"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    account = _decode_keychain_attr(re.search(r'^\s*"acct"<blob>=' + _KEYCHAIN_ATTR + r"\s*$", result.stdout, re.M))
+    raw = _decode_keychain_attr(re.search(r"^password: " + _KEYCHAIN_ATTR + r"\s*$", result.stderr, re.M))
+    if not account or not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    return (account, payload) if isinstance(payload, dict) else None
+
+
 def _read_claude_code_keychain_payload() -> Optional[Dict[str, Any]]:
     """Raw ``{"claudeAiOauth": {...}, ...}`` payload from the macOS Keychain, or None.
 
@@ -240,23 +286,6 @@ def _read_claude_code_keychain_payload() -> Optional[Dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
-def _claude_code_keychain_account() -> str:
-    """The ``acct`` attribute of the existing Keychain item (``""`` when unreadable).
-
-    ``add-generic-password -U`` matches on account AND service; writing under a different
-    account would create a second item instead of updating the one Claude Code reads.
-    """
-    try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    match = re.search(r'"acct"<blob>="((?:[^"\\]|\\.)*)"', result.stdout) if result.returncode == 0 else None
-    return match.group(1) if match else ""
-
-
 def _keychain_mirror_command(account: str, payload: Dict[str, Any]) -> tuple[list[str], str]:
     """``(argv, stdin)`` that updates the Claude Code Keychain item with ``payload``.
 
@@ -265,8 +294,10 @@ def _keychain_mirror_command(account: str, payload: Dict[str, Any]) -> tuple[lis
     no terminal, reads only the first line and stores an EMPTY password when the confirmation
     read hits EOF — either way the live token must never sit on argv.
     """
-    quoted = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'  # noqa: E731 - security -i tokenizer
-    encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8").hex()
+    def quoted(value: str) -> str:  # the ``security -i`` tokenizer: double quotes, backslash escapes
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8").hex()
     line = f"add-generic-password -U -a {quoted(account)} -s {quoted(_CLAUDE_CODE_KEYCHAIN_SERVICE)} -X {encoded}\n"
     return ["security", "-i"], line
 
@@ -451,7 +482,10 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
             # The POST spent ``refresh_token``; this write is the commit step. On failure, fail closed and
             # mark the pre-rotation pair as spent.
             try:
-                _write_claude_code_credentials(refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"])
+                _write_claude_code_credentials(
+                    refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"],
+                    spent_refresh_token=refresh_token,
+                )
             except Exception as e:
                 logger.error(
                     "Anthropic OAuth refresh rotated the single-use token but could not "
@@ -473,7 +507,8 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
 
 
 def _write_claude_code_credentials(
-    access_token: str, refresh_token: str, expires_at_ms: int, *, scopes: Optional[list] = None
+    access_token: str, refresh_token: str, expires_at_ms: int, *, scopes: Optional[list] = None,
+    spent_refresh_token: str = "",
 ) -> None:
     """Commit refreshed credentials to ~/.claude/.credentials.json; ``CredentialPersistError`` on any failure (a
     corrupt existing file included). *scopes* (or the previously stored scopes) are persisted because Claude Code
@@ -491,7 +526,8 @@ def _write_claude_code_credentials(
         oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
     existing["claudeAiOauth"] = oauth_data
     _commit_private_json(cred_path, existing, "credentials")
-    _mirror_claude_code_credentials_to_keychain(access_token, refresh_token, expires_at_ms)
+    _mirror_claude_code_credentials_to_keychain(
+        access_token, refresh_token, expires_at_ms, spent_refresh_token=spent_refresh_token)
 
 
 def _merge_keychain_credential_payload(
@@ -510,33 +546,33 @@ def _merge_keychain_credential_payload(
 
 
 def _mirror_claude_code_credentials_to_keychain(
-    access_token: str, refresh_token: str, expires_at_ms: int
+    access_token: str, refresh_token: str, expires_at_ms: int, *, spent_refresh_token: str
 ) -> None:
-    """Mirror a committed refresh into the macOS Keychain when an entry already exists.
+    """After a Hermes refresh, write the rotated pair into the Claude Code Keychain item too (#98334).
 
-    On Darwin the Keychain is Claude Code's authoritative store, but Hermes historically
-    only wrote ``~/.claude/.credentials.json``. Because the refresh token is single-use and
-    rotating, that left the Keychain holding an already-invalidated token, which Claude Code
-    then spent into ``invalid_grant`` and discarded (``Login: Expired``). Mirror the rotated
-    pair back with ``add-generic-password -U`` (through ``security -i``) so both stores agree.
-
-    Fail-soft: a Keychain mirror failure is logged, never raised. The file commit has already
-    succeeded and the resolver still resolves from it; only the secondary store stays stale.
-    No-op off Darwin and when no entry exists (we never create one the user has not).
+    Claude Code on macOS reads the login Keychain first. Refresh tokens are single-use, so a refresh
+    that only updates the file leaves the Keychain holding a spent token and Claude Code logs itself
+    out. Only the item that held the pair we just spent is updated — a different pair there means a
+    different login (``CLAUDE_CONFIG_DIR``) or a rotation Claude Code already made, and clobbering it
+    would be the bug in the other direction. Best-effort: never raises, never creates an item.
     """
     if platform.system() != "Darwin":
         return
     try:
-        existing = _read_claude_code_keychain_payload()
-        account = _claude_code_keychain_account() if existing else ""
-        if not existing or not account:
+        item = _find_claude_code_keychain_item()
+        if item is None:
+            return
+        account, existing = item
+        oauth = existing.get("claudeAiOauth")
+        if not isinstance(oauth, dict) or oauth.get("refreshToken") != spent_refresh_token:
+            logger.debug("Keychain mirror skipped: item does not hold the pair that was just rotated")
             return
         argv, line = _keychain_mirror_command(
             account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
         result = subprocess.run(
             argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired) as e:
+    except Exception as e:  # the file commit already succeeded; a Keychain hiccup must not fail the rotation
         logger.debug("Keychain mirror skipped (%s)", e)
         return
     if result.returncode != 0:

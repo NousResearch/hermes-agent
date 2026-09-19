@@ -253,9 +253,9 @@ _CAPABILITY_PARAMS = (
 
 _GENERIC_DESCRIPTION = (
     "Generate a video from a text prompt (text-to-video), animate a "
-    "still image (image-to-video), or guide generation with reference images. "
-    "Pass `image_url` to animate an image or `reference_image_urls` for "
-    "reference-to-video. Video edit/extend workflows are not part of this "
+    "still image (image-to-video){reference_modality}. "
+    "Pass `image_url` to animate an image{reference_param}. "
+    "Video edit/extend workflows are not part of this "
     "unified surface; use a dedicated provider-specific tool when one is "
     "available. The backend and model family are user-configured via "
     "`hermes tools` → Video Generation; the agent does not pick them. "
@@ -266,6 +266,18 @@ _GENERIC_DESCRIPTION = (
     "file-delivery convention for the current platform (your platform "
     "guidance describes how files are delivered here)."
 )
+
+
+def _generic_description(max_refs: int) -> str:
+    """The generic blurb, naming ``reference_image_urls`` only when the schema
+    below actually carries it — two shipped backends declare
+    ``max_reference_images: 0``, and advertising a param the schema lacks just
+    earns a rejected call. Same gating as ``image_generate``'s edit clause."""
+    if max_refs > 0:
+        return _GENERIC_DESCRIPTION.format(
+            reference_modality=", or guide generation with reference images",
+            reference_param=" or `reference_image_urls` for reference-to-video")
+    return _GENERIC_DESCRIPTION.format(reference_modality="", reference_param="")
 
 
 def _schema(description: str, properties: Dict[str, Any]) -> Dict[str, Any]:
@@ -286,14 +298,15 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     """Description AND params from capabilities() + the model's catalog entry; enums and duration
     bounds tighten to the active model. Unadvertised args are still accepted (replay compat)."""
     static_props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-    parts: List[str] = [_GENERIC_DESCRIPTION]
+    parts: List[str] = []
     configured_model = _read_configured_video_model()
     provider = _resolve_active_provider()
     if provider is None:
         parts.append(
             "\nNo video backend is available. Calls will return an error "
             "until the user picks one via `hermes tools` → Video Generation.")
-        return _schema("\n".join(parts), {"prompt": static_props["prompt"]})
+        return _schema("\n".join([_generic_description(0), *parts]),
+                       {"prompt": static_props["prompt"]})
     caps = _provider_call(provider, "capabilities", {})
     models = _provider_call(provider, "list_models", [])
     active_model = configured_model or provider.default_model()
@@ -332,13 +345,13 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         if notice:
             parts.append(f"- storage: {notice}")
     properties: Dict[str, Any] = {"prompt": static_props["prompt"]}
+    max_refs = int(caps.get("max_reference_images") or 0) if can_i2v else 0
     if can_i2v:
         properties["image_url"] = {
             "type": "string",
             "description": (
                 "Public HTTPS URL of a still image to animate "
                 "(image-to-video). Omit for text-to-video.")}
-        max_refs = int(caps.get("max_reference_images") or 0)
         if max_refs > 0:
             properties["reference_image_urls"] = {
                 "type": "array",
@@ -373,7 +386,7 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
             "(always on; no toggle) — describe the desired sound in the "
             "prompt")
     properties["model"] = static_props["model"]
-    return _schema("\n".join(parts), properties)
+    return _schema("\n".join([_generic_description(max_refs), *parts]), properties)
 
 
 registry.register(

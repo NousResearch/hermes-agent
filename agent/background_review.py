@@ -313,7 +313,9 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 
 
 # Review prompts. AIAgent exposes them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) so
-# per-agent overrides work; the text lives here.
+# per-agent overrides work; the text lives here. Users can override any of them via
+# ``agent.review_prompts.{memory,skill,combined}`` (or ``..._file``) in config.yaml — see
+# ``_resolve_review_prompt`` below for the full resolution chain.
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
     "Focus on:\n"
@@ -1254,11 +1256,214 @@ def _run_review_in_thread(
         _set_thread_approval_callback(None)
 
 
-# (review_memory, review_skills) -> prompt attribute name; skills-only is also the default.
-_PROMPT_NAME_BY_SCOPE = {
-    (True, True): "_COMBINED_REVIEW_PROMPT", (True, False): "_MEMORY_REVIEW_PROMPT",
-    (False, True): "_SKILL_REVIEW_PROMPT", (False, False): "_SKILL_REVIEW_PROMPT",
+# (review_memory, review_skills) -> config-side kind; skills-only is also the default.
+# The prompt attribute name follows via _REVIEW_PROMPT_BY_KIND — one table chain, one edit
+# point when a review kind is added.
+_REVIEW_KIND_BY_SCOPE = {
+    (True, True): "combined", (True, False): "memory",
+    (False, True): "skill", (False, False): "skill",
 }
+
+# Config-side review-prompt kind (``agent.review_prompts.*`` in config.yaml) -> the module-level
+# constant it overrides. One table so adding a review kind needs one edit here.
+_REVIEW_PROMPT_BY_KIND: Dict[str, str] = {
+    "memory": "_MEMORY_REVIEW_PROMPT",
+    "skill": "_SKILL_REVIEW_PROMPT",
+    "combined": "_COMBINED_REVIEW_PROMPT",
+}
+
+# Upper bound for a review-prompt override file. Prompts are a few KB; anything past this is a
+# misconfiguration (wrong file, a symlink to something huge) and must skip the review loudly,
+# not silently stuff megabytes into the fork's user message.
+_REVIEW_PROMPT_FILE_MAX_BYTES = 64 * 1024
+
+
+def _resolve_review_prompt(agent: Any, kind: str, explicit: bool = False) -> Optional[str]:
+    """Pick the review prompt for one review kind, or ``None`` to skip that review.
+
+    Resolution order (first hit wins):
+
+      1. A per-instance ``agent._MEMORY_REVIEW_PROMPT``-style attribute, checked ONLY when it
+         differs from the module constant: ``run_agent`` imports the constants onto the AIAgent
+         class namespace, so an identity check (``is not``) is what distinguishes a real
+         programmatic override from the inherited default. Without it the shadowed default wins
+         and config can never apply (the #57447 review finding).
+      2. ``agent.review_prompts.<kind>`` (inline string). ``None``/missing → fall through; a
+         non-string → error skip; ``""`` → explicit "off": skip this review silently.
+      3. ``agent.review_prompts.<kind>_file`` — path to a UTF-8 text file whose content replaces
+         the prompt for this kind. Relative paths resolve against the OWNING profile home
+         (``_agent_home``), never CWD or the launch profile. An explicitly configured file that
+         is missing/unreadable/empty/non-UTF-8/oversized/non-regular is an ERROR: warn and skip
+         the affected review — never silently run the default against user intent. Read once per
+         spawn so one review sees one stable prompt snapshot (no TOCTOU mid-review).
+      4. The module-level constant — the unchanged shipped default.
+
+    ``explicit`` (``/refine``): config overrides never disable or starve a user-requested review;
+    an invalid config override falls back to the shipped default with a warning instead of
+    skipping, mirroring the ``auxiliary.background_review.enabled`` contract (auto off, /refine on).
+
+    The config read is fail-open to the default (narrow ``except``), because a broken config.yaml
+    must not crash the review thread — but a broken EXPLICIT override still skips, per 2/3.
+    """
+    attr_name = _REVIEW_PROMPT_BY_KIND.get(kind)
+    if attr_name is None:
+        # Unknown kind — caller bug. Don't raise: a bad probe into the
+        # review API shouldn't kill the user's turn.
+        return _MEMORY_REVIEW_PROMPT
+    default = globals()[attr_name]
+    # 1. Programmatic per-instance/subclass override — only when it differs from the module
+    #    constant: ``run_agent`` binds the constants onto the AIAgent class namespace, so an
+    #    equal value is the inherited DEFAULT, not an override (the #57447 review finding).
+    try:
+        per_instance = getattr(agent, attr_name, None)
+    except Exception:
+        per_instance = None
+    if isinstance(per_instance, str) and per_instance and per_instance != default:
+        return per_instance
+    # 2./3. Config: inline ``<kind>`` string first, then ``<kind>_file`` path. Both live under
+    #    ``agent.review_prompts``; read once here (per-spawn snapshot; edits land next review).
+    rp_cfg = _review_prompts_config_block()
+    if rp_cfg is not None:
+        inline = rp_cfg.get(kind)
+        if isinstance(inline, str):
+            if inline == "":
+                # Explicit "off" sentinel — silent skip on automatic reviews.
+                if not explicit:
+                    return None
+                logger.warning(
+                    "background_review: agent.review_prompts.%s is empty; explicit /refine "
+                    "runs with the shipped default instead of skipping", kind)
+                return default
+            # Same edge-strip as *_file content: a YAML block scalar's trailing newline is
+            # syntax, not intent — and files/inline get identical treatment.
+            stripped = inline.strip()
+            if not stripped:
+                # Whitespace-only inline ≈ whitespace-only file: invalid override, error-skip
+                # with a warning (mirrors the file path), NOT the "" disable sentinel.
+                logger.warning(
+                    "background_review: agent.review_prompts.%s is whitespace-only — an empty "
+                    "override is NOT a disable; use %s: \"\" in config.yaml to turn this "
+                    "review off. %s", kind, kind,
+                    "Explicit /refine runs with the shipped default" if explicit else "Skipping this review")
+                return None if not explicit else default
+            return stripped
+        if inline is not None:
+            _warn_prompt_override_error(
+                kind, f"inline value is {type(inline).__name__}, expected a string", explicit)
+            if not explicit:
+                return None
+            return default
+        file_raw = rp_cfg.get(f"{kind}_file")
+        if isinstance(file_raw, str):
+            if file_raw.strip():
+                file_prompt = _read_review_prompt_file(agent, kind, file_raw)
+                if file_prompt is None:  # actionable diagnostic already logged
+                    if not explicit:
+                        return None
+                    return default
+                return file_prompt
+            # An empty/whitespace-only path string is UNSET, not an error (DEFAULT_CONFIG
+            # seeds "" for the *_file slots; ``hermes config unset`` leaves "").
+        elif file_raw is not None:
+            _warn_prompt_override_error(
+                kind, f"{kind}_file is {type(file_raw).__name__}, expected a path string", explicit)
+            if not explicit:
+                return None
+            return default
+    # 4. Shipped default — byte-equivalent to pre-feature behavior when nothing is set.
+    return default
+
+
+def _review_prompts_config_block() -> Optional[Dict[str, Any]]:
+    """``config["agent"]["review_prompts"]`` as a dict, or None when absent/unreadable.
+
+    ``load_config`` resolves the context-local home (``HERMES_HOME`` ContextVar override → env),
+    so a multiplexed gateway dispatch binds the owning profile before calling in. A broken
+    config.yaml fails open to None (module defaults) with a warning, never crashes the caller.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        agent_cfg = load_config_readonly().get("agent")
+        rp = agent_cfg.get("review_prompts") if isinstance(agent_cfg, dict) else None
+        return rp if isinstance(rp, dict) else None
+    except (ImportError, OSError, ValueError) as exc:
+        # ImportError: hermes_cli.config unavailable in odd contexts. OSError: config file
+        # unreadable. (The loader never raises on a YAML parse error — it serves
+        # last-known-good/defaults internally — so these arms cover exotic loader failures
+        # only; anything else is a bug we'd rather see than swallow.)
+        logger.warning(
+            "background_review: could not read config (%s); using module-level prompt defaults", exc)
+        return None
+
+
+def _read_review_prompt_file(agent: Any, kind: str, raw_path: str) -> Optional[str]:
+    """Read one review-prompt override file. Returns the prompt text, or None after an
+    actionable diagnostic (the caller skips the affected review — an explicit config
+    must not silently fall back to a default the user replaced).
+
+    Bounds: regular files only (no FIFOs/devices), ``stat`` before read, size <= 64 KiB,
+    decode UTF-8 strictly (a prompt the model can't see byte-exactly is a silent corruption),
+    strip trailing whitespace only. Relative paths resolve against the agent's OWNING profile
+    home (``_agent_home``: bound ContextVar override → session-db-derived), never CWD.
+    """
+    from pathlib import Path
+    from agent.system_prompt import _agent_home
+    from hermes_constants import get_hermes_home
+    import stat as stat_module
+    raw_path = raw_path.strip()
+    try:
+        base = _agent_home(agent) or get_hermes_home()
+    except Exception:
+        base = get_hermes_home()
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    try:
+        st = path.stat()
+        if not stat_module.S_ISREG(st.st_mode):
+            logger.warning(
+                "background_review: agent.review_prompts.%s_file %s is not a regular file — "
+                "skipping this review (fix the path or remove the key)", kind, path)
+            return None
+        if st.st_size == 0:
+            logger.warning(
+                "background_review: agent.review_prompts.%s_file %s is empty — an empty file is "
+                "NOT a disable; use %s: \"\" in config.yaml to turn this review off. Skipping "
+                "this review", kind, path, kind)
+            return None
+        if st.st_size > _REVIEW_PROMPT_FILE_MAX_BYTES:
+            logger.warning(
+                "background_review: agent.review_prompts.%s_file %s is %d bytes (max %d) — "
+                "skipping this review", kind, path, st.st_size, _REVIEW_PROMPT_FILE_MAX_BYTES)
+            return None
+        data = path.read_bytes()
+        if len(data) > _REVIEW_PROMPT_FILE_MAX_BYTES:
+            logger.warning(
+                "background_review: agent.review_prompts.%s_file %s grew past %d bytes between "
+                "stat and read — skipping this review", kind, path, _REVIEW_PROMPT_FILE_MAX_BYTES)
+            return None
+        text = data.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning(
+            "background_review: could not read agent.review_prompts.%s_file %s (%s) — skipping "
+            "this review (fix the path or remove the key)", kind, path, exc)
+        return None
+    stripped = text.strip()
+    if not stripped:
+        # whitespace-only file ≈ empty: still an error skip, with the disable hint.
+        logger.warning(
+            "background_review: agent.review_prompts.%s_file %s contains only whitespace — "
+            "an empty file is NOT a disable; use %s: \"\" in config.yaml. Skipping this review",
+            kind, path, kind)
+        return None
+    return stripped
+
+
+def _warn_prompt_override_error(kind: str, detail: str, explicit: bool) -> None:
+    logger.warning(
+        "background_review: invalid agent.review_prompts.%s override (%s) — %s",
+        kind, detail,
+        "explicit /refine runs with the shipped default" if explicit else "skipping this review")
 
 
 def spawn_background_review_thread(
@@ -1268,16 +1473,40 @@ def spawn_background_review_thread(
     explicit: bool = False,
 ):
     """Return ``(target, prompt)``; the caller builds the ``threading.Thread`` so test patches of
-    ``run_agent.threading.Thread`` keep working. ``focus`` (``/refine [instructions]``) is appended
+    ``run_agent.threading.Thread`` keep working. ``prompt`` is ``None`` when the resolved review
+    policy skips this review (``agent.review_prompts.<kind>: \"\"`` disable, or an invalid
+    explicit override — see :func:`_resolve_review_prompt`): the caller must NOT start the
+    thread and must still finish the run token. ``focus`` (``/refine [instructions]``) is appended
     to the chosen prompt; automatic reviews pass ``None``. ``task_cfg`` is the pre-loaded
     ``auxiliary.background_review`` block; when omitted it is read once here. ``explicit``
     (/refine) propagates to the fork's write origin so user-requested reviews keep the full
     memory operation set."""
     if task_cfg is None:
         task_cfg = _background_review_task_config()
-    # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
-    name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
-    prompt = getattr(agent, name, globals()[name])
+    # Resolution chain (see ``_resolve_review_prompt``): programmatic per-agent override (only
+    # when it differs from the inherited class default) → config inline → config file → module
+    # constant. Legacy per-agent overrides that set ``agent._MEMORY_REVIEW_PROMPT`` etc. directly
+    # keep working; ``None`` means the configured policy skips this review. Resolved ONCE here,
+    # synchronously: one stable prompt snapshot per review (no TOCTOU mid-fork), and edits to a
+    # *_file land on the next review. The owning-profile binding pins config + file reads to the
+    # agent's own home on threads that lost the ContextVar (idle-queue dispatch, requeue).
+    from hermes_constants import (
+        set_hermes_home_override, reset_hermes_home_override, get_hermes_home_override,
+    )
+    from agent.system_prompt import _agent_home
+    kind = _REVIEW_KIND_BY_SCOPE[(review_memory, review_skills)]
+    _home_token = None
+    if get_hermes_home_override() is None:
+        agent_home = _agent_home(agent)
+        if agent_home is not None:
+            _home_token = set_hermes_home_override(str(agent_home))
+    try:
+        prompt = _resolve_review_prompt(agent, kind, explicit=explicit)
+    finally:
+        if _home_token is not None:
+            reset_hermes_home_override(_home_token)
+    if prompt is None:
+        return None, None
     if focus := (focus or "").strip():
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "

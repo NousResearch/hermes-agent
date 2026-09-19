@@ -168,12 +168,19 @@ def test_enabled_config_failure_logs_warning(caplog):
 
 
 def test_spawn_reuses_provided_task_cfg_without_rereading():
-    """One config load per spawn — the worker shares task_cfg."""
+    """One config load per spawn — the worker shares task_cfg.
+
+    The AUX block (``auxiliary.background_review``) is never re-read when passed in:
+    ``_background_review_task_config`` must not fire. The PROMPT block
+    (``agent.review_prompts``) is a different section resolved via the cached
+    ``load_config_readonly`` (one stat, no re-parse) — that read is the feature, not a
+    regression; see test_review_prompt_override.py.
+    """
     task = {"enabled": True}
     agent = type("A", (), {})()
     with patch(
-        "hermes_cli.config.load_config_readonly",
-        side_effect=AssertionError("config must not be re-read when task_cfg is passed"),
+        "agent.background_review._background_review_task_config",
+        side_effect=AssertionError("aux config block must not be re-read when task_cfg is passed"),
     ):
         _target, prompt = background_review.spawn_background_review_thread(
             agent,

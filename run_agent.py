@@ -822,6 +822,12 @@ class AIAgent(
                 self, messages_snapshot, review_memory=review_memory, review_skills=review_skills,
                 focus=focus, task_cfg=task_cfg, review_run=review_run, explicit=explicit,
             )
+            if target is None:
+                # The resolved review policy skips this review (explicit disable or invalid
+                # override — see ``_resolve_review_prompt``). No thread, no model call; release
+                # the run token so the next review can spawn.
+                finish_background_review_run(self, review_run)
+                return
 
             def _target_with_requeue() -> None:
                 target()

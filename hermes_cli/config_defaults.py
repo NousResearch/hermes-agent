@@ -254,6 +254,26 @@ DEFAULT_CONFIG = {
         # timeout_s <= 0 disables; poll_s = sampling interval. Invalid values (NaN, Inf,
         # non-positive poll) warn and fall back to defaults. See agent/turn_liveness.py.
         "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
+        # Background-review prompt overrides — tune the post-turn memory/skill review fork
+        # without forking Hermes. Each kind ("memory", "skill", "combined") supports an inline
+        # string and a *_file path. Unset = byte-identical shipped defaults. Resolution order
+        # (first hit wins): programmatic per-agent override → inline string → *_file → shipped
+        # default. "" inline = explicitly disable that review kind (auto reviews skip silently;
+        # /refine still runs with the shipped default). A *_file path is read once per review;
+        # relative paths resolve against the OWNING profile home, never CWD. An explicitly
+        # configured file that is missing/unreadable/empty/non-UTF-8/oversized (>64KiB) is an
+        # error: the affected review is skipped with a warning — never silently replaced by the
+        # default. An empty file is NOT a disable; use "" inline. The override only changes the
+        # user message the review fork receives: system prompt, prompt cache, tool whitelist,
+        # write approvals and protected-file boundaries are untouched.
+        "review_prompts": {
+            "memory": None,
+            "memory_file": "",
+            "skill": None,
+            "skill_file": "",
+            "combined": None,
+            "combined_file": "",
+        },
     },
 
     "terminal": {

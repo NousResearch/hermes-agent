@@ -412,6 +412,62 @@ and tools not listed here remain denied. Keep the list narrow and prefer tools
 that stage a proposal for human review rather than applying external or
 destructive changes directly. The default is an empty list.
 
+### Customizing the review prompts (`agent.review_prompts`)
+
+The post-turn review's instructions are shipped defaults, but they are not a
+contract: you can retune what each review kind looks for without forking
+Hermes. Three kinds are overridable — `memory` (memory-only reviews), `skill`
+(skill-only reviews), and `combined` (both fired in the same fork) — each as an
+inline string or a `*_file` path:
+
+```yaml
+agent:
+  review_prompts:
+    memory: |
+      Review the conversation above. Save ONLY durable user facts to memory
+      (persona, preferences, persistent environment facts). One-shot tool
+      failures and transient task notes do NOT belong in memory.
+      If nothing qualifies, say "Nothing to save." and stop.
+    skill_file: prompts/skill-review.md
+```
+
+Resolution order (first hit wins): a programmatic per-agent override → the
+inline string → the `*_file` file → the shipped default. Unset means the
+shipped default, byte-for-byte — nothing changes for existing users.
+
+`*_file` paths are read once per review, so editing the file takes effect on
+the next review with no restart. Relative paths resolve against your profile
+home (`~/.hermes`, or `~/.hermes/profiles/<name>`), never the working
+directory; files must be regular UTF-8 text, up to 64 KiB. Keep prompts in
+files when you iterate on wording — config.yaml stays untouched.
+
+An inline `""` (empty string) explicitly disables that review kind: automatic
+reviews skip it entirely (no model call), while `/refine` still works and runs
+on the shipped default. An empty *file* is an error, not a disable. Likewise, a
+configured file that is missing, unreadable, non-UTF-8, or oversized skips the
+affected review with a warning — an explicit override is never silently
+replaced by the default it replaced.
+
+A practical conservative example (an operator policy that prefers evidence and
+a valid no-change outcome over an incentive to always produce an edit):
+
+```yaml
+agent:
+  review_prompts:
+    skill: |
+      Update the skill library only on evidence-backed, reusable lessons:
+      a technique that worked, a recurring user preference, or a wrong or
+      outdated skill. One-off fixes, environment failures and incident
+      narration are not lessons. If nothing qualifies, say "Nothing to save."
+      and stop — that is a valid outcome, not a missed opportunity.
+```
+
+This is one example policy, not a shipped default. The override only changes
+the user message the review fork receives: the main conversation's system
+prompt and prompt cache are untouched, and the fork's tool whitelist, write
+approvals and protected-file boundaries are enforced separately and unchanged.
+You cannot relax those boundaries from review prompts.
+
 ### Local models: reviews wait for an idle GPU (`defer`)
 
 On a cloud provider the review finishes in seconds and runs alongside

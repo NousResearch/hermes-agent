@@ -1189,6 +1189,53 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Override the background-review prompts the forked review agent receives
+  # after each turn. Each value here REPLACES the module-level constant for
+  # that review kind. Leave a field unset (null / missing) to keep the
+  # shipped default — these are *opt-in* overrides, not new defaults.
+  #
+  # Two forms per kind ("memory", "skill", "combined"):
+  #   memory: |            inline prompt text
+  #   memory_file: path    read the prompt from a file (edit prompts without
+  #                        touching config.yaml; picked up on the next review)
+  # Relative *_file paths resolve against YOUR profile home (~/.hermes or
+  # ~/.hermes/profiles/<name>), never the working directory. Files are read
+  # once per review (one stable snapshot), capped at 64 KiB, and must be
+  # regular UTF-8 text files.
+  #
+  # Resolution chain (first hit wins):
+  #   1. programmatic per-agent override (subclass / test patch)
+  #   2. inline string in this block
+  #   3. *_file path in this block
+  #   4. module-level constant in `agent/background_review.py`
+  #
+  # Use ``memory``  to retune what counts as memory-worthy.
+  # Use ``skill``   to retune the skill-create / patch / library-shape ladder.
+  # Use ``combined`` when both review kinds fire in the same fork.
+  # Set an inline field to "" (empty string) to disable that review variant
+  # explicitly — automatic reviews skip that kind; /refine still runs on the
+  # shipped default. An empty FILE is an error, not a disable: the affected
+  # review is skipped with a warning, as is a configured file that is
+  # missing/unreadable/non-UTF-8/oversized — never silently replaced by the
+  # default you replaced.
+  #
+  # Safety: this only changes the user-message the background review fork
+  # receives. The main-conversation system prompt and per-conversation prompt
+  # cache are untouched (per AGENTS.md "Per-conversation prompt caching is
+  # sacred"), and the review fork's tool whitelist, write approvals and
+  # protected-file boundaries are enforced separately and unchanged.
+  # review_prompts:
+  #   memory: |
+  #     Review the conversation above. Save ONLY durable user facts to memory
+  #     (persona, preferences, persistent environment facts). One-shot tool
+  #     failures and transient task notes do NOT belong in memory.
+  #     If nothing qualifies, say "Nothing to save." and stop.
+  #   skill_file: prompts/skill-review.md
+  #   combined: |
+  #     Two things. Memory: durable user facts only. Skills: durable lessons
+  #     from this session. Skip one-offs on both sides.
+  #     "Nothing to save." is fine when both criteria are empty.
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. Off by default (false). Set true to force it on
   # everywhere, or "auto" for the surface-aware mode: on for interactive

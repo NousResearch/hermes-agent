@@ -360,7 +360,26 @@ class GatewayAuthorizationMixin:
     def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the transport-owning profile for adapter policy lookups."""
         owner = self._transport_owner(source)
-        return owner[1] if owner is not None else getattr(source, "profile", None)
+        if owner is not None:
+            return owner[1]
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None and identity.multiplexed:
+            return None if identity.transport_profile == "default" else identity.transport_profile
+        return getattr(source, "profile", None)
+
+    def _restored_source(self, entry) -> Optional[SessionSource]:
+        """``entry.origin`` with its identity re-pinned from the routing entry's persisted
+        ``transport_profile`` (no live adapter: the restored row of the transport matrix). Every path
+        that revives a session from durable state — auto-resume, heartbeat restore, plugin injection,
+        background-process events — reads the origin through here, so the receiving bot decides
+        delivery and authorization after a restart, not the runtime profile's heuristics."""
+        source = getattr(entry, "origin", None)
+        if source is None:
+            return None
+        from gateway.session_identity import restore_identity
+        restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
+        return source
 
     def _adapter_flag(self, platform, name: str, profile) -> bool:
         """Adapter-declared boolean, False when unknown. ``authorization_is_upstream`` (relay: a trusted

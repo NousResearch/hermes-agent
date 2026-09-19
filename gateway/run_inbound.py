@@ -1857,7 +1857,8 @@ class GatewayInboundMixin:
         if entry is None or entry.origin is None or not _accepting():
             return False
 
-        source = dataclasses.replace(entry.origin)
+        from gateway.session_identity import replace_source
+        source = replace_source(self._restored_source(entry))
         try:
             authorized = self._is_user_authorized_for_source(source, allow_adapter_delegation=False)
         except Exception:

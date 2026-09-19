@@ -99,6 +99,13 @@ def clear_identity(source: Any) -> None:
         source.profile = None
 
 
+def transport_profile_of(source: Any) -> Optional[str]:
+    """The receiving bot's profile to persist alongside a routing entry (``SessionEntry.transport_profile``);
+    None outside multiplexing or when nothing resolved the source (an unknown transport is never guessed)."""
+    identity = identity_of(source)
+    return identity.transport_profile if identity is not None and identity.multiplexed else None
+
+
 def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":
     """:func:`dataclasses.replace` that keeps the wire-invisible provenance (transport ref,
     authorization home, identity). A plain ``replace`` silently produces a source the runner
@@ -134,6 +141,46 @@ def canonical_identity(
     except IdentityUnresolved as exc:
         logger.debug("identity unresolved: %s", exc)
         return None
+
+
+def restore_identity(
+    source: "SessionSource", *, runner: Any, transport_profile: Optional[str],
+) -> Optional[RoutingIdentity]:
+    """Pin the identity of a source rebuilt from durable state (``SessionEntry.origin``, a
+    ``sessions`` row, a cached copy) — no live adapter, so ``transport=None``: the restored row of the
+    transport matrix, where delivery goes through the persisted transport owner or fails closed.
+
+    *transport_profile* is what the routing index persisted at ingress (``SessionEntry.transport_profile``);
+    ``None`` = a row written before the column existed, whose transport is unknown → nothing is pinned
+    and the legacy heuristics (``_is_shared_bot_satellite``) keep deciding. Standalone gateways have
+    nothing to restore (one bot, one home).
+    """
+    transport_name = _name(transport_profile)
+    if transport_name is None:
+        return None
+    if not bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False)):
+        return None
+    existing = identity_of(source)
+    if existing is not None:
+        return existing
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import get_process_hermes_home
+
+    primary_profile = _name(getattr(runner, "_primary_profile_name", None)) or "default"
+    runtime_name = _name(getattr(source, "profile", None)) or primary_profile
+    authorization_home = (
+        Path(get_process_hermes_home()) if transport_name == primary_profile
+        else get_profile_dir(transport_name))
+    runtime_home = (
+        authorization_home if runtime_name == transport_name
+        else Path(runner._resolve_profile_home_for_source(source)))
+    source._authorization_profile_home = authorization_home
+    identity = RoutingIdentity(
+        transport_profile=transport_name, runtime_profile=runtime_name,
+        authorization_home=authorization_home, runtime_home=runtime_home,
+        multiplexed=True, transport=None)
+    setattr(source, _IDENTITY_ATTR, identity)
+    return identity
 
 
 def resolve_identity(

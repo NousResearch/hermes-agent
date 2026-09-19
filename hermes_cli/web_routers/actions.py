@@ -179,8 +179,12 @@ async def gateway_drain(request: Request):
 
     try:
         body = await request.json()
-    except Exception:
-        body = {}
+    except Exception as exc:
+        _log.warning("Malformed JSON body on /api/gateway/drain: %r", exc)
+        raise HTTPException(
+            status_code=400,
+            detail='Malformed JSON body; expected {"action": "drain"} or {"action": "cancel"}',
+        ) from exc
     body = body or {}
     action = str(body.get("action", "drain")).strip().lower()
     # Attribute to the verified token principal when the token-auth seam attached one.

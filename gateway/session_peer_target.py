@@ -117,5 +117,6 @@ def _authorize_output_admission(adapter, authority, shared, conn, token, dispatc
             or not isinstance(provider, MethodType) or provider.__self__ is not adapter
             or getattr(adapter, '_room_output_admission', None) is not provider):
         raise RuntimeStoreError('room_output_unavailable')
-    if provider(authority, shared, conn, token, dispatch, policy, evidence) is not True:
+    if (provider(authority, shared, conn, token, dispatch, policy, evidence) is not True
+            or getattr(adapter, '_room_output_admission', None) is not provider):
         raise RuntimeStoreError('room_output_unavailable')

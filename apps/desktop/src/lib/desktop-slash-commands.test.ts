@@ -240,8 +240,17 @@ describe('desktop slash command curation', () => {
     }
   })
 
+  it('routes /agents (and /tasks) to the spawn-tree overlay action, not the blind slash worker', () => {
+    expect(resolveDesktopCommand('/agents')?.surface).toEqual({ kind: 'action', action: 'agents' })
+    expect(resolveDesktopCommand('/tasks')?.surface).toEqual({ kind: 'action', action: 'agents' })
+    expect(isDesktopSlashCommand('/agents')).toBe(true)
+    expect(isDesktopSlashSuggestion('/agents')).toBe(true)
+    // Aliases execute but stay out of the popover.
+    expect(isDesktopSlashSuggestion('/tasks')).toBe(false)
+  })
+
   it('keeps commands with richer CLI semantics on the slash worker', () => {
-    for (const name of ['/agents', '/steer', '/usage']) {
+    for (const name of ['/steer', '/usage']) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
   })
@@ -485,9 +494,14 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
 
       const spec = resolveDesktopCommand(name)
 
-      // A desktop-owned action (e.g. /model picker) may override the registry.
+      // A desktop-owned action (e.g. /model picker, /agents pane) may override
+      // the registry with a LOCAL spec — those rows are not block-list entries.
       if (spec?.surface.kind === 'unavailable') {
         expect(spec.surface.reason).toBe(reason)
+      }
+
+      if (spec?.surface.kind === 'action') {
+        continue
       }
 
       expect(isDesktopSlashSuggestion(name)).toBe(false)

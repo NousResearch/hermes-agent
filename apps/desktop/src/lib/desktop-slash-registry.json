@@ -1,4 +1,5 @@
 {
+  "/agents": "agents",
   "/approve": "messaging",
   "/busy": "terminal",
   "/clear": "terminal",
@@ -36,6 +37,7 @@
   "/snap": "terminal",
   "/snapshot": "terminal",
   "/statusbar": "terminal",
+  "/tasks": "agents",
   "/toolsets": "terminal",
   "/update": "terminal",
   "/verbose": "terminal",

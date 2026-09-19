@@ -55,6 +55,7 @@ export interface DesktopThemeCommandOption {
  * keyed by the id.
  */
 export type DesktopActionId =
+  | 'agents'
   | 'branch'
   | 'browser'
   | 'btw'
@@ -227,6 +228,17 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Open the memory graph — skills + memories over time',
     aliases: ['/learning', '/memory-graph'],
     surface: action('journey')
+  },
+  // /agents must be an action (opens the Agents overlay pane), not exec: the
+  // slash worker is a separate process with an empty process registry and its
+  // own idle CLI, so the exec route always reported "Running processes: 0 ·
+  // Agent: idle" even while subagents were live in this chat. The pane reads
+  // the authoritative subagent.list snapshot from the real backend instead.
+  {
+    name: '/agents',
+    description: 'Show the spawn tree — live subagents and background workers',
+    aliases: ['/tasks'],
+    surface: action('agents')
   },
 
   // Overlay pickers

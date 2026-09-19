@@ -1,0 +1,15 @@
+name: meeting-overlay
+repo: https://github.com/taxbax/meeting-overlay
+sha: 64a3edfc701f007f66693d93dfdfca43a06b7857
+description: Native Hermes desktop pane showing the live meeting transcript, answer panel, and daemon
+  status for the meeting-mode copilot (BlackHole/mic -> faster-whisper -> rolling transcript).
+maintainer: taxbax
+tier: community
+category: desktop
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+platforms:
+- macos

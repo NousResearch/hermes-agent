@@ -3124,6 +3124,9 @@ export interface Translations {
       editModels: string
       refreshModels: string
       fast: string
+      pinned: string
+      pin: string
+      unpin: string
     }
     modelOptions: {
       noOptions: string

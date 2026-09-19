@@ -38,6 +38,7 @@ interface CatalogBrowserProps {
 const PAGE_SIZE = 60
 const ListViewIcon = codiconIcon('list-unordered')
 const CardViewIcon = codiconIcon('extensions')
+type PluginSort = 'default' | 'name' | 'stars'
 
 export const CatalogBrowser = memo(function CatalogBrowser({
   kind,
@@ -57,6 +58,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const deferredQuery = useDeferredValue(query.trim().toLowerCase())
   const [source, setSource] = useState('all')
   const [category, setCategory] = useState('all')
+  const [pluginSort, setPluginSort] = useState<PluginSort>('default')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const selectedCardRef = useRef<HTMLButtonElement | null>(null)
@@ -86,7 +88,26 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     (!deferredQuery || entry.search.includes(deferredQuery))
   ), [entries, source, category, deferredQuery])
 
-  const selected = filtered.find(entry => entry.id === selectedId) ?? filtered[0]
+  const visibleEntries = useMemo(() => {
+    if (kind !== 'plugins' || pluginSort === 'default') {
+      return filtered
+    }
+
+    return [...filtered].sort((a, b) => {
+      if (pluginSort === 'name') {
+        return a.name.localeCompare(b.name)
+      }
+
+      // Catalog snapshots omit star counts for some plugins. Keep those at
+      // the end while preserving their snapshot order and star-count ties.
+      if (a.stars === null) return b.stars === null ? 0 : 1
+      if (b.stars === null) return -1
+      return b.stars - a.stars
+    })
+  }, [filtered, kind, pluginSort])
+
+  const selected = visibleEntries.find(entry => entry.id === selectedId) ?? visibleEntries[0]
+
   const installedDetail = selected ? renderInstalledDetail?.(selected) : null
 
   const resetSelection = () => {
@@ -211,6 +232,16 @@ export const CatalogBrowser = memo(function CatalogBrowser({
               </SelectContent>
             </Select>
           </div>
+          {kind === 'plugins' && <div className="w-40">
+            <Select onValueChange={value => { setPluginSort(value as PluginSort); resetSelection() }} value={pluginSort}>
+              <SelectTrigger aria-label={c.sortBy}><SelectValue placeholder={c.defaultOrder} /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">{c.defaultOrder}</SelectItem>
+                <SelectItem value="name">{c.name}</SelectItem>
+                <SelectItem value="stars">{c.githubStars}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>}
         </div>
         <SegmentedControl
           className="ml-auto shrink-0"
@@ -235,10 +266,10 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         ) : view === 'browse' && cardView ? (
           <>
             <div className="flex h-full min-h-0 flex-col px-3 pb-3" data-catalog-cards={kind}>
-              <ListStrip left={<ListStripLabel>{c.results(filtered.length)}</ListStripLabel>} />
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]" key={`${source}:${category}:${deferredQuery}`}>
+              <ListStrip left={<ListStripLabel>{c.results(visibleEntries.length)}</ListStripLabel>} />
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]" key={`${source}:${category}:${pluginSort}:${deferredQuery}`}>
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,17rem),1fr))] gap-3 py-2">
-                  {filtered.slice(0, limit).map(entry => (
+                  {visibleEntries.slice(0, limit).map(entry => (
                     <article className="row-hover flex min-w-0 flex-col overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)" data-catalog-card key={entry.id}>
                       <RowButton
                         aria-haspopup="dialog"
@@ -266,7 +297,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                     </article>
                   ))}
                 </div>
-                {filtered.length > limit && <Button onClick={() => setLimit(value => value + PAGE_SIZE)} size="sm" variant="text">{c.more}</Button>}
+                {visibleEntries.length > limit && <Button onClick={() => setLimit(value => value + PAGE_SIZE)} size="sm" variant="text">{c.more}</Button>}
               </div>
             </div>
             <Dialog onOpenChange={setDetailOpen} open={detailOpen}>
@@ -286,8 +317,8 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         ) : (
           <div className={cn('h-full min-h-0', detailOpen ? '[&_aside]:max-sm:hidden' : '[&_main]:max-sm:hidden')} data-catalog-list={kind}>
             <MasterDetail resizeId="capabilities-split" split="wide">
-              <ListColumn header={<ListStrip left={<ListStripLabel>{c.results(filtered.length)}</ListStripLabel>} />} key={`${source}:${category}:${deferredQuery}`}>
-                {filtered.slice(0, limit).map(entry => (
+              <ListColumn header={<ListStrip left={<ListStripLabel>{c.results(visibleEntries.length)}</ListStripLabel>} />} key={`${source}:${category}:${pluginSort}:${deferredQuery}`}>
+                {visibleEntries.slice(0, limit).map(entry => (
                   <RowButton
                     aria-pressed={entry.id === selected.id}
                     className={cn('row-hover flex w-full min-w-0 items-start gap-3 rounded-md px-2 py-2 text-left', entry.id === selected.id && 'bg-(--ui-row-active-background)')}
@@ -308,7 +339,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                     </span>
                   </RowButton>
                 ))}
-                {filtered.length > limit && <Button onClick={() => setLimit(value => value + PAGE_SIZE)} size="sm" variant="text">{c.more}</Button>}
+                {visibleEntries.length > limit && <Button onClick={() => setLimit(value => value + PAGE_SIZE)} size="sm" variant="text">{c.more}</Button>}
               </ListColumn>
               <DetailColumn footer={c.snapshotHint}>
                 <div className="sm:hidden"><Button onClick={() => setDetailOpen(false)} size="sm" variant="text"><Codicon name="arrow-left" />{c.back}</Button></div>

@@ -75,6 +75,10 @@ export interface Translations {
     searchPlugins: string
     allSources: string
     allCategories: string
+    sortBy: string
+    defaultOrder: string
+    name: string
+    githubStars: string
     about: string
     author: string
     source: string

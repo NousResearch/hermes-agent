@@ -22,7 +22,7 @@ afterEach(() => {
 })
 
 function setup(kind: CatalogKind) {
-  const entries = parseCatalog(kind, ['alpha', 'beta'].map(name => ({
+  const entries = parseCatalog(kind, ['alpha', 'beta', 'gamma'].map((name, index) => ({
     name,
     identifier: `official/${name}`,
     installIdentifier: `official/${name}`,
@@ -30,6 +30,7 @@ function setup(kind: CatalogKind) {
     tier: 'official',
     category: 'research',
     description: `${name} research workflow`,
+    stars: [12, 94, null][index],
     repo: `https://github.com/example/${name}`,
     sourceUrl: `https://github.com/example/${name}`,
     docsUrl: `https://example.com/${name}`
@@ -65,7 +66,7 @@ describe.each(['skills', 'plugins'] as const)('%s catalog layouts', kind => {
     const cards = screen.getAllByRole('article')
     const cardView = screen.getByRole('button', { name: 'Card view', pressed: true })
 
-    expect(cards).toHaveLength(2)
+    expect(cards).toHaveLength(3)
     expect(cardView.textContent).toBe('')
     expect(cardView.querySelector('.codicon-extensions')).not.toBeNull()
     expect(screen.getByRole('button', { name: 'List view' }).querySelector('.codicon-list-unordered')).not.toBeNull()
@@ -128,6 +129,26 @@ describe.each(['skills', 'plugins'] as const)('%s catalog layouts', kind => {
     expect(screen.getByRole('combobox', { name: 'Category' }).textContent).toContain('Research')
     expect(screen.queryByRole('dialog')).toBeNull()
   })
+})
+
+it('sorts plugin results by name or GitHub stars without changing the active filter', async () => {
+  const { container } = setup('plugins')
+  const names = () => [...container.querySelectorAll('[data-catalog-card]')]
+    .map(card => card.querySelector('[aria-haspopup="dialog"]')?.getAttribute('aria-label'))
+
+  expect(names()).toEqual(['alpha', 'beta', 'gamma'])
+
+  fireEvent.click(screen.getByRole('combobox', { name: 'Sort by' }))
+  fireEvent.click(screen.getByRole('option', { name: 'GitHub stars' }))
+  expect(names()).toEqual(['beta', 'alpha', 'gamma'])
+
+  fireEvent.click(screen.getByRole('combobox', { name: 'Sort by' }))
+  fireEvent.click(screen.getByRole('option', { name: 'Name' }))
+  expect(names()).toEqual(['alpha', 'beta', 'gamma'])
+
+  const search = screen.getByRole<HTMLInputElement>('textbox', { name: 'Search catalog' })
+  fireEvent.change(search, { target: { value: 'beta' } })
+  await waitFor(() => expect(names()).toEqual(['beta']))
 })
 
 it('shares the saved layout choice when moving between Skills and Plugins', () => {

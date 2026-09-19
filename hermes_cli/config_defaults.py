@@ -1383,6 +1383,13 @@ DEFAULT_CONFIG = {
         # Resolved once when the agent's prompt is first built; missing/disabled names warn and
         # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
         "auto_load": [],
+        # Per-turn relevancy overlay on the current user message. ``catalog`` (default)
+        # keeps model-judgment-only selection against the system-prompt index.
+        # ``shortlist`` ranks name/description/trigger overlap and annotates the API
+        # copy of this turn's user message; the system prompt stays byte-stable.
+        # ``off`` disables the overlay. Unknown values fail closed to ``catalog``.
+        "selection": "catalog",
+        "selection_limit": 12,
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:

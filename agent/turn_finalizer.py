@@ -516,6 +516,9 @@ def finalize_turn(
         agent._session_messages = messages
 
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
+    with suppress(Exception):
+        from agent.skill_selection import log_unused_skill_shortlist
+        log_unused_skill_shortlist(agent, messages)
 
     # Response transforms apply only to real, uninterrupted responses.
     if final_response and not interrupted:

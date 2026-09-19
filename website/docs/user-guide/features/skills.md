@@ -140,6 +140,20 @@ hermes chat --toolsets skills -q "What skills do you have?"
 hermes chat --toolsets skills -q "Show me the axolotl skill"
 ```
 
+### Per-turn shortlist (optional)
+
+By default the agent sees every eligible skill as a name + one-line description in the system prompt and decides whether to call `skill_view`. That catalog is cache-stable and does not rank the current turn.
+
+To surface a small relevancy shortlist on each user message without rebuilding the system prompt:
+
+```yaml
+skills:
+  selection: shortlist
+  selection_limit: 12
+```
+
+Matching uses the current user text against skill names, descriptions, and optional `triggers` / `metadata.hermes.triggers`. The overlay is API-only; the saved transcript keeps your original message. `catalog` (default) and `off` disable it.
+
 ## Learning a skill from sources (`/learn`)
 
 `/learn` is the fast way to turn something you already know — or a pile of

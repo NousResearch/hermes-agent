@@ -1088,6 +1088,14 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Per-turn skill shortlist. Default ``catalog`` leaves selection to the model
+  # against the system-prompt index. ``shortlist`` ranks the current user
+  # message against skill names, descriptions, and frontmatter triggers and
+  # annotates this turn's user message only (prompt cache stays intact).
+  # ``off`` disables the overlay.
+  # selection: catalog
+  # selection_limit: 12
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

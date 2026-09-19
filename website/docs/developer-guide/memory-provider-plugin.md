@@ -32,8 +32,9 @@ provider is activated by *name* (`memory.provider`), so shadowing would
 silently redirect the agent's memory rather than merely override a tool.
 :::
 
-Discovery only *enumerates* — it never imports a provider. Nothing runs until
-`memory.provider` names it.
+Discovery only *enumerates* — it never imports a provider. Runtime activation
+is separate from loading optional setup/clone companions: cloning may load a
+companion for an inactive provider without importing its runtime package.
 
 ### Directory Provider
 
@@ -64,11 +65,11 @@ Point the entry point at the **package**, or at a `register(ctx)` inside it, and
 keep your implementation, skills, and other resources in the normal Python
 package layout. No copy under `$HERMES_HOME/plugins/` is required.
 
-A package entry point gets everything a directory install does, including the
-two files Hermes reads from disk rather than importing — `config_schema.py`
-(the dashboard config panel) and `cli.py` (your `hermes <provider>`
-subcommands). Both are found next to your package's `__init__.py`, so point the
-entry point at a package rather than a single module if you ship either.
+A package entry point supports sibling surfaces such as `config_schema.py`
+(the dashboard config panel), `cli.py` (your `hermes <provider>` subcommands),
+and the optional [clone companion](#offline-clone-companions). Ship these next
+to the package's `__init__.py`; a single-module entry point has no companion
+directory. A profile clone does not copy the pip environment itself.
 
 ## The MemoryProvider ABC
 
@@ -396,6 +397,174 @@ data_dir = get_hermes_home() / "my-provider"
 # WRONG — shared across all profiles
 data_dir = Path("~/.hermes/my-provider").expanduser()
 ```
+
+## Offline Clone Companions
+
+Native provider state belongs to the provider, not to a hardcoded core migration.
+Ship an optional `clone.py` beside `__init__.py` with this keyword interface:
+
+```python
+from pathlib import Path
+
+
+def prepare_clone(
+    *,
+    source_home: Path,
+    source_name: str,
+    staging_home: Path,
+    destination_home: Path,
+    destination_name: str,
+    clone_all: bool,
+) -> dict | None:
+    """Read source settings and prepare only unpublished staging files."""
+    # Implement your provider's ownership and credential policy here.
+    # Raise if safe preparation cannot be established.
+    # Return None when this installation has nothing to prepare.
+    return None
+```
+
+This is a signature illustration, not a sanitizer for native state. Implement
+and test the actual transformation before publishing it. The host passes these
+arguments by keyword, filtering for declared parameters unless the callback
+accepts `**kwargs`.
+
+| Argument | Contract |
+|---|---|
+| `source_home`, `source_name` | Explicit source profile to read; do not mutate it. |
+| `staging_home` | Private, unpublished clone tree; write only here. |
+| `destination_home`, `destination_name` | Final profile identity; use for persisted pointers and new local identity, not as a write destination. |
+| `clone_all` | Whether the host copied the broader profile tree. Both modes invoke the companion. |
+
+`hermes_cli/profile_clone.py::prepare_memory_clone` invokes companions for
+installed providers (including inactive ones), configured providers, and the
+selected provider. A selected provider missing its package is an error. A missing
+companion is compatible with legacy config/`.env`-only providers, but a companion
+without `prepare_clone` or recognizable native state without a companion is
+refused. Native-state detection is **bounded** to the installed/configured names
+and their `<name>/` or `<name>.json` home paths; it does not discover or sanitize
+arbitrary retired files. Do not advertise it as a generic secret scrubber.
+
+### Preparation, authentication and publication
+
+- Use explicit paths and source file values. The host binds the source home and
+  file-only `.env` secret scope; an absent source secret must not borrow the
+  launching process's credentials. Do not use process environment or import-time
+  globals as the destination's identity.
+- Materialize permitted settings privately, relocate source-private pointers to
+  `destination_home`, and exclude source-owned pending work, session mappings and
+  refreshable grants according to the provider's policy. Keep intentional shared
+  remote resources explicit. Validate copied path components before writing;
+  never write through a staging symlink into the source or an external tree.
+- Do not import or initialize the runtime provider, construct clients, probe or
+  start servers, call network APIs, provision peers, or refresh OAuth. Clone
+  preparation is offline. Authentication and dependency repair are separate user
+  actions after clone creation.
+- Return `{"needs_auth": True}` when destination authentication is required.
+  The host persists only this boolean decision as a provider name in the
+  `needs_auth` list in `.clone-report.json`; arbitrary companion return text is
+  not surfaced. The private report (`0600` on POSIX) also contains `plugins.copied`
+  package keys and `plugins.warnings`: every copied package's code-only snapshot,
+  dependency and update-repair caveats, plus any historical-provenance warning.
+  It is a creation receipt, not a live readiness check. Users can read it with
+  `python3 -m json.tool ~/.hermes/profiles/<name>/.clone-report.json`; see
+  [reading the report](/user-guide/profiles#read-the-clone-report) for repair steps.
+- Raise on unsafe or malformed input. Companion load/preparation errors become
+  sanitized host errors, not raw exceptions that could contain credentials or
+  secret-bearing URLs. The host removes staging on failure and publishes only
+  after preparation succeeds. Never report a usable connection solely because
+  configuration was copied.
+
+The host holds `hermes_cli.plugin_installation.plugin_installation_lock` for the
+source through package copying, preparation and final rename. This coordinates
+Hermes installation writers, not arbitrary config editors, third-party installers
+or runtime writers. Acquiring it may create or update the source's
+`.plugin-installation.lock`; that coordination file is excluded from cloning and
+is the exception to no source writes. Companions must still leave source data
+untouched. It is neither a filesystem sandbox nor an all-files
+transaction. See [plugin snapshot limits](/user-guide/profiles#installed-plugins-in-both-clone-modes)
+for ownership verification, repeat-clone hashes and separate reinstall guidance.
+
+Before memory preparation, a clone without channels must pass the strict
+[offline channel inventory](/user-guide/profiles#offline-inventory-can-refuse-a-clone).
+`hermes_cli/profile_channel_inventory.py` reads manifests and literal platform
+declarations without plugin imports. Supported direct declarations, unambiguous
+literal bindings and inspectable local/one-level relative helpers form one
+validated source graph; declaration extraction visits the same graph. Every
+explicit call in registration scopes is checked against the supported grammar,
+including defaults and annotations; directly passed registration callback lambda
+bodies are deferred, but their defaults are checked. Unknown/unreadable ownership,
+opaque helpers, dynamic registration and ambiguous bindings refuse publication
+rather than falling back to runtime discovery. This is not a Python sandbox or a
+completeness guarantee for arbitrary module initialization or implicit protocols.
+Enabled bulk/unknown secret sources also refuse channelless cloning without
+running a source; only the built-in `secrets.onepassword.env` mapping bounds names
+for offline stripping while preserving non-channel provider references.
+
+### Companion loading is separate from runtime loading
+
+`plugins.memory.surfaces.load_provider_companion(name, companion)` accepts only
+`clone`, `settings`, and `oauth_flow`. Provider names accept ASCII letters,
+digits, underscores and hyphens. It resolves the **same winning source** as runtime
+memory-provider discovery: bundled first, then the owning profile, opted-in
+project plugins, then package entry points. It does not require `plugins.enabled`.
+A missing companion on the winning provider does not fall through to a lower
+priority installation of the same name.
+
+The loader imports the requested file into a separate namespace keyed by the
+resolved provider directory **and captured Python source paths/bytes**, including
+relative helpers. It skips hidden/environment/cache subdirectories when capturing
+sources and compiles the captured bytes rather than trusting timestamp-valid
+`.pyc` files. A reinstall or helper-only edit that changes those bytes gets a new
+namespace on the next load, even at the same path with unchanged file size/mtime.
+An identical source generation can reuse its existing companion module.
+
+Existing companion handles retain their captured Python generation, including
+delayed relative imports through import statements or `importlib.import_module`.
+The generation's finder handles nested packages and namespace helpers without
+falling back to changed on-disk Python files. **Non-Python assets and absolute
+imports are not pinned**; resource reads and external module state remain outside
+this guarantee.
+
+Loading does not execute the provider root's `__init__.py`, create a placeholder
+in its runtime namespace, or activate/register it. Already-running providers and
+their runtime module objects are unchanged. Relative helpers have separate module
+objects from runtime imports: **do not depend on runtime globals or exports from
+`__init__.py`**. Nested helper package initializers can run when imported; keep
+shared helpers import-safe and pass home/identity explicitly.
+Only missing providers/files and directory-less module entry points return
+`None`; resolution/import failures raise `ProviderCompanionLoadError`.
+
+This is trusted plugin code, not a sandbox: imports made by the companion can
+still have side effects, and authors must keep them offline. The fixed
+`settings`/`oauth_flow` allowlist is loading infrastructure, **not a new settings
+API** or a guarantee that existing settings consumers use these companions.
+The separate desktop memory-settings design is not implemented by this clone
+contract; it adds no new authentication service or marketplace/removal API.
+
+### Extraction release gate and verification
+
+Before deleting a bundled native provider, publish its clone companion in the
+**actual external package** users will install, alongside the existing config,
+data-directory and tool-name contracts. Core loader support alone is not an
+extraction release gate: exercise that installed package through real discovery
+and both profile clone modes before removing the bundled copy.
+
+Test source A → destination B → source A with explicit disposable homes. Verify
+source files and runtime module identity remain unchanged; destination settings
+and permissions are private; inactive providers are prepared; authentication
+loss is reported; failures leave no published profile; and no client/network or
+OAuth refresh path runs. Exercise the package entry-point and directory layouts
+that you ship. Replace a real installed package at the same path and clone again:
+the copied revision, hook and helper behavior must agree, while old companion
+handles (including delayed helpers) and active runtime objects stay unchanged.
+Include helper-only and same-size/same-mtime changes. Test OS-specific filesystem
+behavior on that OS, not by spoofing `sys.platform`. Use `scripts/run_tests.sh`
+for Python tests.
+
+Reference implementations: `plugins/memory/honcho/clone.py` (new local AI identity,
+shared user/workspace, restricted credentials) and
+`plugins/memory/openviking/clone.py` (intentional remote sharing, private config
+relocation, pending/run-state exclusion).
 
 ## Testing
 

@@ -74,13 +74,13 @@ hermes profile create researcher --description "Reads source code and external d
 
 You can also set or auto-generate the description later with `hermes profile describe` — see the [Kanban guide](./features/kanban#auto-vs-manual-orchestration) for the full routing model.
 
-### Clone config only (`--clone`)
+### Clone configuration and identity (`--clone`)
 
 ```bash
 hermes profile create work --clone
 ```
 
-Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the curated memory files `memories/MEMORY.md` and `memories/USER.md` into the new profile — memory is treated as part of the agent's identity, like `SOUL.md`. Sessions, `state.db`, cron jobs and everything else start empty. For a blank memory as well, create the profile without `--clone` or delete the two files afterwards; the agent never falls back to another profile's memory when they are absent. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
+Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the curated memory files `memories/MEMORY.md` and `memories/USER.md` into the new profile — memory is treated as part of the agent's identity, like `SOUL.md`. It also snapshots verified installed plugins and prepares supported memory-provider settings, as described below. Sessions, `state.db`, cron jobs and other runtime state start empty. For a blank memory as well, create the profile without `--clone` or delete the two files afterwards; the agent never falls back to another profile's memory when they are absent. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
 
 #### Keep a clone's imported agent setups synced (`--sync-imports`)
 
@@ -93,17 +93,144 @@ hermes -p work import-agent --sync        # pulls changes from the same ~/.claud
 
 This is explicit, opt-in and one-directional, and it links the clone to the **external agent trees only** — never to the source profile. Both profiles stay independent islands: editing the source's `config.yaml`, `SOUL.md` or skills afterwards never reaches the clone. `--clone-all` copies the manifest as part of the full copy.
 
-### Clone everything (`--clone-all`)
+### Clone the broader profile tree (`--clone-all`)
 
 ```bash
 hermes profile create backup --clone-all
 ```
 
-Copies **everything** — config, API keys, personality, all memories, skills, plugins. A complete working snapshot. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. When cloning from the default profile, the local-model runtime trees (`models/`, `runtimes/`, `node/` — downloaded weights and managed binaries, re-fetched on demand) are skipped too, as `hermes backup` already does. **Cron jobs are not cloned** either: they are scheduled work bound to the source profile and its delivery channel, and a clone that inherited them would run every job twice (two gateways, same job ids). The new profile starts with an empty `cron/`. For a full backup including history and cron jobs, use `hermes profile export` or `hermes backup` instead.
+Copies the broader profile tree — config, permitted API keys, personality, memories and skills — with the exclusions below. Installed plugins use the same verified code-only snapshot path as `--clone`; supported memory providers prepare their local settings before publication. This is not a complete backup or a guarantee that every plugin is ready to run. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. When cloning from the default profile, the local-model runtime trees (`models/`, `runtimes/`, `node/` — downloaded weights and managed binaries, re-fetched on demand) are skipped too, as `hermes backup` already does. **Cron jobs are not cloned** either: they are scheduled work bound to the source profile and its delivery channel, and a clone that inherited them would run every job twice (two gateways, same job ids). The new profile starts with an empty `cron/`. For a full backup including history and cron jobs, use `hermes profile export` or `hermes backup` instead.
 
-:::note OAuth logins are never copied
+:::note Supported single-use OAuth logins are stripped
 Anthropic (Claude Pro/Max), OpenAI Codex, and xAI OAuth logins use **single-use refresh tokens** — a copy of one is not a second credential, it is the same credential with two owners, and the first profile to refresh it revokes it for every other copy. `--clone-all` (and the dashboard's credential mirroring) therefore drops those OAuth rows from the clone. Static API keys are copied as usual. Sign the new profile into the OAuth provider itself: `hermes -p <name> auth add <provider>` (or `hermes -p <name> model`).
 :::
+
+### Installed plugins in both clone modes
+
+Both `--clone` and `--clone-all` snapshot the source profile's installed
+`plugins/` packages, including **inactive memory providers and general plugins**.
+They do not just copy the currently selected memory provider. Bundled providers,
+project-local plugins, and pip-installed packages outside that directory are not
+turned into private installations by cloning.
+
+A package must have matching installation metadata and either a clean standalone
+Git checkout or an intact Hermes code-snapshot manifest from an earlier clone.
+Hermes verifies the recorded revision, owned files and executable modes; repeat
+clones verify the snapshot manifest and file hashes. Git-owned code keeps its
+`0644` or `0755` mode; snapshot and installation metadata use `0600` on POSIX.
+The clone gets independent
+regular files, not links back to the source. Updating or removing a package in
+one profile does not update or remove the other's copy.
+
+- Git internals and recognized runtime/secret-like paths, including `.env`, caches,
+  `.venv/` and `node_modules/`, are excluded. A tracked file matching these path
+  rules is refused rather than silently treated as code. These are ownership and
+  path checks, not a content scanner that detects every embedded secret.
+- Source, installed revision, pin state and applicable catalog provenance are
+  retained in `plugins/.install-metadata.json` and, when applicable, the package's
+  `.hermes-catalog.json`. Each code snapshot also has a `.hermes-snapshot.json`
+  file/hash manifest. A catalog record that disagrees with the installed source
+  or revision is kept
+  as **historical** metadata with a warning, not represented as current approval.
+- Unknown/manual installations, missing or ambiguous metadata, subdirectory-only
+  installs, dirty or unowned code, unsupported links and snapshots without a
+  valid integrity manifest fail closed. Packages matching the available offline
+  removed-plugin lists are also refused. The clone is not published on failure.
+- Cloning does not fetch packages, refresh the catalog, install dependencies,
+  grant plugin consent or newly enable plugins. Local integrity metadata proves
+  consistency with the recorded local snapshot, **not authenticated provenance
+  or a security audit**. Dependency readiness is not established.
+
+The snapshot has no Git checkout, so normal Git updates are not available until
+you explicitly reinstall the package in the destination. Repair is a separate,
+potentially networked action, never an automatic part of cloning. Back up local
+changes and private data outside `plugins/` first, then follow the refusal's
+repair instructions. For a supported standalone repository, reinstall in the
+profile being repaired with
+`hermes -p <profile> plugins install <source> --ref <40-character commit SHA> --force`.
+For nested or subdirectory-only installations, first move the package outside
+`plugins/` and remove only its matching `.install-metadata.json` entry; do not
+reinstall the same unsupported subdirectory layout. The installer creates a flat
+`plugins/<package>` installation: update configuration referring to an old nested
+path, and remove an old category directory only if empty. For a subdirectory-only
+source, omit its `#subdir` selector. The repository root must
+itself be a supported plugin, otherwise obtain a standalone package from its author.
+
+Review and install the destination package's dependencies separately using its
+documented setup. A copied package or a successful reinstall alone does not prove
+its dependencies, credentials, services or tools are ready.
+
+#### Read the clone report
+
+Every successful clone writes a private `.clone-report.json` in the destination
+home (`0600` on POSIX). It records `needs_auth` (provider names), `plugins.copied`
+(package keys), and `plugins.warnings`. Each copied package gets a warning that
+it is a code-only snapshot without Git history or copied dependencies, plus
+repair guidance for restoring updates. Historical catalog provenance produces
+an additional warning. Read this report even when creation succeeds:
+
+```bash
+python3 -m json.tool ~/.hermes/profiles/work/.clone-report.json
+```
+
+Replace `work` with the destination profile. The CLI prints authentication needs;
+read the file for the full package warnings and repair instructions. The report
+is a creation receipt, not a live dependency or authentication health check: a
+later sign-in or reinstall does not update it. Follow the separate reinstall and
+dependency steps above only for packages that need repair; clone creation itself
+does not perform those actions.
+
+Cloning holds the source profile's cooperative plugin-installation lock through
+snapshot, provider preparation and publication. Hermes installation writers
+participate; arbitrary editors and third-party installers do not. This is not a
+transaction over every source file or protection against arbitrary concurrent
+filesystem mutation. The source's `.plugin-installation.lock` may be created or
+updated for coordination and is not copied. This lock file is the exception to
+the clone's no-source-data-writes contract; source configuration, credentials and
+plugin code are not rewritten by clone preparation.
+
+### Memory-provider preparation and limits
+
+An optional provider-owned `clone.py` prepares native settings and removes
+source-owned run state **before** the staged profile becomes visible. This runs
+for installed providers, including inactive ones, without initializing a runtime
+provider, refreshing OAuth or provisioning remote resources. Providers can report
+`needs_auth`; sign in from the destination profile when prompted.
+
+Companion Python code and relative helpers are pinned to a content generation.
+After a package replacement changes those Python bytes at the same path, the
+next companion load uses a new namespace; already-loaded companions retain their
+old Python generation, including delayed relative imports. Existing runtime
+provider objects are not reloaded or replaced. This does not pin non-Python assets
+or state imported through absolute module names.
+
+The selected provider must still be installed; cloning refuses a missing selected
+package rather than silently replacing the memory backend. Legacy config/`.env`-only
+providers keep their existing clone behavior. When an
+installed/configured provider has recognizable native state but no usable clone
+companion, cloning refuses rather than guessing how to sanitize it. Detection is
+bounded to known provider names and matching `<name>/` or `<name>.json` paths:
+**unknown or retired native files are not comprehensively discovered or sanitized**.
+In particular, `--clone-all` is not a generic credential scrubber. Review unusual
+provider data yourself, or create a blank profile and configure it separately.
+
+- **Honcho:** prepares a destination AI peer name and session AI-peer prefix in
+  local config while preserving the source's user identity, workspace and supported
+  tuning. It does not eagerly create a remote peer. Permitted root/`.env` static
+  keys can travel; host-only keys and OAuth grants do not. Root/selected-host
+  OAuth objects and recognized `hch-at-`/`hch-rt-` tokens trigger reauthentication,
+  including a grant whose access token is missing. When effective auth is
+  removed, Honcho is disabled in the clone and reported as needing authentication,
+  rather than falling back to a different account.
+- **OpenViking:** preserves the configured remote account/user and optional peer;
+  an absent peer stays absent, so user-memory sharing remains intentional. Local
+  `openviking/pending_sessions/` and `openviking/runs/` are excluded. A linked
+  profile-private CLI config is materialized privately with its pointer relocated;
+  an external/global config link remains shared by intent. Cloning does not create
+  a separate remote memory store.
+
+Provider authors: see [offline clone companions](/developer-guide/memory-provider-plugin#offline-clone-companions).
+
 
 ### Every profile owns its credentials
 
@@ -115,7 +242,7 @@ A named profile resolves providers from **its own** `auth.json` and `.env` only.
 hermes profile create work --clone-from coder
 ```
 
-`--clone-from <source>` selects the source profile directly and implies a config/skills/SOUL clone. Combine it with `--clone-all` when you want a full copy of that source profile:
+`--clone-from <source>` selects the source profile directly and implies `--clone`, including its plugin snapshot and memory-provider preparation. Combine it with `--clone-all` when you want a full copy of that source profile:
 
 ```bash
 hermes profile create work-backup --clone-from coder --clone-all
@@ -160,6 +287,39 @@ before they bite.
 - for `--clone-all`, per-bot state files **and directories** (`platforms/`, pairing ledgers,
   `google_chat_user_tokens/`, `<platform>_*`).
 
+#### Offline inventory can refuse a clone
+
+Channel ownership is read from manifests and Python declarations **without
+importing or activating adapters**, including disabled installations. The reader
+supports direct literal `register_platform` / `PlatformEntry` declarations,
+imported symbol aliases, unambiguous literal bindings, and inspectable local or
+one-level relative-import helpers. It validates explicit calls in registration
+scopes and collects declarations from that same helper graph, including all
+syntactic branches rather than guessing which will run. This is a bounded
+declaration grammar, not an interpreter for arbitrary plugin code.
+
+Unknown or unreadable ownership is a refusal, not permission to keep potentially
+shared bot credentials. Malformed manifests, unresolved entry points, opaque or
+recursive helpers, callable aliases, reflection, generated code and nonliteral
+ownership declarations can therefore block cloning without channels. Repair the
+reported installation/metadata or ask its author for supported literal
+declarations, then retry; alternatively create a blank profile. Hermes does not
+activate the plugin or go online to discover what the missing declaration means.
+
+Enabled external secret sources are checked without fetching secrets. Bulk or
+unknown sources whose output names cannot be bounded offline **refuse a clone
+without channels**, because they could restore stripped tokens on the next run.
+An empty cache, `preserve_existing`, `secrets.sources` ordering or a plugin's
+`shape: mapped` declaration does not make such a source safe. Disable that source
+in the source profile's `secrets` configuration before retrying, or configure a
+blank profile independently.
+
+The supported exception is an enabled 1Password source's explicit
+`secrets.onepassword.env` map: channel key mappings are stripped from the destination while non-channel provider/tool
+references are preserved. References remain opaque; cloning does not resolve
+`op://` values. Shared adapter credentials use the ownership rule below, including
+enabled 1Password mappings when checking whether the credential set is complete.
+
 Credentials that a messaging adapter shares with a non-channel capability — `HASS_TOKEN`/`HASS_URL`
 (also the Home Assistant tool), `TWILIO_*` (also the telephony skill), `EMAIL_*` (also
 mail-sending scripts) — are stripped **only when the source's gateway would run that adapter**
@@ -168,13 +328,15 @@ explicitly disabled). A source with `platforms.homeassistant.enabled: false` use
 as a tool key, so the clone keeps it. Allowlists and ports under those prefixes are always
 channel-only and always stripped.
 
-Clones are built in a hidden staging directory beside `profiles/` and published with one
-rename after the strip, so a running multiplexer (which rescans `profiles/` on create) can
+Clones are built in a hidden staging directory inside `profiles/`, beside the final
+profile directory, and published with one rename after stripping and preparation,
+so a running multiplexer (which rescans `profiles/` on create) can
 never start adapters on a half-copied tree. A symlinked source `.env`/`config.yaml` is
 materialized as a private copy first — the clone never writes through to the source.
+If inventory or preparation fails, staging is removed and no clone is published.
 
-:::tip Honcho memory + profiles
-When Honcho is enabled, clone operations automatically create a dedicated AI peer for the new profile while sharing the same user workspace. Each profile builds its own observations and identity. See [Honcho -- Multi-agent / Profiles](./features/memory-providers.md#honcho) for details.
+:::tip Local isolation is not remote isolation
+Memory providers may intentionally share a remote user or workspace across profiles. Clone preparation separates local run ownership, not every remote resource. Review [memory-provider preparation and limits](#memory-provider-preparation-and-limits) before starting the clone.
 :::
 
 ## Using profiles

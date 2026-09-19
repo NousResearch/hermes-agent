@@ -325,6 +325,43 @@ class MemoryStore:
         working[idx:idx + 1] = [content] if act == "replace" else []
         return None
 
+    def validate_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Check a batch against the live store without writing it.
+
+        Approval-gated callers use this before persisting a proposal: an invalid
+        action or stale ``old_text`` cannot be approved later, so staging it
+        would leave an all-or-nothing proposal stranded forever.
+        """
+        if not operations:
+            return _error("operations list is empty.")
+        if not all(isinstance(op, dict) for op in operations):
+            return _error("operations must contain only objects.")
+        ops = [op or {} for op in operations]
+        for i, op in enumerate(ops):
+            scan_error = (op.get("action") in {"add", "replace"} and op.get("content")
+                          and _scan_memory_content(op["content"]))
+            if scan_error:
+                return _error(f"Operation {i + 1}: {scan_error}")
+
+        entries, limit = self._entries_for(target), self._char_limit(target)
+        working = list(entries)
+        for i, op in enumerate(ops):
+            act = op.get("action")
+            msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
+                                       (op.get("old_text") or "").strip(),
+                                       f"Operation {i + 1} ({act or 'unknown'})")
+            if msg:
+                return _error(msg, current_entries=entries, usage=self._usage(target))
+        if entries and not working:
+            return _error("Batch would remove every entry from a non-empty store.",
+                          current_entries=entries, usage=self._usage(target))
+        new_total = len(ENTRY_DELIMITER.join(working))
+        if new_total > limit:
+            return _error(f"After applying all {len(operations)} operations, memory would be at "
+                          f"{new_total:,}/{limit:,} chars -- over the limit.",
+                          current_entries=entries, usage=self._usage(target))
+        return {"success": True}
+
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or

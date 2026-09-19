@@ -910,3 +910,58 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+    def test_batch_with_unsupported_patch_is_rejected_before_staging(self, store, tmp_path, monkeypatch):
+        """A malformed background batch must not become an unapprovable pending record."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "current rule")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "add", "content": "valid companion fact"},
+                {"action": "patch", "old_text": "current rule", "content": "rewritten rule"},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False
+        assert "unknown action" in result["error"]
+        from tools.write_approval import MEMORY, list_pending
+        assert list_pending(MEMORY) == []
+        assert "valid companion fact" not in store._entries_for("memory")
+
+    def test_batch_with_stale_old_text_is_rejected_before_staging(self, store, tmp_path, monkeypatch):
+        """Only a batch that matches the live memory snapshot may be staged for approval."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "current rule")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "replace", "old_text": "stale rule", "content": "rewritten rule"},
+                {"action": "add", "content": "valid companion fact"},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False
+        assert "no entry matched" in result["error"]
+        from tools.write_approval import MEMORY, list_pending
+        assert list_pending(MEMORY) == []
+
+    def test_batch_with_current_old_text_is_staged_as_one_atomic_proposal(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "current rule")
+        operations = [
+            {"action": "replace", "old_text": "current rule", "content": "rewritten rule"},
+            {"action": "add", "content": "valid companion fact"},
+        ]
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=operations, store=store))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is True
+        assert result["staged"] is True
+        from tools.write_approval import MEMORY, get_pending
+        assert get_pending(MEMORY, result["pending_id"])["payload"]["operations"] == operations

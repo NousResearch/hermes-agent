@@ -293,3 +293,61 @@ describe('host workspace scope', () => {
     expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
   })
 })
+
+describe('host.sessions session-list mutations', () => {
+  beforeEach(async () => {
+    const layout = await import('@/store/layout')
+    const color = await import('@/store/session-color')
+    const session = await import('@/store/session')
+
+    layout.$pinnedSessionIds.set([])
+    layout.$sidebarSessionOrderIds.set([])
+    layout.$sidebarSessionOrderManual.set(false)
+    color.$sessionColorOverrides.set({})
+    session.$sessions.set([])
+  })
+
+  it('pin/unpin write the pinned store the sidebar reads', async () => {
+    const { $pinnedSessionIds } = await import('@/store/layout')
+
+    host.sessions.pin('row-1')
+    expect($pinnedSessionIds.get()).toEqual(['row-1'])
+
+    host.sessions.pin('row-2')
+    expect($pinnedSessionIds.get()).toEqual(['row-1', 'row-2'])
+
+    host.sessions.pin('row-1', false)
+    expect($pinnedSessionIds.get()).toEqual(['row-2'])
+  })
+
+  it('resolves a live id to its durable lineage root before pinning', async () => {
+    const { $pinnedSessionIds } = await import('@/store/layout')
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    $sessions.set([makeSessionInfo({ _lineage_root_id: 'root-9', id: 'tip-9' })])
+
+    host.sessions.pin('tip-9')
+
+    expect($pinnedSessionIds.get()).toEqual(['root-9'])
+  })
+
+  it('reorder persists the manual order the drag path writes', async () => {
+    const { $sidebarSessionOrderIds, $sidebarSessionOrderManual } = await import('@/store/layout')
+
+    host.sessions.reorder(['c', 'a', 'b'])
+
+    expect($sidebarSessionOrderManual.get()).toBe(true)
+    expect($sidebarSessionOrderIds.get()).toEqual(['c', 'a', 'b'])
+  })
+
+  it('setColor writes the durable-keyed colour override and clears with null', async () => {
+    const { $sessionColorOverrides } = await import('@/store/session-color')
+
+    host.sessions.setColor('row-1', '#ff8800')
+    expect($sessionColorOverrides.get()).toEqual({ 'row-1': '#ff8800' })
+
+    host.sessions.setColor('row-1', null)
+    expect($sessionColorOverrides.get()).toEqual({})
+  })
+})

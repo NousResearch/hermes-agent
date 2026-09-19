@@ -60,6 +60,12 @@ import {
   retireLocalProfileGateways,
   type SpawnPriority
 } from '@/store/gateway'
+import {
+  pinSession,
+  setSidebarSessionOrderIds,
+  setSidebarSessionOrderManual,
+  unpinSession
+} from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -90,9 +96,11 @@ import {
   rememberedSessionProfile,
   requestSessionResume,
   sessionMatchesStoredId,
+  sessionPinId,
   setResumeExhaustedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
+import { setSessionColorOverride } from '@/store/session-color'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
@@ -636,6 +644,17 @@ async function awaitProfileActivation(
   // by mutation: removing it changed no test outcome.
 }
 
+/** Pins and colours are keyed by the DURABLE (lineage-root) id so they survive
+ *  compression's session-id rotation; a row's live id resolves through
+ *  `$sessions` (the app's own lineage matcher), and an id that resolves to
+ *  nothing is passed through as-is (the stores tolerate ids for rows this
+ *  window hasn't loaded). */
+function durableSessionPinId(storedSessionId: string): string {
+  const session = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+
+  return session ? sessionPinId(session) : storedSessionId
+}
+
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
@@ -903,6 +922,41 @@ export const host = {
    *  against older behavior unchanged. */
   ensureAgent: async (connectionId: null | string | undefined, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
+
+  /** Session-list mutations a plugin may perform on the user's behalf. Every
+   *  method writes the SAME stores the app's own controls write, so a plugin
+   *  action and a hand click can never disagree — the sidebar and the tab
+   *  strip re-render from those stores immediately. Ids are stored (durable)
+   *  session ids as a sidebar row carries them (`session.id`); a live id is
+   *  resolved to its durable lineage root before writing. */
+  sessions: {
+    /** Pin or unpin a session — the row's ⇧-click / context-menu action. A
+     *  pinned session moves into the Pinned section on the next render. */
+    pin: (storedSessionId: string, pinned = true): void => {
+      const id = durableSessionPinId(storedSessionId)
+
+      if (pinned) {
+        pinSession(id)
+      } else {
+        unpinSession(id)
+      }
+    },
+
+    /** Replace the manual session order with `ids` (what a drag persists).
+     *  Ids the window hasn't loaded reconcile on the next render, exactly
+     *  like the app's own reorder. */
+    reorder: (ids: string[]): void => {
+      setSidebarSessionOrderManual(true)
+      setSidebarSessionOrderIds(ids)
+    },
+
+    /** Set a session's colour override (or clear it with `null`) — the same
+     *  per-session colour the app's own picker writes, so a plugin swatch and
+     *  a hand-picked colour are one value. */
+    setColor: (storedSessionId: string, color: null | string): void => {
+      setSessionColorOverride(durableSessionPinId(storedSessionId), color)
+    }
+  },
 
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —
@@ -1818,6 +1872,10 @@ export { queryClient } from '@/lib/query-client'
 /** Compact labels for the reasoning levels exported from @hermes/shared, so a
  *  plugin surfacing a thinking depth uses the same spelling as the app. */
 export { reasoningEffortLabel } from '@/lib/reasoning-effort'
+/** The app's own gateway-readiness evaluation (setup.status +
+ *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
+ *  readiness from raw RPC shapes. */
+export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 
 export const PANES_AREA = 'panes'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
@@ -1827,10 +1885,10 @@ export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right
  *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
-/** The app's own gateway-readiness evaluation (setup.status +
- *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
- *  readiness from raw RPC shapes. */
-export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+/** Row-decoration slots: register a `data` contribution with a `render` for
+ *  `SESSION_ROW_AREAS.leading` / `.trailing` to decorate sidebar session rows
+ *  (the props carry the row's stored session id). */
+export { SESSION_ROW_AREAS, type SessionRowSlotContribution, type SessionRowSlotProps } from '@/lib/session-row-slots'
 /** Canonical time formatting — every surface pulls from here so timestamps read
  *  the same app-wide. For a row's AGE, bucket with `coarseElapsed` and render
  *  the compact suffixes (`t.sidebar.row.ageMin` → "52m"), which is what the

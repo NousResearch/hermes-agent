@@ -30,6 +30,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
+from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
@@ -2109,6 +2110,10 @@ def _managed_summary_call(agent, api_request_id: str, request, callback, *, retr
 
 
 def _summary_text(agent, response, **normalize_kwargs) -> str:
+    if is_router_timeout_shim(response):
+        # Router failure in a 200 envelope (#68396): an empty summary takes the retry slot.
+        logger.warning("Iteration summary returned a router timeout shim; retrying")
+        return ""
     normalized = agent._get_transport().normalize_response(response, **normalize_kwargs)
     if normalized.tool_calls:
         # No summary path executes tool calls; log so a tool-only response that falls into the
@@ -2960,9 +2965,13 @@ class _StreamingCall(StreamingWaitMonitor):
                 content_parts.append(delta_content)
                 if tool_calls_acc:
                     self._route_suppressed_text(delta_content)
-                elif pending_text_parts or _provider_stream_text_may_be_sse(delta_content):
+                elif (pending_text_parts or _provider_stream_text_may_be_sse(delta_content)
+                        # A shim cannot follow text already released to the display, so the
+                        # whole-content re-join runs only until the first emitted delta.
+                        or (not self.deltas_were_sent["yes"] and router_timeout_shim_may_follow("".join(content_parts)))):
                     pending_text_parts.append(delta_content)
-                    if not _provider_stream_text_may_be_sse("".join(pending_text_parts)):
+                    pending = "".join(pending_text_parts)
+                    if not (_provider_stream_text_may_be_sse(pending) or router_timeout_shim_may_follow(pending)):
                         _flush_pending_stream_text()
                     continue
                 else:
@@ -3073,7 +3082,6 @@ class _StreamingCall(StreamingWaitMonitor):
             full_content or "", effective_finish_reason, response=getattr(stream, "response", None))
         if provider_stream_error is not None:
             raise provider_stream_error
-        flush_pending()
         message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning,
             # ``normalize_response`` reads ``message.refusal`` — same contract as the non-streaming object.
             refusal="".join(refusal_parts or ()) or None)
@@ -3083,9 +3091,14 @@ class _StreamingCall(StreamingWaitMonitor):
             message.reasoning_details = reasoning_details
         # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
         # look a request up. Fabricated only when the stream never sent one.
-        return SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
+        response = SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
             provider=upstream_provider,
             choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
+        # A held router timeout shim (#68396) is rejected by validate_response and retried;
+        # releasing its text here would show the provider failure as assistant output.
+        if not is_router_timeout_shim(response):
+            flush_pending()
+        return response
 
     # ── anthropic_messages wire ─────────────────────────────────────────
 

@@ -6523,6 +6523,11 @@ def _validate_llm_response(
                 f"adapter or custom endpoint compatibility."
             ) from exc
         response = recovered
+    from agent.transports.chat_completions import is_router_timeout_shim
+    if is_router_timeout_shim(response):
+        # HTTP-200 router failure shim (#68396): invalid like a malformed shape so the
+        # auxiliary fallback chain moves to the next candidate instead of titling with it.
+        raise RuntimeError(f"Auxiliary {task or 'call'}: provider returned a timeout shim instead of a completion")
     # Retain the provider-reported model for terminal relay route attribution.
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is not None:

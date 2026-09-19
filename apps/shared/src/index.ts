@@ -164,10 +164,11 @@ export {
   translucencySupportedOn,
   vibrancyFor,
   windowOpacityFor,
-  WINDOWS_BACKGROUND_MATERIALS,
+  WINDOWS_BACKEND_MATERIALS,
   WINDOWS_GLASS_MIN_BUILD,
   type WindowsBackgroundMaterial
 } from './translucency'
+export { type ConnectionRequestPayload, type ModelOptionProvider, type ModelOptionsResult } from './gateway-contract.generated'
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,
@@ -180,4 +181,4 @@ export {
   type ResolveGatewayWsUrlDeps,
   type WebSocketAuthParam
 } from './websocket-url'
-export { type ModelOptionsResult, type ModelOptionProvider, type ConnectionRequestPayload } from './gateway-contract.generated'
+export { type ConnectionRequestPayload, type ModelOptionProvider, type ModelOptionsResult } from './gateway-contract.generated'

@@ -469,7 +469,9 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           liveId =>
             requestSessionGateway<{ status?: string }>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
               session_id: liveId,
-              text
+              submission_ref: messageId,
+              text,
+              input_visibility: 'visible'
             }),
           {
             requestGateway: requestSessionGateway,

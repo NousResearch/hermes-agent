@@ -22,6 +22,7 @@ import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleFreeTierEvent } from './free-tier'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
+import { handleMessageInputEvent } from './message-input'
 import { handleMessageStreamEvent } from './message-stream'
 import { handleOnboardingEvent } from './onboarding'
 import { handleControlEvent } from './session-control'
@@ -90,6 +91,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleSessionInfoEvent,
   handleDeferredPickEvent,
   handleControlEvent,
+  handleMessageInputEvent,
   handleMessageStreamEvent,
   handleToolProgressEvent,
   handleToolEvent,

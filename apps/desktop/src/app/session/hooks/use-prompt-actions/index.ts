@@ -887,7 +887,7 @@ export function usePromptActions({
         try {
           const result = await target.requestGateway<SessionRedirectResponse>(
             mode === 'steer' ? 'session.steer' : 'session.redirect',
-            { session_id: id, text }
+            { session_id: id, submission_ref: messageId, text, input_visibility: 'visible' }
           )
 
           // TUI-26: a bare stop phrase typed mid-turn into a LOCAL voice chat ended that chat on

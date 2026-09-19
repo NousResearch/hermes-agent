@@ -101,7 +101,9 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
         save_config.assert_not_called()
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
-        self.assertIsNone(stub.agent)
+        # Agent is updated in-place, not destroyed (prompt cache preserved).
+        self.assertIsNotNone(stub.agent)
+        self.assertEqual(stub.agent.reasoning_config, {"enabled": True, "effort": "high"})
 
 
 

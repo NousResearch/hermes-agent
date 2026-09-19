@@ -53,7 +53,12 @@ VENV_PYTHON=""
 SKIPPED_VENVS=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
-    if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
+    # Probe under the same hermetic conditions the per-file subprocess will
+    # see (env -i below clears PYTHONPATH/PYTHONHOME). A parent-shell
+    # PYTHONPATH pointing at another venv's site-packages would otherwise
+    # make a pytest-less venv look usable, and every file would then die
+    # with "No module named pytest" after env -i drops the crutch.
+    if env -u PYTHONPATH -u PYTHONHOME "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
       VENV="$candidate"
       VENV_PYTHON="$candidate/bin/python"
       break
@@ -65,7 +70,7 @@ for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agen
   # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
   # this branch — without it the canonical runner refuses to start.
   if [ -f "$candidate/Scripts/activate" ]; then
-    if "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
+    if env -u PYTHONPATH -u PYTHONHOME "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
       VENV="$candidate"
       VENV_PYTHON="$candidate/Scripts/python.exe"
       break
@@ -83,7 +88,7 @@ fi
 if [ -n "$VENV" ]; then
   PYTHON="$VENV_PYTHON"
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
-    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
+    && env -u PYTHONPATH -u PYTHONHOME "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
   # Guard with an import check: HERMES_PYTHON may point at the RELEASE
   # venv (no pytest) when inherited from a wrapped `hermes` binary rather
   # than the devShell hook.

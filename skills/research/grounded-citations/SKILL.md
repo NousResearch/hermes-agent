@@ -23,6 +23,7 @@ For high-stakes work the same ledger doubles as a fact-checking chain: verbatim
 quotes are attached to each source (rejected unless they literally appear in
 the fetched page text), claims from model knowledge are flagged `[unverified]`,
 and `verify --evidence` fails any draft whose cited sources carry no evidence.
+The design rationale and threat model live in `references/grounding-rationale.md`.
 
 This skill covers answers in chat, written documents (markdown, PDF, docx,
 slides), and research reports. It does not cover academic BibTeX pipelines —
@@ -46,9 +47,11 @@ Mention a URL only if the user would plausibly want the link.
 
 ## Prerequisites
 
-None beyond the standard toolset. `scripts/sources.py` is stdlib-only Python 3.
-Retrieval comes from whatever is configured: `web_search`, `web_extract`,
-`browser_navigate`, or `terminal` (curl, CLIs).
+None beyond the standard toolset. `scripts/sources.py` is stdlib-only Python 3
+and imports the sibling helper `scripts/_hermes_home.py` so profile-scoped Hub
+installs resolve `$HERMES_HOME` without a repository checkout. Retrieval comes
+from whatever is configured: `web_search`, `web_extract`, `browser_navigate`, or
+`terminal` (curl, CLIs).
 
 Ledger location: `$HERMES_HOME/cache/citations/ledger.json` (profile-aware).
 Override per task with `--ledger <path>` or `HERMES_CITATION_LEDGER`.

@@ -69,7 +69,12 @@ class NousProfile(ProviderProfile):
 nous = NousProfile(
     name="nous", aliases=("nous-portal", "nousresearch"), env_vars=("NOUS_API_KEY",),
     display_name="Nous Research", description="Nous Research — Hermes model family",
-    signup_url="https://nousresearch.com/", fallback_models=("hermes-3-405b", "hermes-3-70b"),
+    signup_url="https://nousresearch.com/",
+    # Portal serves its aggregated catalog now (401 ids live, zero Hermes-family ones): the previous
+    # ("hermes-3-405b", "hermes-3-70b") pair 404s with "does not exist in our configuration or
+    # OpenRouter catalog", so whenever the live fetch fails the picker offers two dead models. These are
+    # curated Portal ids, each verified to resolve against /chat/completions.
+    fallback_models=("z-ai/glm-5.2", "deepseek/deepseek-v4-pro", "openai/gpt-5.4-mini"),
     base_url="https://inference-api.nousresearch.com/v1", auth_type="oauth_device_code",
 )
 

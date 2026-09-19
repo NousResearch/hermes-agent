@@ -3166,6 +3166,10 @@ export interface Translations {
       smartDescription: string
       off: string
       offDescription: string
+      sessionYolo: string
+      sessionYoloAriaLabel: (mode: string) => string
+      sessionYoloRow: string
+      sessionYoloDescription: string
     }
     statusbar: {
       unknown: string

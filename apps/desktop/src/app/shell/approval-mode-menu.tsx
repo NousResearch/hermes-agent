@@ -3,6 +3,7 @@ import { useEffect, useMemo } from 'react'
 
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
 import {
+  DropdownMenuCheckboxItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -18,11 +19,27 @@ import {
   syncApprovalModeForProfile
 } from '@/store/approval-mode'
 
-export function useApprovalModeStatusbarItem(profile: string, requestGateway: ApprovalModeRequester): StatusbarItem {
+export interface SessionYoloOptions {
+  /** Per-session approval bypass (`/yolo`, ⌘K "Toggle yolo") for the FOCUSED
+   *  chat. Independent of the profile-wide approval mode: the zap lights up
+   *  for either, so a bypass is never invisible in the status bar. */
+  active: boolean
+  onToggle: (enabled: boolean) => Promise<void> | void
+}
+
+const LIT_CLASS = 'bg-(--chrome-action-hover) text-foreground'
+
+export function useApprovalModeStatusbarItem(
+  profile: string,
+  requestGateway: ApprovalModeRequester,
+  sessionYolo?: SessionYoloOptions
+): StatusbarItem {
   const { t } = useI18n()
   const copy = t.shell.approvalMode
   const modes = useStore($approvalModes)
   const mode = modes[profile.trim() || 'default'] ?? 'smart'
+  const yoloActive = sessionYolo?.active === true
+  const onToggleYolo = sessionYolo?.onToggle
 
   const labels = useMemo<Record<ApprovalMode, string>>(
     () => ({ manual: copy.manual, smart: copy.smart, off: copy.off }),
@@ -42,11 +59,21 @@ export function useApprovalModeStatusbarItem(profile: string, requestGateway: Ap
     void syncApprovalModeForProfile(requestGateway, profile).catch(() => undefined)
   }, [profile, requestGateway])
 
+  // Global "off" already bypasses everything; the per-chat flag adds nothing
+  // on top of it, so the trigger reads the mode and the row is inert.
+  const bypass = mode === 'off' || yoloActive
+  const label = mode === 'off' ? labels.off : yoloActive ? copy.sessionYolo : labels[mode]
+  const title = mode !== 'off' && yoloActive ? copy.sessionYoloAriaLabel(labels[mode]) : copy.ariaLabel(labels[mode])
+
   return {
-    className: mode === 'off' ? 'bg-(--chrome-action-hover) text-foreground' : undefined,
-    icon: mode === 'off' ? <ZapFilled className="size-3.5" /> : <Zap className="size-3.5 opacity-70" />,
+    className: bypass ? LIT_CLASS : undefined,
+    icon: bypass ? <ZapFilled className="size-3.5" /> : <Zap className="size-3.5 opacity-70" />,
     id: 'approval-mode',
-    label: labels[mode],
+    label,
+    // The pill is hideable from the bar's context menu — but an active bypass
+    // IS status: dangerous commands run unasked. Pin it on screen for as long
+    // as that holds so a toggled /yolo is never invisible.
+    lockedVisible: bypass,
     menuAlign: 'end',
     menuClassName: 'w-72 p-1',
     menuContent: (
@@ -68,9 +95,29 @@ export function useApprovalModeStatusbarItem(profile: string, requestGateway: Ap
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
+        {sessionYolo ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuCheckboxItem
+              checked={yoloActive}
+              className="items-start gap-2"
+              disabled={mode === 'off'}
+              onCheckedChange={checked => {
+                void Promise.resolve(onToggleYolo?.(checked === true)).catch(() => undefined)
+              }}
+            >
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-xs text-foreground">{copy.sessionYoloRow}</span>
+                <span className="text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">
+                  {copy.sessionYoloDescription}
+                </span>
+              </span>
+            </DropdownMenuCheckboxItem>
+          </>
+        ) : null}
       </>
     ),
-    title: copy.ariaLabel(labels[mode]),
+    title,
     variant: 'menu'
   }
 }

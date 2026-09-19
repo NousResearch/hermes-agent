@@ -145,3 +145,114 @@ it('clips only visible covered siblings, follows resize, and releases styles and
   expect(visible.reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('')
   expect(disconnect).toHaveBeenCalledTimes(2)
 })
+
+it("clips a pinned prompt's own attachments row only past the tuck it sits under", () => {
+  const viewport = window.document.createElement('div')
+  const content = window.document.createElement('div')
+  viewport.append(content)
+  vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect(0, 500))
+
+  const makeRow = (tucked: boolean) => {
+    const group = window.document.createElement('div')
+    group.dataset.slot = 'aui_message-group'
+    const prompt = window.document.createElement('div')
+    prompt.dataset.slot = 'aui_user-message-root'
+    prompt.style.top = '5px'
+    const attachments = window.document.createElement('div')
+    attachments.dataset.slot = 'aui_user-message-attachments'
+    // The row is tucked under the prompt by its own negative top margin, so at
+    // rest its box starts inside the prompt's box.
+    attachments.style.marginTop = '-12px'
+    const reply = window.document.createElement('div')
+    group.append(prompt, attachments, reply)
+    content.append(group)
+    vi.spyOn(group, 'getBoundingClientRect').mockReturnValue(rect(0, 900))
+
+    return {
+      attachments,
+      // Partially covered (raw distance 15px, well inside the 40px clamp): a
+      // tuck deduction leaking onto a non-own row would show as 3px here.
+      attachmentRect: vi
+        .spyOn(attachments, 'getBoundingClientRect')
+        .mockReturnValue(tucked ? rect(53, 40) : rect(50, 40)),
+      group,
+      prompt,
+      promptRect: vi.spyOn(prompt, 'getBoundingClientRect').mockReturnValue(tucked ? rect(5, 60) : rect(-900, 60)),
+      reply
+    }
+  }
+
+  // An older turn whose row has scrolled behind the pinned prompt.
+  const older = makeRow(false)
+  const pinned = makeRow(true)
+  let frame: FrameRequestCallback | undefined
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  )
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  )
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frame = callback
+
+    return 1
+  })
+  vi.stubGlobal('cancelAnimationFrame', () => {
+    frame = undefined
+  })
+
+  const flush = () =>
+    act(() => {
+      const run = frame
+      frame = undefined
+      run?.(0)
+    })
+
+  renderHook(() =>
+    useStickyPromptClip({
+      scrollRef: { current: viewport },
+      contentRef: { current: content },
+      paneVisible: true,
+      rows: 'initial'
+    })
+  )
+  flush()
+
+  // The pinned prompt's row is fully readable at rest: its own tuck is not
+  // "covered" content. Siblings — including an older turn's row — still are, and
+  // by the FULL distance (a tuck deduction leaking onto them would read 3px).
+  expect(pinned.attachments.hasAttribute('data-sticky-prompt-clip')).toBe(false)
+  expect(pinned.attachments.style.getPropertyValue('--sticky-prompt-clip')).toBe('')
+  expect(older.attachments.style.getPropertyValue('--sticky-prompt-clip')).toBe('15px')
+
+  // Scrolling the transcript on by 30px covers exactly those 30px of the row —
+  // not 30px plus the tuck it was already sitting under.
+  pinned.attachmentRect.mockReturnValue(rect(23, 40))
+  act(() => viewport.dispatchEvent(new Event('scroll')))
+  flush()
+  expect(pinned.attachments.style.getPropertyValue('--sticky-prompt-clip')).toBe('30px')
+
+  // Scrolling back to rest releases the clip instead of leaving a stale one.
+  pinned.attachmentRect.mockReturnValue(rect(53, 40))
+  act(() => viewport.dispatchEvent(new Event('scroll')))
+  flush()
+  expect(pinned.attachments.hasAttribute('data-sticky-prompt-clip')).toBe(false)
+  expect(pinned.attachments.style.getPropertyValue('--sticky-prompt-clip')).toBe('')
+
+  // The prompt scrolled out of its sticky range: nothing stays clipped.
+  pinned.promptRect.mockReturnValue(rect(80, 60))
+  act(() => viewport.dispatchEvent(new Event('scroll')))
+  flush()
+  expect(pinned.attachments.hasAttribute('data-sticky-prompt-clip')).toBe(false)
+  expect(older.attachments.hasAttribute('data-sticky-prompt-clip')).toBe(false)
+})

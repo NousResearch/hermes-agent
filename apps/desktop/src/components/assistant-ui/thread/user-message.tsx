@@ -410,7 +410,7 @@ export const UserMessage: FC<{
           // scroll away behind the pinned bubble instead of riding along with
           // it. Image refs render as thumbnails, file refs as chips; no border.
           attachmentRefs.length > 0 ? (
-            <div className="flex flex-wrap gap-1 -mt-3 mb-2">
+            <div className="flex flex-wrap gap-1 -mt-3 mb-2" data-slot="aui_user-message-attachments">
               <DirectiveContent text={attachmentRefs.join(' ')} />
             </div>
           ) : null

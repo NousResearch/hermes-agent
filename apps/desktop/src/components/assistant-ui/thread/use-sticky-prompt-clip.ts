@@ -2,6 +2,8 @@ import { type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react'
 
 const GROUP = '[data-slot="aui_message-group"]'
 const PROMPT = '[data-slot="aui_user-message-root"]'
+/** The chip row a prompt renders below its bubble (file/url/image refs). */
+const ATTACHMENTS = '[data-slot="aui_user-message-attachments"]'
 const CLIP = '--sticky-prompt-clip'
 
 interface StickyPromptClipOptions {
@@ -42,6 +44,36 @@ export function useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows }
   )
 }
 
+/**
+ * The active prompt's OWN attachments row, with the distance it is tucked under
+ * the prompt by.
+ *
+ * That row belongs to the prompt being pinned, not to the content scrolling
+ * behind it — but it is pulled up under the bubble by a negative top margin
+ * (`-mt-3` in user-message.tsx), so its box always starts inside the prompt's
+ * box. Clipping by everything past the tuck keeps the pinned look (the row still
+ * slides under the bubble as the transcript scrolls) without cutting chips that
+ * the prompt never covered.
+ *
+ * The row is rendered by the same fragment as the prompt root, so it is that
+ * root's next element sibling. Anything else means this message has no row (the
+ * inline edit composer, an older shape) and the standard clip applies, which is
+ * how this behaved before the tuck was honored. Binding only the immediate
+ * sibling is also what keeps a LATER message's row from reading as this prompt's
+ * own.
+ */
+function ownAttachments(prompt: HTMLElement): { element: HTMLElement; tuck: number } | null {
+  const row = prompt.nextElementSibling
+
+  if (!(row instanceof HTMLElement) || !row.matches(ATTACHMENTS)) {
+    return null
+  }
+
+  const marginTop = Number.parseFloat(getComputedStyle(row).marginTop)
+
+  return { element: row, tuck: Number.isFinite(marginTop) && marginTop < 0 ? -marginTop : 0 }
+}
+
 function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
   const observed = new Set<HTMLElement>()
   const visible = new Set<HTMLElement>()
@@ -80,6 +112,8 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
     }
 
     if (activePrompt) {
+      const own = ownAttachments(activePrompt)
+
       // Follow only the ancestor path to the active prompt. Other groups can
       // be clipped whole, including old prompts and standalone assistant rows.
       const collect = (element: HTMLElement) => {
@@ -99,8 +133,17 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
 
         const rect = element.getBoundingClientRect()
 
-        if (rect.height > 0 && rect.top < exclusionBottom) {
-          next.set(element, Math.min(rect.height, exclusionBottom - rect.top))
+        if (rect.height === 0 || rect.top >= exclusionBottom) {
+          return
+        }
+
+        // The prompt's own attachments row overlaps the prompt's box by design
+        // (tucked under the bubble); that overlap is not covered, so it is not
+        // clipped. Whatever the row has scrolled past the tuck still is.
+        const inset = exclusionBottom - rect.top - (element === own?.element ? own.tuck : 0)
+
+        if (inset > 0) {
+          next.set(element, Math.min(rect.height, inset))
         }
       }
 

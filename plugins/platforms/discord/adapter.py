@@ -3593,16 +3593,26 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
                 if pcm:
                     speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
-                    mixer.play_speech(self._lead_silence_bytes() + pcm, gain=speech_gain)
-                    # Block until speech drains so callers serialise replies; ambient keeps playing.
-                    wait_start = time.monotonic()
-                    while mixer.speech_active:
-                        if time.monotonic() - wait_start > playback_timeout:
-                            logger.warning("Mixer speech playback timed out after %.1fs", playback_timeout)
-                            mixer.stop_speech()
-                            break
-                        await asyncio.sleep(0.05)
-                    return True
+                    # Pause receiver while speaking (echo prevention — mirrors the
+                    # legacy path below; the mixer output otherwise loops back
+                    # through the user's speakers as fresh input).
+                    receiver = self._voice_receivers.get(guild_id)
+                    if receiver:
+                        receiver.pause()
+                    try:
+                        mixer.play_speech(self._lead_silence_bytes() + pcm, gain=speech_gain)
+                        # Block until speech drains so callers serialise replies; ambient keeps playing.
+                        wait_start = time.monotonic()
+                        while mixer.speech_active:
+                            if time.monotonic() - wait_start > playback_timeout:
+                                logger.warning("Mixer speech playback timed out after %.1fs", playback_timeout)
+                                mixer.stop_speech()
+                                break
+                            await asyncio.sleep(0.05)
+                        return True
+                    finally:
+                        if receiver:
+                            receiver.resume()
                 logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
             # Legacy one-shot path: pause receiver while playing (echo prevention).
             receiver = self._voice_receivers.get(guild_id)

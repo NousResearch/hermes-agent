@@ -31,6 +31,8 @@ Suite layout:
   Section D — benign no-false-positive controls for every new capability.
   Section E — 2026-09-19：resolver 失败姿态（已修复）+ session kernel 跨 cell 残余
               （E2 以 XFAIL strict 文档化，交给 post-hoc 完整性层兜底）。
+  Section F — 2026-09-19：Windows 形态路径按大小写折叠比较（POSIX 保持大小写敏感），
+              修正「受保护 Windows home 的小写拼写逃过不变量」这一真实绕过。
 
 All Section B tests were empirically verified to FAIL on head 5902589454
 (auto-approve in local CLI) and PASS on the fix head — they pin the fixes.
@@ -1203,3 +1205,58 @@ def test_same_cell_literal_protected_target_blocked_control():
 def test_cross_cell_bound_protected_target_visible():
     """E2: a target bound in an earlier cell stays invisible to the per-cell static layer."""
     assert _execute_code_has_sensitive_write('open(target, "w").write("x")') is not None
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Section F — Windows 形态路径的大小写折叠（2026-09-19）
+# ═════════════════════════════════════════════════════════════════════════
+#
+# 盘符 / UNC 路径背后的文件系统不区分大小写：`c:/users/.../hermes/config.yaml` 与
+# `C:\Users\...\hermes\config.yaml` 是同一个文件。此前按字面比较，只有某一种拼写被拦，小写
+# 拼写在本机探针下 `protected=False`（候选命中该 home 时仍逃过不变量）。POSIX 形态保持大小写
+# 敏感——`/ETC/passwd` 与 `/etc/passwd` 是不同文件，折叠会误拦合法写入，故折叠键只对 Windows
+# 形态启用。
+
+_WIN_HOME = "C:\\Users\\probe\\AppData\\Local\\hermes"
+
+
+def _point_home_at(monkeypatch, spelling):
+    """Point both home resolvers at *spelling* (no HERMES_HOME env in the way)."""
+    import hermes_constants as homes
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(homes, "get_hermes_home", lambda: spelling)
+    monkeypatch.setattr(homes, "_get_platform_default_hermes_home", lambda: spelling)
+
+
+def test_windows_home_blocked_in_every_spelling(monkeypatch):
+    """F1: lower-cased / forward-slash / mixed-case spellings of a protected Windows home."""
+    _point_home_at(monkeypatch, _WIN_HOME)
+    assert _write_target_is_sensitive("C:/Users/probe/AppData/Local/hermes/config.yaml") is True
+    assert _write_target_is_sensitive("c:/users/probe/appdata/local/hermes/config.yaml") is True
+    assert _write_target_is_sensitive(
+        "c:\\users\\probe\\appdata\\local\\hermes\\hooks\\pre_tool_call.py") is True
+    assert _write_target_is_sensitive("C:/Users/Probe/AppData/Local/Hermes/HOOKS/x.py") is True
+
+
+def test_windows_home_folded_from_either_side(monkeypatch):
+    """F2: a lower-cased *home* spelling still matches a mixed-case target."""
+    _point_home_at(monkeypatch, "c:\\users\\probe\\appdata\\local\\hermes")
+    assert _write_target_is_sensitive("C:/Users/probe/AppData/Local/hermes/config.yaml") is True
+
+
+def test_windows_home_workspace_stays_allowed(monkeypatch):
+    """F3: no new false positives — non-boundary files under the same Windows home stay writable."""
+    _point_home_at(monkeypatch, _WIN_HOME)
+    assert _write_target_is_sensitive(
+        "C:/Users/probe/AppData/Local/hermes/skills/demo/references/a.json") is False
+    assert _write_target_is_sensitive("C:/Users/probe/AppData/Local/hermes/logs/hermes.log") is False
+    assert _write_target_is_sensitive("C:/Users/probe/Documents/notes.txt") is False
+
+
+def test_posix_paths_stay_case_sensitive(monkeypatch):
+    """F4: folding is scoped to Windows shapes, so POSIX case sensitivity is preserved."""
+    _point_home_at(monkeypatch, _WIN_HOME)
+    assert _write_target_is_sensitive("/etc/passwd") is True
+    assert _write_target_is_sensitive("/ETC/passwd") is False
+    assert _write_target_is_sensitive("/Root/.hermes/config.yaml") is False

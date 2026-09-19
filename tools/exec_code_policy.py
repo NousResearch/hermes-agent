@@ -21,7 +21,13 @@ argument — so they cannot escape per-cell scanning, #94647).  Code that
 builds calls at runtime (string-concatenated ``exec``, dynamic f-string
 path interpolation, lambda-body *calls* like ``lambda: os.kill()``,
 non-literal for-iterables) is not statically visible and belongs to the
-runtime/sandbox boundary.  Callers must not present ``hard_blocked`` as
+runtime/sandbox boundary.  A session kernel also persists across cells
+(``kernel_mode`` retired in #96787), so a protected destination bound to a
+variable in an earlier cell arrives here as a bare ``Name``: measured
+2026-09-19 (cell 1 binds the path, cell 2 writes — the same literal in a
+single cell is hard-blocked).  That shape is recorded as ``XFAIL strict`` in
+``tests/tools/test_exec_code_guard_adversarial.py`` Section E instead of
+being claimed as covered.  Callers must not present ``hard_blocked`` as
 an unbypassable syscall-level property.
 """
 
@@ -1625,6 +1631,21 @@ def _is_in_process_namespace_call(func) -> bool:
                for ns in _EXEC_CODE_IN_PROCESS_NAMESPACES)
 
 
+# A drive-letter or UNC literal names a filesystem that is case-insensitive, so the same file has
+# many spellings.  Kept out of the POSIX comparison, where ``/ETC/passwd`` and ``/etc/passwd`` are
+# different files and folding them would block a legitimate write.  Measured 2026-09-19: the
+# lower-cased spelling of a protected *Windows* home (``c:/users/.../hermes/config.yaml``) slipped
+# through the literal comparison while the ``C:\Users\...`` spelling was blocked.
+_WINDOWS_SHAPED_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
+def _comparison_keys(raw: str, normalized: str) -> tuple:
+    """Keys to compare *normalized* by: itself, plus a case-folded twin for Windows shapes."""
+    if _WINDOWS_SHAPED_RE.match(raw.strip()):
+        return (normalized, normalized.lower())
+    return (normalized,)
+
+
 def _write_target_is_sensitive(path: str) -> bool:
     """True if *path* targets a protected destination (mirrors the file-tool
     sensitive-path invariant from #49578): credentials, system dirs, the guard's
@@ -1639,33 +1660,40 @@ def _write_target_is_sensitive(path: str) -> bool:
     # （2026-08-25 复测）。折叠开头多斜杠为单斜杠再比较。
     if normalized.startswith("//"):
         normalized = "/" + normalized.lstrip("/")
-    if normalized in _EXEC_CODE_SENSITIVE_EXACT:
+    keys = _comparison_keys(path, normalized)
+    if any(key in _EXEC_CODE_SENSITIVE_EXACT for key in keys):
         return True
     for prefix in _EXEC_CODE_SENSITIVE_PREFIXES:
-        if normalized.startswith(prefix):
-            return True
-        # The protected directory itself (``os.chdir("/etc")``): a later relative write would land
-        # inside it, and the trailing-slash prefix test alone would let that through.
-        if normalized == prefix.rstrip("/"):
-            return True
+        for key in keys:
+            if key.startswith(prefix):
+                return True
+            # The protected directory itself (``os.chdir("/etc")``): a later relative write would land
+            # inside it, and the trailing-slash prefix test alone would let that through.
+            if key == prefix.rstrip("/"):
+                return True
     # Instruction files steer the agent from any directory (same scope decision as the file-tool
     # gate, which routes them to approval; execute_code has no approval path → hard block).
-    if posixpath.basename(normalized).lower() in _EXEC_CODE_PROTECTED_INSTRUCTION_BASENAMES:
+    if any(posixpath.basename(key).lower() in _EXEC_CODE_PROTECTED_INSTRUCTION_BASENAMES
+           for key in keys):
         return True
     # Hermes home: boundaries only (enforcement path / config + credentials / hooks).  Both the
     # HOME-based default and a HERMES_HOME override count — a relocated home protects the same
-    # boundaries, and test/isolated runs point HERMES_HOME at a temp dir.
+    # boundaries, and test/isolated runs point HERMES_HOME at a temp dir.  The home's own spelling
+    # gets the same keys, so a Windows home compares case-folded in both directions.
     for hermes_home in _hermes_home_candidates():
         hermes_norm = posixpath.normpath(hermes_home.replace("\\", "/"))
-        if _hermes_home_is_protected(normalized, hermes_norm):
-            return True
+        for hermes_key in _comparison_keys(hermes_home, hermes_norm):
+            for key in keys:
+                if _hermes_home_is_protected(key, hermes_key):
+                    return True
     # Home trees that gate agent security: .ssh, .aws, .gnupg
     home = os.path.expanduser("~")
     home_norm = posixpath.normpath(home.replace("\\", "/"))
     for tree in _EXEC_CODE_SENSITIVE_HOME_TREES:
         target = home_norm + "/" + tree
-        if normalized == target or normalized.startswith(target + "/"):
-            return True
+        for key in keys:
+            if key == target or key.startswith(target + "/"):
+                return True
     return False
 
 

@@ -750,6 +750,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     session_info = _session._get_session_info(nav_session_key)
     is_first_nav = session_info.get("_first_nav", True)
     if is_first_nav:
+        # A user-supplied CDP endpoint is the user's own running browser: agent-browser's ``open``
+        # would navigate whichever tab is active (e.g. a signed-in chat app), so claim a fresh tab first.
+        if (session_info.get("features") or {}).get("cdp_override"):
+            tab_result = _session._run_browser_command(nav_session_key, "tab", ["new"])
+            if not tab_result.get("success"):
+                error = tab_result.get("error") or "unknown error"
+                return _dumps(_err(f"Could not open a new tab in the attached browser "
+                                   f"(refusing to navigate an existing tab): {error}"))
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
 

@@ -431,6 +431,58 @@ class TestPersistence:
 # Client tools (HTTP mocked)
 # --------------------------------------------------------------------------
 
+class TestOutboundAuth:
+    def test_auth_header_reads_token_from_environment(self, monkeypatch):
+        monkeypatch.setenv("A2A_TOKEN_RESEARCHER", "environment-token")
+
+        assert tools._auth_header({
+            "type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {"Authorization": "Bearer environment-token"}
+
+    def test_auth_header_prefers_literal_token_over_environment(self, monkeypatch):
+        monkeypatch.setenv("A2A_TOKEN_RESEARCHER", "environment-token")
+
+        assert tools._auth_header({
+            "type": "bearer", "token": "literal-token",
+            "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {"Authorization": "Bearer literal-token"}
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_auth_header_omits_missing_or_blank_environment_token(self, monkeypatch, value):
+        monkeypatch.delenv("A2A_TOKEN_RESEARCHER", raising=False)
+        if value is not None:
+            monkeypatch.setenv("A2A_TOKEN_RESEARCHER", value)
+
+        assert tools._auth_header({
+            "type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {}
+
+    def test_auth_header_omits_whitespace_environment_token(self, monkeypatch):
+        monkeypatch.setenv("A2A_TOKEN_RESEARCHER", "   ")
+
+        assert tools._auth_header({
+            "type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {}
+
+    def test_auth_header_uses_profile_scoped_secret(self, monkeypatch):
+        monkeypatch.delenv("A2A_TOKEN_RESEARCHER", raising=False)
+        monkeypatch.setattr(
+            tools.security, "_startup_env", lambda name: "scoped-token" if name == "A2A_TOKEN_RESEARCHER" else "",
+        )
+
+        assert tools._auth_header({
+            "type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {"Authorization": "Bearer scoped-token"}
+
+    def test_auth_header_fail_closed_on_scoped_miss(self, monkeypatch):
+        monkeypatch.setenv("A2A_TOKEN_RESEARCHER", "launch-profile-token")
+        monkeypatch.setattr(tools.security, "_startup_env", lambda name: "")
+
+        assert tools._auth_header({
+            "type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {}
+
+
 class TestClientTools:
     def test_call_requires_args(self):
         assert "required" in tools.a2a_call({"agent": "", "message": "hi"})

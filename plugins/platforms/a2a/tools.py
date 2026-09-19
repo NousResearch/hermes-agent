@@ -1,5 +1,5 @@
 """A2A client tools (``a2a`` toolset): a2a_discover/call/list/history/orchestrate talk to *other*
-agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token}, timeout,
+agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token|token_env}, timeout,
 capabilities}}``. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 replies still parse)."""
 
 from __future__ import annotations
@@ -47,7 +47,24 @@ def _resolve_peer(agent: str) -> Optional[dict]:
 
 
 def _auth_header(auth: dict) -> dict:
-    return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
+    """Bearer header for an outbound peer. A non-blank literal ``token`` wins; else resolve
+    ``token_env`` through the profile-scoped secret scope (same source as inbound
+    ``A2A_PEER_TOKENS``), so a secondary profile never falls through to another profile's
+    environment. Missing/blank resolves to no header."""
+    if not auth or auth.get("type") != "bearer":
+        return {}
+    literal = auth.get("token")
+    if isinstance(literal, str):
+        if literal.strip():
+            return {"Authorization": f"Bearer {literal}"}
+    elif literal:
+        return {"Authorization": f"Bearer {literal}"}
+    token_env = auth.get("token_env")
+    if isinstance(token_env, str) and token_env.strip():
+        env_token = security._startup_env(token_env.strip())
+        if env_token:
+            return {"Authorization": f"Bearer {env_token}"}
+    return {}
 
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:

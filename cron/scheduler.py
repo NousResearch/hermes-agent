@@ -116,6 +116,26 @@ def _fallback_chain_phrase() -> str:
     )
 
 
+def _fallback_walk_clause(text: str) -> str:
+    """Hop-by-hop clause from the walk block ``agent.fallback_trail`` renders into a terminal
+    error, or ``""`` when the text carries no walk (script jobs, non-fallback failures).
+
+    ``_fallback_chain_phrase()`` reads the CONFIG, so it can only say a chain exists — it cannot
+    say which hops were tried or why each was passed over. In the reported failure shape that
+    produced a flatly wrong clause: the job's error named only the terminal hop (a 429 from a
+    free-tier model), the config had a chain, and the alert said there was a backup provider
+    while the primary had in fact failed on a rate limit and an intermediate hop had been
+    skipped. When a walk is present it is strictly better evidence than the config read, so it
+    replaces the config phrase rather than being appended to it.
+    """
+    steps = [ln.strip() for ln in (text or "").splitlines() if ln.strip().startswith("hop ")]
+    if not steps:
+        return ""
+    parts = [re.sub(r"^hop \d+\s+", "", step) for step in steps[:4]]
+    more = f" (+{len(steps) - 4} more)" if len(steps) > 4 else ""
+    return "Fallback walk: " + " → ".join(parts) + f"{more}."
+
+
 def _failure_streak_nudge(job: dict) -> str:
     """Review nudge when a recurring job keeps failing, else "". The failure message is delivered
     BEFORE mark_job_run records this run, hence stored ``failure_streak`` + 1. Threshold:
@@ -250,7 +270,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     if not job.get("no_agent"):
         notice = provider_failure_notice(
             job_name, job_id, classify_cron_failure_reason(text),
-            backup_provider_phrase=_fallback_chain_phrase(), provider=job.get("provider"))
+            backup_provider_phrase=_fallback_walk_clause(text) or _fallback_chain_phrase(), provider=job.get("provider"))
         if notice is not None:
             return notice
 

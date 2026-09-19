@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
+from agent.fallback_trail import attach_fallback_trail, format_fallback_trail
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason
@@ -891,18 +892,18 @@ def nonretryable_client_error_result(
     else:
         agent._persist_session(messages, conversation_history)
     if classified.reason == FailoverReason.content_policy_blocked:
-        return _content_policy_blocked_result(
+        return attach_fallback_trail(_content_policy_blocked_result(
             messages, api_call_count,
             final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
             error_detail=_nonretryable_summary,
-        )
+        ), agent)
     # Billing walls get the same structured recovery descriptor as the max-retries path
     # so every surface renders one consistent signal.
     if classified.reason == FailoverReason.billing:
-        return _billing_failure_result(
+        return attach_fallback_trail(_billing_failure_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
-        )
+        ), agent)
     if _welcome_hint:
         # A free-tier refusal is fully explained by its own sentence; the raw provider summary
         # (status codes, JSON) is for the log, not for a first-time user's chat.
@@ -925,7 +926,7 @@ def nonretryable_client_error_result(
         # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
         _stamp_free_tier(result, _kind,
                          _welcome_tier_guidance(classified, model=model, in_chat=True, door=False))
-    return result
+    return attach_fallback_trail(result, agent)
 
 
 _STREAM_DROP_MARKERS = (
@@ -975,6 +976,9 @@ def max_retries_exhausted_result(
     else:
         agent._emit_diagnostic_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
     _vlines(agent, f"   💀 Final error: {_final_summary}")
+    # Name the whole walk, not just the backend it ended on (see agent.fallback_trail).
+    for _trail_line in format_fallback_trail(agent).splitlines():
+        _vlines(agent, f"   {_trail_line}")
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     if _welcome_hint:
         _vlines(agent, f"   💡 {_welcome_hint}")
@@ -1058,7 +1062,7 @@ def max_retries_exhausted_result(
         _stamp_free_tier(result, _free_tier_kind, (
             _welcome_tier_guidance(classified, model=model, in_chat=True, door=False)
             if _welcome_hint else _final_response))
-    return result
+    return attach_fallback_trail(result, agent)
 
 
 def log_api_error_attempt(

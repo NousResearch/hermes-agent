@@ -545,7 +545,16 @@ def _clamp_command_names(
                     continue
             name = candidate
         if name in used:
-            continue
+            # Full-name collision: try numeric-suffix disambiguation
+            # (same strategy as the truncation branch above).
+            prefix = name[:_CMD_NAME_LIMIT - 1] if len(name) >= _CMD_NAME_LIMIT else name
+            for digit in range(10):
+                candidate = f"{prefix}{digit}"
+                if candidate not in used and len(candidate) <= _CMD_NAME_LIMIT:
+                    name = candidate
+                    break
+            else:
+                continue
         used.add(name)
         result.append((name, desc, *extra))
     return result

@@ -335,16 +335,19 @@ def test_base_url_dials_loopback_ip_never_localhost(tmp_path):
 # ── provider integration (existing alias mechanism, no new plugin) ──
 
 
-def test_llamacpp_aliases_route_to_custom_profile():
-    """Design + maintainer direction: llamacpp fits the EXISTING provider
-    mechanism — the aliases already resolve to the keyless custom profile;
-    no parallel provider plugin exists."""
+def test_llamacpp_aliases_route_to_the_llamacpp_profile():
+    """The bundled llamacpp provider plugin claims every llama.cpp alias
+    spelling, so all three resolve to one keyless profile. Before the plugin
+    existed they fell to the custom profile; the wire policy is the same,
+    the plugin adds the server-side observability on top. Runtime resolution
+    already treats the three spellings as one provider, and the profile
+    lookup must agree with it."""
     from providers import get_provider_profile
 
     for alias in ("llamacpp", "llama.cpp", "llama-cpp"):
         profile = get_provider_profile(alias)
         assert profile is not None, alias
-        assert profile.name == "custom"
+        assert profile.name == "llamacpp", alias
         assert profile.env_vars == ()  # credential is reachability
 
 

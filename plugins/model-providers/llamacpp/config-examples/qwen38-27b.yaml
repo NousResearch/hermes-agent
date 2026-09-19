@@ -1,0 +1,38 @@
+# Example: Qwen3.8 27B MTP (thinking) served by llama-swap.
+#
+# Copy this content into a fresh ~/.hermes/config.yaml and adjust the
+# api URL to your endpoint. The model id must match your llama-swap
+# config entry (here: qwen38-27b-mtp-q8).
+#
+# Validated live against a llama-swap deployment serving
+# qwen38-27b-mtp-q8 (llama.cpp build b10433). Its chat template
+# accepts reasoning_effort low, medium
+# and xhigh, remaps high to xhigh, defaults to xhigh, and honors the
+# enable_thinking toggle.
+#
+# What reaches the wire with this config (observable in request bodies):
+# - chat_template_kwargs: {"rig_example_note": "qwen38-example",
+#   "reasoning_effort": "xhigh"} - the per-model override "high" is
+#   clamped client-side onto the template's accepted set (high -> xhigh).
+# - reasoning_budget_tokens: 4096 - emitted because the server build is
+#   confirmed >= b8287 via /props; omitted on older builds.
+# - To turn thinking off instead, set the override to "none": the
+#   request then carries chat_template_kwargs {"enable_thinking": false}.
+
+model:
+  default: qwen38-27b-mtp-q8
+  provider: llamacpp
+
+providers:
+  llamacpp:
+    api: http://192.168.1.10:8080/v1   # adjust to your endpoint
+    models:
+      qwen38-27b-mtp-q8:
+        chat_template_kwargs:
+          rig_example_note: qwen38-example
+        reasoning_budget_tokens: 4096
+
+agent:
+  reasoning_effort: medium         # session-wide default
+  reasoning_overrides:
+    qwen38-27b-mtp-q8: high        # per-model: high -> xhigh on this template

@@ -455,8 +455,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
                                   target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
     Aliases resolving to "custom" (ollama, vllm, llamacpp, …) are treated like bare ``custom``. A
-    llamacpp alias with no explicit base_url resolves to the managed server first; an explicit
-    base_url always wins."""
+    llamacpp alias with no explicit base_url and no configured ``providers.<alias>`` endpoint
+    resolves to the managed server; an explicit or configured base_url always wins."""
     rp = _rp()
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated from a `model_aliases:`
     # direct-alias resolution) — build a runtime directly so the alias's base_url actually takes effect.
@@ -465,7 +465,12 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # silently fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
     if requested_norm in _LLAMACPP_ALIASES and not explicit_base_url:
-        return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
+        # A configured ``providers.llamacpp`` endpoint is the user pointing at a specific server,
+        # the same way --base-url is. Only without one does the managed runtime answer; a
+        # llama-server on another host must not be reported as "the local model server is off".
+        configured = rp._get_named_custom_provider(requested_provider)
+        if not (configured and str(configured.get("base_url", "")).strip()):
+            return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
     if requested_norm and requested_norm != "custom" and rp._resolves_to_custom(requested_norm):
         requested_norm = "custom"
     if requested_norm == "custom" and explicit_base_url:

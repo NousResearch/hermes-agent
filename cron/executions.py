@@ -7,6 +7,7 @@ immutable.
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
@@ -22,9 +23,14 @@ from hermes_time import now as _hermes_now
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
 # home.
+logger = logging.getLogger(__name__)
+
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
+# A live-owned claim older than this many inactivity timeouts is stuck enough
+# to warn about. Warning only — live owners are never reaped here.
+STUCK_CLAIM_TIMEOUT_MULTIPLIER = 3
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -314,9 +320,97 @@ def recover_interrupted_executions() -> int:
                     recovered.append(record)
         if changed:
             _prune_unlocked(conn)
+        try:
+            _warn_stuck_claims_on(conn, _inactivity_timeout_seconds())
+        except Exception:
+            pass
     for record in recovered:
         _emit_execution_state(record)
     return changed
+
+
+def _inactivity_timeout_seconds() -> float:
+    """Mirror of scheduler._cron_inactivity_seconds without the import cycle.
+
+    HERMES_CRON_TIMEOUT seconds; 0 = unlimited (no stuck-claim warnings);
+    missing/bad input = 600.
+    """
+    try:
+        from cron.env_settings import cron_env_setting
+        raw = cron_env_setting("HERMES_CRON_TIMEOUT").strip()
+    except Exception:
+        return 600.0
+    if not raw:
+        return 600.0
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return 600.0
+
+
+def _claim_staleness_seconds(record: Dict[str, Any]) -> Optional[float]:
+    stamp = record.get("started_at") or record.get("claimed_at")
+    if not stamp:
+        return None
+    try:
+        from datetime import datetime, timezone
+        moment = datetime.fromisoformat(str(stamp))
+        now = _hermes_now()
+        if (moment.tzinfo is None) != (now.tzinfo is None):
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            else:
+                moment = moment.replace(tzinfo=None)
+        return (now - moment).total_seconds()
+    except Exception:
+        return None
+
+
+def warn_stuck_claims(*, inactivity_timeout: Optional[float] = None) -> int:
+    """Warn about live-owned claims staler than N x the inactivity timeout.
+
+    Warning only: matching rows are never modified. Live-owner reaping stays
+    with the recovery path, which requires proof the owner is gone.
+    """
+    limit = inactivity_timeout if inactivity_timeout is not None else _inactivity_timeout_seconds()
+    try:
+        limit = float(limit)
+    except (ValueError, TypeError):
+        return 0
+    if limit <= 0:
+        return 0
+    with _transaction() as conn:
+        return _warn_stuck_claims_on(conn, limit)
+
+
+def _warn_stuck_claims_on(conn: sqlite3.Connection, limit: float, *, threshold: Optional[float] = None) -> int:
+    if threshold is None:
+        threshold = limit * STUCK_CLAIM_TIMEOUT_MULTIPLIER
+    rows = conn.execute(
+        """SELECT id, job_id, status, process_id, pid, process_started_at,
+                  claimed_at, started_at
+           FROM executions
+           WHERE status IN ('claimed','running')"""
+    ).fetchall()
+    candidates = [dict(row) for row in rows]
+    warned = 0
+    for candidate in candidates:
+        try:
+            if not _owner_is_live(int(candidate["pid"]), candidate["process_started_at"]):
+                continue
+            age = _claim_staleness_seconds(candidate)
+        except Exception:
+            continue
+        if age is None or age < threshold:
+            continue
+        logger.warning(
+            "Cron execution %s for job %s looks stuck: status=%s owned by live pid %s "
+            "with no progress for %.0fs (inactivity limit %.0fs); leaving the claim in place",
+            candidate["id"], candidate["job_id"], candidate["status"],
+            candidate["pid"], age, limit,
+        )
+        warned += 1
+    return warned
 
 
 def list_executions(

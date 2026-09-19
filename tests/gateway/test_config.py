@@ -1470,3 +1470,52 @@ class TestWebhookEnvOverride:
             config.platforms[Platform.WEBHOOK].extra.get("secret")
             == "shared-secret"
         )
+
+
+class TestDiscordHomeChannelEnvNormalize:
+    """A pasted Discord channel LINK must reduce to the numeric channel id at load.
+
+    Regression (#115216): ``DISCORD_HOME_CHANNEL`` was stored verbatim, so a
+    ``discord.com/channels/...`` link — the client menu item sitting directly
+    above "Copy Channel ID" — reached the adapter's ``int(chat_id)`` and every
+    home-channel delivery failed with ``invalid literal for int()``.
+    """
+
+    @pytest.mark.parametrize("raw, expected", [
+        ("https://discord.com/channels/883478240239693944/1011778778066723001",
+         "1011778778066723001"),
+        ("discord.com/channels/883478240239693944/1011778778066723001",
+         "1011778778066723001"),
+        ("883478240239693944/1011778778066723001", "1011778778066723001"),
+        ("1011778778066723001", "1011778778066723001"),
+    ])
+    def test_home_channel_normalized_to_numeric_id(self, raw, expected):
+        """A URL-, pair-, or id-valued home channel lands as the numeric id."""
+        config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig()})
+        with patch.dict(os.environ, {"DISCORD_HOME_CHANNEL": raw}, clear=True):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.DISCORD].home_channel.chat_id == expected
+
+    def test_unparseable_home_channel_warned_at_load(self, caplog):
+        """A non-id value survives verbatim but is flagged loudly at startup — never
+        a silent `invalid literal for int()` at first send (#115216)."""
+        config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig()})
+        with patch.dict(os.environ, {"DISCORD_HOME_CHANNEL": "general"}, clear=True):
+            with caplog.at_level(logging.WARNING, logger="gateway.config"):
+                _apply_env_overrides(config)
+
+        assert config.platforms[Platform.DISCORD].home_channel.chat_id == "general"
+        assert any(
+            "DISCORD_HOME_CHANNEL" in record.message and "not a discord channel id" in record.message
+            for record in caplog.records
+        )
+
+    def test_numeric_other_platform_home_untouched(self):
+        """Only the Discord home step declares a numeric-id normalizer; the warning text
+        and normalization never leak to other platforms (no cross-platform behavior change)."""
+        config = GatewayConfig(platforms={Platform.MATRIX: PlatformConfig()})
+        with patch.dict(os.environ, {"MATRIX_HOME_ROOM": "space:example.org"}, clear=True):
+            _apply_env_overrides(config)
+
+        assert config.platforms[Platform.MATRIX].home_channel.chat_id == "space:example.org"

@@ -10,6 +10,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Dict, Optional
@@ -152,12 +153,40 @@ def _env_extras(extra: Dict[str, Any], spec, *, strip: bool = False) -> None:
             extra[key] = fn[0](value) if fn else value
 
 
-def _env_home_channel(config: GatewayConfig, platform: Platform, env_base: str, *, strip: bool = False) -> None:
+def _discord_channel_id(value: str) -> str:
+    """Reduce a Discord home-channel value to its numeric channel id.
+
+    Discord clients put "Copy Channel Link" directly above "Copy Channel ID": the
+    link is ``https://discord.com/channels/<guild>/<channel>``. The adapter targets
+    channels by numeric id, so a pasted link otherwise dies at first send with
+    ``invalid literal for int()`` (#115216). Accepts the link, a bare
+    ``<guild>/<channel>`` pair, or an already-numeric value; anything else is
+    returned unchanged for the startup warning to flag."""
+    trimmed = value.strip()
+    if trimmed.isdigit():
+        return trimmed
+    if "/" in trimmed:
+        if trimmed.startswith(("http://", "https://", "discord.com/")):
+            match = re.search(r"/(\d+)/?$", trimmed)
+            return match.group(1) if match else trimmed
+        if all(part.isdigit() for part in trimmed.split("/")):
+            return trimmed.split("/")[-1]
+    return trimmed
+
+
+def _env_home_channel(config, platform, env_base, *, strip=False, normalize=None) -> None:
     """Set ``home_channel`` from ``<env_base>`` (+``_NAME``/``_THREAD_ID``) when the platform is configured."""
     chat_id = getenv(env_base)
     if strip:
         chat_id = chat_id.strip()
+    if normalize and chat_id:
+        chat_id = normalize(chat_id)
     if chat_id and platform in config.platforms:
+        if normalize and not chat_id.isdigit():
+            logger.warning(
+                "Home channel %s=%r is not a %s channel id (a numeric snowflake); home-channel "
+                "deliveries will fail until it is corrected", env_base, chat_id, platform.value,
+            )
         config.platforms[platform].home_channel = HomeChannel(
             platform=platform, chat_id=chat_id,
             name=getenv(f"{env_base}_NAME", "Home"), thread_id=getenv(f"{env_base}_THREAD_ID") or None,
@@ -249,8 +278,8 @@ class _Cred:
             _env_home_channel(config, self.platform, self.home, strip=self.home_strip)
 
 
-def _Home(platform: Platform, env_base: str, *, strip: bool = False):
-    return partial(_env_home_channel, platform=platform, env_base=env_base, strip=strip)
+def _Home(platform: Platform, env_base: str, *, strip: bool = False, normalize: Optional[Callable[[str], str]] = None):
+    return partial(_env_home_channel, platform=platform, env_base=env_base, strip=strip, normalize=normalize)
 
 
 def _ReplyMode(platform: Platform, env: str):
@@ -509,7 +538,9 @@ _ENV_STEPS: tuple = (
     _telegram_fallback_ips,
     _Home(Platform.TELEGRAM, "TELEGRAM_HOME_CHANNEL"),
     _Cred(Platform.DISCORD, ("DISCORD_BOT_TOKEN",), token="DISCORD_BOT_TOKEN"),
-    _Home(Platform.DISCORD, "DISCORD_HOME_CHANNEL"),
+    # The client's "Copy Channel Link" sits right above "Copy Channel ID"; a pasted link
+    # would otherwise die inside the adapter's int(chat_id) on every home-channel delivery.
+    _Home(Platform.DISCORD, "DISCORD_HOME_CHANNEL", normalize=_discord_channel_id),
     _ReplyMode(Platform.DISCORD, "DISCORD_REPLY_TO_MODE"),
     _whatsapp,
     _Home(Platform.WHATSAPP, "WHATSAPP_HOME_CHANNEL"),

@@ -219,8 +219,13 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
+    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    # iter_skill_index_files uses os.walk(followlinks=True), NOT Path.rglob: rglob defaults to
+    # follow_symlinks=False and silently skips skill dirs that are symlinks
+    # (e.g. ~/.skillshub/ central-store mounts), making skill_manage report
+    # "not found in active profile" for skills that skill_view sees fine.
+    # Keep walk parity with iter_skill_index_files (agent/skill_utils.py).
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
         if not is_excluded_skill_path(skill_md):
             yield skill_md.parent
 
@@ -248,10 +253,20 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
             if skill_dir.name == name:
                 return {"path": skill_dir}
             if local_root is not None:
-                resolved = skill_dir.resolve()
-                if (resolved.is_relative_to(local_root)
-                        and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
-                    return {"path": skill_dir}
+                # Check path relative to skills_dir first (preserves symlinks into external pools)
+                try:
+                    if (skill_dir.is_relative_to(skills_dir)
+                            and skill_dir.relative_to(skills_dir).as_posix() == name):
+                        return {"path": skill_dir}
+                except (ValueError, OSError):
+                    pass
+                try:
+                    resolved = skill_dir.resolve()
+                    if (resolved.is_relative_to(local_root)
+                            and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
+                        return {"path": skill_dir}
+                except (ValueError, OSError):
+                    pass
     return None
 
 

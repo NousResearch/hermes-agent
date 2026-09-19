@@ -236,6 +236,74 @@ class TestEditSkill:
         assert found is not None
         assert found["path"] == tmp_path / "mlops" / "my-skill"
 
+    def test_find_skill_follows_symlinked_skill_dir(self, tmp_path):
+        """Symlinked skill dirs (e.g. a central skills pool at ~/.skillshub/<slug>
+        linked into ~/.hermes/skills/) must resolve in skill_manage.
+
+        skills_list/skill_view walk with os.walk(followlinks=True) and see them;
+        _find_skill used Path.rglob() which never descends symlinks, so the
+        agent could view a skill but every skill_manage call on it failed
+        "not found in active profile". Resolution parity with skill_view is
+        the fix (same pattern as the categorized-path bug above).
+        """
+        pool = tmp_path / "pool" / "my-skill"
+        pool.mkdir(parents=True)
+        (pool / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        # skills dir contains ONLY a symlink into the external pool
+        link = tmp_path / "my-skill"
+        try:
+            link.symlink_to(pool, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks not supported on this platform")
+        with _skill_dir(tmp_path):
+            found = _find_skill("my-skill")
+        assert found is not None
+        assert found["path"] == link
+        assert found["path"].resolve() == pool.resolve()
+
+    def test_find_skill_follows_categorized_symlinked_skill_dir(self, tmp_path):
+        """Same as above but nested under a category dir (devops/macos-* etc.)."""
+        pool = tmp_path / "pool" / "my-skill"
+        pool.mkdir(parents=True)
+        (pool / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        (tmp_path / "devops").mkdir()
+        link = tmp_path / "devops" / "my-skill"
+        try:
+            link.symlink_to(pool, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks not supported on this platform")
+        with _skill_dir(tmp_path):
+            found = _find_skill("devops/my-skill")
+        assert found is not None
+        assert found["path"] == link
+        assert found["path"].resolve() == pool.resolve()
+
+    def test_find_skill_in_other_profiles_follows_symlink(self, tmp_path, monkeypatch):
+        """_find_skill_in_other_profiles must discover symlinked skills in non-active profiles."""
+        from tools.skill_manager_tool import _find_skill_in_other_profiles
+        root = tmp_path / "hermes"
+        active_skills = root / "skills"
+        profile_skills = root / "profiles" / "other" / "skills"
+        pool = tmp_path / "pool" / "shared-skill"
+        pool.mkdir(parents=True)
+        (pool / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        active_skills.mkdir(parents=True)
+        profile_skills.mkdir(parents=True)
+        link = profile_skills / "shared-skill"
+        try:
+            link.symlink_to(pool, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks not supported on this platform")
+
+        monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", active_skills)
+        monkeypatch.setattr("tools.skill_manager_tool._skills_dir", lambda: active_skills)
+        monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+
+        matches = _find_skill_in_other_profiles("shared-skill")
+        assert len(matches) == 1
+        assert matches[0][0] == "other"
+        assert matches[0][1] == link
+
     def test_edit_invalid_content_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)

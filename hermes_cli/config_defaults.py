@@ -1144,13 +1144,31 @@ DEFAULT_CONFIG = {
         #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
         #              DELEGATES every real request to Hermes (any model / provider you have
         #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
-        "voice_chat_mode": "chained",
+        #   grok-live — one full-duplex voice model (xAI Grok Voice) owns the mic and speaker and
+        #               delegates to Hermes the same way; needs a SuperGrok login (xai-oauth via
+        #               `hermes login`) or XAI_API_KEY. The backend holds the xAI websocket.
+        "voice_chat_mode": "chained",  # chained | gpt-live | grok-live
         "gpt_live": {
             "model": "gpt-live-1",
             "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
             # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
             "instructions": "",
             # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
+        },
+        "grok_live": {
+            "model": "grok-voice-latest",
+            "voice": "eve",
+            # Auth order (AUTHORITATIVE, spec §8): auto = SuperGrok OAuth token first, XAI_API_KEY
+            # fallback — never the reverse (a zero-credit env API key must not shadow a working
+            # OAuth token). "oauth" forbids the API key; "apikey" forces it.
+            "auth": "auto",  # auto | oauth | apikey
+            # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
+            "instructions": "",
+            # xAI server-side VAD knobs (session.update turn_detection).
+            "vad_threshold": 0.75,
+            "silence_ms": 700,
+            "prefix_ms": 333,
+            "speed": 1.0,
         },
         "record_key": "ctrl+b",
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript

@@ -349,7 +349,8 @@ def _word_setters() -> dict:
         "indicator": (_raw_word, INDICATOR_STYLES, "unknown indicator: {raw!r}; pick one of " + "|".join(INDICATOR_STYLES),
                       lambda w: _write_config_key("display.tui_status_indicator", w)),
         # Which engine the desktop voice button mounts; applies to the NEXT conversation.
-        "voice.voice_chat_mode": (_word, {"chained", "gpt-live"}, "unknown voice chat mode: {value}; pick chained|gpt-live",
+        "voice.voice_chat_mode": (_word, {"chained", "gpt-live", "grok-live"},
+                                  "unknown voice chat mode: {value}; pick chained|gpt-live|grok-live",
                                   lambda w: _write_config_key("voice.voice_chat_mode", w))}
 
 

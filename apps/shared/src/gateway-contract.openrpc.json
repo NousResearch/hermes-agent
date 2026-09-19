@@ -3769,6 +3769,132 @@
       }
     },
     {
+      "name": "voice.grok.audio",
+      "summary": "Relay one ~100ms base64 PCM16 mic chunk to the backend-held xAI session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokAudioParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VoiceGrokAudioResult"
+        }
+      }
+    },
+    {
+      "name": "voice.grok.mute",
+      "summary": "Explicit mic mute, independent of the server-side AEC half-duplex gate (SPEC \u00a77).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokMuteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VoiceGrokMuteResult"
+        }
+      }
+    },
+    {
+      "name": "voice.grok.rekey",
+      "summary": "Re-key the voice bridge onto the chat's real Hermes session id (fresh-draft start).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokRekeyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VoiceGrokRekeyResult"
+        }
+      }
+    },
+    {
+      "name": "voice.grok.speak",
+      "summary": "Make the bridge speak Hermes' finished reply verbatim (xAI force_message, SPEC \u00a75 step 5).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokSpeakParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VoiceGrokSpeakResult"
+        }
+      }
+    },
+    {
+      "name": "voice.grok.start",
+      "summary": "Open (or reuse) the backend xAI realtime session; pauses the wake-word mic lease.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokStartParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VoiceGrokStartResult"
+        }
+      }
+    },
+    {
+      "name": "voice.grok.status",
+      "summary": "Grok-Live availability verdict (mirrors GET /api/audio/voice-live-grok/status).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VoiceGrokStatusResult"
+        }
+      }
+    },
+    {
+      "name": "voice.grok.stop",
+      "summary": "Close the xAI session cleanly (cancel any pending reconnect) and resume wake-word.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokStopParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VoiceGrokStopResult"
+        }
+      }
+    },
+    {
       "name": "voice.record",
       "summary": "VAD-bounded push-to-talk; the transcript arrives as a voice.transcript event.",
       "params": [
@@ -32544,6 +32670,577 @@
         "title": "VerificationStatusResult",
         "type": "object"
       },
+      "VoiceGrokAudioParams": {
+        "additionalProperties": false,
+        "description": "One ~100ms upstream mic chunk (PCM16 mono 24kHz, base64) to relay to xAI.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "pcm_b64": {
+            "title": "Pcm B64",
+            "type": "string"
+          },
+          "seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seq"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "pcm_b64"
+        ],
+        "title": "VoiceGrokAudioParams",
+        "type": "object"
+      },
+      "VoiceGrokAudioPayload": {
+        "additionalProperties": false,
+        "description": "``voice_live_grok_bridge._relay_downstream`` \u2014 one ~100ms of Grok's spoken reply for\nrenderer playback. Never dropped server-side (a dropped reply chunk is an audible glitch).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "pcm_b64": {
+            "title": "Pcm B64",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "pcm_b64",
+          "seq"
+        ],
+        "title": "VoiceGrokAudioPayload",
+        "type": "object"
+      },
+      "VoiceGrokAudioResult": {
+        "additionalProperties": false,
+        "description": "``dropped: true`` = upstream backpressure (the bridge never queues stale live mic audio;\nSPEC \u00a74.1).",
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "dropped": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dropped"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "title": "VoiceGrokAudioResult",
+        "type": "object"
+      },
+      "VoiceGrokDelegationPayload": {
+        "additionalProperties": false,
+        "description": "``voice_live_grok_bridge._flush_delegation`` \u2014 a settled spoken utterance that is a real\nrequest (SPEC \u00a75, renderer-submits revision). ``prompt`` is the user's last words (the turn\ntext the renderer submits \u2014 the persisted user row); ``context`` is the recent spoken\nexchange riding the model input only (``voice_context``). The renderer's ``onDelegation``\nis the SINGLE ``prompt.submit`` caller \u2014 the backend never submits on its behalf.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "delegation_id": {
+            "title": "Delegation Id",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "context": {
+            "title": "Context",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "delegation_id",
+          "prompt",
+          "context"
+        ],
+        "title": "VoiceGrokDelegationPayload",
+        "type": "object"
+      },
+      "VoiceGrokMuteParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "muted": {
+            "title": "Muted",
+            "type": "boolean"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "muted"
+        ],
+        "title": "VoiceGrokMuteParams",
+        "type": "object"
+      },
+      "VoiceGrokMuteResult": {
+        "additionalProperties": false,
+        "properties": {
+          "muted": {
+            "title": "Muted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "muted"
+        ],
+        "title": "VoiceGrokMuteResult",
+        "type": "object"
+      },
+      "VoiceGrokRekeyParams": {
+        "additionalProperties": false,
+        "description": "Fresh-draft completion: the renderer's submit minted the chat session, so it re-keys the\nbridge from the synthetic start id onto the real Hermes session id \u2014 events and delegation\nroute by session from then on. Idempotent.",
+        "properties": {
+          "from_session_id": {
+            "title": "From Session Id",
+            "type": "string"
+          },
+          "to_session_id": {
+            "title": "To Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "from_session_id",
+          "to_session_id"
+        ],
+        "title": "VoiceGrokRekeyParams",
+        "type": "object"
+      },
+      "VoiceGrokRekeyResult": {
+        "additionalProperties": false,
+        "properties": {
+          "rekeyed": {
+            "title": "Rekeyed",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "rekeyed"
+        ],
+        "title": "VoiceGrokRekeyResult",
+        "type": "object"
+      },
+      "VoiceGrokSpeakParams": {
+        "additionalProperties": false,
+        "description": "Renderer-submits design (SPEC \u00a75, revised): the renderer is the sole ``prompt.submit``\ncaller, so once its own turn settles it asks the bridge to speak the finished reply \u2014 the\nbridge itself never touches ``prompt.submit`` (single-submitter invariant).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "text"
+        ],
+        "title": "VoiceGrokSpeakParams",
+        "type": "object"
+      },
+      "VoiceGrokSpeakResult": {
+        "additionalProperties": false,
+        "properties": {
+          "spoken": {
+            "title": "Spoken",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "spoken"
+        ],
+        "title": "VoiceGrokSpeakResult",
+        "type": "object"
+      },
+      "VoiceGrokStartParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "VoiceGrokStartParams",
+        "type": "object"
+      },
+      "VoiceGrokStartResult": {
+        "additionalProperties": false,
+        "description": "Fail-fast answer only: ``started: false`` + ``reason`` when no credential resolves. The\nconnect handshake is async \u2014 progress arrives as ``voice.grok.state`` events.",
+        "properties": {
+          "started": {
+            "title": "Started",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          },
+          "reused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reused"
+          }
+        },
+        "required": [
+          "started"
+        ],
+        "title": "VoiceGrokStartResult",
+        "type": "object"
+      },
+      "VoiceGrokState": {
+        "enum": [
+          "connecting",
+          "listening",
+          "speaking",
+          "thinking",
+          "reconnecting",
+          "degraded",
+          "error",
+          "idle"
+        ],
+        "title": "VoiceGrokState",
+        "type": "string"
+      },
+      "VoiceGrokStatePayload": {
+        "additionalProperties": false,
+        "description": "``voice_live_grok_bridge._set_state`` \u2014 server-driven conversation status (the ws lives\non the backend, so unlike gpt-live the renderer cannot derive this locally).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/VoiceGrokState"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "session_id",
+          "state"
+        ],
+        "title": "VoiceGrokStatePayload",
+        "type": "object"
+      },
+      "VoiceGrokStatusParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "VoiceGrokStatusParams",
+        "type": "object"
+      },
+      "VoiceGrokStatusResult": {
+        "additionalProperties": false,
+        "description": "``tools/voice_live_grok.py::resolve_grok_live_status`` \u2014 the non-secret readiness verdict\n(never the credential). ``available`` means a credential resolves per SPEC \u00a78, not that the\nwebsocket will succeed.",
+        "properties": {
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "voice": {
+            "title": "Voice",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "available",
+          "model",
+          "voice"
+        ],
+        "title": "VoiceGrokStatusResult",
+        "type": "object"
+      },
+      "VoiceGrokStopParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "VoiceGrokStopParams",
+        "type": "object"
+      },
+      "VoiceGrokStopResult": {
+        "additionalProperties": false,
+        "properties": {
+          "stopped": {
+            "title": "Stopped",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "stopped"
+        ],
+        "title": "VoiceGrokStopResult",
+        "type": "object"
+      },
+      "VoiceGrokTranscriptPayload": {
+        "additionalProperties": false,
+        "description": "``voice_live_grok_bridge._emit_transcript`` \u2014 mirrors xAI\n``conversation.item.input_audio_transcription.*`` / ``response.output_audio_transcript.done``\nfor the transcript UI (same shape gpt-live's ``LiveTranscriptFragment`` carries).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "speaker": {
+            "title": "Speaker",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Item Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "speaker",
+          "text"
+        ],
+        "title": "VoiceGrokTranscriptPayload",
+        "type": "object"
+      },
       "VoiceRecordAction": {
         "enum": [
           "start",
@@ -34595,6 +35292,54 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ToolStartPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "voice.grok.audio",
+      "summary": "One ~100ms of Grok's spoken reply audio for playback (base64 PCM16 24kHz).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokAudioPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "voice.grok.delegation",
+      "summary": "A settled spoken utterance delegated to Hermes as a normal turn.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokDelegationPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "voice.grok.state",
+      "summary": "Grok-Live conversation state transition (server-driven).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokStatePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "voice.grok.transcript",
+      "summary": "A user/assistant transcript fragment from the xAI realtime session.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceGrokTranscriptPayload"
           }
         }
       ]

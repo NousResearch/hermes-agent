@@ -907,16 +907,18 @@ class SearchMixin:
     def _resolve_grep_root_symlink(self, path: str) -> str:
         """Resolve a symlinked search root for the grep fallback (#116270).
 
-        ``grep -r`` skips a symlink handed to it as the path argument (exit 1,
-        nothing on stderr — byte-identical to "no match"; ``-R`` only follows
-        links met during traversal, not the argument itself), and ``find``'s
-        ``-type f`` tests the link, not its target, so both grep paths returned
-        a confident zero. The write path already lands edits on the link's
-        target (``readlink -f``/``realpath`` in ``file_operations.py``); resolve
-        the read side the same way so the two agree. rg follows argument
-        symlinks natively and never comes through here. A broken link or an
-        unreadable path keeps the original argument so the engine reports the
-        failure it always would have."""
+        On BSD/macOS grep, ``grep -r`` skips a symlink handed to it as the path
+        argument (exit 1, nothing on stderr — byte-identical to "no match";
+        ``-R`` only follows links met during traversal, not the argument
+        itself; GNU grep >= 3.x does follow the argument), while ``find``'s
+        ``-type f`` tests the link, not its target, on every platform — so the
+        pruned path returned a confident zero everywhere and the plain path
+        did on BSD. The write path already lands edits on the link's target
+        (``readlink -f``/``realpath`` in ``file_operations.py``); resolve the
+        read side the same way so the two agree. rg follows argument symlinks
+        natively and never comes through here. A broken link or an unreadable
+        path keeps the original argument so the engine reports the failure it
+        always would have."""
         if not path:
             return path
         try:

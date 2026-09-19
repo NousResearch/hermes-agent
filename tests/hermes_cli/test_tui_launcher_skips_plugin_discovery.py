@@ -61,3 +61,14 @@ def test_plugin_discovery_runs_for_plain_chat(monkeypatch):
     calls = _install_discover_spy(monkeypatch)
     main_mod._prepare_agent_startup(_args(tui=False, command="chat"))
     assert calls == ["discover"]
+
+
+def test_plugin_discovery_is_not_backgrounded_for_gateway(monkeypatch):
+    """Gateway imports must finish before directory plugins are imported."""
+    calls = _install_discover_spy(monkeypatch)
+
+    main_mod._prepare_agent_startup(
+        _args(tui=False, command="gateway", gateway_command="run")
+    )
+
+    assert calls == []

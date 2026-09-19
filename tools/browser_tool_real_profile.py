@@ -37,32 +37,61 @@ def _cdp_http_ready(http_cdp: str) -> bool:
     return _cdp_ready(http_cdp, timeout=1.0)
 
 
-def _real_profile_daemon_env() -> dict:
+def _real_profile_socket_env() -> Tuple[str, dict]:
     """Reaper-visible socket dir + ``owner_pid`` claim like every other lane (agent-browser's
-    default dir is invisible to the reaper — #100855). The daemon-side idle timeout is dropped:
-    Chrome is launched by Hermes, not the daemon, so a self-exiting daemon would leave Chrome
-    holding the copy dir under the next snapshot overlay."""
+    default dir is invisible to the reaper — #100855), plus the env for a command in it. The
+    daemon-side idle timeout is dropped: Chrome is launched by Hermes, not the daemon, so a
+    self-exiting daemon would leave Chrome holding the copy dir under the next snapshot overlay."""
     _bt = _origin()
     socket_dir = _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
     env = _session._agent_browser_command_env(socket_dir)
     env.pop("AGENT_BROWSER_IDLE_TIMEOUT_MS", None)
-    return env
+    return socket_dir, env
+
+
+def _run_agent_browser_argv(argv: list, tag: str, timeout: float) -> Optional[subprocess.CompletedProcess]:
+    """Run an agent-browser argv to completion with output captured in FILES; None on failure/timeout.
+
+    NEVER capture agent-browser through pipes: it forks a daemon — and, on a cold session,
+    Chromium — that inherit the capture handles. ``subprocess.run(capture_output=True)`` kills
+    only the direct child on timeout and then drains the pipes waiting for an EOF those
+    survivors never give, so the whole tool call wedges until the OUTER timeout (the #106244
+    bug class; on the real-profile launch path that is 420s of dead tool call). The session
+    module already solved this by redirecting to temp files — reuse that runner.
+    """
+    _bt = _origin()
+    socket_dir, env = _real_profile_socket_env()
+    stdout_path = os.path.join(socket_dir, f"_stdout_{tag}")
+    stderr_path = os.path.join(socket_dir, f"_stderr_{tag}")
+    try:
+        proc = _session._popen_agent_browser(argv, env, socket_dir, tag)
+    except (subprocess.SubprocessError, OSError) as e:
+        _bt.logger.debug("real-profile %s failed to launch: %s", tag, e)
+        return None
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except (subprocess.SubprocessError, OSError):
+            pass
+        _session._unlink_command_output_files(stdout_path, stderr_path)
+        _bt.logger.debug("real-profile %s timed out after %ss", tag, timeout)
+        return None
+    stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+    _session._unlink_command_output_files(stdout_path, stderr_path)
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> Optional[subprocess.CompletedProcess]:
     """Run ``agent-browser --session <name> <cmd...>``; None when agent-browser is missing or the run fails."""
-    _bt = _origin()
     try:
         browser_cmd = _install._find_agent_browser()
     except FileNotFoundError:
         return None
-    try:
-        return subprocess.run([*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
-                              env=_real_profile_daemon_env(), stdin=subprocess.DEVNULL)
-    except (subprocess.SubprocessError, OSError) as e:
-        _bt.logger.debug("real-profile %s failed: %s", log_label, e)
-        return None
+    argv = [*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd]
+    return _run_agent_browser_argv(argv, f"rp-{re.sub(r'[^A-Za-z0-9_-]+', '-', log_label)}", 15)
 
 
 def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
@@ -201,14 +230,9 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
         return None, f"{_RP}the local browser engine (agent-browser) is not installed: {e}"
     argv = [*_session._agent_browser_argv(browser_cmd), "--session", _bt._REAL_PROFILE_SESSION,
             "--cdp", str(port), "open", "about:blank"]
-    try:
-        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=_bt._get_open_command_timeout(first_open=True), env=_real_profile_daemon_env(),
-                              stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
+    proc = _run_agent_browser_argv(argv, "rp-attach-open", _bt._get_open_command_timeout(first_open=True))
+    if proc is None:
         return None, _RP + "the real-profile browser took too long to start. Retry, or turn the toggle off."
-    except (subprocess.SubprocessError, OSError) as e:
-        return None, f"{_RP}the launch failed: {e}"
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()
         return None, f"{_RP}the real-profile browser failed to start: {tail[-1] if tail else f'exit {proc.returncode}'}"

@@ -1788,6 +1788,13 @@ unreachable or a model isn't listed, Hermes falls back to its built-in
 model-family list and passes your effort through unchanged.
 :::
 
+:::note `ultra` is clamped to the strongest level the route accepts
+`ultra` is a Hermes-internal ladder step: no provider wire accepts it, so every route clamps it
+to its strongest level (`max` on GPT-5.6 Codex and OpenAI-compatible routes, `xhigh` on older
+Codex models). The effort pickers and `/reasoning` status show this as
+`ultra (sends max on this route)` so the level you see is the level that is sent.
+:::
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```

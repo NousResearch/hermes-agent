@@ -654,12 +654,25 @@ class GatewayModelCommandsMixin:
         if raw_args:  # typed path — same applier the picker uses
             return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
         rc = self._reasoning_config
+        # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
+        # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
+        from agent.reasoning_effort import effort_display_label
+        from gateway.run import _load_gateway_config
+        _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
+        _model_cfg = {}
+        with contextlib.suppress(Exception):  # fail-open on config read errors, like /model does
+            _model_cfg = _load_gateway_config(config_path=self.config_path).get("model", {}) or {}
+        _route = (
+            _session_route.get("provider") or _model_cfg.get("provider"),
+            _session_model or _model_cfg.get("default") or _model_cfg.get("model"),
+        )
         if rc is None:
             level, current_effort = t("gateway.reasoning.level_default"), "medium"
         elif rc.get("enabled") is False:
             level, current_effort = t("gateway.reasoning.level_disabled"), "none"
         else:
-            level = current_effort = rc.get("effort", "medium")
+            current_effort = rc.get("effort", "medium")
+            level = effort_display_label(current_effort, *_route)
         display_state = t("gateway.reasoning.display_on") if self._show_reasoning else t("gateway.reasoning.display_off")
         has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
@@ -673,7 +686,8 @@ class GatewayModelCommandsMixin:
             title=t("gateway.reasoning.picker_title", level=level, scope=scope, display=display_state),
             choices=[
                 {"value": "none", "label": t("gateway.reasoning.choice_none"), "is_current": current_effort == "none"},
-                *({"value": lv, "label": lv, "is_current": lv == current_effort} for lv in VALID_REASONING_EFFORTS),
+                *({"value": lv, "label": effort_display_label(lv, *_route), "is_current": lv == current_effort}
+                  for lv in VALID_REASONING_EFFORTS),
                 *({"value": v, "label": t(f"gateway.reasoning.choice_{v}"), "is_current": False}
                   for v in ("reset", "show", "hide")),
             ],

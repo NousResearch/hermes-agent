@@ -167,6 +167,13 @@ class RoomAttachmentSpool:
         conn.row_factory = sqlite3.Row
         apply_wal_with_fallback(conn, db_label="state.db (RoomLink attachment spool)")
         conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema(conn)
+        conn.commit()
+        return conn
+
+    @staticmethod
+    def _init_schema(conn: sqlite3.Connection) -> None:
+        """Join the caller's transaction; never commit an authorization fence."""
         conn.execute(
             """CREATE TABLE IF NOT EXISTS roomlink_attachment_batches (
                 batch_key TEXT PRIMARY KEY,
@@ -287,8 +294,25 @@ class RoomAttachmentSpool:
                        excluded.expires_at
                    )"""
         )
-        conn.commit()
-        return conn
+
+    def _initialize_request(self, conn: sqlite3.Connection) -> None:
+        """Bootstrap only after the canonical shared→owner authorization hold.
+
+        Connections remain existing-only, including after a cache miss. Current
+        schemas need no DDL or fence backfill; legacy maintenance is independent.
+        """
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        columns = {row[1] for row in conn.execute(
+            "PRAGMA table_info(roomlink_attachment_batches)")}
+        if (not {'roomlink_attachment_batches', 'roomlink_attachment_files',
+                 'roomlink_attachment_attempt_fences'} <= tables
+                or not {'dispatch_json', 'staging_origin_json', 'staging_origin_ambiguous',
+                        'authority_gateway_id', 'authority_epoch', 'complete'} <= columns):
+            self._init_schema(conn)
+        if not self.root.exists():
+            self.root.mkdir(parents=True, mode=0o700, exist_ok=True)
+            os.chmod(self.root, 0o700)
 
     @contextmanager
     def _transaction(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
@@ -762,7 +786,8 @@ class RoomAttachmentSpool:
             return []
         key = _batch_key(dispatch)
         now = float(self.clock())
-        self.prune(now=now)
+        if not self._existing_only:
+            self.prune(now=now)
         with self._transaction() as conn:
             batch = conn.execute(
                 "SELECT * FROM roomlink_attachment_batches WHERE batch_key=?",
@@ -949,6 +974,8 @@ class RoomAttachmentSpool:
                 # quarantined/replaced owner before deleting rows or spool bytes.
                 if authorize_write is not None:
                     grant_locks.enter_context(authorize_write(conn))
+                    if self._existing_only:
+                        self._initialize_request(conn)
                 changed = conn.execute(
                     "DELETE FROM roomlink_attachment_batches WHERE expires_at<=?",
                     (checked_now,),
@@ -996,14 +1023,21 @@ class RoomAttachmentSpool:
 
 
 @lru_cache(maxsize=16)
-def _spool(db_path: str) -> RoomAttachmentSpool:
-    return RoomAttachmentSpool(Path(db_path))
+def _spool(db_path: str, *, _existing_only: bool = False) -> RoomAttachmentSpool:
+    return RoomAttachmentSpool(Path(db_path), _existing_only=_existing_only)
 
 
 def _default_spool() -> RoomAttachmentSpool:
     from gateway import hosted_rooms
 
     return _spool(str(hosted_rooms.default_db_path()))
+
+
+def _request_spool() -> RoomAttachmentSpool:
+    """Inert canonical handle; the first authorized manifest owns bootstrap."""
+    from gateway import hosted_rooms
+
+    return _spool(str(hosted_rooms.default_db_path()), _existing_only=True)
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
@@ -1221,7 +1255,7 @@ async def _handle_room_attachment_manifest(
         from gateway.session_peer_route import run_prepared_room_write
         def stage():
             _require_receiver(self, claims, claims['target_profile'], dispatch=dispatch)
-            return _default_spool().prepare(dispatch, manifest,
+            return _request_spool().prepare(dispatch, manifest,
                 authorize_write=_write_guard(self, request, claims, 'attachment.stage', dispatch))
         result = await run_prepared_room_write(self, dispatch, request, 'manifest', stage)
     except RoomAttachmentSpoolConflict as exc:
@@ -1313,7 +1347,7 @@ async def _handle_room_attachment_upload(
         from gateway.session_peer_route import run_prepared_room_write
         def store():
             _require_receiver(self, claims, claims['target_profile'], dispatch=dispatch)
-            return _default_spool().put(claims=claims, task_id=task_id,
+            return _request_spool().put(claims=claims, task_id=task_id,
                 execution_generation=generation, attachment_id=attachment_id, data=bytes(data),
                 authorize_write=_write_guard(self, request, claims, 'attachment.stage', dispatch))
         result = await run_prepared_room_write(self, dispatch, request, 'upload', store)
@@ -1371,7 +1405,7 @@ async def _handle_room_attachment_discard(
         if generation < 1:
             raise RoomAttachmentSpoolError("execution_generation is invalid")
         removed = await asyncio.to_thread(
-            _default_spool().discard_attempt,
+            _request_spool().discard_attempt,
             claims=claims,
             task_id=str(request.match_info["task_id"]),
             execution_generation=generation,

@@ -70,7 +70,7 @@ def prepare_peer_input(authority, *, session_id, request_id, dispatch, payload):
 def _prepare_peer_input(authority, *, session_id, request_id, dispatch, payload):
     """Bind the COMPLETE final API payload before admission; handle stays private."""
     from gateway.hosted_room_input_preparation import PreparedHostedInput, prepare_verified_documents
-    from gateway.platforms.api_server_room_attachments import _default_spool
+    from gateway.platforms.api_server_room_attachments import _request_spool
     from hermes_state_terminal import identity_key, terminal_admission
     # Replay precedes every spool read or new preparation, including direct API retries.
     with authority.db._read_ctx() as conn:
@@ -85,7 +85,7 @@ def _prepare_peer_input(authority, *, session_id, request_id, dispatch, payload)
             if _without_media(saved_payload) != _without_media(payload):
                 raise RuntimeStoreError('admission_conflict')
             return PreparedHostedInput(saved_payload, None)
-    spool = _default_spool()
+    spool = _request_spool()
     items = spool.materialize(dispatch)
     manifest = canonical_attachment_manifest([
         {key: value for key, value in item.items() if key != 'path'} for item in items])

@@ -95,10 +95,13 @@ def install_failure(monkeypatch, target, case, candidate, failure, observed):
             return items
         monkeypatch.setattr(case.spool, 'materialize', dispose)
     elif failure == 'spool-init':
-        def initialize(db_path):
+        def initialize():
             observed.append(failure)
-            return attachments.RoomAttachmentSpool(db_path, root=blocked / 'spool')
-        monkeypatch.setattr(attachments, '_spool', initialize)
+            # Canonical access no longer creates directories. Its existing-only
+            # reader must still normalize a real inaccessible spool path.
+            return attachments.RoomAttachmentSpool(case.spool.db_path,
+                root=blocked / 'spool', _existing_only=True)
+        monkeypatch.setattr(attachments, '_request_spool', initialize)
     elif failure in {'image-temp-directory', 'image-temp-write'}:
         original = bridge.tempfile.TemporaryDirectory
         @contextmanager

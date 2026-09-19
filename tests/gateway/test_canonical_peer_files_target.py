@@ -168,8 +168,8 @@ async def test_real_source_client_batch_admission_replay_and_disposal(files_targ
     saved = dict(target.db._conn.execute('SELECT * FROM session_admissions').fetchone())
     await asyncio.to_thread(client.discard_attachments, task_id='task-one', execution_generation=1, grant=route.grant)
     assert not target.db._conn.execute('SELECT 1 FROM input_custody_refs WHERE generation<1').fetchone()
-    from gateway.platforms.api_server_room_attachments import _default_spool
-    spool = _default_spool()
+    from gateway.platforms.api_server_room_attachments import _request_spool
+    spool = _request_spool()
     with spool._transaction() as conn:
         assert conn.execute('SELECT count(*) FROM roomlink_attachment_batches').fetchone()[0] == 0
     def forbidden(*args, **kwargs):
@@ -243,7 +243,7 @@ async def test_native_old_four_rights_cannot_stage_after_initialization(target):
 async def staged_batch(target, *, prepare=True):
     from dataclasses import replace
     from gateway.hosted_room_peer import attachment_manifest_digest, decode_room_grant
-    from gateway.platforms.api_server_room_attachments import _default_spool, _write_guard
+    from gateway.platforms.api_server_room_attachments import _request_spool, _write_guard
     from tests.gateway.test_canonical_peer_target_setup import request
     from tests.gateway.test_canonical_peer_text_admission import dispatch
     from tui_gateway.hosted_room_peer_attachments import bound_attachment_payloads
@@ -254,7 +254,7 @@ async def staged_batch(target, *, prepare=True):
     value = replace(dispatch(issued), attachment_manifest_digest=attachment_manifest_digest(manifest))
     claims = decode_room_grant(target.adapter._room_grant_secret(), issued['grant'], permission='attachment.stage')
     req = request({}, token=issued['grant'])
-    spool = _default_spool()
+    spool = _request_spool()
     if prepare:
         spool.prepare(value, manifest, authorize_write=_write_guard(target.adapter, req, claims, 'attachment.stage', value))
     return issued, value, claims, req, spool, manifest, raw

@@ -111,7 +111,7 @@ def test_string_platform_toolsets_resolves_as_the_list_it_encodes():
 
 
 def test_enable_on_string_platform_toolsets_keeps_listed_entries():
-    """#115866: `hermes tools enable` must operate on the selection a JSON-list
+    """#115866: `hermes tools enable` must operate on the selection a list-literal
     string encodes — not re-baseline it on the platform default, which silently
     dropped the user's default-off entries (video, video_gen) on write."""
     config = {"platform_toolsets": {"telegram": '["browser", "terminal", "video", "video_gen"]'}}

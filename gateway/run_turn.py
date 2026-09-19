@@ -1608,6 +1608,20 @@ class GatewayTurnMixin:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""
 
+    def _hmwa_response_prefix_line(self, agent_result, source):
+        """Opt-in model/provider tag for the FIRST message of the turn; off by default
+        (display.response_prefix.enabled=false)."""
+        from gateway.run import _load_gateway_config, _platform_config_key
+        try:
+            from gateway.response_prefix import build_prefix_line as _bpl
+            return _bpl(
+                user_config=_load_gateway_config(), platform_key=_platform_config_key(source.platform),
+                model=agent_result.get("model"), provider=agent_result.get("provider"),
+            )
+        except Exception as _prefix_err:
+            logger.debug("response_prefix build failed: %s", _prefix_err)
+            return ""
+
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {
@@ -2180,6 +2194,14 @@ class GatewayTurnMixin:
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
+            # Response prefix — only on the FIRST message of the turn.  When streaming already
+            # delivered the body, the stream consumer folded the tag into its first delta (see
+            # GatewayStreamConsumer ``prefix``), so only the non-streamed send is decorated here.
+            if response and not agent_result.get("already_sent") and not _intentional_silence:
+                _prefix_line = self._hmwa_response_prefix_line(agent_result, source)
+                if _prefix_line:
+                    from gateway.response_prefix import apply_prefix as _apply_prefix
+                    response = _apply_prefix(_prefix_line, response)
             await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (

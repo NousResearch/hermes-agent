@@ -907,7 +907,7 @@ class TurnRunner:
 
     # ── stream consumer / interim commentary wiring ─────────────────────────────────────────
 
-    def _setup_stream_consumer(self, platform_key):
+    def _setup_stream_consumer(self, platform_key, model=None, provider=None):
         ctx = self._ctx
         if ctx.mute_notification_reply:
             return None, None, None, False
@@ -933,6 +933,19 @@ class TurnRunner:
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
                     )
+                    # Opt-in response prefix on the FIRST streamed message (display.response_prefix,
+                    # off by default).  Streaming can't retro-edit the tag in later, so the consumer
+                    # folds it into the first delta itself.
+                    stream_prefix = ""
+                    try:
+                        from gateway.response_prefix import build_prefix_line as _bpl
+                        stream_prefix = _bpl(
+                            user_config=ctx.user_config, platform_key=platform_key,
+                            model=model, provider=provider,
+                        )
+                    except Exception as prefix_err:
+                        logger.debug("response_prefix build failed: %s", prefix_err)
+                        stream_prefix = ""
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
@@ -941,6 +954,7 @@ class TurnRunner:
                         ),
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
+                        prefix=stream_prefix or None,
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
                     # #105341: a consumer created only for interim commentary (text streaming off)
@@ -1916,7 +1930,9 @@ class TurnRunner:
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
-        stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
+        stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(
+            platform_key, model=model, provider=runtime_kwargs.get("provider"),
+        )
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,

@@ -915,6 +915,13 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # order shown; drop any to hide
         },
+        # Gateway response prefix prepended to the FIRST message of a turn (disabled by default).
+        # When enabled, renders e.g. `[openai/gpt-5.4] Hello!`. Template variables: {model}
+        # (bare id), {modelFull}, {provider}. Per-platform: display.platforms.<platform>.response_prefix.
+        "response_prefix": {
+            "enabled": False,
+            "template": "[{provider}/{model}]",
+        },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
         # config controls visibility not ordering); empty = default set. Available: model,
         # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,

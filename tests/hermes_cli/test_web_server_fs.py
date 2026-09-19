@@ -68,6 +68,56 @@ def test_fs_download_streams_file_without_data_url_cap(client, tmp_path, monkeyp
     assert "report%20with%20spaces.pdf" in response.headers["content-disposition"]
 
 
+def test_fs_download_translates_docker_volume_path_to_host(client, tmp_path, monkeypatch):
+    host_workspace = tmp_path / "AI-Workspace"
+    host_workspace.mkdir()
+    target = host_workspace / "generated report.docx"
+    target.write_bytes(b"generated-document")
+    monkeypatch.setattr(
+        "gateway.platforms.base._translate_docker_container_media_path",
+        lambda path: target if path == Path("/workspace/projects/generated report.docx") else None,
+    )
+
+    response = client.get(
+        "/api/fs/download",
+        params={"path": "/workspace/projects/generated report.docx"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"generated-document"
+
+
+def test_fs_download_retries_docker_translation_with_profile_terminal_scope(
+    client, tmp_path, monkeypatch,
+):
+    target = tmp_path / "generated report.docx"
+    target.write_bytes(b"isolated-desktop-document")
+
+    from tools.terminal_scope import get_terminal_scope
+
+    def translate(path):
+        if path == Path("/workspace/projects/generated report.docx") and get_terminal_scope() is not None:
+            return target
+        return None
+
+    monkeypatch.setattr(
+        "gateway.platforms.base._translate_docker_container_media_path",
+        translate,
+    )
+    monkeypatch.setattr(
+        "tools.terminal_scope.build_profile_terminal_scope",
+        lambda _home: {"TERMINAL_ENV": "docker", "TERMINAL_DOCKER_VOLUMES": "[]"},
+    )
+
+    response = client.get(
+        "/api/fs/download",
+        params={"path": "/workspace/projects/generated report.docx"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"isolated-desktop-document"
+
+
 def test_fs_download_rejects_sensitive_files(client, tmp_path):
     target = tmp_path / ".env"
     target.write_text("SECRET=1")

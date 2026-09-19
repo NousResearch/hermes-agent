@@ -155,8 +155,44 @@ def _io_errors(denied: str, failed: str):
         raise HTTPException(status_code=500, detail=f"{failed}: {exc}")
 
 
+def _translate_fs_container_path(target: Path) -> Path:
+    """Resolve an agent-visible container path for an authenticated fs request.
+
+    A Desktop SSH ``serve --isolated`` process can reach this route after the
+    process-wide terminal config bridge made an early, unsuccessful one-shot
+    attempt.  Retry under the current profile's complete terminal policy, but
+    never replace an already-bound policy/refusal scope.
+    """
+    try:
+        from gateway.platforms.base import _translate_docker_container_media_path
+        from tools.terminal_scope import (
+            build_profile_terminal_scope,
+            get_terminal_scope,
+            reset_terminal_scope,
+            set_terminal_scope,
+        )
+
+        translated = _translate_docker_container_media_path(target)
+        if translated is not None or get_terminal_scope() is not None:
+            return translated or target
+
+        token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
+        try:
+            return _translate_docker_container_media_path(target) or target
+        finally:
+            reset_terminal_scope(token)
+    except Exception:
+        return target
+
+
 def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
     target = _fs_path(str(path))
+    # Desktop transcripts contain the path exactly as the agent saw it.  With
+    # the Docker terminal backend that is commonly `/workspace/...`, while the
+    # authenticated filesystem API runs on the host.  Reuse the gateway's
+    # existing volume translator so previews and downloads resolve the same
+    # MEDIA path that native messaging delivery already accepts.
+    target = _translate_fs_container_path(target)
     try:
         st = target.stat()
     except (FileNotFoundError, NotADirectoryError):

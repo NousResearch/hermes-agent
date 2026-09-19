@@ -27,6 +27,7 @@ client-level limits when a custom transport is supplied.
 
 import asyncio
 import socket
+import sys
 from unittest.mock import MagicMock
 
 import httpx
@@ -136,10 +137,18 @@ def _assert_keepalive_tight(instances):
 
 
 def _assert_updates_pool_never_reuses(instance):
-    """The long-poll pool must not reuse server-closed connections (#87057)."""
+    """The long-poll pool must not reuse server-closed connections (#87057).
+
+    Darwin is the exception: reuse (>=1) is required to avoid TIME_WAIT
+    ephemeral-port exhaustion (#107880).
+    """
     limits = instance.kwargs.get("httpx_kwargs", {}).get("limits")
     assert isinstance(limits, httpx.Limits)
-    assert limits.max_keepalive_connections == 0
+    if sys.platform == "darwin":
+        assert limits.max_keepalive_connections is not None
+        assert limits.max_keepalive_connections >= 1
+    else:
+        assert limits.max_keepalive_connections == 0
     assert limits.max_connections == 512
 
 
@@ -182,6 +191,9 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
             for opt in sock_opts
         )
         if index == 0:
+            assert limits.max_keepalive_connections >= 1
+        elif sys.platform == "darwin":
+            assert limits.max_keepalive_connections is not None
             assert limits.max_keepalive_connections >= 1
         else:
             assert limits.max_keepalive_connections == 0

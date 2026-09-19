@@ -648,6 +648,26 @@ class SessionDB(
     def uses_external_conversation_store(self) -> bool:
         return self._conversation_store is not None
 
+    def conversation_revision(self, session_id: str):
+        """Current opaque canonical revision, or None for built-in SQLite."""
+        if self._conversation_store is None:
+            return None
+        from conversation_store import ConversationRevision
+        revision = self._conversation_store.get_revision(session_id)
+        if not isinstance(revision, ConversationRevision):
+            raise TypeError("conversation store get_revision() must return ConversationRevision")
+        return revision
+
+    def conversation_snapshot(self, session_id: str, *, include_messages: bool = False):
+        """Provider-atomic state + revision for computing a fenced external mutation."""
+        if self._conversation_store is None:
+            return None
+        from conversation_store import ConversationSnapshot
+        snapshot = self._conversation_store.snapshot(session_id, include_messages=include_messages)
+        if not isinstance(snapshot, ConversationSnapshot):
+            raise TypeError("conversation store snapshot() must return ConversationSnapshot")
+        return snapshot
+
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
         malformed sqlite_master), generation stamp."""

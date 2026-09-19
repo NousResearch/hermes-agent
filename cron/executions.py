@@ -28,9 +28,13 @@ logger = logging.getLogger(__name__)
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
-# A live-owned claim older than this many inactivity timeouts is stuck enough
+# A live-owned claim older than this many inactivity timeouts is old enough
 # to warn about. Warning only — live owners are never reaped here.
 STUCK_CLAIM_TIMEOUT_MULTIPLIER = 3
+# Per-claim warning rate limit: the recovery scan runs every few minutes, so
+# without dedupe the same old claim would re-log on every cycle.
+STUCK_CLAIM_WARN_COOLDOWN_SECONDS = 3600.0
+_stuck_claim_warned_at: Dict[str, float] = {}
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -367,10 +371,10 @@ def _claim_staleness_seconds(record: Dict[str, Any]) -> Optional[float]:
 
 
 def warn_stuck_claims(*, inactivity_timeout: Optional[float] = None) -> int:
-    """Warn about live-owned claims staler than N x the inactivity timeout.
+    """Warn about live-owned claims older than N x the inactivity timeout.
 
     Warning only: matching rows are never modified. Live-owner reaping stays
-    with the recovery path, which requires proof the owner is gone.
+    with the recovery path, which requires proof the owner is gone. Each execution id warns at most once per STUCK_CLAIM_WARN_COOLDOWN_SECONDS so periodic scans do not re-log the same claim every cycle.
     """
     limit = inactivity_timeout if inactivity_timeout is not None else _inactivity_timeout_seconds()
     try:
@@ -384,8 +388,23 @@ def warn_stuck_claims(*, inactivity_timeout: Optional[float] = None) -> int:
 
 
 def _warn_stuck_claims_on(conn: sqlite3.Connection, limit: float, *, threshold: Optional[float] = None) -> int:
+    # The recovery path calls this directly with the raw configured timeout,
+    # so the disabled-timeout (0 = unlimited) guard must live here, not only
+    # in warn_stuck_claims - otherwise every live claim warns on every scan.
+    try:
+        limit = float(limit)
+    except (ValueError, TypeError):
+        return 0
+    if limit <= 0:
+        return 0
     if threshold is None:
         threshold = limit * STUCK_CLAIM_TIMEOUT_MULTIPLIER
+    try:
+        threshold = float(threshold)
+    except (ValueError, TypeError):
+        return 0
+    if threshold <= 0:
+        return 0
     rows = conn.execute(
         """SELECT id, job_id, status, process_id, pid, process_started_at,
                   claimed_at, started_at
@@ -393,6 +412,12 @@ def _warn_stuck_claims_on(conn: sqlite3.Connection, limit: float, *, threshold: 
            WHERE status IN ('claimed','running')"""
     ).fetchall()
     candidates = [dict(row) for row in rows]
+    # Drop warned-state for rows that are gone so the map stays bounded.
+    live_ids = {candidate["id"] for candidate in candidates}
+    for known_id in list(_stuck_claim_warned_at):
+        if known_id not in live_ids:
+            del _stuck_claim_warned_at[known_id]
+    now = time.time()
     warned = 0
     for candidate in candidates:
         try:
@@ -403,12 +428,22 @@ def _warn_stuck_claims_on(conn: sqlite3.Connection, limit: float, *, threshold: 
             continue
         if age is None or age < threshold:
             continue
+        last_warned = _stuck_claim_warned_at.get(candidate["id"])
+        if (
+            last_warned is not None
+            and now - last_warned < STUCK_CLAIM_WARN_COOLDOWN_SECONDS
+        ):
+            continue
+        # claimed_at/started_at never advance on a live owner, so the age is
+        # claim age - not an observed lack of progress. Frame it as an old
+        # live-owned claim without asserting stuckness.
         logger.warning(
-            "Cron execution %s for job %s looks stuck: status=%s owned by live pid %s "
-            "with no progress for %.0fs (inactivity limit %.0fs); leaving the claim in place",
+            "Cron execution %s for job %s is an old live-owned claim: status=%s owned by live pid %s "
+            "for %.0fs (inactivity limit %.0fs); leaving the claim in place",
             candidate["id"], candidate["job_id"], candidate["status"],
             candidate["pid"], age, limit,
         )
+        _stuck_claim_warned_at[candidate["id"]] = now
         warned += 1
     return warned
 

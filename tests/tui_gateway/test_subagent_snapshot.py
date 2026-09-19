@@ -13,7 +13,8 @@ def runtime(monkeypatch):
     from tools import async_delegation, delegate_tool_registry
 
     transport = SimpleNamespace(write=lambda frame: True)
-    owner = {"session_key": "parent", "history": [], "transport": transport}
+    parent_agent = SimpleNamespace(session_id="parent", _session_db=None)
+    owner = {"session_key": "parent", "history": [], "transport": transport, "agent": parent_agent}
     monkeypatch.setattr(server, "_sessions", {"ui-owner": owner})
     monkeypatch.setattr(delegate_tool_registry, "_active_subagents", {})
     monkeypatch.setattr(delegate_tool_registry, "_recent_subagents", {})
@@ -116,6 +117,93 @@ def test_live_tail_and_steer_share_exact_owner_and_end_with_child(runtime):
     finally:
         _unregister_subagent("child")
 
+
+
+def test_positive_prompt_authority_survives_delegate_worker_context_loss(runtime, tmp_path, monkeypatch):
+    """The prompt thread captures gateway authority before the worker hop; delegate_task carries that positive
+    marker even when request ContextVars are gone by the time the background child registers."""
+    from tools import async_delegation, delegate_tool_dispatch
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _unregister_subagent
+
+    server, owner, transport, call = runtime
+    parent = owner["agent"]
+    st = server._TurnRun(parent, None, None, True)
+    transport_token = server.bind_transport(transport)
+    record_token = server._current_runtime_session_record.set(owner)
+    try:
+        server._bind_delegate_gateway_authority("ui-owner", owner, st)
+    finally:
+        server._current_runtime_session_record.reset(record_token)
+        server.reset_transport(transport_token)
+    assert getattr(parent, "_delegate_gateway_authority") == ("ui-owner", transport, owner)
+
+    # Simulate the later worker: request ContextVars cannot resolve authority, but the prompt's positive marker can.
+    monkeypatch.setattr(delegate_tool_dispatch, "_capture_gateway_steer_authority", lambda _sid: (None, None))
+    monkeypatch.setattr(async_delegation, "_current_origin_session_id", lambda: "parent")
+    origin = delegate_tool_dispatch._capture_origin(parent)
+    assert origin[1:4] == ("ui-owner", transport, owner)
+    server._restore_delegate_gateway_authority(st)
+    assert not hasattr(parent, "_delegate_gateway_authority")
+
+    transcript = tmp_path / "child.log"
+    transcript.write_text("live child detail")
+    steered, stopped = [], []
+    child = SimpleNamespace(
+        _subagent_id="child", _delegate_depth=1, _parent_session_id="parent", model="test",
+        _live_transcript_path=str(transcript), steer=lambda text: steered.append(text) or True,
+        hard_interrupt=lambda text: stopped.append(text),
+    )
+    _register_child(child, parent, "owned task", owner_session_id=origin[1],
+                    owner_transport=origin[2], owner_session_record=origin[3])
+    try:
+        assert [row["subagent_id"] for row in call("subagent.list")["result"]["subagents"]] == ["child"]
+        assert call("subagent.tail", subagent_id="child")["result"]["text"] == "live child detail"
+        assert call("subagent.steer", subagent_id="child", text="course")["result"]["status"] == "queued"
+        assert call("subagent.interrupt", subagent_id="child")["result"]["found"]
+        assert steered == ["course"] and len(stopped) == 1
+        # Reusing the public UI id with a replacement session record never adopts the old generation.
+        server._sessions["ui-owner"] = {**owner}
+        assert call("subagent.list")["result"]["subagents"] == []
+        assert not call("subagent.tail", subagent_id="child")["result"]["available"]
+    finally:
+        _unregister_subagent("child")
+
+
+def test_ambient_ui_id_and_durable_parent_without_positive_authority_stay_denied(runtime, tmp_path, monkeypatch):
+    """An ambient/stale HERMES_UI_SESSION_ID is a coordinate, not proof that a gateway commissioned the child."""
+    from gateway import session_context
+    from tools import async_delegation, delegate_tool_dispatch
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _unregister_subagent
+
+    server, owner, _transport, call = runtime
+    parent = owner["agent"]
+    monkeypatch.setattr(delegate_tool_dispatch, "_capture_gateway_steer_authority", lambda _sid: (None, None))
+    monkeypatch.setattr(async_delegation, "_current_origin_session_id", lambda: "parent")
+    monkeypatch.setattr(session_context, "get_session_env",
+                        lambda name, default="": "ui-owner" if name == "HERMES_UI_SESSION_ID" else default)
+    origin = delegate_tool_dispatch._capture_origin(parent)
+    assert origin[1:4] == ("ui-owner", None, None)
+
+    transcript = tmp_path / "ambient.log"
+    transcript.write_text("must stay private")
+    effects = []
+    child = SimpleNamespace(
+        _subagent_id="ambient", _delegate_depth=1, _parent_session_id="parent", model="test",
+        _live_transcript_path=str(transcript), steer=lambda text: effects.append(text) or True,
+        hard_interrupt=lambda text: effects.append(text),
+    )
+    _register_child(child, parent, "ambient task", owner_session_id=origin[1],
+                    owner_transport=origin[2], owner_session_record=origin[3])
+    try:
+        assert call("subagent.list")["result"]["subagents"] == []
+        assert not call("subagent.tail", subagent_id="ambient")["result"]["available"]
+        assert call("subagent.steer", subagent_id="ambient", text="deny")["result"]["status"] == "rejected"
+        assert not call("subagent.interrupt", subagent_id="ambient")["result"]["found"]
+        assert effects == []
+    finally:
+        _unregister_subagent("ambient")
 
 
 def test_interrupt_requires_exact_live_owner_but_direct_helper_stays_legacy(runtime):

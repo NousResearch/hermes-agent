@@ -463,6 +463,10 @@ def _run_post_turn_followups(
         _hook_failure("completion queue drain", _drain_exc)
 
 
+_DELEGATE_GATEWAY_AUTHORITY_ATTR = "_delegate_gateway_authority"
+_DELEGATE_GATEWAY_AUTHORITY_UNSET = object()
+
+
 @dataclasses.dataclass(slots=True)
 class _TurnRun:
     """Shared state of one turn thread.  ``agent`` is bound eagerly so except/finally always
@@ -485,6 +489,36 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    delegate_authority_agent: Any = None
+    delegate_authority_marker: Any = None
+    delegate_authority_previous: Any = _DELEGATE_GATEWAY_AUTHORITY_UNSET
+
+
+def _bind_delegate_gateway_authority(sid: str, session: dict, st: _TurnRun) -> None:
+    """Stamp positive gateway origin on the live parent before any delegate worker hop."""
+    try:
+        transport, owner = _current_session_steer_authority(sid)
+    except Exception:
+        return
+    agent = session.get("agent")
+    if transport is None or owner is not session or agent is None:
+        return
+    marker = (sid, transport, owner)
+    st.delegate_authority_agent = agent
+    st.delegate_authority_marker = marker
+    st.delegate_authority_previous = getattr(agent, _DELEGATE_GATEWAY_AUTHORITY_ATTR,
+                                              _DELEGATE_GATEWAY_AUTHORITY_UNSET)
+    setattr(agent, _DELEGATE_GATEWAY_AUTHORITY_ATTR, marker)
+
+
+def _restore_delegate_gateway_authority(st: _TurnRun) -> None:
+    agent, marker = st.delegate_authority_agent, st.delegate_authority_marker
+    if agent is None or marker is None or getattr(agent, _DELEGATE_GATEWAY_AUTHORITY_ATTR, None) is not marker:
+        return
+    if st.delegate_authority_previous is _DELEGATE_GATEWAY_AUTHORITY_UNSET:
+        delattr(agent, _DELEGATE_GATEWAY_AUTHORITY_ATTR)
+    else:
+        setattr(agent, _DELEGATE_GATEWAY_AUTHORITY_ATTR, st.delegate_authority_previous)
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -568,6 +602,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
     _adopt_out_of_band_turns(session)
     st.agent = agent = session["agent"]
+    _bind_delegate_gateway_authority(sid, session, st)
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
         st.history = list(session["history"])
@@ -865,6 +900,7 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
             _persist_live_session_system_prompt(session)
         except Exception:
             logger.debug("TUI one-turn model restore failed", exc_info=True)
+    _restore_delegate_gateway_authority(st)
     scopes = st.scopes
     with contextlib.suppress(Exception):
         if scopes.approval is not None:

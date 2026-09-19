@@ -1070,7 +1070,14 @@ class GatewayAdapterLifecycleMixin:
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     success = await self._connect_initial_adapter_with_timeout(adapter, platform)
                 if not success:
-                    logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
+                    if getattr(adapter, "has_fatal_error", False):
+                        logger.warning(
+                            "✗ %s failed to connect (profile: %s) (%s): %s", platform.value, profile_name,
+                            getattr(adapter, "fatal_error_code", None) or "unknown",
+                            getattr(adapter, "fatal_error_message", None) or "unknown error",
+                        )
+                    else:
+                        logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
             except Exception as e:
                 logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
                 success = False

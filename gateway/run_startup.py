@@ -1164,7 +1164,14 @@ class GatewayStartupMixin:
                 logger.info("\u2713 %s connected%s", platform.value, " (degraded)" if _degraded else "")
                 continue
             # outcome == "failed"
-            logger.warning("\u2717 %s failed to connect", platform.value)
+            if getattr(adapter, "has_fatal_error", False):
+                logger.warning(
+                    "✗ %s failed to connect (%s): %s", platform.value,
+                    getattr(adapter, "fatal_error_code", None) or "unknown",
+                    getattr(adapter, "fatal_error_message", None) or "unknown error",
+                )
+            else:
+                logger.warning("✗ %s failed to connect", platform.value)
             # A failed connect() may have allocated ClientSessions / poll tasks / subprocesses.
             await self._safe_adapter_disconnect(adapter, platform)
             if not adapter.has_fatal_error:

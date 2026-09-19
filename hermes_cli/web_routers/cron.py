@@ -243,6 +243,22 @@ async def get_cron_delivery_targets():
     return {"targets": targets}
 
 
+def _cron_timezone_name() -> Optional[str]:
+    """IANA timezone the cron scheduler evaluates recurrence in, or None when
+    unset (the scheduler then uses server-local time). The timeline view uses
+    this so its client-side occurrence re-derivation matches the same
+    wall-clock zone as the backend instead of the browser's own timezone."""
+    from hermes_time import get_timezone
+
+    tz = get_timezone()
+    return tz.key if tz is not None else None
+
+
+@router.get("/api/cron/timezone")
+async def get_cron_timezone():
+    return {"timezone": await asyncio.to_thread(_cron_timezone_name)}
+
+
 @router.put("/api/cron/jobs/{job_id}")
 async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_update_cron_job_sync, job_id, body, profile)

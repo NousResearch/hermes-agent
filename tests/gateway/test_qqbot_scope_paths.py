@@ -10,7 +10,8 @@ same per-profile ``QQ_*`` values independently:
 - secondary-profile startup validation
   (``gateway.run._own_policy_open_startup_violation``) reads the platform
   opt-in while running inside ``_profile_runtime_scope``;
-- the ``send_message`` tool's direct REST path (``_send_qqbot``) falls back to
+- the ``send_message`` tool's standalone QQ sender
+  (``gateway.platforms.qqbot.standalone._standalone_send``) falls back to
   ``QQ_APP_ID`` / ``QQ_CLIENT_SECRET``.
 
 Each must resolve through the active profile secret scope (scope wins over
@@ -19,8 +20,6 @@ profile's environ opt-in) while unscoped single-profile deployments keep the
 legacy ``os.environ`` behavior.
 """
 
-import sys
-import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -222,39 +221,30 @@ class TestStartupValidatorScope:
 
 
 class TestDirectSendScope:
+    """The standalone direct-send path resolves credentials through the same
+    fallback chain the legacy tool-layer ``_send_qqbot`` had: explicit config
+    first, then the active profile secret scope, then plain ``os.environ``."""
+
     @staticmethod
-    def _fake_httpx(captured):
-        class _Resp:
-            status_code = 500
+    def _fake_api_cls(captured):
+        class _FakeQQApiClient:
+            def __init__(self, app_id, secret, client=None, log_tag=None):
+                captured.append({"appId": app_id, "clientSecret": secret})
 
-            @staticmethod
-            def json():
-                return {}
+            async def send_text(self, chat_type, target_id, content, msg_seq=1):
+                return {"id": "fake-msg-1"}
 
-        class _AsyncClient:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *exc):
-                return False
-
-            async def post(self, url, **kwargs):
-                captured.append(kwargs.get("json") or {})
-                return _Resp()
-
-        module = types.ModuleType("httpx")
-        module.AsyncClient = _AsyncClient
-        return module
+        return _FakeQQApiClient
 
     @pytest.mark.asyncio
     async def test_scoped_credentials_win_over_environ(self, monkeypatch):
-        from tools.send_message_tool import _send_qqbot
+        from gateway.platforms.qqbot.standalone import _standalone_send
 
         captured = []
-        monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx(captured))
+        monkeypatch.setattr(
+            "gateway.platforms.qqbot.standalone.QQApiClient",
+            self._fake_api_cls(captured),
+        )
         monkeypatch.setenv("QQ_APP_ID", "global-app")
         monkeypatch.setenv("QQ_CLIENT_SECRET", "global-secret")
         ss.set_multiplex_active(True)
@@ -262,24 +252,31 @@ class TestDirectSendScope:
             {"QQ_APP_ID": "profileA-app", "QQ_CLIENT_SECRET": "profileA-secret"}
         )
         try:
-            await _send_qqbot(
+            result = await _standalone_send(
                 PlatformConfig(enabled=True, extra={}), "chat-1", "hi"
             )
         finally:
             ss.reset_secret_scope(tok)
-        assert captured, "token request never issued"
+        assert result.get("success"), result
+        assert captured, "QQApiClient was never constructed"
         assert captured[0]["appId"] == "profileA-app"
         assert captured[0]["clientSecret"] == "profileA-secret"
 
     @pytest.mark.asyncio
     async def test_unscoped_falls_back_to_environ(self, monkeypatch):
-        from tools.send_message_tool import _send_qqbot
+        from gateway.platforms.qqbot.standalone import _standalone_send
 
         captured = []
-        monkeypatch.setitem(sys.modules, "httpx", self._fake_httpx(captured))
+        monkeypatch.setattr(
+            "gateway.platforms.qqbot.standalone.QQApiClient",
+            self._fake_api_cls(captured),
+        )
         monkeypatch.setenv("QQ_APP_ID", "env-app")
         monkeypatch.setenv("QQ_CLIENT_SECRET", "env-secret")
-        await _send_qqbot(PlatformConfig(enabled=True, extra={}), "chat-1", "hi")
-        assert captured, "token request never issued"
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}), "chat-1", "hi"
+        )
+        assert result.get("success"), result
+        assert captured, "QQApiClient was never constructed"
         assert captured[0]["appId"] == "env-app"
         assert captured[0]["clientSecret"] == "env-secret"

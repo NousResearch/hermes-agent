@@ -447,11 +447,15 @@ _CODEX_REPLAY_KEYS = (
     "codex_reasoning_items", "codex_message_items",
 )
 
+# Third return value of ``continue_codex_incomplete``: the reasoning-only stall was handed to a
+# fallback provider — the caller re-syncs the system prompt identity and continues the turn.
+CODEX_FALLBACK_ACTIVATED = "codex_fallback_activated"
+
 
 def continue_codex_incomplete(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, response: Any = None,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Any]:
     """Codex Responses ``status=incomplete`` continuation (max 3 per turn).
 
     Appends the interim assistant message (deduped on visible content only — opaque
@@ -459,7 +463,17 @@ def continue_codex_incomplete(
     overwritten, because the earlier response holds the only native-compaction
     checkpoint) and, when a bare retry would be byte-identical, a user-role nudge — only
     after an assistant row, to preserve role alternation. Returns ``None`` to continue
-    the turn loop, or the terminal ``partial`` result once retries are exhausted.
+    the turn loop, ``CODEX_FALLBACK_ACTIVATED`` when a reasoning-only stall was handed to
+    the next fallback provider, or the terminal ``partial`` result once retries are exhausted.
+
+    Reasoning-only stall ladder (#67321): a response with neither visible text nor a tool
+    call advances ``_codex_reasoning_only_streak`` (a visible partial resets it; the aggregate
+    ``_codex_incomplete_retries`` stays the cap for partials). Encrypted reasoning replays
+    byte-for-byte, so after replay (1) and nudge (2) the third consecutive reasoning-only
+    response goes to the configured fallback with the semantic ``incomplete_response`` reason
+    instead of ending on the sentinel; when that response consumed the last iteration the
+    fallback gets exactly one grace call (``_budget_grace_call`` is consumed by the next
+    iteration, and the streak restarts from 0, so a second grace call is unreachable).
 
     When ``response`` hit ``max_output_tokens`` with no visible text (reasoning ate the
     whole budget), the next attempt goes out with reasoning off and a doubled output
@@ -477,6 +491,9 @@ def continue_codex_incomplete(
     interim_has_reasoning = isinstance(_reasoning, str) and bool(_reasoning.strip())
     interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
     interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
+    reasoning_only = not interim_has_content and not getattr(assistant_message, "tool_calls", None)
+    agent._codex_reasoning_only_streak = agent._codex_reasoning_only_streak + 1 if reasoning_only else 0
+    streak = agent._codex_reasoning_only_streak
 
     if interim_has_content or interim_has_reasoning or interim_has_codex_reasoning or interim_has_codex_message_items:
         last_msg = messages[-1] if messages else None
@@ -510,7 +527,26 @@ def continue_codex_incomplete(
             append_message(messages, interim_msg)
             agent._emit_interim_assistant_message(interim_msg)
 
-    if n < 3:
+    if reasoning_only and streak >= 3:
+        if agent._try_activate_fallback(reason=FailoverReason.incomplete_response):
+            # The trigger may have consumed the turn budget; without a grace call the loop
+            # exits before the fallback is ever asked.
+            if api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0:
+                agent._budget_grace_call = True
+            agent._codex_incomplete_retries = 0
+            agent._codex_reasoning_only_streak = 0
+            if not agent.quiet_mode:
+                agent._vprint(
+                    f"{agent.log_prefix}↻ Codex reasoning-only stall after {streak} attempts — "
+                    f"switching to fallback {agent.model} ({agent.provider})", diagnostic=True,
+                )
+            agent._emit_diagnostic_wait("↻ model stuck on internal reasoning — switching to fallback provider")
+            agent._session_messages = messages
+            return CODEX_FALLBACK_ACTIVATED
+        # No fallback left: fall through to the terminal sentinel.
+    elif n < 3 or reasoning_only:
+        # A reasoning-only streak below 3 continues even once partials used up the aggregate
+        # cap, so the mixed partial-then-stall variant reaches the ladder above.
         # If the interim has nothing the Responses converter will replay, a bare retry is
         # byte-identical; a replayable interim holding only a ``compaction`` checkpoint
         # ALSO re-sends identically. One bare retry, then always nudge.
@@ -551,6 +587,7 @@ def continue_codex_incomplete(
         return None
 
     agent._codex_incomplete_retries = 0
+    agent._codex_reasoning_only_streak = 0
     agent._persist_session(messages, conversation_history)
     return partial_result(
         messages, api_call_count, "Codex response remained incomplete after 3 continuation attempts"

@@ -203,6 +203,10 @@ class SessionMaintenanceMixin:
         """Translate the legacy age window into the shared activity filter, then build WHERE."""
         if (older_than_days is not None and filters.get("last_active_before") is None
                 and filters.get("started_before") is None):
+            if older_than_days < 0:
+                raise ValueError(
+                    f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
+                    "retention builds a future cutoff that matches every ended session.")
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
         return self._prune_filter_where(source=source, **filters)
 
@@ -382,6 +386,13 @@ class SessionMaintenanceMixin:
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: Dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+        if retention_days is None or retention_days < 0:
+            # A negative retention would build a future cutoff and match every ended
+            # session; auto_prune=false is the disable switch, not a negative bound.
+            logger.warning("state.db auto-maintenance skipped: retention_days=%r is invalid",
+                           retention_days)
+            result["skipped"] = True
+            return result
         maintenance_lock = _try_acquire_auto_maintenance_lock(self.db_path)
         if maintenance_lock is None:
             result["skipped"] = True

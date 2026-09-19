@@ -142,6 +142,9 @@ export interface ConfigMtimeResponse {
    *  changes (cosmetic writes like /skin must not trigger reconnects). */
   mcp_rev?: string
   mtime?: number
+  /** mtime+size+inode+ctime signature; changes even when a replacement pins mtime
+   *  (cp -p, rsync -t). Absent from older gateways — treat as "unchanged" then. */
+  sig?: string
 }
 
 export interface ConfigGetValueResponse {

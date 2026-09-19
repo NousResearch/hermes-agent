@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
   applyDisplay,
+  configPollChanged,
   hydrateFullConfig,
   type McpRevState,
   normalizeBusyInputMode,
@@ -419,6 +420,32 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     // bell is still applied (defaults to false on null), so the setter
     // runs — we specifically only skip voiceRecordKey.
     expect(setBell).toHaveBeenCalledWith(false)
+  })
+})
+
+// A config.yaml replacement that pins mtime (cp -p, rsync -t, a dotfile-sync tool) must
+// still be picked up by the general re-hydrate (theme, bell, indicator style, ...), which
+// has no other signal of its own — the MCP-reload branch runs off mcp_rev independently
+// and never calls this.
+describe('configPollChanged', () => {
+  it('is unchanged when neither mtime nor sig moved', () => {
+    expect(configPollChanged(100, 'sig-a', 100, 'sig-a')).toBe(false)
+  })
+
+  it('is changed on a plain mtime bump (sig absent, e.g. an older gateway)', () => {
+    expect(configPollChanged(101, '', 100, '')).toBe(true)
+  })
+
+  it('is changed when sig moved but mtime was pinned by the replacement', () => {
+    expect(configPollChanged(100, 'sig-b', 100, 'sig-a')).toBe(true)
+  })
+
+  it('ignores a failed poll (next is falsy) even if a stale sig differs', () => {
+    expect(configPollChanged(0, 'sig-b', 100, 'sig-a')).toBe(false)
+  })
+
+  it('does not treat two gateways both missing sig as changed', () => {
+    expect(configPollChanged(100, '', 100, '')).toBe(false)
   })
 })
 

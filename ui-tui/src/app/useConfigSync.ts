@@ -243,6 +243,24 @@ const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number =
   return 2000
 }
 
+/** Whether a ``config.get mtime`` poll result should trigger a full re-hydrate.
+ *
+ * ``sig`` (mtime+size+inode+ctime, see ``utils.file_signature``) still moves when a
+ * replacement pins mtime (``cp -p``, ``rsync -t``, a dotfile-sync tool) — comparing it
+ * too catches a non-MCP settings change (theme, bell, indicator style) that mtime alone
+ * would miss, since the poll's MCP-reload branch runs independently off ``mcp_rev`` and
+ * never calls this. ``nextSig`` is empty against an older gateway that doesn't send
+ * ``sig``, so this reduces to the plain mtime comparison there. Extracted (alongside
+ * ``hydrateFullConfig`` below) so the comparison is exercised by the test suite without
+ * a React runtime. */
+export function configPollChanged(next: number, nextSig: string, prevMtime: number, prevSig: string): boolean {
+  if (!next) {
+    return false
+  }
+
+  return next !== prevMtime || (nextSig !== '' && nextSig !== prevSig)
+}
+
 /** Fetch ``config.get full`` and fan the result through ``applyDisplay``.
  *
  * Extracted so the mtime-reload path can be exercised by the test
@@ -324,6 +342,7 @@ export function useConfigSync({
   sid
 }: UseConfigSyncOptions) {
   const mtimeRef = useRef(0)
+  const sigRef = useRef('')
   const mcpRevRef = useRef<McpRevState>({ accepted: '', inFlight: false })
 
   useEffect(() => {
@@ -338,6 +357,7 @@ export function useConfigSync({
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
+      sigRef.current = String(r?.sig ?? '')
       // Seed the MCP revision baseline too: after a normal boot mtime is
       // already non-zero, so the poller's baseline branch never runs, and an
       // unset baseline would make the FIRST cosmetic write (mtime bump, same
@@ -355,11 +375,13 @@ export function useConfigSync({
     const id = setInterval(() => {
       quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
         const next = Number(r?.mtime ?? 0)
+        const nextSig = String(r?.sig ?? '')
         const nextMcpRev = String(r?.mcp_rev ?? '')
 
         if (!mtimeRef.current) {
           if (next) {
             mtimeRef.current = next
+            sigRef.current = nextSig
             mcpRevRef.current.accepted = nextMcpRev
           }
 
@@ -378,11 +400,12 @@ export function useConfigSync({
           )
         }
 
-        if (!next || next === mtimeRef.current) {
+        if (!configPollChanged(next, nextSig, mtimeRef.current, sigRef.current)) {
           return
         }
 
         mtimeRef.current = next
+        sigRef.current = nextSig
 
         // Older gateways don't send mcp_rev — fall back to
         // reload-on-any-change there (no ack tracking possible).

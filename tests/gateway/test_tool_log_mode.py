@@ -40,55 +40,6 @@ class TestLogBranchSemantics:
 
 
 @pytest.mark.asyncio
-async def test_write_tool_log_writes_and_rotates_handler(tmp_path, monkeypatch):
-    """The writer coroutine drains the queue into logs/tool_calls.log."""
-    import gateway.run as gateway_run
-
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    log_queue: queue.Queue = queue.Queue()
-    log_queue.put("2026-07-02 10:00:00  terminal: \"echo hi\"")
-    log_queue.put("2026-07-02 10:00:01  read_file: \"foo.py\"")
-
-    # Minimal inline copy of write_tool_log wiring (the real coroutine is a
-    # closure inside _run_agent); exercise the same handler configuration.
-    import logging
-    from logging.handlers import RotatingFileHandler
-
-    from agent.redact import RedactingFormatter
-
-    log_dir = tmp_path / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    handler = RotatingFileHandler(
-        log_dir / "tool_calls.log", maxBytes=5 * 1024 * 1024, backupCount=3,
-        encoding="utf-8",
-    )
-    handler.setFormatter(RedactingFormatter("%(message)s"))
-    tool_logger = logging.getLogger(f"hermes.tool_calls.test.{id(log_queue)}")
-    tool_logger.setLevel(logging.INFO)
-    tool_logger.propagate = False
-    tool_logger.addHandler(handler)
-    try:
-        while True:
-            try:
-                tool_logger.info("%s", log_queue.get_nowait())
-            except queue.Empty:
-                break
-    finally:
-        tool_logger.removeHandler(handler)
-        handler.flush()
-        handler.close()
-
-    content = (log_dir / "tool_calls.log").read_text(encoding="utf-8")
-    assert "terminal" in content
-    assert "read_file" in content
-    assert content.count("\n") == 2
-    await asyncio.sleep(0)  # keep the asyncio marker honest
-
-
-
-
-@pytest.mark.asyncio
 async def test_write_tool_log_shares_one_logger_across_turns(tmp_path, monkeypatch):
     """Two turns with distinct queues register no new Logger (loggerDict is process-lifetime) and
     every line lands in tool_calls.log exactly once through the shared handler."""

@@ -154,15 +154,26 @@ async def test_docs_cache_is_lru_bounded_and_reopens_evicted(tmp_path: Path, mon
     monkeypatch.setattr(client_mod, "MAX_TRACKED_FILES", 3)
     files = [tmp_path / f"f{i}.py" for i in range(5)]
     for f in files:
-        f.write_text("print('hi')\n")
+        f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, "errors")
+    real_send = client._send_notification
+    sent: list = []
+
+    async def _spy(method, params):
+        sent.append((method, params))
+        await real_send(method, params)
+
+    monkeypatch.setattr(client, "_send_notification", _spy)
     await client.start()
     try:
         for f in files:
             await client.open_file(str(f), language_id="python")
         assert len(client._docs) == 3
         assert str(files[0]) not in client._docs  # least recently touched went first
+        # The server releases its mirror too: every evicted doc got a didClose on the wire.
+        closed = [p["textDocument"]["uri"] for m, p in sent if m == "textDocument/didClose"]
+        assert closed == [client_mod.file_uri(str(files[0])), client_mod.file_uri(str(files[1]))]
         version = await client.open_file(str(files[0]), language_id="python")
         assert version == 0  # fresh didOpen, not a didChange against dropped state
         assert len(client._docs) == 3

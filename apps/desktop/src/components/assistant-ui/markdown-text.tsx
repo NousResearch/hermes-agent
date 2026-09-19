@@ -10,6 +10,7 @@ import {
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 
+import { DirectiveDropBadge } from '@/components/assistant-ui/directive-drop-badge'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -18,6 +19,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
+import { remendPreservingTrailingDirective } from '@/lib/directive-remend-guard'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -45,7 +47,13 @@ import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
-import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
+import {
+  paragraphPlainText,
+  TranscriptDirectiveLeaf,
+  useDirectiveDropWarning,
+  useIsClaimedDirective,
+  useResolvedParagraph
+} from './transcript-directive'
 
 const onboardingEnabled = isOnboardingEnabled()
 
@@ -103,7 +111,7 @@ function useCodePlugin(): CodePlugin | null {
 // identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
   try {
-    return tailBoundedRemend(preprocessMarkdown(text))
+    return remendPreservingTrailingDirective(preprocessMarkdown(text), tailBoundedRemend)
   } catch {
     return text
   }
@@ -538,6 +546,8 @@ function MarkdownParagraph({
 }: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean }) {
   const plain = paragraphPlainText(children)
   const resolved = useResolvedParagraph(scratchpad ? null : plain)
+  const claimed = useIsClaimedDirective(scratchpad ? null : plain)
+  const dropReason = useDirectiveDropWarning(scratchpad ? null : plain, claimed, streaming ?? false)
 
   // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which must
   // out-specify Tailwind Typography's `prose` margins — so no `my-*` here.
@@ -571,6 +581,13 @@ function MarkdownParagraph({
   // bug the user should see).
   if (onboardingEnabled && streaming && plain !== null && isDirectiveInProgress(plain)) {
     return null
+  }
+
+  // Settled directive-looking text that no plugin will draw: show the marker
+  // instead of raw `::name{...}`, which reads as model junk rather than a panel
+  // this app failed to mount.
+  if (dropReason !== null && plain !== null) {
+    return <DirectiveDropBadge reason={dropReason} source={plain} />
   }
 
   return (

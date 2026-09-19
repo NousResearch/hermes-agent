@@ -51,6 +51,12 @@ test('findPythonForRoot preference order includes .venv before venv (context for
   )
 })
 
+test('findPythonForRoot rejects an incomplete interpreter before launching the backend', () => {
+  const fn = extractFunction(mainTsSource, 'findPythonForRoot')
+  assert.match(fn, /canImportHermesCli\(candidate, \{ env: probeEnv \}\)/)
+  assert.match(fn, /systemPython && canImportHermesCli\(systemPython, \{ env: probeEnv \}\)/)
+})
+
 // Fixed: createPythonBackend derives venvRoot from the selected interpreter
 // via venvRootForPython(python, root), falling back to root/venv only for a
 // system python. This test guards against re-hardcoding the venv path.

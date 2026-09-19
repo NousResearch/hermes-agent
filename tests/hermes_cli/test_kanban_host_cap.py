@@ -15,6 +15,7 @@ Three gaps found in review of the original memory-guard PR:
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -143,6 +144,7 @@ def test_max_in_progress_counts_other_boards(
         for title in ("busy-1", "busy-2"):
             tid = kb.create_task(conn, title=title, assignee="alice")
             assert kb.claim_task(conn, tid) is not None
+            kbd._set_worker_pid(conn, tid, os.getpid())
 
     spawns: list = []
     with kbc.connect() as conn:
@@ -164,6 +166,7 @@ def test_max_in_progress_partial_budget_across_boards(
     with kbc.connect(board="second") as conn:
         tid = kb.create_task(conn, title="busy", assignee="alice")
         assert kb.claim_task(conn, tid) is not None
+        kbd._set_worker_pid(conn, tid, os.getpid())
 
     spawns: list = []
     with kbc.connect() as conn:
@@ -261,6 +264,7 @@ def _cap_review_row(conn: sqlite3.Connection, review_id: str) -> dict:
     """``reviewer`` already has one running worker → the review row is per-profile capped."""
     busy_id = kb.create_task(conn, title="busy", assignee="reviewer")
     assert kb.claim_task(conn, busy_id) is not None
+    kbd._set_worker_pid(conn, busy_id, os.getpid())
     return {"max_in_progress": 2, "max_in_progress_per_profile": 1}
 
 

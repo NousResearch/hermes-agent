@@ -144,7 +144,9 @@ def test_normalize_parses_string_envelope_single_dict():
         ({"calls": [{"name": "tool_search"}]}, "itself a bridge tool"),
         ({"calls": [{"name": "x", "arguments": "not json {"}]}, "not valid JSON"),
         ({"calls": [{"name": "x", "arguments": 42}]}, "must be an object"),
-        ({"calls": "nope"}, "not valid JSON"),
+        # calls-as-string: garbage string now gets the SPECIFIC unparseable-string
+        # error, not the generic empty-array message (t_99484a2c).
+        ({"calls": "nope"}, "emitted as a JSON-encoded string"),
         ({"calls": json.dumps({"query": "x"})}, "requires a 'name'"),
     ],
 )
@@ -152,6 +154,111 @@ def test_normalize_rejects_malformed_batches(bad, expected_fragment):
     entries, err = normalize_tool_call_entries(bad)
     assert entries == []
     assert expected_fragment in (err or "")
+
+
+def test_normalize_accepts_calls_as_json_string():
+    # t_99484a2c: models occasionally double-encode 'calls' as a JSON string.
+    # Same tolerance the per-entry 'arguments' field already gets.
+    inner = [{"name": "mcp__kb_server__search_kb", "arguments": {"query": "x"}}]
+    entries, err = normalize_tool_call_entries({"calls": json.dumps(inner)})
+    assert err is None
+    assert entries == inner
+
+
+def test_normalize_calls_as_mangled_json_string_gets_specific_error():
+    # Structure actually emitted in the wild (t_99484a2c, msg 39345): entry
+    # object closed before "name", leaving "name" outside its entry — must
+    # produce the specific unparseable-string error, not "non-empty array".
+    mangled = '[{"arguments": {"title": "x"}}], "name": "mcp__kb_server__search_kb"}]'
+    entries, err = normalize_tool_call_entries({"calls": mangled})
+    assert entries == []
+    assert "emitted as a JSON-encoded string" in (err or "")
+    assert "non-empty array" not in (err or "")
+
+
+# ---------------------------------------------------------------------------
+# narrow one-shot repairs for the observed glm mangles (t_86acfa96 family A,
+# t_09babe1a family D) — repair ONLY the two reconstructable shapes; everything
+# else must keep failing closed to the specific re-emit-native error.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_repairs_family_a_dangling_entry_with_sibling_name():
+    # family A: entry object unclosed, "name" promoted to a sibling of "calls".
+    raw = '[{"arguments": {"category": "solution", "content": "long body..."}}'
+    entries, err = normalize_tool_call_entries(
+        {"calls": raw, "name": "mcp__kb_server__save_kb_entry"})
+    assert err is None
+    assert entries == [
+        {"name": "mcp__kb_server__save_kb_entry",
+         "arguments": {"category": "solution", "content": "long body..."}}]
+
+
+def test_normalize_repairs_family_d_name_inside_string():
+    # family D (t_09babe1a, msg 49976): entry left unclosed after its balanced
+    # args object; "name" relocated inside the string ahead of orphaned closers.
+    raw = '[{"arguments": {"title": "t", "content": "c"}] , "name": "mcp__kb_server__save_kb_entry" } ]'
+    entries, err = normalize_tool_call_entries({"calls": raw})
+    assert err is None
+    assert entries == [
+        {"name": "mcp__kb_server__save_kb_entry",
+         "arguments": {"title": "t", "content": "c"}}]
+
+
+def test_normalize_family_d_trailing_bracket_missing_variant():
+    # family D variant (msg 49970's siblings): trailing "]" missing.
+    raw = '[{"arguments": {"a": 1}] , "name": "some_tool" }'
+    entries, err = normalize_tool_call_entries({"calls": raw})
+    assert err is None
+    assert entries == [{"name": "some_tool", "arguments": {"a": 1}}]
+
+
+def test_normalize_family_d_recovered_bridge_name_rejected():
+    # msg 49970: the mangled "name" is literally the bridge tool — the model
+    # mangled the tool name itself, so the payload is untrustworthy.
+    raw = '[{"arguments": {"title": "t"}}] , "name": "tool_call" }'
+    entries, err = normalize_tool_call_entries({"calls": raw})
+    assert entries == []
+    assert "not valid JSON" in (err or "")
+
+
+def test_normalize_repair_rejects_sibling_name_mismatch():
+    # Outer sibling contradicts the in-string name: not recoverable with certainty.
+    raw = '[{"arguments": {"a": 1}}] , "name": "tool_b" } ]'
+    entries, err = normalize_tool_call_entries({"calls": raw, "name": "tool_a"})
+    assert entries == []
+    assert "not valid JSON" in (err or "")
+
+
+def test_normalize_repair_rejects_multientry_uncertain_string():
+    # More than one '"arguments"' occurrence: cannot know which entry is meant.
+    raw = '[{"arguments": {"a": 1}}, {"arguments": {"b": 2}]'
+    entries, err = normalize_tool_call_entries({"calls": raw, "name": "x"})
+    assert entries == []
+    assert "not valid JSON" in (err or "")
+
+
+def test_normalize_repair_rejects_unparseable_args_slice():
+    raw = '[{"arguments": {"a": [1, 2}} , "name": "x" } ]'
+    entries, err = normalize_tool_call_entries({"calls": raw})
+    assert entries == []
+    assert "not valid JSON" in (err or "")
+
+
+def test_normalize_repair_never_guesses_when_name_absent():
+    # Neither a sibling name nor an in-string name: fail closed.
+    entries, err = normalize_tool_call_entries(
+        {"calls": '[{"arguments": {"type": "runbook", "title": "t"}}'})
+    assert entries == []
+    assert "not valid JSON" in (err or "")
+
+
+def test_normalize_repair_rejects_name_orphaned_inside_closed_entry():
+    # t_2c695cfa msg 40547: entry closed BEFORE "name" — not a dangling entry.
+    raw = '[{"action": "wait", "session_id": "proc_x", "timeout": 600}, "name": "process_manage"}]'
+    entries, err = normalize_tool_call_entries({"calls": raw})
+    assert entries == []
+    assert "not valid JSON" in (err or "")
 
 
 # ---------------------------------------------------------------------------

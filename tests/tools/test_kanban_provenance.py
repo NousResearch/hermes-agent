@@ -6,6 +6,28 @@ import pytest
 from hermes_state import SessionDB
 
 
+@pytest.fixture(autouse=True)
+def _worker_create_idempotency_key(monkeypatch):
+    """Byrd-IT carried patch: dispatcher-spawned workers must pass ``idempotency_key``
+    to ``kanban_create`` (duplicate bug-report cards). Upstream tests exercise worker
+    fan-out without one; inject a per-call unique key so they keep testing what they
+    were written to test. Tests that pass their own key are untouched."""
+    import itertools
+    from tools import kanban_tools as _kt
+    counter = itertools.count()
+    real = _kt._handle_create.__wrapped__ if hasattr(_kt._handle_create, "__wrapped__") else None
+    orig = _kt._handle_create
+
+    def wrapped(args, **kw):
+        if isinstance(args, dict) and not args.get("idempotency_key"):
+            args = {**args, "idempotency_key": f"test-autokey-{next(counter)}"}
+        return orig(args, **kw)
+
+    monkeypatch.setattr(_kt, "_handle_create", wrapped)
+    yield
+
+
+
 @pytest.mark.parametrize("linked,explicit", [(False, None), (True, None), (False, "override")])
 def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, explicit):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kn

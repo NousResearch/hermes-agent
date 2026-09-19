@@ -164,6 +164,30 @@ KANBAN_COMPLETE_SCHEMA = _schema(
     [],
 )
 
+KANBAN_RECORD_COMPLETION_STATE_SCHEMA = _schema(
+    "kanban_record_completion_state",
+    (
+        "Record one explicit delivery state with evidence. Written, tested, "
+        "deployed, and verified are independent labels: this never infers a "
+        "higher label. Evidence must include a non-empty textual proof; use "
+        "verified only for observed live proof."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "state": {
+            "type": "string",
+            "enum": ["written", "tested", "deployed", "verified"],
+            "description": "Explicit delivery label to record; no other label is implied.",
+        },
+        "evidence": {
+            "type": "object",
+            "description": "Evidence object containing a non-empty `proof` string.",
+            "additionalProperties": True,
+        },
+    },
+    ["state", "evidence"],
+)
+
 KANBAN_BLOCK_SCHEMA = _schema(
     "kanban_block",
     (
@@ -299,12 +323,13 @@ KANBAN_COMMENT_SCHEMA = _schema(
     ),
     {
         "task_id": _prop("string", (
-                "Task id. Required (may be your own task or "
-                "another's — comment threads are per-task)."
+                "Task id. Optional — defaults to HERMES_KANBAN_TASK (this "
+                "worker's own task); required for cross-task comments — "
+                "comment threads are per-task."
         )),
         "body": _prop("string", "Markdown-supported comment body."),
     },
-    ["task_id", "body"],
+    ["body"],
 )
 
 KANBAN_ATTACH_SCHEMA = _schema(
@@ -434,9 +459,12 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "the body before work starts."
         )),
         "idempotency_key": _prop("string", (
-                "If a non-archived task with this key already "
-                "exists, return that task's id instead of creating "
-                "a duplicate. Useful for retry-safe automation."
+                "REQUIRED when you are a dispatcher-spawned worker (HERMES_KANBAN_TASK set); "
+                "optional for humans/orchestrators. Stable, content-derived key that another "
+                "worker hitting the same problem would also produce, e.g. "
+                "'tirith-fp-<rule>' or 'tool-failure-<tool>-<cause>'. If a non-archived "
+                "task with this key exists, its id is returned, your report is appended as a "
+                "comment, and the response carries deduplicated=true — do not file again."
         )),
         "max_runtime_seconds": _prop("integer", (
                 "Per-task runtime cap. When exceeded, the "
@@ -480,6 +508,13 @@ KANBAN_CREATE_SCHEMA = _schema(
         "completion_contract": _prop("string", (
             "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
             "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
+        )),
+        "requires_live_verification": _prop("boolean", (
+            "Keep this aggregate/request task open until an explicit verified state with live proof is recorded. "
+            "Tests and merges never satisfy this gate implicitly."
+        )),
+        "verification_owner_id": _prop("string", (
+            "Optional task id of the organizational verification owner. This is not a prerequisite parent edge."
         )),
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "

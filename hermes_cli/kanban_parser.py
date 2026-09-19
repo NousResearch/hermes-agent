@@ -255,6 +255,14 @@ _SPECS = [
         _arg("--task", help="Only show diagnostics for one task id"),
         _json_flag(help="Emit JSON (structured) instead of the default human table"),
     ], aliases=["diag"], help="List active diagnostics on the current board"),
+    _cmd("watchdog", [
+        _arg("--retention-days", type=int, default=30,
+             help="Retain resolved alert records for this many days (default: 30)"),
+        _arg("--dry-run", action="store_true",
+             help="Read-only pass: report conditions without writing alerts "
+                  "(works in delegate_task child contexts)"),
+        _json_flag(help="Emit the deterministic run result as JSON"),
+    ], help="Run the detection-only Kanban watchdog once"),
     _cmd("link", [_arg("parent_id"), _arg("child_id")], help="Add a parent->child dependency"),
     _cmd("unlink", [_arg("parent_id"), _arg("child_id")], help="Remove a parent->child dependency"),
     _cmd("claim", [

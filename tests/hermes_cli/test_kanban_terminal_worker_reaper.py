@@ -147,3 +147,74 @@ def test_one_failing_row_does_not_abort_the_sweep(conn):
         for p in (broken, healthy):
             p.kill()
             p.wait()
+
+
+def test_dead_terminal_worker_scope_with_descendant_is_stopped(conn, monkeypatch):
+    """The scope, not a dead wrapper PID, owns an orphaned child process."""
+    tid = kb.create_task(conn, title="finished", assignee="coder")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    run_id = kb._current_run_id(conn, tid)
+    assert kb.complete_task(conn, tid, result="done", expected_run_id=run_id) is True
+    conn.execute(
+        "UPDATE task_runs SET worker_pid=?, worker_started_at=?, ended_at=ended_at-? WHERE id=?",
+        (999_999_999, "old-boot|1", 600, run_id),
+    )
+    descendants = {"count": 1, "processes": [{"pid": 4242, "comm": "python3"}]}
+    stopped = []
+    monkeypatch.setattr(kbd, "_scope_descendant_summary", lambda unit: descendants, raising=False)
+    monkeypatch.setattr(
+        "tools.process_registry._stop_systemd_unit",
+        lambda unit: stopped.append(unit) or True,
+    )
+
+    assert kbd.reap_terminal_workers(conn) == [tid]
+
+    unit = f"hermes-worker-kanban-{tid}-run-{run_id}.scope"
+    assert stopped == [unit]
+    event = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND kind='terminal_scope_reaped'",
+        (tid,),
+    ).fetchone()
+    payload = __import__("json").loads(event["payload"])
+    assert payload == {
+        "unit": unit,
+        "scope_id": unit.removesuffix(".scope"),
+        "descendants": descendants,
+        "stop_result": True,
+    }
+
+
+def test_live_terminal_worker_does_not_stop_its_scope(conn, monkeypatch):
+    """A fingerprint-verified worker uses the existing PID reaper, never scope stop."""
+    proc = _sleeper()
+    stopped = []
+    try:
+        tid, _ = _completed_card_with_worker(conn, proc)
+        monkeypatch.setattr(
+            "tools.process_registry._stop_systemd_unit",
+            lambda unit: stopped.append(unit) or True,
+        )
+
+        assert kbd.reap_terminal_workers(conn, signal_fn=lambda *_: None) == []
+        assert stopped == []
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_dead_fingerprinted_worker_is_not_capacity_even_when_scope_has_descendant(conn, monkeypatch):
+    """A surviving scope cannot reserve dispatch capacity after its worker dies."""
+    tid = kb.create_task(conn, title="dead worker", assignee="coder")
+    kb.claim_task(conn, tid, claimer=kb._claimer_id())
+    conn.execute(
+        "UPDATE tasks SET worker_pid=?, worker_started_at=? WHERE id=?",
+        (999_999_999, "old-boot|1", tid),
+    )
+    monkeypatch.setattr(
+        kbd,
+        "_scope_descendant_summary",
+        lambda _unit: {"count": 1, "processes": [{"pid": 4242, "comm": "browser_harness"}]},
+        raising=False,
+    )
+
+    assert kbd.count_running_tasks(conn) == 0

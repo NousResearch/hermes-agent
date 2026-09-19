@@ -161,14 +161,15 @@ describe('navigateToWorkspacePage', () => {
     expect(fronted()).toBe(true)
   })
 
-  it.each([`${CAPABILITIES_ROUTE}?tab=skills`, `${CAPABILITIES_ROUTE}?tab=toolsets`, `${CAPABILITIES_ROUTE}?tab=mcp&server=ctx7`])(
-    'fronts for the palette target %s',
-    to => {
-      navigateToWorkspacePage(vi.fn(), to)
+  it.each([
+    `${CAPABILITIES_ROUTE}?tab=skills`,
+    `${CAPABILITIES_ROUTE}?tab=toolsets`,
+    `${CAPABILITIES_ROUTE}?tab=mcp&server=ctx7`
+  ])('fronts for the palette target %s', to => {
+    navigateToWorkspacePage(vi.fn(), to)
 
-      expect(fronted()).toBe(true)
-    }
-  )
+    expect(fronted()).toBe(true)
+  })
 
   it('passes navigation options through', () => {
     const navigate = vi.fn()

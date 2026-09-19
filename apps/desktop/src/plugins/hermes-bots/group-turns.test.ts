@@ -1165,7 +1165,9 @@ describe('stranded harvest', () => {
     await room.turns.harvestStrandedGroupReply('Dead', member)
 
     expect(room.chat.$groupChats.get().Dead.stranded?.[key]).toBeUndefined()
-    expect(activity.$groupActivity.get().Dead?.events.map(event => [event.kind, event.member])).toEqual([['failed', key]])
+    expect(activity.$groupActivity.get().Dead?.events.map(event => [event.kind, event.member])).toEqual([
+      ['failed', key]
+    ])
   })
 
   it('never re-submits into a member the harvest just confirmed is still running', async () => {

@@ -46,7 +46,9 @@ test('the current CLI "Not installed:" tail parses into findings + trust', () =>
   expect(parseInstallBlocked(wrapped)).toEqual({ findings: 1, unverified: false })
 
   // No count in the sentence when the scanner reported a verdict without findings.
-  const uncounted = ["Not installed: the security scan found high-risk patterns in 'org/skill' (listed above). Re-run with --force to install anyway."]
+  const uncounted = [
+    "Not installed: the security scan found high-risk patterns in 'org/skill' (listed above). Re-run with --force to install anyway."
+  ]
   expect(parseInstallBlocked(uncounted)).toEqual({ findings: 0, unverified: false })
 })
 
@@ -60,7 +62,11 @@ test('the legacy "Installation blocked:" tail still parses and toasts a plain ex
   expect(parseInstallBlocked(lines)).toEqual({ findings: 2, unverified: true })
   expect(parseInstallBlocked(['Failed to spawn skills install'])).toBeNull()
 
-  notifyHubActionFailed(new HubInstallBlockedError('org/skill', 2, true, lines.join('\n')), 'Skill action failed', 'skill')
+  notifyHubActionFailed(
+    new HubInstallBlockedError('org/skill', 2, true, lines.join('\n')),
+    'Skill action failed',
+    'skill'
+  )
 
   const toast = $notifications.get()[0]
   expect(toast?.title).toMatch(/Couldn't install skill/)

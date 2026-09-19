@@ -826,6 +826,31 @@ never auto-import Python. This is a security boundary, not an oversight
 (GHSA-mcfc-hp25-cjv7).
 :::
 
+#### Pushing events to your desktop half
+
+Your backend runs inside the gateway process, so it can push an update to your
+own desktop half over the app's global event stream — the same stream
+`host.onEvent` subscribes to:
+
+```python
+from hermes_cli.plugin_events import broadcast_plugin_event
+
+broadcast_plugin_event("rss-reader", "items", {"count": 3})
+# → event "plugin.rss-reader.items" reaches every connected desktop client
+```
+
+```javascript
+host.onEvent('plugin.rss-reader.items', payload => queryClient.invalidateQueries({ queryKey: ['items'] }))
+```
+
+The name is always `plugin.<your plugin id>.<event>` — the plugin id namespaces
+it, so `broadcast_plugin_event` takes the BARE event name (`"items"`, not
+`"plugin.rss-reader.items"`) and raises on anything else. Delivery is
+fire-and-forget (a wedged client is skipped, never stalling your handler). Use
+this instead of importing `tui_gateway.server` internals; for plugin-scoped
+frames with a payload tailored per connection, `ctx.socket('/events')` remains
+the richer door.
+
 ### Calling it from the plugin
 
 ```javascript

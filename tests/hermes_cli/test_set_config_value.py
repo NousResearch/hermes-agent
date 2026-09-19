@@ -587,6 +587,69 @@ class TestSchemaValidation:
 
 
 
+    def test_agent_reasoning_effort_is_accepted(self, _isolated_hermes_home, capsys):
+        """The main agent's effort level is read by
+        ``hermes_constants.resolve_reasoning_config`` and written by
+        ``/reasoning --global`` + the TUI/desktop, so it is part of the schema
+        and must not be reported as an unrecognized key."""
+        set_config_value("agent.reasoning_effort", "high")
+        assert "not a recognized config key" not in capsys.readouterr().out
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["reasoning_effort"] == "high"
+
+        # CLI → runtime round trip: the value written here is the effort the runtime resolves.
+        from hermes_constants import resolve_reasoning_config
+        from hermes_cli.config import load_config
+        assert resolve_reasoning_config(load_config()) == {"enabled": True, "effort": "high"}
+
+        # The runtime's other accepted spellings keep working: the disable aliases, the
+        # empty "unset" sentinel, and the null sentinel of the null-defaulted sibling leaf.
+        for value in ("none", "disabled", ""):
+            set_config_value("agent.reasoning_effort", value)
+        set_config_value("x_search.reasoning_effort", "null")
+
+    def test_invalid_reasoning_effort_value_is_rejected(self, _isolated_hermes_home, capsys):
+        """A typo'd level fails loudly instead of being saved: the key validates, but the
+        runtime would silently ignore the value and keep the default."""
+        with pytest.raises(SystemExit):
+            set_config_value("agent.reasoning_effort", "ultra-turbo")
+
+        err = capsys.readouterr().err
+        assert "ultra-turbo" in err
+        assert "xhigh" in err  # the message spells out the ladder
+        assert "reasoning_effort" not in _read_config(_isolated_hermes_home)
+
+    def test_x_search_reasoning_effort_round_trips_through_its_consumer(self, _isolated_hermes_home):
+        """``x_search`` feeds a consumer with a narrower enum than the generic ladder, so the CLI
+        must accept exactly what that consumer accepts, and the value must survive the round trip
+        (case included)."""
+        from tools.x_search_tool import _get_x_search_reasoning_effort
+
+        for typed, resolved in (("low", "low"), ("xhigh", "xhigh"), ("HIGH", "high")):
+            set_config_value("x_search.reasoning_effort", typed)
+            assert _get_x_search_reasoning_effort() == resolved
+
+        # Unset spellings still clear it: the tool treats empty/None as "no opinion". This leaf's
+        # default is null, so the CLI's scalar coercion turns "none"/"null" into null instead of
+        # the string "none" (a string-defaulted leaf keeps "none" verbatim, meaning "disabled").
+        for unset in ("", "null", "none"):
+            set_config_value("x_search.reasoning_effort", unset)
+            assert _get_x_search_reasoning_effort() is None
+
+    @pytest.mark.parametrize("value", ["minimal", "max", "ultra", "disabled", "false"])
+    def test_x_search_reasoning_effort_rejects_values_its_consumer_refuses(
+        self, _isolated_hermes_home, capsys, value
+    ):
+        """Generic-ladder levels and the disable aliases are outside that consumer's enum: it
+        raises on them at call time, so saving one would look applied and fail later."""
+        with pytest.raises(SystemExit):
+            set_config_value("x_search.reasoning_effort", value)
+
+        err = capsys.readouterr().err
+        assert "xhigh" in err  # the message names the consumer's own ladder
+        assert "reasoning_effort" not in _read_config(_isolated_hermes_home)
+
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
         """``--force`` writes unknown keys without the notice (scripted
         forward-compat writes)."""

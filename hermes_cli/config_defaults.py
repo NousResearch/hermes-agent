@@ -239,6 +239,10 @@ DEFAULT_CONFIG = {
         # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # Reasoning effort for the main agent loop ("none" disables thinking; the full ladder is
+        # in the config docs). Empty = unset, so each provider keeps its own default. Read by
+        # hermes_constants.resolve_reasoning_config; /reasoning --global writes here.
+        "reasoning_effort": "",
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},

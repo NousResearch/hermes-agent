@@ -280,15 +280,6 @@ def _sdk_supports_agent_sessions() -> bool:
     return _AGENT_SESSIONS_SUPPORTED
 
 
-def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
-    return client.assistant_threads_setStatus
-
-
 def _session_title_method(client: Any):
     """Return the title setter: ``agents.sessions.rename`` when available, else legacy."""
     if _sdk_supports_agent_sessions():
@@ -2571,8 +2562,7 @@ class SlackAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=ts)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Show a thread status via assistant.threads.setStatus.
-        Needs assistant:write or chat:write scope; auto-clears on reply."""
+        """Show a processing session status, or legacy Assistant display text."""
         if self._suppressed_ignored(chat_id, "typing/status in", level=logging.DEBUG):
             return
         if not self._app:
@@ -2615,12 +2605,26 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """Translate legacy display text/clear to the selected API's status contract."""
+        api_method = "session status"
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
+            client = self._get_client(chat_id, team_id=team_id)
+            _set_status = (
+                getattr(client, "agents_sessions_setStatus", None)
+                if _sdk_supports_agent_sessions() else None
+            )
+            if _set_status is not None:
+                api_method = "agents.sessions.setStatus"
+                # Agent Sessions accepts lifecycle enums, not display prose. Clearing typing
+                # leaves the reusable session active; prose never implies suspension/closure.
+                status = "processing" if status else "active"
+            else:
+                api_method = "assistant.threads.setStatus"
+                _set_status = client.assistant_threads_setStatus
             await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            # SDK exception text/responses can contain credentials or request content.
+            logger.debug("[Slack] %s %s (%s)", api_method, fail_label, type(e).__name__)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:
@@ -2633,7 +2637,7 @@ class SlackAdapter(BasePlatformAdapter):
         return f"still working… ({f'{mins}m{secs:02d}s' if mins else f'{secs}s'})"
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
-        """Clear the assistant thread status indicator."""
+        """Stop the typing indicator without closing the reusable session."""
         if self._suppressed_ignored(chat_id, "status clear in", level=logging.DEBUG):
             self._active_status_threads.pop(chat_id, None)
             return

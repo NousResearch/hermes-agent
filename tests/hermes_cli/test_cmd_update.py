@@ -43,6 +43,25 @@ def mock_args():
     return SimpleNamespace()
 
 
+class UpdateHardExit(Exception):
+    def __init__(self, code: int) -> None:
+        self.code = code
+
+
+class FakeUpdateLock:
+    holder = None
+
+    def __init__(self, events: list) -> None:
+        self.events = events
+
+    def acquire(self) -> bool:
+        self.events.append("acquire")
+        return True
+
+    def release(self) -> None:
+        self.events.append("release")
+
+
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------
@@ -81,6 +100,59 @@ def _patch_managed_uv(request):
 @pytest.fixture(autouse=True)
 def _patch_gateway_discovery(isolated_update_runtime):
     pass
+
+
+class TestCmdUpdateHardExit:
+    def test_real_update_argv_hard_exits_after_cleanup(self, monkeypatch, mock_args) -> None:
+        """A successful top-level update must not return to interpreter teardown after cleanup."""
+        from hermes_cli import main as hm
+
+        events = []
+        monkeypatch.setattr(hm, "_update_preflight_handled", lambda args: False)
+        monkeypatch.setattr(hm, "_install_hangup_protection", lambda gateway_mode=False: "io")
+        monkeypatch.setattr("hermes_cli.update_lock.UpdateLock", lambda: FakeUpdateLock(events))
+        monkeypatch.setattr("hermes_cli.update_cmd._cmd_update_impl", lambda args, gateway_mode=False: events.append("impl"))
+        monkeypatch.setattr(hm, "_finalize_update_receipt", lambda code, reason: events.append(("receipt", code, reason)))
+        monkeypatch.setattr(hm, "_finalize_update_output", lambda state: events.append(("output", state)))
+        monkeypatch.setattr(hm.sys, "argv", ["hermes", "update", "--backup"])
+
+        def hard_exit(code: int) -> None:
+            events.append(("hard_exit", code))
+            raise UpdateHardExit(code)
+
+        monkeypatch.setattr(hm, "_exit_after_update", hard_exit)
+
+        with pytest.raises(UpdateHardExit) as exc_info:
+            cmd_update(mock_args)
+
+        assert exc_info.value.code == 0
+        assert events == [
+            "acquire",
+            "impl",
+            ("receipt", 0, "completed at command boundary"),
+            "release",
+            ("output", "io"),
+            ("hard_exit", 0),
+        ]
+
+    def test_programmatic_update_call_keeps_in_process_return(self, monkeypatch, mock_args) -> None:
+        """Only the real CLI update command hard-exits; direct test/library calls keep returning."""
+        from hermes_cli import main as hm
+
+        events = []
+        monkeypatch.setattr(hm, "_update_preflight_handled", lambda args: False)
+        monkeypatch.setattr(hm, "_install_hangup_protection", lambda gateway_mode=False: "io")
+        monkeypatch.setattr("hermes_cli.update_lock.UpdateLock", lambda: FakeUpdateLock(events))
+        monkeypatch.setattr("hermes_cli.update_cmd._cmd_update_impl", lambda args, gateway_mode=False: events.append("impl"))
+        monkeypatch.setattr(hm, "_finalize_update_receipt", lambda code, reason: events.append(("receipt", code, reason)))
+        monkeypatch.setattr(hm, "_finalize_update_output", lambda state: events.append(("output", state)))
+        monkeypatch.setattr(hm, "_exit_after_update", lambda code: events.append(("hard_exit", code)))
+        monkeypatch.setattr(hm.sys, "argv", ["pytest", "tests/hermes_cli/test_cmd_update.py"])
+
+        cmd_update(mock_args)
+
+        assert ("hard_exit", 0) not in events
+        assert events[-2:] == ["release", ("output", "io")]
 
 
 class TestCmdUpdateNpmLockfileCache:

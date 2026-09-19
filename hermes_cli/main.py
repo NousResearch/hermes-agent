@@ -103,6 +103,30 @@ def _exit_after_oneshot(rc: object) -> None:
     os._exit(rc if isinstance(rc, int) else (0 if rc is None else 1))
 
 
+def _argv_is_update_command(argv: list[str]) -> bool:
+    """True when the process was invoked as the top-level ``hermes update`` CLI command."""
+    return "update" in argv
+
+
+def _exit_after_update(rc: object) -> None:
+    """Exit update mode after durable cleanup without running late native finalizers.
+
+    Update receipts, lock release, and stdout/stderr restoration happen before this helper is
+    called. A hard exit preserves that durable result when interpreter teardown later trips a
+    native ``ctypes``/``dlsym`` crash, instead of letting a successful update surface as exit 139.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    os._exit(rc if isinstance(rc, int) else (0 if rc is None else 1))
+
+
 _oneshot_cleanup_done = False
 # (module, attr, kwargs, exceptions swallowed). MCP shutdown may raise
 # BaseException-derived errors from executor teardown; the rest are Exception.
@@ -2427,14 +2451,14 @@ def cmd_update(args):
         # By this point every durable step is done (receipt finalized above, lock released, stdio restored),
         # so on the hand-off path only, flush and exit hard instead of waiting for the interpreter to unwind
         # — the same treatment #79040's cron workaround applies.
-        if _update_handoff_exit_code is not None and os.environ.get(_UPDATE_REEXEC_ENV) == "1":
+        if _update_handoff_exit_code is not None and (
+            os.environ.get(_UPDATE_REEXEC_ENV) == "1" or _argv_is_update_command(sys.argv[1:])
+        ):
             logger.debug(
-                "Update hand-off child %s exiting via os._exit(%s)",
+                "Update command %s exiting via os._exit(%s)",
                 os.getpid(), _update_handoff_exit_code,
             )
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os._exit(_update_handoff_exit_code)
+            _exit_after_update(_update_handoff_exit_code)
 
 
 def _coalesce_session_name_args(argv: list) -> list:

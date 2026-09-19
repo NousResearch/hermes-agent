@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -333,6 +334,74 @@ class TestBootstrapIsTheOneCreator:
         again = fb.run_bootstrap()
         assert again is record and portal.minted == 1, "a second boot in the same process adopts, never mints"
         assert fb.wait_for_record(timeout=0) is record
+
+    def test_concurrent_bootstrap_waiter_never_blocks_or_duplicates_owner(self, portal, monkeypatch):
+        fb = self._fresh()
+        owner_entered = threading.Event()
+        waiter_entered = threading.Event()
+        release_owner = threading.Event()
+        inventory_calls = 0
+        original_wait = fb._done.wait
+
+        def slow_inventory():
+            nonlocal inventory_calls
+            inventory_calls += 1
+            if inventory_calls == 1:
+                owner_entered.set()
+                assert release_owner.wait(2)
+            return False
+
+        def observed_wait(timeout=None):
+            waiter_entered.set()
+            return original_wait(timeout)
+
+        monkeypatch.setattr(fb, "_inventory_other_providers", slow_inventory)
+        monkeypatch.setattr(fb, "SETUP_READY_WAIT_SECONDS", 2.0)
+        monkeypatch.setattr(fb._done, "wait", observed_wait)
+        records = []
+        owner = threading.Thread(target=lambda: records.append(fb.run_bootstrap(announce=False)))
+        waiter = threading.Thread(target=lambda: records.append(fb.run_bootstrap(announce=False)))
+        owner.start()
+        assert owner_entered.wait(2)
+        waiter.start()
+        assert waiter_entered.wait(2)
+        release_owner.set()
+        owner.join(2)
+        waiter.join(2)
+
+        assert not owner.is_alive() and not waiter.is_alive()
+        assert inventory_calls == 1
+        assert portal.minted == 1
+        assert len(records) == 2 and records[0] is records[1]
+
+    def test_timed_out_waiter_returns_not_ready_without_replacing_owner(self, portal, monkeypatch):
+        fb = self._fresh()
+        owner_entered = threading.Event()
+        release_owner = threading.Event()
+        inventory_calls = 0
+
+        def slow_inventory():
+            nonlocal inventory_calls
+            inventory_calls += 1
+            if inventory_calls == 1:
+                owner_entered.set()
+                assert release_owner.wait(2)
+            return False
+
+        monkeypatch.setattr(fb, "_inventory_other_providers", slow_inventory)
+        monkeypatch.setattr(fb, "SETUP_READY_WAIT_SECONDS", 0)
+        records = []
+        owner = threading.Thread(target=lambda: records.append(fb.run_bootstrap(announce=False)))
+        owner.start()
+        assert owner_entered.wait(2)
+        waiting = fb.run_bootstrap(announce=False)
+        release_owner.set()
+        owner.join(2)
+
+        assert not owner.is_alive() and len(records) == 1
+        assert waiting.error == "free tier bootstrap is still running" and not waiting.has_identity
+        assert inventory_calls == 1 and portal.minted == 1
+        assert fb.run_bootstrap(announce=False) is records[0]
 
     def test_own_key_keeps_inference_and_the_identity_stays_off_active_provider(self, portal, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-own-key")

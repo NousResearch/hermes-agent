@@ -583,6 +583,24 @@ def _codex_usage_probe_url(base_url: Optional[str]) -> str:
     return prefix + "/usage"
 
 
+def _codex_credits_usable(usage: Any) -> bool:
+    """True when the Codex usage payload reports a spendable credit balance, i.e. overage is served."""
+    if not isinstance(usage, dict):
+        return False
+    credits = usage.get("credits")
+    if not isinstance(credits, dict) or not credits.get("has_credits"):
+        return False
+    spend_control = usage.get("spend_control")
+    if credits.get("overage_limit_reached") or (isinstance(spend_control, dict) and spend_control.get("reached")):
+        return False
+    if credits.get("unlimited"):
+        return True
+    try:
+        return float(credits.get("balance") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _probe_codex_quota_restored(
     access_token: Any, *, base_url: Optional[str] = None,
     min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS) -> Optional[bool]:
@@ -619,13 +637,19 @@ def _probe_codex_quota_restored(
         with _codex_http_client(timeout=10.0) as client:
             response = client.get(_codex_usage_probe_url(base_url), headers=headers)
         if response.status_code == 200:
-            rate_limit = (response.json() or {}).get("rate_limit") or {}
+            usage = response.json() or {}
+            rate_limit = usage.get("rate_limit") or {}
             worst_used: Optional[float] = None
             for key in ("primary_window", "secondary_window"):
                 used = (rate_limit.get(key) or {}).get("used_percent")
                 if isinstance(used, (int, float)):
                     worst_used = max(worst_used or 0.0, float(used))
-            if worst_used is not None:
+            # A window pinned at 100% does not mean requests fail: with paid credits the overage
+            # draws from the credit balance, so the account serves while used_percent stays at 100
+            # until the window resets. Judging on the window alone keeps a working credential benched.
+            if _codex_credits_usable(usage):
+                result = True
+            elif worst_used is not None:
                 result = worst_used < 100.0
         elif response.status_code == 429:
             result = False

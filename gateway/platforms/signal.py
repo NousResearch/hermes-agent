@@ -269,6 +269,7 @@ class SignalAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop SSE listener and clean up."""
         self._running = False
+        self._force_reconnect()
         for task in (self._sse_task, self._health_monitor_task):
             await cancel_task(task)
         for task in self._typing_tasks.values():
@@ -296,10 +297,15 @@ class SignalAdapter(BasePlatformAdapter):
         url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
         backoff = SSE_RETRY_DELAY_INITIAL
         while self._running:
+            response: Optional[httpx.Response] = None
             try:
                 logger.debug("Signal SSE: connecting to %s", url)
-                async with self.client.stream("GET", url, headers={"Accept": "text/event-stream"},
-                                              timeout=None) as response:
+                async with self.client.stream(
+                    "GET", url,
+                    headers={"Accept": "text/event-stream", "Connection": "close"},
+                    timeout=None,
+                ) as stream_response:
+                    response = stream_response
                     self._sse_response = response
                     backoff = SSE_RETRY_DELAY_INITIAL  # Reset on successful connection
                     self._last_sse_activity = time.time()
@@ -321,10 +327,11 @@ class SignalAdapter(BasePlatformAdapter):
             except Exception as e:
                 if self._running:
                     logger.warning("Signal SSE: error: %s (reconnecting in %.0fs)", e, backoff)
+            finally:
+                await self._close_sse_response(response)
             if self._running:
                 await asyncio.sleep(backoff + backoff * 0.2 * random.random())  # 20% jitter vs thundering herd
                 backoff = min(backoff * 2, SSE_RETRY_DELAY_MAX)
-        self._sse_response = None
 
     async def _health_monitor(self) -> None:
         """Monitor SSE connection health and force reconnect if stale."""
@@ -348,14 +355,24 @@ class SignalAdapter(BasePlatformAdapter):
                 logger.warning("Signal: health check failed (%d), forcing reconnect", resp.status_code)
                 self._force_reconnect()
 
+    async def _close_sse_response(self, response: Optional[httpx.Response]) -> None:
+        """Close one listener-owned response without disturbing a newer connection."""
+        if response is None:
+            return
+        if self._sse_response is response:
+            self._sse_response = None
+        with suppress(Exception):
+            await response.aclose()
+
     def _force_reconnect(self) -> None:
         """Force SSE reconnection by closing the current response."""
-        if self._sse_response and not self._sse_response.is_stream_consumed:
-            with suppress(Exception):
-                task = asyncio.create_task(self._sse_response.aclose())
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-            self._sse_response = None
+        response = self._sse_response
+        if response is None:
+            return
+        self._sse_response = None
+        task = asyncio.create_task(self._close_sse_response(response))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def _unwrap_sync_message(self, envelope_data: dict) -> Optional[dict]:
         """Promote a "Note to Self" / group sync-sent to a dataMessage envelope; None for other

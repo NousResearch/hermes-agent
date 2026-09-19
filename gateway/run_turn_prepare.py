@@ -45,18 +45,29 @@ _SERVICE_TIER_CURRENT = object()
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(self, **kwargs) -> tuple[str, dict]:
         selected = self._prepare_session_agent_runtime(**kwargs)
-        selected.publish()
-        return selected.model, selected.runtime
+        try:
+            selected.publish()
+            return selected.model, selected.runtime
+        finally:
+            selected.release_snapshots()
 
     def _prepare_session_agent_runtime(self, *, source=None, session_key=None, user_config=None):
         from gateway.session_selected_route import SessionRuntimeSelection
         from gateway.session_policy import policy_for_source
         local = policy_for_source(self, source) if source is not None else None
         key = None if local else self._resolve_session_key_or_none(source, session_key)
-        selected = SessionRuntimeSelection(self, key, local_policy=local is not None)
-        selected.model, selected.runtime = self._select_session_agent_runtime(
-            source=source, session_key=key, user_config=user_config, selection=selected)
-        return selected
+        selected = SessionRuntimeSelection(self, key, local_policy=local is not None,
+                                           source=source, user_config=user_config)
+        try:
+            selected.model, selected.runtime = self._select_session_agent_runtime(
+                source=source, session_key=key, user_config=user_config, selection=selected)
+            if not selected.inputs_current():
+                from gateway.session_selected_route import SelectedRouteUnavailable
+                raise SelectedRouteUnavailable('selection_changed')
+            return selected
+        except BaseException:
+            selected.release_snapshots()
+            raise
 
     def _select_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,

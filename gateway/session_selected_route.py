@@ -5,7 +5,7 @@ material is retained by the adapter; the caller owns and closes each binding.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 import threading
@@ -16,7 +16,7 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 
 MAX_ROUTE_AGE = 30.0
 # These transports consume the existing SDK request-copy Files representation.
-_FILES_MODES = frozenset({'chat_completions', 'responses', 'codex_responses', 'anthropic_messages'})
+_FILES_MODES = frozenset({'chat_completions', 'codex_responses', 'anthropic_messages'})
 
 
 class SelectedRouteUnavailable(RuntimeStoreError):
@@ -35,16 +35,45 @@ def _copy(value):
 
 
 def publication_lock(owner):
-    """Short cache-publication CAS lock, never held across credential work."""
-    return owner.__dict__.setdefault('_selected_route_publication_lock', threading.RLock())
+    """The session-state owner's writer discipline, also used by API recovery."""
+    from gateway.session_state import selection_lock
+    return selection_lock(owner)
 
 
 class SessionRuntimeSelection:
     """Captured read branches plus deferred cache writes; deliberately not serializable."""
-    def __init__(self, runner, key, *, local_policy=False):
+    def __init__(self, runner, key, *, local_policy=False, source=None, user_config=None):
         self.runner, self.key = runner, key
         self.local_policy = local_policy
+        self.source, self.user_config = source, user_config
+        # Effective loader I/O is deliberately outside all owner/cache/SQL locks.
+        self._effective_inputs = self.effective_inputs()
+        with publication_lock(runner):
+            self._capture()
+
+    def effective_inputs(self):
+        if self.local_policy:
+            return None  # LOCAL resolves its immutable launch policy, not live config.
+        from gateway.run import _load_gateway_config
+        from hermes_cli.runtime_provider import load_config
+        from agent.secret_scope import current_secret_scope
+        from tools.terminal_scope import get_terminal_scope
+        config = getattr(self.runner, 'config', None)
+        import os
+        # get_secret() may fall through to process env in standalone mode. Keep
+        # this conservative value snapshot operation-local, never on the scope.
+        return _copy((_load_gateway_config(), load_config(), self.user_config,
+                      config.to_dict() if config is not None else None,
+                      self.source.to_dict() if self.source is not None else None,
+                      current_secret_scope(), get_terminal_scope(), dict(os.environ)))
+
+    def inputs_current(self):
+        return self.effective_inputs() == self._effective_inputs
+
+    def _capture(self):
+        runner, key, local_policy = self.runner, self.key, self.local_policy
         state = runner._peek_session_state(key) if key else None
+        self.revision = state.conversation.selection_revision if state else 0
         self.override = _copy(state.conversation.model_override) if state else None
         self.reasoning = _copy(state.conversation.reasoning_override) if state else None
         from gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
@@ -70,11 +99,18 @@ class SessionRuntimeSelection:
             return True
         state = self.runner._peek_session_state(self.key) if self.key else None
         from gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
-        return ((state.conversation.model_override if state else None) == self.override
+        return ((state.conversation.selection_revision if state else 0) == self.revision
+            and (state.conversation.model_override if state else None) == self.override
             and (state.conversation.reasoning_override if state else None) == self.reasoning
             and (state.conversation.service_tier_override if state else _SERVICE_TIER_UNSET) == self.tier)
 
-    def current(self):
+    def persistence_guard(self):
+        store = getattr(self.runner, 'session_store', None)
+        if self.key and self.override is None and store is not None and not self.local_policy:
+            return store._lock
+        return nullcontext()
+
+    def current(self, *, store_locked=False):
         if self.local_policy:
             return True
         if not self.memory_current():
@@ -82,7 +118,15 @@ class SessionRuntimeSelection:
         store = getattr(self.runner, 'session_store', None)
         if self.key and self.override is None and store is not None:
             try:
-                if store.get_model_override(self.key) != self.persisted:
+                if store_locked:
+                    # Capture already attempted hydration. Preserve the ordinary
+                    # unavailable-index fallback while comparing cached entries
+                    # under their writer lock; never reconcile/reopen under SQL.
+                    entry = store._entries.get(self.key)
+                    persisted = (entry.model_override or None) if entry else None
+                else:
+                    persisted = store.get_model_override(self.key)
+                if persisted != self.persisted:
                     return False
             except Exception:
                 if self.persisted is not None:
@@ -90,9 +134,12 @@ class SessionRuntimeSelection:
         return all((s.conversation.last_resolved_model if (s := self.runner._peek_session_state(k)) else '') == v
                    for k, v in self.last.items() if k != '*' or self.used_global_recovery)
 
-    def publish(self):
-        with publication_lock(self.runner):
-            if self._published or not self.current():
+    def publish(self, *, inputs_checked=False, store_locked=False):
+        if not inputs_checked and not self.inputs_current():
+            raise SelectedRouteUnavailable('selection_changed')
+        guard = nullcontext() if store_locked else self.persistence_guard()
+        with publication_lock(self.runner), guard:
+            if self._published or not self.current(store_locked=True):
                 raise SelectedRouteUnavailable('selection_changed')
             if self.pending_override is not None:
                 self.runner._session_state(self.key).conversation.model_override = self.pending_override
@@ -103,6 +150,12 @@ class SessionRuntimeSelection:
                 if (star.conversation.last_resolved_model if star else '') == self.last.get('*', ''):
                     self.runner._session_state('*').conversation.last_resolved_model = self.pending_model
             self._published = True
+
+    def release_snapshots(self):
+        # Execution owns runtime/turn_route after consume. Input-validation copies
+        # have no execution purpose and must not follow that transfer.
+        self._effective_inputs = self.user_config = None
+        self.override = self.pending_override = self.reasoning = None
 
     def __reduce__(self):
         raise TypeError('private selection cannot be serialized')
@@ -126,10 +179,6 @@ class SelectionScope:
         self.run_store = adapter._run_idempotency_store
         self.run_store_path = self.run_store._db_path
         self.home, self.instance, self.epoch = authority.profile_id, authority.instance_id, authority.epoch
-        from agent.secret_scope import current_secret_scope
-        from tools.terminal_scope import get_terminal_scope
-        self.secret_scope = _copy(current_secret_scope())
-        self.terminal_scope = _copy(get_terminal_scope())
         self.source = source
         self.source_value = source.to_dict()
         self.session_key, self.session_id = session_key, session_id
@@ -147,15 +196,18 @@ class SelectionScope:
                                (self.session_id,)).fetchone()
             return tuple(row) if row else None
         if connection is not None:
+            # Caller already owns the DB SQL lock. Do not acquire it recursively.
+            if self.db._read_conns_closed or connection is not self.db._conn:
+                raise SelectedRouteUnavailable('owner_unavailable')
             return read(connection)
-        with self.db._read_ctx() as conn:
+        with self.db.live_read_connection() as conn:
+            if conn is None:
+                raise SelectedRouteUnavailable('owner_unavailable')
             return read(conn)
 
     def current(self, connection=None):
         from hermes_constants import hermes_home_key, get_hermes_home
         from gateway.session_authorities import authority_for_home
-        from agent.secret_scope import current_secret_scope
-        from tools.terminal_scope import get_terminal_scope
         r, a = self.runner, self.authority
         try:
             return (hermes_home_key(get_hermes_home()) == hermes_home_key(self.home)
@@ -166,8 +218,6 @@ class SelectionScope:
                 and self.adapter.gateway_runner is r and not self.adapter._session_db_cache_closed
                 and self.adapter._run_idempotency_store is self.run_store
                 and self.run_store._db_path == self.run_store_path
-                and current_secret_scope() == self.secret_scope
-                and get_terminal_scope() == self.terminal_scope
                 and self.source.to_dict() == self.source_value
                 and self._revision(connection) == self.revision)
         except (RuntimeStoreError, sqlite3.Error):
@@ -217,16 +267,33 @@ class PreparedSelectedRoute:
         self._scope, self.generation, self.deadline = scope, generation, deadline
         self._material = None
         self._lock = threading.RLock()
+        self._state_lock = threading.Lock()
         self._state = 'PREPARING'
         self._held_thread = None
         self._inputs = None
         self._user_config, self._settings = None, None
         self._adapter_models = self._adapter_before = None
         self._adapter_recovery = False
+        from agent.secret_scope import current_secret_scope
+        from tools.terminal_scope import get_terminal_scope
+        self._secret_snapshot = _copy(current_secret_scope())
+        self._terminal_snapshot = _copy(get_terminal_scope())
+
+    def context_current(self):
+        from agent.secret_scope import current_secret_scope
+        from tools.terminal_scope import get_terminal_scope
+        return (current_secret_scope() == self._secret_snapshot
+                and get_terminal_scope() == self._terminal_snapshot)
 
     def close(self):
-        with self._lock:
+        # Close waits for an active operation, then linearizes under the tiny
+        # projection lock. Peek takes only the latter, even from SQL callbacks;
+        # it never waits for the operation hold or nests into owner/cache locks.
+        with self._lock, self._state_lock:
+            if self._material is not None:
+                self._material.release_snapshots()
             self._material = None
+            self._secret_snapshot = self._terminal_snapshot = None
             self._inputs = None
             self._user_config = self._settings = self._adapter_models = self._adapter_before = None
             if self._state != 'CONSUMED':
@@ -250,12 +317,13 @@ def _prepare_scoped(scope, *, user_config, api_settings, cancelled):
     if not scope.current():
         raise SelectedRouteUnavailable('owner_unavailable')
     # Authority-local issuance counter: only serial issuance, never credential work under this lock.
-    lock = scope.authority.__dict__.setdefault('_selected_route_lock', threading.RLock())
+    lock = publication_lock(scope.runner)
     with lock:
         generation = scope.authority.__dict__.get('_selected_route_generation', 0) + 1
         scope.authority._selected_route_generation = generation
         scope._generation = generation
     b = PreparedSelectedRoute(scope, generation, time.monotonic() + MAX_ROUTE_AGE)
+    material = None
     try:
         b._user_config, b._settings = _copy(user_config), _copy(api_settings or {})
         b._inputs = _inputs(scope, user_config, b._settings)
@@ -279,10 +347,14 @@ def _prepare_scoped(scope, *, user_config, api_settings, cancelled):
         b.deadline = _credential_deadline(material.runtime, b.deadline)
         if time.monotonic() >= b.deadline:
             raise SelectedRouteUnavailable('selection_expired')
-        b._material = material
-        b._state = 'READY'
+        material.files_supported = supports_files_runtime(material.runtime)
+        with b._state_lock:
+            b._material = material
+            b._state = 'READY'
         return b
     except BaseException:
+        if material is not None:
+            material.release_snapshots()
         b.close()
         raise
 
@@ -293,41 +365,66 @@ def peek_selected_route(scope, binding=None, connection=None):
         return RouteReadiness('UNPREPARED')
     if not binding._scope.matches(scope) or not scope.current(connection):
         return RouteReadiness('UNAVAILABLE', reason='owner_unavailable')
-    if scope._generation != binding.generation:
-        return RouteReadiness('RETIRED', reason='selection_superseded')
-    if time.monotonic() >= binding.deadline:
-        return RouteReadiness('STALE', reason='selection_expired')
-    if binding._state not in {'READY', 'HELD'} or binding._material is None:
-        return RouteReadiness(binding._state, reason='not_ready')
-    if not binding._material.memory_current():
-        return RouteReadiness('STALE', reason='selection_changed')
-    supported = supports_files_runtime(binding._material.runtime)
-    return RouteReadiness(binding._state, supported,
-        'ready' if supported else 'unsupported_transport', binding.generation, binding.deadline)
+    with binding._state_lock:
+        material = binding._material
+        state = binding._state
+        if state not in {'READY', 'HELD'} or material is None:
+            return RouteReadiness(state, reason='not_ready')
+        context_current = binding.context_current()
+    if not context_current:
+        return RouteReadiness('UNAVAILABLE', reason='owner_unavailable')
+    current = material.memory_current()
+    # The final short snapshot is the observation's linearization point. close()
+    # can retire while the DB/memory checks run, but cannot leave a torn result.
+    with binding._state_lock:
+        if binding._material is not material or binding._state not in {'READY', 'HELD'}:
+            return RouteReadiness(binding._state, reason='not_ready')
+        if scope._generation != binding.generation:
+            return RouteReadiness('RETIRED', reason='selection_superseded')
+        if time.monotonic() >= binding.deadline:
+            return RouteReadiness('STALE', reason='selection_expired')
+        if scope.db._read_conns_closed:
+            return RouteReadiness('UNAVAILABLE', reason='owner_unavailable')
+        if not current:
+            return RouteReadiness('STALE', reason='selection_changed')
+        supported = material.files_supported
+        return RouteReadiness(binding._state, supported,
+            'ready' if supported else 'unsupported_transport', binding.generation, binding.deadline)
 
 
 @contextmanager
 def hold_selected_route(scope, binding):
     """Acquire BEFORE shared-grant and owner SQL writers; never refresh inside."""
     # Effective input read is outside the hold and, crucially, outside SQL writers.
-    if not binding._scope.matches(scope) or binding._state != 'READY' or not scope.current():
-        raise SelectedRouteUnavailable('not_ready')
-    inputs = _inputs(scope, binding._user_config, binding._settings)
-    with binding._lock:
-        if (not binding._scope.matches(scope) or not scope.current()
-                or scope._generation != binding.generation
-                or binding._state != 'READY' or time.monotonic() >= binding.deadline):
+    if not binding._scope.matches(scope):
+        raise SelectedRouteUnavailable('not_ready')  # foreign observation is nondestructive
+    with binding._state_lock:
+        material = binding._material
+        if binding._state != 'READY' or material is None or not binding.context_current():
             raise SelectedRouteUnavailable('not_ready')
-        if (not binding._material.current() or inputs != binding._inputs
-                or binding._adapter_recovery and scope.adapter._last_resolved_model != binding._adapter_before):
-            binding.close()
-            raise SelectedRouteUnavailable('selection_changed')
-        binding._state, binding._held_thread = 'HELD', threading.get_ident()
-        try:
-            yield binding
-        finally:
-            binding._held_thread = None
-            binding.close()
+        user_config, settings = binding._user_config, binding._settings
+    # All loaders/credentials run before the owner hold, never inside a SQL writer.
+    try:
+        inputs = _inputs(scope, user_config, settings)
+        effective_current = material.inputs_current()
+        with (binding._lock, publication_lock(scope.runner), publication_lock(scope.adapter),
+              material.persistence_guard()):
+            if (not scope.current() or scope._generation != binding.generation
+                    or time.monotonic() >= binding.deadline):
+                raise SelectedRouteUnavailable('not_ready')
+            if (not material.current(store_locked=True) or not effective_current or inputs != binding._inputs
+                    or binding._adapter_recovery and scope.adapter._last_resolved_model != binding._adapter_before):
+                raise SelectedRouteUnavailable('selection_changed')
+            with binding._state_lock:
+                if binding._state != 'READY' or binding._material is not material:
+                    raise SelectedRouteUnavailable('not_ready')
+                binding._state, binding._held_thread = 'HELD', threading.get_ident()
+            try:
+                yield binding
+            finally:
+                binding._held_thread = None
+    finally:
+        binding.close()
 
 
 @contextmanager
@@ -343,11 +440,14 @@ def consume_selected_route(scope, binding):
         with publication_lock(scope.runner), publication_lock(scope.adapter):
             if binding._adapter_recovery and scope.adapter._last_resolved_model != binding._adapter_before:
                 raise SelectedRouteUnavailable('selection_changed')
-            material.publish()
+            material.publish(inputs_checked=True, store_locked=True)
             for key, value in binding._adapter_models.items():
                 if scope.adapter._last_resolved_model.get(key) == binding._adapter_before.get(key):
                     scope.adapter._last_resolved_model[key] = value
-        binding._state = 'CONSUMED'
+        with binding._state_lock:
+            if binding._state != 'HELD' or binding._material is not material:
+                raise SelectedRouteUnavailable('not_ready')
+            binding._state = 'CONSUMED'
         yield material
     finally:
         binding.close()
@@ -373,7 +473,44 @@ def _credential_deadline(runtime, ceiling):
 
 
 def supports_files_runtime(runtime):
-    return runtime.get('api_mode') in _FILES_MODES and not runtime.get('command')
+    """Classify the actual lower construction branch, during explicit preparation.
+
+    agent_init._build_client chooses Anthropic or MoA before the OpenAI factory;
+    that factory can delegate to a profile or native Gemini. Only the physical
+    OpenAI/Anthropic SDK branches establish this request-copy contract. Never
+    call this from peek (profile lookup may initialize the provider registry).
+    """
+    from urllib.parse import urlsplit
+    mode, provider = runtime.get('api_mode'), runtime.get('provider')
+    if (mode not in _FILES_MODES or not provider or runtime.get('command')
+            or runtime.get('acp_command') or provider == 'moa'
+            or urlsplit(runtime.get('base_url') or '').scheme not in {'http', 'https'}):
+        return False
+    if mode == 'anthropic_messages':
+        return True  # _build_client's first branch, before provider-supplied clients
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+    from agent.agent_runtime_helpers import _profile_for_base_url
+    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+    profile = get_provider_profile(provider) or _profile_for_base_url(runtime['base_url'])
+    if profile is not None and getattr(profile.create_client, '__func__', None) is not ProviderProfile.create_client:
+        return False  # no capability contract for delegated/plugin clients
+    if provider in _GEMINI_NATIVE_PROVIDER_NAMES and is_native_gemini_base_url(runtime['base_url']):
+        return False
+    return True
+
+
+def supports_files_agent(agent):
+    """Post-setup closed positive set, including init-time fallback/client drift."""
+    from openai import OpenAI
+    from anthropic import Anthropic
+    mode = getattr(agent, 'api_mode', None)
+    if (getattr(agent, 'acp_command', None) or getattr(agent, 'provider', None) == 'moa'):
+        return False
+    if mode == 'anthropic_messages':
+        return type(getattr(agent, '_anthropic_client', None)) is Anthropic
+    return mode in {'chat_completions', 'codex_responses'} and type(getattr(agent, 'client', None)) is OpenAI
 
 
 def finish_selected_route(runner, material, source, session_key, settings, policy=None):
@@ -414,9 +551,13 @@ def select_execution_route(turn, policy):
         # Ordinary messaging/LOCAL retains its existing branch and publication boundary.
         material = runner._prepare_session_agent_runtime(source=ctx.source,
             session_key=ctx.session_key, user_config=ctx.user_config)
-        material.publish()
-        finish_selected_route(runner, material, ctx.source, ctx.session_key, None, policy)
-        return material
+        try:
+            # Resolve request options before validation/publication as API does.
+            finish_selected_route(runner, material, ctx.source, ctx.session_key, None, policy)
+            material.publish()
+            return material
+        finally:
+            material.release_snapshots()
     scope = selection_scope(api['adapter'], source=ctx.source, session_key=ctx.session_key,
         session_id=ctx.session_id, request_identity=turn, purpose='execute')
     binding = prepare_selected_route(scope, user_config=ctx.user_config, api_settings=api['settings'])

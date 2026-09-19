@@ -857,6 +857,18 @@ class SessionDB(
             return self._get_read_conn()
 
     @contextmanager
+    def live_read_connection(self) -> Iterator[Optional[sqlite3.Connection]]:
+        """Borrow the existing owner connection, or None after close. Never reopen.
+
+        Only bounded read-only statements belong here. The writer lifetime lock
+        excludes actual connection close; no schema, pool checkout or recovery.
+        A caller already holding its SQL connection must use that connection,
+        not recursively acquire this non-reentrant lock.
+        """
+        with self._lock:
+            yield None if self._read_conns_closed else self._conn
+
+    @contextmanager
     def _read_ctx(self) -> Iterator[sqlite3.Connection]:
         """Yield a connection for read-only statements: a pooled read-only
         connection with NO lock under WAL; otherwise (non-WAL, open failure,

@@ -5,6 +5,8 @@ was CLEARED: ``turn`` at the end of every turn; ``conversation`` at conversation
 
 from __future__ import annotations
 
+import threading
+from contextlib import nullcontext
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
@@ -12,6 +14,17 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tu
 # /fast stores "priority" or None (explicit normal), so key PRESENCE decides, not truthiness.
 _UNSET_TIER = object()
 SERVICE_TIER_UNSET = _UNSET_TIER  # public alias
+
+
+# One owner discipline for selection capture, /model, reset and publication.
+# Never hold this lock across credential/config-loader work. Bound operations
+# acquire it before adapter caches and SQL; SQL projections never acquire it.
+def selection_lock(owner):
+    return owner.__dict__.setdefault('_selected_route_publication_lock', threading.RLock())
+
+
+_SELECTION_FIELDS = frozenset({'model_override', 'reasoning_override',
+                               'service_tier_override', 'last_resolved_model'})
 
 
 @dataclass
@@ -38,6 +51,7 @@ class TurnState:
 class ConversationState:
     """State scoped to one conversation (survives turns, not boundaries)."""
 
+    selection_revision: int = 0  # monotonic across reset, detects ABA selection writes
     model_override: Optional[Dict[str, Any]] = None  # /model per-session override
     one_turn_restore: Optional[Dict[str, Any]] = None  # /model --once snapshot
     reasoning_override: Optional[Dict[str, Any]] = None  # /reasoning override
@@ -50,7 +64,9 @@ class ConversationState:
 
     def clear(self) -> None:
         """Reset every field to its default, so new fields are cleared automatically."""
+        revision = self.selection_revision + 1
         self.__dict__.update(ConversationState().__dict__)
+        self.selection_revision = revision
 
 
 @dataclass
@@ -142,7 +158,10 @@ class SessionFieldView(_RunnerView):
         return getattr(getattr(state, self._spec.scope), self._spec.name)
 
     def _set(self, state: SessionState, value: Any) -> None:
-        setattr(getattr(state, self._spec.scope), self._spec.name, value)
+        target = getattr(state, self._spec.scope)
+        setattr(target, self._spec.name, value)
+        if self._spec.name in _SELECTION_FIELDS:
+            target.selection_revision += 1
 
     def _present(self, key: Any) -> Optional[SessionState]:
         """The session state for ``key`` if its field is present, else None."""
@@ -158,11 +177,16 @@ class SessionFieldView(_RunnerView):
     def __getitem__(self, key: str) -> Any:
         return self._value(self._held(key))
 
+    def _selection_guard(self):
+        return selection_lock(self._runner) if self._spec.name in _SELECTION_FIELDS else nullcontext()
+
     def __setitem__(self, key: str, value: Any) -> None:
-        self._set(self._runner._session_state(key), value)
+        with self._selection_guard():
+            self._set(self._runner._session_state(key), value)
 
     def __delitem__(self, key: str) -> None:
-        self._set(self._held(key), self._spec.default())
+        with self._selection_guard():
+            self._set(self._held(key), self._spec.default())
 
     def __iter__(self) -> Iterator[str]:
         return (k for k in list(self._sessions()) if self._present(k) is not None)
@@ -171,8 +195,9 @@ class SessionFieldView(_RunnerView):
         return self._present(key) is not None
 
     def clear(self) -> None:  # avoid MutableMapping's popitem loop
-        for state in list(self._sessions().values()):
-            self._set(state, self._spec.default())
+        with self._selection_guard():
+            for state in list(self._sessions().values()):
+                self._set(state, self._spec.default())
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return f"SessionFieldView({self._spec.scope}.{self._spec.name}, {dict(self.items())!r})"

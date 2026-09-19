@@ -143,9 +143,13 @@ class GatewayAgentCacheMixin:
         """Lazily restore a persisted /model override after a gateway restart: non-secret parts
         (model/provider/base_url) are written through on /model and read back on first use; api_key
         is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
+        from gateway.session_state import selection_lock
         store = getattr(self, "session_store", None)
-        if self._session_model_override(session_key) is not None or store is None:
-            return
+        with selection_lock(self):
+            if self._session_model_override(session_key) is not None or store is None:
+                return
+            state = self._peek_session_state(session_key)
+            revision = state.conversation.selection_revision if state else 0
         try:
             persisted = store.get_model_override(session_key)
         except Exception:
@@ -154,7 +158,14 @@ class GatewayAgentCacheMixin:
         if not persisted:
             return
         override = self._resolve_persisted_model_override(persisted)
-        self._session_state(session_key).conversation.model_override = override
+        with selection_lock(self), store._lock:
+            state = self._peek_session_state(session_key)
+            entry = store._entries.get(session_key)
+            current = (entry.model_override or None) if entry else None
+            if (self._session_model_override(session_key) is None
+                    and (state.conversation.selection_revision if state else 0) == revision
+                    and current == persisted):
+                self._session_model_overrides[session_key] = override
 
     def _resolve_persisted_model_override(self, persisted):
         """Credential preparation only; the caller owns cache publication."""
@@ -225,10 +236,12 @@ class GatewayAgentCacheMixin:
         """Restore the session override captured before a one-turn switch."""
         if not session_key:
             return
-        if snapshot.get("had_override"):
-            self._session_state(session_key).conversation.model_override = dict(snapshot.get("override") or {})
-        elif (state := self._peek_session_state(session_key)) is not None:
-            state.conversation.model_override = None
+        from gateway.session_state import selection_lock
+        with selection_lock(self):
+            if snapshot.get("had_override"):
+                self._session_model_overrides[session_key] = dict(snapshot.get("override") or {})
+            elif (state := self._peek_session_state(session_key)) is not None:
+                self._session_model_overrides[session_key] = None
         self._evict_cached_agent(session_key)
 
     def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:
@@ -351,9 +364,11 @@ class GatewayAgentCacheMixin:
         from gateway.run import _CONVERSATION_SCOPED_STATE
         if not session_key:
             return
-        state = self._peek_session_state(session_key)
-        if state is not None:
-            state.conversation.clear()
+        from gateway.session_state import selection_lock
+        with selection_lock(self):
+            state = self._peek_session_state(session_key)
+            if state is not None:
+                state.conversation.clear()
         # Legacy plain-dict stores still in _CONVERSATION_SCOPED_STATE (not yet folded into
         # SessionState), e.g. _pending_model_notes. SessionState-backed names resolve to MutableMapping
         # views (not dict), so the isinstance(dict) guard skips them — already handled above.

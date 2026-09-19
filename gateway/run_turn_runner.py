@@ -990,11 +990,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
         from gateway.session_api_turn import api_execution
-        from gateway.session_selected_route import execution_has_files, supports_files_runtime, unsupported_files_result
+        from gateway.session_selected_route import execution_has_files, supports_files_agent, unsupported_files_result
         api = api_execution.get()
         if (api is not None and execution_has_files(api['settings'])
-                and not supports_files_runtime({'api_mode': getattr(agent, 'api_mode', None),
-                                                'command': getattr(agent, 'command', None)})):
+                and not supports_files_agent(agent)):
             return unsupported_files_result()
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)

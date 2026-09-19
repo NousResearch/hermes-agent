@@ -958,10 +958,9 @@ class GatewayInboundMixin:
             moa_cfg = normalize_moa_config({})
         try:
             event.text = moa_payload
-            _moa_state = self._session_state(_quick_key)
             # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
             self._claim_one_turn_restore(_quick_key)
-            _moa_state.conversation.model_override = {
+            self._session_model_overrides[_quick_key] = {
                 "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
                 "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
             }

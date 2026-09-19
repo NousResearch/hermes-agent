@@ -115,15 +115,17 @@ another host is treated as an OpenAI-compatible endpoint, so configure it with i
 
 ### Vertex AI Express Mode Keys
 
-Google issues two Gemini key families. AI Studio keys start with `AIza…`; **Vertex AI
-express-mode** keys start with `AQ.…` and only authenticate against
-`aiplatform.googleapis.com` (they get 403 on the AI Studio host). Hermes detects the
-`AQ.` prefix and routes those keys to
-`https://aiplatform.googleapis.com/v1beta1/publishers/google` automatically — set
-`GEMINI_API_KEY` to the express key and leave `GEMINI_BASE_URL` unset. If you set
-`GEMINI_BASE_URL` to `https://aiplatform.googleapis.com` (with or without `/v1beta1`)
-Hermes completes it to the `publishers/google` form; a base URL on any other host (a
-proxy) is never rewritten. Express keys are separate from the OAuth-based
+Google now issues `AQ.…`-prefixed keys for **both** Google AI Studio and Vertex AI
+express mode (the legacy `AIza…` Studio format is being phased out), so a key's
+prefix no longer identifies its surface. Hermes never reroutes by key shape: the
+configured base URL decides the surface. Set `GEMINI_API_KEY` and leave
+`GEMINI_BASE_URL` unset for the default AI Studio host; set `GEMINI_BASE_URL` to
+`https://aiplatform.googleapis.com` (with or without `/v1beta1`) for a Vertex AI
+express-mode key, and Hermes completes it to the `publishers/google` form. Each
+surface only accepts its own keys — a `403 PERMISSION_DENIED` usually means the
+key/host pairing is crossed, and Hermes appends guidance naming the other surface.
+A base URL on any other host (a proxy) is never rewritten. Express keys are
+separate from the OAuth-based
 [Vertex AI provider](./google-vertex.md), which needs no API key.
 
 ## Available Models

@@ -8,14 +8,21 @@ rely on (name-based diff, in-place mutation, agent-scoped filtering) rather than
 freezing any particular tool list.
 """
 
+import asyncio
 import json
 import threading
+import time
 import types
 
 import pytest
 
 from tools import mcp_tool
 from tools import mcp_tool_agent as _mcp_agent
+from tools import mcp_tool_loop
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_discovery import _server_tool_list_ttl_expired
+from tools.mcp_tool_registration import _register_server_tools
+from tools.registry import ToolRegistry
 
 
 def _tool(name):
@@ -205,6 +212,174 @@ def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
 
     assert not errors
     assert agent.valid_tool_names in ({"a", "b"}, {"a", "c"})
+
+
+# ── SEP-2549 TTL-driven re-list of CONNECTED servers ─────────────────────────
+#
+# ``ttl_ms`` (MCP 2026-07-28 / SEP-2549) says how long a server's ``tools/list`` manifest may be
+# cached. The lazy on-disk schema cache honored the hint, but a CONNECTED server was only ever
+# re-listed on a ``tools/list_changed`` notification: a tool added or removed server-side
+# mid-session stayed invisible to the registry, the agent's tool snapshot and tool_search until
+# process restart — discovery skips already-connected servers, so ``/reload-mcp`` could not pick it
+# up either. These drive the real trigger (called from ``refresh_agent_mcp_tools``) against a real
+# ``MCPServerTask`` registering through the real ``_register_server_tools`` into a real
+# ``ToolRegistry``; only the MCP session and the hop onto the MCP loop are stubbed.
+
+
+def _mcp_tool(name):
+    return types.SimpleNamespace(name=name, description="", inputSchema={})
+
+
+class _ListPage:
+    """One ``tools/list`` page, optionally carrying the SEP-2549 ``ttlMs`` hint."""
+
+    def __init__(self, tools, ttl_ms=None):
+        self.tools = tools
+        if ttl_ms is not None:
+            self.ttlMs = ttl_ms
+
+
+class _TTLFixture:
+    """A real ``MCPServerTask`` over a fake session serving a MUTABLE tool list."""
+
+    def __init__(self, name, tool_names, *, ttl_ms=300_000, listed_at_age_s=0.0):
+        self.served = [_mcp_tool(n) for n in tool_names]
+        self.ttl_ms = ttl_ms
+        self.list_calls = 0
+        self.server = MCPServerTask(name)
+        self.server._config = {}
+        self.server._tools = list(self.served)  # the manifest the client last listed
+        self.server.session = types.SimpleNamespace(list_tools=self._list_tools)
+        self.server._ready.set()
+        if ttl_ms is not None:
+            # What ``_discover_tools``/``_refresh_tools`` stamp on every live list, aged so the
+            # test can place itself on either side of the hint.
+            self.server._list_cache_meta = {"ttl_ms": ttl_ms,
+                                            "listed_at": time.time() - listed_at_age_s}
+
+    async def _list_tools(self):
+        self.list_calls += 1
+        return _ListPage(self.served, ttl_ms=self.ttl_ms)
+
+
+def _connected_server(monkeypatch, name, tool_names, *, ttl_ms=300_000, listed_at_age_s=0.0):
+    """Patch the seams the TTL re-list crosses and seed the server's initial manifest.
+
+    Returns ``(fixture, registry)``. Registration goes through the real
+    ``_register_server_tools``, so reconciliation in the tests runs against genuine registry state.
+    """
+    import model_tools
+
+    registry = ToolRegistry()
+    monkeypatch.setattr("tools.registry.registry", registry)
+
+    def _run_inline(coro_or_factory, timeout=None):
+        """Stand-in for the MCP-loop hop: run the scheduled coroutine on a throwaway loop."""
+        coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+        return asyncio.run(coro)
+
+    monkeypatch.setattr(mcp_tool_loop, "_run_on_mcp_loop", _run_inline)
+    # The snapshot is registry-derived in production; mirror that instead of freezing a list.
+    monkeypatch.setattr(model_tools, "get_tool_definitions",
+                        lambda **kw: [_tool(n) for n in registry.get_all_tool_names()])
+
+    fixture = _TTLFixture(name, tool_names, ttl_ms=ttl_ms, listed_at_age_s=listed_at_age_s)
+    monkeypatch.setattr(mcp_tool, "_servers", {name: fixture.server})
+    fixture.server._registered_tool_names = _register_server_tools(name, fixture.server, {})
+    return fixture, registry
+
+
+def test_ttl_expired_server_is_relisted_and_the_new_tool_reaches_the_snapshot(monkeypatch):
+    """A connected server whose tools/list TTL elapsed is re-probed: a tool it gained
+    mid-session lands in the registry AND in the rebuilt agent snapshot, and the re-list
+    re-anchors the hint so the next turn does not probe again."""
+    fixture, registry = _connected_server(
+        monkeypatch, "ttl_srv", ["get_sites"],
+        listed_at_age_s=600.0,  # 10 min > the server's 5 min TTL
+    )
+    agent = _agent(registry.get_all_tool_names())
+    fixture.served.append(_mcp_tool("get_countries"))  # added server-side since the last list
+
+    added = _mcp_agent.refresh_agent_mcp_tools(agent)
+
+    assert fixture.list_calls == 1, "an elapsed TTL must trigger exactly one re-list"
+    assert registry.get_toolset_for_tool("mcp__ttl_srv__get_countries") == "mcp-ttl_srv"
+    assert added == {"mcp__ttl_srv__get_countries"}
+    assert "mcp__ttl_srv__get_countries" in agent.valid_tool_names
+    assert fixture.server._registered_tool_names == [
+        "mcp__ttl_srv__get_sites", "mcp__ttl_srv__get_countries"]
+    assert fixture.server._list_cache_meta["listed_at"] > time.time() - 60, "anchor re-stamped"
+
+
+def test_ttl_relist_deregisters_names_the_server_no_longer_serves(monkeypatch):
+    """A name the live server stopped serving leaves the registry and the snapshot, so the
+    model never sees a tool that can only fail."""
+    fixture, registry = _connected_server(
+        monkeypatch, "ttl_phantom", ["get_sites", "test_connection"], listed_at_age_s=600.0)
+    agent = _agent(registry.get_all_tool_names())
+    assert "mcp__ttl_phantom__test_connection" in agent.valid_tool_names  # premise
+
+    fixture.served[:] = [_mcp_tool("get_sites")]  # server dropped test_connection last update
+
+    _mcp_agent.refresh_agent_mcp_tools(agent)
+
+    assert fixture.list_calls == 1
+    assert "mcp__ttl_phantom__test_connection" not in registry.get_all_tool_names()
+    assert "mcp__ttl_phantom__test_connection" not in agent.valid_tool_names
+    assert {t["function"]["name"] for t in agent.tools} == {"mcp__ttl_phantom__get_sites"}
+    assert fixture.server._registered_tool_names == ["mcp__ttl_phantom__get_sites"]
+
+
+def test_server_inside_its_ttl_is_never_relisted(monkeypatch):
+    """The hint's whole point: a manifest that is still fresh must not cost a tools/list."""
+    fixture, registry = _connected_server(
+        monkeypatch, "ttl_fresh", ["get_sites"],
+        listed_at_age_s=60.0,  # 1 min < the server's 5 min TTL
+    )
+    agent = _agent(registry.get_all_tool_names())
+
+    assert _mcp_agent.refresh_agent_mcp_tools(agent) == set()
+    assert fixture.list_calls == 0
+
+
+def test_server_without_a_ttl_hint_keeps_never_expires_behavior(monkeypatch):
+    """Pre-SEP-2549 servers (no ``ttlMs``) are never re-listed — same rule the lazy on-disk
+    schema cache applies to an entry with no recorded TTL."""
+    fixture, registry = _connected_server(
+        monkeypatch, "ttl_legacy", ["get_sites"], ttl_ms=None, listed_at_age_s=99_999.0)
+    before = registry.get_all_tool_names()
+    agent = _agent(registry.get_all_tool_names())
+    fixture.served.append(_mcp_tool("added_but_unannounced"))
+
+    _mcp_agent.refresh_agent_mcp_tools(agent)
+
+    assert fixture.list_calls == 0
+    assert registry.get_all_tool_names() == before
+
+
+@pytest.mark.asyncio
+async def test_every_live_list_stamps_the_ttl_anchor_expiry_is_measured_against():
+    """Without the anchor a captured ``ttl_ms`` can never expire; with it, expiry is measurable
+    and a fresh list reads as unexpired. Drives the real ``_discover_tools``."""
+    server = MCPServerTask("anchor_srv")
+    server._config = {}
+    server._ready.set()
+    server._registered_tool_names = ["mcp__anchor_srv__already"]  # short-circuit the publish path
+
+    async def _list_tools():
+        return _ListPage([_mcp_tool("get_sites")], ttl_ms=60_000)
+
+    server.session = types.SimpleNamespace(list_tools=_list_tools)
+
+    await server._discover_tools()
+
+    meta = server._list_cache_meta
+    assert meta["ttl_ms"] == 60_000
+    assert meta["listed_at"] == pytest.approx(time.time(), abs=10)
+    assert _server_tool_list_ttl_expired(server) is False  # just listed → still fresh
+
+    meta["listed_at"] = time.time() - 120.0  # 2 min > the 1 min hint
+    assert _server_tool_list_ttl_expired(server) is True
 
 
 # ── discovery-wait bound (mcp_discovery_timeout config) ──────────────────────

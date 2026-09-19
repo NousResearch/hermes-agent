@@ -721,6 +721,12 @@ This is useful for MCP servers whose capabilities change dynamically (e.g. a ser
 
 The refresh is lock-protected so rapid-fire notifications from the same server don't cause overlapping refreshes. Prompt and resource change notifications (`prompts/list_changed`, `resources/list_changed`) are received but not yet acted on.
 
+### Cached tool lists (ttlMs)
+
+A `tools/list` result may carry a `ttlMs` cache hint (MCP 2026-07-28, SEP-2549) telling the client how long that manifest may be treated as fresh. Hermes honors it for **connected** servers too: once a server's hint has elapsed, its tool list is re-fetched on the next tool refresh — the same per-turn refresh that picks up late-connecting servers — so a tool the server added or removed mid-session reaches the registry, the agent's tool snapshot and `tool_search` without a restart.
+
+The re-list reconciles exactly like a `list_changed` refresh: newly served tools are registered, names the server no longer serves are deregistered, and a fresh list re-anchors the hint so the next turn does not probe again. It is bounded (15 s per server) and deduplicated per server, and failures are logged per-server without breaking the turn. Servers that never send a `ttlMs` hint keep the never-expires behavior.
+
 ### Reloading
 
 If you change MCP config, use:

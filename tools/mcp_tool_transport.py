@@ -5,6 +5,7 @@ protocol negotiation and initial tool discovery. Split from tools/mcp_tool.py.""
 import logging
 import asyncio
 import os
+import time
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -582,6 +583,10 @@ class MCPServerTransportMixin:
                 self._list_cache_meta = {}
                 self._tools = await _core._paginate_full_list(
                     self.session.list_tools, "tools", self.name, cache_meta_out=self._list_cache_meta)
+                # Anchor SEP-2549 TTL expiry on THIS list: ``ttl_ms`` alone is a duration, so the
+                # timestamp of the list it came from is what ``_refresh_ttl_expired_server_tool_lists``
+                # measures elapsed time against.
+                self._list_cache_meta["listed_at"] = time.time()
         self._register_discovered_tools_if_needed()
 
     def _register_discovered_tools_if_needed(self) -> None:

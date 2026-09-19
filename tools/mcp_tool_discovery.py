@@ -298,6 +298,84 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     return registered_names
 
 
+# ---- SEP-2549 tools/list TTL maintenance for CONNECTED servers ----
+
+# One TTL-driven re-list per connection at a time: concurrent refresh threads (gateway reload,
+# between-turns refresh) measuring the same elapsed ``ttl_ms`` would otherwise double
+# ``tools/list`` on the server.
+_ttl_refreshing: set = set()
+# Upper bound on one TTL-driven re-list of a connected server. Generous — a re-list is a single
+# paginated request family — but bounded: a slow server must never stall the turn it rides on.
+_MCP_TTL_RELIST_TIMEOUT = 15.0
+
+
+def _server_tool_list_ttl_expired(server: _core.MCPServerTask) -> bool:
+    """True when *server* is connected and its SEP-2549 ``tools/list`` hint has elapsed.
+
+    ``ttl_ms`` and ``listed_at`` are stamped together on every list (``_discover_tools``,
+    ``_refresh_tools``). A server that never sent a hint (pre-2026-07-28) has no anchor and keeps
+    the never-expires behavior — the same rule ``tools.mcp_schema_cache.get_cached_entry`` applies
+    to the lazy on-disk manifest.
+    """
+    if getattr(server, "session", None) is None:
+        return False
+    ready = getattr(server, "_ready", None)
+    is_ready = getattr(ready, "is_set", None)
+    if not callable(is_ready) or not is_ready():
+        return False
+    meta = getattr(server, "_list_cache_meta", None) or {}
+    ttl_ms = meta.get("ttl_ms")
+    listed_at = meta.get("listed_at")
+    if not isinstance(ttl_ms, (int, float)) or not isinstance(listed_at, (int, float)):
+        return False
+    return (time.time() - listed_at) * 1000.0 >= float(ttl_ms)
+
+
+def _refresh_ttl_expired_server_tool_lists() -> None:
+    """Re-list connected servers whose SEP-2549 ``tools/list`` cache hint (``ttl_ms``) elapsed.
+
+    ``ttl_ms`` (MCP 2026-07-28 / SEP-2549) is how long the client may cache a tool manifest. The
+    lazy on-disk schema cache honors it, but a CONNECTED server was only ever re-listed on a
+    ``tools/list_changed`` notification: ``_list_cache_meta`` was captured at discovery, persisted
+    to the schema cache and never measured for expiry. A tool added or removed server-side
+    mid-session therefore stayed invisible to the registry, the agent's tool snapshot and
+    tool_search until process restart — discovery skips already-connected servers, so
+    ``/reload-mcp`` could not pick it up either.
+
+    Runs on the caller's thread, hopping onto the MCP loop only for servers whose TTL actually
+    elapsed. Per-server failures are logged and swallowed: this rides the per-turn refresh and must
+    never break the turn.
+    """
+    with _core._lock:
+        servers = list(_core._servers.items())
+    for key, server in servers:
+        if not _server_tool_list_ttl_expired(server):
+            continue
+        try:
+            _relist_server_tools_if_ttl_expired(key, server)
+        except Exception as exc:  # noqa: BLE001 - one bad server must not skip the others
+            logger.warning("MCP server '%s': TTL tool-list refresh failed: %s", _key_name(key), exc)
+
+
+def _relist_server_tools_if_ttl_expired(key, server: _core.MCPServerTask) -> None:
+    """Re-list one connected server's tools under the TTL trigger, deduped per connection.
+
+    Delegates to ``MCPServerHealthMixin._refresh_tools`` — the same body the ``tools/list_changed``
+    notification runs — so both triggers reconcile identically: fresh manifest, new tools
+    registered, names the server no longer serves deregistered (ownership-guarded), TTL anchor
+    advanced.
+    """
+    with _core._lock:
+        if key in _ttl_refreshing:
+            return
+        _ttl_refreshing.add(key)
+    try:
+        _loop._run_on_mcp_loop(server._refresh_tools, timeout=_MCP_TTL_RELIST_TIMEOUT)
+    finally:
+        with _core._lock:
+            _ttl_refreshing.discard(key)
+
+
 def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     """Pick connect candidates (enabled, not connected/connecting/lazy, not in backoff) and
     refresh per-server bookkeeping. Known servers without a live session are parked or

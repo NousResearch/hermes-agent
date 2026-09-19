@@ -116,6 +116,33 @@ class TestPreserveMode:
         assert chown_calls == []
 
 
+class TestFsyncDir:
+    def test_symlink_write_fsyncs_the_resolved_target_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """fsync_dir must cover the rename's real parent, not the link's."""
+
+        real = tmp_path / "real"
+        links = tmp_path / "links"
+        real.mkdir()
+        links.mkdir()
+        target = real / "value"
+        target.write_text("old", encoding="utf-8")
+        link = links / "value"
+        link.symlink_to(target)
+
+        synced: list[Path] = []
+        monkeypatch.setattr(
+            "utils.fsync_directory", lambda p: synced.append(Path(p))
+        )
+
+        atomic_write_text(link, "new", mode=0o600, fsync_dir=True)
+
+        assert target.read_text(encoding="utf-8") == "new"
+        assert link.is_symlink()
+        assert synced == [real]
+
+
 class TestCreateMode:
     def test_create_mode_applies_when_target_is_new(self, tmp_path: Path) -> None:
         target = tmp_path / "SOUL.md"

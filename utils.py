@@ -257,9 +257,10 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
             write(f)
             f.flush()
             os.fsync(f.fileno())
-        _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        replaced_path = Path(atomic_replace(tmp_path, path))
+        _restore_file_metadata(replaced_path, original_owner, mode)  # symlink-preserving
         if fsync_dir:
-            fsync_directory(path.parent)
+            fsync_directory(replaced_path.parent)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)

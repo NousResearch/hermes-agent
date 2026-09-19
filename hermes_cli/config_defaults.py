@@ -107,6 +107,14 @@ DEFAULT_CONFIG = {
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
+        # Transport-failure fallback threshold: number of consecutive
+        # transport-layer failures (timeout/overloaded) before the agent
+        # switches to the fallback model.  Lower to 1 for fast failover on
+        # flaky primaries; raise to tolerate longer provider hiccups.
+        # 0 disables transport-failure fallback entirely (rate-limit and
+        # billing failover still applies); negative values are invalid
+        # and fall back to the default.
+        "transport_fallback_threshold": 2,
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).

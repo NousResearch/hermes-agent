@@ -27,6 +27,7 @@ from agent.skill_utils import (
     extract_skill_description,
     is_skill_description_truncated_for_prompt,
     parse_frontmatter as _parse_frontmatter,
+    SKILL_FRONTMATTER_MAX_BYTES,
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
@@ -186,6 +187,12 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
             f"Move detail into the skill body.")
     if not content[end_match.end() + 3:].strip():
         return "SKILL.md must have content after the frontmatter (instructions, procedures, etc.)."
+    fm_bytes = len(content[: end_match.end() + 3].encode("utf-8"))
+    if new_skill and fm_bytes > SKILL_FRONTMATTER_MAX_BYTES:
+        return (
+            f"Frontmatter is {fm_bytes:,} bytes (limit {SKILL_FRONTMATTER_MAX_BYTES:,}). Skill "
+            f"discovery reads only the head of SKILL.md to route skills, so the frontmatter must "
+            f"stay inside that window — move long metadata or prose into the body.")
     return None
 
 

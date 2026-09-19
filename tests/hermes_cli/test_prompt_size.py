@@ -117,5 +117,25 @@ def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home)
         assert entry["index_line_skill_count"] == 2
 
 
+def test_skills_breakdown_deduplicates_same_resolved_skill_path(isolated_home):
+    """Repeated rendered names for one SKILL.md produce one breakdown row."""
+    _seed_skill(isolated_home, "pinokio", "Pinokio app manager")
+    rendered_line = "    - pinokio: Pinokio app manager"
+    skills_block = (
+        "<available_skills>\n"
+        f"{rendered_line}\n"
+        f"{rendered_line}\n"
+        "</available_skills>"
+    )
+
+    entries = _compute_skills_breakdown(skills_block)
+
+    assert len(entries) == 1
+    assert entries[0]["name"] == "pinokio"
+    assert entries[0]["index_line_bytes"] == len(rendered_line.encode("utf-8"))
+    assert Path(entries[0]["path"]).resolve() == (
+        isolated_home / "skills" / "demo" / "pinokio" / "SKILL.md"
+    ).resolve()
+
 
 

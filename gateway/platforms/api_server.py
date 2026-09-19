@@ -3161,7 +3161,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
-        """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        """POST /api/sessions/{session_id}/chat — one synchronous agent turn (plus the delivery lanes'
+        one bounded re-run of a transient failure; ``hermes peer dm`` is the client)."""
+        from tools.bot_failure_reasons import RETRY_NONE, result_retry_action
         # This turn runs through _run_agent, so it already COUNTS toward the cap (#7483).
         # Spending the budget without checking it refused every other caller while never
         # refusing this route — and a fleet's cross-machine DMs all arrive here.
@@ -3175,6 +3177,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_id = ctx["session_id"]
         history = await self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
+        # One policy-gated re-run of a transiently failed turn — the peer-DM transport's half of the
+        # retry the local (``tools.bot_mode_dm``) and relayed (``tui_gateway.methods_bot_relay``)
+        # delivery lanes already apply (#93091 item 5, #115325). Same policy, same gate: transient
+        # classes (429 / 5xx) re-run the SAME session once, a context overflow lets the re-run's
+        # pre-API compaction shrink the transcript first, and auth/quota/config/model never re-run. The
+        # store is read again first: the failed attempt's turn-start persist left the DM as the
+        # transcript's unanswered tail row, and the re-run resumes that row instead of appending a
+        # second copy of it. A turn that fails again reaches the peer client exactly as before.
+        if result_retry_action(result) != RETRY_NONE:
+            history = await self._conversation_history_for_session(session_id)
+            result, usage = await self._run_agent(
+                conversation_history=history, resume_unanswered_turn=True, **ctx["run_kwargs"])
         is_dict = isinstance(result, dict)
         effective_session_id = result.get("session_id") if is_dict else session_id
         final_response = _resolve_media_to_data_urls(
@@ -3738,7 +3752,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result") -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
+        resume_unanswered_turn: bool = False) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3746,7 +3761,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``session_history_delivery`` declares #98619 session-id provenance and default-denies: only audited
         producers whose client can address the id again pass "1" (see
         ``_bind_api_server_session``).
-        ``turn_author`` only labels the turn for memory attribution. It grants nothing."""
+        ``turn_author`` only labels the turn for memory attribution. It grants nothing.
+        ``resume_unanswered_turn`` marks a policy-gated re-run of a turn whose user row the failed attempt
+        already persisted: the transcript's unanswered tail row is adopted from ``conversation_history``
+        as THIS turn's user message instead of being appended a second time
+        (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
@@ -3776,6 +3795,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
                     if agent_ref is not None:
                         agent_ref[0] = agent
+                    if resume_unanswered_turn:
+                        # A dispatcher's re-run of a failed delivery turn: the DM's own row is already
+                        # in the store (the failed attempt persisted it at turn start), so continue THAT
+                        # row instead of appending a second copy of the same text (#115325).
+                        from agent.session_persistence import adopt_unanswered_turn
+
+                        adopt_unanswered_turn(conversation_history, user_message, agent)
                     if active_run_id:
                         self._active_run_agents[active_run_id] = agent
                     effective_task_id = session_id or str(uuid.uuid4())

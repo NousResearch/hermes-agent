@@ -203,3 +203,51 @@ class TestHooksDoctor:
         )
         assert "not allowlisted" in out.lower()
         assert "skipped JSON smoke test" in out
+
+
+def test_print_run_result_shows_decision_for_error_and_timeout():
+    """A failing hook's decision must be printed, not hidden by early returns (#115968).
+
+    run_once always sets ``parsed`` (agent/shell_hooks.py::_evaluate_result), so `hooks test` must show
+    it even when the hook errored or timed out. Before this fix the ``return`` on error/timeout skipped
+    the parsed tail, so a fail-closed blocker rendered identically to a fail-open pass-through.
+    """
+    parsed = {"action": "block", "message": "hook failed closed: command not found"}
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        hooks_cli._print_run_result(
+            {"error": "command not found", "parsed": parsed}
+        )
+    out = buf.getvalue()
+    assert "✗ error: command not found" in out
+    assert '"action": "block"' in out
+    assert '"message": "hook failed closed: command not found"' in out
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        hooks_cli._print_run_result(
+            {"timed_out": True, "elapsed_seconds": 2.33, "parsed": parsed}
+        )
+    out = buf.getvalue()
+    assert "✗ timed out after 2.33s" in out
+    assert '"action": "block"' in out
+
+
+def test_print_run_result_happy_path_unchanged():
+    """The normal success path still prints exit, streams, and the decision."""
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        hooks_cli._print_run_result(
+            {
+                "returncode": 0,
+                "elapsed_seconds": 0.1,
+                "stdout": "ok",
+                "stderr": "",
+                "parsed": {"action": "allow"},
+            }
+        )
+    out = buf.getvalue()
+    assert "exit=0" in out
+    assert "stdout: ok" in out
+    assert '"action": "allow"' in out

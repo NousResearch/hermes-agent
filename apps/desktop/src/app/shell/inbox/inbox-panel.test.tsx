@@ -708,6 +708,44 @@ describe('InboxPanel', () => {
     expect(screen.getByText('Heartbeat')).toBeTruthy()
   })
 
+  it('goal, loop and heartbeat controls are actionable from the inline detail', async () => {
+    const item = makeItem({
+      goal: { status: 'active', title: 'Ship inbox' },
+      heartbeat: { status: 'paused' },
+      loop: { status: 'active' },
+      session_key: 'sess-ctl',
+      title: 'Controls test'
+    })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 1, running: 1, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    const { fetchInboxRequestDetails } = await import('@/store/inbox')
+
+    vi.mocked(fetchInboxRequestDetails).mockResolvedValue({
+      coverage: {
+        approval_count: 0, clarification_count: 0, context_anchor: 'available', errors: [],
+        live_session_count: 1, profile: 'inbox-test-profile', session_key: 'sess-ctl'
+      },
+      sessions: [{ approvals: [], clarifications: [], expired_requests: [], live_session_ids: ['live-1'] }]
+    })
+
+    renderPanel(entry)
+    clickRow('Controls test')
+
+    // Same two actions as the composer status cards, reachable without leaving the panel:
+    // active goal/loop offer Pause; a paused heartbeat offers Resume.
+    await waitFor(() => expect(screen.getByText('Pause goal')).toBeTruthy())
+    expect(screen.getByText('Pause loop')).toBeTruthy()
+    expect(screen.getByText('Resume heartbeat')).toBeTruthy()
+  })
+
   it('hides inline detail when filtered list is empty', () => {
     const item = makeItem({ title: 'My project', session_key: 'sess-1' })
 

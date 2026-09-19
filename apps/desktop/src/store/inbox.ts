@@ -645,6 +645,35 @@ export async function respondToApproval(params: {
   return result
 }
 
+export type InboxAutomationAction =
+  | 'goal.pause'
+  | 'goal.resume'
+  | 'heartbeat.pause'
+  | 'heartbeat.resume'
+  | 'loop.pause'
+  | 'loop.resume'
+
+/**
+ * Run one automation control action for the session behind the panel. Same `session.control`
+ * allowlist the composer's status cards go through, so the panel can never exceed the chat's
+ * authority. Refused (4009-class) when the session is not live — nothing is touched remotely.
+ */
+export async function runInboxAutomationAction(params: {
+  action: InboxAutomationAction
+  liveSessionId: string
+  profile?: string
+  request?: InboxRequest
+}): Promise<void> {
+  const { action, liveSessionId, profile, request: rpc = defaultInboxRequest } = params
+
+  await rpc('session.control', {
+    action,
+    args: {},
+    session_id: liveSessionId,
+    ...(profile ? { profile } : {})
+  })
+}
+
 export interface RedoExpiredResult {
   record_cleared: boolean
   redone: boolean

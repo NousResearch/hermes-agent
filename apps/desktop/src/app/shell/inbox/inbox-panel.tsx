@@ -37,6 +37,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, setSelectedStoredSessionId } from '@/store/session'
 
 import { ApprovalCard } from './approval-card'
+import { AutomationControls } from './automation-controls'
 import { ClarifyCard } from './clarify-card'
 
 type SearchScope = 'all' | 'section'
@@ -169,6 +170,12 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
               { label: 'Status', value: String((item.goal as Record<string, unknown>).status ?? '—') }
             ]}
           />
+          <AutomationControls
+            kind="goal"
+            liveSessionId={detailLiveSessionId}
+            onChanged={onRetry}
+            status={String((item.goal as Record<string, unknown>).status ?? '')}
+          />
         </div>
       )}
       {item.loop && (
@@ -177,6 +184,12 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
           <PanelMeta
             rows={[{ label: 'Status', value: String((item.loop as Record<string, unknown>).status ?? '—') }]}
           />
+          <AutomationControls
+            kind="loop"
+            liveSessionId={detailLiveSessionId}
+            onChanged={onRetry}
+            status={String((item.loop as Record<string, unknown>).status ?? '')}
+          />
         </div>
       )}
       {item.heartbeat && (
@@ -184,6 +197,12 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
           <PanelSectionLabel>Heartbeat</PanelSectionLabel>
           <PanelMeta
             rows={[{ label: 'Status', value: String((item.heartbeat as Record<string, unknown>).status ?? '—') }]}
+          />
+          <AutomationControls
+            kind="heartbeat"
+            liveSessionId={detailLiveSessionId}
+            onChanged={onRetry}
+            status={String((item.heartbeat as Record<string, unknown>).status ?? '')}
           />
         </div>
       )}

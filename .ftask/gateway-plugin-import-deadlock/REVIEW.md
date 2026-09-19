@@ -88,3 +88,21 @@ assumptions: |
 notes: |
   [rebase-refresh] Terminal p0 audit: PR direct trigger skips full-suite; orchestrated workflow_call with typed via_ci=true runs the single canonical suite; permissions, pins, provisioning and command unchanged; paths/needs consistent.
 ---
+---
+recorded_at: 2026-09-19T04:56:08.210Z
+by: claude
+verdict: pass
+mode: delta
+finding_ids: none
+simulation_verdict: pass
+spec_hash: 9145c40a89a0
+code_patch_id: 260e170c702af6601a4a40b346e97c0d8cf4f6519db60316d3c981dd0887eb3c
+code_diff_hash: 674221c189b825b76e849dd7cd446010a6e9019429a8d8ae051bf4061add64c8
+head_sha: 848d4c759d2c10573d292a1c58c9e14d808c0c95
+confusion: |
+  None.
+assumptions: |
+  Workflow default working directory is repository root.
+notes: |
+  [rebase-refresh] Terminal delta only changes scripts/run_tests.sh to ./scripts/run_tests.sh; identical repository-root execution; no p0.
+---

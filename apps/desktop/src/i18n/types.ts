@@ -2779,6 +2779,11 @@ export interface Translations {
       heartbeatNext: (time: string) => string
       heartbeatDueWaitingForIdle: string
       heartbeatActions: string
+      editHeartbeat: string
+      editHeartbeatDescription: string
+      heartbeatMessageLabel: string
+      heartbeatFrequencyLabel: string
+      heartbeatFrequencyPlaceholder: string
       pauseHeartbeat: string
       resumeHeartbeat: string
       clearHeartbeat: string

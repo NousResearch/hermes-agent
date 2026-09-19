@@ -40,6 +40,7 @@ _MANAGER_ACTIONS = frozenset({
     "heartbeat.pause",
     "heartbeat.resume",
     "heartbeat.clear",
+    "heartbeat.update",
 })
 
 _VALID_ACTIONS = frozenset(_ACTION_COMMAND_MAP) | _MANAGER_ACTIONS
@@ -318,7 +319,34 @@ def _validate_action_args(rid, action: str, args: dict):
         if index < 1:
             return None, _err(rid, 4004, "subgoal index must be >= 1")
         return {"index": index}, None
+    if action == "heartbeat.update":
+        return _validate_heartbeat_update_args(rid, args)
     return {}, None
+
+
+def _validate_heartbeat_update_args(rid, args: dict):
+    """Accept ``prompt`` and/or ``interval`` (the same interval grammar as /heartbeat) on an edit."""
+    prompt = args.get("prompt")
+    if prompt is not None and (not isinstance(prompt, str) or not prompt.strip()):
+        return None, _err(rid, 4004, "heartbeat prompt must be a non-empty string")
+    interval = args.get("interval")
+    validated: dict = {}
+    if prompt is not None:
+        validated["prompt"] = prompt.strip()
+    if interval is not None:
+        if not isinstance(interval, str) or not interval.strip():
+            return None, _err(rid, 4004, "heartbeat interval must be a non-empty string")
+        from hermes_cli.heartbeat import MIN_INTERVAL_SECONDS, parse_interval
+
+        seconds = parse_interval(interval)
+        if seconds is None:
+            return None, _err(rid, 4004, f"heartbeat interval '{interval.strip()}' is not an interval like 10m, 2h, or 90s")
+        if seconds == -1:
+            return None, _err(rid, 4004, f"heartbeat interval must be at least {MIN_INTERVAL_SECONDS}s")
+        validated["interval_seconds"] = seconds
+    if not validated:
+        return None, _err(rid, 4004, "heartbeat.update requires a prompt or an interval")
+    return validated, None
 
 
 def _dispatch_command(rid, *, session_id: str, name: str, arg: str) -> dict:
@@ -337,7 +365,7 @@ def _execute_manager_action(session_key: str, action: str, args: dict) -> dict:
     """Use manager APIs for controls that have no TUI command handler."""
     if action.startswith("subgoal."):
         return _execute_subgoal_action(session_key, action, args)
-    return _execute_heartbeat_action(session_key, action)
+    return _execute_heartbeat_action(session_key, action, args)
 
 
 def _execute_subgoal_action(session_key: str, action: str, args: dict) -> dict:
@@ -356,7 +384,7 @@ def _execute_subgoal_action(session_key: str, action: str, args: dict) -> dict:
     return {"result": {"type": "exec", "output": output}}
 
 
-def _execute_heartbeat_action(session_key: str, action: str) -> dict:
+def _execute_heartbeat_action(session_key: str, action: str, args: dict) -> dict:
     from hermes_cli.heartbeat import HeartbeatManager, format_interval
 
     manager = HeartbeatManager(session_id=session_key)
@@ -371,6 +399,9 @@ def _execute_heartbeat_action(session_key: str, action: str) -> dict:
         )
     elif action == "heartbeat.clear":
         output = "✓ Heartbeat cleared." if manager.clear() else "No heartbeat set."
+    elif action == "heartbeat.update":
+        state = manager.update(prompt=args.get("prompt"), interval_seconds=args.get("interval_seconds"))
+        output = f"✓ Heartbeat updated (every {format_interval(state.interval_seconds)}): {state.prompt}"
     else:
         return _err(None, 4004, f"unknown heartbeat action: {action}")
     return {"result": {"type": "exec", "output": output}}
@@ -381,6 +412,7 @@ def _manager_error_message(action: str, exc: Exception) -> str:
         "subgoal.add": "/subgoal",
         "subgoal.remove": "/subgoal remove",
         "subgoal.clear": "/subgoal clear",
+        "heartbeat.update": "/heartbeat",
     }
     return f"{prefixes.get(action, action)}: {exc}"
 

@@ -73,7 +73,7 @@ def session(server):
 
 
 def _call(server, method, *, rid=91, **params):
-    return server._methods[method](rid, params)
+    return server.handle_request({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
 
 
 def _control(server, sid):
@@ -302,6 +302,86 @@ class TestManagerOnlyMutations:
             action = "subgoal.add" if "text" in args else "subgoal.remove"
             assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == 4004
 
+    def test_heartbeat_update_edits_message_and_interval_without_dispatch(self, server, session, monkeypatch):
+        from hermes_cli.heartbeat import load_heartbeat
+
+        sid, key, _ = session
+        _save_heartbeat(key, prompt="Check the deployment", interval_seconds=600, fire_count=2)
+        _forbid_dispatch(server, monkeypatch)
+
+        updated = _call(
+            server, "session.control", session_id=sid, action="heartbeat.update",
+            args={"prompt": "Check the staging deployment", "interval": "every 2h"},
+        )
+        assert updated["result"]["dispatch"]["type"] == "exec"
+        assert updated["result"]["dispatch"]["output"] == "✓ Heartbeat updated (every 2h): Check the staging deployment"
+        heartbeat = updated["result"]["control"]["heartbeat"]
+        assert heartbeat["prompt"] == "Check the staging deployment"
+        assert heartbeat["interval_seconds"] == 7200
+        # An edit is not a reset: the fire history survives it.
+        assert heartbeat["fire_count"] == 2
+        assert load_heartbeat(key).interval_seconds == 7200
+
+        prompt_only = _call(server, "session.control", session_id=sid, action="heartbeat.update",
+                            args={"prompt": "Only the message"})
+        assert prompt_only["result"]["control"]["heartbeat"]["prompt"] == "Only the message"
+        assert prompt_only["result"]["control"]["heartbeat"]["interval_seconds"] == 7200
+
+        interval_only = _call(server, "session.control", session_id=sid, action="heartbeat.update",
+                              args={"interval": "90s"})
+        assert interval_only["result"]["control"]["heartbeat"]["interval_seconds"] == 90
+        assert interval_only["result"]["control"]["heartbeat"]["prompt"] == "Only the message"
+
+    def test_heartbeat_update_requires_a_heartbeat_and_valid_arguments(self, server, session, monkeypatch):
+        from hermes_cli.heartbeat import load_heartbeat
+
+        sid, key, _ = session
+        _forbid_dispatch(server, monkeypatch)
+        assert _error(_call(server, "session.control", session_id=sid, action="heartbeat.update",
+                            args={"prompt": "criterion"}))["code"] == 4004
+
+        _save_heartbeat(key, prompt="Check the deployment", interval_seconds=600)
+        for args in (
+            {},
+            {"prompt": "   "},
+            {"prompt": 7},
+            {"interval": "   "},
+            {"interval": "banana"},
+            {"interval": "9" * 400 + "s"},
+            {"interval": "5s"},
+            {"interval": 600},
+        ):
+            assert _error(_call(server, "session.control", session_id=sid, action="heartbeat.update",
+                                args=args))["code"] == 4004
+
+        # Rejected edits never touch the stored heartbeat.
+        state = load_heartbeat(key)
+        assert (state.prompt, state.interval_seconds) == ("Check the deployment", 600)
+
+    def test_card_edit_survives_the_worker_manager_on_its_next_write_and_poll(self, server, session, monkeypatch):
+        """/heartbeat creates the heartbeat on the slash worker's own cached manager; the card then edits
+        it through session.control in the backend process. That worker instance must neither resurrect the
+        old values on its next command nor fire the superseded instruction (the review's lost-edit case)."""
+        from hermes_cli.heartbeat import HeartbeatManager, load_heartbeat, save_heartbeat
+
+        sid, key, _ = session
+        worker = HeartbeatManager(key)  # the slash worker's manager, holding the pre-edit copy
+        worker.set("original prompt", 60)
+        aged = worker.state
+        aged.created_at = time.time() - 700  # a poller's cached view believes the old tick is due
+        save_heartbeat(key, aged)
+        watchdog = HeartbeatManager(key)
+        _forbid_dispatch(server, monkeypatch)
+
+        updated = _call(server, "session.control", session_id=sid, action="heartbeat.update",
+                        args={"prompt": "edited prompt", "interval": "10m"})
+        assert updated["result"]["control"]["heartbeat"]["prompt"] == "edited prompt"
+
+        assert watchdog.due_prompt() is None  # no stale tick enqueued
+        worker.pause()  # the worker's next /heartbeat command
+        persisted = load_heartbeat(key)
+        assert (persisted.prompt, persisted.interval_seconds, persisted.status) == ("edited prompt", 600, "paused")
+
     def test_goal_unwait_clears_the_real_barrier_through_shared_command(self, server, session):
         from hermes_cli.goals import GoalManager
 
@@ -336,18 +416,23 @@ class TestManagerOnlyMutations:
 
 class TestErrorsAndEvents:
     @pytest.mark.parametrize(
-        ("action", "args"),
+        ("action", "args", "code"),
         [
-            ("", {}),
-            ("not.allowed", {}),
-            ("goal.gate.add", {"command": "echo should-not-run"}),
-            ("subgoal.add", []),
+            ("", {}, 4004),
+            ("not.allowed", {}, 4004),
+            ("goal.gate.add", {}, 4004),
+            ("goal.gate.add", {"command": "echo should-not-run"}, 4000),
+            ("subgoal.add", [], 4004),
+            ("heartbeat.update", [], 4004),
+            ("heartbeat.update", {"unexpected": "value"}, 4000),
         ],
     )
-    def test_invalid_actions_and_malformed_args_return_4004_without_dispatch(self, server, session, monkeypatch, action, args):
+    def test_invalid_actions_and_malformed_args_are_rejected_without_dispatch(
+        self, server, session, monkeypatch, action, args, code,
+    ):
         sid, _, _ = session
         _forbid_dispatch(server, monkeypatch)
-        assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == 4004
+        assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == code
 
     def test_unknown_session_returns_4001(self, server):
         assert _error(_call(server, "session.control", session_id="gone", action="goal.pause"))["code"] == 4001
@@ -392,6 +477,15 @@ class TestUpdatePublication:
         _save_goal(key)
         emitted = self._capture(server, monkeypatch)
         response = _call(server, "session.control", session_id=sid, action="goal.pause")
+        updates = [e for e in emitted if e[0] == "session.control.update"]
+        assert updates == [("session.control.update", sid, {"control": response["result"]["control"]})]
+
+    def test_heartbeat_update_publishes_exactly_one_update_matching_the_response(self, server, session, monkeypatch):
+        sid, key, _ = session
+        _save_heartbeat(key)
+        emitted = self._capture(server, monkeypatch)
+        response = _call(server, "session.control", session_id=sid, action="heartbeat.update",
+                         args={"prompt": "Edited message", "interval": "30m"})
         updates = [e for e in emitted if e[0] == "session.control.update"]
         assert updates == [("session.control.update", sid, {"control": response["result"]["control"]})]
 

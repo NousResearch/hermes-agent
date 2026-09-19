@@ -214,7 +214,12 @@ def _messaging_platform_payload(
     gateway_running = resolve_gateway_liveness(
         profile_dir=profile_home, runtime=runtime,
         health_probe=_probe_gateway_health if _GATEWAY_HEALTH_URL else None,
-        pid_probe=get_running_pid_cached, runtime_reader=read_runtime_status,
+        # cleanup_stale=False: a scoped probe of another profile's home. get_running_pid()'s
+        # scoped branch hard-codes runtime_pid=None, so the default cleanup_stale=True would
+        # unlink that profile's gateway.pid/gateway.lock on every poll — deleting the
+        # authoritative liveness signal (see gateway/status.get_running_pid docstring).
+        pid_probe=lambda path: get_running_pid_cached(path, cleanup_stale=False),
+        runtime_reader=read_runtime_status,
         runtime_pid_probe=get_runtime_status_running_pid,
     ).running
     if not gateway_running:

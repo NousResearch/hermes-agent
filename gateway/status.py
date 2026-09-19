@@ -1068,6 +1068,17 @@ def resolve_gateway_liveness(
     _runtime_pid_probe = runtime_pid_probe or get_runtime_status_running_pid
     probe_error = False
     scoped = profile_dir is not None
+    if scoped and pid_probe is None:
+        # A scoped probe reads ANOTHER profile's home, and get_running_pid()'s scoped branch
+        # hard-codes runtime_pid=None — so with the default cleanup_stale=True the
+        # "lock inactive" rung always unlinks that home's gateway.pid/gateway.lock. That is the
+        # very pair rung-1 needs, and the cron ticker gate reads it every 60s: losing it makes
+        # _check_gateway_running() fall back to the process-table rung, so the Desktop backend
+        # adopts the profile's tick and races its own gateway (observed live: 07:50 GitHub job
+        # fired by the serve pid, then stalled). Force it off here so EVERY scoped caller is
+        # safe by default instead of each call site having to remember (#106406).
+        _scoped_probe_base = _pid_probe
+        _pid_probe = lambda path: _scoped_probe_base(path, cleanup_stale=False)
 
     def guarded(fn, *args, fallback=None, **kwargs):
         nonlocal probe_error

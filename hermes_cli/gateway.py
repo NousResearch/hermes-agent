@@ -1676,6 +1676,18 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     if supervised_host:
         return False
 
+    # launchd is a supervisor too. ``supports_systemd_services()`` is Linux-only and returns
+    # False on macOS, so without this probe every desktop ``serve`` start treats the
+    # launchd-supervised gateway as an orphan and SIGKILLs it (live: `launchctl` showed
+    # runs=13 / last exit 137, and each kill unlinked gateway.pid, leaving the cron ticker
+    # gate with no rung-1 signal so Desktop raced the gateway for the same job store).
+    if is_macos():
+        try:
+            if _probe_launchd_service_running():
+                return False
+        except Exception:
+            pass
+
     # Task Scheduler is a supervisor too; its state beats a parent-chain walk (broken once the bootstrap exits).
     # A Scheduled Task gateway whose conhost/VBS bootstrap has already exited is invisible to
     # `_reaper_candidate_is_supervisor_owned` (the parent chain breaks before services.exe, fail-open), yet

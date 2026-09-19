@@ -73,10 +73,19 @@ def _install_chromium(install_cmd: list[str]) -> None:
     try:
         result = _run_text(install_cmd, cwd=str(PROJECT_ROOT), timeout=600, creationflags=_post_setup_no_window_flags())
         if result.returncode == 0:
-            _print_success("    Chromium installed")
-            # Invalidate the cached "missing" flag so later check_browser_requirements() calls see the install.
+            # Invalidate the cached "missing" flag, then verify the gate actually detects the fresh
+            # install. The installer can exit 0 while leaving a build the gate can't see (interrupted
+            # download, unexpected layout), and a success message that check_browser_requirements()
+            # then contradicts is worse than a warning (curtis921 on PR #30161).
             import tools.browser_tool as _bt
+            from tools.browser_tool_install import _chromium_installed
             _bt._cached_chromium_installed = None
+            if _chromium_installed():
+                _print_success("    Chromium installed")
+            else:
+                _print_warning("    Chromium install finished, but the browser gate still can't detect it.")
+                _print_info("    Set AGENT_BROWSER_EXECUTABLE_PATH to the chrome binary and restart: "
+                            "~/.agent-browser/browsers/chrome-<version>/chrome")
             return
         _print_warning("    Chromium install failed:")
         for line in (result.stderr or result.stdout or "").strip().splitlines()[-3:]:

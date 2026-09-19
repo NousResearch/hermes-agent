@@ -272,7 +272,8 @@ def _parked_agent(loop, started: asyncio.Event, release: threading.Event) -> Mag
     agent._last_compaction_in_place = False
     agent._hermes_api_runtime = {}
 
-    def _park(user_message=None, conversation_history=None, task_id=None):
+    def _park(user_message=None, conversation_history=None, task_id=None, expected_conversation_epoch=None):
+        del expected_conversation_epoch
         loop.call_soon_threadsafe(started.set)
         release.wait(_TURN_UNBLOCK_TIMEOUT)
         return {"final_response": "done", "messages": [], "api_calls": 0, "tools": []}

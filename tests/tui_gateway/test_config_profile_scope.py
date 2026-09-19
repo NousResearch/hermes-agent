@@ -158,3 +158,44 @@ def test_profile_cwd_write_does_not_retarget_launch_session(tmp_path, monkeypatc
         assert server._sessions[sid]["profile_home"] is None
     finally:
         server._sessions.pop(sid, None)
+
+
+def test_session_bound_profile_cwd_write_does_not_retarget_launch_process(tmp_path, monkeypatch):
+    launch, worker = _homes(tmp_path)
+    launch_cwd = tmp_path / "launch-workspace"
+    worker_cwd = tmp_path / "worker-workspace"
+    launch_cwd.mkdir()
+    worker_cwd.mkdir()
+    _bind_homes(monkeypatch, launch, worker)
+    monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
+    monkeypatch.setitem(
+        server._sessions,
+        "worker-session",
+        {"agent": None, "profile_home": str(worker), "session_key": "worker-session"},
+    )
+
+    response = _set(
+        {"session_id": "worker-session", "key": "terminal.cwd", "value": str(worker_cwd)}
+    )
+
+    assert response["result"]["cwd"] == str(worker_cwd)
+    assert _read_yaml(worker)["terminal"]["cwd"] == str(worker_cwd)
+    assert server.os.environ["TERMINAL_CWD"] == str(launch_cwd)
+
+
+def test_launch_profile_cwd_write_updates_non_local_terminal_task(tmp_path, monkeypatch):
+    launch, worker = _homes(tmp_path)
+    old_cwd = tmp_path / "old-workspace"
+    new_cwd = tmp_path / "new-workspace"
+    old_cwd.mkdir()
+    new_cwd.mkdir()
+    _bind_homes(monkeypatch, launch, worker)
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CWD", str(old_cwd))
+
+    response = _set({"key": "terminal.cwd", "value": str(new_cwd)})
+
+    assert response["result"]["cwd"] == str(new_cwd)
+    assert _read_yaml(launch)["terminal"]["cwd"] == str(new_cwd)
+    assert server.os.environ["TERMINAL_CWD"] == str(new_cwd)
+    assert server._terminal_task_cwd(None) == str(new_cwd)

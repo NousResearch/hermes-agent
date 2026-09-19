@@ -108,6 +108,37 @@ class TestUsageCachedAgent:
         assert "80,000" in result   # running agent's total
         assert "API calls: 10" in result
 
+    @pytest.mark.asyncio
+    async def test_usage_lists_each_model_route_from_the_ledger(self):
+        """A session that switched models (or spent on aux work) gets a By-model block; the
+        ledger read is best-effort so a failing DB never breaks /usage."""
+        runner = _make_runner(SK, cached_agent=_make_mock_agent())
+        runner._session_db = AsyncSessionDB(MagicMock())
+        runner._session_db._db.get_session_model_usage.return_value = [
+            {"model": "claude-sonnet-4.6", "billing_provider": "anthropic", "task": "", "api_call_count": 4,
+             "input_tokens": 30_000, "output_tokens": 9_000},
+            {"model": "claude-sonnet-4.6", "billing_provider": "anthropic", "task": "compression", "api_call_count": 1,
+             "input_tokens": 5_000, "output_tokens": 1_000},
+            {"model": "deepseek-v4-pro", "billing_provider": "deepseek", "task": "", "api_call_count": 1,
+             "input_tokens": 400, "output_tokens": 50},
+        ]
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-1"
+        runner.session_store.get_or_create_session.return_value = session_entry
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
+            result = await runner._handle_usage_command(MagicMock())
+
+        assert "By model:" in result
+        assert "claude-sonnet-4.6 (anthropic): 5 calls, 35,000 in / 10,000 out (aux: compression)" in result
+        assert "deepseek-v4-pro (deepseek): 1 calls, 400 in / 50 out" in result
+        assert "$" not in result
+
+        runner._session_db._db.get_session_model_usage.side_effect = RuntimeError("db gone")
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
+            result = await runner._handle_usage_command(MagicMock())
+        assert "By model:" not in result and "API calls:" in result
+
 
 class TestUsageAccountSection:
     """Account-limits section appended to /usage output (PR #2486)."""

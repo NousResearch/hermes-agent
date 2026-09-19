@@ -1210,6 +1210,15 @@ def _(rid, params: dict, session: dict) -> dict:
     return _ok(rid, usage)
 
 
+@method("session.model_usage")
+@_with_db(5007, session_scoped=True)
+def _(rid, params: dict, session: dict, db) -> dict:
+    """Return persisted token/cost counters split by live model route (one line per
+    model/provider/mode; aux-task rows of the same model fold in, see fold_model_usage_routes)."""
+    from hermes_state_usage import fold_model_usage_routes
+    return _ok(rid, fold_model_usage_routes(db.get_session_model_usage(session["session_key"])))
+
+
 @_session_method("session.context_breakdown")
 def _(rid, params: dict, session: dict) -> dict:
     if (agent := session.get("agent")) is None:

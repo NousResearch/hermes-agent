@@ -264,6 +264,36 @@ class TestCLIUsageReport:
         assert "Cache read tokens:" not in output
         assert "Cache write tokens:" not in output
 
+    def test_show_usage_lists_each_model_route_after_a_switch(self, capsys):
+        """A session that switched models mid-way reports every route (with aux work folded
+        into its model line); a single-route session stays as before (no duplicate block)."""
+        cli_obj = _attach_agent(
+            _make_cli(), prompt_tokens=100, completion_tokens=20, total_tokens=120,
+            api_calls=3, context_tokens=120, context_length=200_000,
+        )
+        cli_obj.verbose = False
+        cli_obj.agent.session_id = "sess-1"
+        rows = [
+            {"model": "anthropic/claude-sonnet-4-20250514", "billing_provider": "anthropic", "billing_mode": "api_key",
+             "task": "", "api_call_count": 2, "input_tokens": 60, "output_tokens": 10, "last_seen": 2.0},
+            {"model": "anthropic/claude-sonnet-4-20250514", "billing_provider": "anthropic", "billing_mode": "",
+             "task": "compression", "api_call_count": 1, "input_tokens": 5_000, "output_tokens": 300, "last_seen": 1.5},
+            {"model": "deepseek-v4-pro", "billing_provider": "deepseek", "billing_mode": "api_key",
+             "task": "", "api_call_count": 1, "input_tokens": 40, "output_tokens": 10, "last_seen": 1.0},
+        ]
+        cli_obj._session_db = SimpleNamespace(get_session_model_usage=lambda sid: rows if sid == "sess-1" else [])
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+        assert "By model" in output
+        assert "anthropic/claude-sonnet-4-20250514 (anthropic): 3 calls, 5.06K in / 310 out  aux: compression" in output
+        assert "deepseek-v4-pro (deepseek): 1 calls, 40 in / 10 out" in output
+        assert "Total cost:" not in output and "$" not in output
+
+        cli_obj._session_db = SimpleNamespace(get_session_model_usage=lambda sid: rows[:1])
+        cli_obj._show_usage()
+        assert "By model" not in capsys.readouterr().out
+
 
 class TestStatusBarWidthSource:
     """Ensure status bar fragments don't overflow the terminal width."""

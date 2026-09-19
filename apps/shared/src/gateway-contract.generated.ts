@@ -2806,6 +2806,43 @@ export interface SessionUsageResult {
   credits_lines?: string[] | null
   [key: string]: unknown
 }
+export interface SessionModelUsageParams {
+  session_id: string
+  profile?: string | null
+}
+export interface SessionModelUsageResult {
+  routes: ModelUsageRoute[]
+  totals: ModelUsageTotals
+}
+export interface ModelUsageRoute {
+  calls: number
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  reasoning: number
+  total: number
+  estimated_cost_usd: number
+  actual_cost_usd: number
+  model: string
+  provider: string
+  billing_mode: string
+  tasks: string[]
+  cost_status: string
+  cost_source: string
+  last_seen: number
+}
+export interface ModelUsageTotals {
+  calls: number
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  reasoning: number
+  total: number
+  estimated_cost_usd: number
+  actual_cost_usd: number
+}
 export interface SessionContextBreakdownParams {
   session_id: string
   profile?: string | null
@@ -4519,6 +4556,8 @@ export interface RpcMethods {
   'session.interrupt': { params: SessionInterruptParams; result: SessionInterruptResult }
   /** Human-facing stored sessions, most recent first (sub-agent / kanban sources denied). */
   'session.list': { params: SessionListParams; result: SessionListResult }
+  /** Persisted per-model route breakdown of the session's token/cost ledger (main loop + aux tasks folded per model/provider), summed over the compression lineage. */
+  'session.model_usage': { params: SessionModelUsageParams; result: SessionModelUsageResult }
   /** Most recent human-facing session; errors fold into a null session_id. */
   'session.most_recent': { params: SessionMostRecentParams; result: SessionMostRecentResult }
   /** Redirect the active turn (queued for the next turn while the agent is still building). */
@@ -4793,6 +4832,7 @@ export const RPC_METHODS = [
   'session.history',
   'session.interrupt',
   'session.list',
+  'session.model_usage',
   'session.most_recent',
   'session.redirect',
   'session.resume',

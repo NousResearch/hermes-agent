@@ -423,6 +423,41 @@ method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
        doc="Token / context / cost counters for the session (+ Nous credit lines when available).")
 
 
+class SessionModelUsageParams(SessionParams):
+    pass
+
+
+class ModelUsageTotals(Result):
+    calls: int
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+    reasoning: int
+    total: int
+    estimated_cost_usd: float
+    actual_cost_usd: float
+
+
+class ModelUsageRoute(ModelUsageTotals):
+    model: str
+    provider: str
+    billing_mode: str
+    tasks: list[str]
+    cost_status: str
+    cost_source: str
+    last_seen: float
+
+
+class SessionModelUsageResult(Result):
+    routes: list[ModelUsageRoute]
+    totals: ModelUsageTotals
+
+
+method("session.model_usage", params=SessionModelUsageParams, result=SessionModelUsageResult,
+       doc="Persisted per-model route breakdown of the session's token/cost ledger (main loop + aux tasks folded per model/provider), summed over the compression lineage.")
+
+
 class SessionContextBreakdownParams(SessionParams):
     pass
 

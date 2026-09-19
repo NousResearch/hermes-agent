@@ -78,6 +78,60 @@ _MODEL_USAGE_FIELDS = frozenset((
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
     "actual_cost_usd", "cost_status", "cost_source", "api_call_count"))
 
+_ROUTE_SUM_KEYS = ("calls", "input", "output", "cache_read", "cache_write", "reasoning", "total",
+                   "estimated_cost_usd", "actual_cost_usd")
+
+
+def fold_model_usage_routes(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Shape ``get_session_model_usage`` rows into ``{"routes": [...], "totals": {...}}`` for display.
+
+    Rows are keyed per (model, provider, base_url, mode, task); a display route is one
+    (model, provider) line, so main-loop and aux-task rows of the same model fold into it and
+    the task names survive in ``tasks`` (aux rows never carry a billing_mode, so mode cannot
+    be part of the key; the first non-empty one is kept). ``total`` matches ``CanonicalUsage.total_tokens``
+    (input + output + both cache buckets); reasoning stays separate because providers may already
+    count it inside output. Shared by the CLI ``/usage`` block and the ``session.model_usage`` RPC
+    so every surface reports the same numbers.
+    """
+    folded: Dict[tuple, Dict[str, Any]] = {}
+    for row in rows:
+        key = (row.get("model") or "unknown", row.get("billing_provider") or "")
+        route = folded.get(key)
+        if route is None:
+            route = folded[key] = {
+                "model": key[0], "provider": key[1], "billing_mode": "", "tasks": [],
+                **{k: 0 for k in _ROUTE_SUM_KEYS}, "estimated_cost_usd": 0.0, "actual_cost_usd": 0.0,
+                "cost_status": "", "cost_source": "", "last_seen": 0.0,
+            }
+        inp, out = int(row.get("input_tokens") or 0), int(row.get("output_tokens") or 0)
+        cr, cw = int(row.get("cache_read_tokens") or 0), int(row.get("cache_write_tokens") or 0)
+        route["billing_mode"] = route["billing_mode"] or (row.get("billing_mode") or "")
+        route["calls"] += int(row.get("api_call_count") or 0)
+        route["input"] += inp
+        route["output"] += out
+        route["cache_read"] += cr
+        route["cache_write"] += cw
+        route["reasoning"] += int(row.get("reasoning_tokens") or 0)
+        route["total"] += inp + out + cr + cw
+        route["estimated_cost_usd"] += float(row.get("estimated_cost_usd") or 0.0)
+        route["actual_cost_usd"] += float(row.get("actual_cost_usd") or 0.0)
+        task = row.get("task") or ""
+        if task and task not in route["tasks"]:
+            route["tasks"].append(task)
+        last_seen = float(row.get("last_seen") or 0.0)
+        if last_seen >= route["last_seen"]:
+            route["last_seen"] = last_seen
+            route["cost_status"] = row.get("cost_status") or route["cost_status"]
+            route["cost_source"] = row.get("cost_source") or route["cost_source"]
+    routes = list(folded.values())  # DB order (last_seen DESC) is preserved; first row of a key anchors it
+    totals: Dict[str, Any] = {k: 0 for k in _ROUTE_SUM_KEYS}
+    totals["estimated_cost_usd"] = totals["actual_cost_usd"] = 0.0
+    for route in routes:
+        route["tasks"].sort()
+        for k in _ROUTE_SUM_KEYS:
+            totals[k] += route[k]
+    return {"routes": routes, "totals": totals}
+
 
 class SessionUsageMixin:
     """Coalesced token writer, per-model usage rows, billing route."""

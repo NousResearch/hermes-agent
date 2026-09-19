@@ -607,6 +607,8 @@ class GatewayStatusCommandsMixin:
             return "\n".join(lines)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = _usage_agent_stats_lines(agent)
+            # Per-model routes (a /model switch or aux work such as compression) from the persisted ledger.
+            lines += await _quiet(lambda: self._usage_by_model_lines(source), [])
             # Per-category breakdown (chars/4 estimate, same engine as the desktop popover): prompt
             # / tools / skills / memory off the live agent, conversation from the transcript.
             breakdown_lines = await asyncio.to_thread(self._context_breakdown_lines, agent, source)
@@ -631,6 +633,24 @@ class GatewayStatusCommandsMixin:
         if account_lines or credits_lines:
             return _with_account_blocks([])
         return t("gateway.usage.no_data")
+
+    async def _usage_by_model_lines(self, source) -> list[str]:
+        """``By model:`` block from the persisted ``session_model_usage`` ledger; empty when the DB
+        is unpinned or the session has a single main-loop route (the ``Model:`` line covers it)."""
+        if getattr(self, "_session_db", None) is None:
+            return []
+        from hermes_state_usage import fold_model_usage_routes
+        entry = await self.async_session_store.get_or_create_session(source)
+        routes = fold_model_usage_routes(await self._session_db.get_session_model_usage(entry.session_id))["routes"]
+        if not routes or (len(routes) == 1 and not routes[0]["tasks"]):
+            return []
+        lines = ["", t("gateway.usage.header_by_model")]
+        for r in routes:
+            lines.append(t("gateway.usage.by_model_route", model=r["model"],
+                           provider=f" ({r['provider']})" if r["provider"] else "", calls=r["calls"],
+                           inp=_fmt(r["input"]), out=_fmt(r["output"]),
+                           aux=t("gateway.usage.by_model_aux", tasks=", ".join(r["tasks"])) if r["tasks"] else ""))
+        return lines
 
     async def _persisted_billing_route(self, source):
         """``(provider, base_url)`` from the SessionDB row / most recent route when no agent is resident."""

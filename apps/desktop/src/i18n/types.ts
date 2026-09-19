@@ -3245,6 +3245,7 @@ export interface Translations {
       toggleCacheHitRate: string
       toggleCommandCenter: string
       toggleContextUsage: string
+      toggleTokenUsage: string
       toggleRunningTimer: string
       toggleSessionTimer: string
       toggleTerminal: string
@@ -3267,6 +3268,24 @@ export interface Translations {
       starmap: string
       openStarmap: string
       turnRunning: string
+      currentTurnElapsed: string
+      modelUsage: string
+      tokenUsage: string
+      openModelUsage: string
+      modelUsagePanel: {
+        active: string
+        actualCost: (value: string) => string
+        cacheRead: (value: string) => string
+        calls: (count: number) => string
+        empty: string
+        estimatedCost: (value: string) => string
+        loading: string
+        reasoning: (value: string) => string
+        title: string
+        totalTokens: (value: string) => string
+        unavailable: string
+        unknownProvider: string
+      }
       contextUsage: string
       systemResources: {
         title: string

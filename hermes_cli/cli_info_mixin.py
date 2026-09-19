@@ -729,6 +729,7 @@ class CLIInfoMixin:
         print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)")
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
+        self._print_model_usage_breakdown(agent)
 
         # Account limits — fetched off-thread with a hard timeout so slow provider APIs don't
         # hang the prompt. Lazy import: pulls the OpenAI SDK chain.
@@ -759,6 +760,37 @@ class CLIInfoMixin:
                 logging.getLogger(noisy).setLevel(logging.WARNING)
         else:
             logging.getLogger().setLevel(logging.INFO)
+
+    def _print_model_usage_breakdown(self, agent) -> None:
+        """Per-model route lines under the session totals (Copilot CLI 1.0.85 `/usage` parity).
+
+        Reads the persisted ``session_model_usage`` ledger, so a session that switched models
+        (``/model``, fallback) or spent tokens on aux work (compression, vision, background
+        review) shows where the tokens went. Skipped when the ledger has a single main-loop
+        route: the ``Model:`` line above already says it all.
+        """
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(agent, "session_id", None) or getattr(self, "session_id", None)
+        if db is None or not session_id:
+            return
+        try:
+            from hermes_state_usage import fold_model_usage_routes
+            report = fold_model_usage_routes(db.get_session_model_usage(session_id))
+        except Exception as exc:  # ledger read is best-effort; never break /usage
+            logging.getLogger(__name__).debug("per-model usage breakdown unavailable: %s", exc)
+            return
+        routes = report["routes"]
+        if not routes or (len(routes) == 1 and not routes[0]["tasks"]):
+            return
+        from agent.usage_pricing import format_token_count_compact as _fmt
+        print()
+        print("  📚 By model")
+        # No per-route cost or cache lines: #52717 removed per-conversation cost estimates from CLI /usage.
+        for route in routes:
+            provider = f" ({route['provider']})" if route["provider"] else ""
+            tasks = f"  aux: {', '.join(route['tasks'])}" if route["tasks"] else ""
+            print(f"    {route['model']}{provider}: {route['calls']} calls, "
+                  f"{_fmt(route['input'])} in / {_fmt(route['output'])} out{tasks}")
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history (`--days N` / `N`, `--source`)."""

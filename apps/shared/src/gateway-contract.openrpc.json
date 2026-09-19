@@ -2977,6 +2977,24 @@
       }
     },
     {
+      "name": "session.model_usage",
+      "summary": "Persisted per-model route breakdown of the session's token/cost ledger (main loop + aux tasks folded per model/provider), summed over the compression lineage.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionModelUsageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionModelUsageResult"
+        }
+      }
+    },
+    {
       "name": "session.most_recent",
       "summary": "Most recent human-facing session; errors fold into a null session_id.",
       "params": [
@@ -15793,6 +15811,152 @@
         "title": "ModelSaveKeyResult",
         "type": "object"
       },
+      "ModelUsageRoute": {
+        "additionalProperties": false,
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "input": {
+            "title": "Input",
+            "type": "integer"
+          },
+          "output": {
+            "title": "Output",
+            "type": "integer"
+          },
+          "cache_read": {
+            "title": "Cache Read",
+            "type": "integer"
+          },
+          "cache_write": {
+            "title": "Cache Write",
+            "type": "integer"
+          },
+          "reasoning": {
+            "title": "Reasoning",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "estimated_cost_usd": {
+            "title": "Estimated Cost Usd",
+            "type": "number"
+          },
+          "actual_cost_usd": {
+            "title": "Actual Cost Usd",
+            "type": "number"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "billing_mode": {
+            "title": "Billing Mode",
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tasks",
+            "type": "array"
+          },
+          "cost_status": {
+            "title": "Cost Status",
+            "type": "string"
+          },
+          "cost_source": {
+            "title": "Cost Source",
+            "type": "string"
+          },
+          "last_seen": {
+            "title": "Last Seen",
+            "type": "number"
+          }
+        },
+        "required": [
+          "calls",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "reasoning",
+          "total",
+          "estimated_cost_usd",
+          "actual_cost_usd",
+          "model",
+          "provider",
+          "billing_mode",
+          "tasks",
+          "cost_status",
+          "cost_source",
+          "last_seen"
+        ],
+        "title": "ModelUsageRoute",
+        "type": "object"
+      },
+      "ModelUsageTotals": {
+        "additionalProperties": false,
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "input": {
+            "title": "Input",
+            "type": "integer"
+          },
+          "output": {
+            "title": "Output",
+            "type": "integer"
+          },
+          "cache_read": {
+            "title": "Cache Read",
+            "type": "integer"
+          },
+          "cache_write": {
+            "title": "Cache Write",
+            "type": "integer"
+          },
+          "reasoning": {
+            "title": "Reasoning",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "estimated_cost_usd": {
+            "title": "Estimated Cost Usd",
+            "type": "number"
+          },
+          "actual_cost_usd": {
+            "title": "Actual Cost Usd",
+            "type": "number"
+          }
+        },
+        "required": [
+          "calls",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "reasoning",
+          "total",
+          "estimated_cost_usd",
+          "actual_cost_usd"
+        ],
+        "title": "ModelUsageTotals",
+        "type": "object"
+      },
       "NoticePayload": {
         "additionalProperties": false,
         "description": "``tui_gateway/model_switch.py`` capability-refresh notice.",
@@ -26280,6 +26444,53 @@
           }
         },
         "title": "SessionLiveInfo",
+        "type": "object"
+      },
+      "SessionModelUsageParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionModelUsageParams",
+        "type": "object"
+      },
+      "SessionModelUsageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/ModelUsageRoute"
+            },
+            "title": "Routes",
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ModelUsageTotals"
+          }
+        },
+        "required": [
+          "routes",
+          "totals"
+        ],
+        "title": "SessionModelUsageResult",
         "type": "object"
       },
       "SessionMostRecentParams": {

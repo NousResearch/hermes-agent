@@ -1,5 +1,7 @@
 """Read-only verification at the Windows Desktop handoff receipt boundary."""
 import json
+import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 import re
 import struct
@@ -93,3 +95,31 @@ def verify_windows_desktop_update(project_root: Path | None = None) -> None:
     _verify_packaged_entry(executable.parent / "resources")
     if _desktop_build_needed(desktop, project_root, source_mode=False):
         raise RuntimeError("The updated Desktop build is stale, unstamped, or incomplete")
+
+
+def verify_or_rebuild_windows_desktop_update(
+    project_root: Path | None = None, *, run=None
+) -> None:
+    """Verify the packaged app, rebuilding once when a zero-exit update left it invalid."""
+    if project_root is None:
+        project_root = checkout_root()
+    try:
+        verify_windows_desktop_update(project_root)
+        return
+    except RuntimeError as initial_error:
+        print(f"Desktop verification failed; rebuilding once: {initial_error}", flush=True)
+        runner = run or subprocess.run
+        command = [
+            sys.executable, "-m", "hermes_cli.main", "desktop", "--force-build", "--build-only"
+        ]
+        try:
+            result = runner(command, cwd=project_root, check=False)
+        except OSError as repair_error:
+            raise RuntimeError(
+                f"Desktop verification failed and the repair build could not start: {repair_error}"
+            ) from initial_error
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Desktop verification failed and the repair build exited {result.returncode}"
+            ) from initial_error
+    verify_windows_desktop_update(project_root)

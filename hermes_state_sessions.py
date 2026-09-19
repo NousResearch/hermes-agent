@@ -35,6 +35,10 @@ def _delegate_from_json(col: str = "model_config") -> str:
     return _sql_json_extract(col, "$._delegate_from")
 
 
+def _branched_from_json(col: str = "model_config") -> str:
+    return _sql_json_extract(col, "$._branched_from")
+
+
 # _merge_model_config_json's "no such row" result — distinct from the legal None
 # ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
@@ -243,10 +247,14 @@ _INHERIT_PARENT_ROUTING_SQL = (
         "transport_profile",
     ))
     + "\n                     WHERE id = ? AND parent_session_id IS NOT NULL\n"
-    # Delegate/subagent children (``_delegate_from`` marker) never inherit: peer
-    # recovery could repoint real user traffic into the subagent's session
-    # (#116322) — the same exclusion the sibling routing queries enforce.
+    # Delegate/subagent children (``_delegate_from`` marker) and /branch forks
+    # (``_branched_from``, via tui_gateway._persist_branch) never inherit: peer
+    # recovery could otherwise repoint real user traffic into a non-continuation
+    # child's session (#116322). Reset forks (``_reset_from``) intentionally keep
+    # inheriting: a reset child continues the user's own conversation — the same
+    # non-continuation class the sibling routing queries exclude by value-match.
     "                       AND " + _delegate_from_json("sessions.model_config") + " IS NULL\n"
+    "                       AND " + _branched_from_json("sessions.model_config") + " IS NULL\n"
     "                       AND EXISTS (\n"
     "                           SELECT 1 FROM sessions p\n"
     "                           WHERE p.id = sessions.parent_session_id\n"

@@ -5264,12 +5264,19 @@ def test_child_inherits_parent_profile_only_within_its_key_namespace(db):
     assert db.get_session("keyless")["profile_name"] == "bot2"
 
 
-def test_delegate_child_does_not_inherit_gateway_routing_columns(db):
+@pytest.mark.parametrize(
+    "marker",
+    ["_delegate_from", "_branched_from"],
+    ids=["delegate", "branch"],
+)
+def test_non_continuation_fork_does_not_inherit_gateway_routing_columns(db, marker):
     """#116322: gateway routing inheritance is compression-fork-only.
 
-    A delegate/subagent child (``model_config._delegate_from``) must not be
+    A non-continuation child — a delegate/subagent (``_delegate_from``) or an
+    /branch fork (``_branched_from``, via tui_gateway._persist_branch, which
+    builds its row with the marker and no routing columns) — must not be
     repointed at its parent's gateway peer: peer recovery could otherwise
-    route real user traffic into the subagent's session. Same ``_delegate_from``
+    route real user traffic into that child's session. Same non-continuation
     exclusion the sibling queries on the routing columns already enforce.
     """
     db.create_session(
@@ -5279,18 +5286,18 @@ def test_delegate_child_does_not_inherit_gateway_routing_columns(db):
     )
     db.end_session("p", "compression")
     db.create_session(
-        "delegate", source="subagent", parent_session_id="p",
-        model_config={"_delegate_from": "p"},
+        "fork", source="subagent", parent_session_id="p",
+        model_config={marker: "p"},
     )
-    row = db.get_session("delegate")
+    row = db.get_session("fork")
     assert row["source"] == "subagent"
     for col in ("session_key", "chat_id", "chat_type", "user_id"):
-        assert row[col] is None, f"delegate child inherited {col}"
+        assert row[col] is None, f"{marker} child inherited {col}"
 
 
 def test_compression_fork_still_inherits_gateway_routing_columns(db):
-    """Compression forks keep inheriting routing (#59527): the delegate-child
-    exclusion must stay scoped to ``_delegate_from`` children, not narrow the
+    """Compression forks keep inheriting routing (#59527): the non-continuation
+    exclusion must stay scoped to marker-carrying children, not narrow the
     compression-fork recovery path."""
     db.create_session(
         "p", source="telegram",

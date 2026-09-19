@@ -466,7 +466,7 @@
   // standard `drop` event and our `hermes-kanban:drop` event.
   // -------------------------------------------------------------------------
 
-  function attachTouchDrag(el, taskId) {
+  function attachTouchDrag(el, taskId, onDragStart, onDragEnd) {
     if (!el) return;
     function onDown(e) {
       if (e.pointerType !== "touch") return;
@@ -474,6 +474,7 @@
       const proxy = el.cloneNode(true);
       proxy.classList.add("hermes-kanban-touch-proxy");
       document.body.appendChild(proxy);
+      if (onDragStart) onDragStart(taskId);
       let lastTarget = null;
 
       function move(ev) {
@@ -491,12 +492,12 @@
           lastTarget = target;
         }
       }
-      function up() {
+      function up(ev) {
         document.removeEventListener("pointermove", move);
         document.removeEventListener("pointerup", up);
         document.removeEventListener("pointercancel", up);
-        if (lastTarget) {
-          lastTarget.classList.remove("hermes-kanban-column--drop");
+        if (lastTarget) lastTarget.classList.remove("hermes-kanban-column--drop");
+        if (lastTarget && ev.type !== "pointercancel") {
           const status = lastTarget.getAttribute("data-kanban-column");
           const isTrash = lastTarget.hasAttribute("data-kanban-trash");
           if (isTrash) {
@@ -512,6 +513,7 @@
           }
         }
         proxy.remove();
+        if (onDragEnd) onDragEnd();
       }
       // Kick off proxy at the pointer origin.
       proxy.style.position = "fixed";
@@ -641,11 +643,15 @@
     // showing stale data.
     const [taskEventTick, setTaskEventTick] = useState({});
 
-    const cursorRef = useRef(0);
+    const cursorRef = useRef({ board, cursor: 0, ready: false });
+    // A new board starts a new cursor scope; late callbacks retain the old
+    // object, so even A -> B -> A cannot revive an obsolete snapshot.
+    if (cursorRef.current.board !== board) {
+      cursorRef.current = { board, cursor: 0, ready: false };
+    }
+    const cursorScope = cursorRef.current;
     const reloadTimerRef = useRef(null);
-    const wsRef = useRef(null);
-    const wsBackoffRef = useRef(1000);
-    const wsClosedRef = useRef(false);
+    const scheduleReloadRef = useRef(null);
 
     // --- load config once ---------------------------------------------------
     useEffect(function () {
@@ -670,14 +676,19 @@
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
       return SDK.fetchJSON(withBoard(url, board))
         .then(function (data) {
+          if (cursorRef.current !== cursorScope) return;
           setBoardData(data);
-          cursorRef.current = data.latest_event_id || 0;
+          cursorScope.cursor = Math.max(cursorScope.cursor, data.latest_event_id || 0);
+          cursorScope.ready = true;
           setError(null);
         })
         .catch(function (err) {
+          if (cursorRef.current !== cursorScope) return;
           setError(String(err && err.message ? err.message : err));
         })
-        .finally(function () { setLoading(false); });
+        .finally(function () {
+          if (cursorRef.current === cursorScope) setLoading(false);
+        });
     }, [tenantFilter, includeArchived, board]);
 
     // --- load list of boards for the switcher ------------------------------
@@ -723,11 +734,21 @@
     }, [loadBoard]);
 
     // --- WebSocket ---------------------------------------------------------
+    // Filters change the reload callback, not the lifetime of the stream.
+    scheduleReloadRef.current = scheduleReload;
     useEffect(function () {
-      if (!boardData) return undefined;
-      wsClosedRef.current = false;
+      if (!cursorScope.ready) return undefined;
+      let closed = false;
+      let socket = null;
+      let retryTimer = null;
+      let backoff = 1000;
+      function retry() {
+        if (closed) return;
+        retryTimer = setTimeout(openWs, backoff);
+        backoff = Math.min(backoff * 2, 30000);
+      }
       function openWs() {
-        if (wsClosedRef.current) return;
+        if (closed) return;
         // Build the WS URL via the host SDK so the correct auth param is used
         // in BOTH modes: single-use ?ticket= in gated OAuth mode, ?token= in
         // loopback. Reading window.__HERMES_SESSION_TOKEN__ directly (the old
@@ -735,7 +756,7 @@
         // also applies the dashboard base-path prefix for reverse-proxied
         // deployments, which the old inline URL did not. It's async (gated
         // mode mints a fresh ticket per connect), so resolve then open.
-        const wsParams = { since: String(cursorRef.current || 0) };
+        const wsParams = { since: String(cursorScope.cursor) };
         // Pin the WS stream to the currently-selected board so events
         // from other boards don't bleed in. Includes "default" so the
         // dashboard's own board pin always wins over the server-side
@@ -743,16 +764,21 @@
         // Regression: #20879.
         if (board) wsParams.board = board;
         SDK.buildWsUrl(`${API}/events`, wsParams).then(function (url) {
-          if (wsClosedRef.current) return;
+          if (closed) return;
           let ws;
-          try { ws = new WebSocket(url); } catch (_e) { return; }
-          wsRef.current = ws;
-          ws.onopen = function () { wsBackoffRef.current = 1000; };
+          try { ws = new WebSocket(url); } catch (_e) { retry(); return; }
+          socket = ws;
+          ws.onopen = function () {
+            if (closed) return;
+            backoff = 1000;
+            setError(null);
+          };
           ws.onmessage = function (ev) {
+            if (closed || cursorRef.current !== cursorScope) return;
             try {
               const msg = JSON.parse(ev.data);
+              if (msg) cursorScope.cursor = Math.max(cursorScope.cursor, msg.cursor || 0);
               if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
-                cursorRef.current = msg.cursor || cursorRef.current;
                 // Stamp per-task signal so the TaskDrawer can reload itself.
                 setTaskEventTick(function (prev) {
                   const next = Object.assign({}, prev);
@@ -761,36 +787,31 @@
                   }
                   return next;
                 });
-                scheduleReload();
+                scheduleReloadRef.current();
               }
             } catch (_e) { /* ignore */ }
           };
           ws.onclose = function (ev) {
-            if (wsClosedRef.current) return;
+            if (closed) return;
             if (ev && ev.code === 1008) {
               setError(tx(t, "wsAuthFailed",
                 "WebSocket auth failed — reload the page to refresh the session token."));
-              return;
             }
-            const delay = Math.min(wsBackoffRef.current, 30000);
-            wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-            setTimeout(openWs, delay);
+            retry();
           };
         }).catch(function () {
           // Ticket mint / URL build failed (e.g. session expired). Back off
           // and retry; a hard auth failure surfaces via the 1008 close path.
-          if (wsClosedRef.current) return;
-          const delay = Math.min(wsBackoffRef.current, 30000);
-          wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-          setTimeout(openWs, delay);
+          retry();
         });
       }
       openWs();
       return function () {
-        wsClosedRef.current = true;
-        try { wsRef.current && wsRef.current.close(); } catch (_e) { /* noop */ }
+        closed = true;
+        clearTimeout(retryTimer);
+        try { socket && socket.close(); } catch (_e) { /* noop */ }
       };
-    }, [!!boardData, board, scheduleReload]);
+    }, [cursorScope.ready, board]);
 
     // --- filtering ----------------------------------------------------------
     const filteredBoard = useMemo(function () {
@@ -1144,7 +1165,7 @@
       // event cursor so the WS reopens aligned to the new board's
       // latest_event_id on the next loadBoard.
       setBoardData(null);
-      cursorRef.current = 0;
+      cursorRef.current = { board: nextSlug, cursor: 0, ready: false };
       setLoading(true);
       setBoard(nextSlug);
       writeSelectedBoard(nextSlug);
@@ -2902,6 +2923,8 @@
         return h(Column, {
           key: col.name,
           column: col,
+          onDragStart: props.onDragStart,
+          onDragEnd: props.onDragEnd,
           boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
@@ -3044,6 +3067,8 @@
                   lane.tasks.map(function (tk) {
                     return h(TaskCard, {
                       key: tk.id, task: tk,
+                      onDragStart: props.onDragStart,
+                      onDragEnd: props.onDragEnd,
                       selected: props.selectedIds.has(tk.id),
                       failed: props.failedIds && props.failedIds.has(tk.id),
                       draggingTaskId: props.draggingTaskId,
@@ -3058,6 +3083,8 @@
             : props.column.tasks.map(function (tk) {
                 return h(TaskCard, {
                   key: tk.id, task: tk,
+                  onDragStart: props.onDragStart,
+                  onDragEnd: props.onDragEnd,
                   selected: props.selectedIds.has(tk.id),
                   failed: props.failedIds && props.failedIds.has(tk.id),
                   draggingTaskId: props.draggingTaskId,
@@ -3102,8 +3129,8 @@
     const cardRef = useRef(null);
 
     useEffect(function () {
-      return attachTouchDrag(cardRef.current, t.id);
-    }, [t.id]);
+      return attachTouchDrag(cardRef.current, t.id, props.onDragStart, props.onDragEnd);
+    }, [t.id, props.onDragStart, props.onDragEnd]);
 
     const handleDragStart = function (e) {
       e.dataTransfer.setData(MIME_TASK, t.id);

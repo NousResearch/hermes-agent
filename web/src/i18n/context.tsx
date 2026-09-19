@@ -60,6 +60,14 @@ function getInitialLocale(): Locale {
   } catch {
     // SSR or privacy mode
   }
+  try {
+    const browserLanguage = navigator.language.toLowerCase();
+    if (isLocale(browserLanguage)) return browserLanguage;
+    const baseLanguage = browserLanguage.split("-")[0];
+    if (isLocale(baseLanguage)) return baseLanguage;
+  } catch {
+    // SSR or privacy mode
+  }
   return "en";
 }
 

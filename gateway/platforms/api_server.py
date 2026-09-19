@@ -3409,13 +3409,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return err if err else self._job_response(fn, job_id, notify=notify)
 
     async def _handle_list_jobs(self, request: "web.Request") -> "web.Response":
-        """GET /api/jobs — list all cron jobs."""
+        """GET /api/jobs — list all cron jobs.
+
+        Defaults to the strict enabled-only list (upstream parity). ``pause_job``
+        stores ``enabled=False`` with ``state="paused"``, so paused jobs are NOT
+        in that default; pass ``?include_paused=true`` to surface them.
+        ``include_disabled`` is unchanged.
+        """
         _, err = self._cron_request_guard(request)
         if err:
             return err
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in {"true", "1"}
-            return web.json_response({"jobs": _cron_list(include_disabled=include_disabled)})
+            include_paused = request.query.get("include_paused", "").lower() in {"true", "1"}
+            return web.json_response({
+                "jobs": _cron_list(include_disabled=include_disabled, include_paused=include_paused)})
         except Exception as e:
             return self._cron_error_response(e)
 

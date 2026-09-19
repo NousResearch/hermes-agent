@@ -476,7 +476,7 @@ class TestCronUnavailable:
         app = _create_app(adapter)
         captured = {}
 
-        def _plain_list(include_disabled=False):
+        def _plain_list(include_disabled=False, include_paused=False):
             captured["include_disabled"] = include_disabled
             return [SAMPLE_JOB]
 
@@ -488,6 +488,42 @@ class TestCronUnavailable:
                 assert resp.status == 200
                 data = await resp.json()
                 assert data["jobs"] == [SAMPLE_JOB]
+                assert captured["include_disabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_handler_paused_is_opt_in(self, adapter):
+        """Paused jobs are stored enabled=False; to keep upstream parity the list
+        handler defaults to include_paused=False (strict enabled-only). Only an
+        explicit ?include_paused=true surfaces them; ?include_paused=false and
+        the default both stay strict."""
+        app = _create_app(adapter)
+        captured = {}
+
+        def _plain_list(include_disabled=False, include_paused=False):
+            captured["include_disabled"] = include_disabled
+            captured["include_paused"] = include_paused
+            return [SAMPLE_JOB]
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_list", _plain_list
+            ):
+                resp = await cli.get("/api/jobs")
+                assert resp.status == 200
+                assert captured["include_paused"] is False
+                assert captured["include_disabled"] is False
+
+                resp = await cli.get("/api/jobs?include_paused=true")
+                assert resp.status == 200
+                assert captured["include_paused"] is True
+
+                resp = await cli.get("/api/jobs?include_paused=false")
+                assert resp.status == 200
+                assert captured["include_paused"] is False
+
+                resp = await cli.get("/api/jobs?include_paused=0&include_disabled=true")
+                assert resp.status == 200
+                assert captured["include_paused"] is False
                 assert captured["include_disabled"] is True
 
     @pytest.mark.asyncio

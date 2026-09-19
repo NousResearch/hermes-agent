@@ -1911,11 +1911,22 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
     return _normalize_job_record(name_matches[0])
 
 
-def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
-    """List all jobs, optionally including disabled ones."""
+def list_jobs(include_disabled: bool = False, include_paused: bool = False) -> List[Dict[str, Any]]:
+    """List all jobs, optionally including disabled ones and/or paused ones.
+
+    ``pause_job`` stores ``enabled=False`` with ``state="paused"``, so a plain
+    enabled-only filter hides paused jobs entirely — they vanished from the
+    default listing while ``GET /api/jobs/{id}`` still returned them, leaving a
+    list/get inconsistency. Paused jobs stay hidden from the default (strict
+    enabled-only parity with upstream) and are surfaced only when
+    ``include_paused`` is passed — by the library caller or, over HTTP, via
+    ``?include_paused=true``. Disabled-but-not-paused records remain behind
+    ``include_disabled``, as do terminal (completed/error) records."""
     jobs = [_normalize_job_record(j) for j in load_jobs()]
-    if not include_disabled:
+    if not include_disabled and not include_paused:
         jobs = [j for j in jobs if j.get("enabled", True)]
+    elif not include_disabled:
+        jobs = [j for j in jobs if j.get("enabled", True) or j.get("state") == "paused"]
     try:
         from cron.executions import latest_executions
 

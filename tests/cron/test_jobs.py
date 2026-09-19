@@ -547,6 +547,51 @@ class TestPauseResumeJob:
         assert after["last_run_at"] == before.get("last_run_at")
         assert after["enabled"] is False
 
+    def test_paused_job_visible_via_include_paused(self, tmp_cron_dir):
+        """Regression: pause_job stores enabled=False, so the plain enabled-only filter
+        dropped paused jobs from list_jobs() entirely while GET /api/jobs/{id} still
+        returned them — external observers (HA hermes_jobs_paused sensor) could never
+        see a paused job. include_paused must surface it with accurate pause fields."""
+        job = create_job(prompt="Pause me", schedule="every 1h")
+        listed = list_jobs(include_paused=True)
+        assert {j["id"] for j in listed} == {job["id"]}
+
+        pause_job(job["id"], reason="maintenance")
+        listed = {j["id"]: j for j in list_jobs(include_paused=True)}
+        assert job["id"] in listed
+        paused = listed[job["id"]]
+        assert paused["enabled"] is False
+        assert paused["state"] == "paused"
+        assert paused["paused_at"]
+        assert paused["paused_reason"] == "maintenance"
+        # Default enabled-only listing still excludes it (opt-in contract).
+        assert job["id"] not in {j["id"] for j in list_jobs()}
+        # include_disabled alone is the disabled-not-paused path: paused jobs are not
+        # "disabled" in the operator sense and must not leak through that flag.
+        assert job["id"] in {j["id"] for j in list_jobs(include_disabled=True)}
+
+        resume_job(job["id"])
+        listed = {j["id"]: j for j in list_jobs(include_paused=True)}
+        assert listed[job["id"]]["state"] == "scheduled"
+        assert listed[job["id"]]["paused_at"] is None
+        assert listed[job["id"]]["paused_reason"] is None
+        assert job["id"] in {j["id"] for j in list_jobs()}
+
+    def test_paused_and_disabled_listing_flags_are_independent(self, tmp_cron_dir):
+        """include_paused and include_disabled select disjoint record classes."""
+        paused = create_job(prompt="Paused one", schedule="every 1h", paused=True, paused_reason="pre-paused")
+        disabled = create_job(prompt="Disabled one", schedule="every 2h")
+        update_job(disabled["id"], {"enabled": False})
+        active = create_job(prompt="Active one", schedule="every 3h")
+
+        def ids(**kw):
+            return {j["id"] for j in list_jobs(**kw)}
+
+        assert ids() == {active["id"]}
+        assert ids(include_paused=True) == {active["id"], paused["id"]}
+        assert ids(include_disabled=True) == {active["id"], paused["id"], disabled["id"]}
+        assert ids(include_disabled=False, include_paused=False) == {active["id"]}
+
     def test_contradictory_half_pause_self_disables_and_does_not_fire(self, tmp_cron_dir):
         """enabled=true + paused_at must not fire; scan heals enabled=false."""
         now = _hermes_now()

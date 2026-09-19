@@ -27,6 +27,8 @@ export interface DirectSttConfig {
   api_key: string
   model: null | string
   language: null | string
+  /** Seconds the gateway allows one transcription request (`stt.openai.timeout`); absent on older backends. */
+  timeout_s?: null | number
 }
 
 export interface DirectTtsConfig {
@@ -170,6 +172,38 @@ export function transcriptFromOpenAiMultipartBody(body: string): string {
   return trimmed
 }
 
+const DEFAULT_STT_TIMEOUT_S = 60
+
+/** Same budget the gateway's own transcription client uses (`stt.openai.timeout`, default 60 s). */
+export function sttTimeoutSeconds(stt: Pick<DirectSttConfig, 'timeout_s'>): number {
+  const value = Number(stt.timeout_s)
+
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_STT_TIMEOUT_S
+}
+
+/**
+ * `fetch` with the STT deadline. A slow or wedged endpoint otherwise keeps the
+ * dictation UI in "transcribing" forever — the browser applies no timeout of
+ * its own to a POST that never answers.
+ */
+async function sttFetch(stt: DirectSttConfig, url: string, init: RequestInit): Promise<Response> {
+  const seconds = sttTimeoutSeconds(stt)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), seconds * 1000)
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Transcription timed out after ${seconds}s (${stt.provider} did not answer)`)
+    }
+
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /**
  * Transcribe provider-direct. Returns the transcript ('' = silence), or null
  * when the profile's provider isn't client-callable — the caller relays.
@@ -199,7 +233,7 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
       form.set('language', stt.language)
     }
 
-    const response = await fetch(`${stt.base_url.replace(/\/+$/, '')}/audio/transcriptions`, {
+    const response = await sttFetch(stt, `${stt.base_url.replace(/\/+$/, '')}/audio/transcriptions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${stt.api_key}` },
       body: form
@@ -221,7 +255,7 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
       form.set('language', stt.language)
     }
 
-    const response = await fetch(`${stt.base_url.replace(/\/+$/, '')}/stt`, {
+    const response = await sttFetch(stt, `${stt.base_url.replace(/\/+$/, '')}/stt`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${stt.api_key}` },
       body: form
@@ -248,7 +282,7 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
       form.set('language_code', stt.language)
     }
 
-    const response = await fetch(`${stt.base_url.replace(/\/+$/, '')}/speech-to-text`, {
+    const response = await sttFetch(stt, `${stt.base_url.replace(/\/+$/, '')}/speech-to-text`, {
       method: 'POST',
       headers: { 'xi-api-key': stt.api_key },
       body: form

@@ -95,9 +95,13 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     language = tt._resolve_stt_language(
         provider, stt_config, extra_keys=("language_code",) if provider == "elevenlabs" else ())
     section = _section(stt_config, provider)
+    # Same deadline the gateway's own transcription client applies
+    # (``stt.openai.timeout``; riders such as groq/deepinfra inherit it), so a
+    # slow endpoint fails the Desktop's direct request instead of hanging it.
+    timeout_s = tc._config_number(_section(stt_config, "openai"), "timeout", 60.0)
 
     def direct(wire: str, base_url: Any, api_key: str, model: Any) -> Dict[str, Any]:
-        return _direct(wire, provider, base_url, api_key, model, language=language)
+        return _direct(wire, provider, base_url, api_key, model, language=language, timeout_s=timeout_s)
 
     def env_base_url(env_var: str, default: str) -> str:
         from hermes_cli.config import get_env_value

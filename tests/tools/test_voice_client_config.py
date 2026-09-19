@@ -183,6 +183,16 @@ def test_xai_env_key_goes_direct(voice_home, monkeypatch):
     assert stt["api_key"] == "xai_key1"
 
 
+def test_direct_stt_carries_the_gateway_transcription_timeout(voice_home, monkeypatch):
+    """The Desktop's direct request must honour ``stt.openai.timeout`` (default 60 s) like the gateway."""
+    voice_home({"stt": {"provider": "xai"}})
+    monkeypatch.setenv("XAI_API_KEY", "xai_key1")
+    assert _resolve()["stt"]["timeout_s"] == 60
+
+    voice_home({"stt": {"provider": "xai", "openai": {"timeout": "5"}}})
+    assert _resolve()["stt"]["timeout_s"] == 5
+
+
 def test_resolution_never_raises(voice_home, monkeypatch):
     """A broken config section degrades to relay, never a 500."""
     voice_home({"stt": "not-a-dict", "tts": ["also", "wrong"]})

@@ -161,6 +161,10 @@ class TestSpawnAsyncDiagnostic:
         contents = log_path.read_text(encoding="utf-8", errors="replace")
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
+        lines = contents.splitlines()
+        ps_section = lines[lines.index("--- ps (top 60 by cpu, comm only) ---") + 1:]
+        assert ps_section and ps_section[0].split()[:2] == ["PID", "PPID"], \
+            "ps column header must lead the listing, not sort as a 0.0-cpu row"
 
     @pytest.mark.linux_only
     def test_diagnostic_log_omits_child_argv_and_is_owner_only(self, tmp_path, child_with_secret_argv):

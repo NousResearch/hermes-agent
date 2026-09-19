@@ -121,8 +121,9 @@ def _async_diagnostic_script(signal_name: str, self_pid: int) -> str:
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
         "echo '--- ps (top 60 by cpu, comm only) ---'; "
-        # ``sort`` instead of GNU ``--sort=-pcpu`` so BSD ps (macOS) produces a listing too.
-        "ps -eo pid,ppid,user,pcpu,pmem,stat,comm 2>/dev/null | sort -nrk4 | head -60; "
+        # ``sort`` instead of GNU ``--sort=-pcpu`` so BSD ps (macOS) produces a listing too; the header
+        # line is echoed first so ``sort`` does not bury it among the 0.0-cpu rows.
+        "ps -eo pid,ppid,user,pcpu,pmem,stat,comm 2>/dev/null | { IFS= read -r h; echo \"$h\"; sort -nrk4; } | head -60; "
         f"echo '--- pstree of self ---'; pstree -pl {self_pid} 2>/dev/null | head -40 || true; "
         "echo '--- loadavg ---'; cat /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg 2>/dev/null || true; "
         "echo '--- recent dmesg (oom/killed) ---'; "

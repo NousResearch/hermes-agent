@@ -394,11 +394,14 @@ def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> Non
 
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------
 
-def _read_permanent_allowlist() -> set:
-    """``command_allowlist`` of the active profile's config as a set (empty on malformed input)."""
-    from hermes_cli.config import load_config_readonly
-    config = load_config_readonly()
-    raw = config.get("command_allowlist")
+def _coerce_allowlist(raw) -> set | None:
+    """``command_allowlist`` as a set of patterns; ``None`` when the value is malformed.
+
+    The read and the write path both go through this, so the two cannot disagree about
+    what is on disk. They used to: the loader recovered the legacy scalar form while the
+    save did a bare ``set()`` on it, iterating the string into single characters and
+    persisting those over the operator's standing approvals.
+    """
     legacy = isinstance(raw, str)
     if legacy:
         # Old config-set versions serialized list values as scalar strings.
@@ -406,15 +409,26 @@ def _read_permanent_allowlist() -> set:
         try:
             raw = yaml.safe_load(raw)
         except yaml.YAMLError:
-            raw = False
+            return None
     if raw is None and not legacy:
         raw = []
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        return None
+    return set(raw)
+
+
+def _read_permanent_allowlist() -> set:
+    """``command_allowlist`` of the active profile's config as a set (empty on malformed input)."""
+    from hermes_cli.config import load_config_readonly
+    config = load_config_readonly()
+    raw = config.get("command_allowlist")
+    patterns = _coerce_allowlist(raw)
+    if patterns is None:
         logger.warning("Ignoring malformed command_allowlist; configure a list of strings.")
         return set()
-    if legacy:
+    if isinstance(raw, str):
         logger.warning("Recovered legacy string command_allowlist; re-save it as a list of strings.")
-    return set(raw)
+    return patterns
 
 
 # What ``command_allowlist`` held the last time this process synchronised with the
@@ -464,7 +478,13 @@ def save_permanent_allowlist(patterns: set):
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
-        on_disk = set(config.get("command_allowlist", []) or [])
+        on_disk = _coerce_allowlist(config.get("command_allowlist"))
+        if on_disk is None:
+            logger.warning(
+                "Not writing command_allowlist: the on-disk value is malformed; "
+                "fix it with `hermes config edit`."
+            )
+            return
         with _lock:
             key = _baseline_key()
             baseline = _permanent_baseline_by_home.get(key, set())

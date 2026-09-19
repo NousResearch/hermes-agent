@@ -247,6 +247,7 @@ export interface Translations {
 
   // ── Models page ──
   models: {
+    lastUsedModels: string;
     modelsUsed: string;
     estimatedCost: string;
     tokens: string;

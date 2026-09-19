@@ -200,6 +200,7 @@ export const zh: Translations = {
   },
 
   models: {
+    lastUsedModels: "最近使用的 5 个模型",
     modelsUsed: "使用模型数",
     estimatedCost: "预估费用",
     tokens: "Token",

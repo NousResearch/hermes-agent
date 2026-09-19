@@ -202,6 +202,7 @@ export const ko: Translations = {
   },
 
   models: {
+    lastUsedModels: "Last 5 Models",
     modelsUsed: "사용된 모델",
     estimatedCost: "예상 비용",
     tokens: "토큰",

@@ -37,12 +37,23 @@ def _has_xai_stt_credentials() -> bool:
 
 
 def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, log_label: str, body):
-    """Run ``body(client)`` on a fresh OpenAI SDK client (30s timeout, no retries); always closed.
+    """Run ``body(client)`` on a fresh OpenAI SDK client; always closed. Transport shape comes from
+    ``stt.openai.timeout`` / ``stt.openai.max_retries`` (defaults 60s, 1 retry; #112939) for every
+    rider of this helper — openai, groq and deepinfra — because a self-hosted endpoint's model cold
+    start exceeds the old fixed 30s and lost the voice message at the first attempt.
     Errors map to the shared envelope. APIConnectionError is checked before APITimeoutError (its
     subclass) so timeouts report as connection errors, as they always have."""
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        from tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number
+        from tools.transcription_tools import _load_stt_config
+        openai_config = _get_stt_section(_load_stt_config(), "openai")
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=_config_number(openai_config, "timeout", DEFAULT_STT_TIMEOUT),
+            max_retries=_config_number(openai_config, "max_retries", 1, cast=int),
+        )
         try:
             return body(client)
         finally:

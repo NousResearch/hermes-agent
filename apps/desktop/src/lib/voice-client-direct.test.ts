@@ -111,6 +111,8 @@ describe('transcribeAudioClientDirect', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.groq.com/openai/v1/audio/transcriptions')
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer gsk_test')
+    // A hung provider must not stall dictation forever: every STT upload carries a timeout signal.
+    expect(init.signal).toBeInstanceOf(AbortSignal)
 
     const form = init.body as FormData
     expect(form.get('model')).toBe('whisper-large-v3-turbo')

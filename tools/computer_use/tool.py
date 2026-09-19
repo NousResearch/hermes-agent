@@ -20,6 +20,11 @@ from collections import namedtuple
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from contextvars import ContextVar
+
+from tools.computer_use.execution_revision import admit, validate, StaleRevision
+
+_execution_revision: ContextVar[Any] = ContextVar("computer_use_execution_revision", default=None)
 
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
@@ -310,7 +315,17 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
         with call_lock:
-            return _dispatch(backend, action, args, session_id=session_id or None)
+            token = _execution_revision.set(admit(backend, action, args))
+            try:
+                if action in _INPUT_ACTIONS:
+                    validate(_execution_revision.get(), backend,
+                             deps=("profile", "display", "backend", "epoch", "target", "snapshot"))
+                return _dispatch(backend, action, args, session_id=session_id or None)
+            except StaleRevision as exc:
+                return json.dumps({"error": "execution revision is stale", "code": "revision_stale",
+                                   "invalidation_reason": exc.reason})
+            finally:
+                _execution_revision.reset(token)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -378,7 +393,7 @@ def _do_capture(backend, action, args, session_id=None, **_):
     # pid/window_id forwarded only when given so older backends keep their defaults.
     return _capture_response(backend.capture(mode=mode, app=args.get("app"),
                                              **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}),
-                             session_id=session_id)
+                             session_id=session_id, revision=_execution_revision.get(), backend=backend)
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
@@ -553,8 +568,8 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
     return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
                            truncated=len(cap.elements) - len(visible), bounds_scale=scale, bounds_note=note,
-                           elements_file=_spill_elements_to_file(cap) if lost_detail else None,
-                           screenshot_path=_persist_capture_image(cap) if has_image else None,
+                           elements_file=None,
+                           screenshot_path=None,
                            dims_omitted=dims if too_small else None, has_image=has_image)
 
 def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
@@ -594,8 +609,19 @@ def _capture_digest(cap: CaptureResult) -> str:
                           + (cap.png_b64 or "").encode("ascii", "ignore")).hexdigest()
 
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
-                      session_id: Optional[str] = None) -> Any:
+                      session_id: Optional[str] = None, revision=None, backend: Optional[ComputerUseBackend] = None) -> Any:
     v = _capture_view(cap, max_elements)
+    try:
+        if revision is not None:
+            if backend is None:
+                raise StaleRevision("backend_changed")
+            validate(revision, backend, deps=("profile", "display", "backend", "epoch"))
+    except StaleRevision as exc:
+        return json.dumps({"error": "execution revision is stale", "code": "revision_stale", "invalidation_reason": exc.reason})
+    if len(cap.elements) > len(v.visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in v.visible):
+        v.elements_file = _spill_elements_to_file(cap)
+    if v.has_image:
+        v.screenshot_path = _persist_capture_image(cap)
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
     if v.has_image and session_id and _screenshot_dedup_check(
@@ -651,7 +677,7 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
-    resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
+    resp, payload = _capture_response(cap, session_id=session_id, revision=_execution_revision.get(), backend=backend), _action_payload(res)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.
         resp["content"][0]["text"] = resp["text_summary"] = json.dumps(payload) + "\n\n" + resp["text_summary"]

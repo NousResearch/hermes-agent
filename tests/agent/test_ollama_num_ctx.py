@@ -7,6 +7,8 @@ Covers:
 
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 
 from agent.model_metadata import query_ollama_num_ctx, query_ollama_supports_vision
 
@@ -187,3 +189,18 @@ class TestCompressorClampsToNumCtx:
         # num_ctx above the resolved window must not RAISE the compressor
         # window: the clamp is one-directional.
         assert agent.context_compressor.context_length == 65536
+
+
+class TestServedNumCtxSatisfiesTheFloor(TestCompressorClampsToNumCtx):
+    """#100437: the 64K floor judges the window Ollama actually serves. A Modelfile or
+    model.ollama_num_ctx at 64K+ is usable even when the GGUF metadata advertises 40K, so
+    construction must succeed; the compressor still targets the smaller probed window."""
+
+    def test_explicit_num_ctx_above_the_floor_admits_a_small_metadata_window(self):
+        agent = self._build_agent({"agent": {}, "model": {"ollama_num_ctx": 65536}}, probed_ctx=40960)
+        assert agent._ollama_num_ctx == 65536
+        assert agent.context_compressor.context_length == 40960  # one-directional clamp unchanged
+
+    def test_served_window_below_the_floor_is_still_rejected(self):
+        with pytest.raises(ValueError, match="below the minimum"):
+            self._build_agent({"agent": {}, "model": {"ollama_num_ctx": 32768}}, probed_ctx=40960)

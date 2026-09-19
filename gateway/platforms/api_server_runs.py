@@ -690,7 +690,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 for token, reset in resets:
                     with suppress(Exception):
                         reset(token)
-        return r, {key: getattr(agent, attr, 0) or 0 for key, attr in _USAGE_FIELDS}
+        usage = {key: getattr(agent, attr, 0) or 0 for key, attr in _USAGE_FIELDS}
+        usage.update(_api_server._turn_context_occupancy(agent))
+        return r, usage
 
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:

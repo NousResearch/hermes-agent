@@ -102,13 +102,39 @@ def context_display_source(compressor: Any) -> str:
     return "local_estimate" if isinstance(real, (int, float)) and shown > 0 and shown != real else "provider_usage"
 
 
-def context_usage_fields(compressor: Any) -> Dict[str, Any]:
-    """Current occupancy only; lifetime throughput is never a context fallback."""
-    used = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
+def anchored_display_context(agent: Any, messages: Optional[List[dict]]) -> Optional[Tuple[int, str]]:
+    """Usage-anchored occupancy as ``(tokens, context_source)``; None without a valid anchor.
+
+    Provider-exact tokens of a response plus a delta estimate of what was appended since beat
+    last_prompt_tokens (lags) and the heuristic. The turn-base anchor comes first: on reasoning
+    models later same-turn responses inflate prompt_tokens with replayed thinking that evaporates
+    at the turn boundary, so anchoring on the LAST response makes the meter sawtooth.
+    """
+    from agent.usage_anchor import anchored_context_tokens
+
+    messages = messages if isinstance(messages, list) else []
+    anchor = getattr(agent, "_turn_base_usage_anchor", None)
+    used = anchored_context_tokens(messages, anchor, charge_stale_thinking=False)
+    if used is None:
+        anchor = getattr(agent, "_usage_anchor", None)
+        used = anchored_context_tokens(messages, anchor)
+    if used is None:
+        return None
+    delta = messages[int(anchor["base_count"]):]
+    if delta and delta[0].get("role") == "assistant":
+        delta = delta[1:]
+    return used, "provider_usage_plus_estimate" if delta else "provider_usage"
+
+
+def context_usage_fields(compressor: Any, agent: Any = None) -> Dict[str, Any]:
+    """Current occupancy only; lifetime throughput is never a context fallback. Given the owning
+    *agent*, the figure is the anchored one ``/context`` shows, not the lagging last request."""
+    anchored = anchored_display_context(agent, getattr(agent, "_session_messages", None))
+    used = anchored[0] if anchored else max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
     maximum = getattr(compressor, "context_length", 0) or 0
     if not used or not maximum:
         return {}
-    source = context_display_source(compressor)
+    source = anchored[1] if anchored else context_display_source(compressor)
     return {"context_used": used, "context_max": maximum,
             "context_percent": max(0, min(100, round(used / maximum * 100))),
             "context_source": source, "context_estimated": source != "provider_usage"}
@@ -117,7 +143,6 @@ def context_usage_fields(compressor: Any) -> Dict[str, Any]:
 def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]] = None) -> Dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
     from agent.model_metadata import estimate_messages_tokens_rough
-    from agent.usage_anchor import anchored_context_tokens
     from agent.system_prompt import build_system_prompt_parts
 
     messages = messages or []
@@ -143,26 +168,14 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
 
     comp = getattr(agent, "context_compressor", None)
     context_max = int(getattr(comp, "context_length", 0) or 0) if comp else 0
-    # Usage-anchored figure (provider-exact tokens of a response + delta of what was
-    # appended since) beats last_prompt_tokens (lags) and the heuristic. Prefer the
-    # turn-base anchor: on reasoning models later same-turn responses inflate
-    # prompt_tokens with replayed thinking that evaporates at the turn boundary, so
-    # anchoring on the LAST response makes the meter sawtooth. Fall back to the
-    # last-response anchor, then measured, then estimated.
-    anchor = getattr(agent, "_turn_base_usage_anchor", None)
-    context_used = anchored_context_tokens(messages, anchor, charge_stale_thinking=False)
-    if context_used is None:
-        anchor = getattr(agent, "_usage_anchor", None)
-        context_used = anchored_context_tokens(messages, anchor)
-    if context_used is None:
+    # Anchored figure first (anchored_display_context), then measured, then estimated.
+    anchored = anchored_display_context(agent, messages)
+    if anchored is not None:
+        context_used, source = anchored
+    else:
         measured_used = int(getattr(comp, "last_prompt_tokens", 0) or 0) if comp else 0
         context_used = measured_used if measured_used > 0 else estimated_total
         source = context_display_source(comp) if measured_used > 0 else "local_estimate"
-    else:
-        delta = messages[int(anchor["base_count"]):]
-        if delta and delta[0].get("role") == "assistant":
-            delta = delta[1:]
-        source = "provider_usage_plus_estimate" if delta else "provider_usage"
 
     return {
         "categories": [

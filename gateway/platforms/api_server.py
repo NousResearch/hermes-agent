@@ -677,6 +677,18 @@ def _responses_usage_payload(usage: Dict[str, Any]) -> Dict[str, int]:
     return {key: usage.get(key, 0) for key in _USAGE_TOKEN_KEYS}
 
 
+def _turn_context_occupancy(agent: Any) -> Dict[str, Any]:
+    """Context occupancy for a finished turn's ``usage``: the TUI usage fields, anchored the way
+    ``/context`` shows them. The token counters beside them sum every API call of the turn (cost),
+    which a remote context meter cannot use. Gated on the ``ContextEngine`` ABC that plugin load
+    enforces, so a stand-in object never fails a finished turn over an optional gauge."""
+    from agent.context_breakdown import context_usage_fields
+    from agent.context_engine import ContextEngine
+
+    comp = getattr(agent, "context_compressor", None)
+    return context_usage_fields(comp, agent) if isinstance(comp, ContextEngine) else {}
+
+
 async def _abandon_agent_task(
     agent_ref, agent_task, reason: str, *,
     reap_source: str = "api_server_sse_disconnect", await_cancel: bool = True) -> None:
@@ -3708,6 +3720,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         usage = {"input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                  "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                  "total_tokens": getattr(agent, "session_total_tokens", 0) or 0}
+        usage.update(_turn_context_occupancy(agent))
         # Effective session id lets callers track compression-triggered rotations.
         # (#16938)
         _eff_sid = getattr(agent, "session_id", session_id)

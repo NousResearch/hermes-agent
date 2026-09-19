@@ -3237,3 +3237,50 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+class TestSessionStreamApprovalBridge:
+    def test_notify_emits_choices_and_parks_run(self, monkeypatch):
+        """#58853: the session chat stream's approval notifier must surface the request
+        on the stream (with the resolvable choice set) and park the run so
+        POST /v1/runs/{run_id}/approval finds it."""
+        adapter = _make_routing_adapter({})
+        statuses = {}
+        monkeypatch.setattr(
+            adapter, "_set_run_status",
+            lambda run_id, status, **fields: statuses.update({"run_id": run_id, "status": status, **fields}),
+        )
+
+        class FakeEvents:
+            def __init__(self):
+                self.sent = []
+
+            def enqueue(self, name, payload):
+                self.sent.append((name, payload))
+
+        events = FakeEvents()
+        notify = adapter._make_session_approval_notify("run_1", events)
+        notify({"command": "rm -rf /x", "request_id": "req9", "allow_permanent": False})
+
+        name, payload = events.sent[0]
+        assert name == "approval.request"
+        assert payload["request_id"] == "req9"
+        assert payload["choices"] == ["once", "session", "deny"]
+        assert statuses["run_id"] == "run_1"
+        assert statuses["status"] == "waiting_for_approval"
+        assert statuses["approval"]["request_id"] == "req9"
+
+    def test_smart_denied_narrows_choices(self):
+        adapter = _make_routing_adapter({})
+        adapter._set_run_status = lambda *a, **k: None
+
+        class FakeEvents:
+            def __init__(self):
+                self.sent = []
+
+            def enqueue(self, name, payload):
+                self.sent.append((name, payload))
+
+        events = FakeEvents()
+        adapter._make_session_approval_notify("run_2", events)({"request_id": "r", "smart_denied": True})
+        assert events.sent[0][1]["choices"] == ["once", "deny"]

@@ -36,18 +36,27 @@ export function setupGracefulExit({
 
   let shuttingDown = false
 
-  const exit = (code: number, signal?: NodeJS.Signals) => {
+  const exit = (code: number, beforeCleanup?: () => void) => {
     if (shuttingDown) {
       return
     }
 
     shuttingDown = true
 
-    if (signal) {
-      onSignal?.(signal)
-    }
+    // Arm the hard-exit backstop before diagnostics or other user-provided
+    // hooks. A hook is allowed to fail, but it must never strand the process
+    // with an uncaught fatal error and a still-running gateway child.
+    // Keep this timer referenced. A pending Promise does not keep Node alive,
+    // so unref'ing the only backstop can make a fatal process exit naturally
+    // with status 0 while cleanup is still hung.
+    setTimeout(() => process.exit(code), failsafeMs)
 
-    setTimeout(() => process.exit(code), failsafeMs).unref?.()
+    try {
+      beforeCleanup?.()
+    } catch {
+      // Best-effort diagnostics only. Cleanup and the requested exit code are
+      // the lifecycle contract, even when a hook throws.
+    }
 
     void Promise.allSettled(cleanups.map(fn => Promise.resolve().then(fn))).finally(() => process.exit(code))
   }
@@ -58,10 +67,10 @@ export function setupGracefulExit({
         return
       }
 
-      exit(SIGNAL_EXIT_CODE[sig], sig)
+      exit(SIGNAL_EXIT_CODE[sig], () => onSignal?.(sig))
     })
   }
 
-  process.on('uncaughtException', err => onError?.('uncaughtException', err))
-  process.on('unhandledRejection', reason => onError?.('unhandledRejection', reason))
+  process.on('uncaughtException', err => exit(1, () => onError?.('uncaughtException', err)))
+  process.on('unhandledRejection', reason => exit(1, () => onError?.('unhandledRejection', reason)))
 }

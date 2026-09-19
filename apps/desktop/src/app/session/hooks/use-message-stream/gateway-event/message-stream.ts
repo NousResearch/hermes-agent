@@ -1,8 +1,11 @@
 import type { BillingBlock } from '@hermes/shared'
 
+import type { UsageStats } from '@/types/hermes'
+
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
+import { parseTurnStats } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -67,6 +70,24 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
 
 /** The message/reasoning/MoA streaming family: message.start → deltas →
  *  interim → complete, thinking/reasoning deltas, moa.* progress, reaction. */
+
+// The cache-TTL pair only exists on routes that do explicit prompt caching. A plain merge
+// would carry it across a model switch or a session change and leave a countdown running
+// for a window the current route does not have, so an omitting frame clears it.
+const CACHE_TTL_KEYS = ['cache_ttl_s', 'cache_refreshed_at'] as const
+
+function mergeUsageFrame(current: UsageStats, incoming: Partial<UsageStats> | undefined): UsageStats {
+  const next: UsageStats = { ...current, ...incoming }
+
+  for (const key of CACHE_TTL_KEYS) {
+    if (!incoming || !(key in incoming)) {
+      delete next[key]
+    }
+  }
+
+  return next
+}
+
 export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
 
@@ -350,7 +371,14 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
           }
         : undefined
 
-    completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
+    completeAssistantMessage(
+      sessionId,
+      finalText,
+      payload?.response_previewed,
+      failure,
+      occurredAt,
+      parseTurnStats(payload?.turn_stats)
+    )
 
     // Onboarding's first build: between turns is the only moment Setup may
     // put a check-in into that session (no-op everywhere else).
@@ -391,11 +419,11 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       // let a background tile's turn overwrite the primary's count.
       updateSessionState(sessionId, state => ({
         ...state,
-        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+        usage: mergeUsageFrame({ calls: 0, input: 0, output: 0, total: 0, ...state.usage }, payload.usage)
       }))
 
       if (isActiveEvent) {
-        setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        setCurrentUsage(current => mergeUsageFrame(current, payload.usage))
       }
     }
 

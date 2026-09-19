@@ -3,6 +3,7 @@ import type { TranslucencyState } from '@hermes/shared/translucency'
 
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HermesNotification } from '../electron/notification-types'
+import type { PluginOverlayBounds } from '../electron/plugin-overlay-geometry'
 import type { PoolLimits } from '../electron/pool-limits'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
@@ -131,6 +132,39 @@ declare global {
         ready: () => void
         onSkip: (callback: () => void) => () => void
         onClosed: (callback: () => void) => () => void
+      }
+      // Plugin overlay: the generic transparent window hosting a plugin
+      // contribution (area 'pluginOverlay'). TWO postures — 'mascot' (small
+      // non-activating sprite bound to the app window) and 'card'
+      // (interactive Q&A). Opened from the MAIN window by plugins
+      // (ctx.os.openOverlay); the overlay window reports its geometry over
+      // set-bounds/report-bounds, flips posture over set-mode, and asks for
+      // its plugin id + posture over whoami.
+      pluginOverlay: {
+        open: (request: {
+          pluginId: string
+          mode?: 'mascot' | 'card'
+          bounds?: PluginOverlayBounds
+          screen?: boolean
+        }) => Promise<{ ok: boolean }>
+        close: () => Promise<{ ok: boolean }>
+        /** TRANSIENT live drag/resize — main snaps, never persists. */
+        setBounds: (bounds: PluginOverlayBounds) => void
+        /** DURABLE bounds at drag/resize end — main snaps + persists. */
+        reportBounds: (bounds: PluginOverlayBounds) => void
+        /** Carve (rects) or clear ([]) the X11 window shape — no-compositor
+         *  transparency for mascot silhouettes / card paint confirmation. */
+        setShape: (rects: Array<{ x: number; y: number; width: number; height: number }>) => void
+        /** Flip posture: mascot ↔ card. */
+        setMode: (mode: 'mascot' | 'card') => void
+        whoami: () => Promise<{
+          pluginId: string | null
+          mode: 'mascot' | 'card' | null
+          bounds: PluginOverlayBounds | null
+        }>
+        /** Main flipped the posture — the renderer swaps its view. */
+        onMode: (callback: (mode: 'mascot' | 'card') => void) => () => void
+        onClosed: (callback: (payload: { pluginId: string | null }) => void) => () => void
       }
       // In-chat onboarding assembly: grow the main window outward by per-edge
       // pixel deltas so the chat pane keeps its exact screen rect while the

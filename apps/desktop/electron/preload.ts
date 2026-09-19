@@ -121,6 +121,46 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
     }
   },
+  // Plugin overlay: the generic transparent window hosting a plugin
+  // contribution (area 'pluginOverlay'). TWO postures: 'mascot' (a small
+  // non-activating sprite bound to the app window — Dash's auto-start
+  // pencil) and 'card' (the interactive Q&A card). The overlay renderer
+  // swaps views and flips posture over set-mode.
+  pluginOverlay: {
+    open: request => ipcRenderer.invoke('hermes:plugin-overlay:open', request),
+    close: () => ipcRenderer.invoke('hermes:plugin-overlay:close'),
+    // Overlay → main: TRANSIENT live drag/resize bounds — main snaps the
+    // window, never persists. reportBounds is the durable writer.
+    setBounds: bounds => ipcRenderer.send('hermes:plugin-overlay:set-bounds', { bounds }),
+    // Overlay → main: DURABLE bounds at drag/resize END — main snaps AND
+    // persists under its own hosted-plugin latch.
+    reportBounds: bounds => ipcRenderer.send('hermes:plugin-overlay:report-bounds', { bounds }),
+    // Overlay → main: carve (rects) or clear ([]) the X11 window shape — the
+    // no-compositor transparency path for mascot silhouettes, and the
+    // card's "painted opaque" confirmation.
+    setShape: rects => ipcRenderer.send('hermes:plugin-overlay:set-shape', { rects }),
+    // Overlay → main: flip posture (mascot click → card, card ✕ → mascot).
+    setMode: mode => ipcRenderer.send('hermes:plugin-overlay:set-mode', mode),
+    // Overlay → main: which plugin this window hosts + current posture +
+    // remembered bounds.
+    whoami: () => ipcRenderer.invoke('hermes:plugin-overlay:whoami'),
+    // Overlay renderer: main flipped the posture (native geometry changed) —
+    // swap the view now.
+    onMode: callback => {
+      const listener = (_event, mode) => callback(mode)
+      ipcRenderer.on('hermes:plugin-overlay:mode', listener)
+
+      return () => ipcRenderer.removeListener('hermes:plugin-overlay:mode', listener)
+    },
+    // Main renderer: the overlay went away on its own (evicted, ⌘W, crash) —
+    // a pop-out toggle must never stay stale.
+    onClosed: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:plugin-overlay:closed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:plugin-overlay:closed', listener)
+    }
+  },
   // HUD mode: the chrome-free floating chat. A full app renderer (own gateway)
   // sized as a floating bar, so it mounts the real composer. Main owns the
   // window; `onChanged` keeps every window's toggle truthful.

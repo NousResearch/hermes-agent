@@ -576,6 +576,78 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is False
 
+    def test_xai_credentials_do_not_light_web_tools(self):
+        """xAI credentials back TTS/media tools only: ``xai`` is in
+        _BUILTIN_AVAILABILITY for bookkeeping but no web provider is ever
+        dispatched to it, so it must not satisfy the web_search/web_extract
+        gate; otherwise the tools register with no servable backend. Note the
+        probe must be patched at ``has_xai_credentials``: _BUILTIN_AVAILABILITY
+        holds a direct reference to ``_xai_available``, so patching the module
+        attribute would not reach the dict entry."""
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.xai_http.has_xai_credentials", return_value=True):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
+
+    def test_xai_credentials_plus_web_key_still_pass(self):
+        """Excluding xai from the gate does not weaken detection of a real web key."""
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.xai_http.has_xai_credentials", return_value=True), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "test-key"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_configured_xai_backend_still_lights_gate(self):
+        """An explicit ``web.backend: xai`` selection still counts toward the
+        gate: the bundled web-xai plugin's provider can serve it when loaded,
+        and a stored selection is returned as-is by _get_backend either way."""
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "xai"}), \
+             patch("tools.xai_http.has_xai_credentials", return_value=True):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_registered_xai_provider_lights_gate_via_registry(self):
+        """Skipping the bare xai credential probe does not hide real
+        availability: when the web-xai plugin IS registered and available,
+        get_active_search_provider returns it and the plugin path lights the
+        gate on its own."""
+        class _XaiProvider:
+            name = "xai"
+
+            def is_available(self):
+                return True
+
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.xai_http.has_xai_credentials", return_value=False), \
+             patch("agent.web_search_registry.get_active_search_provider",
+                   return_value=_XaiProvider()):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_xai_only_env_end_to_end_toolset_gate(self, monkeypatch, tmp_path):
+        """E2e through the registry: a real XAI_API_KEY env var -> the real
+        has_xai_credentials probe -> check_fn -> get_tool_definitions. The web
+        toolset must serve zero tools (xai can never be dispatched to), and it
+        must light up once a real web key joins."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # isolate auth.json / credential pool
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        from tools.registry import invalidate_check_fn_cache
+        import model_tools
+
+        with patch("tools.web_tools._load_web_config", return_value={}):
+            invalidate_check_fn_cache()
+            names = {d["function"]["name"]
+                     for d in model_tools.get_tool_definitions(enabled_toolsets=["web"])}
+            assert names == set()
+
+            monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-key")
+            invalidate_check_fn_cache()
+            names = {d["function"]["name"]
+                     for d in model_tools.get_tool_definitions(enabled_toolsets=["web"])}
+            assert names == {"web_search", "web_extract"}
+
 
     def test_configured_firecrawl_backend_accepts_managed_gateway(self):
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):

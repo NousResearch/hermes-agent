@@ -77,8 +77,14 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
 
 
 def check_x_search_requirements() -> bool:
-    """True when xAI credentials resolve to a non-empty bearer (OAuth auto-refreshed)."""
-    return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
+    """True when xAI credentials resolve to a non-empty bearer (OAuth auto-refreshed).
+
+    Same ordering as ``_resolve_xai_bearer``: an explicit key wins over the subscription OAuth
+    bearer (which answers x_search in a degraded, citation-less mode, #88040) — never touch the
+    OAuth pool for an availability probe when a key is configured. See #87045, #113727 (the
+    identical sibling fix for the xAI TTS availability probe, ``tools/tts_tool._xai_requirements``).
+    """
+    return bool(str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip())
 
 
 def _normalize_handles(handles: Optional[List[str]], field_name: str) -> List[str]:

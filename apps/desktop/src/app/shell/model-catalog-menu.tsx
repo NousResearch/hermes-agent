@@ -25,7 +25,7 @@ import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { modelDisplayParts } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -491,7 +491,9 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    const { name, tag } = modelDisplayParts(family.id, {
+                      quantization: group.provider.quantization?.[family.id]
+                    })
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Managed local model loading into memory right now:
@@ -546,6 +548,7 @@ export function ModelCatalogMenu({
                         >
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches foldSeparators query={search} text={name} />
+                            {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
                           {loadProgress ? (
@@ -719,11 +722,16 @@ function groupModels(
       continue
     }
 
-    const matches = (family: ModelFamily) =>
-      foldIncludes(
-        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`,
+    const matches = (family: ModelFamily) => {
+      const { name, tag } = modelDisplayParts(family.id, {
+        quantization: provider.quantization?.[family.id]
+      })
+
+      return foldIncludes(
+        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${name} ${tag}`,
         q
       )
+    }
 
     let shown: Set<string>
 

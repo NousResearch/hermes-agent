@@ -54,6 +54,7 @@ from hermes_cli.models_local import (
     _OLLAMA_LOCAL_MODELS_CACHE_TTL,
     _OLLAMA_LOCAL_PROBE_FAILURE_CACHE,
     _OLLAMA_LOCAL_PROBE_REACHABLE,
+    _OLLAMA_LOCAL_QUANTIZATION_CACHE,
     _get_ollama_base_url,
     _get_ollama_native_headers,
     _ollama_local_catalog,
@@ -1783,6 +1784,7 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         # Native Ollama tags are keyed by root URL, not provider slug — a targeted refresh can't
         # identify the root from the name alone, so clear this small in-process cache every time.
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
+        _OLLAMA_LOCAL_QUANTIZATION_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
         # A fresh copilot-acp CLI login must be visible to the next /model switch (this helper is

@@ -169,6 +169,7 @@ def _get_ollama_native_headers(base_url: Optional[str], *, api_key: Optional[str
 # failure timestamps (short negative TTL), and whether the root answered the native probe.
 _OLLAMA_LOCAL_MODELS_CACHE_TTL: int = 300  # seconds
 _OLLAMA_LOCAL_MODELS_CACHE: dict[str, tuple[tuple[str, ...], float]] = {}
+_OLLAMA_LOCAL_QUANTIZATION_CACHE: dict[str, tuple[dict[str, str], float]] = {}
 _OLLAMA_LOCAL_PROBE_FAILURE_CACHE: dict[str, float] = {}
 _OLLAMA_LOCAL_PROBE_REACHABLE: dict[str, bool] = {}
 _OLLAMA_LOCAL_PROBE_FAILURE_TTL: int = 30
@@ -177,6 +178,7 @@ _OLLAMA_LOCAL_CACHE_MAX_ENTRIES: int = 256
 
 def _evict_related_ollama_cache_entries(key: str) -> None:
     _OLLAMA_LOCAL_MODELS_CACHE.pop(key, None)
+    _OLLAMA_LOCAL_QUANTIZATION_CACHE.pop(key, None)
     _OLLAMA_LOCAL_PROBE_REACHABLE.pop(key, None)
     for failure_key in list(_OLLAMA_LOCAL_PROBE_FAILURE_CACHE):
         if failure_key == key or failure_key.startswith(f"{key}|timeout:"):
@@ -214,6 +216,49 @@ def _parse_ollama_tags(payload: Any) -> Optional[list[str]]:
     return models
 
 
+def _parse_ollama_quantization(payload: Any) -> dict[str, str]:
+    """``{model_id: quantization_level}`` from an ``/api/tags`` payload. Fail-open: skip
+    missing/empty/non-string ``details.quantization_level`` rather than inventing a tag."""
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        return {}
+    quant: dict[str, str] = {}
+    for item in raw_models:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("model") or item.get("name") or "").strip()
+        if not model_id:
+            continue
+        details = item.get("details")
+        if not isinstance(details, dict):
+            continue
+        level = details.get("quantization_level")
+        if not isinstance(level, str):
+            continue
+        level = level.strip()
+        if level:
+            quant[model_id] = level
+    return quant
+
+
+def ollama_local_quantization_map(
+    base_url: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    """Cached ``{model_id: quantization_level}`` from the last successful ``/api/tags`` probe.
+
+    Empty on miss/expiry. Does not hit the network — populate via ``probe_ollama_local_models``.
+    """
+    from hermes_cli.models import _get_ollama_base_url
+    root = _root_for_ollama_native_api(base_url or _get_ollama_base_url())
+    if not root:
+        return {}
+    cached = _OLLAMA_LOCAL_QUANTIZATION_CACHE.get(_ollama_probe_cache_key(root, headers))
+    if cached is None or time.monotonic() - cached[1] >= _OLLAMA_LOCAL_MODELS_CACHE_TTL:
+        return {}
+    return dict(cached[0])
+
+
 def probe_ollama_local_models(
     base_url: Optional[str] = None,
     timeout: float = 2.0,
@@ -240,17 +285,22 @@ def probe_ollama_local_models(
         request_headers = {"User-Agent": _HERMES_USER_AGENT, **(headers or {})}
         req = urllib.request.Request(root.rstrip("/") + "/api/tags", headers=request_headers)
         with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
-            models = _parse_ollama_tags(json.loads(resp.read().decode()))
+            payload = json.loads(resp.read().decode())
+        models = _parse_ollama_tags(payload)
+        quant = _parse_ollama_quantization(payload) if models is not None else {}
     except (ValueError, OSError, TimeoutError, http.client.HTTPException, urllib.error.URLError,
             json.JSONDecodeError, UnicodeDecodeError):
         models = None
+        quant = {}
     if models is None:
         _remember_ollama_cache(_OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, False)
         _remember_ollama_cache(_OLLAMA_LOCAL_PROBE_FAILURE_CACHE, failure_key, time.monotonic())
         return None
+    now = time.monotonic()
     _remember_ollama_cache(_OLLAMA_LOCAL_PROBE_REACHABLE, cache_key, True)
     _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
-    _remember_ollama_cache(_OLLAMA_LOCAL_MODELS_CACHE, cache_key, (tuple(models), time.monotonic()))
+    _remember_ollama_cache(_OLLAMA_LOCAL_MODELS_CACHE, cache_key, (tuple(models), now))
+    _remember_ollama_cache(_OLLAMA_LOCAL_QUANTIZATION_CACHE, cache_key, (quant, now))
     return models
 
 
@@ -343,6 +393,7 @@ def _ollama_local_catalog(force_refresh: bool) -> list[str]:
     from hermes_cli.models import _get_provider_config_dict, fetch_api_models
     if force_refresh:
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
+        _OLLAMA_LOCAL_QUANTIZATION_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
     base_url = _get_ollama_base_url()

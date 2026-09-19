@@ -177,6 +177,48 @@ def _find_heredoc_close(
         cursor = after
 
 
+def heredoc_spans(command: str) -> list[tuple[int, int]] | None:
+    """Offset-preserving ``[(body_start, body_end)]`` for every heredoc body in *command*.
+
+    Same parser and same fail-closed posture as :func:`strip_inert_heredoc_bodies`, but for
+    callers that REWRITE the command: spans index the ORIGINAL string, so a scanner can hand the
+    surrounding code back byte-identical. ``None`` means "an operator could not be resolved, or a
+    heredoc has no exact terminator line" — the caller must then scan the raw text, because an
+    unresolvable ``<<`` must never silently hide command text from a guard.
+    """
+    if "<<" not in command:
+        return []
+    last_opener_index = command.rfind("<<")
+    spans: list[tuple[int, int]] = []
+    command_start = 0
+    while command_start <= last_opener_index:
+        (
+            command_end,
+            specs,
+            unknown_operator,
+            _post_heredoc_list_operator,
+            _owner_start,
+        ) = _scan_heredoc_command_unit(command, command_start)
+        if unknown_operator:
+            return None
+        if not specs:
+            if command_end >= len(command):
+                break
+            command_start = command_end + 1
+            continue
+        if command_end >= len(command):
+            return None  # opener with no body line: unterminated
+        body_cursor = command_end + 1
+        for delimiter, strip_tabs, _quoted in specs:
+            close_end = _find_heredoc_close(command, body_cursor, delimiter, strip_tabs)
+            if close_end is None:
+                return None  # unterminated
+            spans.append((body_cursor, close_end))
+            body_cursor = close_end
+        command_start = body_cursor
+    return spans
+
+
 def strip_inert_heredoc_bodies(command: str) -> str:
     """Mask heredoc bodies that are provably inert data (see module docstring)."""
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.

@@ -89,13 +89,18 @@ after changing backend settings so existing shared handles can close.
 
 This backend stores sessions, messages, model usage, conversation generations,
 routing, compression/turn leases, async delegations, gateway delivery obligations,
-optional Telegram topic bindings, cron's execution, incident, delivery, and
-notepad tables, and the shared Kanban board tables. History, resume, search,
-analytics, profile session readers, gateway delivery recovery, cron commands, and
-Kanban commands retain their existing APIs and field names. Cron job definitions,
-output files, scripts, scheduler lock files, Kanban workspaces, attachment bytes,
-worker logs, and board metadata remain in the filesystem. Local files are still
-required; this setting does not make an entire deployment stateless.
+optional Telegram topic bindings, cron runtime state, and shared Kanban boards. It
+also stores projects, API response chains, API run idempotency, hosted-room state,
+shared metrics, verification evidence, Discord recovery, plugin databases, Matrix
+E2EE state, and the optional Holographic and RetainDB stores. Their public APIs and
+field names remain unchanged. Each small store receives a deterministic schema
+derived from the profile schema and a readable store name, which prevents table
+name collisions while keeping database inspection clear.
+
+Cron job definitions, output files, scripts, scheduler lock files, skills, model
+configuration, Kanban workspaces, attachment bytes, worker logs, and board metadata
+remain in the filesystem. Local files are still required; this setting does not
+make an entire deployment stateless.
 
 PostgreSQL delivery and cron execution owners use a process token and an expiring
 lease because a PID cannot establish whether a process on another container host
@@ -178,6 +183,7 @@ HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/hermes_state/test_postgres_*.p
 HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/gateway/test_postgres_delivery_ledger.py
 HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/cron/test_postgres_cron_stores.py
 HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/hermes_cli/test_postgres_kanban.py
+HERMES_TEST_POSTGRES=1 scripts/run_tests.sh tests/hermes_cli/test_postgres_remaining_stores.py
 ```
 
 ### Desktop profile isolation and compaction generations

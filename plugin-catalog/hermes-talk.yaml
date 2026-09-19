@@ -1,7 +1,12 @@
 name: hermes-talk
 repo: https://github.com/TheSmokeDev/hermes-talk
 sha: 7219f2fdff353df72f5323b219bfe759991b0365
-description: Realtime voice for Hermes through terminal, Discord, and dashboard interfaces.
+description: >-
+  Realtime voice for Hermes through terminal, Discord, dashboard and Desktop.
+  Live voice mode (TALK_VOICE_MODE=live, TALK_LIVE_AUTH=subscription) connects with your
+  own Codex OAuth session to the undocumented chatgpt.com/backend-api/codex/realtime/calls
+  endpoint, which is outside the vendor's published API terms and may change or stop
+  working without notice.
 maintainer: TheSmokeDev
 tier: community
 category: voice

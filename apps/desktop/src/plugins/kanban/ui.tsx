@@ -67,18 +67,21 @@ export function errText(err: unknown): string {
 
   if (brace !== -1) {
     try {
-      const { detail } = JSON.parse(raw.slice(brace)) as {
-        detail?: string | { msg?: string }[]
+      // `detail` is whatever the server sent, so every shape other than a string or a list of
+      // {msg} entries falls back to `raw` — handing React an object or number renders nothing.
+      const { detail } = JSON.parse(raw.slice(brace)) as { detail?: unknown }
+      if (typeof detail === 'string') {
+        return detail
       }
       if (Array.isArray(detail)) {
         return (
           detail
-            .map(d => d.msg)
-            .filter(Boolean)
+            .map(d => (d && typeof d === 'object' ? (d as { msg?: unknown }).msg : undefined))
+            .filter((msg): msg is string => typeof msg === 'string' && msg !== '')
             .join('; ') || raw
         )
       }
-      return detail ?? raw
+      return raw
     } catch {
       // Not JSON — fall through to the raw message.
     }

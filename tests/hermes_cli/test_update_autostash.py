@@ -736,6 +736,49 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
         os.chmod(pkg, 0o755)
 
 
+def test_autostash_survives_intent_to_add_entries(tmp_path):
+    """An index entry from `git add -N` must not block the update autostash.
+
+    Reported: `hermes update` aborted with "Entry 'tests/...' not uptodate. Cannot merge." because
+    `git add -N` records a path with the empty blob and zeroed stat data, which `git stash push`
+    refuses outright. Editors that show new files in diffs leave exactly that state behind, and the
+    update must not require the user to repair their index by hand.
+    """
+    import subprocess
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "tracked.txt").write_text("v1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    # The reported shape: a new local file recorded with `git add -N`, alongside a normal edit.
+    (tmp_path / "tracked.txt").write_text("v2 local\n", encoding="utf-8")
+    local_test = tmp_path / "tests" / "test_live_custom_provider_poll.py"
+    local_test.parent.mkdir()
+    body = "def test_poll():\n    assert True\n"
+    local_test.write_text(body, encoding="utf-8")
+    git("add", "-N", "tests/test_live_custom_provider_poll.py")
+    # Precondition: git reports it as " A" (present in the worktree, absent from the index) - the
+    # intent-to-add shape that `git stash push` refuses.
+    assert " A tests/test_live_custom_provider_poll.py" in git("status", "--porcelain").stdout.splitlines()
+
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+
+    assert stash_ref, "the update must be able to stash an intent-to-add entry"
+    # The stash must have taken everything, so the pull cannot be blocked by a dirty tree.
+    assert git("status", "--porcelain").stdout == ""
+    assert hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
+    assert local_test.read_text(encoding="utf-8") == body
+    assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "v2 local\n"
+
+
 def test_restore_rejects_invalid_python_and_keeps_clean_updated_tree(
     monkeypatch, tmp_path, capsys
 ):

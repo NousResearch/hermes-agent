@@ -621,6 +621,10 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """
 
+# DDL only: completeness is owned by explicit authority preparation, not open().
+from hermes_state_logical_attempts import SCHEMA_SQL as LOGICAL_ATTEMPT_SCHEMA_SQL
+SCHEMA_SQL += LOGICAL_ATTEMPT_SCHEMA_SQL
+
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active

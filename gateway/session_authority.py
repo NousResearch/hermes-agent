@@ -544,6 +544,11 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
         db = getattr(runner._session_db, '_db', runner._session_db)
     epoch = begin_runtime_epoch(db, instance_id=instance_id)
     recover_session_inputs(db, epoch=epoch)
+    # One explicit bounded bootstrap batch, never a constructor or HTTP probe.
+    # Large or unrecoverable legacy inventory remains unavailable to RoomLink
+    # until separately prepared; other canonical session operations still work.
+    from hermes_state_logical_attempts import prepare_logical_attempt_index
+    prepare_logical_attempt_index(db, batch_size=128)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     if register:
         runner.session_authority = authority

@@ -15,6 +15,7 @@ import atexit
 import contextlib
 import json
 import logging
+import math
 import os
 import queue
 import sys
@@ -453,6 +454,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
+            {"key": "prefer_observations", "description": "When recalling observation+raw facts together, drop raw facts superseded by consolidated observations. Requires Hindsight >= 0.8.4.", "default": False},
+            {"key": "min_scores", "description": "Per-stage score floors for recall. JSON object with optional fields: semantic (0-1, minimum vector similarity), keyword (>=0, minimum BM25 score), reranker (0-1, minimum normalized cross-encoder score), final (minimum final ranking score). Requires Hindsight >= 0.8.4.", "default": ""},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
@@ -801,6 +804,121 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list([] if configured_types is None else configured_types) or ["observation"]
         self._recall_prompt_preamble = cfg.get("recall_prompt_preamble", "")
         self._recall_indicator = bool(cfg.get("recall_indicator", True))
+        # v0.8.4+ recall parameters — implicit opt-in via prefer_observations or
+        # non-empty min_scores. A version guard below ensures hindsight-client
+        # >= 0.8.4 before passing the params.
+
+        # Supported min_scores fields and their valid numeric ranges.
+        # Per the Hindsight recall API: semantic / reranker / final are
+        # normalized scores in [0, 1], keyword is a BM25 score >= 0.
+        _MIN_SCORE_FIELDS = {
+            "semantic": (0.0, 1.0),
+            "keyword": (0.0, None),
+            "reranker": (0.0, 1.0),
+            "final": (0.0, 1.0),
+        }
+
+        self._prefer_observations = cfg.get("prefer_observations", False)
+        self._min_scores: dict | None = None
+
+        raw_min_scores = cfg.get("min_scores", None)
+        if raw_min_scores is not None and raw_min_scores != "":
+            parsed = None
+            if isinstance(raw_min_scores, str):
+                try:
+                    parsed = json.loads(raw_min_scores)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "min_scores is not valid JSON: %r. Rejected.",
+                        raw_min_scores[:80],
+                    )
+            elif isinstance(raw_min_scores, dict):
+                parsed = raw_min_scores
+            else:
+                logger.warning(
+                    "min_scores must be a JSON object or dict, got %s. Rejected.",
+                    type(raw_min_scores).__name__,
+                )
+
+            if parsed is not None:
+                if not isinstance(parsed, dict):
+                    logger.warning(
+                        "min_scores must be a JSON object, got %s. Rejected.",
+                        type(parsed).__name__,
+                    )
+                else:
+                    # Validate each key and value — fail closed.
+                    valid = True
+                    for key, val in parsed.items():
+                        if key not in _MIN_SCORE_FIELDS:
+                            logger.warning(
+                                "min_scores: unsupported field %r. "
+                                "Supported fields: %s. Rejected.",
+                                key, ", ".join(sorted(_MIN_SCORE_FIELDS)),
+                            )
+                            valid = False
+                            break
+                        if not isinstance(val, (int, float)):
+                            logger.warning(
+                                "min_scores: value for %r must be numeric, got %s. Rejected.",
+                                key, type(val).__name__,
+                            )
+                            valid = False
+                            break
+                        # NaN and ±Infinity must be rejected explicitly: NaN
+                        # comparisons are always False, so range checks alone
+                        # cannot catch it, and json.dumps would serialize NaN
+                        # into invalid JSON on the wire.
+                        if isinstance(val, float) and not math.isfinite(val):
+                            logger.warning(
+                                "min_scores: value for %r must be finite, got %r. Rejected.",
+                                key, val,
+                            )
+                            valid = False
+                            break
+                        lo, hi = _MIN_SCORE_FIELDS[key]
+                        if lo is not None and val < lo:
+                            logger.warning(
+                                "min_scores: %s must be >= %s, got %s. Rejected.",
+                                key, lo, val,
+                            )
+                            valid = False
+                            break
+                        if hi is not None and val > hi:
+                            logger.warning(
+                                "min_scores: %s must be <= %s, got %s. Rejected.",
+                                key, hi, val,
+                            )
+                            valid = False
+                            break
+
+                    if valid:
+                        self._min_scores = parsed
+
+        # Version guard: if any v0.8.4 param is active, require hindsight-client >= 0.8.4.
+        _v084_active = self._prefer_observations or self._min_scores is not None
+        if _v084_active:
+            try:
+                from importlib.metadata import version as pkg_version
+                from packaging.version import Version
+                installed = pkg_version("hindsight-client")
+                if Version(installed) < Version("0.8.4"):
+                    logger.warning(
+                        "v0.8.4 recall params require hindsight-client >= 0.8.4 "
+                        "(installed: %s). Params disabled.", installed,
+                    )
+                    self._prefer_observations = False
+                    self._min_scores = None
+            except Exception as exc:
+                # Fail closed: if the installed version cannot be determined
+                # (client missing, packaging unavailable), never pass the
+                # v0.8.4 kwargs to an unknown client.
+                logger.warning(
+                    "Could not verify hindsight-client version (%s); "
+                    "v0.8.4 recall params disabled.", exc,
+                )
+                self._prefer_observations = False
+                self._min_scores = None
 
     def _start_embedded_daemon(self) -> None:
         """Start the embedded daemon on a background thread (Rich output -> log file)."""
@@ -891,6 +1009,10 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
         if self._recall_types:
             kwargs["types"] = self._recall_types
+        if self._prefer_observations:
+            kwargs["prefer_observations"] = self._prefer_observations
+        if self._min_scores is not None:
+            kwargs["min_scores"] = self._min_scores
         resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
         return resp.results or []
 

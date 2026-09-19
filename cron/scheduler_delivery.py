@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -1372,6 +1373,22 @@ def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
     return bool(getattr(runtime_adapter, "supports_inchannel_continuable", False))
 
 
+def _render_subject_template(job: dict) -> Optional[str]:
+    """Render a cron job's ``subject_template`` for the email subject line.
+
+    Supports ``{date}`` -> today's date (YYYY/MM/DD, local time). Returns None when the job
+    has no template. An unknown placeholder falls back to the raw template instead of raising,
+    so a typo never blocks delivery.
+    """
+    template = job.get("subject_template")
+    if not template:
+        return None
+    try:
+        return template.format(date=datetime.now().strftime("%Y/%m/%d"))
+    except (KeyError, IndexError, ValueError):
+        return template
+
+
 def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]:
     """Compute ``(route_thread_id, route_metadata, media_metadata)`` for a live send, ONCE so text
     and media agree. ``telegram:<positive_chat_id>:<numeric_thread_id>`` is ambiguous (private
@@ -1417,6 +1434,12 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     if t.origin_target and t.origin.get("scope_id"):
         route_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
         media_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
+
+    # Email-only: render the job's subject_template into a custom subject. Other platforms
+    # have no subject concept, so the key is added for EMAIL targets only (media ignores it).
+    if t.platform == Platform.EMAIL and (subject := _render_subject_template(job)) is not None:
+        route_metadata["subject"] = subject
+
     return route_thread_id, route_metadata, media_metadata
 
 

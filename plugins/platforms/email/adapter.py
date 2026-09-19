@@ -658,21 +658,36 @@ class EmailAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        """Send an email to the given address.
+
+        ``metadata["subject"]`` (e.g. a cron ``subject_template`` report) starts a fresh,
+        non-reply email; without it the mail threads onto the cached inbound subject.
+        """
+        custom_subject = (metadata or {}).get("subject")
+        return await self._run_send(self._send_email, (chat_id, content, reply_to, custom_subject),
+                                   "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
-                   attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
-        """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
+                   attach_empty_body: bool = False, custom_subject: Optional[str] = None) -> Tuple[MIMEMultipart, str, str]:
+        """Build an outbound email skeleton. Returns ``(msg, msg_id, subject)``.
+
+        A ``custom_subject`` (e.g. a cron ``subject_template`` report) starts a fresh conversation:
+        the subject is used verbatim and the cached inbound message-id is not reused as In-Reply-To.
+        Without it the mail threads onto the cached subject with a ``Re:`` prefix.
+        """
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        if custom_subject:
+            subject = custom_subject
+            original_msg_id = reply_to_msg_id  # fresh outbound; never chain onto the cached inbound thread
+        else:
+            subject = ctx.get("subject", "Hermes Agent")
+            if not subject.startswith("Re:"):
+                subject = f"Re: {subject}"
+            original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
@@ -694,9 +709,11 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
+                    custom_subject: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
+        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True,
+                                               custom_subject=custom_subject)
         self._smtp_send(msg)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id

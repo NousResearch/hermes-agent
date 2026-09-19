@@ -153,12 +153,23 @@ class TestScanContent:
         mod = _load_plugin_init()
         assert mod._scan_content("/tmp/foo.py", "") == []
 
-    def test_huge_content_skipped(self):
+    def test_huge_content_scans_every_window(self):
         mod = _load_plugin_init()
-        # 1 MB of content with a dangerous pattern at the end — scanner caps
-        # out at _MAX_SCAN_BYTES (256 KB), so this should return [].
-        big = "x" * (1024 * 1024) + "\npickle.load(open('p.pkl', 'rb'))\n"
-        assert mod._scan_content("/tmp/foo.py", big) == []
+        dangerous = "\npickle.load(open('p.pkl', 'rb'))\n"
+        big = "x" * (512 * 1024) + dangerous + "y" * (512 * 1024)
+
+        findings = mod._scan_content("/tmp/foo.py", big)
+
+        assert "pickle_deserialization" in [name for name, _ in findings]
+
+    def test_scan_windows_overlap_at_chunk_boundaries(self):
+        mod = _load_plugin_init()
+        dangerous = "\npickle.load(open('p.pkl', 'rb'))"
+        prefix = "x" * (mod._MAX_SCAN_BYTES - len("\npickle."))
+
+        findings = mod._scan_content("/tmp/foo.py", prefix + dangerous)
+
+        assert "pickle_deserialization" in [name for name, _ in findings]
 
 
 # ---------------------------------------------------------------------------

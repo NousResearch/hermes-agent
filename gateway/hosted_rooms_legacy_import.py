@@ -15,6 +15,7 @@ from contextlib import closing
 from pathlib import Path
 
 from gateway.hosted_rooms_common import clock, table_columns, table_exists
+from hermes_state_holders import read_only_db_uri
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
 
     copied_rooms: list[str] = []
     existing = {str(row[0]) for row in target.execute("SELECT room_id FROM hosted_rooms")}
-    with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)) as legacy:
+    with closing(sqlite3.connect(read_only_db_uri(source), uri=True, timeout=10)) as legacy:
         names = [str(row[0]) for row in legacy.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'hosted_room*'")]
         # Parents first: hosted_room_events carries a foreign key into hosted_rooms.

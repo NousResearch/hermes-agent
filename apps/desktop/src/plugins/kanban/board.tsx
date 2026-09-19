@@ -94,7 +94,9 @@ import {
   errText,
   FIELD_LABEL,
   isLockedTarget,
+  KanbanUrlChip,
   lockedReason,
+  RichKanbanText,
   RunClock,
   shortId,
   useDefaultAssignee,
@@ -209,6 +211,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           </span>
         </Tip>
       )}
+      <KanbanUrlChip text={`${task.title}\n${task.body ?? ''}`} />
       <div className="ml-auto flex min-w-0 shrink items-center gap-2">
         {typeof task.priority === 'number' && task.priority > 0 && (
           <span className="inline-flex items-center gap-0.5 text-amber-500">
@@ -296,10 +299,12 @@ function Card({
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
           )}
           <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
-            {task.title || task.id}
+            <RichKanbanText text={task.title || task.id} />
           </span>
           {summary && (
-            <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
+            <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">
+              <RichKanbanText text={summary} />
+            </span>
           )}
           <CardFooter arc={arc} task={task} />
         </div>

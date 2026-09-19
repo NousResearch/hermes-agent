@@ -10,7 +10,7 @@ import logging
 import os
 import re
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
@@ -470,12 +470,17 @@ class ModelFlagParseResult:
     force_refresh: bool = False
     is_session: bool = False
     is_once: bool = False
+    is_auto: bool = False
+    is_deep: bool = False
 
 
 # --- Flag parsing
 
-_BOOL_FLAGS = {"--global": "is_global", "--session": "is_session", "--refresh": "force_refresh", "--once": "is_once"}
+_BOOL_FLAGS = {"--global": "is_global", "--session": "is_session", "--refresh": "force_refresh", "--once": "is_once", "--auto": "is_auto", "--deep": "is_deep"}
 _VALUE_FLAGS = {"--provider": "explicit_provider", "--reasoning": "reasoning_effort"}
+
+# Alias for the Stage 2 router: ``/model auto`` (auto-select) and ``/model auto-<alias>`` (manual override).
+MODEL_SCOPE_AUTO = "auto"
 
 
 def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
@@ -514,7 +519,8 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
 
 
 def resolve_persist_behavior(
-    is_global: bool, is_session: bool, is_once: bool = False, explicit_provider: str = "") -> bool:
+    is_global: bool, is_session: bool, is_once: bool = False, explicit_provider: str = "",
+    is_auto: bool = False) -> bool:
     """Decide whether a ``/model`` switch should persist to ``config.yaml``.
 
     Order: ``--once`` / ``--session`` -> False; ``--global`` -> True; no default configured yet
@@ -532,7 +538,7 @@ def resolve_persist_behavior(
     affects only the current session). Users who want the old persist-by-default behavior can set the key to
     ``true``; a one-off ``--global`` always persists. See #86414.
     """
-    if is_once or is_session:
+    if is_once or is_session or is_auto:
         return False
     if is_global:
         return True
@@ -583,6 +589,8 @@ class ModelSwitchRequest:
     is_global: bool = False
     is_session: bool = False
     is_once: bool = False
+    is_auto: bool = False
+    is_deep: bool = False
     force_refresh: bool = False
     scope: str = "default"
     errors: tuple = ()
@@ -590,6 +598,10 @@ class ModelSwitchRequest:
     @property
     def model_input(self) -> str:
         return self.target
+
+    def with_target(self, target: str) -> "ModelSwitchRequest":
+        """Return a frozen copy with ``target`` reassigned (router auto-pick reassigns the alias)."""
+        return replace(self, target=target)
 
     def error_messages(self) -> list:
         """Canonical (undercorated) error strings for this request."""
@@ -617,11 +629,11 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
             errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
     # First matching flag wins: once > session > global > default.
     scope = next((name for name, on in (("once", parsed.is_once), ("session", parsed.is_session),
-                                        ("global", parsed.is_global)) if on), "default")
+                                        ("auto", parsed.is_auto), ("global", parsed.is_global)) if on), "default")
     return ModelSwitchRequest(
         raw=raw, target=parsed.model_input, scope=scope, errors=tuple(errors),
         **{f: getattr(parsed, f)
-           for f in ("explicit_provider", "reasoning_effort", "is_global", "is_session", "is_once", "force_refresh")})
+           for f in ("explicit_provider", "reasoning_effort", "is_global", "is_session", "is_once", "is_auto", "is_deep", "force_refresh")})
 
 
 def _effective_model_candidate(value: Any) -> str:

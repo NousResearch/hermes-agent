@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import sys
 import threading
+from typing import Optional
 
 from rich.markup import escape as _escape
 from utils import base_url_host_matches
@@ -28,6 +29,26 @@ _RUNTIME_FIELDS = (
 
 def _runtime_fields(cli) -> dict:
     return {key: getattr(cli, key, None) for key in _RUNTIME_FIELDS}
+
+
+def _estimate_context_bytes(history) -> int:
+    """Rough character budget of the turn (>= 0). The auto-router uses it as a SOFT signal only --
+    it never parses the full context window. Estimates from cumulative history length; an empty or
+    non-iterable history yields 0 (the router then just picks by tier + depth, no context bias)."""
+    if not history:
+        return 0
+    total = 0
+    try:
+        for msg in history:
+            # Each message is a dict with text-ish content; sum the stringified size.
+            if isinstance(msg, dict):
+                for value in msg.values():
+                    total += len(str(value))
+            else:
+                total += len(str(msg))
+    except Exception:
+        return 0
+    return max(0, int(total))
 
 
 def _resolve_cli_reasoning(cli) -> None:
@@ -765,6 +786,53 @@ class CLIModelSwitchMixin:
             self, self._confirm_and_apply_model_switch_result,
             result, persist_global, _picker_custom_provs, *extra)
 
+    def _resolve_auto_model(self, request) -> Optional[tuple[str, str]]:
+        """Resolve ``/model auto`` (and its ``--deep`` / ``--global`` variants) via the router.
+
+        Returns ``(alias, reason)`` when an auto pick was made and ``request.target`` should be
+        reassigned to that alias so it flows into the existing switch chain unchanged; otherwise
+        ``None``. Pure side-effect-free except for printing the pick -- the caller reassigns
+        ``request.target`` so no other code has to know a router ran.
+
+        Signals (soft, never authoritative): image/video attachments -> multimodal-capable alias;
+        cumulative history size -> nudge toward high-context tiers when large; ``--deep`` or a known
+        deep-research trigger -> prefer the top reasoning tier; otherwise fast/cheap default. A manual
+        override of the form ``auto-<alias>`` (e.g. ``/model auto-researcher``) bypasses scoring and
+        picks that exact alias. Falls back to no-op on any import/config error so /model never hard-fails.
+        """
+        from cli import _cprint
+        # --- Manual override: "auto-<alias>" -> pick that alias exactly, no scoring. ---
+        target = getattr(request, "target", "") or ""
+        if target.startswith("auto-") and len(target) > 5:
+            override = target[len("auto-"):].strip()
+            return (override, f"manual override: /model auto-{override}")
+
+        # --- Auto mode: bare "auto" or "--auto" with no explicit provider. ---
+        is_auto_mode = target == "auto" or (getattr(request, "is_auto", False) and not getattr(request, "explicit_provider", None))
+        if not is_auto_mode:
+            return None
+
+        try:
+            from hermes_cli.config import load_config as _load_config
+            cfg = _load_config()
+        except Exception:
+            cfg = {}
+        aliases_config = (cfg.get("model_aliases") or {}) if isinstance(cfg, dict) else {}
+        if not aliases_config:
+            _cprint("  ✗ No model_aliases configured -- define one in config.yaml first.")
+            return None
+
+        # Turn signals.
+        has_vision = bool(getattr(self, "_attached_images", None))
+        deep_intent = bool(getattr(request, "is_deep", False)) or bool(getattr(request, "is_auto", False) and getattr(request, "deep_hint", False))
+        context_bytes = _estimate_context_bytes(getattr(self, "conversation_history", None))
+
+        from hermes_cli.models_router import resolve as router_resolve
+        decision = router_resolve(
+            aliases_config, has_vision=has_vision, context_bytes=context_bytes,
+            deep_intent=deep_intent)
+        return (decision.alias, f"tier={decision.tier}; {decision.reason}")
+
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model.
 
@@ -789,10 +857,19 @@ class CLIModelSwitchMixin:
             # CLI decoration: "  ✗ " prefix over the canonical error copy.
             _cprint(f"  ✗ {request.error_messages()[0]}")
             return
+        auto_pick = self._resolve_auto_model(request)
         one_turn = request.is_once
         persist_global = resolve_persist_behavior(
             request.is_global, request.is_session, is_once=one_turn,
             explicit_provider=request.explicit_provider)
+
+        # Auto pick (router): reassign request.target so it flows into _switch_model_from unchanged.
+        if auto_pick:
+            alias, reason = auto_pick
+            if alias:
+                request = request.with_target(alias)
+                _cprint(f"  ✓ Model picked automatically: {alias}")
+                _cprint(f"    {reason}")
 
         # --refresh: wipe the picker cache so every authed provider's /v1/models is re-fetched.
         if request.force_refresh:

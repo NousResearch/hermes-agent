@@ -1155,3 +1155,156 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
     response = await adapter._handle_get_run(get_request)
     assert response.status == 200
     assert "the answer worth keeping" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Named custom provider identity across the api_server runtime chain
+# (regression: every turn after the first on a session died with
+# "No LLM provider configured" under `model.provider: custom:<name>`)
+# ---------------------------------------------------------------------------
+
+
+def _patch_named_custom_runtime(monkeypatch):
+    """Runtime for a config using a NAMED custom provider, with the real resolver's lossiness:
+    re-resolving the normalized marker ``custom`` answers a credential-less OpenRouter runtime,
+    while the full identity ``custom:acme`` carries the working credentials."""
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "custom",
+            "requested_provider": "custom:acme",
+            "api_key": "sk-acme",
+            "base_url": "https://acme.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    def _resolve(requested=None, target_model=None, **kwargs):
+        if requested == "custom:acme":
+            return {
+                "provider": "custom",
+                "api_key": "sk-acme",
+                "base_url": "https://acme.example/v1",
+                "api_mode": "chat_completions",
+                "model": target_model,
+            }
+        # The credential-less last rung: merging this by key wipes a working key.
+        return {
+            "provider": requested or "custom",
+            "api_key": "",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _resolve)
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        lambda provider: _resolve(requested=provider),
+    )
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "acme/model")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
+    )
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None)
+    )
+    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+
+def _install_capturing_agent(monkeypatch) -> dict:
+    captured: dict = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.session_id = kwargs.get("session_id")
+            self.provider = kwargs.get("provider") or ""
+            self.model = kwargs.get("model") or ""
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            return {"final_response": "ok", "session_id": self.session_id}
+
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_session_persisted_model_keeps_named_custom_provider_credentials(
+    adapter, session_db, monkeypatch
+):
+    """A raw model persisted on the session row is re-resolved from the provider's FULL identity,
+    not the normalized marker: resolving the marker answers a credential-less OpenRouter runtime
+    whose empty api_key overwrites the working one, so agent init raises and every turn after the
+    first fails without the model ever being called."""
+    session_id = session_db.create_session(
+        "persisted-custom-model", "api_server", model="acme/model"
+    )
+    _patch_named_custom_runtime(monkeypatch)
+    captured = _install_capturing_agent(monkeypatch)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "hi"})
+        assert resp.status == 200, await resp.text()
+
+    assert captured["model"] == "acme/model"
+    assert captured["api_key"] == "sk-acme"
+    assert captured["base_url"] == "https://acme.example/v1"
+
+
+@pytest.mark.asyncio
+async def test_request_model_without_provider_keeps_named_custom_provider_credentials(
+    adapter, session_db, monkeypatch
+):
+    """Streaming twin for the other re-resolution site: a per-request raw model with no explicit
+    provider re-resolves from the same full identity."""
+    session_id = session_db.create_session("request-model-custom", "api_server")
+    _patch_named_custom_runtime(monkeypatch)
+    captured = _install_capturing_agent(monkeypatch)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            f"/api/sessions/{session_id}/chat/stream",
+            json={"message": "hi", "model": "acme/other"},
+        )
+        assert resp.status == 200, await resp.text()
+        await resp.text()  # drain: the 200 lands before _run_agent is invoked
+
+    assert captured["model"] == "acme/other"
+    assert captured["api_key"] == "sk-acme"
+    assert captured["base_url"] == "https://acme.example/v1"
+
+
+@pytest.mark.asyncio
+async def test_v1_chat_completions_keeps_named_custom_provider_credentials(
+    session_db, monkeypatch
+):
+    """Third re-resolution site, on the OpenAI-compatible surface: a bare per-request model (the
+    `direct_model_requests` opt-in) re-resolves the provider from the full identity too, so /v1
+    clients do not lose the credentials the other two routes keep."""
+    adapter = APIServerAdapter(
+        PlatformConfig(enabled=True, extra={"direct_model_requests": True})
+    )
+    adapter._session_db = session_db
+    _patch_named_custom_runtime(monkeypatch)
+    captured = _install_capturing_agent(monkeypatch)
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            "/v1/chat/completions",
+            json={"model": "acme/other", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status == 200, await resp.text()
+
+    assert captured["model"] == "acme/other"
+    assert captured["api_key"] == "sk-acme"
+    assert captured["base_url"] == "https://acme.example/v1"

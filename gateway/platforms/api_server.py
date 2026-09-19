@@ -2092,6 +2092,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_key = gateway_session_key or session_id
         session_row_model = _clean_request_string(session_model)
         current_provider = _clean_request_string(runtime_kwargs.get("provider"))
+        # ``provider`` is the normalized KIND ("custom"), which is lossy for a named custom
+        # provider — re-resolving it answers a credential-less OpenRouter runtime that clobbers
+        # the working credentials, so agent init dies (#102384). The full identity travels in
+        # ``requested_provider`` ("custom:<name>").
+        current_identity = (_clean_request_string(runtime_kwargs.get("requested_provider"))
+                            or current_provider)
         session_override = None if confirmed_runtime_lock else self._session_model_override_for(session_key)
         # Model-string precedence (override > session-persisted > global) is owned by
         # hermes_cli.model_switch.resolve_effective_model.
@@ -2100,7 +2106,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             model = resolve_effective_model(session_override, None, model)
             self._apply_provider_runtime(
                 runtime_kwargs,
-                _clean_request_string(session_override.get("provider")) or current_provider,
+                _clean_request_string(session_override.get("provider")) or current_identity,
                 target_model=model)
             _apply_runtime_agent_overrides(runtime_kwargs, session_override)
             if route or request_model or request_provider:
@@ -2111,7 +2117,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # A session-persisted raw model (no route alias) is a standing selection that pins
             # this session's turns ahead of per-request body values.
             self._apply_provider_runtime(
-                runtime_kwargs, current_provider, target_model=session_row_model)
+                runtime_kwargs, current_identity, target_model=session_row_model)
             model = resolve_effective_model(None, session_row_model, model)
             if request_model or request_provider:
                 logger.debug(
@@ -2121,7 +2127,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # The request's ``model`` selected the route, so its value is the ALIAS — never a
             # model name; a route with no ``model`` key keeps the global default.
             effective_model = (route_model or model) if route is not None else (request_model or model)
-            effective_provider = request_provider or route_provider or current_provider
+            effective_provider = request_provider or route_provider or current_identity
             applied = False
             if effective_provider and (bool(request_provider or route_provider) or effective_model != model):
                 # A confirmed Browser lock fails closed: never fall through to the previous
@@ -2129,7 +2135,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 applied = self._apply_provider_runtime(
                     runtime_kwargs, effective_provider, target_model=effective_model,
                     required=bool(request_provider) or confirmed_runtime_lock)
-            if not applied and effective_provider and effective_provider != current_provider:
+            if not applied and effective_provider and effective_provider not in {
+                    current_provider, current_identity}:
                 runtime_kwargs["provider"] = effective_provider
             model = effective_model
             # Per-route explicit transport secrets/base URLs win after provider resolution.

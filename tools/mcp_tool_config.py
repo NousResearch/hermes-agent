@@ -308,6 +308,44 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
     return flagged
 
 
+# (server_name, dotted key path) pairs already warned about: config loads repeat per discovery pass.
+_unresolved_env_warned: Set[Tuple[str, str]] = set()
+
+
+def _warn_unresolved_env_refs(server_name: str, config: dict) -> List[str]:
+    """Warn once per (server, key path) about ``${VAR}`` refs still literal after interpolation —
+    the env var is unset or empty, so the placeholder itself is what gets sent to the server
+    (otherwise an opaque auth/connect failure, e.g. a bare 401). Advisory only: values are never
+    mutated nor logged (often secrets). Returns flagged paths."""
+    flagged: List[Tuple[str, List[str]]] = []
+
+    def _walk(value: Any, path: str) -> None:
+        if isinstance(value, str):
+            names = list(dict.fromkeys(
+                _env_ref_name(m.group(1)) for m in _ENV_VAR_PATTERN.finditer(value)))
+            names = [n for n in names if n]
+            if names:
+                flagged.append((path, names))
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                _walk(v, f"{path}.{k}" if path else str(k))
+        elif isinstance(value, list):
+            for i, v in enumerate(value):
+                _walk(v, f"{path}[{i}]")
+    _walk(config, "")
+    from hermes_constants import display_hermes_home
+    for key_path, names in flagged:
+        if (server_name, key_path) not in _unresolved_env_warned:
+            _unresolved_env_warned.add((server_name, key_path))
+            logger.warning(
+                "MCP server '%s': config value '%s' references env var(s) %s that are not set — "
+                "the literal placeholder will be sent to the server, which usually surfaces as an "
+                "authentication or connection failure. Set it in %s/.env or an enabled secrets "
+                "source (secrets: in config.yaml).",
+                server_name, key_path, ", ".join(f"'{n}'" for n in names), display_hermes_home())
+    return [key_path for key_path, _ in flagged]
+
+
 def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
     try:
@@ -357,6 +395,7 @@ def _load_mcp_config() -> Dict[str, dict]:
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
+                _warn_unresolved_env_refs(name, interpolated)
                 safe_servers[name] = interpolated
         _portable_mcp_servers(safe_servers)
         return safe_servers

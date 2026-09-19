@@ -166,6 +166,11 @@ from environment variables (which include everything in `~/.hermes/.env`).
 This is useful when a catalog entry wants to reference a value the user
 configured elsewhere — e.g. `${HOME}/foo` or `${MY_PROVIDER_TOKEN}`.
 
+An unset `${VAR}` is sent to the server literally, which usually surfaces
+only as an opaque 401 — so every config load logs a WARNING naming each
+unresolved variable and its key path (see the
+[MCP config reference](../../reference/mcp-config-reference.md)).
+
 Cursor-style context variables are also substituted (case-sensitive):
 `${userHome}` (home directory), `${workspaceFolder}` (session workspace
 root), `${workspaceFolderBasename}`, and `${pathSeparator}` / `${/}`

@@ -159,7 +159,6 @@ def export_board(
         # Both name a location on the exporting machine; the importer
         # resolves its own.
         meta.pop("db_path", None)
-        # Import creates a new logical board and therefore a new database id.
         meta.pop("database_id", None)
         meta["default_workdir"] = None
         meta["project_id"] = None

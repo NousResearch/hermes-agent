@@ -862,6 +862,10 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
+        lock = row["claim_lock"] or ""
+        if (pid and getattr(conn, "backend", "sqlite") == "postgres"
+                and not lock.startswith(_kb._host_prefix())):
+            continue
         if pid and _worker_alive(pid, _kb._row_get(row, "worker_started_at")):
             # Never requeue beside a live process. Retry next tick.
             _kb._log.debug(

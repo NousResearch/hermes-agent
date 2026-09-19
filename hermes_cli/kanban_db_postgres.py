@@ -207,7 +207,20 @@ def _board_identity(board: str | None) -> tuple[str, str]:
     from hermes_cli import kanban_db as kb
 
     slug = kb._normalize_board_slug(board) or kb.get_current_board()
-    return slug, kb.board_database_id(slug)
+    database_id = kb.read_board_metadata(slug).get("database_id")
+    if database_id:
+        return slug, str(database_id)
+    import psycopg
+
+    settings = database_settings()
+    with psycopg.connect(settings.database_url, **_connection_kwargs()) as connection:
+        with connection.transaction():
+            connection.execute("SELECT set_config('lock_timeout', '5000', true)")
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"{settings.schema}:kanban:identity:{slug}",),
+            )
+            return slug, kb.board_database_id(slug)
 
 
 def board_schema(board: str | None = None) -> str:

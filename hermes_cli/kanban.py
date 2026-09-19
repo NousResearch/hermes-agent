@@ -180,7 +180,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         # KanbanDbCorruptError, which would turn every repair into "could not initialize database".
         if action == "repair":
             return _cmd_repair(args)
-        # init_db is idempotent and prevents a missing tasks table on first use.
+        # Initialization is idempotent and ensures a fresh installation has
+        # the required tables before executing the command.
         try:
             kb.init_db()
         except Exception as exc:

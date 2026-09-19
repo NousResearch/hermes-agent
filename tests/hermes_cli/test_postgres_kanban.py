@@ -315,3 +315,67 @@ def test_postgres_board_export_import_round_trip(postgres_kanban_home, tmp_path)
         assert kb.list_comments(connection, task.id)[0].body == "preserved"
         attachment = kb.list_attachments(connection, task.id)[0]
         assert Path(attachment.stored_path).read_bytes() == b"portable bytes"
+
+
+def test_orphan_recovery_checks_only_the_owning_host(postgres_kanban_home, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as dispatch
+
+    checked_pids = []
+
+    def pid_alive(pid):
+        checked_pids.append(pid)
+        return pid == 101
+
+    monkeypatch.setattr(kb, "_pid_alive", pid_alive)
+    with kbc.connect_closing() as connection:
+        tasks = {}
+        for name, claim_lock, pid in (
+            ("local_alive", kb._host_prefix() + "alive", 101),
+            ("local_dead", kb._host_prefix() + "dead", 102),
+            ("remote", "other-host:worker", 103),
+            ("unknown", None, 104),
+            ("no_worker", None, None),
+        ):
+            task_id = kb.create_task(connection, title=name, assignee="worker")
+            connection.execute(
+                "UPDATE tasks SET status='running', claim_lock=?, "
+                "claim_expires=NULL, worker_pid=? WHERE id=?",
+                (claim_lock, pid, task_id),
+            )
+            tasks[name] = task_id
+        assert set(dispatch.reconcile_orphaned_running(connection)) == {
+            tasks["local_dead"], tasks["no_worker"]
+        }
+        assert set(checked_pids) == {101, 102}
+        for name in ("local_alive", "remote", "unknown"):
+            assert kb.get_task(connection, tasks[name]).status == "running"
+
+
+def test_concurrent_legacy_board_initialization_uses_one_schema(postgres_kanban_home, monkeypatch):
+    import threading
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_postgres as pg
+
+    kb.create_board("legacy")
+    path = kb.board_metadata_path("legacy")
+    metadata = json.loads(path.read_text())
+    metadata.pop("database_id")
+    path.write_text(json.dumps(metadata))
+    original_read = kb.read_board_metadata
+    first_reads = threading.Barrier(4)
+    local = threading.local()
+
+    def read_metadata(board=None):
+        result = original_read(board)
+        if not getattr(local, "read", False):
+            local.read = True
+            first_reads.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(kb, "read_board_metadata", read_metadata)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        schemas = list(pool.map(lambda _: pg.board_schema("legacy"), range(4)))
+    assert len(set(schemas)) == 1
+    assert json.loads(path.read_text())["database_id"]

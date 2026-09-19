@@ -565,8 +565,6 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "default_workdir": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
-        # Stable storage identity. A board keeps this when archived, while a
-        # new board reusing the slug receives a different PostgreSQL schema.
         "database_id": DEFAULT_BOARD if slug == DEFAULT_BOARD else None,
         "created_at": None,
         "archived": False,
@@ -630,8 +628,6 @@ def board_database_id(board: Optional[str] = None) -> str:
     database_id = read_board_metadata(slug).get("database_id")
     if database_id:
         return str(database_id)
-    # Legacy named boards did not have an identity field. Persist one before
-    # the PostgreSQL schema is created so every process resolves the same one.
     return str(write_board_metadata(slug).get("database_id"))
 
 
@@ -707,7 +703,6 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     from hermes_cli.kanban_db_postgres import drop_board, uses_postgres
     if uses_postgres():
-        # Resolve the schema while board.json still carries its database id.
         drop_board(normed)
     import shutil
     shutil.rmtree(d)

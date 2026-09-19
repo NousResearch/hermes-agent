@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => {
       resolveStreamStart?.()
       resolveStreamStart = null
     },
+    consumePendingResponse: vi.fn(),
     deferStreamStart() {
       deferStreamStart = true
     },
@@ -134,7 +135,7 @@ function renderRearmConversation(responseId: string, responseText: string) {
     ({ enabled }) =>
       useVoiceConversation({
         busy: false,
-        consumePendingResponse: vi.fn(),
+        consumePendingResponse: mocks.consumePendingResponse,
         enabled,
         onSubmit: async () => {
           response = { id: responseId, pending: false, text: responseText }
@@ -203,9 +204,11 @@ describe('useVoiceConversation playback rearm', () => {
       mocks.continueStreamStart()
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
+    // The reply is silenced, but the conversation stays live and re-listens.
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(mocks.stopVoicePlayback).toHaveBeenCalledTimes(2)
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(2)
+    expect(hook.result.current.status).toBe('listening')
   })
 
   it('does not start fallback playback after Stop during stream discovery', async () => {
@@ -221,12 +224,14 @@ describe('useVoiceConversation playback rearm', () => {
       mocks.continueStreamStart()
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
+    // No fallback playback, but the loop re-arms the mic instead of wedging.
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(mocks.playSpeechText).not.toHaveBeenCalled()
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(2)
+    expect(hook.result.current.status).toBe('listening')
   })
 
-  it('does not re-arm after an external Stop during streaming playback', async () => {
+  it('re-arms and consumes the pending response after an external Stop during streaming playback', async () => {
     const hook = renderRearmConversation('reply-stopped', 'Playing now')
 
     await beginReply(hook)
@@ -237,8 +242,9 @@ describe('useVoiceConversation playback rearm', () => {
       mocks.finishSpeech('done')
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
+    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(2)
+    expect(hook.result.current.status).toBe('listening')
   })
 
   it('re-arms the microphone after normal fallback playback completes', async () => {

@@ -21,6 +21,23 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    # Optional global ceiling on simultaneous in-flight provider model
+    # requests. This is a REQUEST-level limit (how many provider API calls
+    # may be outstanding at once) and is strictly independent of the
+    # AGENT-level subagent concurrency governed by
+    # ``delegation.max_concurrent_children``. It is provider-agnostic and
+    # optional: ``None`` (default) means "unlimited" and changes nothing.
+    # The slot is held only for the duration of the actual HTTP model
+    # request, never while the agent executes tools / reads files / runs
+    # subprocesses / waits. Children and the main agent share this capacity.
+    "provider_max_concurrent_requests": None,
+    # Optional per-provider REQUEST-concurrency overrides. Keys are provider
+    # names (e.g. "openrouter", "nous", "anthropic"); values are int > 0 or
+    # None. A provider with an entry here uses its own independent semaphore,
+    # overriding the global ``provider_max_concurrent_requests``. This keeps
+    # REQUEST-level limits independent per provider (still separate from the
+    # AGENT-level delegation cap). Unset/empty = no per-provider override.
+    "provider_request_concurrency": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],

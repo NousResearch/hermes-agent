@@ -589,9 +589,9 @@ def _configured_cwd_from_cfg(cfg: dict | None) -> str | None:
 
 
 def _profile_configured_cwd(profile_home: Path | None) -> str | None:
-    """A non-launch profile's ``terminal.cwd`` from ITS config.yaml (fail-open → None): the process-global
+    """A profile's ``terminal.cwd`` from ITS config.yaml (fail-open → None): the process-global
     ``TERMINAL_CWD`` belongs to the *launch* profile, and load_config() resolves the ACTIVE profile, so
-    read that file through the same effective-config pipeline as ``_load_cfg``.
+    read the requested file through the same effective-config pipeline as ``_load_cfg``.
 
     A new session bound to another profile must take its workspace from THAT profile's config, not the stale
     env var (issue #40334). Returns an absolute, existing directory, or None for placeholders / missing /
@@ -609,9 +609,9 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
 def _launch_configured_cwd() -> str | None:
     """Launch profile's ``terminal.cwd`` from config.yaml: the dashboard's in-memory gateway gets no bridged
     ``TERMINAL_CWD`` env (only the Node PTY child does), so a fresh /chat would otherwise start in ``os.getcwd()``."""
-    with contextlib.suppress(Exception):
-        return _configured_cwd_from_cfg(_load_cfg())
-    return None
+    # Read the launch file by path. ``_load_cfg`` follows the active HERMES_HOME
+    # override, which may belong to a different profile-scoped RPC.
+    return _profile_configured_cwd(Path(_hermes_home))
 
 
 def _default_session_cwd() -> str:

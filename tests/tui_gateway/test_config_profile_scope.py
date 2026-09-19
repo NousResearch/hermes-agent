@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 import tui_gateway.server as server
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 LAUNCH_CWD = "/workspace/default"
@@ -111,3 +112,49 @@ def test_config_set_without_profile_still_writes_launch_home(tmp_path, monkeypat
     assert resp["result"]["value"] == "interrupt"
     assert _read_yaml(launch)["display"]["busy_input_mode"] == "interrupt"
     assert _read_yaml(worker)["display"]["busy_input_mode"] == "queue"
+
+
+def test_launch_cwd_reads_launch_config_during_foreign_profile_scope(tmp_path, monkeypatch):
+    launch, worker = _homes(tmp_path)
+    launch_cwd = tmp_path / "launch-workspace"
+    worker_cwd = tmp_path / "worker-workspace"
+    launch_cwd.mkdir()
+    worker_cwd.mkdir()
+    _write_cfg(launch, str(launch_cwd), LAUNCH_ROOTS)
+    _write_cfg(worker, str(worker_cwd), WORKER_ROOTS)
+    _bind_homes(monkeypatch, launch, worker)
+
+    token = set_hermes_home_override(str(worker))
+    try:
+        assert server._launch_configured_cwd() == str(launch_cwd)
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_profile_cwd_write_does_not_retarget_launch_session(tmp_path, monkeypatch):
+    launch, worker = _homes(tmp_path)
+    launch_cwd = tmp_path / "launch-workspace"
+    worker_cwd = tmp_path / "worker-workspace"
+    launch_cwd.mkdir()
+    worker_cwd.mkdir()
+    _write_cfg(launch, ".", LAUNCH_ROOTS)
+    _write_cfg(worker, str(worker_cwd), WORKER_ROOTS)
+    _bind_homes(monkeypatch, launch, worker)
+    monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+
+    response = _set(
+        {"key": "terminal.cwd", "value": str(worker_cwd), "profile": "code"}
+    )
+    assert response["result"]["cwd"] == str(worker_cwd)
+    assert _read_yaml(worker)["terminal"]["cwd"] == str(worker_cwd)
+    assert server.os.environ["TERMINAL_CWD"] == str(launch_cwd)
+
+    created = server._methods["session.create"]("rid-create", {"cols": 80})
+    sid = created["result"]["session_id"]
+    try:
+        assert created["result"]["info"]["cwd"] == str(launch_cwd)
+        assert server._sessions[sid]["profile_home"] is None
+    finally:
+        server._sessions.pop(sid, None)

@@ -1722,6 +1722,115 @@ test('connect removes the token file when a fresh backend fails after returning 
   assert.ok(ssh.calls.some(command => /rm -f .*\.token/.test(command)))
 })
 
+// #110970: when the spawn acknowledgement is lost (30 s exec timeout, channel
+// drop) the detached child is already running while the token file it was told
+// to read is deleted. Every later attempt then meets it through the EXISTING
+// path without a credential it can authenticate against, so the reap must
+// happen on the failure path — not just the token removal.
+test('spawnRemoteDashboard reaps the detached child when the spawn acknowledgement is lost', async () => {
+  const state: any = { nonce: '', spawnCommand: '' }
+
+  const ssh = fakeSsh([
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [
+      command => /reservation_nonce/.test(String(command)),
+      command => {
+        state.spawnCommand = String(command)
+        state.nonce = String(command).match(/\/([0-9a-f]{16})\.token/)?.[1] || ''
+
+        throw new Error('channel closed before the launcher acknowledged')
+      }
+    ],
+    [/print\("OWNED"/, 'OWNED\n'],
+    [
+      /cat .*backend\.lock\.json/,
+      () => JSON.stringify(ownedLock({ spawnNonce: state.nonce, logPath: spawnLogPath(OWNERSHIP_ID, state.nonce) }))
+    ],
+    [/python3 -c/, ''],
+    [/kill -0 333/, 'ALIVE']
+  ])
+
+  await assert.rejects(
+    () => spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tk', ownershipId: OWNERSHIP_ID }),
+    /channel closed/
+  )
+
+  assert.match(state.nonce, /^[0-9a-f]{16}$/)
+  assert.ok(
+    ssh.calls.some(command => /rm -f .*\.token/.test(command)),
+    'the uploaded token must be removed'
+  )
+  assert.ok(
+    ssh.calls.some(command => /kill 333\b/.test(command)),
+    'the detached child recorded for this spawn must be reaped'
+  )
+  assert.ok(
+    ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)),
+    'the failed spawn must not leave its ownership record behind'
+  )
+})
+
+test('spawnRemoteDashboard leaves a foreign ownership record alone on a lost acknowledgement', async () => {
+  const ssh = fakeSsh([
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [
+      command => /reservation_nonce/.test(String(command)),
+      () => {
+        throw new Error('channel closed before the launcher acknowledged')
+      }
+    ],
+    // A record for a DIFFERENT spawn nonce: never reap what this attempt did not create.
+    [/(cat|backend\.lock\.json)/, JSON.stringify(ownedLock({ spawnNonce: 'ffffffffffffffff' }))],
+    [/print\("OWNED"/, 'OWNED\n'],
+    [/python3 -c/, ''],
+    [/kill -0/, 'ALIVE']
+  ])
+
+  await assert.rejects(
+    () => spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tk', ownershipId: OWNERSHIP_ID }),
+    /channel closed/
+  )
+
+  assert.ok(!ssh.calls.some(command => /kill 333\b/.test(command)), 'a foreign record must never be reaped')
+  assert.ok(!ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
+})
+
+test('connect() refuses to respawn forever when a live backend it cannot adopt holds the slot', async () => {
+  const state = { spawns: 0 }
+
+  const ssh = fakeSsh([
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/\[ -x/, 'OK'],
+    [/print\("OWNED"/, 'FOREIGN\n'],
+    [/cat .*backend\.lock\.json/, JSON.stringify(ownedLock({ pid: 333, port: 40000 }))],
+    [/kill -0 333/, 'ALIVE'],
+    [
+      /setsid|nohup/,
+      () => {
+        state.spawns += 1
+
+        if (state.spawns > 3) {
+          throw new Error('respawning against the same live owner')
+        }
+
+        return 'EXISTING\n'
+      }
+    ],
+    [/python3 -c/, '']
+  ])
+
+  await assert.rejects(
+    () => connect(connectDeps(ssh, { reuseToken: 'stored-token', platform: { os: 'Linux', arch: 'x86_64' } })),
+    (error: any) => {
+      assert.equal(error.kind, 'remote-ownership-contended')
+
+      return true
+    }
+  )
+
+  assert.equal(state.spawns, 2, 'one recycle pass, then an actionable refusal — never a third spawn')
+})
+
 test('connect preserves an exact-owned backend when reuse proof transport fails', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })

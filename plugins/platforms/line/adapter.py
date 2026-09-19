@@ -391,6 +391,13 @@ class LineAdapter(BasePlatformAdapter):
         self.allow_all = _truthy_env("LINE_ALLOW_ALL_USERS", bool(extra.get("allow_all_users", False)))
         self.allowed_users = allowlist("LINE_ALLOWED_USERS", "allowed_users")
         self.allowed_groups = allowlist("LINE_ALLOWED_GROUPS", "allowed_groups")
+        # Group wake-up policy is config-backed; behavioral settings do not
+        # need additional user-facing environment variables.
+        self.require_prefix_groups = set(extra.get("require_prefix_groups", []))
+        self.group_prefixes = [
+            str(prefix) for prefix in (extra.get("group_prefixes") or ["Hermes:"])
+            if str(prefix)
+        ]
         self.allowed_rooms = allowlist("LINE_ALLOWED_ROOMS", "allowed_rooms")
         # Slow-LLM postback button threshold + user-overridable copy
         threshold = env_or("LINE_SLOW_RESPONSE_THRESHOLD", "slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
@@ -537,12 +544,28 @@ class LineAdapter(BasePlatformAdapter):
         source = event.get("source") or {}
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
-        if chat_id and reply_token:  # stash the reply token for outbound use
-            self._reply_tokens[chat_id] = (reply_token, time.time() + LINE_REPLY_TOKEN_TTL_SECONDS)
+        text = ""
+
+        # Gate configured groups before any reply-token storage or media
+        # download. Ignored events must have no inbound side effects.
+        if chat_type == "group" and chat_id in self.require_prefix_groups:
+            if msg_type != "text":
+                logger.info("LINE: ignoring non-text group event without prefix chat=%s type=%s", chat_id, msg_type)
+                return
+            text = msg.get("text", "") or ""
+            matched = next((prefix for prefix in self.group_prefixes if text.startswith(prefix)), None)
+            if matched is None:
+                logger.info("LINE: ignoring unprefixed group event chat=%s", chat_id)
+                return
+            text = text[len(matched):].lstrip()
+            if not text:
+                logger.info("LINE: ignoring prefix-only group event chat=%s", chat_id)
+                return
+
         media_urls: List[str] = []
         media_types: List[str] = []
         if msg_type == "text":
-            text = msg.get("text", "") or ""
+            text = text or msg.get("text", "") or ""
         elif msg_type in _INBOUND_MEDIA_EXT:  # fetch, cache, surface a vision-friendly local path
             local_path, media_type = await self._download_media(
                 message_id, msg_type, filename=msg.get("fileName") or msg.get("file_name"))
@@ -555,6 +578,8 @@ class LineAdapter(BasePlatformAdapter):
             text = f"[location: {msg.get('title', '')} {msg.get('address', '')}]".strip()
         else:
             text = f"[unsupported message type: {msg_type}]"
+        if chat_id and reply_token:  # stash only after the prefix gate
+            self._reply_tokens[chat_id] = (reply_token, time.time() + LINE_REPLY_TOKEN_TTL_SECONDS)
         if chat_type == "dm" and self._client:  # best-effort typing indicator (DM only)
             asyncio.create_task(self._client.loading(chat_id))
         source_obj = self.build_source(

@@ -2304,10 +2304,14 @@ stt:
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
     language: ""               # per-provider override of stt.language
+    timeout: 60                # SDK client timeout seconds for /v1/audio/transcriptions; 0 = no timeout
+    max_retries: 1             # transport retries on the same request (429/408/5xx included)
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
 Language resolution is the same for **every** STT provider (local, groq, openai, mistral, xai, elevenlabs, deepinfra, command providers, and plugins): `stt.<provider>.language` → `stt.language` → `HERMES_LOCAL_STT_LANGUAGE` env var → provider auto-detect. **The default is `stt.language: "en"`** — Whisper auto-detection frequently misidentifies short or accented clips, which shows up as voice notes transcribed in the wrong language. Non-English speakers should set `stt.language` to their language code once (e.g. `"es"`, `"zh"`, `"uk"`); set it to `""` to restore auto-detection for multilingual use.
+
+The OpenAI-SDK transcription transport (openai, and the riders that share the client: groq, deepinfra) reads `stt.openai.timeout` (default `60`) and `stt.openai.max_retries` (default `1`); a provider's own section overrides the fallback (`stt.groq.timeout` beats `stt.openai.timeout`). Defaults changed from the old hardcoded `30`/`0` because a self-hosted OpenAI-compatible endpoint's model cold start can exceed 30s (measured 35.3s) and the voice message was lost at the first attempt; with `max_retries: 1` the SDK makes exactly two attempts, so an unreachable backend now holds the voice handler for roughly twice the timeout before the local fallback engages. Set `timeout: 30` and `max_retries: 0` to restore the old shape exactly. The SDK itself has no environment-variable layer for these values.
 
 Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
 

@@ -1116,6 +1116,14 @@ DEFAULT_CONFIG = {
             # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
             "model": "whisper-1",
             "language": "",  # auto-detect; set "en", "es", ... to force
+            # SDK client transport for /v1/audio/transcriptions; stt.<provider>.timeout /
+            # max_retries override per rider (groq), these are the fallback. 60s covers a
+            # self-hosted model's cold start (measured 35.3s on parakeet-mlx, #112939) and one
+            # retry absorbs a transient without a retry storm; with max_retries=1 the SDK makes
+            # exactly 2 attempts, so a fully dead backend holds the voice handler ~2x the
+            # timeout (~121s). timeout: 0 means no timeout (httpx). Set 30/0 for the old shape.
+            "timeout": 60,
+            "max_retries": 1,
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602

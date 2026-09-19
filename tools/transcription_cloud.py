@@ -36,13 +36,68 @@ def _has_xai_stt_credentials() -> bool:
     return bool(resolve_xai_http_credentials().get("api_key"))
 
 
-def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, log_label: str, body):
-    """Run ``body(client)`` on a fresh OpenAI SDK client (30s timeout, no retries); always closed.
-    Errors map to the shared envelope. APIConnectionError is checked before APITimeoutError (its
-    subclass) so timeouts report as connection errors, as they always have."""
+DEFAULT_STT_OPENAI_TIMEOUT = 60.0
+DEFAULT_STT_OPENAI_MAX_RETRIES = 1
+
+
+def _openai_client_settings(provider_section: str = "openai") -> tuple:
+    """SDK client timeout/retries for the transcription transport (#112939).
+
+    Precedence: ``stt.<provider>.timeout`` / ``stt.<provider>.max_retries`` (for the rider's
+    own section, e.g. ``groq``) over the ``stt.openai`` fallback, over the defaults above.
+    The SDK has no env layer for these (openai 2.x reads no OPENAI_TIMEOUT /
+    OPENAI_MAX_RETRIES anywhere; omitted args mean its own 600s / 2 defaults), so config is
+    the only knob. Quoted numerics coerce like every other stt numeric key
+    (``tools.transcription_common._config_number``); booleans are rejected (``True`` is not a
+    timeout); a timeout of exactly 0 keeps httpx semantics and means "no timeout" (None);
+    negative or invalid values fall back with a warning that names the rejected value."""
+    from tools.transcription_common import _config_number
+
+    timeout: object = DEFAULT_STT_OPENAI_TIMEOUT
+    retries: object = DEFAULT_STT_OPENAI_MAX_RETRIES
+    try:
+        from tools.transcription_tools import _load_stt_config
+        cfg = _load_stt_config() or {}
+        sections = [cfg.get("openai") or {}]
+        if provider_section and provider_section != "openai":
+            sections.append(cfg.get(provider_section) or {})
+        for store in sections:  # later sections (the provider's own) win
+            for key in ("timeout", "max_retries"):
+                if key not in store:
+                    continue
+                raw = store[key]
+                if isinstance(raw, bool):
+                    logger.warning("stt.%s.%s: boolean is not a valid %s; keeping %s",
+                                   provider_section, key, key, timeout if key == "timeout" else retries)
+                    continue
+                if key == "timeout":
+                    timeout = _config_number(store, key, timeout, cast=float)
+                else:
+                    retries = _config_number(store, key, retries, cast=int)
+    except Exception:
+        logger.debug("stt transport settings unavailable; using defaults", exc_info=True)
+        return DEFAULT_STT_OPENAI_TIMEOUT, DEFAULT_STT_OPENAI_MAX_RETRIES
+    if timeout is not None and timeout < 0:
+        logger.warning("stt.%s.timeout: negative value %s; using the default %s",
+                       provider_section, timeout, DEFAULT_STT_OPENAI_TIMEOUT)
+        timeout = DEFAULT_STT_OPENAI_TIMEOUT
+    if isinstance(retries, int) and retries < 0:
+        logger.warning("stt.%s.max_retries: negative value %s; treating as 0 (no retries)",
+                       provider_section, retries)
+        retries = 0
+    return (None if timeout == 0 else timeout), retries
+
+
+def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, log_label: str, body,
+                        config_section: str = "openai"):
+    """Run ``body(client)`` on a fresh OpenAI SDK client (timeout/retries per
+    ``_openai_client_settings(config_section)``, default 60s and one retry, #112939); always
+    closed. Errors map to the shared envelope. APIConnectionError is checked before
+    APITimeoutError (its subclass) so timeouts report as connection errors, as they always have."""
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        timeout, max_retries = _openai_client_settings(config_section)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=max_retries)
         try:
             return body(client)
         finally:
@@ -101,13 +156,13 @@ def _transcribe_groq(
         logger.info("Transcribed %s via Groq API (%s, lang=%s, %d chars)",
                      Path(file_path).name, model_name, language or "auto", len(transcript_text))
         return _ok_result(transcript_text, "groq")
-    return _with_openai_client(api_key, GROQ_BASE_URL, file_path, "Groq", _run)
+    return _with_openai_client(api_key, GROQ_BASE_URL, file_path, "Groq", _run, config_section="groq")
 
 
 def _transcribe_openai(
     file_path: str, model_name: str, *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, provider_label: str = "openai", language: Optional[str] = None,
-    prompt: Optional[str] = None) -> Dict[str, Any]:
+    prompt: Optional[str] = None, config_section: str = "openai") -> Dict[str, Any]:
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape, shared by every
     OpenAI-compatible endpoint (DeepInfra etc.): explicit ``api_key``/``base_url`` skip the
     OpenAI-only auth chain; ``provider_label`` names the response's provider."""
@@ -162,7 +217,7 @@ def _transcribe_openai(
         logger.info("Transcribed %s via %s (%s, %d chars)",
                     Path(file_path).name, provider_label, model_name, len(transcript_text))
         return _ok_result(transcript_text, provider_label)
-    return _with_openai_client(api_key, base_url, file_path, provider_label, _run)
+    return _with_openai_client(api_key, base_url, file_path, provider_label, _run, config_section=config_section)
 
 
 def _transcribe_mistral(
@@ -344,7 +399,8 @@ def _transcribe_deepinfra(
             "No DeepInfra STT model available. Pin one in config.yaml under stt.deepinfra.model, "
             "or check connectivity to api.deepinfra.com so the live catalog can be fetched.")
     return _transcribe_openai(file_path, model_name, api_key=api_key, base_url=base_url,
-                              provider_label="deepinfra", language=language, prompt=prompt)
+                              provider_label="deepinfra", language=language, prompt=prompt,
+                              config_section="deepinfra")
 
 
 # ---- OpenAI audio credential resolution -----------------------------------

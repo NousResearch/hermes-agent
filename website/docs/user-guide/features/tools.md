@@ -49,7 +49,20 @@ hermes tools
 hermes tools
 ```
 
-Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, and `safe`.
+Common toolsets include `web`, `search`, `terminal`, `file`, `file_write`, `browser`, `vision`, `image_gen`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, and `safe`.
+
+File reading and file mutation are separate toolsets: `file` grants `read_file` and
+`search_files`, `file_write` grants `write_file` and `patch`. A review, research or audit
+profile can therefore disable `file_write` and keep full read access:
+
+```yaml
+agent:
+  disabled_toolsets: [file_write]
+```
+
+Note that this removes the file-mutation *tools*; a profile that still has `terminal` or
+`code_execution` can write files through those. Dropping `file_write` alone is a reduction of
+the model's write surface, not a sandbox.
 
 See [Toolsets Reference](../../reference/toolsets-reference.md) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 

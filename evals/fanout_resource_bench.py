@@ -173,7 +173,7 @@ def main() -> None:
     session_db = SessionDB(db_path=Path(db_path))
     parent = AIAgent(api_key="bench", base_url=f"http://127.0.0.1:{port}/v1", model="bench-model",
                      quiet_mode=True, skip_context_files=True, skip_memory=True,
-                     enabled_toolsets=["delegation", "file", "code_execution"],
+                     enabled_toolsets=["delegation", "file", "file_write", "code_execution"],
                      session_db=session_db, session_id="bench-root")
     # Children reference parent_session_id; the parent row is normally created
     # lazily on the parent's first turn, which this harness never runs.

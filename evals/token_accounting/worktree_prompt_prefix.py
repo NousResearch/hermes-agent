@@ -132,7 +132,7 @@ else:
         base_url="http://127.0.0.1:9/v1",
         provider="openai-compat",
         model="offline-probe",
-        enabled_toolsets=["terminal", "file"],
+        enabled_toolsets=["terminal", "file", "file_write"],
         quiet_mode=True,
         skip_context_files=False,
         skip_memory=True,

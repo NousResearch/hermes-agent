@@ -74,6 +74,11 @@ _EXCLUDED_DIRS = {
 # is user data.
 _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS
 
+# Backup-only profile roots. Keep these separate from ``LOCAL_RUNTIME_ROOT_DIRS``: they are live
+# local state unsafe to archive, not managed runtime downloads that profile cloning should treat
+# specially. The local CDP launcher always owns ``chrome-debug/`` at a profile home.
+_BACKUP_ONLY_EXCLUDED_ROOT_DIRS = {"chrome-debug"}
+
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
 # the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
@@ -88,7 +93,7 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
         parts = parts[2:]
     if not parts:
         return False
-    if parts[0] in _EXCLUDED_ROOT_DIRS:
+    if parts[0] in _EXCLUDED_ROOT_DIRS or parts[0] in _BACKUP_ONLY_EXCLUDED_ROOT_DIRS:
         return True
     return parts[0] == "cache" and len(parts) >= 2 and parts[1] not in _KEPT_CACHE_SUBDIRS
 
@@ -237,7 +242,11 @@ def _collect_memory_provider_external_paths() -> List[Path]:
 
 def _iter_external_files(base: Path) -> List[Path]:
     """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
-    if base.is_file() and not base.is_symlink():
+    # ``Path.is_file()`` and ``Path.is_dir()`` follow symlinks, so reject a declared link before
+    # either probe can turn external provider state into an archive candidate.
+    if base.is_symlink():
+        return []
+    if base.is_file():
         return [base]
     if not base.is_dir():
         return []

@@ -172,6 +172,16 @@ class TestShouldExclude:
         assert _should_exclude(Path("profiles/clean/models/big.gguf"))
         assert _should_exclude(Path("profiles/clean/runtimes/llamacpp/x.dll"))
 
+    def test_excludes_live_chrome_debug_only_at_profile_homes(self):
+        """The local CDP profile is runtime state at each profile home, not a
+        generic directory name that can erase user skill content."""
+        from hermes_cli.backup import _should_exclude
+
+        assert _should_exclude(Path("chrome-debug/Default/Cookies"))
+        assert _should_exclude(Path("profiles/coder/chrome-debug/Default/Cookies"))
+        assert not _should_exclude(Path("skills/example/chrome-debug/notes.md"))
+        assert not _should_exclude(Path("profiles/coder/skills/example/chrome-debug/notes.md"))
+
     def test_excludes_regenerable_cache_but_keeps_durable_artifacts(self):
         """Catalogs and live browser profiles are rebuilt on demand; delivered media and the
         citation ledger are not, so they stay in the archive."""
@@ -307,6 +317,62 @@ class TestIterBackupFiles:
 
 class TestBackup:
 
+    @pytest.mark.parametrize("entry_point", ["manual", "automatic"])
+    def test_live_chrome_debug_is_pruned_before_both_full_backup_walks(
+        self, tmp_path, monkeypatch, capsys, entry_point
+    ):
+        """Both full ZIP entry points skip live root/profile CDP directories
+        before walking them, while retaining nested user content."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        live_dirs = [
+            hermes_home / "chrome-debug",
+            hermes_home / "profiles" / "coder" / "chrome-debug",
+        ]
+        for live_dir in live_dirs:
+            (live_dir / "Default").mkdir(parents=True)
+            (live_dir / "Default" / "Cookies").write_text("live runtime state")
+        nested_files = [
+            hermes_home / "skills" / "example" / "chrome-debug" / "notes.md",
+            hermes_home / "profiles" / "coder" / "skills" / "example" / "chrome-debug" / "notes.md",
+        ]
+        for nested_file in nested_files:
+            nested_file.parent.mkdir(parents=True)
+            nested_file.write_text("user content")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        import hermes_cli.backup as backup_mod
+
+        walked: list[Path] = []
+        real_walk = backup_mod.os.walk
+
+        def traced_walk(*args, **kwargs):
+            for item in real_walk(*args, **kwargs):
+                walked.append(Path(item[0]))
+                yield item
+
+        monkeypatch.setattr(backup_mod.os, "walk", traced_walk)
+        out_zip = tmp_path / f"{entry_point}.zip"
+        if entry_point == "manual":
+            assert backup_mod.run_backup(Namespace(output=str(out_zip))) is True
+            output = capsys.readouterr().out
+            for live_dir in live_dirs:
+                assert f"    {live_dir.relative_to(hermes_home)}/" in output
+        else:
+            assert backup_mod._write_full_zip_backup(out_zip, hermes_home) == out_zip
+
+        assert not any(
+            walked_path == live_dir or live_dir in walked_path.parents
+            for live_dir in live_dirs
+            for walked_path in walked
+        )
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert not any(name.startswith("chrome-debug/") for name in names)
+        assert not any(name.startswith("profiles/coder/chrome-debug/") for name in names)
+        assert {path.relative_to(hermes_home).as_posix() for path in nested_files} <= names
 
     def test_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
         """SQLite staging temp files must be created on the output zip's
@@ -767,6 +833,40 @@ class TestBackupEdgeCases:
         assert exc.value.code == 1
         unreadable.chmod(0o600)
         assert run_backup(Namespace(output=str(tmp_path / "out4.zip"))) is True
+
+    def test_lstat_error_remains_writer_visible(self, tmp_path, monkeypatch, capsys):
+        """A transient lstat failure must not silently turn a source file into
+        an excluded entry; the archive writer reports its failure instead."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        raced_file = hermes_home / "skills" / "raced.txt"
+        raced_file.write_text("still selected")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        import hermes_cli.backup as backup_mod
+
+        real_lstat = Path.lstat
+        real_write = zipfile.ZipFile.write
+
+        def racing_lstat(path):
+            if path == raced_file:
+                raise OSError("simulated lstat race")
+            return real_lstat(path)
+
+        def failing_write(zf, filename, arcname=None, *args, **kwargs):
+            if Path(filename) == raced_file:
+                raise OSError("simulated archive read failure")
+            return real_write(zf, filename, arcname, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", racing_lstat)
+        monkeypatch.setattr(zipfile.ZipFile, "write", failing_write)
+        out_zip = tmp_path / "raced.zip"
+
+        assert backup_mod.run_backup(Namespace(output=str(out_zip))) is False
+        output = capsys.readouterr().out
+        assert "Backup incomplete" in output
+        assert "raced.txt: simulated archive read failure" in output
 
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
         """Backup handles empty hermes home (no files to back up)."""
@@ -2175,6 +2275,28 @@ class TestMemoryProviderExternalPaths:
         assert not any("leak.json" in n for n in names)
         (outside / "leak.json").unlink()
         outside.rmdir()
+
+    def test_external_file_iterator_rejects_symlink_roots(self, tmp_path):
+        """Provider-declared symlink roots must not turn into archive candidates,
+        whether they point to a file or a directory."""
+        from hermes_cli.backup import _iter_external_files
+
+        regular = tmp_path / "regular.json"
+        regular.write_text("keep")
+        target_dir = tmp_path / "target-dir"
+        target_dir.mkdir()
+        (target_dir / "nested.json").write_text("keep")
+        file_link = tmp_path / "file-link"
+        dir_link = tmp_path / "dir-link"
+        try:
+            file_link.symlink_to(regular)
+            dir_link.symlink_to(target_dir, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        assert _iter_external_files(regular) == [regular]
+        assert _iter_external_files(file_link) == []
+        assert _iter_external_files(dir_link) == []
 
     def test_import_restores_external_to_home_relative_location(self, tmp_path, monkeypatch):
         """_external/ members restore to ~/<relpath>, not under HERMES_HOME,

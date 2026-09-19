@@ -142,7 +142,12 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 
 def _thread_metadata_for_event(event) -> dict | None:
     """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
-    return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+    metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+    continue_token = (getattr(event, "metadata", None) or {}).get("telegram_continue_token")
+    if continue_token:
+        metadata = dict(metadata or {})
+        metadata["telegram_continue_token"] = str(continue_token)
+    return metadata
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
@@ -3414,8 +3419,8 @@ class BasePlatformAdapter(ABC):
     async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
         """Call the handler and send its reply inline, with retry, threading and
         ephemeral deletion — no session lifecycle (active-session bypass paths)."""
-        thread_meta = _thread_metadata_for_event(event)
         response = await self._message_handler(event)
+        thread_meta = _thread_metadata_for_event(event)
         text, eph_ttl = self._unwrap_ephemeral(response)
         if not text:
             return
@@ -4365,8 +4370,9 @@ class BasePlatformAdapter(ABC):
                 extracted = await self._extract_response_content(
                     response, event, session_key, is_ephemeral_response=is_ephemeral_response)
                 text_content, media_files = extracted.text_content, extracted.media_files
-                # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
-                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                # Final content gets notify=True; recompute after the handler because turn delivery
+                # may add metadata (for example the one-shot Telegram continuation token).
+                _final_thread_metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):

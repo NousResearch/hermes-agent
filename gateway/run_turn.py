@@ -13,6 +13,7 @@ import inspect
 import json
 import os
 import queue
+import secrets
 import threading
 import time
 from agent.i18n import t
@@ -330,7 +331,12 @@ class GatewayTurnMixin:
 
     def _event_thread_metadata(self, event, source):
         """Thread metadata for a send that replies to ``event`` on ``source``."""
-        return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        continue_token = (getattr(event, "metadata", None) or {}).get("telegram_continue_token")
+        if continue_token:
+            metadata = dict(metadata or {})
+            metadata["telegram_continue_token"] = str(continue_token)
+        return metadata
 
     @staticmethod
     def _pop_post_delivery_callback(adapter, key, generation):
@@ -1909,6 +1915,19 @@ class GatewayTurnMixin:
                 event._streamed_final_response = str(response or "")
             return None
 
+        # A tool-call iteration limit is a safe continuation point: all completed tool results are
+        # already in the transcript, while the next turn can continue from the assistant's summary.
+        # Store a one-shot capability token so an old Telegram button cannot resume a newer turn.
+        if (
+            response
+            and str(agent_result.get("turn_exit_reason") or "").startswith("max_iterations_reached(")
+            and getattr(source.platform, "value", source.platform) == "telegram"
+        ):
+            continue_token = secrets.token_urlsafe(9)
+            event.metadata["telegram_continue_token"] = continue_token
+            with suppress(Exception):
+                self.session_store.set_session_metadata(session_key, "telegram_continue_token", continue_token)
+
         return response
 
     # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
@@ -2005,6 +2024,13 @@ class GatewayTurnMixin:
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
+        if (
+            getattr(source.platform, "value", source.platform) == "telegram"
+            and not (getattr(event, "metadata", None) or {}).get("telegram_continue_event")
+        ):
+            # A new user message supersedes any older Continue button for this session.
+            with suppress(Exception):
+                self.session_store.set_session_metadata(session_key, "telegram_continue_token", None)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)

@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import dataclasses
+import hmac
 import inspect
 import json
 import logging
@@ -142,6 +143,11 @@ from gateway.platforms.base import (
 
 # Every refused button tap answers with the same sentence.
 _UNAUTHORIZED = unauthorized_action_notice(Platform.TELEGRAM)
+_CONTINUE_PROMPT = (
+    "[Continue the same task from the last completed tool result. The previous assistant turn reached "
+    "the tool-call iteration limit. Do not repeat any operation whose outcome is unknown. "
+    "If fresh native permission is required, stop and ask for it explicitly.]"
+)
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
@@ -1323,7 +1329,11 @@ class TelegramAdapter(BasePlatformAdapter):
             and self._rich_content_ok(content))
 
     def _should_attempt_rich(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
-        return bool(not (metadata or {}).get("expect_edits") and self._rich_eligible(content))
+        return bool(
+            not (metadata or {}).get("expect_edits")
+            and not (metadata or {}).get("telegram_continue_token")
+            and self._rich_eligible(content)
+        )
 
     def prefers_fresh_final_streaming(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Replace a streamed preview with a fresh rich final — DM topics only. Root DMs stay off (a live
@@ -3340,6 +3350,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
+                if index == 0 and (metadata or {}).get("telegram_continue_token"):
+                    token = str(metadata["telegram_continue_token"])
+                    send_kwargs["reply_markup"] = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("▶️ Продолжить", callback_data=f"hermes:continue:{token}")
+                    ]])
                 return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
@@ -4458,6 +4473,100 @@ class TelegramAdapter(BasePlatformAdapter):
         await query.answer(text=denial_text)
         return False
 
+    def _continue_session_key(self, source) -> Optional[str]:
+        """Derive the exact gateway session key for a Telegram callback source."""
+        runner = getattr(self, "gateway_runner", None)
+        key_fn = getattr(runner, "_session_key_for_source", None)
+        if callable(key_fn):
+            try:
+                return str(key_fn(source))
+            except Exception:
+                logger.debug("[%s] Could not derive Continue session key", self.name, exc_info=True)
+        if source.chat_id:
+            return f"telegram:{source.chat_id}:{source.thread_id or ''}:{source.user_id or ''}"
+        return None
+
+    def _continue_event_from_query(self, query) -> Optional[MessageEvent]:
+        """Build a synthetic, non-command event that stays in the tapped topic/session."""
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        user = getattr(query, "from_user", None)
+        if message is None or chat is None or user is None:
+            return None
+        chat_id = str(getattr(message, "chat_id", None) or getattr(chat, "id", "")).strip()
+        user_id = str(getattr(user, "id", "")).strip()
+        if not chat_id or not user_id or getattr(message, "message_id", None) is None:
+            return None
+        raw_thread_id = getattr(message, "message_thread_id", None)
+        is_topic_message = bool(getattr(message, "is_topic_message", False))
+        is_forum_group = getattr(chat, "is_forum", False) is True
+        chat_type = self._normalize_chat_type(
+            getattr(chat, "type", "dm"), is_forum=raw_thread_id is not None and (is_topic_message or is_forum_group))
+        thread_id = None
+        if raw_thread_id is not None and (
+            (chat_type == "forum" and (is_topic_message or is_forum_group))
+            or (chat_type == "dm" and is_topic_message)
+        ):
+            thread_id = str(raw_thread_id)
+        user_name = str(
+            getattr(user, "username", "") or getattr(user, "full_name", "")
+            or getattr(user, "first_name", "") or ""
+        ).strip() or None
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=str(getattr(chat, "title", "") or "").strip() or None,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=thread_id,
+            message_id=str(getattr(message, "message_id")),
+            is_bot=bool(getattr(user, "is_bot", False)),
+        )
+        callback_id = str(getattr(query, "id", "") or getattr(message, "message_id"))
+        return MessageEvent(
+            text=_CONTINUE_PROMPT,
+            user_id=user_id,
+            user_name=user_name,
+            source=source,
+            raw_message=message,
+            ledger_message_id=f"telegram-continue:{callback_id}",
+            reply_to_message_id=str(getattr(message, "message_id")),
+            metadata={"telegram_continue_event": True},
+            allow_gateway_control=False,
+        )
+
+    async def _handle_continue_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+        """Consume a one-shot iteration-limit token and continue the same Telegram session."""
+        parts = data.split(":", 2)
+        if len(parts) != 3 or not parts[2]:
+            await query.answer(text="Некорректная кнопка продолжения.")
+            return
+        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
+            return
+        event = self._continue_event_from_query(query)
+        if event is None:
+            await query.answer(text="Не удалось определить тему задачи.")
+            return
+        session_key = self._continue_session_key(event.source)
+        store = getattr(self, "_session_store", None)
+        if not session_key or store is None:
+            await query.answer(text="Нет безопасной точки продолжения.")
+            return
+        runner = getattr(self, "gateway_runner", None)
+        if runner is not None and getattr(runner, "_is_session_running", lambda _key: False)(session_key):
+            await query.answer(text="Задача уже выполняется.")
+            return
+        pending = store.get_session_metadata(session_key, "telegram_continue_token")
+        if not pending or not hmac.compare_digest(str(pending), parts[2]):
+            await query.answer(text="Кнопка устарела или уже использована.")
+            return
+        # Clear before dispatch: duplicate callback deliveries fail closed even if the turn is slow.
+        store.set_session_metadata(session_key, "telegram_continue_token", None)
+        await query.answer(text="Продолжаю задачу…")
+        with contextlib.suppress(Exception):
+            await query.edit_message_reply_markup(reply_markup=None)
+        await self._dispatch_inline_reply(event)
+
     async def _handle_callback_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
         """Dispatch inline keyboard button clicks on the callback_data prefix."""
         query = update.callback_query
@@ -4477,7 +4586,8 @@ class TelegramAdapter(BasePlatformAdapter):
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
-            ("update_prompt:", self._handle_update_prompt_callback)):
+            ("update_prompt:", self._handle_update_prompt_callback),
+            ("hermes:continue:", self._handle_continue_callback)):
             if data.startswith(prefix):
                 await handler(query, data, cb)
                 return

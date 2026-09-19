@@ -326,6 +326,7 @@ import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
 import { capturePreviewContents } from './preview-capture'
+import { resolvePreviewHomeFallback } from './preview-home-fallback'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -6436,7 +6437,22 @@ async function previewFileTarget(rawTarget, baseDir) {
   const ext = path.extname(resolved).toLowerCase()
 
   if (!fileExists(resolved)) {
-    return null
+    // Attachment refs stored in chat history are frequently home-relative
+    // (e.g. `AppData/Local/hermes/attachments/foo.xlsx`). The default base
+    // (the agent working directory) does not contain them, so retry against
+    // the user home directory and the well-known attachments directory
+    // before giving up. Absolute paths and `file:` URLs never reach here
+    // with candidates, so they are unaffected.
+    const fallback = resolvePreviewHomeFallback(raw, {
+      exists: candidate => fileExists(candidate),
+      homeDir: app.getPath('home')
+    })
+
+    if (!fallback) {
+      return null
+    }
+
+    resolved = fallback
   }
 
   ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))

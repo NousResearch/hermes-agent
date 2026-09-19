@@ -153,7 +153,7 @@ const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => vo
     return false
   }
 
-  startSessionDrag(payload, event, { onTap })
+  startSessionDrag(payload, event, { onTap, sourcePaneId: 'workspace' })
 
   return true
 }

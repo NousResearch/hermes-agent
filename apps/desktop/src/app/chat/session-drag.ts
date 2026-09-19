@@ -37,7 +37,13 @@ import {
   type StripSnapshot,
   subZonePosition
 } from '@/components/pane-shell/tree/renderer/drag-session'
-import { $treeDragging, type DropHint, revealTreePane, SESSION_TILE_DRAG } from '@/components/pane-shell/tree/store'
+import {
+  $treeDragging,
+  type DropHint,
+  moveTreePane,
+  revealTreePane,
+  SESSION_TILE_DRAG
+} from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { openSessionTile, type TileDock } from '@/store/session-states'
 
@@ -77,17 +83,19 @@ function snapshotSurfaces(): SurfaceSnapshot[] {
  *  is byte-identical to what the zone overlay paints. */
 
 /**
- * Begin dragging a session — a sidebar row OR a tile's own tab (same drop
- * language either way: stack, split, or composer link). Sub-threshold releases
- * stay ordinary clicks, so `opts.onTap` (activate the tile) rides the tab's
- * gesture; Esc aborts instantly. A stack/split commits through
- * `openSessionTile`, which OPENS a new tile from a sidebar row and MOVES the
- * existing one when its tab is the drag source.
+ * Begin dragging a session — a sidebar row, a tile tab, or the primary
+ * workspace tab (same drop language either way: stack, split, or composer
+ * link). Sub-threshold releases stay ordinary clicks, so `opts.onTap`
+ * (activate the tile) rides the tab's gesture; Esc aborts instantly. A
+ * stack/split normally commits through `openSessionTile`, which OPENS a new
+ * tile from a sidebar row and MOVES an existing tile. The primary workspace is
+ * already a pane and cannot be duplicated as a tile, so `sourcePaneId` moves
+ * that pane itself instead.
  */
 export function startSessionDrag(
   payload: SessionDragPayload,
   e: ReactPointerEvent<HTMLElement>,
-  opts?: { onTap?: () => void }
+  opts?: { onTap?: () => void; sourcePaneId?: 'workspace' }
 ) {
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
@@ -97,7 +105,7 @@ export function startSessionDrag(
 
   // Commit intent, updated per resolved move (the machinery flushes the final
   // move before commit, so these always match the released-at position).
-  let split: { anchor: string; before?: null | string; pos: TileDock } | null = null
+  let split: { anchor: string; before?: null | string; groupId: string; pos: TileDock } | null = null
   let link: null | string = null
 
   // The drag SOURCE (sidebar row or tile tab). Captured synchronously — React
@@ -144,10 +152,12 @@ export function startSessionDrag(
       const strip = strips.find(s => s.groupId === zone.id && rectContains(s.rect, x, y))
 
       if (strip) {
-        // Exclude the tile's OWN tab from the slots so re-dropping it in its
-        // home strip reorders cleanly (a no-op for a sidebar-row drag).
-        const stack = slotBefore(strip.slots, x, `session-tile:${payload.id}`)
-        split = { anchor: host.pane, before: stack.before, pos: 'center' }
+        // Exclude the actual source pane from the slots so re-dropping a tab
+        // in its home strip reorders cleanly. Tile tabs use their mirrored pane
+        // id; the primary chat moves the `workspace` pane itself.
+        const sourcePaneId = opts?.sourcePaneId ?? `session-tile:${payload.id}`
+        const stack = slotBefore(strip.slots, x, sourcePaneId)
+        split = { anchor: host.pane, before: stack.before, groupId: zone.id, pos: 'center' }
         link = null
 
         return { kind: 'group', groupId: zone.id, groupIds: [zone.id], pos: 'center', stack }
@@ -164,10 +174,10 @@ export function startSessionDrag(
       } else if (pos === 'center') {
         // A preview/page zone has no composer to link to — its center stacks
         // the session as a tab, same as dropping on the strip's tail.
-        split = { anchor: host.pane, pos: 'center' }
+        split = { anchor: host.pane, groupId: zone.id, pos: 'center' }
         link = null
       } else {
-        split = { anchor: surface?.anchor ?? host.pane, pos }
+        split = { anchor: surface?.anchor ?? host.pane, groupId: zone.id, pos }
         link = null
       }
 
@@ -176,11 +186,27 @@ export function startSessionDrag(
 
     onCommit() {
       if (split) {
-        openSessionTile(payload.id, split.pos, split.anchor, split.before)
-        // A tile for this session may already exist (openSessionTile is
-        // idempotent — e.g. persisted from an earlier run): a drop must never
-        // feel dead, so front/unhide/un-dismiss it either way.
-        revealTreePane(`session-tile:${payload.id}`)
+        if (opts?.sourcePaneId) {
+          // The primary workspace cannot become a session tile: openSessionTile
+          // deliberately refuses the session already loaded there. Move the
+          // pane itself so its source zone dissolves and the chat joins the
+          // destination strip instead of making the drop look dead.
+          moveTreePane(opts.sourcePaneId, {
+            before: split.before,
+            groupId: split.groupId,
+            pos: split.pos
+          })
+          // A minimized target keeps that state through movePane. The workspace
+          // is uncloseable and must never disappear into a collapsed zone, so
+          // finish the move through the same reveal invariant used by tiles.
+          revealTreePane(opts.sourcePaneId)
+        } else {
+          openSessionTile(payload.id, split.pos, split.anchor, split.before)
+          // A tile for this session may already exist (openSessionTile is
+          // idempotent — e.g. persisted from an earlier run): a drop must never
+          // feel dead, so front/unhide/un-dismiss it either way.
+          revealTreePane(`session-tile:${payload.id}`)
+        }
       } else if (link) {
         // The "link to chat" drop: an @session chip in that surface's composer.
         requestComposerInsertRefs([sessionInlineRef(payload)], { target: link })

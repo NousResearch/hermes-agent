@@ -36,7 +36,7 @@ def pending_human_input() -> Optional[int]:
         return None
 
 
-def idle_proof(turn_probe: Callable[[], Optional[bool | str]] = busy_ledger,
+def idle_proof(turn_probe: Callable[[], bool | str | None] = busy_ledger,
                input_probe: Callable[[], Optional[int]] = pending_human_input) -> dict:
     """``{"idle": True | False | None, "reason": str | None}`` plus ``"detail"`` naming the busy ledger.
 

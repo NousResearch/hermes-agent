@@ -137,7 +137,8 @@ def busy_ledger() -> Optional[str]:
 
 
 def turn_in_flight() -> Optional[bool]:
-    """True/False from :func:`busy_ledger`; None when it cannot be read."""
+    """Bool view of :func:`busy_ledger`, kept so ``should_exit_idle`` / the idle watchdog and injected
+    test probes keep their ``Optional[bool]`` contract; None when the ledgers cannot be read."""
     ledger = busy_ledger()
     return None if ledger is None else bool(ledger)
 

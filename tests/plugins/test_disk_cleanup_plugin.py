@@ -14,6 +14,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
 import importlib
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -237,6 +238,78 @@ class TestProtectedDirsNeverRmtreed:
         assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
         assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
         assert dg.load_tracked() == []
+
+
+class TestGitWorktreeFilesNeverCleaned:
+    """Regression tests for #115295 — git-owned test_* files (committed regression tests
+    inside worktrees/checkouts) are never tracked or auto-deleted; scratch files outside
+    git trees still are."""
+
+    def test_linked_worktree_test_file_not_tracked(self, _isolate_env):
+        """A test_* file inside a linked git worktree ($HERMES_HOME/worktrees/, .git is a
+        pointer FILE) is not classified as disposable test scratch."""
+        dg = _load_lib()
+        wt = _isolate_env / "worktrees" / "repro-wt"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /elsewhere/main/.git/worktrees/repro-wt\n")
+        f = wt / "test_durable.py"
+        f.write_text("x")
+        assert dg.guess_category(f) is None
+
+    def test_checkout_test_file_not_tracked(self, _isolate_env):
+        """Same for a plain checkout outside HERMES_HOME. Must be a literal /tmp/hermes-*
+        path — is_safe_path() only accepts that prefix for out-of-home trees, and the
+        pytest tmp dir (/private/var/folders on macOS) would be rejected before the
+        git-ownership check is ever reached. Pid-suffixed so parallel runs don't collide."""
+        dg = _load_lib()
+        checkout = Path(f"/tmp/hermes-cleanup-test-checkout-{os.getpid()}")
+        try:
+            (checkout / ".git").mkdir(parents=True, exist_ok=True)
+            f = checkout / "test_durable.py"
+            f.write_text("x")
+            assert dg.guess_category(f) is None
+        finally:
+            import shutil
+            shutil.rmtree(checkout, ignore_errors=True)
+
+    def test_git_above_cleanup_root_does_not_exempt(self, _isolate_env, tmp_path):
+        """A stray .git ABOVE the accepted cleanup root (the /tmp/.git or /.git case from
+        review) must not exempt unrelated test_* scratch inside the root — the worktree
+        walk is bounded at HERMES_HOME, so only .git entries inside the root count."""
+        dg = _load_lib()
+        (tmp_path / ".git").mkdir()  # parent of HERMES_HOME (= tmp_path/.hermes)
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+
+    def test_quick_drops_stale_tracked_worktree_entry_instead_of_deleting(self, _isolate_env):
+        """A stale pre-fix tracked entry (category "test") inside a worktree is dropped by
+        re-validation, not deleted — durable, git-committed tests survive."""
+        dg = _load_lib()
+        wt = _isolate_env / "worktrees" / "repro-wt"
+        wt.mkdir(parents=True)
+        (wt / ".git").mkdir()
+        f = wt / "test_durable.py"
+        f.write_text("x")
+        dg.save_tracked([{"path": str(f), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert f.exists(), "git-owned test files must never be auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "stale entry is dropped from tracking, not kept"
+
+    def test_scratch_outside_git_trees_still_cleaned(self, _isolate_env):
+        """Control: root-level test_* scratch (no .git anywhere on the chain) is still
+        auto-deleted — the fix must not leak protection outside git-owned trees."""
+        dg = _load_lib()
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        dg.save_tracked([{"path": str(scratch), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert not scratch.exists()
+        assert result["deleted"] == 1
 
 
 class TestStaleCronEntryMigration:

@@ -336,6 +336,38 @@ _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
 
+def _cleanup_root(path: Path) -> Optional[Path]:
+    """The accepted cleanup root containing *path* — HERMES_HOME or a ``/tmp/hermes-*``
+    peer (mirrors :func:`is_safe_path`, resolved so it compares equal to ancestors of
+    ``path.resolve()``). None outside both roots."""
+    home = get_hermes_home()
+    with contextlib.suppress(ValueError, OSError):
+        path.resolve().relative_to(home)
+        return home
+    parts = path.parts
+    if len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-"):
+        return Path(*parts[:3]).resolve()
+    return None
+
+
+def _inside_git_worktree(path: Path) -> bool:
+    """True if *path* sits inside a Git worktree/checkout: a ``.git`` entry (a directory in a
+    normal checkout, a pointer FILE in a linked worktree) exists on the directory chain up to
+    the accepted cleanup root. The walk is bounded at that root: a stray ``/tmp/.git`` or
+    ``/.git`` can never exempt files in unrelated trees (#115307 review). Files inside a
+    bounded worktree are Git-owned — a ``test_*`` file there is typically a committed
+    regression test, not session scratch (#115295)."""
+    root = _cleanup_root(path)
+    if root is None:
+        return False
+    for parent in path.resolve().parents:
+        if (parent / ".git").exists():
+            return True
+        if parent == root:
+            break
+    return False
+
+
 def guess_category(path: Path) -> Optional[str]:
     """Category label for *path*, or None if we shouldn't track it (``post_tool_call`` hook)."""
     if not is_safe_path(path):
@@ -352,4 +384,9 @@ def guess_category(path: Path) -> Optional[str]:
         if top == "cache":
             return "temp"
     name = path.name
-    return "test" if name.startswith(_TEST_PATTERNS) or name.endswith(_TEST_SUFFIXES) else None
+    if name.startswith(_TEST_PATTERNS) or name.endswith(_TEST_SUFFIXES):
+        # Git-owned trees manage their own files: never classify a test_* there as disposable,
+        # so neither tracking nor quick() (which re-validates stored "test" entries through
+        # this function) touches it (#115295).
+        return None if _inside_git_worktree(path) else "test"
+    return None

@@ -432,8 +432,15 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
     """
-    ext = os.path.splitext(filepath)[1].lower()
-    if has_opaque_document_extension(filepath):
+    resolution_failed = False
+    try:
+        effective_path = str(_resolve_path_for_task(filepath, task_id))
+    except Exception:
+        effective_path = filepath
+        resolution_failed = True
+
+    ext = os.path.splitext(effective_path)[1].lower()
+    if has_opaque_document_extension(effective_path):
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
@@ -444,7 +451,7 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     # A -wal/-shm/-journal path is never a legitimate text target, even when
     # no sidecar exists yet: a checkpointed db has none on disk, and a garbage
     # WAL dropped next to a live database is picked up on the next open.
-    if is_sqlite_sidecar(filepath):
+    if is_sqlite_sidecar(effective_path):
         return (
             f"Refusing to write plain text to binary SQLite sidecar '{filepath}' ({ext}). "
             "A -wal/-shm/-journal file holds raw database pages that SQLite "
@@ -455,12 +462,9 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     # with text destroys it — the model only ever saw extracted or mojibake
     # text. Creating a NEW file with such an extension stays allowed: raw PDF
     # syntax is text-authorable and text fixtures named ``*.db`` exist.
-    pdf = is_pdf_path(filepath)
-    if pdf or has_binary_extension(filepath):
-        try:
-            resolved = Path(_resolve_path_for_task(filepath, task_id))
-        except Exception:
-            resolved = Path(_expand_tilde(filepath))
+    pdf = is_pdf_path(effective_path)
+    if pdf or has_binary_extension(effective_path):
+        resolved = Path(_expand_tilde(filepath) if resolution_failed else effective_path)
         try:
             if resolved.is_file():
                 if pdf:

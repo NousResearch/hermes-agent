@@ -1555,6 +1555,13 @@ def start() -> None:
     elif is_task_registered():
         reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
 
+    # install(start_now=True) may already have spawned via _start_or_report_running;
+    # do not launch a second gateway on top of that process.
+    running_pids = _gateway_pids()
+    if running_pids:
+        _report_already_running(running_pids)
+        return
+
     # Manual starts use the same console-less direct spawn as restart() and install --start-now;
     # Scheduled Task / Startup entries are only login persistence.
     pid = _spawn_detached()

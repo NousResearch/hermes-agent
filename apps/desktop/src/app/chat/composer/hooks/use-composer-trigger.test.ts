@@ -7,7 +7,7 @@ import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
-import { useComposerTrigger } from './use-composer-trigger'
+import { collapseSelectionOntoTrigger, rebuildAroundCaret, useComposerTrigger } from './use-composer-trigger'
 
 beforeEach(() => {
   rememberDesktopCommandsCatalog({
@@ -239,6 +239,54 @@ describe('useComposerTrigger — free-text slash arguments', () => {
   })
 })
 
+describe('collapseSelectionOntoTrigger + rebuildAroundCaret (non-collapsed selection)', () => {
+  /** Ctrl+A shape: whole editor selected. Fires no input event, so the
+   *  composer never normalizes it — the accept path has to. */
+  function selectAllIn(editor: HTMLElement) {
+    const range = document.createRange()
+    range.selectNodeContents(editor)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
+
+  it('collapses a whole-editor selection onto the end of the trigger token', () => {
+    const editor = mountEditor('/ne')
+    selectAllIn(editor)
+
+    expect(collapseSelectionOntoTrigger(editor, '/', 'ne')).toBe(true)
+
+    const selection = window.getSelection()!
+    expect(selection.getRangeAt(0).collapsed).toBe(true)
+  })
+
+  it('re-marks emptiness after a fragment rebuild so the placeholder stops painting', () => {
+    // The rebuild renders an empty prefix (which sets data-empty), then appends
+    // the chip + suffix — appends that fire no input event. Without the re-mark
+    // the placeholder hint painted over the committed content.
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+    renderComposerContents(editor, '/new')
+    selectAllIn(editor)
+
+    expect(collapseSelectionOntoTrigger(editor, '/', 'new')).toBe(true)
+
+    const chip = document.createElement('span')
+    chip.contentEditable = 'false'
+    chip.dataset.refText = '/new '
+    chip.append(document.createTextNode('/new '))
+    const chipFragment = document.createDocumentFragment()
+    chipFragment.append(chip)
+
+    rebuildAroundCaret(editor, 4, chipFragment)
+
+    expect(composerPlainText(editor)).toBe('/new ')
+    expect(editor.dataset.empty).toBeUndefined()
+  })
+})
+
 describe('useComposerTrigger — chip survival (the plaintext-demotion bug class)', () => {
   it('keeps a leading command pill through a Backspace path-ascend', () => {
     // The reported repro: `/work @folder…` then Backspace — both chips went
@@ -305,5 +353,61 @@ describe('useComposerTrigger — chip survival (the plaintext-demotion bug class
 
     expect(composerPlainText(editor)).toBe('please run /clean ')
     expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
+  })
+
+  it('replaces the token when the editor is selected-all (Ctrl+A) at accept time', () => {
+    // Ctrl+A (native select-all) leaves a NON-COLLAPSED selection behind; it
+    // fires no input event, so the composer never normalizes it. An accept
+    // must treat the selected token as the thing being replaced — the rebuild
+    // used to read the caret at the selection's document-order START (0),
+    // re-appending the typed token after the chip.
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+    renderComposerContents(editor, '/ne')
+    const all = document.createRange()
+    all.selectNodeContents(editor)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(all)
+
+    const { hook } = mountTrigger(editor, [item('/new', 'Commands')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.moveTriggerActive(1))
+    act(() => hook.result.current.moveTriggerActive(-1))
+    act(() => hook.result.current.replaceTriggerWithChip(item('/new', 'Commands')))
+
+    expect(composerPlainText(editor)).toBe('/new ')
+    expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
+    // The stale-empty regression: the rebuild set data-empty while wiping the
+    // editor, and nothing re-marked it after the append — the placeholder hint
+    // painted over the chip.
+    expect(editor.dataset.empty).toBeUndefined()
+  })
+
+  it('replaces the token under select-all when prose precedes it', () => {
+    // The selection's DOM offsets are (node, child-index) pairs, NOT character
+    // offsets: with prose in front, the whole-editor selection's endOffset is
+    // the number of child nodes, which used to be read as an absolute text
+    // offset and made the token search conclude the selection didn't reach it.
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+    renderComposerContents(editor, 'please run /cle')
+    const all = document.createRange()
+    all.selectNodeContents(editor)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(all)
+
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/clean')))
+
+    expect(composerPlainText(editor)).toBe('please run /clean ')
   })
 })

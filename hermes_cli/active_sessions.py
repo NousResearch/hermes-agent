@@ -538,6 +538,19 @@ def try_acquire_active_session(
                     entries[index] = entry
                     _write_entries(state_path, entries)
                     return lease, None
+                if is_stale_lease(existing):
+                    # The holder stopped heartbeating: reclaim instead of refusing. Its pid can
+                    # still be alive (a wedged backend no sweep can see), so pid pruning never
+                    # fires and this one entry would fence the session off from every other
+                    # surface for good. Logged because a lease changes hands here (#112028).
+                    logger.warning(
+                        "Reclaiming stale active session lease for %s: holder pid=%s surface=%s "
+                        "stopped heartbeating %s ago (timeout %ss)",
+                        key, existing.get("pid"), existing.get("surface"),
+                        format_age(lease_heartbeat_age(existing) or 0.0), LEASE_HEARTBEAT_TIMEOUT_S,
+                    )
+                    entries.pop(index)  # persisted by the append/write below
+                    break
                 return refuse(
                     session_already_owned_message(key, existing), SESSION_NOT_OWNED,
                     "Refused active session %s: already held by pid=%s surface=%s",
@@ -628,6 +641,75 @@ def transfer_active_session(
 # read the brand-new lease as an orphan and drop it. Real orphans are minutes old.
 # See #101415.
 _SELF_ORPHAN_GRACE_SECONDS = 30.0
+
+# How long a liveness-tracked lease may go un-restamped before another surface may reclaim
+# it. Tracked leases are restamped by their owner's reaper tick
+# (``tui_gateway.session_reaper._touch_own_leases``, every 300s), so this window is six ticks
+# wide: silence means the lane stopped vouching for the entry, which pid pruning cannot see
+# because a wedged backend's pid is still alive (#112028: Desktop holds a session the mobile
+# dashboard needs; #104691: a zombie lease that outlives its lane). 0 disables the backstop
+# and restores exact "the owner pid is alive" semantics.
+LEASE_HEARTBEAT_TIMEOUT_S = _optional_float(os.environ.get("HERMES_ACTIVE_SESSION_LEASE_TIMEOUT_S"))
+if LEASE_HEARTBEAT_TIMEOUT_S is None:
+    LEASE_HEARTBEAT_TIMEOUT_S = 1800.0
+
+
+def lease_heartbeat_age(entry: dict[str, Any]) -> Optional[float]:
+    """Seconds since the holder last stamped ``entry``; None when it carries no stamp.
+
+    Clamped at 0: a clock that rolled back must read as "just stamped" (fail closed,
+    never as stale).
+    """
+    stamp = _optional_float(entry.get("updated_at"))
+    if stamp is None:
+        stamp = _optional_float(entry.get("started_at"))
+    return None if stamp is None else max(0.0, time.time() - stamp)
+
+
+def is_stale_lease(entry: dict[str, Any]) -> bool:
+    """True when a liveness-tracked lease outlived its holder's heartbeat.
+
+    Untracked entries (CLI, gateway, one-shot TUI) are exact and never expire: their owner
+    runs no refresher, and it may legitimately sit inside a long turn with no timer at all,
+    so age must not be read as abandonment there. Only the liveness-tracked family (the
+    Desktop surfaces, which do run the refresher) carries a heartbeat to compare against.
+    """
+    if not entry.get("track_liveness"):
+        return False
+    age = lease_heartbeat_age(entry)
+    return age is not None and LEASE_HEARTBEAT_TIMEOUT_S > 0 and age > LEASE_HEARTBEAT_TIMEOUT_S
+
+
+def touch_active_session(lease: ActiveSessionLease) -> bool:
+    """Restamp a live owner's lease heartbeat; False when the entry is gone or untracked.
+
+    Called from the owner's reaper tick. Nothing here decides ownership -- it only records
+    that the lane is still alive, so every other process can tell a holder that is merely
+    idle from one that stopped existing.
+    """
+    if not lease.enabled or lease.released or not lease.track_liveness:
+        return False
+    state_path, lock_path = _lease_paths(lease)
+    try:
+        with _FileLock(lock_path):
+            if lease.released:
+                return False
+            loaded = _read_live_entries(
+                state_path, track_liveness=True,
+                warn="Active-session registry is unavailable; leaving lease heartbeats alone",
+            )
+            if loaded is None:
+                return False
+            own = next(
+                (e for e in loaded[1] if str(e.get("lease_id") or "") == lease.lease_id), None)
+            if own is None:
+                return False
+            own["updated_at"] = time.time()
+            _write_entries(state_path, loaded[1])
+            return True
+    except Exception as exc:
+        logger.debug("Failed to refresh active session lease heartbeat: %s", exc)
+        return False
 
 
 def _drop_self_orphans(

@@ -7,6 +7,7 @@ context-file discovery agreeing on where the agent lives. Multi-session gateways
 logical cwd via `_SESSION_CWD`.
 """
 
+import contextlib
 import logging
 import os
 from contextvars import ContextVar, Token
@@ -97,3 +98,115 @@ def resolve_context_cwd() -> Path | None:
     launch dir). An existing configured path is honored verbatim — including the Hermes source tree, a
     legitimate workspace when developing Hermes; fallback-directory policy lives in the caller."""
     return _resolve_configured_cwd(override_is_final=True)
+
+
+# --- Workspace identity -------------------------------------------------------
+
+def session_cwd_override() -> str | None:
+    """Per-session cwd override, shape-preserving so callers can tell an explicit
+    empty session cwd from no session context at all:
+
+    - ``""`` when the bound session explicitly has no cwd (gateway/API turns) —
+      callers must NOT fall back to the ambient TERMINAL_CWD in that case;
+    - ``None`` when no session context is installed on this task (local CLI) —
+      the ambient surface cwd may still be the user's real working directory.
+    """
+    value = _SESSION_CWD.get()
+    if value is _UNSET:
+        return None
+    return str(value).strip()
+
+
+def _hermes_home_key() -> str:
+    """normalized-comparison key for ``$HERMES_HOME`` ("" when unresolvable)."""
+    with contextlib.suppress(Exception):
+        from hermes_constants import get_hermes_home
+        return os.path.normcase(os.path.realpath(str(get_hermes_home())))
+    return ""
+
+
+def _non_workspace_dirs() -> set[str]:
+    """Directories that are never a workspace identity: the filesystem root, the
+    user's home, the dir homes live in, plus both POSIX spellings on every host —
+    mirrors the Desktop's ``tui_gateway.methods_projects._non_workspace_dirs``
+    (keep the two in sync) — plus ``$HERMES_HOME`` itself."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    candidates = (os.sep, home, os.path.dirname(home), "/home", "/Users")
+    dirs = {os.path.normcase(os.path.realpath(p)) for p in candidates if p}
+    if key := _hermes_home_key():
+        dirs.add(key)
+    return dirs
+
+
+def _is_non_workspace_path(path: str) -> bool:
+    """True for the never-a-workspace dirs and anything inside ``$HERMES_HOME``
+    (an install/data tree, not a project — unless a declared project owns it,
+    which callers check first)."""
+    try:
+        key = os.path.normcase(os.path.realpath(str(path)))
+    except Exception:
+        return False
+    if not key:
+        return False
+    if key in _non_workspace_dirs():
+        return True
+    home_key = _hermes_home_key()
+    return bool(home_key) and key.startswith(home_key + os.sep)
+
+
+def _workspace_name(path: str) -> str:
+    """Basename of *path* as a workspace identity ("" for degenerate names)."""
+    name = os.path.basename(str(path).rstrip("/\\"))
+    return "" if name in ("", ".", "..") else name
+
+
+def resolve_workspace_identity(cwd: str, *, repo_root: str = "") -> str:
+    """Workspace identity for workspace-scoped features (memory-provider
+    ``bank_id_template`` placeholders, per-workspace tagging).
+
+    Deterministic, generic cascade — the same order the Desktop's project tree
+    resolves a session workspace:
+
+    1. the declared Hermes project owning *cwd* (deepest owning folder wins);
+    2. the git repository root's name (the session-stamped *repo_root* first —
+       the Desktop folds linked worktrees into the common root; otherwise a
+       bounded ``.git`` walk-up, never a git subprocess);
+    3. the working directory's basename;
+    4. ``""`` when nothing usable is found (never-a-workspace dirs, Hermes home
+       internals, empty input).
+
+    Never raises: a missing/corrupt projects DB, a vanished path or an import
+    failure all degrade to the next arm of the cascade.
+    """
+    raw = str(cwd or "").strip()
+    if not raw:
+        return ""
+    try:
+        path = os.path.abspath(os.path.expanduser(raw))
+    except Exception:
+        return ""
+
+    # 1. Declared Hermes project (per-profile projects.db). Best-effort and
+    #    read-only: never creates the DB, never raises.
+    with contextlib.suppress(Exception):
+        from hermes_cli.projects_db import connect_closing, project_for_path, projects_db_path
+        if projects_db_path().exists():
+            with connect_closing() as conn:
+                project = project_for_path(conn, path)
+            if project is not None and (slug := str(project.slug or "").strip()):
+                return slug
+
+    if _is_non_workspace_path(path):
+        return ""
+
+    # 2. Git repository root (session-stamped root first).
+    root = str(repo_root or "").strip()
+    if root and os.path.isdir(root) and not _is_non_workspace_path(root):
+        return _workspace_name(root)
+    with contextlib.suppress(Exception):
+        from agent.skill_utils import find_project_root
+        if (found := find_project_root(Path(path))) is not None and not _is_non_workspace_path(str(found)):
+            return _workspace_name(str(found))
+
+    # 3. Working-directory basename.
+    return _workspace_name(path)

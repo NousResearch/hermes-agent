@@ -38,6 +38,17 @@ When a memory provider is active, Hermes automatically:
 
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
+### Workspace identity
+
+Providers that scope storage per workspace receive the session's **resolved workspace identity** as the `agent_workspace` init kwarg, with a deterministic cascade:
+
+1. **Declared Hermes project** — the project (see `hermes project`) whose folders own the session's working directory; the deepest owning folder wins → the project's slug;
+2. **Git repository root** — the repository's name (a session-stamped root is preferred, so linked worktrees fold into the main repository);
+3. **Working-directory basename**;
+4. **Empty string** when the session has no real workspace — gateway/API sessions with no associated directory, home directories, or `$HERMES_HOME` internals. The ambient configured `terminal.cwd` is never promoted to a workspace for those sessions.
+
+The same identity groups sessions in the Desktop sidebar. Providers can turn it into per-workspace storage — e.g. Hindsight's `bank_id_template: "hermes-{workspace}"` yields one bank per project (such as `hermes-myapp`), and the empty identity collapses back to the shared `hermes` bank.
+
 ## Available Providers
 
 ### Honcho
@@ -459,6 +470,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 |-----|---------|-------------|
 | `mode` | `cloud` | `cloud` or `local` |
 | `bank_id` | `hermes` | Memory bank identifier |
+| `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}` — `{workspace}` is the session's resolved workspace identity (see [Workspace identity](#workspace-identity)); empty values collapse cleanly |
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
 | `auto_retain` | `true` | Automatically retain conversation turns |

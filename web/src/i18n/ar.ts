@@ -1,5 +1,9 @@
 import { defineLocale } from "./define-locale";
 
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
 export const ar = defineLocale({
   common: {
     save: "حفظ",
@@ -43,20 +47,12 @@ export const ar = defineLocale({
     expand: "توسيع",
     general: "عام",
     messaging: "مراسلة",
-    pluginLoadFailed:
-      "تعذر تحميل سكربت هذا المكوِّن الإضافي. تفقَّد علامة الشبكة (dashboard-plugins/…) ومسار ملحقات الخادم.",
-    pluginNotRegistered:
-      "لم يستدعِ سكربت المكوِّن الإضافي register()، أو حدث خطأ في السكربت. افتح وحدة تحكم المتصفح للتفاصيل.",
+    pluginLoadFailed: "تعذر تحميل سكربت هذا المكوِّن الإضافي. تفقَّد علامة الشبكة (dashboard-plugins/…) ومسار ملحقات الخادم.",
+    pluginNotRegistered: "لم يستدعِ سكربت المكوِّن الإضافي register()، أو حدث خطأ في السكربت. افتح وحدة تحكم المتصفح للتفاصيل.",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "إغلاق التنقل",
     closeModelTools: "إغلاق النموذج والأدوات",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "الجلسات النشطة:",
     gatewayStatusLabel: "حالة البوابة:",
     gatewayStrip: {
@@ -91,7 +87,6 @@ export const ar = defineLocale({
     system: "النظام",
     webUi: "واجهة الويب",
   },
-
   status: {
     actionFailed: "فشلت الإجراء",
     actionFinished: "انتهى",
@@ -108,7 +103,6 @@ export const ar = defineLocale({
     lastUpdate: "آخر تحديث",
     noneRunning: "لا شيء",
     notRunning: "لا يعمل",
-    pid: "PID",
     platformDisconnected: "غير متصل",
     platformError: "خطأ",
     recentSessions: "الجلسات الأخيرة",
@@ -124,7 +118,6 @@ export const ar = defineLocale({
     updatingHermes: "جاري تحديث Hermes…",
     waitingForOutput: "في انتظار الناتج…",
   },
-
   sessions: {
     title: "الجلسات",
     filterChats: "الدردشات",
@@ -132,17 +125,16 @@ export const ar = defineLocale({
     filterAll: "الكل",
     sourceFilter: "مصدر الجلسة",
     anySource: "أي مصدر",
-    noSessionsInFilter: "لا توجد جلسات في هذا الفلتر",
     searchPlaceholder: "بحث في محتوى الرسائل...",
-        noSessions: "لا توجد جلسات حتى الآن",
+    noSessions: "لا توجد جلسات حتى الآن",
+    noSessionsInFilter: "لا توجد جلسات في هذا الفلتر",
     noMatch: "لا توجد جلسات تطابق بحثك",
     startConversation: "ابدأ محادثة لتظهر هنا",
     noMessages: "لا توجد رسائل",
     untitledSession: "جلسة بدون عنوان",
     deleteSession: "حذف الجلسة",
     confirmDeleteTitle: "حذف الجلسة؟",
-    confirmDeleteMessage:
-      "سيزيل هذا نهائيًا المحادثة وجميع رسائلها. لا يمكن التراجع عن هذا الإجراء.",
+    confirmDeleteMessage: "سيزيل هذا نهائيًا المحادثة وجميع رسائلها. لا يمكن التراجع عن هذا الإجراء.",
     sessionDeleted: "تم حذف الجلسة",
     failedToDelete: "فشل حذف الجلسة",
     resumeInChat: "استئناف في المحادثة",
@@ -155,7 +147,6 @@ export const ar = defineLocale({
       tool: "أداة",
     },
   },
-
   analytics: {
     period: "الفترة:",
     totalTokens: "إجمالي الرموز",
@@ -181,7 +172,6 @@ export const ar = defineLocale({
     acrossModels: "عبر {count} نموذج",
     inOut: "{input} إدخال / {output} إخراج",
   },
-
   models: {
     modelsUsed: "النماذج المستخدمة",
     estimatedCost: "التكلفة التقريبية",
@@ -193,7 +183,6 @@ export const ar = defineLocale({
     noModelsData: "لا توجد بيانات نموذج لهذه الفترة",
     startSession: "ابدأ جلسة لرؤية بيانات النماذج هنا",
   },
-
   logs: {
     title: "السجلات",
     autoRefresh: "تحديث تلقائي",
@@ -203,10 +192,8 @@ export const ar = defineLocale({
     lines: "الأسطر",
     noLogLines: "لم يُعثر على أسطر سجل",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "يزيل هذا المهمة من الجدولة. لا يمكن التراجع عن الإجراء.",
+    confirmDeleteMessage: "يزيل هذا المهمة من الجدولة. لا يمكن التراجع عن الإجراء.",
     confirmDeleteTitle: "حذف المهمة المجدولة؟",
     newJob: "مهمة cron جديدة",
     nameOptional: "الاسم (اختياري)",
@@ -214,7 +201,6 @@ export const ar = defineLocale({
     prompt: "المطالبة",
     promptPlaceholder: "ماذا يجب أن يفعل العامل في كل تشغيل؟",
     schedule: "الجدولة (تعبير cron)",
-    schedulePlaceholder: "0 9 * * *",
     deliverTo: "التسليم إلى",
     scheduledJobs: "المهام المجدولة",
     noJobs: "لم يتم تكوين أي مهام cron. أنشئ واحدة أعلاه.",
@@ -225,25 +211,19 @@ export const ar = defineLocale({
     triggerNow: "تشغيل الآن",
     delivery: {
       local: "محلي",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
       email: "البريد الإلكتروني",
     },
   },
-
   profiles: {
     newProfile: "ملف شخصي جديد",
     name: "الاسم",
     namePlaceholder: "مثال: coder, writer, إلخ.",
     nameRequired: "الاسم مطلوب",
-    nameRule:
-      "حروف صغيرة، أرقام، _ و - فقط؛ يجب البدء بحرف أو رقم؛ حتى 64 حرفًا.",
+    nameRule: "حروف صغيرة، أرقام، _ و - فقط؛ يجب البدء بحرف أو رقم؛ حتى 64 حرفًا.",
     invalidName: "اسم ملف شخصي غير صالح",
     allProfiles: "الملفات الشخصية",
     noProfiles: "لم يُعثر على ملفات شخصية.",
     defaultBadge: "افتراضي",
-    hasEnv: "env",
     model: "النموذج",
     skills: "المهارات",
     rename: "إعادة تسمية",
@@ -256,13 +236,11 @@ export const ar = defineLocale({
     commandCopied: "تم النسخ إلى الحافظة",
     copyFailed: "تعذر النسخ",
     confirmDeleteTitle: "حذف الملف الشخصي؟",
-    confirmDeleteMessage:
-      "هذا يحذف نهائيًا الملف الشخصي '{name}' — الإعدادات، المفاتيح، الذكريات، الجلسات، المهارات، مهام cron. لا يمكن التراجع عن الإجراء.",
+    confirmDeleteMessage: "هذا يحذف نهائيًا الملف الشخصي '{name}' — الإعدادات، المفاتيح، الذكريات، الجلسات، المهارات، مهام cron. لا يمكن التراجع عن الإجراء.",
     created: "تم الإنشاء",
     deleted: "تم الحذف",
     renamed: "تمت إعادة التسمية",
   },
-
   pluginsPage: {
     contextEngineLabel: "محرك السياق",
     dashboardSlots: "فتحات لوحة التحكم",
@@ -270,8 +248,7 @@ export const ar = defineLocale({
     enableAfterInstall: "تفعيل بعد التثبيت",
     enableRuntime: "تفعيل",
     forceReinstall: "إعادة تثبيت إجباري (حذف المجلد الموجود أولاً)",
-    headline:
-      "اكتشف وثبِّت وفعِّل وحدِّث مكوِّنات Hermes الإضافية (مطابقة `hermes plugins`).",
+    headline: "اكتشف وثبِّت وفعِّل وحدِّث مكوِّنات Hermes الإضافية (مطابقة `hermes plugins`).",
     identifierLabel: "رابط Git أو owner/repo",
     inactive: "غير نشط",
     installBtn: "تثبيت من Git",
@@ -285,8 +262,7 @@ export const ar = defineLocale({
     pluginListHeading: "المكوِّنات الإضافية المثبتة",
     providerDefaults: "مدمج / افتراضي",
     providersHeading: "مكوِّنات مزوِّدات وقت التشغيل",
-    providersHint:
-      "يكتب memory.provider (فارغ = مدمج) و context.engine إلى config.yaml. يسري في الجلسة التالية.",
+    providersHint: "يكتب memory.provider (فارغ = مدمج) و context.engine إلى config.yaml. يسري في الجلسة التالية.",
     refreshDashboard: "إعادة فحص امتدادات لوحة التحكم",
     removeConfirm: "إزالة هذا المكوِّن الإضافي من ~/.hermes/plugins/؟",
     removeHint: "يمكن إزالة المكوِّنات المثبتة من المستخدم تحت ~/.hermes/plugins فقط.",
@@ -303,7 +279,6 @@ export const ar = defineLocale({
     showInSidebar: "إظهار في الشريط الجانبي",
     hideFromSidebar: "إخفاء من الشريط الجانبي",
   },
-
   skills: {
     title: "المهارات",
     searchPlaceholder: "بحث في المهارات ومجموعات الأدوات...",
@@ -323,22 +298,18 @@ export const ar = defineLocale({
     disabledForCli: "معطَّل لواجهة CLI",
     more: "+{count} المزيد",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
     filters: "الفلاتر",
     sections: "الأقسام",
     exportConfig: "تصدير الإعدادات كـ JSON",
-    importConfig: "استيراد الإعدادات من JSON",
     resetDefaults: "إعادة التعيين للافتراضيات",
     resetScopeTooltip: "إعادة تعيين {scope} للافتراضيات",
-    confirmResetScope:
-      "إعادة تعيين جميع إعدادات {scope} للافتراضيات؟ هذا يحدِّث النموذج فقط — لا تُكتب التغييرات في config.yaml حتى تضغط على حفظ.",
+    confirmResetScope: "إعادة تعيين جميع إعدادات {scope} للافتراضيات؟ هذا يحدِّث النموذج فقط — لا تُكتب التغييرات في config.yaml حتى تضغط على حفظ.",
     resetScopeToast: "تمت إعادة تعيين {scope} للافتراضيات — راجع واحفظ للتثبيت",
     rawYaml: "إعدادات YAML الأولية",
     searchResults: "نتائج البحث",
     fields: "حقل{s}",
-    noFieldsMatch: 'لا توجد حقول تطابق "{query}"',
+    noFieldsMatch: "لا توجد حقول تطابق \"{query}\"",
     configSaved: "تم حفظ الإعدادات",
     yamlConfigSaved: "تم حفظ إعدادات YAML",
     failedToSave: "فشل الحفظ",
@@ -360,15 +331,12 @@ export const ar = defineLocale({
       tts: "تحويل النص إلى كلام",
       stt: "تحويل الكلام إلى نص",
       logging: "التسجيل",
-      discord: "Discord",
       auxiliary: "إضافي",
     },
   },
-
   env: {
     changesNote: "يتم حفظ التغييرات على القرص فورًا. تلتقط الجلسات النشطة المفاتيح الجديدة تلقائيًا.",
-    confirmClearMessage:
-      "سيتم إزالة القيمة المخزنة لهذا المتغير من ملف .env. لا يمكن التراجع عن هذا من الواجهة.",
+    confirmClearMessage: "سيتم إزالة القيمة المخزنة لهذا المتغير من ملف .env. لا يمكن التراجع عن هذا من الواجهة.",
     confirmClearTitle: "مسح هذا المفتاح؟",
     description: "إدارة مفاتيح API والأسرار المخزَّنة في",
     hideAdvanced: "إخفاء المتقدمة",
@@ -384,12 +352,10 @@ export const ar = defineLocale({
     showValue: "إظهار القيمة الحقيقية",
     hideValue: "إخفاء القيمة",
   },
-
   oauth: {
     title: "عمليات تسجيل دخول المزوِّدين (OAuth)",
     providerLogins: "عمليات تسجيل دخول المزوِّدين (OAuth)",
-    description:
-      "{connected} من {total} مزوِّدي OAuth متصلون. تتدفق عمليات تسجيل الدخول حاليًا عبر CLI؛ انسخ الأمر وألصقه في طرفية للإعداد.",
+    description: "{connected} من {total} مزوِّدي OAuth متصلون. تتدفق عمليات تسجيل الدخول حاليًا عبر CLI؛ انسخ الأمر وألصقه في طرفية للإعداد.",
     connected: "متصل",
     expired: "منتهي الصلاحية",
     notConnected: "غير متصل. شغِّل {command} في طرفية.",
@@ -424,24 +390,18 @@ export const ar = defineLocale({
     },
     expiresIn: "تنتهي خلال {time}",
   },
-
   language: {
     switchTo: "التبديل إلى الإنجليزية",
   },
-
   theme: {
     title: "السمة",
     switchTheme: "تبديل السمة",
   },
-
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
       title: "إنجازات Hermes",
-      subtitle:
-        "شارات Hermes قابلة للجمع مكتسبة من سجل الجلسات الفعلي. الإنجازات غير المكتملة المعروفة تُعرض كـ Discovered؛ تبقى الإنجازات السرية مخفية حتى يظهر السلوك المطابق لأول مرة.",
-      scan_subtitle:
-        "فحص سجل جلسات Hermes. يمكن أن يستغرق الفحص الأول 5–10 ثوانٍ على السجلات الكبيرة.",
+      subtitle: "شارات Hermes قابلة للجمع مكتسبة من سجل الجلسات الفعلي. الإنجازات غير المكتملة المعروفة تُعرض كـ Discovered؛ تبقى الإنجازات السرية مخفية حتى يظهر السلوك المطابق لأول مرة.",
+      scan_subtitle: "فحص سجل جلسات Hermes. يمكن أن يستغرق الفحص الأول 5–10 ثوانٍ على السجلات الكبيرة.",
     },
     actions: {
       rescan: "إعادة الفحص",
@@ -475,25 +435,19 @@ export const ar = defineLocale({
     },
     scan: {
       building_headline: "إنشاء ملف الإنجاز…",
-      building_detail:
-        "قراءة الجلسات، استدعاءات الأدوات، بيانات تعريف النموذج، وحالة الفتح.",
+      building_detail: "قراءة الجلسات، استدعاءات الأدوات، بيانات تعريف النموذج، وحالة الفتح.",
       starting_headline: "بدء فحص الإنجازات…",
-      progress_detail:
-        "تم فحص {scanned} من {total} جلسة · {pct}%. تنفتح الشارات مع تدفق المزيد من السجل.",
-      idle_detail:
-        "قراءة الجلسات، استدعاءات الأدوات، بيانات تعريف النموذج، وحالة الفتح. تظهر الشارات هنا عند فتحها.",
+      progress_detail: "تم فحص {scanned} من {total} جلسة · {pct}%. تنفتح الشارات مع تدفق المزيد من السجل.",
+      idle_detail: "قراءة الجلسات، استدعاءات الأدوات، بيانات تعريف النموذج، وحالة الفتح. تظهر الشارات هنا عند فتحها.",
     },
     guide: {
       tiers_header: "المستويات",
       secret_header: "الإنجازات السرية",
-      secret_body:
-        "تخفى الأسرار محددها الدقيق. بمجرد أن ترى Hermes إشارة ذات صلة، تصبح البطاقة مكتشفة وتعرض متطلباتها.",
+      secret_body: "تخفى الأسرار محددها الدقيق. بمجرد أن ترى Hermes إشارة ذات صلة، تصبح البطاقة مكتشفة وتعرض متطلباتها.",
       scan_status_header: "حالة الفحص",
-      scan_status_body:
-        "تُفحص Hermes السجل المحلي مرة واحدة، ثم تظهر البطاقات تلقائيًا. لا يوجد توقف إذا استغرق هذا بضع ثوانٍ.",
+      scan_status_body: "تُفحص Hermes السجل المحلي مرة واحدة، ثم تظهر البطاقات تلقائيًا. لا يوجد توقف إذا استغرق هذا بضع ثوانٍ.",
       what_scanned_header: "ما يتم فحصه",
-      what_scanned_body:
-        "الجلسات، استدعاءات الأدوات، بيانات تعريف النموذج، الأخطاء، الإنجازات، وحالة الفتح المحلية.",
+      what_scanned_body: "الجلسات، استدعاءات الأدوات، بيانات تعريف النموذج، الأخطاء، الإنجازات، وحالة الفتح المحلية.",
     },
     card: {
       share_title: "مشاركة هذا الإنجاز",
@@ -510,8 +464,7 @@ export const ar = defineLocale({
     },
     empty: {
       no_secrets_header: "لا توجد أسرار مخفية متبقية في هذا الفحص.",
-      no_secrets_body:
-        "تلميح: تبدأ الأسرار عادة من أنماط الفشل غير العادية أو أنماط المستخدم المتقدم — تعارضات المنافذ، حواجز الأذونات، متغيرات بيئة مفقودة، أخطاء YAML، تصادمات Docker، استخدام الإرجاع أو التبقي، ضربات التخزين المؤقت، أو إصلاحات صغيرة بعد الكثير من الأخطاء الحمراء."
+      no_secrets_body: "تلميح: تبدأ الأسرار عادة من أنماط الفشل غير العادية أو أنماط المستخدم المتقدم — تعارضات المنافذ، حواجز الأذونات، متغيرات بيئة مفقودة، أخطاء YAML، تصادمات Docker، استخدام الإرجاع أو التبقي، ضربات التخزين المؤقت، أو إصلاحات صغيرة بعد الكثير من الأخطاء الحمراء.",
     },
     filters: {
       all_categories: "الكل",
@@ -533,32 +486,21 @@ export const ar = defineLocale({
       copy_button: "نسخ الصورة",
       copied: "تم النسخ ✓",
       download_button: "تنزيل PNG",
-      hint:
-        "المشاركة على X تفتح منشورًا معدَّلاً مسبقًا في تبويب جديد. انقر نسخ الصورة أولاً إذا أردت شارة الإنجاز 1200×630 مرفقة — يسمح X باللصق مباشرة في مؤلف التغريد. تنزيل PNG يحفظ الملف للاستخدام anywhere.",
-      clipboard_unsupported:
-        "نسخ صورة الحافظة غير مدعوم في هذا المتصفح — استخدم التنزيل بدلاً من ذلك.",
-      tweet_text: "فتحت للتو {tier_part}\"{name}\" في Hermes Agent ☤"
+      hint: "المشاركة على X تفتح منشورًا معدَّلاً مسبقًا في تبويب جديد. انقر نسخ الصورة أولاً إذا أردت شارة الإنجاز 1200×630 مرفقة — يسمح X باللصق مباشرة في مؤلف التغريد. تنزيل PNG يحفظ الملف للاستخدام anywhere.",
+      clipboard_unsupported: "نسخ صورة الحافظة غير مدعوم في هذا المتصفح — استخدم التنزيل بدلاً من ذلك.",
+      tweet_text: "فتحت للتو {tier_part}\"{name}\" في Hermes Agent ☤",
     },
   },
-
   kanban: {
     loading: "جاري تحميل لوحة Kanban…",
     loadFailed: "فشل تحميل لوحة Kanban: ",
-    loadFailedHint:
-      "يُنشئ الواجهة الخلفية kanban.db تلقائيًا عند أول قراءة. إذا استمرت المشكلة، تفقَّد سجلات لوحة التحكم.",
+    loadFailedHint: "يُنشئ الواجهة الخلفية kanban.db تلقائيًا عند أول قراءة. إذا استمرت المشكلة، تفقَّد سجلات لوحة التحكم.",
     board: "لوحة",
     newBoard: "+ لوحة جديدة",
     newBoardTitle: "لوحة جديدة",
-    newBoardDescription:
-      "تتيح اللوحات فصل تدفقات العمل غير المرتبطة — واحدة لكل مشروع أو مستودع أو مجال.",
+    newBoardDescription: "تتيح اللوحات فصل تدفقات العمل غير المرتبطة — واحدة لكل مشروع أو مستودع أو مجال.",
     slug: "المعرِّف",
     slugHint: "— أحرف صغيرة، واصلات، مثال atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "الاسم المعروض",
     displayNameHint: "(اختياري)",
     description: "الوصف",
@@ -588,8 +530,7 @@ export const ar = defineLocale({
     noTasks: "— لا توجد مهام —",
     unassigned: "غير مكلَّف",
     needsAssignee: "يحتاج مكلِّف",
-    needsAssigneeHint:
-      "المتطلبات مُلباة، لكن المُجلِّب يتخطى هذه المهمة حتى تعيّن ملفًا شخصيًا.",
+    needsAssigneeHint: "المتطلبات مُلباة، لكن المُجلِّب يتخطى هذه المهمة حتى تعيّن ملفًا شخصيًا.",
     untitled: "(بدون عنوان)",
     loadingDetail: "جاري التحميل…",
     addComment: "إضافة تعليق… (Enter للتقديم)",
@@ -604,8 +545,7 @@ export const ar = defineLocale({
     runHistory: "سجل التنفيذ",
     workerLog: "سجل العامل",
     loadingLog: "جاري تحميل السجل…",
-    noWorkerLog:
-      "— لا يوجد سجل عامل بعد (لم تُنشَ المهمة أو تم تدوير السجل) —",
+    noWorkerLog: "— لا يوجد سجل عامل بعد (لم تُنشَ المهمة أو تم تدوير السجل) —",
     noDescription: "— لا يوجد وصف —",
     noComments: "— لا توجد تعليقات —",
     edit: "تعديل",
@@ -636,8 +576,7 @@ export const ar = defineLocale({
     reassign: "إعادة تعيين",
     renderingError: "اصطدم تبويب Kanban بخطأ عرض",
     reloadView: "إعادة تحميل العرض",
-    wsAuthFailed:
-      "فشلت مصادقة WebSocket — أعد تحميل الصفحة لتحديث رمز الجلسة.",
+    wsAuthFailed: "فشلت مصادقة WebSocket — أعد تحميل الصفحة لتحديث رمز الجلسة.",
     markDone: "تحديد {n} مهمة كمكتملة؟",
     markArchived: "أرشفة {n} مهمة؟",
     warning: "تحذير",
@@ -648,8 +587,7 @@ export const ar = defineLocale({
     showAllAttempts: "إظهار كل المحاولات",
     sendingUpdates: "إرسال التحديثات إلى",
     sendNotifications: "إرسال إشعارات مكتمل / محظور / متروك لـ",
-    archiveBoardConfirm:
-      "أرشفة لوحة '{name}'؟ ستُنقَل إلى boards/_archived/ لتتمكن من استرجاعها لاحقًا. المهام على هذه اللوحة لن تظهر بعد الآن في أي مكان في الواجهة.",
+    archiveBoardConfirm: "أرشفة لوحة '{name}'؟ ستُنقَل إلى boards/_archived/ لتتمكن من استرجاعها لاحقًا. المهام على هذه اللوحة لن تظهر بعد الآن في أي مكان في الواجهة.",
     archiveBoardTitle: "أرشفة هذه اللوحة",
     boardSwitcherHint: "تتيح اللوحات فصل تدفقات عمل غير مرتبطة",
     taskCreatedWarning: "تم إنشاء المهمة، لكن: ",
@@ -686,28 +624,20 @@ export const ar = defineLocale({
       done: "مكتمل",
       archived: "مؤرشف",
     },
-    confirmDone:
-      "تحديد هذه المهمة كمكتملة؟ سيتم تحرير مطالبة العامل ويصبح الأبناء المعتمدون جاهزين.",
-    confirmArchive:
-      "أرشفة هذه المهمة؟ ستختفي من عرض اللوحة الافتراضي.",
-    confirmBlocked:
-      "تحديد هذه المهمة كمحظورة؟ سيتم تحرير مطالبة العامل.",
-    completionSummary:
-      "ملخص الإنجاز لـ {label}. يُخزَّن كنتيجة للمهمة.",
-    completionSummaryRequired:
-      "ملخص الإنجاز مطلوب قبل تحديد المهمة كمكتملة.",
+    confirmDone: "تحديد هذه المهمة كمكتملة؟ سيتم تحرير مطالبة العامل ويصبح الأبناء المعتمدون جاهزين.",
+    confirmArchive: "أرشفة هذه المهمة؟ ستختفي من عرض اللوحة الافتراضي.",
+    confirmBlocked: "تحديد هذه المهمة كمحظورة؟ سيتم تحرير مطالبة العامل.",
+    completionSummary: "ملخص الإنجاز لـ {label}. يُخزَّن كنتيجة للمهمة.",
+    completionSummaryRequired: "ملخص الإنجاز مطلوب قبل تحديد المهمة كمكتملة.",
     triagePlaceholder: "فكرةrough — سيقوم الذكاء الاصطناعي بصياغة المواصفات…",
     taskTitlePlaceholder: "عنوان المهمة الجديد…",
     specifier: "محدِّد المواصفات",
     assigneePlaceholder: "المكلَّف",
     priority: "الأولوية",
-    skillsPlaceholder:
-      "مهارات (اختياري، مفصولة بفواصل): translation, github-code-review",
+    skillsPlaceholder: "مهارات (اختياري، مفصولة بفواصل): translation, github-code-review",
     noParent: "— لا يوجد أب —",
     workspacePathDir: "مسار مساحة العمل (مطلوب، مثال ~/projects/my-app)",
-    workspacePathOptional:
-      "مسار مساحة العمل (اختياري، مستنتج من المكلَّف إذا كان فارغًا)",
+    workspacePathOptional: "مسار مساحة العمل (اختياري، مستنتج من المكلَّف إذا كان فارغًا)",
     logTruncated: "(عرض آخر 100 كيلوبايت — السجل الكامل في ",
-    logAt: ")",
   },
 });

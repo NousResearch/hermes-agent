@@ -377,20 +377,36 @@ class EventBridge:
             _close_quietly(db, "baseline")
 
     def _poll_loop(self):
-        """Background loop: poll SessionDB for new messages."""
-        db = _get_session_db()
-        if not db:
-            logger.warning("EventBridge: SessionDB unavailable, event polling disabled")
-            return
+        """Background loop: poll SessionDB for new messages.
+
+        A temporary startup failure must not permanently disable polling while
+        the bridge still reports itself as running. Keep trying until a handle
+        becomes available or the bridge is stopped.
+        """
+        db = None
+        last_warning_at: Optional[float] = None
         try:
             while self._running:
+                if db is None:
+                    db = _get_session_db()
+                    if db is None:
+                        now = time.monotonic()
+                        if last_warning_at is None or now - last_warning_at >= 30.0:
+                            logger.warning(
+                                "EventBridge: SessionDB unavailable, retrying every %.1fs",
+                                POLL_INTERVAL,
+                            )
+                            last_warning_at = now
+                        time.sleep(POLL_INTERVAL)
+                        continue
                 try:
                     self._poll_once(db)
                 except Exception as e:
                     logger.debug("EventBridge poll error: %s", e)
                 time.sleep(POLL_INTERVAL)
         finally:
-            _close_quietly(db, "polling")
+            if db is not None:
+                _close_quietly(db, "polling")
 
     def _poll_once(self, db):
         """Check for new messages across all sessions.

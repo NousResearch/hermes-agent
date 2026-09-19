@@ -389,6 +389,49 @@ class TestAttachmentExtraction:
 # ---------------------------------------------------------------------------
 
 class TestEventBridge:
+    def test_poll_loop_retries_until_session_db_recovers(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import mcp_serve
+
+        bridge = mcp_serve.EventBridge()
+        bridge._running = True
+        db = MagicMock()
+        attempts = iter((None, None, db))
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: next(attempts))
+        monkeypatch.setattr(mcp_serve.time, "sleep", lambda _seconds: None)
+
+        def stop_after_poll(handle):
+            assert handle is db
+            bridge._running = False
+
+        monkeypatch.setattr(bridge, "_poll_once", stop_after_poll)
+
+        bridge._poll_loop()
+
+        db.close.assert_called_once_with()
+
+    def test_poll_loop_can_stop_before_session_db_recovers(self, monkeypatch):
+        import mcp_serve
+
+        bridge = mcp_serve.EventBridge()
+        bridge._running = True
+        attempts = 0
+
+        def unavailable():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 3:
+                bridge._running = False
+            return None
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", unavailable)
+        monkeypatch.setattr(mcp_serve.time, "sleep", lambda _seconds: None)
+
+        bridge._poll_loop()
+
+        assert attempts == 3
+
     def test_create(self):
         from mcp_serve import EventBridge
         b = EventBridge()

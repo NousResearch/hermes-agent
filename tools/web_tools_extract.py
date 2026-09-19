@@ -146,20 +146,28 @@ def _extract_timeout_seconds() -> float:
         return _DEFAULT_EXTRACT_TIMEOUT_S
 
 
-async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
+async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str],
+                            headers: Optional[Dict[str, str]] = None) -> List[dict]:
     """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
 
     Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
-    failed (backend outage, not per-page problems). Rescued batches are never cached.
+    failed (backend outage, not per-page problems). Rescued batches are never cached. ``headers``
+    (optional): request headers forwarded to the provider; a header-customized fetch is never
+    written to the shared cache since it may return caller-specific content (#74177).
     """
     import inspect
     from tools.web_result_cache import extract_cache_put
     timeout = _extract_timeout_seconds()
+    # Only forward the argument when the caller supplied headers, so backends that
+    # don't accept it (and cached calls) keep their previous call shape.
+    extract_kwargs: Dict[str, Any] = {"format": format}
+    if headers:
+        extract_kwargs["headers"] = headers
     try:
         if inspect.iscoroutinefunction(provider.extract):
-            coro = provider.extract(fetch_urls, format=format)
+            coro = provider.extract(fetch_urls, **extract_kwargs)
         else:  # sync extract() runs in a thread so network I/O never blocks the loop
-            coro = asyncio.to_thread(provider.extract, fetch_urls, format=format)
+            coro = asyncio.to_thread(lambda: provider.extract(fetch_urls, **extract_kwargs))
         if timeout > 0:
             results = await asyncio.wait_for(coro, timeout=timeout)
         else:
@@ -185,24 +193,30 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     # write filed one page's text under another URL's key for the whole TTL. ``metadata.sourceURL``
     # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
     # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
-    requested = set(fetch_urls)
-    for fetched in results:
-        meta = fetched.get("metadata")
-        source = meta.get("sourceURL") if isinstance(meta, dict) else None
-        url = next((u for u in (fetched.get("url"), source) if u in requested), None)
-        _content = fetched.get("raw_content", "") or fetched.get("content", "")
-        if url and _content and not fetched.get("error"):
-            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
+    # A header-customized fetch is not cached at all: it may carry caller-specific content and must
+    # not poison the shared, header-agnostic cache key (#74177).
+    if not headers:
+        requested = set(fetch_urls)
+        for fetched in results:
+            meta = fetched.get("metadata")
+            source = meta.get("sourceURL") if isinstance(meta, dict) else None
+            url = next((u for u in (fetched.get("url"), source) if u in requested), None)
+            _content = fetched.get("raw_content", "") or fetched.get("content", "")
+            if url and _content and not fetched.get("error"):
+                extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
     return results
 
 
-async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[str]) -> List[dict]:
+async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[str],
+                             headers: Optional[Dict[str, str]] = None) -> List[dict]:
     """Serve cache hits, fetch the rest, and merge back in ``safe_urls`` order.
 
     The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
     resolution, and is gated per-URL on the website policy — a hit skips only the vendor call, never a
     control; policy-blocked URLs are cache misses. Keys include provider and format, so switching either
-    within the TTL never serves the other's content."""
+    within the TTL never serves the other's content. When the caller supplies ``headers`` the shared
+    (header-agnostic) cache is bypassed entirely — read and write — so a header-customized fetch is
+    neither served stale content nor allowed to poison the shared key (#74177)."""
     from tools.web_result_cache import extract_cache_get
     from tools.website_policy import check_website_access as _check_site
     cached_results, fetch_urls, fetch_positions = {}, [], []
@@ -211,7 +225,7 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
             _policy_block = _check_site(url)
         except Exception:  # noqa: BLE001 — policy errors fail open like dispatch
             _policy_block = None
-        hit = extract_cache_get(url, format=format, provider=provider.name) if _policy_block is None else None
+        hit = extract_cache_get(url, format=format, provider=provider.name) if (_policy_block is None and not headers) else None
         if hit is not None:
             cached_results[position] = hit
         else:
@@ -221,7 +235,7 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
     if not fetch_urls:
         return [cached_results[i] for i in range(len(safe_urls))]
     logger.info("Web extract via %s: %d URL(s)", provider.name, len(fetch_urls))
-    results = await _dispatch_extract(provider, fetch_urls, format)
+    results = await _dispatch_extract(provider, fetch_urls, format, headers)
     if not cached_results:
         return results
     return _merge_in_order(len(safe_urls), cached_results, fetch_positions, fetch_urls, results)

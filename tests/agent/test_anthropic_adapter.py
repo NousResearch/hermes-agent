@@ -664,6 +664,21 @@ class TestConvertTools:
         }
         assert result[0]["input_schema"]["required"] == ["command"]
 
+    def test_coerces_invalid_type_strings_recursively(self):
+        tools = [{"type": "function", "function": {"name": "run", "parameters": {
+            "type": "object", "properties": {
+                "custom": {"type": "custom"},
+                "nested": {"type": "object", "properties": {"undefined": {"type": "undefined"}}},
+                "entries": {"type": "array", "items": {"type": "unrecognized"}},
+            },
+        }}}]
+
+        schema = convert_tools_to_anthropic(tools)[0]["input_schema"]
+
+        assert schema["properties"]["custom"]["type"] == "object"
+        assert schema["properties"]["nested"]["properties"]["undefined"]["type"] == "object"
+        assert schema["properties"]["entries"]["items"]["type"] == "object"
+
 
 # ---------------------------------------------------------------------------
 # Message conversion

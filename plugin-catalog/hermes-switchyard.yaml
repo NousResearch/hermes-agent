@@ -1,0 +1,25 @@
+name: hermes-switchyard
+repo: https://github.com/bgrablin/hermes-switchyard
+sha: 44e14848bb8f808762e3e32dee55f4a3276881bb
+subdir: ""
+description: Jev-powered assessment, skill and model routing, and bounded computer-use decisions with TypeSafe or OpenRouter.
+maintainer: bgrablin
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/bgrablin/hermes-switchyard/blob/44e14848bb8f808762e3e32dee55f4a3276881bb/docs/SETUP.md
+version: "0.4.1"
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - jev_assess
+    - jev_computer_use
+    - jev_model_route
+    - jev_skill_select
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -356,6 +356,10 @@ try:
             "oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex",
         }:
             continue
+        # Judgment-only backends (TypeSafe System One) are credential/setup
+        # providers, not session chat models — mirror OMP's auth-only posture.
+        if getattr(_pp, "api_mode", "chat_completions") == "systemone":
+            continue
         _label = _pp.display_name or _pp.name
         CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _pp.description or f"{_label} (direct API)"))
         _canonical_slugs.add(_pp.name)

@@ -1223,3 +1223,54 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+
+class TestGetRealHomeFallback:
+    """Exhausted candidates must fall back to the platform temp dir, never "/tmp"."""
+
+    def _profile_env(self, tmp_path, monkeypatch, home_value, tilde_value):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "home").mkdir(parents=True)
+        profile_home = str(hermes_home / "home")
+        env = {
+            "HERMES_HOME": str(hermes_home),
+            "HOME": home_value,
+            "HERMES_REAL_HOME": "",
+            "USERPROFILE": "",
+            "HOMEDRIVE": "",
+            "HOMEPATH": "",
+        }
+        for key in ("HERMES_REAL_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
+            monkeypatch.delenv(key, raising=False)
+        # Only "~" maps to the stub; every other path must expand normally or
+        # _norm_home_path() would compare identical constants.
+        real_expanduser = os.path.expanduser
+        monkeypatch.setattr(
+            os.path, "expanduser", lambda p: tilde_value if p == "~" else real_expanduser(p)
+        )
+        return env, profile_home
+
+    def test_fallback_returns_platform_tempdir(self, tmp_path, monkeypatch):
+        import tempfile
+
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "home").mkdir(parents=True)
+        profile_home = str(hermes_home / "home")
+        # Deterministic exhaustion: the real candidate chain consults
+        # pwd.getpwuid()/expanduser(), which resolve to the operator's home on
+        # Linux CI and would win over the fallback. Stub the chain to the
+        # profile home only, and point gettempdir at a sentinel to prove the
+        # fallback delegates instead of hardcoding a path.
+        monkeypatch.setattr(
+            hermes_constants, "_iter_real_home_candidates", lambda env=None: [profile_home]
+        )
+        sentinel = str(tmp_path / "sentinel-tmp")
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: sentinel)
+        env = {"HERMES_HOME": str(hermes_home), "HOME": profile_home}
+        assert hermes_constants.get_real_home(env) == sentinel
+
+    def test_usable_candidate_beats_fallback(self, tmp_path, monkeypatch):
+        real_home = tmp_path / "real"
+        real_home.mkdir()
+        env, _ = self._profile_env(tmp_path, monkeypatch, str(real_home), str(real_home))
+        assert hermes_constants.get_real_home(env) == str(real_home)

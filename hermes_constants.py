@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -920,7 +921,10 @@ def get_real_home(env: dict[str, str] | None = None) -> str:
         seen.add(key)
         if not _is_profile_home(candidate, profile_home):
             return candidate
-    return "/tmp"
+    # No usable home found (every candidate was the profile HOME or empty).
+    # tempfile.gettempdir() honors TMPDIR/TEMP/TMP per platform; a hardcoded
+    # "/tmp" does not exist on Windows.
+    return tempfile.gettempdir()
 
 
 _HOME_MODE_ALIASES = {"isolated": "profile", "profile_home": "profile", "profile-home": "profile",

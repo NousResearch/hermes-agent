@@ -134,20 +134,22 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             transaction = _mcp_oauth_transaction(flow)
             with transaction, force_interactive_oauth(), dashboard_oauth_flow(flow):
                 manager = get_manager()
-                storage = HermesTokenStorage(flow.server_name)
+                manager.unblock(flow.server_name, hermes_home=flow.hermes_home)
+                storage = HermesTokenStorage(flow.server_name, requested=cfg)
                 backup = storage.snapshot()
                 previous_entry = None
                 try:
-                    previous_entry = manager.remove(flow.server_name, hermes_home=flow.hermes_home)
+                    previous_entry = manager.remove(
+                        flow.server_name, hermes_home=flow.hermes_home, pool_path=storage.pool_path)
                     tools = _probe_single_server(
                         flow.server_name, cfg, connect_timeout=login_connect_timeout(cfg)
                     )
-                    if not _oauth_tokens_present(flow.server_name):
+                    if not _oauth_tokens_present(flow.server_name, cfg=cfg):
                         raise RuntimeError(
                             "The server responded, but no OAuth token was obtained — "
                             "this provider may require a manually-registered OAuth client."
                         )
-                    _save_mcp_server(flow.server_name, cfg)
+                    _save_mcp_server(flow.server_name, cfg, authorized_pool=storage.pool_path)
                     flow.tools = [{"name": t, "description": d} for t, d in tools]
                     flow.mark_approved()
                     if flow.reconnect_live:

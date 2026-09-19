@@ -31,7 +31,8 @@ def probe_with_rollback(
     from tools.mcp_oauth import HermesTokenStorage, login_connect_timeout
     from tools.mcp_oauth_manager import get_manager
     manager = get_manager()
-    storage = HermesTokenStorage(server_name)
+    manager.unblock(server_name, hermes_home=hermes_home)  # an explicit authorization lifts a tombstone
+    storage = HermesTokenStorage(server_name, requested=cfg)
     # An attempt that replaced a still-running one starts from that one's half-written files, so
     # it carries the older attempt's snapshot: the state from before either of them.
     backup = getattr(flow, "inherited_backup", None) or storage.snapshot()
@@ -52,10 +53,10 @@ def probe_with_rollback(
         manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
 
     try:
-        previous_entry = manager.remove(server_name, hermes_home=hermes_home)
+        previous_entry = manager.remove(server_name, hermes_home=hermes_home, pool_path=storage.pool_path)
         tools = _probe_single_server(
             server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
-        if not _oauth_tokens_present(server_name):
+        if not _oauth_tokens_present(server_name, cfg=cfg):
             details["initialized"] = False
             raise RuntimeError(
                 "The server responded, but no OAuth token was obtained — "
@@ -66,7 +67,7 @@ def probe_with_rollback(
             raise
         tools, discovery_error = [], exception_message(exc)
     try:
-        _commit(server_name, cfg, on_commit, flow)
+        _commit(server_name, cfg, on_commit, flow, authorized_pool=storage.pool_path)
     except AttemptCanceled:
         undo()
         raise
@@ -105,13 +106,14 @@ def cancel_attempt(flow) -> bool:
     return False
 
 
-def _commit(server_name: str, cfg: dict, on_commit: Optional[Callable[[], None]], flow=None) -> None:
+def _commit(server_name: str, cfg: dict, on_commit: Optional[Callable[[], None]], flow=None, *,
+            authorized_pool: str = "") -> None:
     from hermes_cli.mcp_config import _save_mcp_server
 
     with _COMMIT_GUARD:
         if flow is not None and getattr(flow, "cancelled", False):
             raise AttemptCanceled("canceled")
-        if not _save_mcp_server(server_name, cfg):
+        if not _save_mcp_server(server_name, cfg, authorized_pool=authorized_pool):
             raise RuntimeError(f"'{server_name}' was rejected: suspicious command/args configuration")
         if on_commit is not None:
             on_commit()
@@ -129,12 +131,15 @@ def _reuse_saved_authorization(
     from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server
     from tools.mcp_oauth import suppress_interactive_oauth
 
-    if not _oauth_tokens_present(server_name):
+    from tools.mcp_oauth import HermesTokenStorage
+
+    if not _oauth_tokens_present(server_name, cfg=cfg):
         return False
     try:
         with suppress_interactive_oauth():
             tools = _probe_single_server(server_name, cfg, connect_timeout=30)
-        _commit(server_name, cfg, on_commit, flow)
+        _commit(server_name, cfg, on_commit, flow,
+                authorized_pool=HermesTokenStorage(server_name, requested=cfg).pool_path)
     except Exception as exc:
         logger.debug("saved authorization for %s was not usable: %s", server_name, exc)
         return False

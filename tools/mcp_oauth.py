@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from hermes_constants import secure_parent_dir
-from utils import atomic_json_write
+from utils import atomic_json_write, atomic_write_bytes
 from tools.mcp_dashboard_oauth import contextvar_set as _contextvar_set, get_dashboard_oauth_flow
 
 if TYPE_CHECKING:  # annotations only; the SDK is imported lazily at runtime
@@ -206,6 +206,12 @@ class OAuthNonInteractiveError(RuntimeError):
     """Raised when OAuth requires browser interaction in a non-interactive env."""
 
 
+class OAuthStorageDetachedError(RuntimeError):
+    """Raised when a provider evicted from its token pool (server removed, re-identified, or moved
+    off a shared pool) is asked to authenticate a request: it must not read or re-authorize the
+    pool it left. The session reconnects and builds a fresh provider."""
+
+
 # Port of the most recent callback-port resolution. Legacy global; per-flow closures are the
 # real mechanism (concurrent flows must not share it).
 _oauth_port: int | None = None
@@ -225,16 +231,121 @@ _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
 _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 
 
-def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
-    """``HERMES_HOME/mcp-tokens/`` — per-profile token directory."""
+def _load_mcp_server_config(home: Path, server_name: str) -> dict[str, Any] | None:
+    """One raw ``mcp_servers`` entry from *home*'s ``config.yaml``; None when absent or unreadable.
+    Reads the file directly: the shared-pool decision must never go through the profile-aware
+    loader, which would inherit or resolve values the export contract requires verbatim."""
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover — yaml ships with hermes
+        return None
+    try:
+        data = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        return None
+    servers = data.get("mcp_servers") if isinstance(data, dict) else None
+    entry = servers.get(server_name) if isinstance(servers, dict) else None
+    return entry if isinstance(entry, dict) else None
+
+
+def _contains_config_reference(value: Any) -> bool:
+    """True when any string under *value* carries a ``${...}`` reference (resolved per profile scope,
+    so two profiles can read the same text as different endpoints or clients)."""
+    if isinstance(value, str):
+        return "${" in value
+    if isinstance(value, dict):
+        return any(_contains_config_reference(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_config_reference(v) for v in value)
+    return False
+
+
+def _shared_server_identity(entry: dict[str, Any]) -> tuple[Any, ...] | None:
+    """The identity two profiles must agree on before they may share one OAuth grant:
+    ``(url, transport, oauth block minus share_with_profiles)``. None fails closed — a non-OAuth
+    server, a non-HTTP URL, or any dynamic ``${...}`` reference in the identity."""
+    url = entry.get("url")
+    if entry.get("auth") != "oauth" or not isinstance(url, str) or _contains_config_reference(url):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    oauth = entry.get("oauth")
+    if oauth is None:
+        oauth_identity: dict[str, Any] = {}
+    elif isinstance(oauth, dict):
+        oauth_identity = {k: v for k, v in oauth.items() if k != "share_with_profiles"}
+    else:
+        return None
+    transport = entry.get("transport")
+    if _contains_config_reference(oauth_identity) or _contains_config_reference(transport):
+        return None
+    return (url, transport, oauth_identity)
+
+
+def _shared_token_home(active_home: Path, server_name: str, *, requested: dict | None = None) -> Path:
+    """The home whose ``mcp-tokens/`` holds *server_name*'s grant for *active_home*.
+
+    A named profile resolves to the ROOT home only when the root's own entry for the same name
+    carries ``oauth.share_with_profiles: true`` AND both entries have an identical, fully static
+    OAuth identity. Everything else — no root entry, no export flag, a differing URL/client/
+    transport, a ``${...}`` reference on either side — keeps the profile's own pool. No other
+    configuration is inherited; the profile still needs its own server entry to see the server.
+
+    *requested* is the entry actually being connected or authorized when that may differ from
+    the one on disk (an edit being authorized before it is saved, a provider built from a live
+    config): its ``url`` and ``oauth`` block must match the root's too, or a grant for another
+    endpoint/client would be written into — and presented from — the shared pool.
+    """
+    from hermes_constants import named_profile_home
+
+    if named_profile_home(active_home) != active_home:
+        return active_home
+    root_home = active_home.parent.parent
+    root_entry = _load_mcp_server_config(root_home, server_name)
+    profile_entry = _load_mcp_server_config(active_home, server_name)
+    if root_entry is None or profile_entry is None:
+        return active_home
+    export = root_entry.get("oauth")
+    if not isinstance(export, dict) or export.get("share_with_profiles") is not True:
+        return active_home
+    root_identity = _shared_server_identity(root_entry)
+    if root_identity is None or root_identity != _shared_server_identity(profile_entry):
+        logger.warning(
+            "MCP OAuth '%s': root token pool export ignored — the profile's OAuth identity differs "
+            "or one side carries a dynamic ${...} reference", server_name)
+        return active_home
+    if requested is not None:
+        wanted = _shared_server_identity({**profile_entry, "url": requested.get("url"),
+                                          "oauth": requested.get("oauth")})
+        if wanted != root_identity:
+            return active_home
+    return root_home
+
+
+def _get_token_dir(hermes_home: str | Path | None = None, *, server_name: str | None = None,
+                   requested: dict | None = None) -> Path:
+    """``<home>/mcp-tokens/`` — per-profile token directory. With *server_name*, *home* is first
+    resolved through :func:`_shared_token_home`, so a named profile using a root-exported pool
+    lands on the root's directory."""
     from hermes_constants import get_hermes_home
 
-    return Path(hermes_home if hermes_home is not None else get_hermes_home()) / "mcp-tokens"
+    base = Path(hermes_home if hermes_home is not None else get_hermes_home())
+    if server_name is not None:
+        base = _shared_token_home(base, server_name, requested=requested)
+    return base / "mcp-tokens"
 
 
 def _safe_filename(name: str) -> str:
-    """Sanitize a server name for use as a filename (no path separators)."""
-    return re.sub(r"[^\w\-]", "_", name).strip("_")[:128] or "default"
+    """Filename component for a server name. Plain names keep their historical path; a name that
+    needs sanitizing gets a digest suffix so ``a/b`` and ``a_b`` can never share OAuth state. ``~``
+    is outside the plain alphabet, so no plain name can impersonate the encoded namespace."""
+    if re.fullmatch(r"[\w-]{1,128}", name) and name.strip("_"):
+        return name
+    import hashlib
+
+    stem = re.sub(r"[^\w-]", "_", name).strip("_") or "default"
+    return f"~u~{stem[:111]}-{hashlib.sha256(name.encode('utf-8')).hexdigest()[:12]}"
 
 
 # Callback-port reservation: bound-but-not-listening sockets keyed by port, held from selection
@@ -409,25 +520,43 @@ def _model_json(model: Any) -> dict:
 
 
 class HermesTokenStorage:
-    """Persist OAuth state as ``HERMES_HOME/mcp-tokens/<server_name>`` + ``.json`` (tokens),
-    ``.client.json`` (client info), ``.meta.json`` (server metadata), ``.cimd-off`` (CIMD refused)."""
+    """Persist OAuth state as ``<pool>/mcp-tokens/<server_name>`` + ``.json`` (tokens),
+    ``.client.json`` (client info), ``.meta.json`` (server metadata), ``.cimd-off`` (CIMD refused),
+    ``.removed`` (permanent-removal tombstone: no provider is rebuilt until the server is re-added).
 
-    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
+    The pool directory is resolved ONCE at construction (``_shared_token_home``): a live provider
+    keeps the pool it was built against even if the profile's config changes underneath it, and
+    the manager pins that path on the provider entry. ``token_dir`` overrides the lookup for callers
+    that already hold a pinned path; ``requested`` is the entry being used when it may differ from
+    the one on disk (see ``_shared_token_home``).
+    """
+
+    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None,
+                 token_dir: str | Path | None = None, requested: dict | None = None):
+        self._config_server_name = server_name
         self._server_name = _safe_filename(server_name)
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        self._token_dir = (Path(token_dir) if token_dir is not None
+                           else _get_token_dir(self._hermes_home, server_name=server_name, requested=requested))
         # Issuer binding: ``loaded_issuer`` is what the token file on disk recorded (the authorization
         # server that granted the stored refresh token); ``_bound_issuer`` is stamped onto the next
         # ``set_tokens`` write. See ``tools.mcp_oauth_provider.enforce_refresh_token_issuer``.
         self.loaded_issuer: str | None = None
         self._bound_issuer: str | None = None
 
+    @property
+    def pool_path(self) -> str:
+        """Resolved tokens-file path: the identity of the pool this storage reads and writes."""
+        return str(self._tokens_path().resolve(strict=False))
+
     def _path(self, suffix: str) -> Path:
-        return _get_token_dir(self._hermes_home) / f"{self._server_name}{suffix}"
+        return self._token_dir / f"{self._server_name}{suffix}"
 
     _tokens_path = partialmethod(_path, ".json")
     _client_info_path = partialmethod(_path, ".client.json")
     _meta_path = partialmethod(_path, ".meta.json")
     _cimd_rejected_path = partialmethod(_path, ".cimd-off")
+    _removed_path = partialmethod(_path, ".removed")
 
     def _state_paths(self) -> tuple[Path, Path, Path]:
         return self._tokens_path(), self._client_info_path(), self._meta_path()
@@ -584,42 +713,57 @@ class HermesTokenStorage:
         """True when this server has refused our metadata document before."""
         return self._cimd_rejected_path().exists()
 
-    def remove(self, *, keep_metadata: bool = False) -> None:
-        """Delete all stored OAuth state for this server; ``keep_metadata`` spares ``.meta.json`` so a
+    def remove(self, *, keep_metadata: bool = False, permanent: bool = False) -> None:
+        """Delete all stored OAuth state for this server. ``keep_metadata`` spares ``.meta.json`` so a
         re-login can still announce the discovered ``authorization_endpoint`` when the authorization
-        server's metadata document cannot be re-fetched (#115329)."""
+        server's metadata document cannot be re-fetched (#115329). ``permanent`` also leaves a
+        ``.removed`` tombstone so no process rebuilds a provider for the pool until
+        :meth:`unblock_rebuild`."""
         # The ``.refresh.lock`` sidecar is deliberately kept: flock is inode-bound, so unlinking it
         # while a peer holds the fence would let the next acquirer lock a fresh inode (two holders).
         for p in (self._tokens_path(), self._client_info_path(), self._cimd_rejected_path(),
-                  *(() if keep_metadata else (self._meta_path(),))):
+                  self._client_backup_path(), *(() if keep_metadata else (self._meta_path(),))):
             p.unlink(missing_ok=True)
+        if permanent:
+            _write_json(self._removed_path(), {"removed": True})
+
+    def _client_backup_path(self) -> Path:
+        client_path = self._client_info_path()
+        return client_path.with_name(client_path.name + ".bak")
+
+    def rebuild_blocked(self) -> bool:
+        """True while a permanent-removal tombstone stands for this pool."""
+        return self._removed_path().exists()
+
+    def unblock_rebuild(self) -> None:
+        """Clear the tombstone: the server was re-added or explicitly re-authorized."""
+        self._removed_path().unlink(missing_ok=True)
 
     def snapshot(self) -> dict[str, bytes]:
-        """filename -> bytes of the existing state files; ``restore()`` it to undo a ``remove()`` after
-        a failed re-auth so a valid token survives."""
+        """filename -> bytes of the existing state files (tokens, client, metadata, CIMD marker);
+        ``restore()`` it to undo a ``remove()`` after a failed re-auth so a valid token survives."""
         snap: dict[str, bytes] = {}
-        for p in self._state_paths():
+        for p in (*self._state_paths(), self._cimd_rejected_path()):
             with contextlib.suppress(OSError):
                 snap[p.name] = p.read_bytes()
         return snap
 
     def restore(self, snapshot: dict[str, bytes], *, only_if_absent: bool = False) -> None:
-        """Revert to a snapshot without overwriting a concurrent successful write."""
-        if only_if_absent and any(path.exists() for path in self._state_paths()):
-            logger.info("Skipping OAuth rollback for %s because newer state exists", self._server_name)
+        """Revert to a snapshot without overwriting a concurrent successful write. Only a token file
+        proves a newer authorization succeeded: a failed attempt routinely leaves client/metadata
+        files behind, and those must not suppress restoring the previous valid grant."""
+        if only_if_absent and self._tokens_path().exists():
+            logger.info("Skipping OAuth rollback for %s because a newer token exists", self._server_name)
             return
         self.remove()
         if not snapshot:
             return
-        token_dir = _get_token_dir(self._hermes_home)
         from hermes_constants import mkdir_under_hermes_home
 
-        mkdir_under_hermes_home(token_dir)
+        mkdir_under_hermes_home(self._token_dir)
         for fname, data in snapshot.items():
             try:
-                fd = os.open(str(token_dir / fname), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(data)
+                atomic_write_bytes(self._token_dir / fname, data, mode=0o600)
             except OSError as exc:
                 logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
 
@@ -630,7 +774,7 @@ class HermesTokenStorage:
         client_path = self._client_info_path()
         if not client_path.exists():
             return False
-        backup = client_path.with_name(client_path.name + ".bak")
+        backup = self._client_backup_path()
         try:
             backup.write_bytes(client_path.read_bytes())
         except OSError as exc:  # non-fatal — proceed with the removal anyway

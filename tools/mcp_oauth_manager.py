@@ -31,10 +31,13 @@ except ImportError:  # pragma: no cover — SDK required in CI; module must stil
 class _ProviderEntry:
     """Per-server OAuth state. ``last_mtime_ns``: last-seen tokens-file mtime (0 = never read)
     for external-refresh detection; ``lock`` binds to the first asyncio loop awaiting it (the MCP
-    loop); ``pending_401`` dedupes thundering-herd 401s by failed access_token."""
+    loop); ``pending_401`` dedupes thundering-herd 401s by failed access_token. ``pool_path`` is
+    the tokens file the provider was built against — its storage identity, distinct from the
+    ``(home, name)`` provider identity, since a named profile may be reading a root-exported pool."""
 
     server_url: str
     oauth_config: Optional[dict]
+    pool_path: str = ""
     provider: Optional[Any] = None
     last_mtime_ns: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -52,6 +55,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
     """
 
     _hermes_logger = logger
+    # Flipped by the manager when this provider's pool moved or was tombstoned (``_detach_provider``).
+    _hermes_detached = False
 
     def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -207,6 +212,11 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             self._log_nonfatal("invalid_client detection", exc)
 
     async def async_auth_flow(self, request):  # type: ignore[override]
+        if self._hermes_detached:
+            from tools.mcp_oauth import OAuthStorageDetachedError
+            raise OAuthStorageDetachedError(
+                f"MCP OAuth '{self._hermes_server_name}': provider detached from its token pool "
+                "(server removed or re-identified); reconnect to build a fresh one")
         try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)
             await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
         except Exception as exc:  # pragma: no cover — defensive
@@ -280,16 +290,36 @@ class MCPOAuthManager:
         self._inflight_tasks: set[asyncio.Task] = set()
 
     def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict]) -> Optional[Any]:
-        """Cached OAuth provider for ``server_name``, built on first use (rebuilt when ``server_url`` changes);
-        None if the MCP SDK's OAuth support is unavailable."""
+        """Cached OAuth provider for ``server_name``, built on first use; None if the MCP SDK's OAuth
+        support is unavailable or the pool is tombstoned (``remove(..., block_rebuild=True)``).
+
+        Rebuilt when the endpoint, the ``oauth:`` block, or the resolved pool changes. A change that
+        keeps the pool (same profile, new endpoint/client) also wipes that pool: the new identity
+        must not reload tokens minted for the old one. A change that MOVES the profile off a shared
+        root pool evicts only this provider — the root grant stays for root and sibling profiles."""
+        from tools.mcp_oauth import HermesTokenStorage
+
         key = self._key(server_name)
+        requested_storage = HermesTokenStorage(
+            server_name, hermes_home=key[0], requested={"url": server_url, "oauth": oauth_config})
+        requested_pool = requested_storage.pool_path
+        requested_config = dict(oauth_config or {})
         with self._entries_lock:
+            if requested_storage.rebuild_blocked():
+                logger.info("MCP OAuth '%s': provider rebuild blocked after permanent removal", server_name)
+                return None
             entry = self._entries.get(key)
-            if entry is not None and entry.server_url != server_url:
-                logger.info("MCP OAuth '%s': URL changed from %s to %s, discarding cache", server_name, entry.server_url, server_url)
+            if entry is not None and (entry.server_url != server_url or (entry.oauth_config or {}) != requested_config
+                                      or entry.pool_path != requested_pool):
+                logger.info("MCP OAuth '%s': server or OAuth configuration changed, discarding cache", server_name)
+                if entry.provider is not None:
+                    self._detach_provider(entry.provider)
+                if entry.pool_path == requested_pool:
+                    HermesTokenStorage(server_name, hermes_home=key[0], token_dir=Path(entry.pool_path).parent).remove()
                 entry = None
             if entry is None:
-                entry = self._entries[key] = _ProviderEntry(server_url=server_url, oauth_config=oauth_config)
+                entry = self._entries[key] = _ProviderEntry(
+                    server_url=server_url, oauth_config=requested_config, pool_path=requested_pool)
             if entry.provider is None:
                 entry.provider = self._build_provider(server_name, entry)
                 if entry.provider is not None:
@@ -302,6 +332,29 @@ class MCPOAuthManager:
         home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
         return (str(home.expanduser().resolve(strict=False)), server_name)
 
+    @staticmethod
+    def _clear_provider_oauth_state(provider: Any) -> None:
+        """Drop an evicted provider's in-memory tokens and force a storage reload on its next request
+        (a live session may keep the object until it reconnects; after a re-auth it must pick up
+        the rotated grant rather than present the one it was built with)."""
+        provider.context.clear_tokens()
+        provider._initialized = False  # noqa: SLF001 — private SDK API, stable across pinned versions
+
+    @staticmethod
+    def _detach_provider(provider: Any) -> None:
+        """Fence an evicted provider whose pool moved or was tombstoned: it must neither read the pool
+        it left nor re-authorize into it. ``async_auth_flow`` refuses every request from then on;
+        the owning session reconnects on the config change and builds a fresh provider."""
+        MCPOAuthManager._clear_provider_oauth_state(provider)
+        provider._hermes_detached = True
+
+    @staticmethod
+    def _entry_pool(entry: _ProviderEntry) -> str:
+        """The pool a cached entry reads: the live provider's storage wins over the recorded path."""
+        storage = getattr(getattr(entry.provider, "context", None), "storage", None)
+        pool = getattr(storage, "pool_path", None)
+        return pool if isinstance(pool, str) and pool else entry.pool_path
+
     def _build_provider(self, server_name: str, entry: _ProviderEntry) -> Optional[Any]:
         """Build a ``HermesMCPOAuthProvider``; None if the SDK's OAuth support is unavailable."""
         if _HERMES_PROVIDER_CLS is None:
@@ -312,7 +365,8 @@ class MCPOAuthManager:
         from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
         if not _OAUTH_AVAILABLE:
             return None
-        cfg, storage = prepare_oauth_config(server_name, entry.server_url, entry.oauth_config)
+        cfg, storage = prepare_oauth_config(server_name, entry.server_url, entry.oauth_config,
+                                            token_dir=Path(entry.pool_path).parent if entry.pool_path else None)
         if get_dashboard_oauth_flow() is None and not _is_interactive() and not storage.has_cached_tokens():
             raise OAuthNonInteractiveError(
                 f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. "
@@ -321,13 +375,50 @@ class MCPOAuthManager:
             server_name=server_name, preregistered=bool(cfg.get("client_id")), server_url=entry.server_url,
             **build_provider_kwargs(cfg, storage, ssh_proxy_hint=False))
 
-    def remove(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:
-        """Evict the provider from cache AND delete tokens from disk (``hermes mcp remove`` / forced re-auth)."""
-        entry = self.evict(server_name, hermes_home=hermes_home)
-        from tools.mcp_oauth import remove_oauth_tokens
-        remove_oauth_tokens(server_name, hermes_home=hermes_home)
-        logger.info("MCP OAuth '%s': evicted from cache and removed from disk", server_name)
+    def remove(self, server_name: str, *, hermes_home: str | Path | None = None, pool_path: str | None = None,
+               block_rebuild: bool = False, detach_participants: bool = False) -> _ProviderEntry | None:
+        """Evict this home's provider and delete its pool from disk. The pool is ``pool_path`` when the
+        caller captured one, else the cached provider's, else the one the current config resolves.
+
+        A re-authorization (the default: ``hermes mcp login``, the dashboard/TUI Authorize button)
+        touches only this home's entry: other cached participants of a shared pool keep their
+        providers and adopt the new grant through the disk watch once it lands. A revocation by the
+        pool's owner (``detach_participants``, implied by ``block_rebuild``) also fences every cached
+        participant — the grant is gone for good — and ``block_rebuild`` tombstones the pool so no
+        process rebuilds a provider for it until the server is re-added."""
+        from tools.mcp_oauth import HermesTokenStorage
+
+        requested_key = self._key(server_name, hermes_home)
+        with self._entries_lock:
+            entry = self._entries.pop(requested_key, None)
+            pool = pool_path or (self._entry_pool(entry) if entry is not None else "")
+            storage = (HermesTokenStorage(server_name, hermes_home=hermes_home, token_dir=Path(pool).parent) if pool
+                       else HermesTokenStorage(server_name, hermes_home=hermes_home))
+            target = storage.pool_path
+            fenced = 0
+            if detach_participants or block_rebuild:
+                siblings = [k for k, e in self._entries.items() if self._entry_pool(e) == target]
+                for participant in (entry, *(self._entries.pop(k) for k in siblings)):
+                    if participant is not None and participant.provider is not None:
+                        self._detach_provider(participant.provider)
+                        fenced += 1
+            storage.remove(permanent=block_rebuild)
+        logger.info("MCP OAuth '%s': removed disk state at %s (%d fenced participant provider(s))", server_name, target, fenced)
         return entry
+
+    def detach(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:
+        """Evict this home's provider AND fence it: it left its pool (the entry's identity changed or the
+        profile stopped sharing) and must not present or refresh the grant it was built with. The pool
+        itself is untouched — it belongs to whoever still resolves it."""
+        entry = self.evict(server_name, hermes_home=hermes_home)
+        if entry is not None and entry.provider is not None:
+            self._detach_provider(entry.provider)
+        return entry
+
+    def unblock(self, server_name: str, *, hermes_home: str | Path | None = None) -> None:
+        """Lift a permanent-removal tombstone: the server was deliberately re-added or re-authorized."""
+        from tools.mcp_oauth import HermesTokenStorage
+        HermesTokenStorage(server_name, hermes_home=hermes_home).unblock_rebuild()
 
     def restore_entry(self, server_name: str, entry: _ProviderEntry | None, *, hermes_home: str | Path | None = None) -> None:
         """Restore a provider entry removed for a failed reauthorization."""
@@ -342,14 +433,19 @@ class MCPOAuthManager:
             return self._entries.pop(self._key(server_name, hermes_home), None)
 
     async def invalidate_if_disk_changed(self, server_name: str, *, hermes_home: str | Path | None = None) -> bool:
-        """Force the SDK provider to reload when the tokens file mtime changed (e.g. a cron refresh); True if so."""
-        from tools.mcp_oauth import _get_token_dir, _safe_filename
+        """Force the SDK provider to reload when the tokens file mtime changed (e.g. a cron refresh, or a
+        sibling profile re-authorizing a shared pool); True if so. A tokens file that is momentarily
+        ABSENT (a re-authorization in flight) is not a change: the provider keeps its in-memory grant
+        until the new one lands, rather than starting a second OAuth flow from a live session."""
+        from tools.mcp_oauth import HermesTokenStorage
         entry = self._entries.get(self._key(server_name, hermes_home))
         if entry is None or entry.provider is None:
             return False
         async with entry.lock:
+            pool = self._entry_pool(entry)
+            tokens_path = Path(pool) if pool else HermesTokenStorage(server_name, hermes_home=hermes_home)._tokens_path()
             try:
-                mtime_ns = (_get_token_dir(hermes_home) / f"{_safe_filename(server_name)}.json").stat().st_mtime_ns
+                mtime_ns = tokens_path.stat().st_mtime_ns
             except OSError:
                 return False
             if mtime_ns == entry.last_mtime_ns:

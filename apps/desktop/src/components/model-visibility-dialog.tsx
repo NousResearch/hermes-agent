@@ -10,11 +10,12 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { Switch } from '@/components/ui/switch'
+import { Tip } from '@/components/ui/tooltip'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelDisplayParts, modelRouteTags } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import {
   $visibleModels,
@@ -64,6 +65,11 @@ export function ModelVisibilityDialog({
   )
 
   const visible = effectiveVisibleKeys(stored, providers)
+
+  const routeTags = useMemo(
+    () => new Map(providers.map(provider => [provider.slug, modelRouteTags(provider.models ?? [])])),
+    [providers]
+  )
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
     setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
@@ -145,6 +151,7 @@ export function ModelVisibilityDialog({
                   {!collapsed &&
                     models.map(family => {
                       const { name, tag } = modelDisplayParts(family.id)
+                      const routeTag = routeTags.get(provider.slug)?.get(family.id) ?? ''
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (
@@ -155,12 +162,18 @@ export function ModelVisibilityDialog({
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches foldSeparators query={search} text={name} />
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
+                            {routeTag ? (
+                              <span className="text-(--ui-text-tertiary)"> · {routeTag}</span>
+                            ) : null}
                           </span>
-                          <Switch
-                            checked={visible.has(key)}
-                            onCheckedChange={() => toggle(provider, family.id)}
-                            size="xs"
-                          />
+                          <Tip label={family.id}>
+                            <Switch
+                              aria-label={family.id}
+                              checked={visible.has(key)}
+                              onCheckedChange={() => toggle(provider, family.id)}
+                              size="xs"
+                            />
+                          </Tip>
                         </label>
                       )
                     })}

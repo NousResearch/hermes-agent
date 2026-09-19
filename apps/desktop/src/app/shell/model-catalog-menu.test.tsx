@@ -60,12 +60,14 @@ afterEach(() => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu() {
+function renderMenu(
+  current: ModelMenuController['current'] = { effort: '', fast: false, model: '', provider: '' }
+) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
     applyPreset: vi.fn(),
-    current: { effort: '', fast: false, model: '', provider: '' },
+    current,
     presetFor: () => ({}),
     select,
     setOptions: vi.fn()
@@ -122,6 +124,36 @@ describe('the catalog owns model curation', () => {
         )
       ).toBeDefined()
     })
+  })
+
+  it('uses the exact active fast sibling id for the collapsed family tooltip', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-opus-4.8', 'anthropic/claude-opus-4.8-fast'],
+          name: 'OmniRoute',
+          slug: 'omniroute'
+        }
+      ]
+    })
+
+    renderMenu({
+      effort: '',
+      fast: false,
+      model: 'anthropic/claude-opus-4.8-fast',
+      provider: 'omniroute'
+    })
+
+    const triggers = await screen.findAllByText(
+      (_, element) => element?.textContent?.startsWith('Opus 4.8 · anthropic') ?? false
+    )
+    const trigger = triggers.find(element => element.getAttribute('data-slot') === 'tooltip-trigger')!
+
+    expect(trigger.getAttribute('title')).toBeNull()
+
+    fireEvent.pointerMove(trigger, { pointerType: 'mouse' })
+
+    expect((await screen.findByRole('tooltip')).textContent).toBe('anthropic/claude-opus-4.8-fast')
   })
 
   it('offers Edit Models without the host wiring it up', async () => {

@@ -751,6 +751,34 @@ _REFRESH_TIMEOUT_ENV_VARS = {
     "xai-oauth": "HERMES_XAI_REFRESH_TIMEOUT_SECONDS",
 }
 
+# How long a failed ``claude_code`` refresh waits for the official ``claude``
+# CLI to finish writing its out-of-band rotation before the entry is benched
+# (#105797). The CLI revokes the old access token the moment it starts a
+# rotation, so our 401 can arrive a second or more before the rotated pair is
+# on disk; without this wait both re-reads see the already-consumed refresh
+# token and a borrowed credential is declared dead while a valid one lands
+# immediately after. Deliberately a module constant, not config: it is a
+# property of the other process's write latency, not a user preference. Only
+# the failure path pays it — the happy path never sleeps.
+_CLAUDE_CODE_ROTATION_WAIT_SECONDS = 3.0
+_CLAUDE_CODE_ROTATION_POLL_SECONDS = 0.25
+
+
+def claude_code_credentials_mtime() -> float:
+    """Modification time of the shared Claude Code credentials file, 0.0 when absent.
+
+    The file — not auth.json — is token authority for borrowed ``claude_code``
+    entries, so its real mtime is the only honest signal that the CLI has
+    rotated. Never raises: a missing file (Keychain-only install) simply
+    reports "no rotation seen".
+    """
+    from agent.anthropic_credentials import claude_code_credentials_path
+
+    try:
+        return claude_code_credentials_path().stat().st_mtime
+    except OSError:
+        return 0.0
+
 # Singleton-seeded source whose exhausted/DEAD pool row may be revived by a
 # re-auth another process wrote to the provider's store.
 _RESYNC_SOURCE = {
@@ -1269,8 +1297,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 # lock (inner, per the ordering invariant on ``_auth_store_lock``)
                 # and re-read that authoritative file before any
                 # adopt-and-return shortcut fires. The official ``claude`` CLI
-                # rotating out-of-band is handled by the sync-and-retry-once
-                # fallback in ``_recover_failed_refresh``.
+                # rotating out-of-band is handled by the sync-wait-and-retry
+                # fallback in ``_recover_failed_refresh``, which also covers a
+                # rotation still being written when we get here (#105797).
                 with self._claude_code_credentials_lock():
                     synced = self._sync_anthropic_entry_from_credentials_file(synced)
                     if synced.refresh_token != entry.refresh_token:
@@ -1465,6 +1494,102 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._sync_device_code_entry_to_auth_store(updated)
         return updated
 
+    def _retry_refresh_from_credentials_file(self, entry: PooledCredential) -> Optional[PooledCredential]:
+        """One more attempt for a ``claude_code`` entry against the shared credentials file.
+
+        Returns the recovered entry, or None when the file holds nothing newer
+        than the token that already failed. ``_RefreshDone`` is allowed to
+        propagate: an unpersisted rotation was quarantined and must not be
+        retried against the same file.
+
+        The no-POST shortcut requires the ACCESS token to have changed, not
+        merely to look unexpired. ``_entry_needs_refresh`` is an expiry check,
+        and a revoked token is not an expired one (#105797): the access token
+        that just 401'd still has its hour of ``expiresAt`` left, so returning
+        it as "recovered" only buys another 401. A file can carry a rotated
+        refreshToken beside an unchanged accessToken — the one that just 401'd
+        — with ``expiresAt`` still an hour out. The sync adopts the new refresh
+        token, so the entry differs from the one we failed with while its
+        access token does not. Only a changed access token skips the POST;
+        everything else falls through to the refresh-token comparison below.
+        (A file written with an empty ``accessToken`` never reaches here:
+        ``_claude_oauth_record`` rejects it and the sync returns the entry
+        untouched.)
+
+        A valid access token is adopted *before* any POST is considered
+        because the file is Claude Code's own store and its refresh tokens are
+        single-use: POSTing a pair the CLI just wrote would rotate the CLI out
+        of its own session for a token we did not need.
+        """
+        synced = self._sync_anthropic_entry_from_credentials_file(entry)
+        if synced.access_token != entry.access_token and not self._entry_needs_refresh(synced):
+            logger.debug("Credentials file has valid token, using without refresh")
+            return synced
+        if synced.refresh_token == entry.refresh_token:
+            return None
+        logger.debug("Retrying refresh with synced token from credentials file")
+        try:
+            from agent.anthropic_credentials import refresh_anthropic_oauth_pure
+            refreshed = refresh_anthropic_oauth_pure(
+                synced.refresh_token, use_json=synced.source.endswith("hermes_pkce"),
+            )
+            # Commit to the authoritative singleton BEFORE marking or
+            # persisting the pool row, or a failed write leaves an
+            # "ok" row that the next load_pool() re-seeds over.
+            self._commit_anthropic_rotation(synced, refreshed)
+            return self._adopt(
+                synced,
+                access_token=refreshed["access_token"],
+                refresh_token=refreshed["refresh_token"],
+                expires_at_ms=refreshed["expires_at_ms"],
+                last_status=STATUS_OK,
+                last_status_at=None,
+                last_error_code=None,
+            )
+        except _RefreshDone:
+            raise
+        except Exception as retry_exc:
+            logger.debug("Retry refresh also failed: %s", retry_exc)
+        return None
+
+    def _retry_after_claude_code_rotation(
+        self, entry: PooledCredential, mtime_before: float
+    ) -> Optional[PooledCredential]:
+        """Wait a bounded window for the ``claude`` CLI's rotation to land, and retry each
+        write it sees until the window is spent.
+
+        The CLI revokes the old access token as it starts a rotation but writes
+        the new pair some way after; in #105797 both Hermes refresh attempts
+        finished 1.4 s after the first 401 while the file was rewritten at
+        ~1.8 s, so every re-read replayed the already-consumed refresh token
+        and a perfectly recoverable borrowed credential was benched for the
+        rest of the run. Poll the file's real mtime instead of sleeping blind:
+        nothing is paid unless a refresh has already failed, and a file that
+        never changes still reaches "unrecoverable" inside the window.
+        """
+        if not mtime_before:
+            # Nothing to watch (Keychain-only install, or no file at all):
+            # waiting cannot produce a rotation to adopt.
+            return None
+        deadline = time.monotonic() + _CLAUDE_CODE_ROTATION_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            time.sleep(_CLAUDE_CODE_ROTATION_POLL_SECONDS)
+            current = claude_code_credentials_mtime()
+            if current == mtime_before:
+                continue
+            # Only a recovery ends the window. A write that carries no usable
+            # pair — a truncate-then-rename landing in two steps, a
+            # metadata-only touch, a pair that is itself mid-rotation — must
+            # not forfeit the remaining poll time, or the late write this
+            # whole wait exists for is missed one layer in. Re-stamp so each
+            # new write is tried once and only once.
+            mtime_before = current
+            logger.debug("Credentials file changed during the rotation wait — re-syncing")
+            recovered = self._retry_refresh_from_credentials_file(entry)
+            if recovered is not None:
+                return recovered
+        return None
+
     def _recover_failed_refresh(self, entry: PooledCredential, exc: Exception) -> Optional[PooledCredential]:
         """After a failed refresh POST: adopt a peer's rotation, quarantine a dead grant, or bench.
 
@@ -1474,34 +1599,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         if self.provider == "anthropic":
             if entry.source == "claude_code":
-                synced = self._sync_anthropic_entry_from_credentials_file(entry)
-                if synced.refresh_token != entry.refresh_token:
-                    logger.debug("Retrying refresh with synced token from credentials file")
-                    try:
-                        from agent.anthropic_credentials import refresh_anthropic_oauth_pure
-                        refreshed = refresh_anthropic_oauth_pure(
-                            synced.refresh_token, use_json=synced.source.endswith("hermes_pkce"),
-                        )
-                        # Commit to the authoritative singleton BEFORE marking or
-                        # persisting the pool row, or a failed write leaves an
-                        # "ok" row that the next load_pool() re-seeds over.
-                        self._commit_anthropic_rotation(synced, refreshed)
-                        return self._adopt(
-                            synced,
-                            access_token=refreshed["access_token"],
-                            refresh_token=refreshed["refresh_token"],
-                            expires_at_ms=refreshed["expires_at_ms"],
-                            last_status=STATUS_OK,
-                            last_status_at=None,
-                            last_error_code=None,
-                        )
-                    except _RefreshDone as done:
-                        return done.result
-                    except Exception as retry_exc:
-                        logger.debug("Retry refresh also failed: %s", retry_exc)
-                elif not self._entry_needs_refresh(synced):
-                    logger.debug("Credentials file has valid token, using without refresh")
-                    return synced
+                mtime_before = claude_code_credentials_mtime()
+                try:
+                    recovered = self._retry_refresh_from_credentials_file(entry)
+                    if recovered is not None:
+                        return recovered
+                    recovered = self._retry_after_claude_code_rotation(entry, mtime_before)
+                    if recovered is not None:
+                        return recovered
+                except _RefreshDone as done:
+                    return done.result
             else:
                 # Backstop for pool-owned sources (hermes_pkce, manual:dashboard_pkce):
                 # the winner may have persisted between our pre-check and our POST.

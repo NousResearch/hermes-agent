@@ -18,6 +18,9 @@ from agent.lsp.client import LSPClient
 from agent.lsp.protocol import LSPProtocolError, LSPRequestError
 
 
+pytestmark = pytest.mark.live_system_guard_bypass
+
+
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 
@@ -221,8 +224,6 @@ async def test_reader_failure_retires_client_and_rejects_later_work(
             )
     finally:
         await client.shutdown()
-
-
 @pytest.mark.asyncio
 async def test_shutdown_never_signals_a_server_that_honours_exit(tmp_path: Path):
     """A server that exits on the protocol ``exit`` must not be SIGTERMed on top of it (#72944:
@@ -278,3 +279,41 @@ async def test_docs_cache_is_lru_bounded_and_reopens_evicted(tmp_path: Path, mon
         assert client.diagnostics_for(str(files[0]))
     finally:
         await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_client_handles_large_stderr_line(tmp_path: Path):
+    """LSP stderr drain must not crash or deadlock when the server emits a line
+    larger than asyncio's old 64 KiB default StreamReader limit."""
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n", encoding="utf-8")
+
+    client = _client(tmp_path, "large_stderr")
+    await client.start()
+    try:
+        assert client.is_running
+        version = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), version, mode="document")
+        diags = client.diagnostics_for(str(f))
+        assert diags == []
+    finally:
+        await client.shutdown()
+    assert not client.is_running
+
+
+@pytest.mark.asyncio
+async def test_client_handles_stderr_line_over_stream_limit(tmp_path: Path):
+    """An over-limit stderr line must not terminate the drain task."""
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n", encoding="utf-8")
+
+    client = _client(tmp_path, "oversized_stderr")
+    await client.start()
+    try:
+        assert client.is_running
+        version = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), version, mode="document")
+        assert client.diagnostics_for(str(f)) == []
+    finally:
+        await client.shutdown()
+    assert not client.is_running

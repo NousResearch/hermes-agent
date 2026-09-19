@@ -10,6 +10,8 @@ from __future__ import annotations
 import html
 import re
 
+from tools.tts_technical_speech import speak_technical_tokens
+
 # Sentinel appended to former heading lines so smooth_whitespace_for_tts folds the
 # heading into the sentence after it ("Weather, it will be sunny") instead of a bare
 # "Weather." label.
@@ -203,11 +205,17 @@ def flatten_newlines_for_payload(text: str) -> str:
 
 def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     """Return a TTS-friendly script from assistant text (deterministic cleanup, not a rewrite).
-    Pipeline: non-spoken blocks > Markdown > symbols/units > line formatting into sentence
-    pauses > single line (for newline-sensitive providers), then ``max_chars``."""
+    Pipeline: non-spoken blocks > technical tokens > Markdown > symbols/units > line formatting
+    into sentence pauses > single line (for newline-sensitive providers), then ``max_chars``.
+
+    Technical tokens run before ``normalize_symbols_for_tts`` so ``&&`` is spelled out before
+    the ``&`` rule reaches it, and before ``smooth_whitespace_for_tts`` so a dotted identifier
+    is already words when the dot-then-letter rule would otherwise split it.
+    """
     spoken = text
-    for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
-                 smooth_whitespace_for_tts, flatten_newlines_for_payload):
+    for step in (strip_nonspoken_blocks, speak_technical_tokens, strip_markdown_for_tts,
+                 normalize_symbols_for_tts, smooth_whitespace_for_tts,
+                 flatten_newlines_for_payload):
         spoken = step(spoken)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:
         spoken = spoken[:max_chars].rstrip()

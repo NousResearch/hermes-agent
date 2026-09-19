@@ -492,45 +492,45 @@ def _adopt_out_of_band_turns(session: dict) -> None:
     history before the turn snapshots it. The desktop already repaints them from the DB (#86588); without
     this the next prompt still ran on the in-memory history and the model never saw them (#42962).
     Foreign rows are the active rows between the highest ``_row_id`` the agent's own flushes stamped onto
-    the in-memory messages (``sync_flushed_message_markers``) and this turn's own user row, which
-    ``_persist_submit_user_row`` already wrote (#111868). Nothing stamped yet (seeded branch before its
-    first turn) means nothing to adopt; a cold resume arrives stamped."""
+    the in-memory messages (``sync_flushed_message_markers``; a local compaction re-stamps them too) and
+    this turn's own user row, which ``_persist_submit_user_row`` already wrote (#111868). When a foreign
+    row is a compaction summary the other surface rewrote the transcript under us, so the in-memory history
+    is stale from the root and is re-hydrated from the DB the way ``session.resume`` does. Nothing stamped
+    yet (seeded branch before its first turn) means nothing to adopt; a cold resume arrives stamped."""
     with session["history_lock"]:
         history, version = list(session.get("history") or ()), int(session.get("history_version", 0))
     seen = max((rid for m in history if isinstance(m, dict) and (rid := _message_row_id(m)) is not None),
                default=None)
-    if seen is None or not (rows := _load_durable_truncation_history(session, repair_alternation=False)):
+    if seen is None:
         return
     ceiling = _message_row_id(session.get("_submit_user_row") or {})
-    foreign = [m for m in rows if (rid := _message_row_id(m)) is not None and rid > seen
-               and (ceiling is None or rid < ceiling)]
-    tail = canonicalize_replay_history(_strip_in_memory_overlap(foreign, history))
+
+    def _below_ceiling(rid) -> bool:
+        return isinstance(rid, int) and (ceiling is None or rid < ceiling)
+
+    def _foreign(rid) -> bool:
+        return _below_ceiling(rid) and rid > seen
+    # Keyset probe first: the common turn has nothing to adopt and must not pay a full transcript decode.
+    with _session_db(session) as db:
+        try:
+            newer = db.get_messages(session["session_key"], after_id=seen) if db is not None else []
+        except Exception:
+            logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
+            return
+    newer = [row for row in newer if _foreign(row.get("id"))]
+    if not newer:
+        return
+    rewritten = any(row.get("_compressed_summary") for row in newer)
+    rows = _load_durable_truncation_history(session, repair_alternation=rewritten) or []
+    keep = _below_ceiling if rewritten else _foreign
+    tail = canonicalize_replay_history([m for m in rows if keep(_message_row_id(m))])
     if not tail:
         return
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != version:
             return  # /compress, a rewind or a pivot marker landed meanwhile; the next turn re-derives
-        session["history"] = history + tail
+        session["history"] = tail if rewritten else history + tail
         session["history_version"] = version + 1
-
-
-def _strip_in_memory_overlap(candidates: list[dict], history: list) -> list[dict]:
-    """A compaction re-inserts the carried messages as fresh rows (new ids, ``archive_and_compact``) while
-    the in-memory dicts keep the archived originals' ``_row_id``; those rows sit above the boundary but are
-    already in memory. Drop the longest candidate prefix that equals the durable in-memory tail message for
-    message — a foreign turn starts with a user row after our assistant reply, so it never aligns."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-
-    def _key(msg: dict) -> tuple:
-        return (msg.get("role"), _coerce_message_text(msg.get("content")))
-    durable = [m for m in history if isinstance(m, dict)]
-    while durable and not (durable[-1].get(_DB_PERSISTED_MARKER) or _message_row_id(durable[-1]) is not None):
-        durable.pop()  # an unflushed local row has no persisted copy to collide with
-    recent = [_key(m) for m in durable[-len(candidates):]] if candidates else []
-    for k in range(min(len(candidates), len(recent)), 0, -1):
-        if [_key(m) for m in candidates[:k]] == recent[-k:]:
-            return candidates[k:]
-    return candidates
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):

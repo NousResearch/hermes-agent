@@ -46,18 +46,26 @@ def test_next_turn_adopts_rows_another_writer_appended(tmp_path, monkeypatch):
     assert len(session["history"]) == 4 and session["history_version"] == 1
 
 
-def test_compaction_resequenced_rows_are_not_adopted_again(tmp_path, monkeypatch):
-    """archive_and_compact re-inserts the carried messages as fresh rows while the in-memory dicts keep the
-    archived originals' ids (only the persisted marker is restamped); an unflushed local row carries no id.
-    Neither may be read back into history as if another surface had written it."""
+def test_compaction_epochs(tmp_path, monkeypatch):
+    """A local compaction re-stamps the in-memory dicts with the re-inserted rows' ids, so nothing sits above
+    the boundary. A compaction by ANOTHER surface rewrites the transcript under us: the summary shows up as a
+    foreign row and the history is re-hydrated from the DB instead of appended to."""
     db, session = _seed(tmp_path)
     _bind_db(monkeypatch, db)
-    compacted = [{"role": "assistant", "content": "summary of MANGO", "_compressed_summary": True},
-                 dict(session["history"][-1])]  # carried tail keeps _row_id 2
-    db.archive_and_compact("s1", compacted, tail_count=1)
-    session["history"] = compacted + [{"role": "user", "content": "unflushed local turn"}]
+    local = [{"role": "assistant", "content": "summary of MANGO", "_compressed_summary": True}, session["history"][-1]]
+    db.archive_and_compact("s1", local, tail_count=1)
+    session["history"] = local
+    server._adopt_out_of_band_turns(session)
+    assert [m.get("_row_id") for m in session["history"]] == [3, 4] and session["history_version"] == 0
 
+    remote = [{"role": "assistant", "content": "summary of MANGO", "_compressed_summary": True},
+              {"role": "user", "content": "Repeat it"}, {"role": "assistant", "content": "MANGO"}]  # its own copies
+    db.archive_and_compact("s1", remote, tail_count=1)
+    db.append_message("s1", "user", "KIWI")
+    db.append_message("s1", "assistant", "OK")
+    own = db.append_message("s1", "user", "List every codeword")
+    session["_submit_user_row"] = {"role": "user", "content": "List every codeword", "_row_id": own}
     server._adopt_out_of_band_turns(session)
 
-    assert [m["content"] for m in session["history"]] == ["summary of MANGO", "OK", "unflushed local turn"]
-    assert session["history_version"] == 0
+    assert [m["content"] for m in session["history"]] == ["summary of MANGO", "Repeat it", "MANGO", "KIWI", "OK"]
+    assert session["history"][0].get("_compressed_summary") and session["history_version"] == 1

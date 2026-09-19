@@ -586,7 +586,12 @@ def _apply_profile_override() -> None:
     if profile_name is None and hermes_home_env and os.environ.get("HERMES_UPDATE_POST_SWAP") == "1":
         return
 
-    if profile_name is None and not _under_gateway_supervisor(argv) and not _desktop_ssh_backend(argv):
+    # The sticky-pointer suppression exists for the supervised serving
+    # process only (`gateway run`, #74872). One-shot gateway commands typed
+    # into a marker-carrying shell are operator commands, not supervised
+    # children, so they still honor the sticky profile (#113206).
+    supervised_serve = _under_gateway_supervisor(argv) and _argv_is_gateway_run(argv)
+    if profile_name is None and not supervised_serve and not _desktop_ssh_backend(argv):
         try:
             from hermes_constants import get_default_hermes_root
 

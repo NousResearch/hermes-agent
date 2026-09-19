@@ -317,8 +317,11 @@ def _request(method: str, path: str, timeout: Optional[int] = None, **kwargs: An
     return resp
 
 
-def _post(path: str, body: dict, timeout: Optional[int] = None) -> dict:
-    return _request("post", path, timeout, json=body).json()
+def _post(path: str, body: dict, timeout: Optional[int] = None, *, allow_redirects: bool = True) -> dict:
+    response = _request("post", path, timeout, json=body, allow_redirects=allow_redirects)
+    if not allow_redirects and response.status_code != 200:
+        raise RuntimeError("Camofox request refused")
+    return response.json()
 
 
 def _get(path: str, params: dict = None, timeout: Optional[int] = None) -> dict:

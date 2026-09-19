@@ -61,6 +61,9 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    from tools.browser_camofox import is_camofox_mode
+    if is_camofox_mode():
+        return _eval_js_secret(task_id, expression)
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
@@ -125,6 +128,28 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
     """
+    from tools.browser_camofox import is_camofox_mode
+    if is_camofox_mode():
+        from tools.browser_camofox import _ensure_tab, _post, get_camofox_url
+        from urllib.parse import urlsplit
+        try:
+            url = urlsplit(get_camofox_url())
+            if (url.username or url.password or url.query or url.fragment or
+                    not (url.scheme == "https" or (url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")))):
+                raise ValueError("Vault requires HTTPS or loopback HTTP")
+            tab = _ensure_tab(task_id)
+            # Catch page exceptions in-page too: the REST server logs JS error messages.
+            wrapped = "(() => { try { return (" + expression + "); } catch (_) { return {vault_eval_failed:true}; } })()"
+            response = _post(f"/tabs/{tab['tab_id']}/evaluate", body={
+                "expression": wrapped, "userId": tab["user_id"]}, allow_redirects=False)
+            if (isinstance(response, dict) and "result" in response and not response.get("error")
+                    and response.get("result") != {"vault_eval_failed": True}):
+                return {"success": True, "result": response["result"]}
+        except Exception:
+            # Browser exceptions may contain the entire secret-bearing expression.
+            pass
+        return {"success": False, "error_type": "eval_failed", "error": "Camofox vault evaluation failed"}
+
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception as exc:
@@ -192,6 +217,10 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    from tools.browser_camofox import is_camofox_mode
+    if is_camofox_mode():
+        # Camofox already binds the current tab to its dedicated user identity.
+        return None
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
@@ -488,7 +517,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         result = classify(LoginControl.from_dict(raw))
         if result is not None:
             classified.append(result)
-    if not classified:
+    if not classified or (meta.kind == "login" and not any(
+        control.token == "current-password" for control in classified
+    )):
         return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────

@@ -10,11 +10,24 @@ from agent.title_generator import (
     derive_title,
     generate_title,
     auto_title_session,
+    is_titleable_user_message,
     maybe_auto_title,
     wait_for_title_upgrades,
     _title_language,
 )
 from hermes_state import SessionDB
+
+
+class TestDerivedTitle:
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            '[Replying to: "Cronjob Response: media-inbox-mirror"]',
+            '[Replying to your previous message: "Cronjob Response: media-inbox-mirror"]',
+        ],
+    )
+    def test_reply_context_wrapper_is_not_titleable(self, wrapper):
+        assert is_titleable_user_message(f"{wrapper}\n\nReparieren") is False
 
 
 class TestGenerateTitle:

@@ -17,6 +17,7 @@ Covers the two safeguards added in response:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -206,6 +207,7 @@ def test_dispatch_elevated_pressure_does_not_widen_tighter_budget(
     with kbc.connect() as conn:
         running = kb.create_task(conn, title="running", assignee="alice")
         kb.claim_task(conn, running)
+        kbd._set_worker_pid(conn, running, os.getpid())
         kb.create_task(conn, title="ready", assignee="bob")
         res = kbd.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=1)
 

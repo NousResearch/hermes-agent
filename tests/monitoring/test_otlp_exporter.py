@@ -116,3 +116,34 @@ def test_failing_streamer_never_breaks_emitter(monkeypatch):
     em.flush()
     em.close()
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize("signal", ["traces", "metrics", "logs"])
+def test_signal_endpoint_appends_suffix_to_bare_endpoint(signal):
+    # Regression for #t_30ffc2a3: a bare base endpoint (the documented config shape) must get
+    # the per-signal /v1/<signal> suffix appended, not silently 404 against the collector root.
+    assert OE._signal_endpoint("http://127.0.0.1:4318", signal) == f"http://127.0.0.1:4318/v1/{signal}"
+    assert OE._signal_endpoint("http://127.0.0.1:4318/", signal) == f"http://127.0.0.1:4318/v1/{signal}"
+
+
+def test_signal_endpoint_swaps_between_known_suffixes():
+    assert OE._signal_endpoint("http://127.0.0.1:4318/v1/traces", "metrics") == "http://127.0.0.1:4318/v1/metrics"
+    assert OE._signal_endpoint("http://127.0.0.1:4318/v1/metrics", "logs") == "http://127.0.0.1:4318/v1/logs"
+    assert OE._signal_endpoint("http://127.0.0.1:4318/v1/logs", "traces") == "http://127.0.0.1:4318/v1/traces"
+
+
+def test_signal_endpoint_already_correct_is_unchanged():
+    assert OE._signal_endpoint("http://127.0.0.1:4318/v1/traces", "traces") == "http://127.0.0.1:4318/v1/traces"
+
+
+def test_build_exporter_appends_traces_suffix_to_bare_endpoint(monkeypatch):
+    captured = {}
+
+    class FakeSpanExporter:
+        def __init__(self, endpoint, headers):
+            captured["endpoint"] = endpoint
+            captured["headers"] = headers
+
+    monkeypatch.setattr(OE, "_require_sdk", lambda *a, **k: {"OTLPSpanExporter": FakeSpanExporter})
+    OE.build_exporter({"monitoring": {"export": {"otlp": {"endpoint": "http://127.0.0.1:4318"}}}})
+    assert captured["endpoint"] == "http://127.0.0.1:4318/v1/traces"

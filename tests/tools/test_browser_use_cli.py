@@ -282,6 +282,64 @@ class TestVaultSupervisorAttach:
         assert _fake_supervisor_registry == [("t-vault", "ws://127.0.0.1:47000/devtools/browser/t-vault")]
 
 
+class TestManagedBrowserActivityHeartbeat:
+    def test_exec_keeps_hermes_managed_browser_session_active(self, tmp_path, monkeypatch):
+        """Browser Use drives local Chrome over direct CDP, so its traffic never reaches
+        agent-browser's control daemon. Keep Hermes' cache activity alive for the whole exec.
+        """
+        entered = []
+
+        class _Heartbeat:
+            def __enter__(self):
+                entered.append("enter")
+
+            def __exit__(self, *_exc):
+                entered.append("exit")
+
+        monkeypatch.setattr(
+            bu_cli,
+            "_managed_browser_session_heartbeat",
+            lambda cache_key: entered.append(cache_key) or _Heartbeat(),
+        )
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.setitem(browser_tool._active_sessions, "bu-named-named", {"session_name": "h_test"})
+        cli = _fake_cli(tmp_path, "cat > /dev/null\necho ok\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="t-heartbeat", session="named"))
+
+        assert result["success"] is True
+        assert entered == ["bu-named-named", "enter", "exit"]
+
+    def test_heartbeat_touches_only_hermes_owned_session(self, monkeypatch):
+        """Never claim lifecycle ownership of an operator-provided CDP endpoint."""
+        import agent.memory_provider as memory_provider
+        import tools.browser_tool as browser_tool
+        import tools.browser_tool_lifecycle as lifecycle
+
+        events = []
+
+        class _Thread:
+            def start(self):
+                events.append("start")
+
+            def join(self, timeout):
+                events.append(("join", timeout))
+
+        monkeypatch.setitem(browser_tool._active_sessions, "managed", {"session_name": "h_test"})
+        monkeypatch.setattr(lifecycle, "_update_session_activity", lambda key: events.append(key))
+        monkeypatch.setattr(memory_provider, "spawn_context_thread", lambda *args, **kwargs: _Thread())
+
+        with bu_cli._managed_browser_session_heartbeat("managed"):
+            assert events == ["managed", "start"]
+        assert events == ["managed", "start", ("join", 2)]
+
+        with bu_cli._managed_browser_session_heartbeat("operator-cdp"):
+            pass
+        assert events == ["managed", "start", ("join", 2)]
+
+
 class TestVaultEgressRedaction:
     def test_exec_redacts_registered_vault_secret_from_stdout_and_stderr(self, tmp_path, monkeypatch):
         """A browser_exec page read must not return a vault-filled value to model history."""

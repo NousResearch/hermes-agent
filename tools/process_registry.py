@@ -98,15 +98,65 @@ _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 
 
-def _worker_memory_max_bytes() -> int:
-    """Finite per-worker cgroup limit that can never widen host risk.
-    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
-    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
+def _configured_worker_memory_max_bytes() -> Optional[int]:
+    """Configured explicit worker cap in bytes, or ``None`` for auto/invalid values."""
+    try:
+        from hermes_cli.config import load_config
 
-    The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
-    isolation composes with PR #57121 instead of inventing a second knob.
+        value = ((load_config() or {}).get("terminal") or {}).get(
+            "worker_memory_max_mb", "auto"
+        )
+    except Exception:
+        return None
+    if value == "auto" or value is None:
+        return None
+    if isinstance(value, bool):
+        parsed = -1
+    elif isinstance(value, int):
+        parsed = value * 1024 * 1024
+    elif isinstance(value, str):
+        try:
+            parsed = int(value) * 1024 * 1024
+        except ValueError:
+            parsed = -1
+    else:
+        parsed = -1
+    if parsed < _MIN_WORKER_MEMORY_MAX_BYTES:
+        logger.warning(
+            "Ignoring invalid terminal.worker_memory_max_mb=%r; "
+            "expected 'auto' or an integer representing at least %d MiB",
+            value, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024),
+        )
+        return None
+    return parsed
+
+
+def _enclosing_cgroup_memory_max_bytes() -> Optional[int]:
+    """Finite cgroup-v2 memory.max for this process, when available."""
+    with suppress(OSError, ValueError):
+        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
+        v2 = next((ln for ln in lines if ln.startswith("0::")), None)
+        if v2 is not None:
+            relative = v2.partition("::")[2].lstrip("/")
+            raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8").strip()
+            if raw_limit.isdigit() and int(raw_limit) >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                return int(raw_limit)
+    return None
+
+
+def _worker_memory_max_bytes() -> int:
+    """Finite per-worker cgroup limit with a config override safe for its slice.
+
+    ``terminal.worker_memory_max_mb='auto'`` retains the historical min of the
+    enclosing cgroup, half of physical RAM, and 4 GiB. An explicit value can
+    exceed 4 GiB, but is still clamped by a finite enclosing cgroup ``memory.max``.
+    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` remains an auto-mode tightening guard.
     """
+    cgroup_bound = _enclosing_cgroup_memory_max_bytes()
+    configured_bound = _configured_worker_memory_max_bytes()
+    if configured_bound is not None:
+        return min(configured_bound, cgroup_bound) if cgroup_bound else configured_bound
+
     override_bound: Optional[int] = None
     override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
     if override:
@@ -122,14 +172,8 @@ def _worker_memory_max_bytes() -> int:
                 "expected an integer representing at least %d MiB",
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     candidates: List[int] = []
-    with suppress(OSError, ValueError):
-        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
-        v2 = next((ln for ln in lines if ln.startswith("0::")), None)
-        if v2 is not None:
-            relative = v2.partition("::")[2].lstrip("/")
-            raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8").strip()
-            if raw_limit.isdigit() and int(raw_limit) >= _MIN_WORKER_MEMORY_MAX_BYTES:
-                candidates.append(int(raw_limit))
+    if cgroup_bound is not None:
+        candidates.append(cgroup_bound)
     with suppress(OSError, ValueError, TypeError):
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
         candidates.append(min(_WORKER_MEMORY_MAX_CAP_BYTES, max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)))

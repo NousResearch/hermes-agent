@@ -198,6 +198,11 @@ def build_model_options_payload(
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
         capabilities=True, featured=True,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
+        # for_picker: a provider whose pool is in exhaustion cooldown must stay selectable —
+        # limits are per-model/per-window and the user can reset credits at any time. Without
+        # this the dashboard silently dropped openai-codex from EVERY profile for days after
+        # one 429, while a live call succeeded (Byrd-IT local fix, KB zsSQraABF8V8wqQQAlDz).
+        for_picker=True,
         non_blocking_catalogs=not refresh,
     )
     if not refresh:

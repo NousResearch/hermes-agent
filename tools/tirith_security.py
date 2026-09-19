@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import platform
+import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -535,6 +537,9 @@ def check_command_security(command: str) -> dict:
     if tirith_path is None:
         _warn_once("tirith_path_none", "tirith path resolved to None; scanning disabled")
         return _fail(fail_open, "tirith path unavailable", "tirith path unavailable (fail-closed)")
+    # First scan (also the witness for the cache-warm rescan below). One spawn, fully
+    # accounted: spawn failure/timeout/unknown-exit are classified here (crash + breaker
+    # accounting, fail_open respected); _tirith_check stays for the rescan paths below.
     try:
         result = subprocess.run(
             [tirith_path, "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
@@ -549,19 +554,18 @@ def check_command_security(command: str) -> dict:
     except subprocess.TimeoutExpired:
         _warn_once(f"tirith_timeout:{timeout}", "tirith timed out after %ds", timeout)
         return _crash(fail_open, f"tirith timed out ({timeout}s)", "tirith timed out (fail-closed)")
-    exit_code = result.returncode
-    if (action := _EXIT_ACTIONS.get(exit_code)) is None:
+    if (action := _EXIT_ACTIONS.get(result.returncode)) is None:
         # Unknown exit code (includes signal-killed, e.g. -11): respect fail_open.
-        logger.warning("tirith returned unexpected exit code %d", exit_code)
-        return _crash(fail_open, f"tirith exit code {exit_code} (fail-open)",
-                      f"tirith exit code {exit_code} (fail-closed)")
+        logger.warning("tirith returned unexpected exit code %d", result.returncode)
+        return _crash(fail_open, f"tirith exit code {result.returncode} (fail-open)",
+                      f"tirith exit code {result.returncode} (fail-closed)")
     # Any completed scan (allow/block/warn) proves the binary is healthy: clear the streak and close the
     # breaker. This is the half-open probe's recovery path, and it also fixes the streak never resetting on
     # block/warn verdicts.
     _crash_count = 0
     if _circuit_open:
         _circuit_open, _circuit_open_at = False, 0.0
-        logger.info("tirith circuit breaker closed after successful probe")
+        logger.info("tirith circuit breaker closed after successful scan")
     # JSON enriches findings/summary; a parse failure never changes the verdict.
     findings, summary = [], ""
     try:
@@ -581,7 +585,263 @@ def check_command_security(command: str) -> dict:
     if action == "warn" and findings and all(_is_emoji_variation_selector_finding(f) for f in findings) \
             and _has_only_emoji_presentation_selectors(command):
         return _verdict("allow")
+    # Redirection tokens and package-manager flag operands ("2>&1", the value of
+    # --index-strategy) that tirith mistook for package names produce analysis_incomplete
+    # warns on ordinary commands the same way: the names 404 on every registry. Drop only
+    # findings grounded in tokens of the scanned command (warn-only; a real package or any
+    # other rule keeps the verdict).
+    if action == "warn" and findings:
+        action, findings = _suppress_phantom_package_findings(command, action, findings)
+        if action == "allow":
+            return _verdict("allow")
+    # tirith 0.4.2 hard-blocks while/until bracket-test compounds with two
+    # analysis_incomplete HIGH findings even when every leaf command is
+    # read-only -- a false positive that kills the command outright in
+    # single-query mode. `[ args ]` is exactly `test args` (POSIX), so rewrite
+    # the bracket spans, and downgrade ONLY when the ORIGINAL command's leaf
+    # set is provably read-only AND the rewritten copy re-scans as a clean
+    # allow. The leaf gate is what keeps destructive watcher loops blocked:
+    # tirith 0.4.2 cannot see rm/sudo inside while bodies even after the
+    # rewrite, so a bare rescan-clean gate would fail open. Everything that
+    # does not pass both gates keeps the original block (fail-closed).
+    if action == "block" and _is_loop_analysis_fp_block(findings):
+        leaves = _extract_leaf_commands(command)
+        rewritten = _rewrite_bracket_tests(command)
+        if (rewritten is not None and rewritten != command
+                and _all_leaves_readonly(leaves)):
+            rescan = _tirith_check(tirith_path, timeout, rewritten)
+            if rescan is not None:
+                r_action, r_findings, r_summary = rescan
+                if r_action == "allow":
+                    _crash_count = 0
+                    return _verdict("allow", "bracket-test loop downgraded after "
+                                             "read-only-leaf rescan")
+    # tirith <= 0.4.2 runs every package's threat-intel lookups under one small per-run wall-clock
+    # budget, so `npm install a b` warns "deadline exhausted" for all packages even when upstreams
+    # are healthy — the budget is spent before later packages finish their first lookup. Successful
+    # responses are cached on disk (failures are not), so solo per-package scans (one package per
+    # run = one budget each) warm the cache and a single re-scan then completes. Warnings for
+    # genuinely unreachable upstreams survive the re-scan and stand, so this never fails open.
+    if action == "warn" and (real := _incomplete_real_packages(findings, command)):
+        if (rescan := _rescan_after_cache_warm(command, tirith_path, timeout, real)) is not None:
+            rescan_action, rescan_findings, rescan_summary = rescan
+            if rescan_action == "warn" and rescan_findings:
+                rescan_action, rescan_findings = _suppress_app_tld_false_positives(
+                    rescan_action, rescan_findings)
+                rescan_action, rescan_findings = _suppress_phantom_package_findings(
+                    command, rescan_action, rescan_findings)
+            if rescan_action == "allow":
+                _crash_count = 0
+                return _verdict("allow")
+            return _verdict(rescan_action, rescan_summary, rescan_findings)
     return _verdict(action, summary, findings)
+
+
+_INCOMPLETE_PKG = re.compile(r"threat-intelligence check for package '([^']*)'")
+_REDIRECT_OP = re.compile(r"""
+    (?P<fd>\d*|\{[A-Za-z_][A-Za-z0-9_]*\})   # optional fd number or {varname}
+    (?:>>|>&|<&|<>|>\||>|<)                  # the redirection operator itself
+    """, re.VERBOSE)
+# Warm commands are constructed from names extracted out of tirith findings before they are ever
+# spawned, and tirith echoes package names from the install command it scanned — so this charset
+# (npm/pypi name rules, '=' for version specs) bounds what can reach the shell. Anything else is
+# not a package name.
+_PKGNAME_OK = re.compile(r"^[@a-zA-Z0-9][@/=.:_a-zA-Z0-9-]*$")
+_WARM_SCAN_LIMIT = 12  # bound worst-case added latency (~1s per cold solo scan)
+_WARM_CMDS = {"npm": "npm install {pkg}", "pnpm": "pnpm install {pkg}",
+              "yarn": "yarn add {pkg}", "pip": "pip install {pkg}"}
+
+
+_LONG_VALUE_FLAGS = frozenset({
+    # pip / uv
+    "--index-strategy", "--index-url", "--extra-index-url", "--find-links", "--index",
+    "--default-index", "--extra-index", "--keyring-provider", "--config-setting",
+    "--config-settings", "--constraint", "--requirement", "--editable", "--target", "--prefix",
+    "--platform", "--python-version", "--implementation", "--abi", "--python", "--only-binary",
+    "--no-binary", "--prefer-binary", "--trusted-host", "--timeout", "--retries",
+    "--resume-retries", "--build", "--cache-dir", "--build-constraint", "--build-constraints",
+    "--config-file", "--exclude-newer", "--resolution", "--annotation-style", "--fork-strategy",
+    "--link-mode", "--no-build-isolation-package", "--strategy",
+    # npm / yarn / cargo / gem
+    "--registry", "--destination", "--source", "--tag", "--cwd", "--output", "--format",
+})
+_SHORT_VALUE_FLAGS = frozenset({"-c", "-e", "-f", "-i", "-r", "-t", "-b", "-s"})
+
+
+def _redirect_artifact_tokens(command: str) -> set[str]:
+    """Tokens in *command* that exist only because of a shell redirection: the operator tokens
+    themselves (``2>&1``, ``>``, ``2>/tmp/e``), each redirection *target* (``out.log``), and the
+    numeric fd prefixes a naive splitter leaves behind. These are exactly the strings tirith
+    mistakes for packages."""
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:  # unbalanced quotes -- fall back to whitespace splitting
+        tokens = command.split()
+    artifacts: set[str] = set()
+    expect_target = False
+    for tok in tokens:
+        if expect_target:
+            artifacts.add(tok)
+            expect_target = False
+        if not (m := _REDIRECT_OP.search(tok)):
+            continue
+        artifacts.add(tok)
+        # "2>&1" also yields the bare fd number when a parser splits on the operator.
+        if (prefix := m.group("fd")) and prefix.isdigit():
+            artifacts.add(prefix)
+        # A bare operator ("> out.log") takes its target from the next token.
+        expect_target = tok.endswith(m.group(0)) and not tok[m.end():]
+    return artifacts
+
+
+def _flag_operand_tokens(command: str) -> set[str]:
+    """The flag token and operand of value-taking package-manager flags in *command*
+    (e.g. ``--index-strategy unsafe-best-match`` -> both tokens; ``--flag=value`` -> both).
+    The VALUE of a flag is not a package, but tirith enriches it as one."""
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:  # unbalanced quotes -- fall back to whitespace splitting
+        tokens = command.split()
+    artifacts: set[str] = set()
+    expect_value = False
+    for tok in tokens:
+        if expect_value:
+            artifacts.add(tok)
+            expect_value = False
+            continue
+        if tok in _SHORT_VALUE_FLAGS:
+            artifacts.add(tok)
+            expect_value = True
+        elif tok.startswith("--"):
+            if "=" in tok:
+                artifacts.add(tok)
+                artifacts.add(tok.split("=", 1)[1])
+            elif tok in _LONG_VALUE_FLAGS:
+                artifacts.add(tok)
+                expect_value = True
+    return artifacts
+
+
+def _incomplete_real_packages(findings: list, command: str) -> list[str]:
+    """Real package names (not command-text artifacts) named by analysis_incomplete findings,
+    filtered to a conservative package-name charset before any warm command is built."""
+    artifacts = _redirect_artifact_tokens(command) | _flag_operand_tokens(command)
+    pkgs: list[str] = []
+    for f in findings or []:
+        if not isinstance(f, dict) or f.get("rule_id") != "analysis_incomplete":
+            continue
+        for name in _INCOMPLETE_PKG.findall(str(f.get("description") or "")):
+            if (name and name not in artifacts and _PKGNAME_OK.match(name)
+                    and name not in pkgs):
+                pkgs.append(name)
+    return pkgs
+
+
+def _is_phantom_package_finding(finding: dict, artifacts: set[str]) -> bool:
+    """True if *finding* is an incomplete-lookup warning whose named package(s) are all
+    command-text artifacts (redirection tokens, flag operands), not real packages."""
+    if not isinstance(finding, dict) or finding.get("rule_id") != "analysis_incomplete":
+        return False
+    names = _INCOMPLETE_PKG.findall(str(finding.get("description") or ""))
+    return bool(names) and all(n in artifacts for n in names)
+
+
+def _suppress_phantom_package_findings(command: str, action: str, findings: list) -> tuple[str, list]:
+    """Warn-only phantom-package suppression (t_2550b91f, re-land of the dc9df97cc6 lineage):
+    drop analysis_incomplete findings naming a redirection token or package-manager flag
+    operand from the scanned command ("2>&1", the value of --index-strategy) — names that
+    404 on every registry. Warn-only: a block action is never downgraded, and a real
+    package or any other rule keeps the verdict. Returns ``(action, findings)``; ``allow``
+    with an empty list when nothing but phantoms remains."""
+    if action != "warn" or not findings:
+        return action, findings
+    artifacts = _redirect_artifact_tokens(command) | _flag_operand_tokens(command)
+    kept = [f for f in findings if not _is_phantom_package_finding(f, artifacts)]
+    if kept == findings:
+        return action, findings
+    if not kept:
+        return "allow", []
+    return action, kept
+
+
+def _warm_command(pm: str, pkg: str) -> str:
+    """Solo-scan command that warms the cache for ``pkg`` on the SAME registry the original
+    command targets: npm/pnpm/yarn installs scan npm packages, everything else (pip etc.)
+    scans PyPI. Mirroring the manager keeps the warmed cache entries on the right registry."""
+    return _WARM_CMDS[pm].format(pkg=pkg)
+
+
+def _tirith_check(tirith_path: str, timeout: int, command: str) -> tuple[str, list, str] | None:
+    """One tirith check -> ``(action, findings, summary)``, or None on operational trouble
+    (spawn failure, timeout, unknown exit). The CALLER owns the verdict for operational trouble
+    (fail_open + crash accounting in check_command_security); any COMPLETED scan (allow/block/warn)
+    proves the binary is healthy, so the crash streak resets and an open breaker closes here --
+    the half-open probe's recovery path (#41400)."""
+    global _crash_count, _circuit_open, _circuit_open_at
+    try:
+        result = subprocess.run(
+            [tirith_path, "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
+            stdin=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if (action := _EXIT_ACTIONS.get(result.returncode)) is None:
+        return None
+    # Any completed scan (allow/block/warn) proves the binary is healthy: clear the streak and close the
+    # breaker. This is the half-open probe's recovery path, and it also fixes the streak never resetting on
+    # block/warn verdicts.
+    _crash_count = 0
+    if _circuit_open:
+        _circuit_open, _circuit_open_at = False, 0.0
+        logger.info("tirith circuit breaker closed after successful scan")
+    # JSON enriches findings/summary; a parse failure never changes the verdict.
+    findings, summary = [], ""
+    try:
+        data = json.loads(result.stdout) if result.stdout.strip() else {}
+        findings = data.get("findings", [])[:_MAX_FINDINGS]
+        summary = (data.get("summary", "") or "")[:_MAX_SUMMARY_LEN]
+    except (json.JSONDecodeError, AttributeError):
+        logger.debug("tirith JSON parse failed, using exit code only")
+        summary = _NO_DETAILS_SUMMARY.get(action, "")
+    return action, findings, summary
+
+
+def _rescan_after_cache_warm(command: str, tirith_path: str, timeout: int,
+                             packages: list[str]) -> tuple[str, list, str] | None:
+    """Warm tirith's persistent response cache with one solo scan per package, then re-scan the
+    full command once. Returns the re-scan verdict, or None (keep the original verdict) when
+    warming could not run: no binary path, operational failure, or an empty package list.
+    The solo-scan command mirrors the original package manager so the cache is warmed on the
+    registry the original command actually targets."""
+    if not tirith_path or not packages:
+        return None
+    # Manager detection from the ORIGINAL command text (what tirith scanned). If the manager
+    # can't be determined, the original warn verdict stands (fail-closed default).
+    head = command.strip().split()
+    if head and head[0] in ("npm", "pnpm", "yarn", "pip"):
+        pm = head[0]
+    elif head and head[0] == "uv" and len(head) > 1 and head[1] == "pip":
+        pm = "pip"
+    else:
+        return None
+    for pkg in packages[:_WARM_SCAN_LIMIT]:
+        if _tirith_check(tirith_path, timeout, _warm_command(pm, pkg)) is None:
+            return None  # binary trouble mid-warm: keep the original verdict untouched
+    return _tirith_check(tirith_path, timeout, command)
+
+
+def _suppress_app_tld_false_positives(action: str, findings: list) -> tuple[str, list]:
+    """Drop .app lookalike_tld findings from a warn; everything dropped -> allow, a partial
+    drop keeps the remaining real findings and the warn stands. Warn-only: a block action is
+    never downgraded."""
+    if action != "warn" or not findings:
+        return action, findings
+    kept = [f for f in findings if not _is_app_tld_finding(f)]
+    if kept == findings:
+        return action, findings
+    if not kept:
+        return "allow", []
+    return action, kept
 
 
 def _is_app_tld_finding(finding: dict) -> bool:
@@ -591,6 +851,192 @@ def _is_app_tld_finding(finding: dict) -> bool:
     return any(
         val is not None and ".app" in str(val).lower()
         for val in (finding.get(k) for k in ("value", "tld", "detail", "description", "message")))
+
+
+# ---------------------------------------------------------------------------
+# analysis_incomplete nested-loop false-positive suppressor (t_0fb18e49)
+#
+# tirith 0.4.2 hard-BLOCKS `while [ ... ]`/`until [ ... ]` compounds (rule
+# analysis_incomplete, titles "Nested executable body could not be resolved" +
+# "nested command analysis was incomplete") even when every leaf command is
+# read-only -- and in single-query mode there is no user to approve, so the
+# command just dies. POSIX defines `[ args ]` as exactly `test args`, so the
+# wrapper rewrites word-boundary bracket spans to `test`, requires every leaf
+# command of the ORIGINAL text to be provably read-only, and re-scans the
+# rewritten copy; the block is downgraded ONLY on a clean allow. The read-only
+# leaf gate is NOT optional: tirith 0.4.2 cannot see destructive bodies inside
+# while-loops (verified live: `while test ! -f x; do sudo rm -rf /opt/x; done`
+# scans ALLOW), so a bare rescan-clean gate would un-block destructive watcher
+# loops.
+# ---------------------------------------------------------------------------
+
+_FP_LOOP_BLOCK_TITLE = "Nested executable body could not be resolved"
+_FP_LOOP_GAP_TITLE = "nested command analysis was incomplete"
+
+# Word-boundary `[`/`[[` that starts a test invocation (never a glob char
+# class like /tmp/[abc]*.log, which is preceded by / or a word char).
+_FP_BRACKET_TEST_SPAN = re.compile(r"(?<![\w/])\[{1,2}(?=\s)")
+
+# Strict read-only leaf allowlist for the downgrade gate. Deliberately narrow:
+# these commands' observable effects are on stdout/stderr only. `find` is
+# excluded on purpose (-delete / -exec rm); xargs/sed/awk/sh never listed.
+_FP_READONLY_LEAVES = frozenset({
+    "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "ack",
+    "stat", "file", "tree", "du", "df", "readlink", "realpath", "basename",
+    "dirname", "hostname", "whoami", "id", "uname", "arch", "date", "pwd",
+    "tty", "true", "false", "test", "[", "[[", "sleep", "seq", "printf",
+    "echo", "env", "printenv",
+})
+
+# Shell reserved words that only structure a compound command; stripped from
+# segment starts before the leaf head is read.
+_FP_LOOP_KEYWORDS = frozenset({
+    "while", "until", "for", "if", "then", "do", "else", "elif", "fi",
+    "done", "case", "esac", "!", "time",
+})
+
+# Assignments that redirect executable/library/startup resolution or shell
+# parsing when set on a command -> the leaf is not provably read-only.
+_FP_DANGEROUS_ASSIGN = frozenset({
+    "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "IFS", "ENV",
+    "BASH_ENV", "HOME", "SHELL", "CDPATH", "GLOBIGNORE", "PYTHONPATH",
+    "PYTHONHOME",
+})
+
+_FP_ASSIGN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
+
+
+def _is_loop_analysis_fp_block(findings: list) -> bool:
+    """True iff findings are EXACTLY the two analysis_incomplete HIGH titles
+    tirith 0.4.2 emits for while/until bracket-test loops (the t_0fb18e49
+    false-positive pair). Any other finding keeps the fail-closed block."""
+    if not isinstance(findings, list) or len(findings) != 2:
+        return False
+    titles = set()
+    for f in findings:
+        if not isinstance(f, dict) or f.get("rule_id") != "analysis_incomplete" \
+                or str(f.get("severity", "")).lower() != "high":
+            return False
+        titles.add(str(f.get("title", "")))
+    return titles == {_FP_LOOP_BLOCK_TITLE, _FP_LOOP_GAP_TITLE}
+
+
+def _fp_quoted_spans(command: str) -> list[tuple[int, int]]:
+    """Character-index ranges of single/double-quoted regions (best-effort:
+    backslash escapes honored outside quotes). Bracket spans inside quotes are
+    skipped -- rewriting there would change the quoted text."""
+    spans, start, quote = [], None, None
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if quote is None:
+            if c == "\\":
+                i += 2
+                continue
+            if c in ("'", '"'):
+                quote, start = c, i
+        elif c == quote:
+            spans.append((start, i))
+            quote = None
+        i += 1
+    if quote is not None:
+        spans.append((start, n))  # unterminated quote: rest counts as quoted
+    return spans
+
+
+def _rewrite_bracket_tests(command: str) -> str | None:
+    """Rewrite word-boundary bracket-test spans ``[ ... ]`` / ``[[ ... ]]`` to
+    ``test ...`` (POSIX-identical builtin). Returns the rewritten text, the
+    unchanged text when there is nothing to rewrite, or None when rewriting is
+    not provably equivalent: any ``$( `` ``${ `` ``$[ `` or backtick anywhere,
+    a quote/escape inside a span, an empty test body, an unterminated span, or
+    a ``[[`` span without its matching ``]]``."""
+    if any(t in command for t in ("$(", "${", "$[", "`")):
+        return None
+    quoted = _fp_quoted_spans(command)
+    out: list[str] = []
+    consumed, rewritten = 0, False
+    for m in _FP_BRACKET_TEST_SPAN.finditer(command):
+        start = m.start()
+        if start < consumed or any(a <= start <= b for a, b in quoted):
+            continue
+        close = command.find("]", start + len(m.group(0)))
+        if close == -1:
+            return None
+        if command.startswith("[[", start):
+            if command[close + 1:close + 2] != "]":
+                return None  # [[ without its ]] closer: do not guess
+        elif command[close + 1:close + 2] == "]":
+            return None  # single-[ span ending in ]]: unmodeled nesting
+        inner = command[start + len(m.group(0)):close]
+        if any(c in inner for c in "'\"\\\n"):
+            return None  # quotes/escapes inside the span: no quote parsing
+        words = inner.split()
+        if not words:
+            return None  # empty test: fail closed
+        if any(not re.fullmatch(r"[A-Za-z0-9_@%+=:,./!-]+", w) for w in words):
+            return None  # non-plain word inside the span (`!` = test negation)
+        out.append(command[consumed:start])
+        out.append("test" + inner.rstrip())
+        consumed = close + (2 if command.startswith("[[", start) else 1)
+        rewritten = True
+    if not rewritten:
+        return command
+    out.append(command[consumed:])
+    return "".join(out)
+
+
+def _extract_leaf_commands(command: str) -> list[str] | None:
+    """Leaf command heads of *command*, one per segment split on ``;`` ``|``
+    ``&`` ``&&`` and newlines. Returns None (fail-closed: unknown leaf set)
+    when any segment carries command substitution or quotes (``$``, backtick,
+    quote, backslash), grouping constructs, an input redirection or heredoc
+    (any ``<``), a non-/dev/null output redirection, a dangerous assignment
+    (``PATH=`` etc.), or an assignment/env wrapper with no command. Compound
+    scaffolding (while/do/done/...) is stripped from segment starts; bare
+    scaffolding segments yield no leaf. Special write flags of otherwise
+    read-only commands (date -s) also disqualify."""
+    if any(c in command for c in "$`'\"\\(){}<"):
+        return None
+    leaves: list[str] = []
+    for seg in re.split(r"[;|\n]+", command):
+        seg = re.sub(r"\d*(?:&>|>>|>|>&|<|<>|>&\d|>&-|<&|<&\d|<&-)\s*/dev/null\b", " ", seg)
+        seg = re.sub(r"\d*>\s*&\s*\d+\b", " ", seg)  # fd dups: 2>&1, >&2
+        seg = re.sub(r"\d*<>\s*", " ", seg)  # open-for-read-write fd: no file touched
+        seg = seg.replace("/dev/null", " ")
+        if re.search(r"[>|&]", seg):
+            return None  # unmodeled redirect/pipe/control char -> unknown
+        tokens = seg.split()
+        while tokens and tokens[0] in _FP_LOOP_KEYWORDS:
+            tokens = tokens[1:]
+        if not tokens:
+            continue  # bare scaffolding (done / fi / then ...)
+        while tokens and (m := _FP_ASSIGN.match(tokens[0])):
+            if m.group(1) in _FP_DANGEROUS_ASSIGN:
+                return None
+            tokens = tokens[1:]
+        while tokens and tokens[0] in ("env", "nice"):
+            tokens = tokens[1:]
+            while tokens and (m := _FP_ASSIGN.match(tokens[0])):
+                if m.group(1) in _FP_DANGEROUS_ASSIGN:
+                    return None
+                tokens = tokens[1:]
+        if not tokens:
+            return None  # assignment or env wrapper with no command
+        head, args = tokens[0], tokens[1:]
+        if head == "date" and any(a in ("-s", "--set") for a in args):
+            return None  # date writes the system clock with -s
+        leaves.append(head)
+    return leaves
+
+
+def _all_leaves_readonly(leaves: list[str] | None) -> bool:
+    """Every leaf head is in the strict read-only allowlist. Extraction already
+    rejected write channels (non-/dev/null redirects, heredocs, dangerous
+    assignments, date -s); an empty/None leaf set is fail-closed."""
+    if not leaves:
+        return False
+    return all(head in _FP_READONLY_LEAVES for head in leaves)
 
 
 def _is_emoji_variation_selector_finding(finding: dict) -> bool:

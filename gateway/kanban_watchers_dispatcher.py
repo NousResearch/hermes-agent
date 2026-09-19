@@ -39,6 +39,7 @@ class _DispatcherSettings:
     max_in_progress: Optional[int]
     failure_limit: int
     stale_timeout_seconds: int
+    reclaim_defer_max_attempts: int
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
@@ -92,6 +93,10 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
                        "disabling stale detection", raw_stale)
         stale_timeout_seconds = 0
 
+    reclaim_defer_max_attempts = _positive_int_setting(
+        kanban_cfg, "reclaim_defer_max_attempts",
+    ) or _kbd().DEFAULT_RECLAIM_DEFER_MAX_ATTEMPTS
+
     # Fallback profile for tasks created without an assignee (e.g. via the
     # dashboard). Empty (the schema default) keeps skipping them.
     # When set, the dispatcher applies it to unassigned ready tasks instead of skipping them indefinitely
@@ -108,6 +113,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         max_in_progress=effective_max_in_progress,
         failure_limit=failure_limit,
         stale_timeout_seconds=stale_timeout_seconds,
+        reclaim_defer_max_attempts=reclaim_defer_max_attempts,
         # Requeue 'running' cards with broken claim bookkeeping (zombie-card
         # reconciliation); false keeps orphans frozen for manual forensics.
         reconcile_orphans=bool(kanban_cfg.get("reconcile_orphans", True)),

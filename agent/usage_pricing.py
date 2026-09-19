@@ -400,7 +400,25 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
         return entry
     normalize = _MODEL_NORMALIZERS.get(route.provider)
     normalized = normalize(model) if normalize else model
-    return _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
+    entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
+    if entry:
+        return entry
+    # Generic OpenAI-compatible gateways (provider "custom") serve vendor-prefixed ids
+    # ("deepseek/deepseek-v4-flash") and publish no pricing of their own — their /models
+    # payload carries only id/object/created/owned_by. The vendor segment names whose
+    # published snapshot prices the call; without this the session reports unknown cost
+    # for a model that IS in the table under the vendor's own provider key.
+    if "/" in model:
+        vendor, bare = model.split("/", 1)
+        entry = _OFFICIAL_DOCS_PRICING.get((vendor, bare))
+        if entry:
+            return entry
+        vendor_normalize = _MODEL_NORMALIZERS.get(vendor)
+        if vendor_normalize:
+            norm_bare = vendor_normalize(bare)
+            if norm_bare != bare:
+                return _OFFICIAL_DOCS_PRICING.get((vendor, norm_bare))
+    return None
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:

@@ -1,10 +1,12 @@
 name: hermes-talk
 repo: https://github.com/TheSmokeDev/hermes-talk
-sha: a4843d82c0b2c8443830b79f5e0a19b8a78a8303
+sha: 7219f2fdff353df72f5323b219bfe759991b0365
 description: Realtime voice for Hermes through terminal, Discord, and dashboard interfaces.
 maintainer: TheSmokeDev
 tier: community
-docs_url: https://github.com/TheSmokeDev/hermes-talk/blob/a4843d82c0b2c8443830b79f5e0a19b8a78a8303/README.md
+category: voice
+version: "0.21.0"
+docs_url: https://github.com/TheSmokeDev/hermes-talk/blob/7219f2fdff353df72f5323b219bfe759991b0365/README.md
 capabilities:
   provides_tools: []
   provides_hooks:

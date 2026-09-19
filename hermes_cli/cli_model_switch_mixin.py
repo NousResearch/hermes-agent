@@ -98,6 +98,25 @@ def _merge_preflight_warning(cli, result, custom_providers) -> None:
         logger.debug("preflight-compression switch warning failed: %s", exc)
 
 
+def _route_quota_lines(result, *, base_url: str = "", api_key: str = "") -> list[str]:
+    """Account limits for the route a switch is moving TO (``[]`` when there is nothing to say).
+
+    ``result``'s own provider/credentials win; the fallbacks are for switches whose pick carries
+    none (the CLI fields have already been swapped to the target by the time this runs). The block
+    is the answer to "what does the route I just picked have left", so it must never be built from
+    the route being left — that is exactly the stale-value bug this exists to fix.
+    """
+    try:
+        from agent.account_usage import account_usage_lines
+        return account_usage_lines(
+            result.target_provider, base_url=result.base_url or base_url or "",
+            api_key=result.api_key or api_key or "")
+    except Exception:
+        # A summary is never worth a crash: account_usage_lines is already fail-open, this covers
+        # a broken import in a stripped install.
+        return []
+
+
 def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_context: bool) -> None:
     """Record the next-turn switch note and print the "Model switched" block.
 
@@ -152,6 +171,14 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         _cprint("    Prompt caching: enabled")
     if result.warning_message:
         _cprint(f"    ⚠ {result.warning_message}")
+    # The NEW route's quota/balance, fetched now rather than echoed from the route we just left.
+    # Bounded + fail-open (see agent.account_usage.account_usage_lines): a slow or broken provider
+    # usage API delays this block at most, and a fetch that fails prints "Unavailable" instead of
+    # silently looking like valid numbers or breaking the switch summary.
+    for line in _route_quota_lines(
+            result, base_url=getattr(cli, "base_url", "") or "",
+            api_key=getattr(cli, "api_key", "") or ""):
+        _cprint(f"    {line}")
 
 
 def _switch_model_from(

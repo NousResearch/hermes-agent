@@ -303,6 +303,23 @@ class GatewayModelCommandsMixin:
             lines.append(t("gateway.model.prompt_caching_enabled"))
         if result.warning_message:
             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
+        # The NEW route's quota/balance — never the route we just left: the pick's own endpoint and
+        # credentials win, and the ambient ones are only a fallback for credential-less picks.
+        # Off the event loop and hard-bounded (see account_usage_lines) so a slow provider usage
+        # API cannot stall the gateway; a fetch that fails renders "Unavailable" rather than
+        # silently dropping the block or breaking the confirmation.
+        from agent.account_usage import account_usage_lines
+        try:
+            quota_lines = await asyncio.to_thread(
+                account_usage_lines, result.target_provider,
+                base_url=result.base_url or ctx.current_base_url or "",
+                api_key=result.api_key or ctx.current_api_key or "",
+                markdown=True)
+        except Exception:
+            quota_lines = []
+        if quota_lines:
+            lines.append("")
+            lines.extend(quota_lines)
         if ctx.persist_global:
             lines.append(t("gateway.model.saved_global"))
         elif one_turn:

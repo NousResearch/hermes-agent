@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -601,9 +602,105 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+_DEEPSEEK_BALANCE_PATH = "/user/balance"
+_DEEPSEEK_DEFAULT_ORIGIN = "https://api.deepseek.com"
+
+
+def _deepseek_balance_url(base_url: Optional[str]) -> str:
+    """DeepSeek's balance endpoint (``GET /user/balance``) hangs off the API ROOT, while the configured
+    base_url carries a route suffix — ``https://api.deepseek.com/v1`` by default, ``/beta`` or ``/anthropic``
+    on the other documented routes — so the URL is rebuilt from the origin (``{base_url}/user/balance`` 404s).
+    A base_url that is not a usable http(s) URL falls back to the public API root.
+    """
+    raw = str(base_url or "").strip()
+    if raw:
+        parts = urlsplit(raw if "://" in raw else f"https://{raw}")
+        if parts.scheme in ("http", "https") and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}{_DEEPSEEK_BALANCE_PATH}"
+    return f"{_DEEPSEEK_DEFAULT_ORIGIN}{_DEEPSEEK_BALANCE_PATH}"
+
+
+def _deepseek_amount(value: Any) -> Optional[str]:
+    """DeepSeek quotes every amount as a decimal STRING (``"110.00"``). Format those for display, but keep an
+    unparseable value verbatim — an oddly formatted balance beats a silently missing one."""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            value = float(text)
+        except ValueError:
+            return text
+    return f"{value:,.2f}" if _is_finite_num(value) else None
+
+
+def _deepseek_is_zero(amount: Any) -> bool:
+    try:
+        return float(amount) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _deepseek_balance_line(info: dict) -> Optional[str]:
+    """One ``Balance:`` line per reported currency. The granted/topped-up split rides along when the API
+    reports it (a granted balance expires, a topped-up one does not); a zero part is noise, not information."""
+    total = _deepseek_amount(info.get("total_balance"))
+    if total is None:
+        return None
+    breakdown = " • ".join(
+        f"{label} {amount}" for label, amount in (
+            ("granted", _deepseek_amount(info.get("granted_balance"))),
+            ("topped up", _deepseek_amount(info.get("topped_up_balance"))),
+        ) if amount and not _deepseek_is_zero(amount)
+    )
+    currency = str(info.get("currency") or "").strip()
+    return f"Balance: {total}{f' {currency}' if currency else ''}{f' ({breakdown})' if breakdown else ''}"
+
+
+def _fetch_deepseek_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """DeepSeek prepaid balance → balance detail lines (prepaid credit, so there is no quota window).
+
+    Auth is the same key as chat completions (``Authorization: Bearer``). Fail-open: anything raised here is
+    swallowed by ``fetch_account_usage``, so a 429/5xx/network failure simply produces no block. A rejected
+    key is the exception — that is durable, and rendering nothing would read as an empty account.
+    """
+    runtime = resolve_runtime_provider(requested="deepseek", explicit_base_url=base_url, explicit_api_key=api_key)
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    try:
+        payload = _get_json(
+            _deepseek_balance_url(runtime.get("base_url") or base_url),
+            {"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=10.0,
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code not in (401, 403):
+            raise
+        return _snapshot(
+            "deepseek", "balance_api", [], [], title="DeepSeek balance",
+            unavailable_reason=(f"DeepSeek rejected the request (HTTP {exc.response.status_code}) — "
+                                "check DEEPSEEK_API_KEY."),
+        )
+    if not isinstance(payload, dict):
+        return None
+    details: list[str] = []
+    for info in payload.get("balance_infos") or []:
+        line = _deepseek_balance_line(info) if isinstance(info, dict) else None
+        if line:
+            details.append(line)
+    if payload.get("is_available") is False:
+        # Balance too low for API calls: the next chat request would fail with a billing error.
+        details.append(_DEPLETED_LINE)
+    if not details:
+        return None  # a header with no numbers under it is worse than no block at all
+    return _snapshot("deepseek", "balance_api", [], details, title="DeepSeek balance")
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
-    "openrouter": _fetch_openrouter_account_usage,
+    "openrouter": _fetch_openrouter_account_usage, "deepseek": _fetch_deepseek_account_usage,
 }
 
 
@@ -615,3 +712,68 @@ def fetch_account_usage(
         return fetcher(base_url, api_key) if fetcher else None
     except Exception:
         return None
+
+
+# Inline budget for a display block (``/usage`` and the model-switch confirmations): bounded so a
+# slow provider usage API can only ever delay the output, never hang it. A switch confirmation is
+# what the user is actively waiting on, so it uses this default; ``/usage`` passes its own 10s.
+ACCOUNT_USAGE_SWITCH_TIMEOUT = 5.0
+
+
+def _unavailable_usage_lines(provider: str, reason: str, *, markdown: bool) -> list[str]:
+    return render_account_usage_lines(
+        _snapshot(provider, "unavailable", [], [], unavailable_reason=reason), markdown=markdown)
+
+
+def account_usage_lines(
+    provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
+    markdown: bool = False, timeout: float = ACCOUNT_USAGE_SWITCH_TIMEOUT,
+    render_unavailable: bool = True,
+) -> list[str]:
+    """Bounded, fail-open render of ONE route's account limits, or ``[]``.
+
+    The one display entry point for provider account limits (CLI + gateway ``/usage`` and the
+    model-switch confirmations). For a switch, ``provider`` / ``base_url`` / ``api_key`` must
+    describe the route being switched TO — that is the question the block answers ("what does the
+    route I just picked have left"). Passing the ambient route instead reproduces the
+    stale-balance bug this exists to remove, so callers must prefer the switch result's own
+    provider/credentials over the live session's.
+
+    * A provider with no fetcher renders nothing: we make no claim about routes whose account
+      concept we do not know (custom endpoints, Ollama, ...).
+    * A fetch that fails, returns nothing or outruns ``timeout`` renders one explicit
+      ``Unavailable:`` line when ``render_unavailable`` is set, so a missing block in a switch
+      confirmation can never be misread as "the previous route's numbers still apply".
+    * A fetcher-supplied ``unavailable_reason`` (e.g. a rejected key) renders its specific message
+      either way — that detail is durable, not a transport failure.
+    * ``render_unavailable=False`` is for surfaces that stay silent when a route cannot be read
+      (``/usage``), preserving their existing behavior: no fabricated line, but a snapshot the
+      fetcher itself marked unavailable still renders.
+    * Never raises and never blocks longer than ``timeout``: the caller is output the user is
+      waiting on. A hung provider call is abandoned on a daemon worker thread.
+    """
+    slug = str(provider or "").strip().lower()
+    if not slug or slug not in _USAGE_FETCHERS:
+        return []
+    snapshot: Optional[AccountUsageSnapshot] = None
+    try:
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        pool = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="account-usage")
+        try:
+            snapshot = pool.submit(
+                fetch_account_usage, slug, base_url=base_url, api_key=api_key,
+            ).result(timeout=max(0.1, float(timeout)))
+        finally:
+            # wait=False: an abandoned fetch must not pin the caller on shutdown.
+            pool.shutdown(wait=False)
+    except Exception:
+        logger.debug("account usage unavailable for %s (fail-open)", provider, exc_info=True)
+        snapshot = None
+    if snapshot is not None and (snapshot.available or snapshot.unavailable_reason):
+        return render_account_usage_lines(snapshot, markdown=markdown)
+    if not render_unavailable:
+        return []
+    return _unavailable_usage_lines(
+        slug,
+        f"could not read the {slug} account balance (no data returned, request failed, or timed out)",
+        markdown=markdown)

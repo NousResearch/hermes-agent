@@ -13,6 +13,7 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
+    AUTO_VACUUM_MIN_FREELIST_RATIO,
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
@@ -592,6 +593,15 @@ class SessionSearchMixin:
         except sqlite3.OperationalError as exc:
             logger.warning("VACUUM after FTS optimize failed: %s", exc)
             vacuum_ok = False
+        self._optimize_wal_foldback()
+        return vacuum_ok
+
+    def _optimize_wal_foldback(self) -> None:
+        """Fold the WAL back into the main file after an optimize pass.
+
+        Runs whether or not the VACUUM ran: the backfill/teardown phases write just as much WAL
+        as the VACUUM does, so the settle is what makes the on-disk size truthful either way.
+        """
         # Best-effort WAL fold-back, REFUSED (SQLITE_BUSY) while another connection holds a
         # read-mark (callers size via logical_size_bytes, not stat()). PASSIVE, never TRUNCATE:
         # a TRUNCATE reset from a transient CLI would race a live writer.
@@ -604,7 +614,6 @@ class SessionSearchMixin:
                 self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except Exception as exc:
             logger.debug("WAL checkpoint (PASSIVE) after optimize VACUUM failed: %s", exc)
-        return vacuum_ok
 
     def _optimize_settle(self, conn) -> Optional[str]:
         """Phase 4 (inside the write transaction, so a concurrent writer cannot race a stamp past
@@ -691,8 +700,25 @@ class SessionSearchMixin:
 
         vacuum_ok = None
         if vacuum:
-            _emit("vacuum")
-            vacuum_ok = self._optimize_vacuum()
+            # VACUUM is a single exclusive transaction: unlike the chunked, duty-cycled
+            # backfill/teardown above it cannot yield the write lock, so it stalls every other
+            # writer for its full duration (a measured ~44s on a dense 2.5GB state.db). Pay that
+            # only when there is something to reclaim -- same trade auto-maintenance already
+            # refuses via AUTO_VACUUM_MIN_FREELIST_RATIO (#54189). A dense DB's freelist is a
+            # rounding error, so the rewrite copies the whole file to hand back a few MB.
+            ratio = self._freelist_ratio()
+            if ratio is not None and ratio <= AUTO_VACUUM_MIN_FREELIST_RATIO:
+                # False, not None: None means "not attempted" (vacuum=False). False is the
+                # conformance suite's "did no work", which is the truth here.
+                vacuum_ok = False
+                logger.info(
+                    "Skipping VACUUM after FTS optimize: freelist ratio %.4f <= %.2f (nothing to reclaim).",
+                    ratio, AUTO_VACUUM_MIN_FREELIST_RATIO)
+                # Still settle the WAL: the backfill/teardown above wrote plenty of it.
+                self._optimize_wal_foldback()
+            else:
+                _emit("vacuum")
+                vacuum_ok = self._optimize_vacuum()
         refusal = self._execute_write(self._optimize_settle)
         if refusal is not None:
             # A concurrent process changed state since the pre-vacuum check; a re-run can still settle.

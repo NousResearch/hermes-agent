@@ -61,8 +61,43 @@ _PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
 _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
 
 
+def _real_hermes_roots_for_gate() -> list[Path]:
+    """Candidate real Hermes roots, for the production-HOME gate below.
+
+    Delegates to ``hermes_state_guard``, which owns the one root-shape rule.
+    That module is a leaf (stdlib only) and does not import ``hermes_state``,
+    so reading it here cannot freeze ``DEFAULT_DB_PATH`` against the
+    unsandboxed ``HERMES_HOME`` — the escape this gate closes. Keeping a
+    second copy of the rule here let the two drift apart instead.
+    """
+    from hermes_state_guard import _hermes_roots_for_home
+
+    roots: list[Path] = []
+
+    def _add(candidate: Path) -> None:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            return
+        if resolved not in roots:
+            roots.append(resolved)
+
+    real_home = os.environ.get("HERMES_REAL_HOME", "").strip()
+    if real_home:
+        for candidate in _hermes_roots_for_home(Path(real_home)):
+            _add(candidate)
+
+    try:
+        home = Path.home()
+    except Exception:
+        return roots
+    for candidate in _hermes_roots_for_home(home):
+        _add(candidate)
+    return roots
+
+
 def _hermes_home_points_at_production(value: str) -> bool:
-    """True when a pre-set HERMES_HOME resolves to the real production root.
+    """True when a pre-set HERMES_HOME resolves to a real production root.
 
     Gateway-launched shells (and developer shells that ``export
     HERMES_HOME=~/.hermes``) hand pytest the PRODUCTION home. Historically
@@ -73,6 +108,9 @@ def _hermes_home_points_at_production(value: str) -> bool:
     scopes) in the live state.db and flipped its journal mode under the
     WAL-mode gateway writer. Only a genuinely custom (non-production)
     HERMES_HOME is honored now.
+
+    Fails safe: anything unparseable is treated as production, so the
+    sandbox is applied rather than skipped.
     """
     if not value:
         return True
@@ -81,16 +119,18 @@ def _hermes_home_points_at_production(value: str) -> bool:
         # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
         # "custom", pinning import-time paths (``tui_gateway.server._hermes_home``) to the live
         # install so the state.db guard tripped on every store-touching test (#112692).
-        from hermes_state_guard import _real_platform_state_root
-
+        # ``_real_hermes_roots_for_gate`` below carries that platform rule and adds the
+        # profile-home roots a single root misses.
         resolved = Path(value).expanduser().resolve()
-        real_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
     except Exception:
         return True
-    if resolved == real_root:
-        return True
-    # Profile home directly under the production root: <root>/profiles/<name>
-    return resolved.parent.name == "profiles" and resolved.parent.parent == real_root
+    for real_root in _real_hermes_roots_for_gate():
+        if resolved == real_root:
+            return True
+        # Profile home directly under a production root: <root>/profiles/<name>
+        if resolved.parent.name == "profiles" and resolved.parent.parent == real_root:
+            return True
+    return False
 
 
 if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
@@ -774,8 +814,11 @@ def _capture_real_kanban_root() -> Path:
         from hermes_constants import get_default_hermes_root
         return get_default_hermes_root().resolve()
     # No pre-existing HERMES_HOME: the real root is the platform default,
-    # NOT the sandbox tempdir now sitting in the env.
-    return (Path.home() / ".hermes").resolve()
+    # NOT the sandbox tempdir now sitting in the env. Uses the shared
+    # root-shape rule so a remapped HOME (profile mode) maps back to the
+    # real root instead of yielding <home>/.hermes, which does not exist.
+    roots = _real_hermes_roots_for_gate()
+    return roots[0] if roots else (Path.home() / ".hermes").resolve()
 
 
 _REAL_KANBAN_ROOT = _capture_real_kanban_root()

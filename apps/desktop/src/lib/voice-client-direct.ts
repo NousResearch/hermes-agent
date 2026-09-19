@@ -31,13 +31,14 @@ export interface DirectSttConfig {
 
 export interface DirectTtsConfig {
   mode: 'direct'
-  wire: 'elevenlabs-tts' | 'openai-speech'
+  wire: 'elevenlabs-tts' | 'openai-speech' | 'deepgram-tts'
   provider: string
   base_url: string
   api_key: string
   model: null | string
   voice: null | string
   speed: null | number
+  encoding?: string
 }
 
 interface RelayConfig {
@@ -324,6 +325,31 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
 
     if (!response.ok) {
       throw new Error(`ElevenLabs TTS error (HTTP ${response.status}): ${await providerErrorText(response)}`)
+    }
+
+    return response.arrayBuffer()
+  }
+
+  if (tts.wire === 'deepgram-tts') {
+    const url = new URL(`${tts.base_url.replace(/\/+$/, '')}/speak`)
+    url.searchParams.set('model', tts.model || 'aura-2-hermes-en')
+    // Force mp3: decodeAudioData can't decode opus, and the fallback
+    // HTMLAudioElement only plays mp3 reliably across browsers.
+    url.searchParams.set('encoding', 'mp3')
+    if (tts.speed && tts.speed !== 1) {
+      url.searchParams.set('speed', String(tts.speed))
+    }
+    const response = await fetch(url.toString(), {
+      method: 'POST',
+      headers: {
+        Authorization: `Token ${tts.api_key}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text })
+    })
+
+    if (!response.ok) {
+      throw new Error(`${tts.provider} TTS error (HTTP ${response.status}): ${await providerErrorText(response)}`)
     }
 
     return response.arrayBuffer()

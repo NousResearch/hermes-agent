@@ -309,6 +309,43 @@ class XAIStreamer(StreamingTTSProvider):
             return [frame async for frame in self._async_frames(text)]
         return asyncio.run(_drain())
 
+
+@register("deepgram")
+class DeepgramStreamer(StreamingTTSProvider):
+    """Deepgram Aura streaming TTS: chunked HTTP → PCM16 frames.
+
+    Uses ``encoding=linear16`` so each chunk is raw PCM16 at the requested
+    sample rate — the desktop speak-stream WS relays them as-is, and the
+    client-side ``schedule()`` helper plays them through Web Audio.
+    """
+
+    @staticmethod
+    def available() -> bool:
+        return bool(_resolve_key("DEEPGRAM_API_KEY", "deepgram"))
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        import requests
+        api_key = _resolve_key("DEEPGRAM_API_KEY", "deepgram")
+        model = str(self.section.get("model") or "aura-2-hermes-en").strip() or "aura-2-hermes-en"
+        encoding = "linear16"
+        sample_rate = self.section.get("sample_rate")
+        speed = self.section.get("speed")
+        base_url = str(self.section.get("base_url") or "https://api.deepgram.com/v1").rstrip("/")
+        url = f"{base_url}/speak?model={model}&encoding={encoding}&stream=true"
+        if sample_rate is not None:
+            url += f"&sample_rate={int(sample_rate)}"
+        if speed is not None:
+            url += f"&speed={speed}"
+        payload = {"text": text}
+        with requests.post(url, json=payload, headers={
+            "Authorization": f"Token {api_key}",
+            "Content-Type": "application/json",
+        }, stream=True, timeout=60) as response:
+            response.raise_for_status()
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+
     async def _async_frames(self, text: str):
         import json as _json
         import websockets

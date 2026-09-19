@@ -11,7 +11,7 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    ACTUAL_RELAY_EFFORTS, CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
+    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
@@ -65,14 +65,21 @@ def _merge_extra_headers(kwargs: dict[str, Any], **headers: str) -> None:
 # (incomplete hang / HTTP 400); it goes on the wire under this alias.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 
-# OpenCode /v1/responses rejects client tools using these names (HTTP 400
-# "custom function name 'X' is reserved"); xAI reserves ``tool_search`` for
-# Grok's native Tool Search. Aliased as hermes_<name>.
+# Responses providers reject client functions whose names collide with native
+# tools (HTTP 400 "custom function name 'X' is reserved"). Alias them as
+# hermes_<name> and map them back before local dispatch.
 # OpenCode's /v1/responses endpoints (Zen and Go, including custom providers pointing at opencode.ai)
 # reserve certain function names server-side and reject client tools that use them with HTTP 400 ("custom
 # function name 'X' is reserved"). Same treatment as the xAI web_search collision: rename on the wire
 # (hermes_<name>), map back in normalize_response so Hermes dispatch is unaffected. See #85589.
 _OPENCODE_RESERVED_TOOL_NAMES = ("web_search", "search_files")
+_PERPLEXITY_RESERVED_TOOL_NAMES = (
+    "web_search",
+    "search_files",
+    "fetch_url",
+    "people_search",
+    "finance_search",
+)
 _XAI_RESERVED_TOOL_NAMES = ("tool_search",)
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 
@@ -80,7 +87,7 @@ _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 # built a request; real requests carry request-local ``_last_wire_aliases``.
 _LEGACY_ALIAS_FALLBACK = {
     f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}": name
-    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES)
+    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_PERPLEXITY_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES)
 }
 _LEGACY_ALIAS_FALLBACK[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
 
@@ -98,6 +105,16 @@ def _is_opencode_responses_backend(params: dict[str, Any]) -> bool:
         from utils import base_url_hostname
 
         return base_url_hostname(str(params.get("base_url") or "")).lower() == "opencode.ai"
+    except Exception:
+        return False
+
+
+def _is_perplexity_responses_backend(params: dict[str, Any]) -> bool:
+    """True for Perplexity's Responses-compatible Agent API endpoint."""
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() == "api.perplexity.ai"
     except Exception:
         return False
 
@@ -178,6 +195,11 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
     if response_tools and _is_opencode_responses_backend(params):
         response_tools, _oc_aliases = _alias_reserved_tools(response_tools, _OPENCODE_RESERVED_TOOL_NAMES)
         wire_aliases.update(_oc_aliases)
+    # Perplexity's Agent API reserves the same names as server-side tools.
+    # Keep Hermes's client-side functions available under wire aliases.
+    if response_tools and _is_perplexity_responses_backend(params):
+        response_tools, _pplx_aliases = _alias_reserved_tools(response_tools, _PERPLEXITY_RESERVED_TOOL_NAMES)
+        wire_aliases.update(_pplx_aliases)
     # xAI server-side web search vs Hermes web providers. grok models on xAI's /v1/responses surface have a
     # *native*, server-executed web search. A client-side function literally named ``web_search`` collides
     # with that engine: declared as a plain ``function`` rather than ``{"type": "web_search"}``, the search
@@ -221,15 +243,18 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
 
         # Grok 4.6 accepts xhigh; older Grok tops out at high.
         supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) else XAI_LEGACY_EFFORTS
-    elif (params.get("provider") or "").strip().lower() == "actual":
-        supported = ACTUAL_RELAY_EFFORTS
     else:
-        declared = _profile_declared_efforts(params.get("provider"), model, params.get("base_url"))
+        base_url = params.get("base_url")
+        is_codex_backend = params.get("is_codex_backend") is True
+        # OpenAI's own origins have a known per-model ladder; a profile declaration speaks for
+        # endpoints the transport cannot know (a custom relay, a catalog-driven router), never
+        # for a ``custom:`` entry that merely points at api.openai.com.
+        declared = None
+        if not (is_codex_backend or _is_openai_api_origin(base_url)):
+            declared = _profile_declared_efforts(params.get("provider"), model, base_url)
         if declared is not None and not declared:
             reasoning_enabled = False
-        supported = declared or _codex_efforts_for_route(
-            model, params.get("base_url"), is_codex_backend=params.get("is_codex_backend") is True
-        )
+        supported = declared or _codex_efforts_for_route(model, base_url, is_codex_backend=is_codex_backend)
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 
@@ -265,14 +290,16 @@ def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Op
     return "24h" if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized) else None
 
 
-def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
-    """Astra on the canonical API origin only — exact host, so a Responses-compatible proxy or a
-    lookalike subdomain keeps the generic contract."""
-    if not is_astra_model(model):
-        return False
+def _is_openai_api_origin(base_url: Any) -> bool:
+    """Exact host, so a Responses-compatible proxy or a lookalike subdomain keeps the generic contract."""
     from utils import base_url_hostname
 
     return base_url_hostname(str(base_url or "")).lower() == "api.openai.com"
+
+
+def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
+    """Astra on the canonical API origin only."""
+    return is_astra_model(model) and _is_openai_api_origin(base_url)
 
 
 def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
@@ -330,16 +357,17 @@ def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]],
 def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any = None) -> Optional[tuple]:
     """Provider-profile-declared reasoning-effort vocabulary, or None (fail-open).
 
-    Resolves by provider name, then by endpoint host. Lazy import: provider
-    plugins import this transport during registry discovery.
+    Resolves by endpoint host first, then by provider name: a ``custom:<name>`` entry pointed
+    at a host with a registered profile must follow that host's vocabulary, not the generic
+    custom declaration. Lazy import: provider plugins import this transport during registry
+    discovery.
     """
     try:
         from providers import get_provider_profile
 
         name = str(provider or "").strip().lower()
-        profile = get_provider_profile(name) if name else None
-        declared = profile.supported_reasoning_efforts(model) if profile is not None else None
-        if declared is None and base_url:
+        declared = None
+        if base_url:
             from agent.model_metadata import _infer_provider_from_url
 
             inferred = _infer_provider_from_url(str(base_url))
@@ -347,6 +375,9 @@ def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any
                 inferred_profile = get_provider_profile(inferred)
                 if inferred_profile is not None:
                     declared = inferred_profile.supported_reasoning_efforts(model)
+        if declared is None:
+            profile = get_provider_profile(name) if name else None
+            declared = profile.supported_reasoning_efforts(model) if profile is not None else None
     except Exception as exc:
         logger.debug("profile-declared efforts lookup failed: %s", exc)
         return None
@@ -405,6 +436,39 @@ def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
     return False
 
 
+def _is_azure_responses(params: dict[str, Any]) -> bool:
+    """True for any Azure-hosted Responses endpoint: the ``azure-foundry`` provider, a resource-level
+    ``*.openai.azure.com`` host, or the project-scoped ``*.services.ai.azure.com`` gateway."""
+    from utils import base_url_host_matches
+
+    if str(params.get("provider") or "").strip().lower() == "azure-foundry":
+        return True
+    base_url = str(params.get("base_url") or "")
+    return base_url_host_matches(base_url, "openai.azure.com") or base_url_host_matches(base_url, "services.ai.azure.com")
+
+
+def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy of ``messages`` keeping ``codex_reasoning_items`` only on the newest assistant row that has any.
+    Foundry rejects a request that replays encrypted reasoning from more than one prior response (HTTP 400
+    "Conflicting authenticated continuation identities", #105369). ``compaction`` checkpoints stay everywhere."""
+    out: list[dict[str, Any]] = []
+    newest_kept = False
+    for msg in reversed(messages):
+        items = msg.get("codex_reasoning_items") if isinstance(msg, dict) and msg.get("role") == "assistant" else None
+        if isinstance(items, list) and any(isinstance(i, dict) and i.get("type") != "compaction" for i in items):
+            if newest_kept:
+                checkpoints = [i for i in items if isinstance(i, dict) and i.get("type") == "compaction"]
+                msg = dict(msg)
+                if checkpoints:
+                    msg["codex_reasoning_items"] = checkpoints
+                else:
+                    msg.pop("codex_reasoning_items")
+            newest_kept = True
+        out.append(msg)
+    out.reverse()
+    return out
+
+
 def _native_compaction_active(context_management: Any) -> bool:
     """True only when the caller's eligibility gate produced a non-empty payload.
 
@@ -458,6 +522,7 @@ class ResponsesApiTransport(ProviderTransport):
 
     # Issuer kind of the most recent build_kwargs/convert_messages call (normalize_response fallback).
     _last_issuer_kind: Optional[str] = None
+    _last_issuer_model: Optional[str] = None
     # ``{wire_alias: original}`` of the most recent build_kwargs. None = no request built (legacy map).
     _last_wire_aliases: Optional[dict[str, str]] = None
 
@@ -479,13 +544,15 @@ class ResponsesApiTransport(ProviderTransport):
 
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input, _wire_model_identity
 
+        self._last_issuer_model = _wire_model_identity(kwargs.get("model"))
         return _chat_messages_to_responses_input(
             messages, is_xai_responses=kwargs.get("is_xai_responses") is True,
             is_github_responses=kwargs.get("is_github_responses") is True,
             replay_encrypted_reasoning=bool(kwargs.get("replay_encrypted_reasoning", True)),
             current_issuer_kind=self._resolve_issuer_kind(kwargs),
+            current_issuer_model=self._last_issuer_model,
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
         )
 
@@ -536,6 +603,10 @@ class ResponsesApiTransport(ProviderTransport):
         replay_encrypted_reasoning = bool(params.get("replay_encrypted_reasoning", True)) and not (
             _is_azure_foundry_responses(params) and _is_post_tool_replay(payload_messages)
         )
+        # Own predicate: #101243 may narrow _is_azure_foundry_responses to the project gateway, and the
+        # multi-item rejection happens on resource-level hosts too.
+        if replay_encrypted_reasoning and _is_azure_responses(params):
+            payload_messages = _newest_reasoning_only(payload_messages)
         # One predicate decides whether context_management goes out AND whether the converter may replay a checkpoint.
         context_management = params.get("context_management")
         native_compaction_active = _native_compaction_active(context_management)
@@ -545,14 +616,17 @@ class ResponsesApiTransport(ProviderTransport):
 
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
+        request_overrides = params.get("request_overrides") or {}
+        # An override may rewrite the wire model; provenance must be stamped with what actually goes out.
+        wire_model = _strip_ctx_variant(request_overrides.get("model", model))
         kwargs = {
             # ``-900k`` picker variants are Hermes-side aliases; the backend knows only the base slug.
-            "model": _strip_ctx_variant(model),
+            "model": wire_model,
             "instructions": instructions,
             "input": self.convert_messages(
                 payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
-                is_codex_backend=is_codex_backend, context_management=context_management,
+                is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
             ),
             "store": False,
         }
@@ -582,8 +656,9 @@ class ResponsesApiTransport(ProviderTransport):
             replay_encrypted_reasoning=replay_encrypted_reasoning,
             is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
         ))
-        if params.get("request_overrides"):
-            kwargs.update(params["request_overrides"])
+        if request_overrides:
+            kwargs.update(request_overrides)
+            kwargs["model"] = wire_model
 
         _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
@@ -642,7 +717,8 @@ class ResponsesApiTransport(ProviderTransport):
         from agent.codex_responses_adapter import _normalize_codex_response
 
         msg, finish_reason = _normalize_codex_response(
-            response, issuer_kind=kwargs.get("issuer_kind") or self._last_issuer_kind
+            response, issuer_kind=kwargs.get("issuer_kind") or self._last_issuer_kind,
+            issuer_model=kwargs.get("issuer_model") or self._last_issuer_model,
         )
 
         tool_calls = None

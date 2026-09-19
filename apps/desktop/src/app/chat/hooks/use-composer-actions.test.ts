@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $composerAttachments, type ComposerAttachment, updateComposerAttachment } from '@/store/composer'
 import { $connection } from '@/store/session'
 
+import { droppedFileInlineRefs } from '../composer/inline-refs'
+
 import {
   attachmentPreviewDataUrl,
   type DroppedFile,
@@ -87,9 +89,14 @@ interface StubEntry {
   isDirectory: boolean
 }
 
-function stubTransfer(entries: StubEntry[], internalRaw = ''): DataTransfer & { _pathByFile: Map<File, string> } {
+function stubTransfer(
+  entries: StubEntry[],
+  internalRaw = '',
+  uriList = ''
+): DataTransfer & { _pathByFile: Map<File, string> } {
   const files = entries.map(entry => new File(['x'], entry.path.split('/').pop() || 'f'))
-  const pathByFile = new Map(files.map((file, i) => [file, entries[i].path]))
+  // A virtual shortcut File (browser link drag on Windows) has a name but no path.
+  const pathByFile = new Map(files.map((file, i) => [file, entries[i].path.includes('/') ? entries[i].path : '']))
 
   const items: Record<number | string, unknown> = { length: entries.length }
   entries.forEach((entry, i) => {
@@ -101,7 +108,7 @@ function stubTransfer(entries: StubEntry[], internalRaw = ''): DataTransfer & { 
   })
 
   return {
-    getData: (mime: string) => (mime === HERMES_PATHS_MIME ? internalRaw : ''),
+    getData: (mime: string) => (mime === HERMES_PATHS_MIME ? internalRaw : mime === 'text/uri-list' ? uriList : ''),
     files: {
       length: files.length,
       item: (i: number) => files[i] ?? null
@@ -172,6 +179,41 @@ describe('extractDroppedFiles', () => {
     expect(inAppRefs.map(entry => entry.path)).toEqual(['/abs/src'])
     expect(inAppRefs[0]?.isDirectory).toBe(true)
     expect(osDrops.map(entry => entry.path)).toEqual(['/abs/notes.txt'])
+  })
+
+  it('turns a browser link drag into an @url chip instead of failing on the virtual .url stub', () => {
+    // Dragging a link out of a browser on Windows lands as `text/uri-list` plus a
+    // path-less `<title>.url` shortcut File. That stub used to reach the upload
+    // pipeline and toast "Could not attach agent-wiki.url".
+    const transfer = stubTransfer(
+      [{ path: 'agent-wiki.url', isDirectory: false }],
+      '',
+      'https://example.com/wiki/agent?x=1\r\n'
+    ) as DataTransfer & { _pathByFile: Map<File, string> }
+
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toEqual([{ path: '', url: 'https://example.com/wiki/agent?x=1' }])
+    expect(partitionDroppedFiles(result).osDrops).toEqual([])
+    expect(droppedFileInlineRefs(result, '/w')).toEqual(['@url:https://example.com/wiki/agent?x=1'])
+  })
+
+  it('keeps a path-less image dragged off a web page as an upload, not a link chip', () => {
+    const transfer = stubTransfer(
+      [{ path: 'logo.png', isDirectory: false }],
+      '',
+      'https://example.com/logo.png'
+    ) as DataTransfer & { _pathByFile: Map<File, string> }
+
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toHaveLength(1)
+    expect(result[0]?.file).toBeInstanceOf(File)
+    expect(result[0]?.url).toBeUndefined()
   })
 
   it('does not duplicate a folder that appears in both items and files', () => {
@@ -255,6 +297,26 @@ describe('useComposerActions native image drops', () => {
     vi.clearAllMocks()
   })
 
+  it('does not attach a screenshot when its draft changes during native image saving', async () => {
+    let finishSave!: (path: string) => void
+    const saveImageBuffer = vi.fn(() => new Promise<string>(resolve => { finishSave = resolve }))
+    const add = vi.fn()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { saveImageBuffer } })
+    const { result } = renderHook(() => useComposerActions({
+      activeSessionId: null,
+      currentCwd: '/test',
+      requestGateway: vi.fn(),
+      scope: { add, remove: vi.fn(() => null), target: 'main', update: vi.fn(() => true), updateIfCurrent: vi.fn(() => true) }
+    }))
+    let current = true
+    const pending = result.current.attachImageBlob(new Blob([new Uint8Array([1])], { type: 'image/png' }), () => current)
+    await vi.waitFor(() => expect(saveImageBuffer).toHaveBeenCalledOnce())
+    current = false
+    finishSave('/test/screenshot.png')
+    expect(await pending).toBe(false)
+    expect(add).not.toHaveBeenCalled()
+  })
+
   it('copies dropped screenshot bytes before trusting a transient macOS path', async () => {
     const transientPath =
       '/var/folders/x7/example/T/TemporaryItems/NSIRD_screencaptureui_4roSuW/Screen Shot 2026-08-11.png'
@@ -321,6 +383,35 @@ describe('useComposerActions native image drops', () => {
         path: durablePath
       })
     )
+  })
+})
+
+describe('useComposerActions generated paste title metadata', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.clearAllMocks()
+  })
+
+  it('marks only a Hermes-generated large paste with a bounded title preview', async () => {
+    const savePastedText = vi.fn(async () => '/tmp/composer-pastes/pasted-content.txt')
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { savePastedText } })
+    const { result } = renderHook(() => useComposerActions({
+      activeSessionId: null,
+      currentCwd: '/test',
+      requestGateway: vi.fn(),
+      scope: { add, remove: vi.fn(() => null), target: 'main', update: vi.fn(() => true), updateIfCurrent: vi.fn(() => true) }
+    }))
+
+    const pasted = `Database migration incident\n${'x'.repeat(1_500)}`
+    await expect(result.current.attachPastedText(pasted)).resolves.toBe(true)
+
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'file',
+      path: '/tmp/composer-pastes/pasted-content.txt',
+      refText: '@file:/tmp/composer-pastes/pasted-content.txt',
+      titlePreview: pasted.slice(0, 1_000)
+    }))
   })
 })
 

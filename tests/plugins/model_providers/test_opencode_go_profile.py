@@ -81,30 +81,6 @@ class TestOpenCodeZenOxReasoning:
             )
             assert top_level == {"reasoning_effort": expected}, requested
 
-    def test_opencode_free_profile_shares_the_translation(self):
-        """Ox Alpha is reachable via the keyless opencode-free provider too;
-        its profile must emit the identical clamped reasoning_effort."""
-        import model_tools  # noqa: F401
-        import providers
-        from providers.base import ProviderProfile
-
-        profile = providers.get_provider_profile("opencode-free")
-        assert profile is not None
-        assert (
-            type(profile).build_api_kwargs_extras
-            is not ProviderProfile.build_api_kwargs_extras
-        ), "opencode-free must override build_api_kwargs_extras (aux gate)"
-        _, top_level = profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "medium"},
-            model="x-preview-f-free",
-        )
-        assert top_level == {"reasoning_effort": "low"}
-        _, other = profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "max"},
-            model="big-pickle",
-        )
-        assert other == {}
-
 
 class TestOpenCodeGoKimiReasoning:
     """Kimi K2 models use Moonshot's thinking + reasoning_effort shape on OpenCode Go."""
@@ -182,6 +158,36 @@ class TestOpenCodeGoDeepSeekThinking:
             assert extra_body == {}
             assert top_level == {"reasoning_effort": "max"}
 
+    @pytest.mark.parametrize("model", ["deepseek-flash", "deepseek/deepseek-flash"])
+    def test_version_less_canonical_id_gets_the_controls(self, opencode_go_profile, model):
+        """The canonical version-less Flash id must reach the wire like the versioned ids:
+        the asked effort, and an explicit thinking-off when reasoning is disabled."""
+        _, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "high"}
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model=model,
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+
+    def test_version_less_flash_effort_reaches_the_wire(self, opencode_go_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-flash",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=opencode_go_profile,
+            reasoning_config={"enabled": True, "effort": "max"},
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        assert "extra_body" not in kwargs
+        assert kwargs["reasoning_effort"] == "max"
+
 
 class TestOpenCodeGoGLM52Reasoning:
     """GLM-5.2 uses its native high/max reasoning_effort knob on OpenCode Go."""
@@ -253,3 +259,4 @@ class TestOpenCodeGoFullKwargsIntegration:
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
+

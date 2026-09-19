@@ -602,6 +602,6 @@ def test_config_set_on_unparseable_yaml_reports_error_not_crash(tmp_path, monkey
     )
 
     assert result.status == "error"
-    assert "not valid YAML" in (result.output or "") or "Failed to parse" in (result.output or "")
+    assert "formatting error" in (result.output or "")
     # The broken-but-recoverable file must survive untouched.
     assert config_path.read_text(encoding="utf-8") == original

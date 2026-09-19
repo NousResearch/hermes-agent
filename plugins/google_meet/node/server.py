@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
-from plugins.google_meet._jsonfile import read_json, write_json_atomic
+from plugins.google_meet._jsonfile import read_json
+from utils import atomic_json_write
 from plugins.google_meet.node import protocol as _proto
 
 _START_BOT_KEYS = ("url", "guest_name", "duration", "headed", "auth_state", "session_id", "out_dir")
@@ -80,7 +81,7 @@ class NodeServer:
         if not (isinstance(tok, str) and tok):
             tok = secrets.token_hex(16)  # 32 hex chars
             # Owner-only: the token grants full RPC access to the meet bot.
-            write_json_atomic(self.token_path, {"token": tok, "generated_at": time.time()}, mode=0o600)
+            atomic_json_write(self.token_path, {"token": tok, "generated_at": time.time()}, mode=0o600)
         self._token = tok
         return tok
 

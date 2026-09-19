@@ -1,6 +1,7 @@
 import type { ConnectionState } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { setApiRequestLocalMode } from '@/api/client'
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
@@ -141,6 +142,48 @@ export function getRememberedSessionId(profile: string): null | string {
 export function setRememberedSessionId(id: null | string, profile: string): void {
   discardLegacyRememberedNavigation()
   persistString(profileNavigationKey(LAST_SESSION_KEY, profile), id)
+}
+
+/** A renamed profile keeps its sessions, so the remembered session / route and
+ *  every owner hint pointing at the old name move to the new one instead of
+ *  routing the next open at a backend that no longer exists (#111868). */
+export function migrateRememberedNavigationForProfile(oldProfile: string, newProfile: string): void {
+  discardLegacyRememberedNavigation()
+
+  for (const base of [LAST_SESSION_KEY, LAST_ROUTE_KEY]) {
+    const value = storedString(profileNavigationKey(base, oldProfile))
+
+    if (value !== null) {
+      persistString(profileNavigationKey(base, newProfile), value)
+      persistString(profileNavigationKey(base, oldProfile), null)
+    }
+  }
+}
+
+export function migrateSessionOwnerHintsForProfile(oldProfile: string, newProfile: string): void {
+  const from = oldProfile.trim() || 'default'
+  const to = newProfile.trim() || 'default'
+  let changed = false
+
+  for (const [key, entry] of [...sessionOwnerHints]) {
+    const { route } = entry
+
+    if (route.profile !== from && route.targetProfile !== from) {
+      continue
+    }
+
+    sessionOwnerHints.delete(key)
+    rememberSessionOwnerHint(entry.id, {
+      ...route,
+      profile: route.profile === from ? to : route.profile,
+      ...(route.targetProfile === from ? { targetProfile: to } : {})
+    })
+    changed = true
+  }
+
+  if (changed) {
+    persistSessionOwnerHints()
+  }
 }
 
 export function sessionBelongsToProfile(
@@ -319,7 +362,14 @@ export async function ensureDefaultWorkspaceCwd(shouldPublish: () => boolean = (
   const remembered = getRememberedWorkspaceCwd()
 
   if ($connection.get()?.mode === 'remote') {
-    seedLiveCwd(remembered)
+    // Unlike the local branches below, an empty `remembered` here is meaningful:
+    // it means the incoming gateway has no memory of its own, so any workspace
+    // still live from the outgoing gateway is stale and must be cleared rather
+    // than left in place (seedLiveCwd's cwd-truthy guard would otherwise skip
+    // publishing and leave the old path looking valid — #114306).
+    if (shouldPublish() && !$activeSessionId.get()) {
+      setCurrentCwdTransient(remembered)
+    }
 
     return
   }
@@ -792,6 +842,44 @@ export const $messagingPlatformTotals = atom<Record<string, number>>({})
 export const $messagingTruncated = atom<boolean>(false)
 
 /**
+ * Ownership stubs for UNLISTED draft tiles (the tab-strip "+" / project
+ * sidebar "+" with `listed: false`, see `openNewSessionTile`). A brand-new
+ * backend session is in-memory only until its first turn persists a row, so
+ * these drafts have no row in any sidebar slice — yet the tile's immediate
+ * `session.resume` must still name the backend that minted them. Without a
+ * stub, a draft minted on the legacy ambient route (null owner route: local
+ * source + named profile) records its owner NOWHERE — no tile route, no hint,
+ * no row — and every session-scoped RPC fails closed with
+ * SessionOwnerResolutionError on multi-profile installs (#102792).
+ *
+ * Stubs carry the SAME owner stamps an optimistic row would (ambient profile
+ * when the create was unrouted, exact connection tag when routed) but live
+ * outside $sessions so the drafts stay out of the visible sidebar list. Real
+ * rows always outrank stubs (shadow-filtered below); the first send replaces
+ * the stub via the normal optimistic upsert.
+ */
+export const $unlistedSessionOwnerRows = atom<SessionInfo[]>([])
+
+/** Drop stubs shadowed by a real row `id` already present in `rows`. Returns
+ *  `rows` untouched (same reference) when there is nothing to append, so
+ *  per-list memo caches keyed on the array identity still hit. */
+function withUnlistedOwnerStubs(rows: SessionInfo[], stubs: readonly SessionInfo[]): SessionInfo[] {
+  if (!stubs.length) {
+    return rows
+  }
+
+  const listed = new Set<string>()
+
+  for (const row of rows) {
+    listed.add(row.id)
+  }
+
+  const visible = stubs.filter(stub => !listed.has(stub.id))
+
+  return visible.length ? [...rows, ...visible] : rows
+}
+
+/**
  * Every session row the renderer knows, for OWNER lookups. The sidebar splits
  * its fetch into three source-scoped slices ($sessions / $cronSessions /
  * $messagingSessions), and each slice's rows carry the same `profile` (and,
@@ -801,19 +889,22 @@ export const $messagingTruncated = atom<boolean>(false)
  * install failed closed with SessionOwnerResolutionError even though the row
  * naming its owner was already in memory, one atom over. Concatenation order
  * mirrors lookup priority: recents first (they can carry fresher optimistic
- * connection tags), then the cron and messaging slices.
+ * connection tags), then the cron and messaging slices. Unlisted-draft stubs
+ * ($unlistedSessionOwnerRows) ride last: a real row for the same id always
+ * shadows its stub, so a listed session never resolves off a stale stamp.
  */
 export function ownerLookupSessionRows(): SessionInfo[] {
   const cron = $cronSessions.get()
   const messaging = $messagingSessions.get()
+  const stubs = $unlistedSessionOwnerRows.get()
 
   // Recents-only stays the common case; keep its array identity (no copy) so
   // per-list memo caches (lineageAliases) keyed on the reference still hit.
   if (!cron.length && !messaging.length) {
-    return $sessions.get()
+    return withUnlistedOwnerStubs($sessions.get(), stubs)
   }
 
-  return [...$sessions.get(), ...cron, ...messaging]
+  return withUnlistedOwnerStubs([...$sessions.get(), ...cron, ...messaging], stubs)
 }
 
 // Whether a profile's last session page was CAPPED by the request limit, keyed
@@ -1176,11 +1267,21 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
   // keeps the current scope.
   rescopeConnectionScopedStores($connection.get())
   syncCronModelImpactConnection($connection.get())
+
+  // Null descriptor = reconnect blip; keep the last resolved mode (same
+  // contract as rescopeConnectionScopedStores above).
+  const mode = $connection.get()?.mode
+
+  if (mode) {
+    setApiRequestLocalMode(mode === 'local')
+  }
+
   rescopeComposerSelection(composerScopeForConnection($connection.get()))
 }
 
 export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
+export const setUnlistedSessionOwnerRows = (next: Updater<SessionInfo[]>) => updateAtom($unlistedSessionOwnerRows, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
 export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>

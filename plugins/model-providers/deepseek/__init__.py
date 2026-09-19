@@ -10,9 +10,16 @@ Retired ``deepseek-chat``/``deepseek-reasoner`` IDs are remapped in
 
 from typing import Any
 
-from agent.reasoning_effort import DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, clamp_effort
+from agent.reasoning_effort import DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, thinking_toggle_extras
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+# Version-less canonical ids for thinking-capable DeepSeek models. The 2026-09 Flash
+# refresh dropped the ``v<N>`` marker from the public id: ``GET /v1/models`` reports
+# ``deepseek-flash`` and the API accepts it directly, so the generation check in
+# ``build_api_kwargs_extras`` cannot recognise it.
+_THINKING_CAPABLE_IDS: frozenset[str] = frozenset({"deepseek-flash"})
 
 
 class DeepSeekProfile(ProviderProfile):
@@ -22,28 +29,28 @@ class DeepSeekProfile(ProviderProfile):
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         m = (model or "").strip().lower()
-        if not m.startswith("deepseek-v") or m.startswith("deepseek-v3"):  # v4+ only; v3 excluded
+        # v4+ only; v3 excluded. Version-less canonicals (``deepseek-flash``) carry the
+        # same thinking-mode contract but no ``v<N>`` prefix, so consult the id set too —
+        # missing them makes Hermes omit ``thinking``, so the server defaults to on and
+        # the user's thinking toggle / effort setting is silently ignored.
+        versioned_v4_plus = m.startswith("deepseek-v") and not m.startswith("deepseek-v3")
+        if not versioned_v4_plus and m not in _THINKING_CAPABLE_IDS:
             return {}, {}
-        rc = reasoning_config if isinstance(reasoning_config, dict) else None
         # Always set thinking explicitly (default enabled, matching the API default)
         # to avoid the reasoning_content echo trap on subsequent turns.
-        if rc is not None and rc.get("enabled") is False:
-            return {"thinking": {"type": "disabled"}}, {}
-        top_level: dict[str, Any] = {}
-        # No effort -> omit reasoning_effort so DeepSeek applies its server default.
-        effort = (rc.get("effort") or "").strip().lower() if rc is not None else ""
-        if effort and effort != "none":
-            clamped = clamp_effort(effort, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES)
-            if clamped in DEEPSEEK_V4_EFFORTS:
-                top_level["reasoning_effort"] = clamped
-        return {"thinking": {"type": "enabled"}}, top_level
+        return thinking_toggle_extras(
+            reasoning_config, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, always_emit_toggle=True
+        )
 
 
 deepseek = DeepSeekProfile(
-    name="deepseek", aliases=("deepseek-chat",), env_vars=("DEEPSEEK_API_KEY",), display_name="DeepSeek",
+    name="deepseek", aliases=("deepseek-chat", "deep-seek"), env_vars=("DEEPSEEK_API_KEY",), display_name="DeepSeek",
     description="DeepSeek — native DeepSeek API", signup_url="https://platform.deepseek.com/",
-    fallback_models=("deepseek-v4-pro", "deepseek-v4-flash"), base_url="https://api.deepseek.com/v1",
-    default_aux_model="deepseek-v4-flash",
+    fallback_models=("deepseek-v4-pro", "deepseek-flash"), base_url="https://api.deepseek.com/v1",
+    default_aux_model="deepseek-flash",
+    # Native API implements only ``json_object`` (https://api-docs.deepseek.com/guides/json_mode);
+    # ``json_schema`` is a guaranteed HTTP 400 "This response_format type is unavailable now".
+    unsupported_response_formats=("json_schema",),
 )
 
 register_provider(deepseek)

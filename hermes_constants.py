@@ -42,6 +42,11 @@ def get_hermes_home_override() -> str | None:
     return str(override) if override is not _UNSET and override else None
 
 
+def _expand_hermes_home(path: str) -> Path:
+    """Expand environment and user-home syntax in a Hermes home path."""
+    return Path(os.path.expanduser(os.path.expandvars(path)))
+
+
 def _get_platform_default_hermes_home() -> Path:
     """Return the platform-native default Hermes home path."""
     if sys.platform == "win32":
@@ -49,6 +54,25 @@ def _get_platform_default_hermes_home() -> Path:
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
         return base / "hermes"
     return Path.home() / ".hermes"
+
+
+def sudo_invoker_default_home() -> Path | None:
+    """The invoking user's native ``~/.hermes`` when this process is root under ``sudo``, else None.
+
+    sudo strips HERMES_HOME and sets HOME=/root, so the process's own default is root's; the profile
+    store and the system service being operated on belong to SUDO_USER.
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    sudo_user = os.environ.get("SUDO_USER", "").strip()
+    if not sudo_user or sudo_user == "root":
+        return None
+    import pwd
+
+    try:
+        return Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes"
+    except KeyError:  # SUDO_USER not in passwd (chroot/container)
+        return None
 
 
 def _warn_profile_fallback_once() -> None:
@@ -83,7 +107,7 @@ def get_hermes_home() -> Path:
     """Hermes home: context-local override → ``HERMES_HOME`` env var → platform default."""
     override = get_hermes_home_override()
     if override:
-        return Path(override)
+        return _expand_hermes_home(override)
     if not os.environ.get("HERMES_HOME", "").strip():
         _warn_profile_fallback_once()
     return get_process_hermes_home()
@@ -135,11 +159,17 @@ def get_process_hermes_home() -> Path:
     request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
     """
     val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else _get_platform_default_hermes_home()
+    return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
 
 
-# get_default_hermes_root() memo keyed on (native home, HERMES_HOME) so it stays
-# fresh when a test or plugin mutates HERMES_HOME; saves ~80us/call at 31+ sites.
+# Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
+# managed Node): re-downloadable on demand and routinely tens to hundreds of GB. Shared by
+# ``hermes backup`` (excludes them) and ``profile create --clone-all`` (skips them from the
+# default profile) so the two lists cannot drift apart.
+LOCAL_RUNTIME_ROOT_DIRS: frozenset[str] = frozenset({"models", "runtimes", "node"})
+
+# get_default_hermes_root() memo keyed on (native home, expanded HERMES_HOME) so it stays
+# fresh when a test or plugin mutates either input; saves ~80us/call at 31+ sites.
 _default_hermes_root_memo: "tuple[str, str, Path] | None" = None
 
 
@@ -147,18 +177,19 @@ def get_default_hermes_root() -> Path:
     """Root Hermes dir for profile-level ops: ``<root>`` when ``HERMES_HOME=<root>/profiles/<name>``."""
     global _default_hermes_root_memo
     native_home = _get_platform_default_hermes_home()
-    env_home = os.environ.get("HERMES_HOME", "")
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    env_path = _expand_hermes_home(env_home) if env_home else None
+    memo_key = (str(native_home), str(env_path) if env_path is not None else "")
     memo = _default_hermes_root_memo
-    if memo is not None and memo[:2] == (str(native_home), env_home):
+    if memo is not None and memo[:2] == memo_key:
         return memo[2]
     result = native_home
-    if env_home:
-        env_path = Path(env_home)
+    if env_path is not None:
         try:
             env_path.resolve().relative_to(native_home.resolve())  # under ~/.hermes (normal or profile mode)
         except ValueError:  # Docker/custom root: <root>/profiles/<name> -> <root>, else HERMES_HOME itself
             result = env_path.parent.parent if env_path.parent.name == "profiles" else env_path
-    _default_hermes_root_memo = (str(native_home), env_home, result)
+    _default_hermes_root_memo = (*memo_key, result)
     return result
 
 
@@ -206,12 +237,60 @@ def named_profile_home(path: str | Path) -> Path | None:
     return None
 
 
+def profile_name_for_home(path: str | Path | None) -> str | None:
+    """Return the canonical profile id owning *path*, or ``None`` when it is not a profile home.
+
+    The default home is the Hermes root itself, so its basename is an installation detail (``.hermes``
+    on POSIX and commonly ``hermes`` on Windows), not the profile id ``default``.
+    """
+    if path is None or not str(path).strip():
+        return None
+    current = Path(path).expanduser()
+    try:
+        default_root = get_default_hermes_root()
+        for candidate in (current, current.resolve(strict=False)):
+            if candidate == default_root or candidate == default_root.resolve(strict=False):
+                return "default"
+            named = named_profile_home(candidate)
+            if named is not None:
+                return named.name
+            # A stored profile home is authoritative: its owner already resolved it, so the
+            # <root>/profiles/<name> shape names the profile even when <root> carries no markers.
+            if candidate.parent.name == "profiles" and not candidate.name.startswith("."):
+                return candidate.name
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
 def profile_tombstone_path(profile_home: Path) -> Path:
     return profile_home.parent / _DELETED_PROFILES_DIR / profile_home.name
 
 
 def named_profile_is_deleted(profile_home: str | Path) -> bool:
     return profile_tombstone_path(Path(profile_home)).exists()
+
+
+# A directory under profiles/ is a profile only when something identifies it as one.
+# Runtime side-effects (cron heartbeats, log rotation, caches) create dirs that carry
+# none of these; a pre-tombstone ghost shell or a stray infrastructure dir must never be
+# listed, served, ticked, or seeded with the default install's credentials.
+_PROFILE_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+
+
+def named_profile_has_identity(profile_home: str | Path) -> bool:
+    # A dangling symlinked marker (clone/migration leftover) is still an identity claim:
+    # ``is_file()`` follows links, so it alone would make such a profile unlistable.
+    home = Path(profile_home)
+    return any((home / marker).is_file() or (home / marker).is_symlink() for marker in _PROFILE_IDENTITY_MARKERS)
+
+
+def named_profile_is_live(profile_home: str | Path) -> bool:
+    """A resolvable named profile: an existing dir with identity that has not been deleted.
+    ``-p``/``--profile`` resolution and ``profile_exists`` share this so a stale ghost shell can
+    never be started as a backend (whose ``ensure_hermes_home`` would rebuild the full tree)."""
+    home = Path(profile_home)
+    return home.is_dir() and named_profile_has_identity(home) and not named_profile_is_deleted(home)
 
 
 def mark_named_profile_deleted(profile_home: str | Path) -> None:
@@ -736,13 +815,27 @@ def _legacy_path_has_content(path: Path) -> bool:
     return True
 
 
-def display_hermes_home() -> str:
-    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``)."""
-    home = get_hermes_home()
+def display_hermes_home(home: Path | None = None) -> str:
+    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``).
+
+    ``home`` overrides the lookup for callers that run before the CLI has applied the sticky
+    ``active_profile`` (``get_hermes_home()`` would emit the wrong-profile fallback warning there).
+    """
+    if home is None:
+        home = get_hermes_home()
     try:  # as_posix(): str() on Windows yields chimeras like ~/AppData\Local\hermes/skills/
         return "~/" + home.relative_to(Path.home()).as_posix()
     except ValueError:
         return str(home)
+
+
+def profile_cli_selector() -> str:
+    """``-p <name> `` (trailing space) pinning copy-pasteable ``hermes ...`` guidance to the
+    active NAMED profile, else ``""``: a bare ``hermes`` follows the sticky ``active_profile``
+    file, which can name a different database than the one that failed (#105887). A custom
+    home outside the profile tree has no selector (only HERMES_HOME names it)."""
+    name = profile_name_for_home(get_hermes_home())
+    return f"-p {name} " if name and name != "default" else ""
 
 
 def secure_parent_dir(path: Path) -> None:
@@ -782,7 +875,7 @@ def _profile_home_path(env: dict[str, str] | None = None) -> str | None:
     hermes_home = get_hermes_home_override() or (env or {}).get("HERMES_HOME") or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
-    profile_home = os.path.join(hermes_home, "home")
+    profile_home = str(_expand_hermes_home(hermes_home) / "home")
     return profile_home if os.path.isdir(profile_home) else None
 
 
@@ -929,13 +1022,33 @@ def _canonical_model_variants(model: str) -> list[str]:
 def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> dict | None:
     """Per-model reasoning_effort override with spelling tolerance; first non-None parse wins.
 
-    Order: exact → dots↔dashes → provider stripped → aggregator stripped → known prefixes added.
+    Order: exact → dots↔dashes → provider stripped → aggregator stripped → known prefixes added →
+    reverse lookup of prefixed keys whose stripped forms match (custom provider slugs are not
+    enumerable, so a key like ``ollama-local/qwen3.6:27b`` must still match the bare
+    ``qwen3.6:27b`` model string a fallback swap feeds after stripping the prefix).
     """
     if not overrides or not isinstance(overrides, dict) or not model:
         return None
-    for variant in _canonical_model_variants(model):
+    variants = _canonical_model_variants(model)
+    for variant in variants:
         if variant in overrides:
             result = parse_reasoning_effort(overrides[variant])
+            if result is not None:
+                return result
+    # Reverse lookup: the key may carry a custom-provider prefix the model string lost
+    # (fallback entries and custom-provider resolution feed the bare slug, while the
+    # documented key spelling keeps the ``provider/model`` form). Direct and variant
+    # matches above still win, so provider-qualified keys stay most specific.
+    variant_set = set(variants)
+    for key, raw in overrides.items():
+        if not isinstance(key, str) or "/" not in key:
+            continue
+        parts = key.split("/")
+        key_forms = _canonical_model_variants(parts[-1])
+        if len(parts) >= 3:
+            key_forms += _canonical_model_variants("/".join(parts[1:]))
+        if any(form in variant_set for form in key_forms):
+            result = parse_reasoning_effort(raw)
             if result is not None:
                 return result
     return None
@@ -1121,6 +1234,47 @@ PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
 FINISH_REASON_LENGTH = "length"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+
+# OpenRouter request-time routing variants (docs: guides/routing/model-variants).
+# These suffixes are per-request routing modifiers valid on ANY model id —
+# ":nitro" sorts the endpoint pool by throughput and admits priority-tier
+# endpoints, ":floor" sorts by price and admits flex-tier endpoints, ":exacto"
+# applies quality-first provider sorting, ":online" attaches the web plugin.
+# They are never separate catalog entries: /models lists only the base id, so
+# every catalog lookup must key on the BASE while the suffixed id stays on the
+# wire.
+# NOT in this set: ":free", ":batch", ":thinking", ":extended" — those ARE
+# distinct catalog SKUs with their own /models entries (and their own context
+# windows), so stripping them would resolve the wrong window.
+OPENROUTER_VARIANT_SUFFIXES: frozenset[str] = frozenset(
+    {"nitro", "floor", "exacto", "online"}
+)
+
+
+def openrouter_variant_base(model_id: str) -> str | None:
+    """Return the base model id when ``model_id`` carries a recognized
+    OpenRouter routing-variant suffix (e.g. ``x-ai/grok-4:nitro`` →
+    ``x-ai/grok-4``), else ``None``.
+
+    Lives here rather than in ``hermes_cli.models`` so the metadata layer
+    (``agent.model_metadata``) can share one definition without importing the
+    CLI — this module is dependency-free by contract.
+
+    >>> openrouter_variant_base("x-ai/grok-4:nitro")
+    'x-ai/grok-4'
+    >>> openrouter_variant_base("x-ai/grok-4:free") is None
+    True
+    >>> openrouter_variant_base("x-ai/grok-4") is None
+    True
+    """
+    base, sep, suffix = (model_id or "").rpartition(":")
+    if not sep or not base:
+        return None
+    if suffix.lower() in OPENROUTER_VARIANT_SUFFIXES:
+        return base
+    return None
+
+
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 

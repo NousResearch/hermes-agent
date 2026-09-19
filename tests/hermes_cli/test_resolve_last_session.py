@@ -131,5 +131,34 @@ def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
             cmd, 0, stdout=str(repo_a), stderr=""
         ),
     )
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: real_db(db_path=state_db))
+    monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: real_db(db_path=state_db, **kw))
     assert _resolve_last_session("cli") == "repo_a"
+
+
+def test_resolve_last_session_cli_continues_a_oneshot(monkeypatch, tmp_path):
+    """`hermes -z … --resume latest` / `hermes -c` chain on the previous one-shot: its distinct `oneshot`
+    source hides it from pickers but it is still CLI history (#112550)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    import hermes_state
+    from pathlib import Path
+
+    state_db = Path(tmp_path / "state.db")
+    real_db = hermes_state.SessionDB
+    db = real_db(db_path=state_db)
+    try:
+        db.create_session("interactive", source="cli")
+        db.create_session("oneshot_run", source="oneshot")
+        db.create_session("tui_chat", source="tui")
+        with db._lock:
+            for sid, started in (("interactive", 100.0), ("oneshot_run", 200.0), ("tui_chat", 300.0)):
+                db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (started, sid))
+            db._conn.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
+    monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: real_db(db_path=state_db, **kw))
+    assert _resolve_last_session("cli") == "oneshot_run"
+    assert _resolve_last_session("tui") == "tui_chat"

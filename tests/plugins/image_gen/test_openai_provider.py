@@ -172,6 +172,40 @@ class TestGenerate:
         # gpt-image-2 rejects response_format — we must NOT send it.
         assert "response_format" not in call_kwargs
 
+    @pytest.mark.parametrize("has_image", [True, False])
+    def test_token_usage_reaches_session_accounting(self, provider, has_image):
+        """gpt-image bills per token: the Images API ``usage`` block lands as one
+        ``image_generation`` row keyed on the API model, not the Hermes tier label — also
+        when the billed HTTP 200 carries no image data."""
+        from agent import aux_accounting
+
+        recorded = []
+
+        class _DB:
+            def record_auxiliary_usage(self, *args, **kwargs):
+                recorded.append((args, kwargs))
+
+        response = _fake_response(b64=_b64_png())
+        if not has_image:
+            response.data = []
+        response.usage = SimpleNamespace(input_tokens=23, output_tokens=1056, total_tokens=1079)
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = response
+        token = aux_accounting.set_accounting_context(_DB(), "sess-1")
+        try:
+            with _patched_openai(fake_client):
+                result = provider.generate("a cat", aspect_ratio="landscape")
+        finally:
+            aux_accounting.reset_accounting_context(token)
+
+        assert result["success"] is has_image
+        if not has_image:
+            assert result["error_type"] == "empty_response"
+        ((session_id, task), kwargs), = recorded
+        assert (session_id, task) == ("sess-1", "image_generation")
+        assert (kwargs["model"], kwargs["billing_provider"]) == ("gpt-image-2", "openai")
+        assert (kwargs["input_tokens"], kwargs["output_tokens"]) == (23, 1056)
+
     @pytest.mark.parametrize("api_model,quality", [
         ("gpt-image-2", quality) for quality in ("low", "medium", "high")
     ] + [

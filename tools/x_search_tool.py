@@ -78,10 +78,7 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
 
 def check_x_search_requirements() -> bool:
     """True when xAI credentials resolve to a non-empty bearer (OAuth auto-refreshed)."""
-    try:
-        return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
-    except Exception:
-        return False
+    return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
 
 
 def _normalize_handles(handles: Optional[List[str]], field_name: str) -> List[str]:

@@ -6,7 +6,7 @@ A distribution maps toolset names to the % chance each is enabled for a prompt
 be a "+"-grouped compound ("browser+search") that rolls once for all members.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import random
 from toolsets import validate_toolset
 
@@ -46,7 +46,7 @@ DISTRIBUTIONS = {
 }
 
 
-def get_distribution(name: str) -> Optional[Dict[str, any]]:
+def get_distribution(name: str) -> Optional[Dict[str, Any]]:
     """Distribution definition (description + toolsets), or None if unknown."""
     return DISTRIBUTIONS.get(name)
 

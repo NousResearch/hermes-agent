@@ -11,12 +11,15 @@ import hashlib
 import json
 import logging
 
+from tools.environments.local_env_policy import _is_env_name_in
+
 logger = logging.getLogger("tools.environments.docker")
 
 _EGRESS_LABEL_KEY = "hermes-egress"
 _CONTAINER_CA = "/etc/ssl/certs/hermes-egress-ca.crt"
 _NODE_OPTIONS_SENTINEL = "_HERMES_EGRESS_NODE_OPTIONS_APPEND"
 _CA_MODE_FLAGS = {"--use-openssl-ca", "--use-bundled-ca"}
+from tools.environments.local_env_policy import _is_env_name_in
 
 # Env names whose override would weaken or bypass enforced egress.
 _PROXY_CONTROL_ENV = frozenset({
@@ -139,7 +142,7 @@ def _egress_enforce_on_docker(default: bool = True) -> bool:
 def _critical_egress_env_names(env_overrides: dict[str, str]) -> set[str]:
     """Env names that would weaken or bypass enforced egress if overridden."""
     critical = set(_PROXY_CONTROL_ENV) | {"NODE_OPTIONS"}
-    critical.update(k for k in env_overrides if k.endswith("_API_KEY") or k.endswith("_TOKEN"))
+    critical.update(k for k in env_overrides if k.upper().endswith(("_API_KEY", "_TOKEN")))
     return critical
 
 
@@ -155,7 +158,7 @@ def _extra_args_egress_collisions(extra_args: list[str], critical_names: set[str
             name = value.split("=", 1)[0]
             if flag == "--env-file":
                 collisions.append(flag)
-            elif name in critical_names:
+            elif _is_env_name_in(name, critical_names):
                 collisions.append(name)
             i += 1 if sep else 2
             continue
@@ -174,7 +177,7 @@ def _collision_guard(msg: str, *, enforce: bool, remedy: str, consequence: str) 
 
 
 def check_forward_env_collisions(forward_env: list[str], critical: set[str], enforce: bool) -> None:
-    collisions = sorted(k for k in forward_env if k in critical)
+    collisions = sorted(k for k in forward_env if _is_env_name_in(k, critical))
     if collisions:
         _collision_guard(
             f"docker_forward_env would inject real egress-protected variables {collisions}",
@@ -195,13 +198,16 @@ def check_docker_env_collisions(user_env: dict[str, str], egress_env: dict[str, 
         pass
 
     def _collides(k: str) -> bool:
-        if k not in user_env:
+        matching_user = next((name for name in user_env if _is_env_name_in(name, {k})), None)
+        if matching_user is None:
             return False
+        matching_egress = next((name for name in egress_env if _is_env_name_in(name, {k})), None)
         if k in provider_keys:
-            return k not in egress_env or user_env[k] != egress_env[k]
-        return k in egress_env and user_env[k] != egress_env[k]
+            return matching_egress is None or user_env[matching_user] != egress_env[matching_egress]
+        return matching_egress is not None and user_env[matching_user] != egress_env[matching_egress]
 
-    collisions = sorted(k for k in (_PROXY_CONTROL_ENV | provider_keys) if _collides(k))
+    collision_names = set(_PROXY_CONTROL_ENV) | provider_keys
+    collisions = sorted(k for k in collision_names if _collides(k))
     if collisions:
         _collision_guard(
             f"docker_env in config.yaml overrides egress-proxy variables {collisions}",

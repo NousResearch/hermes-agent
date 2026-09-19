@@ -8,7 +8,8 @@ import subprocess
 from typing import Callable, Iterable
 
 from tools.environments.base_session_env import _SHELL_ENV_NAME_RE
-from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST, _is_hermes_internal_secret
+from tools.environments.local_env_policy import (
+    _is_hermes_internal_secret, _is_provider_env_blocklisted)
 
 
 def load_hermes_env_vars() -> dict[str, str]:
@@ -25,10 +26,9 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
                             ) -> tuple[dict[str, str], set[str]]:
     """Values to forward into a remote shell plus the scoped names that must be unset there.
 
-    Implicit passthrough (skill ``required_environment_variables`` + ``terminal.env_passthrough``)
-    is filtered through the Hermes provider-credential blocklist and the dynamic internal-secret
-    check; ``explicit_forward`` entries (docker_forward_env) are an operator opt-in that bypasses
-    both. Each value is the routed profile's secret when multiplex is active; a name the active
+    implicit passthrough (skill ``required_environment_variables`` + ``terminal.env_passthrough``)
+    and explicit forwarding are filtered through the Hermes provider-credential blocklist and the
+    dynamic internal-secret check. Each value is the routed profile's secret when multiplex is active;
     scope lacks is returned in the unset set so a shared sandbox cannot leak another profile's
     value.
     """
@@ -44,7 +44,10 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     except Exception:
         pass
     implicit_forward = {k for k in passthrough_keys if not _is_hermes_internal_secret(k)}
-    forward_keys = set(explicit_forward) | (implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
+    forward_keys = {
+        key for key in set(explicit_forward) | implicit_forward
+        if not _is_provider_env_blocklisted(key)
+    }
     hermes_env = hermes_env_loader() if forward_keys else {}
     exec_env: dict[str, str] = {}
     unset_names: set[str] = set()

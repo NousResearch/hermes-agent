@@ -844,7 +844,8 @@ class DockerEnvironment(BaseEnvironment):
         return _name_only_env_args(exec_env)
 
     def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
-        """See ``remote_common.resolve_passthrough_env``; explicit docker_forward_env bypasses the blocklist."""
+        """See ``remote_common.resolve_passthrough_env``; all forwarded names remain subject to the
+        provider-credential and internal-secret blocklists."""
         return resolve_passthrough_env(self._forward_env, hermes_env_loader=_load_hermes_env_vars)
 
     def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...], dict[str, str]]:

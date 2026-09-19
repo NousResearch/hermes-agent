@@ -80,6 +80,24 @@ def _build_provider_env_blocklist() -> frozenset:
 
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+_HERMES_PROVIDER_ENV_BLOCKLIST_FOLDED = frozenset(name.upper() for name in _HERMES_PROVIDER_ENV_BLOCKLIST)
+
+
+def _is_provider_env_blocklisted(name: str) -> bool:
+    """Match provider env names using the host environment's case semantics.
+
+    Windows resolves environment names case-insensitively, so a case-sensitive
+    membership test can turn a spelling variant into a credential bypass. Using
+    the folded set on every host also keeps policy behavior deterministic across
+    local and remote execution paths.
+    """
+    return name in _HERMES_PROVIDER_ENV_BLOCKLIST or name.upper() in _HERMES_PROVIDER_ENV_BLOCKLIST_FOLDED
+
+
+def _is_env_name_in(name: str, names: frozenset[str] | set[str]) -> bool:
+    """Case-insensitive membership for environment-name scrub policies."""
+    return name in names or name.upper() in {item.upper() for item in names}
+
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,
@@ -123,7 +141,7 @@ _TERMINAL_FIRST_PARTY_ENV_PREFIXES = ("BUZZ_",)
 def _matches_terminal_first_party_prefix(name: str) -> bool:
     """Pure name check (``BUZZ_*``), regardless of session context — the snapshot
     exclusion must stay conservative even when the carve-out is inactive."""
-    return name.startswith(_TERMINAL_FIRST_PARTY_ENV_PREFIXES)
+    return name.upper().startswith(tuple(prefix.upper() for prefix in _TERMINAL_FIRST_PARTY_ENV_PREFIXES))
 
 
 def _buzz_terminal_context_active() -> bool:

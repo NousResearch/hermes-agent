@@ -21,8 +21,9 @@ from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
-    _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-    _is_hermes_internal_secret, _is_terminal_first_party_env,
+    _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _is_env_name_in, _is_hermes_internal_secret, _is_provider_env_blocklisted,
+    _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
 from tools.environments.local_gitbash_probe import (
     _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
@@ -252,11 +253,11 @@ def _filter_secret_env(
             if not _is_hermes_internal_secret(key):
                 out[key] = value
             continue
-        if _is_hermes_internal_secret(key) or key in plugin_strip:
+        if _is_hermes_internal_secret(key) or _is_env_name_in(key, plugin_strip):
             continue
         first_party = _is_terminal_first_party_env(key)
         passthrough = is_env_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
+        if _is_provider_env_blocklisted(key) and not (passthrough or first_party):
             continue
         if passthrough and not first_party:
             value = resolve_passthrough_value(key, value)
@@ -288,7 +289,8 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
     # declared secret again (#114209); _scrub_child_env calls it the same way.
     from tools.env_passthrough import scoped_passthrough_additions
-    out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
+    out.update((k, v) for k, v in scoped_passthrough_additions(out).items()
+               if not _is_env_name_in(k, plugin_strip))
     path_key = _path_env_key(out)
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment
@@ -320,10 +322,10 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
 def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
     """Tier 1 (always) and, unless ``inherit_credentials``, Tier 2 provider/tool credentials, in place."""
     strip = _ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()
-    if not inherit_credentials:
-        strip |= _HERMES_PROVIDER_ENV_BLOCKLIST
     for key in list(env):
-        if (key in strip or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
+        if (_is_env_name_in(key, strip)
+                or (not inherit_credentials and _is_provider_env_blocklisted(key))
+                or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
                 or _is_hermes_internal_secret(key)):
             del env[key]
     return env
@@ -423,9 +425,12 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
         return env
     launch_home = get_process_hermes_home()
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    from tools.environments.local_env_policy import _is_env_name_in
     for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
-        if not _is_global_env(key) or key.startswith("TERMINAL_"):
-            env.pop(key, None)
+        if not _is_global_env(key) or key.upper().startswith("TERMINAL_"):
+            for env_key in list(env):
+                if _is_env_name_in(env_key, {key}):
+                    env.pop(env_key, None)
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).

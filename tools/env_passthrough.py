@@ -44,13 +44,13 @@ def _is_hermes_provider_credential(name: str) -> bool:
     registerable. Fails closed when the blocklist cannot be imported."""
     try:
         from tools.environments.local_env_policy import (
-            _HERMES_PROVIDER_ENV_BLOCKLIST, _is_hermes_internal_secret)
+            _is_hermes_internal_secret, _is_provider_env_blocklisted)
     except Exception as e:
         logger.warning(
             "env passthrough: provider credential blocklist import failed; "
             "failing closed and refusing passthrough registration for %r: %s", name, e)
         return True
-    return _is_hermes_internal_secret(name) or name in _HERMES_PROVIDER_ENV_BLOCKLIST
+    return _is_hermes_internal_secret(name) or _is_provider_env_blocklisted(name)
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:

@@ -208,3 +208,29 @@ class TestParseVllmTokenBasedOutputCap:
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
 
+
+
+class TestParseAdvertisedCeilingWordings:
+    """Azure and SGLang name the ceiling without any phrase the parser knew (#78405, #83521).
+    Unrecognized, the 400 carried the bare ``max_tokens`` substring (or nothing at all) into
+    the compression path and a fresh session died with "cannot be shrunk further"."""
+
+    @pytest.mark.parametrize("msg, available", [
+        # Azure OpenAI (verbatim from #78405): the advertised completion ceiling IS the budget.
+        ("Error: max_tokens is too large: 65536. This model supports at most 32768 completion tokens.", 32768),
+        # SGLang (verbatim from #83521): window - input; never mentions max_tokens.
+        ("Requested token count exceeds the model's maximum context length of 131072 tokens. You requested "
+         "a total of 132528 tokens: 66992 tokens from the input messages and 65536 tokens for the completion. "
+         "Please reduce the number of tokens in the input messages or the completion to fit within the limit.",
+         64080),
+    ])
+    def test_ceiling_is_parsed_and_classified_as_output_cap(self, msg, available):
+        assert parse_available_output_tokens_from_error(msg) == available
+        assert is_output_cap_error(msg) is True
+
+    def test_sglang_input_alone_over_window_routes_to_compression(self):
+        # Same wording, but the input by itself exceeds the window: shrinking the output cannot help.
+        msg = ("Requested token count exceeds the model's maximum context length of 100000 tokens. You requested "
+               "a total of 150000 tokens: 120000 tokens from the input messages and 30000 tokens for the completion.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False

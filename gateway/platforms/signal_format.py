@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 
 from agent.markdown_tables import is_table_divider, realign_markdown_tables
+from agent.message_sanitization import _sanitize_surrogates
 
 # Signal has no fixed-width client area; this budgets for a phone screen in the app's
 # monospace face. Tables wider than this fall back to realign_markdown_tables()'s
@@ -67,7 +68,14 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     """Convert markdown to plain text + Signal textStyles list. Signal uses ``bodyRanges`` (signal-cli
     ``textStyle`` / ``textStyles`` params) as ``start:length:STYLE`` with positions in UTF-16 code units.
     Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE."""
-    text = _fence_tables(_normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", text).strip()))
+    # Lone UTF-16 surrogates (U+D800-U+DFFF) cannot be UTF-16 encoded, so ``_utf16_len`` below raises
+    # UnicodeEncodeError on the first formatted span and aborts the whole Signal send (#55143). The
+    # ``final_response`` chokepoints guard gateway replies only: the ``send_message`` tool
+    # (tools/send_message_senders.py ``_send_signal``) and the status path both reach this function
+    # with raw model text. U+FFFD is one UTF-16 code unit, so every offset below is unchanged for
+    # surrogate-free text. Reuses agent.message_sanitization._sanitize_surrogates rather than a
+    # second regex.
+    text = _fence_tables(_normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", _sanitize_surrogates(text)).strip()))
     styles: list[tuple[int, int, str]] = []
     while match := _CODE_BLOCK_RE.search(text):
         inner = match.group(1).rstrip("\n")

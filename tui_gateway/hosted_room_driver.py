@@ -614,7 +614,8 @@ class HostedRoomRuntime:
                     # consumer and retains its existing automatic queue retry.
                     if self.publish_terminal is not None and task.get("payload", {}).get("target_member_id"):
                         deferred = state.defer_not_admitted_task(
-                            self.db_path, attempt, reason="member_unavailable", clock=self.clock)
+                            self.db_path, attempt, reason="member_unavailable", clock=self.clock,
+                            retry_binding=getattr(transport, "nonadmission_retry_binding", None))
                     else:
                         deferred = None
                         state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)

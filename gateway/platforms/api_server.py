@@ -1205,12 +1205,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
         self._history_tool_output_max_chars = self._resolve_api_server_int(
             "history_tool_output_max_chars", default=0)
-        # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
+        # Admitted _run_agent() turns, including executor work whose asyncio waiter was cancelled
+        # (/v1/runs tracks its own work via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
         # /v1/runs, /api/sessions/{id}/chat[/stream]). Read from config.yaml
         # gateway.api_server.max_concurrent_runs; 0 disables the cap.
         # Bounds CPU / memory / upstream-LLM-quota exhaustion from a request flood (#7483).
         self._inflight_agent_runs: int = 0
+        self._agent_work_lock = threading.Lock()
         # Every agent inside _run_agent() for shutdown interrupt, keyed by id() (the strong ref
         # keeps the id() from recycling); distinct from the run_id-keyed _active_run_agents.
         self._shutdown_interruptible_agents: Dict[int, Any] = {}
@@ -1224,11 +1226,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
 
     def active_agent_work_count(self) -> int:
-        """All live agent work: pending admissions + in-flight turns + live /v1/runs tasks
-        (task-based, since ``_active_run_agents`` has a queued-before-agent gap)."""
+        """All live agent work: pending requests + queued turns + running threads + /v1/runs
+        tasks (task-based, since ``_active_run_agents`` has a queued-before-agent gap)."""
         try:
+            with self._agent_work_lock:
+                inflight_agent_runs = self._inflight_agent_runs
             return (int(getattr(self, "_pending_agent_requests", 0))
-                    + int(self._inflight_agent_runs)
+                    + int(inflight_agent_runs)
                     + sum(not task.done() for task in self._active_run_tasks.values()))
         except Exception:
             return 0
@@ -3790,7 +3794,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         request_browser_control_principal = _api_request_browser_control_principal.get()
         request_browser_control_transport_family = _api_request_browser_control_transport_family.get()
 
-        def _run():
+        def _run_turn():
             from gateway.session_context import clear_session_vars
             with self._profile_scope(request_profile):
                 tokens = self._bind_api_server_session(
@@ -3887,12 +3891,43 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                             self._bind_declared_conversation(
                                 getattr(agent, "session_id", None) or session_id, gateway_session_key)
                     clear_session_vars(tokens)
+
+        def _run():
+            # The asyncio waiter can be cancelled without stopping this executor thread.
+            # Transfer its queued admission to thread-lifetime accounting before doing work.
+            with self._agent_work_lock:
+                if work_state["phase"] != "queued":
+                    return None
+                work_state["phase"] = "running"
+            try:
+                return _run_turn()
+            finally:
+                with self._agent_work_lock:
+                    work_state["phase"] = "done"
+                    self._inflight_agent_runs -= 1
+
         self._activate_admitted_request()
-        self._inflight_agent_runs += 1
+        work_state = {"phase": "queued"}
+        with self._agent_work_lock:
+            self._inflight_agent_runs += 1
         try:
-            return await loop.run_in_executor(None, _run)
-        finally:
-            self._inflight_agent_runs -= 1
+            future = loop.run_in_executor(None, _run)
+        except BaseException:
+            with self._agent_work_lock:
+                if work_state["phase"] == "queued":
+                    work_state["phase"] = "done"
+                    self._inflight_agent_runs -= 1
+            raise
+
+        def _release_cancelled_admission(_future) -> None:
+            # A cancelled queued future never enters _run(), so it must release its own slot.
+            with self._agent_work_lock:
+                if work_state["phase"] == "queued":
+                    work_state["phase"] = "done"
+                    self._inflight_agent_runs -= 1
+
+        future.add_done_callback(_release_cancelled_admission)
+        return await future
 
     # -- /v1/runs, room grants, room dispatch: thin delegators (real methods: tests assert
     # __dict__ membership and patch the module-level implementations) ---------------------

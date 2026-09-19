@@ -243,7 +243,7 @@ class TestDrainAdmission:
 # Shutdown interrupt coverage (#63529)
 #
 # The drain ACCOUNTS for every API turn (`active_agent_work_count()` sums
-# `_pending_agent_requests` + `_inflight_agent_runs` + live `_active_run_tasks`)
+# pending requests, queued turns, running executor threads and live `/v1/runs` tasks)
 # but `GatewayRunner._interrupt_running_agents()` only walked
 # `self._running_agents`, which no API turn ever enters.  So an API turn held
 # the drain open for the full timeout and was then amputated by
@@ -321,6 +321,71 @@ def _make_async_noop():
 
 
 class TestRunAgentRegistersForShutdownInterrupt:
+    @pytest.mark.asyncio
+    async def test_cancelled_queued_waiter_releases_its_work_count(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        loop = asyncio.get_running_loop()
+        queued = loop.create_future()
+
+        with patch.object(loop, "run_in_executor", return_value=queued):
+            waiter = asyncio.create_task(
+                adapter._run_agent(
+                    user_message="hello",
+                    conversation_history=[],
+                    session_id="s1",
+                )
+            )
+            await asyncio.sleep(0)
+            assert adapter.active_agent_work_count() == 1
+
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            await asyncio.sleep(0)
+
+        assert queued.cancelled() is True
+        assert adapter.active_agent_work_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_keeps_executor_worker_counted_until_exit(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        agent = _parked_agent(loop, started, release)
+        original_run = agent.run_conversation.side_effect
+
+        def _run_and_finish(**kwargs):
+            try:
+                return original_run(**kwargs)
+            finally:
+                finished.set()
+
+        agent.run_conversation.side_effect = _run_and_finish
+
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            waiter = asyncio.create_task(
+                adapter._run_agent(
+                    user_message="hello",
+                    conversation_history=[],
+                    session_id="s1",
+                )
+            )
+            await started.wait()
+            try:
+                assert adapter.active_agent_work_count() == 1
+                waiter.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await waiter
+
+                assert adapter.active_agent_work_count() == 1
+            finally:
+                release.set()
+                assert await asyncio.to_thread(finished.wait, _TURN_UNBLOCK_TIMEOUT)
+
+        assert adapter.active_agent_work_count() == 0
+
     @pytest.mark.asyncio
     async def test_run_agent_registers_and_unregisters_the_agent(self):
         """One registration inside ``_run_agent`` covers all six of its callers.

@@ -4540,6 +4540,20 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
     return str(fallback or "")
 
 
+def _tag_aux_effective_provider(client: Any, provider: str) -> None:
+    """Keep the resolved provider on a wrapper and its request-building client."""
+    if not provider:
+        return
+    for target in (client, getattr(client, "_real_client", None)):
+        if target is None:
+            continue
+        try:
+            setattr(target, "_hermes_aux_effective_provider", provider)
+        except (AttributeError, TypeError):
+            logger.debug("Auxiliary client %s cannot retain effective provider %s",
+                         type(target).__name__, provider)
+
+
 # Centralized Provider Router: resolve_provider_client() is the single entry point for building a configured
 # client (auth, base URL, headers, API format) from (provider, model). Never read auth env vars ad-hoc.
 
@@ -4773,6 +4787,8 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
         )
         client._hermes_aux_effective_provider = "actual"
         return client
+    if isinstance(client_obj, CodexAuxiliaryClient):
+        _tag_aux_effective_provider(client_obj, req.provider)
     needs_codex = not (
         isinstance(client_obj, CodexAuxiliaryClient) or req.raw_codex
     ) and (
@@ -4787,7 +4803,9 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
         logger.debug("resolve_provider_client: wrapping client in CodexAuxiliaryClient "
                      "(api_mode=%s, model=%s, base_url=%s)",
                      req.api_mode or "auto-detected", final_model_str, base_url_str[:60] if base_url_str else "")
-        return CodexAuxiliaryClient(client_obj, final_model_str)
+        client = CodexAuxiliaryClient(client_obj, final_model_str)
+        _tag_aux_effective_provider(client, req.provider)
+        return client
     # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
@@ -4828,13 +4846,9 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
         logger.debug("Dropping OpenRouter-format model %r for non-OpenRouter "
                      "auxiliary provider (using %r instead)", model, resolved)
         model = None
+    _tag_aux_effective_provider(client, effective_provider)
     routed_client, routed_model = _route_client(req, client, model or resolved)
-    if routed_client is not None and effective_provider:
-        try:
-            setattr(routed_client, "_hermes_aux_effective_provider", effective_provider)
-        except (AttributeError, TypeError):
-            logger.debug("Auxiliary client %s cannot retain effective provider %s",
-                         type(routed_client).__name__, effective_provider)
+    _tag_aux_effective_provider(routed_client, effective_provider)
     return routed_client, routed_model
 
 
@@ -5052,6 +5066,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
         client = CodexAuxiliaryClient(client, final_model)
+        _tag_aux_effective_provider(client, provider)
     else:
         client = _wrap_transport(req, client, final_model, custom_base, custom_key)
     return _route_client(req, client, final_model)

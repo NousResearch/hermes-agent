@@ -1,0 +1,16 @@
+name: vk-platform
+repo: https://github.com/web3blind/hermes-vk-platform
+sha: ef16edf55a8bb7b24cc162860cc18e1d9c476527
+version: "0.2.0"
+description: VK Messenger gateway with community Long Poll, media attachments, allowlists, and project-lane routing.
+maintainer: web3blind
+tier: community
+category: platform
+docs_url: https://github.com/web3blind/hermes-vk-platform/blob/ef16edf55a8bb7b24cc162860cc18e1d9c476527/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - VK_GROUP_TOKEN
+    - VK_GROUP_ID

@@ -530,6 +530,8 @@ export const zhHant = defineLocale({
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',
+      skillSuggestionsTitle: '技能建議',
+      skillSuggestionsDesc: '輸入時自動推薦相符的斜線命令，按 Tab 補全，懸停查看技能說明。',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       tipsTitle: '應用程式內提示',
       tipsDesc: '偶爾顯示來自應用程式和 Hermes 的提示，每則提示只出現一次。開始使用滿30天後自動關閉，你可以重新開啟。',
@@ -2430,9 +2432,10 @@ export const zhHant = defineLocale({
     lookupNoMatches: '沒有相符項目。',
     lookupTry: '試試',
     lookupOr: '或',
-    commonCommands: '常用指令',
+    commonCommands: '常用命令',
     hotkeys: '快捷鍵',
     helpFooter: '開啟完整面板 · 退格鍵關閉',
+    ghostShiftTabHint: '按 Shift+Tab 切換',
     commandDescs: {
       '/help': '指令與快捷鍵的完整清單',
       '/clear': '開始新工作階段',
@@ -2499,6 +2502,12 @@ export const zhHant = defineLocale({
     snippetsDesc: '選擇一個起始提示詞放入輸入框。',
     dropFiles: '拖曳檔案以附加',
     dropSession: '拖曳以連結此聊天',
+    skillStripPrefix: '試試輸入：',
+    skillStripDismiss: '不再顯示',
+    onboardingTitle: '歡迎使用 Hermes Desktop',
+    onboardingLine1: '點按這裡開始對話',
+    onboardingLine2: '輸入 / 檢視所有命令 · @ 引用檔案 · /help 看完整手冊',
+    onboardingAck: '知道了',
     snippets: {
       codeReview: {
         label: '程式碼審查',

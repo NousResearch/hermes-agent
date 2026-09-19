@@ -1727,13 +1727,15 @@ def _profile_runtime_scope(
     # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
     # pinned (first-writer-wins backend leak; #68559).
     from tools.terminal_scope import install_and_reset_profile_terminal_scope
+    from tools.write_safe_root_scope import install_and_reset_profile_write_safe_root_scope
 
     with install_and_reset_profile_terminal_scope(Path(profile_home)):
-        try:
-            yield
-        finally:
-            reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+        with install_and_reset_profile_write_safe_root_scope(Path(profile_home)):
+            try:
+                yield
+            finally:
+                reset_secret_scope(secret_token)
+                reset_hermes_home_override(home_token)
 
 
 @_asynccontextmanager

@@ -193,6 +193,7 @@ class _TurnScopes:
     home: Any = None  # per-turn HERMES_HOME override for a resumed remote profile
     secret: Any = None
     terminal: Any = None
+    write_safe_root: Any = None
 
 
 def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
@@ -553,6 +554,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     bound = _profile_runtime_scope_tokens(session.get("profile_home"))
     if bound is not None:
         scopes.home, scopes.secret, scopes.terminal = bound.home, bound.secret, bound.terminal
+        scopes.write_safe_root = bound.write_safe_root
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
@@ -877,6 +879,9 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     if scopes.terminal is not None:
         from tools.terminal_scope import reset_terminal_scope
         reset_terminal_scope(scopes.terminal)
+    if scopes.write_safe_root is not None:
+        from tools.write_safe_root_scope import reset_write_safe_root_scope
+        reset_write_safe_root_scope(scopes.write_safe_root)
     _clear_session_context(scopes.session_tokens)
 
 

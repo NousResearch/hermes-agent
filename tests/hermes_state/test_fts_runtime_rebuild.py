@@ -566,12 +566,15 @@ class TestRuntimeFtsRebuild:
         assert any("corruption survives" in row["snippet"] for row in results)
 
         # A later open atomically rebuilds all canonical rows before triggers
-        # return, then clears the durable breadcrumb.
+        # return, then clears the durable breadcrumb — including the retired
+        # tool high-water marker a pre-projection store may still carry.
+        db.set_meta("fts_tool_full_content_high_water", "1")
         db.close()
         reopened = SessionDB(db_path=db_path)
         try:
             assert reopened._fts_stale is False
             assert _meta_value(db_path, FTS_STALE_KEY) is None
+            assert _meta_value(db_path, "fts_tool_full_content_high_water") is None
             assert _base_fts_triggers(db_path) == set(_FTS_TRIGGERS)
             results = reopened.search_messages("corruption survives")
             assert results

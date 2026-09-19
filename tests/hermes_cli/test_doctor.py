@@ -426,6 +426,11 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
         return real_which(cmd)
 
     monkeypatch.setattr(shutil, "which", fake_which)
+    # The docker check resolves through find_docker() (which also knows the macOS Docker
+    # Desktop paths), so pin it off the host instead of relying on PATH alone.
+    from hermes_cli import doctor_tools
+
+    monkeypatch.setattr(doctor_tools, "find_docker", lambda: None)
 
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
 
@@ -1529,6 +1534,36 @@ class TestDoctorStaleMaxIterationsDrift:
         assert "shadows" not in out
 
 
+class TestDoctorLegacyCustomProvidersResidue:
+    """A legacy ``custom_providers`` list entry without a ``providers:`` twin lives on in the retired list
+    store; doctor must name it and point at the move. Twins (URL modulo trailing slash /
+    case) and non-list values are not this step's business."""
+
+    def _run(self, tmp_path, yaml_text):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml_text, encoding="utf-8")
+        finding = doctor_config.Finding()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_config._drift_legacy_custom_providers(finding, False, cfg)
+        return buf.getvalue(), finding
+
+    def test_orphan_entry_is_flagged_with_repair_instruction(self, tmp_path):
+        out, finding = self._run(tmp_path, (
+            "custom_providers:\n  - name: Local (8283)\n    base_url: http://127.0.0.1:8283/v1\n"
+            "providers:\n  other:\n    api: http://127.0.0.1:8290/v1\n"))
+        assert "Legacy custom_providers entry 'Local (8283)' has no providers: twin" in out
+        assert finding.manual_issues and "providers.<key>.api: http://127.0.0.1:8283/v1" in finding.manual_issues[0]
+        assert finding.fixed == 0 and finding.issues == []  # warn-only: no --fix rewrite of config.yaml
+
+    def test_twin_and_scalar_are_silent(self, tmp_path):
+        out, finding = self._run(tmp_path, (
+            "custom_providers:\n  - name: Local\n    base_url: http://127.0.0.1:8283/V1/\n"
+            "providers:\n  local:\n    api: http://127.0.0.1:8283/v1\n"))
+        assert out == "" and finding.manual_issues == []
+        out, finding = self._run(tmp_path, "custom_providers: oops\n")
+        assert out == "" and finding.manual_issues == []
+
 
 
 class TestDoctorDeprecatedConfigAndEnv:
@@ -1793,10 +1828,10 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     from hermes_cli import doctor_tools
 
     calls: list = []
-    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(doctor_tools, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(doctor_tools, "_run_ok", lambda cmd, timeout, **kw: calls.append(cmd) or True)
     monkeypatch.setattr(doctor_tools, "_require", lambda *a, **k: None)
 
     doctor_tools._check_docker_backend("docker", False, [])
 
-    assert calls and calls[0][:2] == ["docker", "version"]
+    assert calls == [["/usr/bin/docker", "version"]]

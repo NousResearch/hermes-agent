@@ -21,7 +21,7 @@ Create, read, edit, template, and review Word .docx files.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `word`, `docx`, `documents`, `office`, `templates`, `revisions`, `comments` |
-| Related skills | [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`xlsx`](/docs/user-guide/skills/bundled/productivity/productivity-xlsx), [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) |
+| Related skills | [`pdf`](./productivity-pdf.md), [`xlsx`](./productivity-xlsx.md), [`powerpoint`](./productivity-powerpoint.md) |
 
 ## Reference: full SKILL.md
 

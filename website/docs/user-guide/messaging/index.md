@@ -8,10 +8,10 @@ description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, 
 
 Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
-For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
+For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](../features/voice-mode.md) and [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md).
 
 :::tip
-Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/integrations/nous-portal) subscription bundles all of them.
+Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](../../integrations/nous-portal.md) subscription bundles all of them.
 :::
 
 ## Messaging status in Desktop and the dashboard
@@ -64,7 +64,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
 :::note Hermes Relay
-[Hermes Relay](/user-guide/messaging/relay) (experimental) is not a chat platform itself — it is a connector system that fronts platforms like Discord, Telegram, Slack, and WhatsApp through an external connector that owns the platform credentials. Capabilities (media, native approval/clarify prompts, reactions, threads, typing, streaming) are negotiated per connector at handshake rather than fixed in the table above.
+[Hermes Relay](./relay.md) (experimental) is not a chat platform itself — it is a connector system that fronts platforms like Discord, Telegram, Slack, and WhatsApp through an external connector that owns the platform credentials. Capabilities (media, native approval/clarify prompts, reactions, threads, typing, streaming) are negotiated per connector at handshake rather than fixed in the table above.
 :::
 
 ## Architecture
@@ -140,6 +140,7 @@ Supported tokens:
 - `SILENT`
 - `NO_REPLY`
 - `NO REPLY`
+- `[静默]` / `静默` and `[沉默]` / `沉默` — the Chinese renderings a model produces when it translates the sentinel instead of emitting it literally
 
 Whitespace and case are normalized, but the whole final response must be the token. A sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
 
@@ -175,6 +176,35 @@ hermes gateway stop         # Stop the default service
 hermes gateway status       # Check default service status
 hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
+
+### Stack dump on demand (`SIGUSR2`)
+
+On Linux and macOS, `kill -USR2 <gateway pid>` appends a dump of every thread's
+stack to `~/.hermes/logs/gateway_faulthandler.log` and the gateway keeps
+running — use it to see what a stalled or misbehaving gateway is doing without
+restarting it.
+
+### Built-in event-loop liveness watchdog
+
+On every platform the gateway runs an out-of-loop watchdog thread that probes
+the asyncio loop (`gateway.loop_watchdog_probe_interval_s`, default 30 s). When
+the loop stops dispatching for `gateway.loop_watchdog_max_strikes` consecutive
+probes (default 3), housekeeping, the cron scheduler and the embedded kanban
+dispatcher have all frozen with it, so the watchdog dumps every thread's stack
+to the log, stamps `gateway_state.json` with `gateway_state: degraded` and
+`exit_reason: loop_liveness_watchdog`, and exits with code `75` so the service
+supervisor restarts the process. `hermes gateway status` renders that record as
+`⚠ Gateway exited degraded: event loop stopped dispatching …` until a new
+gateway process overwrites it, and the dashboard's gateway badge shows
+**Degraded** with the same reason. Set `gateway.loop_watchdog: false` in
+`config.yaml` to disable the watchdog.
+
+Housekeeping also re-stamps `gateway_state.json`'s `updated_at` every tick
+(60 s), so it doubles as a heartbeat: when the process is still alive but that
+stamp is more than 120 s old, `hermes gateway status` prints
+`⚠ Gateway heartbeat stale: housekeeping has not refreshed gateway_state.json
+for N s …` and the dashboard badge reads **Heartbeat stale** — the "looks
+running but nothing is scheduled" case. Restart the gateway.
 
 ### Optional Linux event-loop watchdog
 
@@ -266,6 +296,10 @@ Semantics are honest at-least-once:
   attempt or re-running the agent. Retries retain the original bot profile, chat
   and thread. A rate-limit recovery prefix warns that earlier chunks may already
   have arrived; the ledger cannot infer partial delivery from message length.
+- Any other rejected final send (a platform 5xx, an unclassified error) is retried the same
+  way after a growing backoff (30 s, then 2 min); the last budgeted attempt is left for the
+  next gateway start, so an outage that outlasts the timer never strands the reply. A
+  permanently unreachable chat (blocked bot, deleted group) is not retried.
 - Redelivery is bounded: 3 attempts, 24-hour freshness, then the row is
   abandoned. Delivered rows are pruned after 7 days.
 
@@ -382,7 +416,7 @@ gateway:
 
 #### Inspecting your access
 
-Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](/user-guide/messaging/telegram#slash-command-access-control) and [Discord](/user-guide/messaging/discord#slash-command-access-control) pages for platform-specific examples.
+Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](./telegram.md#slash-command-access-control) and [Discord](./discord.md#slash-command-access-control) pages for platform-specific examples.
 
 ## Redirecting the Agent
 
@@ -397,7 +431,7 @@ Send a message while the agent is working to correct the active turn:
 
 By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately). Two other modes are available:
 
-- `queue` — follow-up messages wait and run as the next turn after the current task finishes.
+- `queue` — follow-up messages wait and run as the next turn after the current task finishes. Each follow-up (text, voice note, video, document) gets its own turn in arrival order; only a rapid photo burst is merged into one album turn.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
 
 Gateway steers (including explicit `/steer`) and active-turn redirects carry the requesting event's available platform, chat, thread, sender, message, profile, and scope identifiers as per-message JSON context. With `privacy.redact_pii: true`, identifiers in this model-visible context are hashed on supported platforms, including alternate and parent identifiers; the original event identifiers remain internal for routing. Otherwise identifiers are preserved exactly. Neither mode changes the session's system prompt or chooses a fallback reply destination. The context is routing data, not authorization or a guarantee of automatic delivery.
@@ -530,6 +564,8 @@ You can also set this via environment variable:
 HERMES_BACKGROUND_NOTIFICATIONS=result
 ```
 
+With `terminal(background=true, notify_on_complete=true)` the finished process starts a new agent turn and the agent reports the result itself, so no separate status line is sent. The exception is a process that finishes while the turn that launched it is still running: the completion is queued as the agent's next turn and you get the one-line `concise` status right away (unless the mode is `off`, or `error` with a zero exit code), instead of silence until that turn ends.
+
 ### Use Cases
 
 - **Server monitoring** — "/bg Check the health of all services and alert me if anything is down"
@@ -587,6 +623,10 @@ hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed he
 
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
+:::note Inside a container, only the system scope is offered
+`hermes gateway install` (and the `hermes gateway setup` wizard) refuse to install a **user** service when Hermes detects it is running inside a container. A user unit lands in `~/.config/systemd/user`, and when that home is bind-mounted from the host (podman/distrobox), the host's own `systemd --user` enables and starts the same unit — a second gateway polling the same bot token. Run the gateway as the container's main process (`hermes gateway run`, with a container restart policy), or in a systemd container (systemd as PID 1) install the isolated system scope: `sudo hermes gateway install --system --run-as-user <user>`.
+:::
+
 :::info Multiple installations
 If you run multiple Hermes installations on the same machine (with different `HERMES_HOME` directories), each gets its own systemd service name. The default `~/.hermes` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `hermes gateway` commands automatically target the correct service for your current `HERMES_HOME`.
 :::
@@ -614,6 +654,30 @@ launchd plists are static — if you install new tools (e.g. a new Node.js versi
 :::info Multiple installations
 Like the Linux systemd service, each `HERMES_HOME` directory gets its own launchd label. The default `~/.hermes` uses `ai.hermes.gateway`; other installations use `ai.hermes.gateway-<suffix>`.
 :::
+
+### Windows (Task Scheduler)
+
+```powershell
+hermes gateway install               # Register the Hermes_Gateway Scheduled Task (runs at logon)
+hermes gateway start                 # Start the gateway hidden, without a console window
+hermes gateway stop                  # Drain and stop the service
+hermes gateway status                # Check status, including registration drift
+```
+
+The Scheduled Task runs `wscript.exe` on a generated `.vbs` launcher under `%USERPROFILE%\.hermes\gateway-service\`. The launcher starts `python.exe -m hermes_cli.main gateway run` with a hidden window and **exits immediately** — by design: `wscript.exe` has no console, so at logon it never receives the `CTRL_CLOSE_EVENT` that kills a `cmd.exe`-hosted gateway, and the gateway inherits one hidden console instead of every subprocess flashing its own (see `hermes_cli/gateway_windows.py::_build_gateway_vbs_script`).
+
+:::warning RestartOnFailure covers the launcher, not the gateway
+Because the launcher returns as soon as the gateway is spawned, Task Scheduler only ever sees the launcher's exit code. The `<RestartOnFailure>` policy in the registered task therefore fires only when `wscript.exe` itself fails to start the gateway — it does **not** restart a gateway that crashes or is killed later. Gateway auto-restart on Windows relies on the gateway's own in-process restart path (`/restart`, updates, and the `hermes gateway restart` command); a gateway killed from outside stays down until `hermes gateway start` or `schtasks /Run /TN <task>`.
+:::
+
+`hermes gateway install` writes the task from the current template; a task registered by an older build would otherwise keep its old settings (no `RestartOnFailure`, no logon `Delay`, an older launcher command line) indefinitely. `hermes gateway status` compares the registered task with the current template and warns when it predates it:
+
+```
+⚠ Scheduled Task registration predates the current template (missing: RestartOnFailure, LogonTrigger Delay; version 1.3 vs 1.4)
+  Repair: hermes gateway start  (or: hermes gateway install)
+```
+
+`hermes gateway start` and `hermes update` run the same comparison and re-register a drifted task from the current template automatically (like the systemd unit refresh on Linux); when `schtasks` refuses without elevation, re-run `hermes gateway install`, which can request administrator approval. The check is silent when the task cannot be queried, and it only inspects a few settings Hermes owns (task version, `RestartOnFailure`, the logon trigger delay and the launcher arguments), so deliberate local edits elsewhere in the task are not flagged.
 
 ## Platform-Specific Toolsets
 
@@ -796,6 +860,52 @@ display:
       interim_assistant_messages: false
       long_running_notifications: false
 ```
+
+### Warning and error notifications (opt-in suppression)
+
+Automatic warning and error notifications are shown by default. To suppress
+these notifications, enable `suppress_warning_notifications` globally or for
+an individual surface:
+
+```yaml
+display:
+  suppress_warning_notifications: true
+  platforms:
+    telegram:
+      suppress_warning_notifications: false
+```
+
+This example suppresses notifications globally while keeping them visible on
+Telegram. Omit the setting or use `false` to preserve normal delivery. Platform
+overrides take precedence; `null` inherits. Invalid values do not enable
+suppression.
+
+The setting controls automatic engine warnings, retry/fallback diagnostics,
+watchdog and database notices, cron failure notifications, Kanban failure
+notifications, background/delegation diagnostics, and adapter-generated error
+notices. It applies to messaging platforms, CLI/TUI presentation and API
+notification presentation. Classification belongs to the producer: warning-like
+text in a user request or an ordinary result is not filtered by its wording.
+
+Suppression changes presentation, not execution. Existing logs, stored diagnostic
+content, retry decisions, failure state, scheduler bookkeeping and notification
+cursors remain available. A diagnostic-only internal wake (a subagent or credit
+failure, a Kanban crash notice) still runs its agent turn — so the agent can act on
+the failure and the session history stays consistent — and that turn is billed as
+usual; only its unsolicited text, media and streaming presentation are muted. Structured
+approval and clarification controls, direct command/API outcomes and requested
+results are not converted into success or discarded. API failure flags, status
+codes and usage remain truthful even when diagnostic text is hidden.
+
+Cron `failure_deliver` still selects the destination; the destination's warning
+policy determines whether an automatic failure notice is presented there.
+Suppressed deliveries are settled without claiming a successful send. Already
+admitted deliveries retain their delivery identity and outcome.
+
+Policy is resolved for the owning profile and logical destination. Agent turns
+use their turn policy; independent notifications and deferred deliveries evaluate
+policy at their own delivery boundary. Already delivered messages are not removed.
+Suppression does not fix an underlying failure or add another logging destination.
 
 ### Progress bubble cleanup (opt-in)
 

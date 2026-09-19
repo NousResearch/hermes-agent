@@ -51,25 +51,74 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-@contextlib.contextmanager
-def _session_profile_runtime_scope(session: dict):
-    """Bind model resolution to the session's profile config and secrets."""
-    profile_home = session.get("profile_home")
-    if not profile_home:
-        yield
-        return
-    home_token = set_hermes_home_override(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
+    """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
+    return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
+    the launch env (live while single-profile, frozen at activation afterwards; never live
+    ``os.environ`` once a secondary context may have written to it, #107422) — so the credential
+    source is fixed at entry and an in-flight launch body survives a concurrent first-secondary
+    activation instead of hitting ``UnscopedSecretError`` mid-request. Its terminal policy is bound
+    only once multiplexing is active: single-profile terminal execution keeps the standalone
+    ``os.environ`` bridge."""
+    from agent.secret_scope import is_multiplex_active
+    scopes = _TurnScopes()
+    if profile_home:
+        home = Path(profile_home)
+        # External sources first: the requested profile may never have been served in this process.
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        hydrate_profile_secret_sources(home)
+        secrets = build_profile_secret_scope(home)
+        overlay = None
+        scopes.home = set_hermes_home_override(str(home))
+    else:
+        # No home override: the launch home IS get_hermes_home() (``_profile_home`` answers None for
+        # "already the launch profile"); only its secrets (+ terminal policy under multiplex) need binding.
+        from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
+        home = Path(_hermes_home)
+        secrets = launch_secret_scope(home)
+        scopes.secret = set_secret_scope(secrets)
+        if not is_multiplex_active():
+            return scopes
+        overlay = launch_terminal_env()
+    if scopes.secret is None:
+        scopes.secret = set_secret_scope(secrets)
     # Same terminal policy the gateway binds per turn: a docker-configured profile
     # must never resolve the launch process's pinned env. Failure → refusal scope.
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
-    terminal_token = install_profile_terminal_scope(Path(profile_home))
+    from tools.terminal_scope import install_profile_terminal_scope
+    scopes.terminal = install_profile_terminal_scope(home, env_overlay=overlay)
+    return scopes
+
+
+def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
+    """Release terminal → secret → home. Each reset is independent: a failing terminal reset must
+    not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
+    context (a fail-open scope leak on the teardown path). The first failure is re-raised after
+    every scope has been released."""
+    if scopes is None:
+        return
+    from tools.terminal_scope import reset_terminal_scope
+    first_error: BaseException | None = None
+    for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, reset_secret_scope),
+                         (scopes.home, reset_hermes_home_override)):
+        if token is None:
+            continue
+        try:
+            reset(token)
+        except Exception as exc:  # noqa: BLE001 — keep releasing the remaining scopes
+            first_error = first_error or exc
+    if first_error is not None:
+        raise first_error
+
+
+@contextlib.contextmanager
+def _session_profile_runtime_scope(session: dict):
+    """Bind model resolution to the session's profile config and secrets (launch profile included
+    once the process multiplexes; see ``_profile_runtime_scope_tokens``)."""
+    scopes = _profile_runtime_scope_tokens(session.get("profile_home"))
     try:
         yield
     finally:
-        reset_terminal_scope(terminal_token)
-        reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+        _release_profile_runtime_scope_tokens(scopes)
 
 
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:
@@ -128,7 +177,7 @@ def _current_model_runtime(agent, explicit_provider: str) -> tuple:
     if explicit_provider:
         return explicit_provider.strip(), current_model, "", ""
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    runtime = resolve_runtime_provider(requested=None)
+    runtime = resolve_runtime_provider(requested=None, target_model=current_model or None)
     # Keep a callable api_key (Azure Entra bearer) unchanged: ``str()`` would
     # yield "<function ...>" and poison switch_model validation.
     key = runtime.get("api_key", "")
@@ -341,7 +390,11 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
             persist_override=False)
     except Exception as e:
-        _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"})
+        logger.warning("Configured model %s could not be adopted for session %s: %s", model, sid, e)
+        from gateway.warning_notifications import render_notification
+        render_notification(
+            lambda: _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"}),
+            platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
 
 
 def _pending_switch_selection_warning(model: str, provider: str) -> str | None:

@@ -101,6 +101,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Refuse Docker sandboxes when egress is enabled but not configured/running",
         "category": "security",
     },
+    "auth.adopt_external_logins": {
+        "type": "boolean",
+        "description": (
+            "Borrow and refresh the Codex CLI / Claude Code logins when Hermes has no usable login of its own. "
+            "Off: Hermes uses only its own logins (`hermes auth add <provider>`)."
+        ),
+        "category": "security",
+    },
     "tts.provider": _select(
         "Text-to-speech provider",
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
@@ -196,6 +204,8 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "runtime": "agent",
     "session": "general",
     "nous": "agent",
+    "connections": "agent",
+    "auth": "security",
 }
 
 
@@ -652,17 +662,31 @@ def _cron_model_impact(cfg: dict, provider: str, model: str) -> Any:
         return build_cron_model_impact(config=cfg, jobs={})
 
 
-def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str) -> dict:
-    from hermes_cli.config import save_config
+def _provider_entry(cfg: dict, provider: str) -> Any:
+    providers_cfg = cfg.get("providers")
+    return providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+
+
+def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str, api_key: str) -> "tuple[str, ModelSwitchResult]":
+    """Validation half of a main-slot assignment: ``(effective base_url, switch result)``.
+    ``switch_model`` fetches catalogs / probes endpoints, so callers run this BEFORE taking
+    ``_CONFIG_MUTATION_LOCK``; it writes nothing."""
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model required for main")
     provider, model = _normalize_main_model_assignment(provider, model)
-    providers_cfg = cfg.get("providers")
-    provider_entry = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+    provider_entry = _provider_entry(cfg, provider)
     if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
         base_url = str(provider_entry.get("base_url") or "").strip()
-    result = _validated_main_model_selection(cfg, provider, model, base_url, api_key)
+    return base_url, _validated_main_model_selection(cfg, provider, model, base_url, api_key)
+
+
+def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
+                                prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
+    from hermes_cli.config import save_config
+    from hermes_cli.free_tier_bootstrap import reconcile_record
+    base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
+    provider_entry = _provider_entry(cfg, provider)
     model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
     _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
@@ -672,6 +696,8 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     save_config(cfg)
     if new_provider in {"custom", "local"} and base_url:
         _register_custom_endpoint(base_url, api_key, model)
+    # The serve process's boot record may still say "nothing configured"; the chat gates on it.
+    reconcile_record()
 
     return {
         "ok": True,
@@ -772,17 +798,18 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
 
 def _apply_model_assignment_sync(
     scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = "",
-    reasoning_effort: Optional[str] = _UNSET,
+    reasoning_effort: Optional[str] = _UNSET, prepared: "Optional[tuple[str, ModelSwitchResult]]" = None,
 ):
     """Synchronous body of POST /api/model/set.
 
     Runs inside ``_profile_scope`` (worker thread) so every load_config/save_config lands in
-    the requested profile. Raises HTTPException for validation errors.
+    the requested profile. Raises HTTPException for validation errors. ``prepared`` is a
+    ``_prepare_main_assignment`` result computed outside the config lock.
     """
     from hermes_cli.config import load_config
     cfg = load_config()
     if scope == "main":
-        return _apply_main_assignment_sync(cfg, provider, model, base_url, api_key)
+        return _apply_main_assignment_sync(cfg, provider, model, base_url, api_key, prepared)
     return _apply_aux_assignment_sync(cfg, provider, model, task, base_url, api_key, reasoning_effort)
 
 

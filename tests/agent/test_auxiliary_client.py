@@ -724,6 +724,42 @@ class TestBuildCodexClient:
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
 
+    def test_profile_codex_base_url_overrides_pool_endpoint(self, monkeypatch):
+        """Auxiliary Codex calls use the same profile endpoint override as the main client."""
+        entry = SimpleNamespace(
+            runtime_api_key="codex-pool-token",
+            runtime_base_url="https://chatgpt.com/backend-api/codex",
+        )
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, entry)),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _build_codex_client
+
+            client, model = _build_codex_client("gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://127.0.0.1:8787/v1"
+
+    def test_profile_codex_base_url_applies_to_raw_codex_client(self, monkeypatch):
+        """The main agent's raw Codex client honours the same endpoint override."""
+        with (
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("openai-codex", "gpt-5.4", raw_codex=True)
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://127.0.0.1:8787/v1"
+
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""
         from agent.auxiliary_client import _build_codex_client
@@ -1798,11 +1834,12 @@ class TestStaleFallbackCandidateSkip:
             )
 
         assert result.choices[0].message.content == "openrouter-serves"
+        # The chain was walked a second time after the stale candidate was quarantined.
         assert mock_fb.call_count == 2
-        assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
-        mock_mark.assert_called_once_with(
-            "anthropic", base_url="https://api.anthropic.com",
-        )
+        assert mock_mark.call_count == 1
+        assert mock_mark.call_args.args[0] == "anthropic"
+        assert mock_mark.call_args.kwargs["base_url"] == "https://api.anthropic.com"
+        assert mock_mark.call_args.kwargs["reason"] == "stale fallback credential"
         assert stale_fb.chat.completions.create.call_count == 1
         assert healthy_fb.chat.completions.create.call_count == 1
 
@@ -2463,6 +2500,117 @@ class TestStaleBaseUrlWarning:
 
 
 class TestAuxiliaryTaskExtraBody:
+    def test_disabled_caller_reasoning_suppresses_task_reasoning_for_profile_wire(self, monkeypatch):
+        """A profile-owned ``reasoning_effort=none`` must not ship with task reasoning."""
+        import agent.auxiliary_client as aux
+
+        projection = aux._ProfileProjection({}, {}, {"reasoning_effort": "none"}, True)
+        monkeypatch.setattr(aux, "_project_provider_profile", lambda *_args: projection)
+        monkeypatch.setattr(
+            aux,
+            "_get_auxiliary_task_config",
+            lambda _task: {"reasoning_effort": "low", "extra_body": {"metadata": {"task": "title"}}},
+        )
+
+        kwargs = aux._build_call_kwargs(
+            provider="custom",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=aux._get_task_extra_body("title_generation"),
+            reasoning_config={"enabled": False},
+            task="title_generation",
+        )
+
+        assert kwargs["reasoning_effort"] == "none"
+        assert "reasoning" not in kwargs["extra_body"]
+        assert kwargs["extra_body"]["metadata"] == {"task": "title"}
+
+    def test_disabled_caller_reasoning_keeps_profile_owned_disable_shape(self, monkeypatch):
+        """Control: a profile whose disabled shape IS ``extra_body.reasoning`` (OpenRouter) keeps it —
+        the caller's thinking-off replaces the task effort, it never deletes the profile's own field."""
+        import agent.auxiliary_client as aux
+
+        projection = aux._ProfileProjection({}, {"reasoning": {"enabled": False}}, {}, True)
+        monkeypatch.setattr(aux, "_project_provider_profile", lambda *_args: projection)
+        monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda _task: {"reasoning_effort": "low"})
+
+        kwargs = aux._build_call_kwargs(
+            provider="openrouter",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=aux._get_task_extra_body("title_generation"),
+            reasoning_config={"enabled": False},
+            task="title_generation",
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+        assert "reasoning_effort" not in kwargs
+
+    @pytest.mark.parametrize("task", ["session_search", "moa_reference", "moa_aggregator"])
+    def test_generic_reasoning_fallback_clamps_ultra_for_auxiliary_and_moa_calls(self, task, monkeypatch):
+        """The OpenAI-compatible fallback must never put Hermes-only ``ultra`` on the wire."""
+        from agent.auxiliary_client import _ProfileProjection, _build_call_kwargs
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._project_provider_profile",
+            lambda *_args: _ProfileProjection({}, {}, {}, False),
+        )
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            task=task,
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
+
+    def test_task_extra_body_reasoning_effort_ultra_is_clamped(self, monkeypatch):
+        """``auxiliary.<task>.reasoning_effort: ultra`` folds into ``extra_body.reasoning`` (the path
+        compression/title/vision/... use, with no reasoning_config) and must take the same clamp."""
+        import agent.auxiliary_client as aux
+        from agent.auxiliary_client import _build_call_kwargs, _get_task_extra_body
+
+        monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: {"reasoning_effort": "ultra"})
+        monkeypatch.setattr(aux, "_project_provider_profile", lambda *_args: aux._ProfileProjection({}, {}, {}, False))
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=_get_task_extra_body("session_search"),
+            reasoning_config=None,
+            task="session_search",
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
+
+    def test_profile_projection_receives_wire_clamped_effort(self, monkeypatch):
+        """Profiles clamp only against their own narrower sets (or a catalog that may be cold), so
+        ``ultra`` must already be a wire level when the projection sees it — the MoA aggregator on
+        an OpenRouter/Nous slot 400'd otherwise (#112010)."""
+        import agent.auxiliary_client as aux
+
+        seen = {}
+        real = aux._project_provider_profile
+
+        def spy(provider, provider_norm, model, effective_base, reasoning_config):
+            seen["config"] = reasoning_config
+            return real(provider, provider_norm, model, effective_base, reasoning_config)
+
+        monkeypatch.setattr(aux, "_project_provider_profile", spy)
+        kwargs = aux._build_call_kwargs(
+            provider="openrouter",
+            model="deepseek/deepseek-v4.1-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            task="moa_aggregator",
+        )
+
+        assert seen["config"] == {"enabled": True, "effort": "max"}
+        assert "ultra" not in json.dumps(kwargs.get("extra_body")) and kwargs.get("reasoning_effort") != "ultra"
+
     def test_sync_call_merges_task_extra_body_from_config(self):
         client = MagicMock()
         client.base_url = "https://api.example.com/v1"
@@ -2631,6 +2779,17 @@ class TestAuxiliaryTaskExtraBody:
         assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Should NOT warn when provider is 'custom'"
 
+    def test_bare_custom_auth_error_does_not_fall_back_to_env_base_url(self, monkeypatch):
+        """Bare 'custom' with nothing configured: the main resolver raises AuthError; aux must
+        return no endpoint rather than route to a stale env OPENAI_BASE_URL with a placeholder key."""
+        from hermes_cli.auth import AuthError
+        from agent.auxiliary_client import _resolve_custom_runtime
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://old-proxy.example/v1")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=AuthError("no creds", provider="custom", code="missing_api_key")):
+            assert _resolve_custom_runtime() == (None, None, None)
+
 
 
 # ---------------------------------------------------------------------------
@@ -2750,7 +2909,8 @@ class TestAuxiliaryAuthRefreshRetry:
 
     def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
         stale_client = MagicMock()
-        cache_key = ("anthropic", False, None, None, None)
+        from agent.auxiliary_client import _client_cache_key
+        cache_key = _client_cache_key("anthropic", async_mode=False)
 
         monkeypatch.setenv("ANTHROPIC_TOKEN", "")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
@@ -2776,10 +2936,13 @@ class TestAuxiliaryAuthRefreshRetry:
             from agent.auxiliary_client import _refresh_provider_credentials
 
             assert _refresh_provider_credentials("anthropic", failed_api_key="expired-token") is True
+            import agent.auxiliary_client as aux
+            assert cache_key not in aux._client_cache  # evicted, not closed (in-flight users)
 
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
-        mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
-        stale_client.close.assert_called_once()
+        mock_write.assert_called_once_with(
+            "fresh-token", "refresh-token-2", 9999999999999, spent_refresh_token="refresh-token")
+        stale_client.close.assert_not_called()
 
     def test_refresh_provider_credentials_remints_vertex_token_and_evicts_cache(self):
         """Vertex tokens live ~1h; on a long-running gateway the cached
@@ -2791,7 +2954,8 @@ class TestAuxiliaryAuthRefreshRetry:
         through to the final `return False` and the stale client (and its
         dead token) stayed cached until process restart."""
         stale_client = MagicMock()
-        cache_key = ("vertex", False, None, None, None)
+        from agent.auxiliary_client import _client_cache_key
+        cache_key = _client_cache_key("vertex", async_mode=False)
 
         with (
             patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "google/gemini-3-flash-preview", None)}),
@@ -2803,9 +2967,11 @@ class TestAuxiliaryAuthRefreshRetry:
             from agent.auxiliary_client import _refresh_provider_credentials
 
             assert _refresh_provider_credentials("vertex") is True
+            import agent.auxiliary_client as aux
+            assert cache_key not in aux._client_cache  # evicted, not closed (in-flight users)
 
         mock_get_config.assert_called_once()
-        stale_client.close.assert_called_once()
+        stale_client.close.assert_not_called()
 
     def test_refresh_provider_credentials_vertex_returns_false_when_unminted(self):
         """No usable token/base_url (e.g. ADC and the service-account file
@@ -3827,6 +3993,81 @@ class TestCodexAuxiliaryAdapterCompletedResponse:
         assert response.usage.prompt_tokens == 11
         assert response.usage.completion_tokens == 3
         assert response.usage.total_tokens == 14
+
+
+class TestCodexAuxiliaryAdapterReservedToolAliases:
+    """The aux adapter emits the same tool schemas as the main Responses transport: shared
+    converter (``strict: False``) plus provider-reserved-name aliasing (OpenCode, Perplexity),
+    reversed on the parsed tool_calls before Hermes dispatch (#114260)."""
+
+    _TOOLS = [
+        {"type": "function", "function": {"name": name, "description": name,
+                                          "parameters": {"type": "object", "properties": {}}}}
+        for name in ("web_search", "search_files", "people_search", "read_file", "tool_search")
+    ]
+    _HISTORY = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "find it"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "search_files", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+    ]
+
+    @pytest.mark.parametrize("base_url, aliased", [
+        ("https://api.perplexity.ai/v1", {"web_search", "search_files", "people_search"}),
+        ("https://opencode.ai/zen/v1", {"web_search", "search_files"}),
+        # xAI (client web-search mode): Grok's native ``web_search`` and ``tool_search`` collide.
+        ("https://api.x.ai/v1", {"web_search", "tool_search"}),
+        ("https://api.perplexity.ai.evil.com/v1", set()),
+        ("https://example.com/v1", set()),
+    ])
+    def test_wire_tools_match_main_transport_aliases_and_strict(self, base_url, aliased, monkeypatch):
+        from agent.codex_responses_adapter import classify_responses_route
+        from agent.transports.codex import ResponsesApiTransport
+
+        # Deterministic xAI branch: a non-xAI web backend keeps client dispatch under ``hermes_web_search``.
+        monkeypatch.setattr("agent.transports.codex._xai_prefers_native_web_search", lambda: False)
+        adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url=base_url), "m")
+        resp_kwargs, _, _ = adapter._build_responses_kwargs(
+            {"model": "m", "messages": self._HISTORY, "tools": self._TOOLS}
+        )
+        # The main loop hands build_kwargs the route flags it classified from provider + base_url.
+        route = classify_responses_route(SimpleNamespace(provider="custom", base_url=base_url))
+        main_kwargs = ResponsesApiTransport().build_kwargs(
+            "m", self._HISTORY, self._TOOLS, provider="custom", base_url=base_url, **route._asdict()
+        )
+        assert resp_kwargs["tools"] == main_kwargs["tools"]
+        assert all(t["strict"] is False for t in resp_kwargs["tools"])
+        assert {t["name"] for t in resp_kwargs["tools"]} == {
+            f"hermes_{n}" if n in aliased else n
+            for n in ("web_search", "search_files", "people_search", "read_file", "tool_search")
+        }
+        # Replayed history names the tool the way this request declares it; the alias map rides on the payload.
+        history_names = [i["name"] for i in resp_kwargs["input"] if i.get("type") == "function_call"]
+        assert history_names == ["hermes_search_files" if "search_files" in aliased else "search_files"]
+        assert resp_kwargs.get("_wire_aliases", {}) == {f"hermes_{n}": n for n in aliased}
+
+    def test_create_maps_aliases_back_and_never_sends_alias_map(self):
+        sent = {}
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                sent.update(kwargs)
+                return SimpleNamespace(
+                    status="completed", id="resp_1", usage=None,
+                    output=[SimpleNamespace(type="function_call", call_id="c9", id="fc_9",
+                                            name="hermes_search_files", arguments='{"pattern": "x"}')],
+                )
+
+        adapter = _CodexCompletionsAdapter(
+            SimpleNamespace(base_url="https://api.perplexity.ai/v1", responses=FakeResponses()), "m"
+        )
+        response = adapter.create(messages=[{"role": "user", "content": "find it"}], tools=self._TOOLS)
+
+        wire_tools = sent.get("tools") or sent.get("extra_body", {}).get("tools")  # SDK transform bypass moves bulk fields
+        assert "_wire_aliases" not in sent and "_wire_aliases" not in sent.get("extra_body", {})
+        assert "hermes_search_files" in {t["name"] for t in wire_tools}
+        assert [tc.function.name for tc in response.choices[0].message.tool_calls] == ["search_files"]
 
 
 # ---------------------------------------------------------------------------

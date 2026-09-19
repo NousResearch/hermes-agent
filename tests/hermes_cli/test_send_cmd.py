@@ -64,19 +64,122 @@ def fake_tool(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def whatsapp_bridge(monkeypatch):
+    """Route ``hermes send --to whatsapp:...`` through the real plugin standalone sender into a fake
+    bridge; returns the recorded ``(path, payload)`` posts and a mutable ``supports_mentions`` flag."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import aiohttp
+
+    from gateway.config import Platform
+    from hermes_cli.plugins import discover_plugins
+
+    calls = []
+    state = {"supports_mentions": True}
+
+    class BridgeResponse:
+        status = 200
+
+        def __init__(self, *, health=False):
+            self.health = health
+
+        async def json(self):
+            if self.health:
+                return {"capabilities": {"outboundMentions": state["supports_mentions"]}}
+            return {"messageId": f"m{len(calls)}"}
+
+        async def text(self):
+            return ""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class BridgeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def get(self, url, *, timeout):
+            return BridgeResponse(health=True)
+
+        def post(self, url, *, json, timeout):
+            calls.append((url.rsplit("/", 1)[-1], json))
+            return BridgeResponse()
+
+    discover_plugins()
+    config = SimpleNamespace(
+        platforms={Platform.WHATSAPP: SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000})},
+        get_home_channel=lambda _platform: None,
+    )
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
+    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args: False)
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
+    return SimpleNamespace(calls=calls, state=state)
 
 
+_GROUP = "whatsapp:120363000000000000@g.us"
 
 
+@pytest.mark.parametrize("argv", [
+    ["--to", "telegram", "--mention", "15550000001", "hello"],
+    ["--to", _GROUP, "--mention", "not-a-phone", "hello"],
+    ["--to", _GROUP, "--mention", "\u0661\u0665\u0665\u0665\u0660\u0660\u0660\u0660\u0660\u0660\u0661", "hello"],
+    ["--to", _GROUP, "--mention", "\u0661\u0665\u0665\u0665\u0660\u0660\u0660\u0660\u0660\u0660\u0661@s.whatsapp.net", "hello"],
+])
+def test_whatsapp_mention_rejections_never_reach_the_bridge(whatsapp_bridge, capsys, argv):
+    """Non-WhatsApp targets and non-ASCII / non-numeric mention values are usage errors (exit 2)
+    raised before any delivery attempt."""
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(argv))
+    assert exc.value.code == 2
+    assert "mention" in capsys.readouterr().err.lower()
+    assert whatsapp_bridge.calls == []
 
 
+def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, tmp_path, capsys):
+    """Across chunked text and text+media, exactly one bridge payload carries the normalized,
+    deduplicated JIDs; a captioned single-media send carries them on the media payload; a bridge
+    without native-mention support fails closed instead of silently sending an unmentioned message."""
+    calls = whatsapp_bridge.calls
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    long_message = "@15550000001 " + "word " * 1000
 
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse([
+            "--to", _GROUP, "--mention", "+1 (555) 000-0001", "--mention", "15550000001@s.whatsapp.net",
+            f"{long_message} MEDIA:{image}",
+        ]))
+    assert exc.value.code == 0
+    text_payloads = [payload for path, payload in calls if path == "send"]
+    assert len(text_payloads) >= 2 and calls[-1][0] == "send-media"
+    assert text_payloads[0]["mentions"] == ["15550000001@s.whatsapp.net"]
+    assert all("mentions" not in payload for _, payload in calls[1:])
 
-# ---------------------------------------------------------------------------
-# Error paths
-# ---------------------------------------------------------------------------
+    calls.clear()
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(["--to", _GROUP, "--mention", "15550000001", f"hello @15550000001 MEDIA:{image}"]))
+    assert exc.value.code == 0
+    assert [path for path, _ in calls] == ["send-media"]
+    assert calls[0][1]["mentions"] == ["15550000001@s.whatsapp.net"]
 
-
+    calls.clear()
+    whatsapp_bridge.state["supports_mentions"] = False
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(["--to", _GROUP, "--mention", "15550000001", "hello @15550000001"]))
+    assert exc.value.code == 1
+    assert "does not support native mentions" in capsys.readouterr().err
+    assert calls == []
 
 
 def test_file_decode_error_suggests_media_directive(fake_tool, capsys, monkeypatch, tmp_path):
@@ -213,7 +316,7 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
-    (hermes_home / ".env").write_text("SOME_TOKEN=abc123\n")
+    (hermes_home / ".env").write_text("SOME_TOKEN=abc123\n", encoding="utf-8")
     (hermes_home / "config.yaml").write_text(
         "TELEGRAM_HOME_CHANNEL: '5550001111'\nnested:\n  ignored: true\n"
     )
@@ -376,3 +479,62 @@ def test_load_hermes_env_bom_only_env_is_noop(tmp_path, monkeypatch):
 
     added = {k: v for k, v in os.environ.items() if k not in before}
     assert "\ufeff" not in "".join(added)
+
+
+def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, capsys):
+    """``--help`` and the ``--list`` empty-state hint derive their paths from the resolved home instead of a
+    hardcoded ``~/.hermes`` (absent on a Windows install or under a profile home)."""
+    import argparse
+    import sys
+    import types
+
+    home = tmp_path / "AppData" / "Local" / "hermes"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    send_parser = send_cmd.register_send_subparser(parser.add_subparsers(dest="command"))
+    help_text = send_parser.format_help()
+    assert str(home / ".env") in help_text and str(home / "config.yaml") in help_text
+    assert "~/.hermes" not in help_text
+
+    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: [])
+    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
+    fake_dir = types.ModuleType("gateway.channel_directory")
+    fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
+    fake_dir.format_directory_for_display = lambda platforms=None: ""
+    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
+
+    assert send_cmd._list_targets(None, json_mode=False) == 0
+    out = capsys.readouterr().out
+    assert str(home / "channel_directory.json") in out
+    assert "~/.hermes" not in out
+
+
+def test_empty_list_hint_names_default_root_directory_under_profile_home(tmp_path, monkeypatch, capsys):
+    """Under ``HERMES_HOME=<root>/profiles/<p>`` the ``--list`` empty state says the default root already holds
+    a ``channel_directory.json`` (written by a gateway running from that root), so the user knows which home
+    the gateway is serving (#114272 step 5)."""
+    import sys
+    import types
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    (root / "channel_directory.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: [])
+    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
+    fake_dir = types.ModuleType("gateway.channel_directory")
+    fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
+    fake_dir.format_directory_for_display = lambda platforms=None: ""
+    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
+
+    assert send_cmd._list_targets(None, json_mode=False) == 0
+    out = capsys.readouterr().out
+    assert f"channel discovery can populate {profile / 'channel_directory.json'}." in out
+    assert f"A gateway running from {root} already has {root / 'channel_directory.json'}" in out
+    assert f"scoped to profile home {profile}" in out

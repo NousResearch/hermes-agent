@@ -3,6 +3,7 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -14,6 +15,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
 import {
   $gateway,
@@ -56,7 +58,25 @@ export const $activeProfile = atom<string>('default')
 
 // Cached profile list for the picker. Refreshed lazily; the dropdown also
 // re-fetches on open so a profile created elsewhere shows up.
-export const $profiles = atom<ProfileInfo[]>([])
+const NO_PROFILES: ProfileInfo[] = []
+export const $profiles = atom<ProfileInfo[]>(NO_PROFILES)
+
+// Successful lists belong to their source, not whichever gateway is active
+// when a rail renders. A re-home repaints from this cache until the incoming
+// source serves its own list, so a failed incoming read can neither borrow the
+// outgoing source's profiles nor blank a source we already know.
+export const $profilesByConnection = atom<ReadonlyMap<string, ProfileInfo[]>>(new Map())
+
+// Registry descriptors carry their connection id (a slug, so it never contains
+// ':'); legacy primaries are keyed by endpoint. Null is a reconnect blip (see
+// setConnection), not a source.
+function profileListSource(connection: HermesConnection | null): null | string {
+  if (!connection) {
+    return null
+  }
+
+  return connection.connectionId ?? `${connection.mode ?? 'local'}:${connection.baseUrl}`
+}
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
@@ -95,6 +115,7 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 
   const flight = (async () => {
     const epoch = profileListEpoch
+    const source = profileListSource($connection.get())
     const MAX_RETRIES = 2
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -102,7 +123,13 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
         const { profiles } = await getProfiles()
 
         if (epoch === profileListEpoch) {
-          $profiles.set(profiles)
+          batch(() => {
+            if (source !== null) {
+              $profilesByConnection.set(new Map($profilesByConnection.get()).set(source, profiles))
+            }
+
+            $profiles.set(profiles)
+          })
         }
 
         return profiles
@@ -120,6 +147,12 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
         // a window to finish routing after WebSocket-ready but pre-HTTP-proxy
         // states (global remote mode, #70679).
         await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)))
+
+        // A switch during backoff must not send this old flight to the new
+        // ambient REST route, even if its eventual cache write is guarded.
+        if (epoch !== profileListEpoch) {
+          throw error
+        }
       }
     }
 
@@ -135,6 +168,30 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 
   return flight
 }
+
+// Source changes can keep the same profile name (default → default), including
+// direct agent activations that never run the connection-switch wipe. The
+// first published descriptor adopts whatever list is already loaded; a null
+// descriptor is a reconnect blip and keeps the current owner (setConnection).
+let profileListOwner: null | string = null
+
+$connection.subscribe(connection => {
+  const source = profileListSource(connection)
+
+  if (source === null || source === profileListOwner) {
+    return
+  }
+
+  const adopting = profileListOwner === null
+  profileListOwner = source
+
+  if (adopting) {
+    return
+  }
+
+  invalidateProfileListFetches()
+  $profiles.set($profilesByConnection.get().get(source) ?? NO_PROFILES)
+})
 
 // ── Rail order ─────────────────────────────────────────────────────────────
 // User-defined order for the named (non-default) profile squares in the rail.
@@ -154,18 +211,7 @@ export function setProfileOrder(names: string[]): void {
 
 // Sort items by the stored order; unordered names alphabetise at the tail.
 export function sortByProfileOrder<T extends { name: string }>(items: T[], order: string[]): T[] {
-  const rank = new Map(order.map((name, index) => [name, index]))
-
-  return [...items].sort((a, b) => {
-    const ra = rank.get(a.name)
-    const rb = rank.get(b.name)
-
-    if (ra != null && rb != null) {
-      return ra - rb
-    }
-
-    return ra != null ? -1 : rb != null ? 1 : a.name.localeCompare(b.name)
-  })
+  return sortProfilesByOrder(items, order, item => item.name)
 }
 
 // ── Rail colors ────────────────────────────────────────────────────────────
@@ -275,11 +321,34 @@ export const $newChatRoute = atom<AgentProfileRoute | null>(null)
 // profile pick on the explicit `local` source — see profilePickConnectionId).
 export const $newChatConnectionId = atom<null | string>(null)
 
+// A saved null default explicitly chooses the legacy profile door even while
+// a remote source is still active. Ordinary profile picks retain their existing
+// source policy; only this pinned intent suppresses the ambient fallback.
+let legacyNewChatProfile: null | string = null
+
 /** Capture the registry source a new-chat profile intent lands on — by
  *  default the active one; callers that dial a different door (a profile
  *  pick, see profilePickConnectionId) pass the source that door uses. */
 export function captureNewChatSource(connectionId: null | string = activeGatewayConnectionId()): void {
+  legacyNewChatProfile = null
   $newChatConnectionId.set(connectionId)
+}
+
+export function pinLegacyNewChatProfile(profile: string): void {
+  const target = normalizeProfileKey(profile)
+  $newChatProfile.set(target)
+  $newChatRoute.set(null)
+  captureNewChatSource(null)
+  legacyNewChatProfile = target
+}
+
+export function isLegacyNewChatProfile(profile: string): boolean {
+  return (
+    legacyNewChatProfile === normalizeProfileKey(profile) &&
+    $newChatProfile.get() === legacyNewChatProfile &&
+    $newChatRoute.get() === null &&
+    $newChatConnectionId.get() === null
+  )
 }
 
 /**
@@ -328,6 +397,10 @@ export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute
   }
 
   const intentProfile = forProfile ? normalizeProfileKey(forProfile) : $newChatProfile.get()
+
+  if (intentProfile && isLegacyNewChatProfile(intentProfile)) {
+    return null
+  }
 
   const connectionId = (
     (intentProfile
@@ -418,6 +491,10 @@ const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
 
+function registryConnectionKind(connectionId: string): string | undefined {
+  return $connectionsRegistry.get()?.connections.find(entry => entry.id === connectionId)?.kind
+}
+
 export function prewarmProfileBackend(name: string, connectionId: null | string = null): void {
   const key = normalizeProfileKey(name)
   const connection = (connectionId ?? '').trim() || null
@@ -427,6 +504,14 @@ export function prewarmProfileBackend(name: string, connectionId: null | string 
     key === normalizeProfileKey($activeGatewayProfile.get()) &&
     (!connection || connection === activeGatewayConnectionId())
   ) {
+    return
+  }
+
+  // SSH sources are connect-on-demand (#89756): dialing one bootstraps the
+  // tunnel and spawns `hermes -p <profile> serve --isolated` on the remote
+  // box, so a hover sweep across the roster spawned one isolated backend per
+  // bot and knocked the primary chat over. Only an explicit open may dial SSH.
+  if (connection && registryConnectionKind(connection) === 'ssh') {
     return
   }
 
@@ -501,7 +586,10 @@ async function resolveConnectionForProfile(profile: string): Promise<HermesConne
 // their sockets — so their sessions keep streaming concurrently. A null/empty
 // target means "no explicit profile" → keep the current gateway (a plain new
 // chat stays put; single-profile users never leave the primary).
-export async function ensureGatewayProfile(profile: string | null | undefined): Promise<void> {
+export async function ensureGatewayProfile(
+  profile: string | null | undefined,
+  { forceLegacyRoute = false }: { forceLegacyRoute?: boolean } = {}
+): Promise<void> {
   if (profile == null || !String(profile).trim()) {
     // "No explicit profile" = use the current gateway. But if an explicit swap
     // (e.g. the user just picked a profile in the switcher) is still in flight,
@@ -530,6 +618,12 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
   // scope — recognized via the active descriptor so global-remote keeps its
   // fast path instead of re-running the swap on every create.
   const routeAgrees = (): boolean => {
+    // A saved legacy default names a door, not just a profile. A registry
+    // source can serve the SAME name without being that legacy backend.
+    if (forceLegacyRoute && activeGatewayConnectionId() !== null) {
+      return false
+    }
+
     if (normalizeProfileKey($activeGatewayProfile.get()) !== target || $gateway.get()?.connectionState !== 'open') {
       return false
     }
@@ -983,7 +1077,7 @@ export function newSessionInAgent(route: AgentProfileRoute): void {
 
   $newChatProfile.set(captured.profile)
   $newChatRoute.set(captured)
-  $newChatConnectionId.set(captured.connectionId)
+  captureNewChatSource(captured.connectionId)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
   void ensureGatewayAgent(captured.connectionId, captured.profile).catch((error: unknown) => {

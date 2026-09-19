@@ -2,6 +2,7 @@
 
 import ast
 import logging
+import time
 
 import pytest
 
@@ -18,6 +19,49 @@ def _ensure_redaction_enabled(monkeypatch):
 
 class TestKnownPrefixes:
 
+    def test_dotted_sk_and_prefixless_zhipu_keys_fully_masked_on_every_surface(self):
+        """A key whose body carries dots must never leave a cleartext tail, and the
+        prefix-less Zhipu ``id.secret`` shape must mask at all: on the terminal
+        ``cat``/``grep`` path (code_file=True, the reporter's surface) and on the
+        file-read path, where the mask must be the non-reusable sentinel."""
+        from agent.redact import redact_terminal_output
+
+        dotted_sk = "sk-sp-" + "ABCDEFGH1234567890" + "." + "abcdefgh1234567890_XYZ-0987654321"
+        multi_dot_sk = "sk-ws-" + "H.EEPXREE.pFau.MEUCIQC6UnD-jj2a" + "ABCDEFGHIJKLMNOP"
+        zhipu = "50aaed1234567890abcdef1234567890" + "." + "ZpSh99AbCdEfGh12"
+        yaml = f"a:\n  api_key: {dotted_sk}\nb:\n  api_key: {zhipu}\nc:\n  api_key: {multi_dot_sk}\n"
+
+        term = redact_terminal_output(yaml, "cat /tmp/keys.yaml")
+        for secret_tail in ("abcdefgh1234567890_XYZ", "ZpSh99", "MEUCIQC6UnD", "EEPXREE"):
+            assert secret_tail not in term, term
+        # Display masks (``sk-pro...EFGH``) contain ``..``, which no real key does:
+        # a second pass over an already-masked token must be a no-op, not ``***``
+        # (tool_executor redacts browser_type args, then build_tool_preview
+        # redacts them again).
+        assert redact_sensitive_text("sk-pro...EFGH", force=True) == "sk-pro...EFGH"
+
+        read = redact_sensitive_text(yaml, file_read=True)
+        assert "«redacted:sk-…»" in read and "«redacted-secret»" in read, read
+        for secret_tail in ("abcdefgh1234567890_XYZ", "ZpSh99", "MEUCIQC6UnD", "EEPXREE"):
+            assert secret_tail not in read, read
+
+    def test_dotted_and_prefixless_matchers_leave_benign_tokens_alone(self):
+        """The Zhipu matcher is provider-shaped, not a generic dotted-token sweep:
+        content-hash filenames (incl. ``<sha>.bundle`` / ``<md5>.sqlite3``), bare
+        git shas, short ``sk-`` fragments and a 31-char id must stay byte-identical."""
+        from agent.redact import redact_terminal_output
+
+        benign = (
+            "blob 0123456789abcdef0123456789abcdef.png\n"
+            "git bundle create 0123456789abcdef0123456789abcdef01234567.bundle\n"
+            "/cache/0123456789abcdef0123456789abcdef.sqlite3\n"
+            "cp " + "a1" * 18 + ".example\n"
+            "commit 0123456789abcdef0123456789abcdef01234567\n"
+            "sk-short sk-abc.def\n"
+            "release=" + "a" * 31 + ".ZpSh99AbCdEfGh12\n"
+        )
+        assert redact_terminal_output(benign, "git log --stat") == benign
+        assert redact_sensitive_text(benign, file_read=True) == benign
 
 
 
@@ -139,7 +183,48 @@ class TestEnvAssignments:
     ):
         assert cleartext not in redact_sensitive_text(text, force=True)
 
+    @pytest.mark.parametrize(
+        "text, cleartext",
+        [
+            # AWS secret access keys are 40 chars of base64: ~1 in 64 begin with '/'.
+            ("AWS_SECRET_ACCESS_KEY=/wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+             "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"),
+            # argon2/bcrypt digests always begin with '$'.
+            ("API_SECRET=$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$aGFzaHZhbHVl",
+             "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$aGFzaHZhbHVl"),
+            ("SESSION_SECRET=/8f3kd9sKd0alsKDJ2mfkeisl3kdMc9dksla",
+             "8f3kd9sKd0alsKDJ2mfkeisl3kdMc9dksla"),
+            # A second '/' (~1 in 3 of the '/'-led AWS secrets) must not turn it into a "path".
+            ("AWS_SECRET_ACCESS_KEY=/wJalrXUtnFEMIK7MDENG/bPxRfiCYEXAMPLEKEY",
+             "wJalrXUtnFEMIK7MDENG/bPxRfiCYEXAMPLEKEY"),
+            ("API_SECRET=~wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+             "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"),
+        ],
+    )
+    def test_secret_that_only_starts_like_a_path_or_var_still_redacts(
+        self, text, cleartext
+    ):
+        # The rc-readability exemption must fire only on a value that IS a complete
+        # $VAR / ~/path / /abs/path reference — not on a secret that merely begins with
+        # one of those characters. Before the exemption was anchored it returned ahead
+        # of the strong-key and opaque-credential checks, leaking these verbatim.
+        assert cleartext not in redact_sensitive_text(text, force=True)
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock",
+            "SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/ssh-agent.$USER.sock",
+            "SSH_AUTH_SOCK=/run/user/$UID/keyring/ssh",
+            "export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)",
+            "DOCKER_AUTH_CONFIG=/home/u/.docker",
+            "DOCKER_AUTH_CONFIG=/home/u/.docker/MyProject2024Build.d/config.json",
+            "MY_KEY_PATH=~/.ssh/id_rsa",
+            "SECRET_DIR=/etc",
+        ],
+    )
+    def test_real_path_and_var_references_stay_readable(self, text):
+        assert redact_sensitive_text(text, force=True) == text
 
 
 
@@ -1243,6 +1328,69 @@ class TestFileReadNonReusableRedaction:
 
 
 
+
+
+class TestSecretFileAssignmentRedaction:
+    """#110567: ``file_read=True`` used to imply ``code_file=True`` and skip the assignment passes,
+    so an opaque prefix-less credential in a secret-bearing file reached the model in cleartext
+    while the terminal read of the same file masked it. ``secret_file=True`` re-enables the passes
+    with the non-reusable sentinel (#35519); unclassified reads are byte-identical to before."""
+
+    SYNTH = "3JcQ1UqZ8mNp4Rt6vWx2Yb9Ad0Ef7Gh5Ij2kS"  # 40-char opaque, no vendor prefix
+
+    @pytest.mark.parametrize("template, sentinel", [
+        ("ADS_API_TOKEN: {tok}", "«redacted-secret»"),          # YAML
+        ("export FOO_TOKEN='{tok}'", "«redacted-secret»"),      # shell rc
+        ("FOO_API_KEY={tok}", "«redacted-secret»"),             # dotenv
+        ('{{"api_key": "{tok}"}}', "«redacted-secret»"),        # JSON
+        ("5|      ADS_API_TOKEN: {tok}", "«redacted-secret»"),  # read_file line gutter
+        ("108:ADS_API_TOKEN: {tok}", "«redacted-secret»"),      # grep -n gutter
+        ("108-      ADS_API_TOKEN: {tok}", "«redacted-secret»"),  # grep -A/-B/-C context gutter
+        ("   108\tADS_API_TOKEN: {tok}", "«redacted-secret»"),   # cat -n / nl gutter (number + TAB)
+        ("   108\texport FOO_TOKEN={tok}", "«redacted-secret»"),
+        ("GITHUB_TOKEN: ghp_S1abcdefghijklmnopqrstuvwxyz0Pn2T", "«redacted:ghp_…»"),  # prefix label kept
+    ])
+    def test_secret_file_masks_assignment_with_non_reusable_sentinel(self, template, sentinel):
+        text = template.format(tok=self.SYNTH)
+        out = redact_sensitive_text(text, force=True, code_file=True, file_read=True, secret_file=True)
+        assert self.SYNTH not in out and "ghp_S1" not in out
+        assert sentinel in out
+        assert out.split(sentinel)[0].rstrip(" ='\"") in text  # key, gutter and quoting survive
+
+    def test_unclassified_read_and_non_secret_scalars_are_untouched(self):
+        for text in ("MAX_TOKENS: 100", '{"apiKey": "test"}', "api_key: test", f"5|ADS_API_TOKEN: {self.SYNTH}"):
+            assert redact_sensitive_text(text, force=True, file_read=True) == text
+        # Strong-key names whose value is a variable/path reference are shell-rc configuration, not
+        # secrets; the agent must still be able to read and edit them (password-class keys mask anyway).
+        rc = "export SSH_AUTH_SOCK=$HOME/.ssh/agent.sock\nexport DOCKER_AUTH_CONFIG=/home/u/.docker\n"
+        out = redact_sensitive_text(rc + f"ADS_API_TOKEN: {self.SYNTH}\n5|MAX_TOKENS: 100\nDB_PASSWORD=~/pw\n",
+                                    force=True, file_read=True, secret_file=True)
+        assert out.startswith(rc) and self.SYNTH not in out and "5|MAX_TOKENS: 100" in out and "~/pw" not in out
+        # The gutter-tolerant anchors must stay linear: a wide indented line is not a stall.
+        wide = "1|" + " " * 20000 + "token:"
+        started = time.perf_counter()
+        assert redact_sensitive_text(wide, force=True, file_read=True, secret_file=True) == wide
+        assert time.perf_counter() - started < 1.0
+
+
+class TestHermesHomePathClassification:
+    """``_is_secret_file_arg`` must see the RESOLVED Hermes home: a managed Windows home
+    (``%LOCALAPPDATA%\\hermes``) has no ``.hermes`` segment and a resolved path never spells
+    ``$HERMES_HOME``, so the literal test alone classified its ``config.yaml`` as ordinary YAML."""
+
+    def test_resolved_home_config_is_secret_bearing_but_project_config_is_not(self, tmp_path, monkeypatch):
+        import agent.file_safety as file_safety
+        from agent.redact import _is_secret_file_arg
+
+        home = tmp_path / "hermes"  # no ".hermes" segment
+        monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: home)
+        monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: home)
+        assert _is_secret_file_arg(str(home / "config.yaml"))
+        assert _is_secret_file_arg(str(home / "profiles" / "coder" / "config.yaml"))
+        assert _is_secret_file_arg(str(home / "backups" / "config" / "config.yaml.good.20260914-184559"))
+        assert not _is_secret_file_arg(str(home / "config.yaml.pdf"))  # only the backups/config/ copies
+        assert not _is_secret_file_arg(str(tmp_path / "proj" / "config.yaml"))
+        assert not _is_secret_file_arg("config.yaml")  # relative, not resolvable to the home
 
 
 class TestFireworksToken:

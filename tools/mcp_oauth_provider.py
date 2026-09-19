@@ -15,6 +15,60 @@ if TYPE_CHECKING:
     from tools.mcp_oauth import HermesTokenStorage
 logger = logging.getLogger(__name__)
 
+# Authorization servers that advertise ``authorization_response_iss_parameter_supported`` and then
+# omit ``iss`` from the redirect (#111135). Exact issuer match, nothing else is relaxed.
+_ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com"})
+
+# Authorization-server metadata documents the SDK tries in its 401 branch (RFC 8414 / OIDC discovery).
+_ASM_DISCOVERY_PATHS = ("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")
+_DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
+
+
+def _default_auth_request_user_agent() -> str:
+    """``Hermes-Agent/<version>`` for SDK-built OAuth requests that would otherwise carry no User-Agent at
+    all; versioned so an operator debugging a WAF block can tell which client they are looking at."""
+    from hermes_cli import __version__
+    return f"Hermes-Agent/{__version__}"
+
+
+DEFAULT_AUTH_REQUEST_USER_AGENT = _default_auth_request_user_agent()
+
+
+def stamp_default_user_agent(request):
+    """Give an SDK-built OAuth request (discovery, registration, token) a User-Agent if it has none.
+
+    The SDK builds those as bare ``httpx.Request`` objects and sends them through ``client.send()``,
+    which never merges the client's default headers, so they leave with NO ``User-Agent`` at all.
+    WAF-fronted authorization servers (www.tradingview.com, coda.io) answer 403 to header-less
+    requests while curl and a plain ``client.get()`` get 200 — the metadata document is then "not
+    found", the SDK falls back to guessing ``/register`` and ``/authorize`` on the MCP host, and the
+    user sees ``Registration failed: 404`` (#113771). Only an absent header is filled, so a
+    configured ``oauth.user_agent`` (token requests) still wins."""
+    if "user-agent" not in request.headers:
+        request.headers["User-Agent"] = DEFAULT_AUTH_REQUEST_USER_AGENT
+    return request
+
+
+def _asm_discovery_failure(response) -> str | None:
+    """``"<status> from <url>"`` when *response* is a failed authorization-server metadata fetch."""
+    req = getattr(response, "request", None)
+    status = getattr(response, "status_code", None)
+    if req is None or status is None or 200 <= status < 300:
+        return None
+    url = str(req.url)
+    return f"{status} from {url}" if any(p in url for p in _ASM_DISCOVERY_PATHS) else None
+
+
+def _with_discovery_context(exc: Exception, failures: list[str]):
+    """Re-shape a registration error raised after every metadata fetch failed: lead with the discovery
+    failure, since the 404 on the guessed ``/register`` URL is only its consequence (#113771)."""
+    return type(exc)(f"{_DISCOVERY_CONTEXT_LEAD} ({'; '.join(failures)}); dynamic client registration "
+                     f"then fell back to a guessed endpoint on the MCP host and failed: {exc}")
+
+
+
+class _RefreshCompletedByPeer(Exception):
+    """Restart the SDK auth flow: a peer rotated the grant we were about to present."""
 
 class HermesProviderMixin:
     """Token-endpoint fixes layered over the SDK's ``OAuthClientProvider`` (must precede it in
@@ -45,7 +99,28 @@ class HermesProviderMixin:
             raise OAuthNonInteractiveError(
                 "MCP device authorization requires `hermes mcp login <server> --flow device`; "
                 "background reconnects cannot start a device login")
+        self._tolerate_missing_iss_for_known_server()
         return await super()._perform_authorization()
+
+    def _tolerate_missing_iss_for_known_server(self) -> None:
+        """Figma advertises ``authorization_response_iss_parameter_supported`` and then omits ``iss``
+        from the redirect, so the SDK's RFC 9207 check rejects every valid code (#111135). For that
+        one issuer only, fill a missing ``iss`` with the discovered issuer and warn; a present-but-
+        different ``iss`` still fails the SDK check, and every other server keeps the strict rule."""
+        issuer = _metadata_issuer(self.context)
+        if issuer not in _ISS_OMITTING_ISSUERS:
+            return
+        inner = self.context.callback_handler
+
+        async def _fill_iss():
+            result = await inner()
+            if getattr(result, "iss", None) is None and getattr(result, "code", None):
+                self._hermes_logger.warning(
+                    "MCP OAuth: %s omitted the iss parameter it advertises; accepting the redirect for that issuer only", issuer)
+                result = result.model_copy(update={"iss": str(self.context.oauth_metadata.issuer)})
+            return result
+
+        self.context.callback_handler = _fill_iss
 
     def _prepare_token_request(self, request):
         """Stamp the configured User-Agent onto a token/refresh request."""
@@ -70,9 +145,182 @@ class HermesProviderMixin:
         self._coerce_client_secret_post()
         return self._prepare_token_request(await super()._exchange_token_authorization_code(*args, **kwargs))
 
+    # Locked descriptor while this provider owns the refresh fence; cleared by
+    # _hermes_release_refresh_fence. Never shared across instances.
+    _hermes_fence: int | None = None
+
+    async def async_auth_flow(self, request):
+        """Guarantee fence release even if the auth generator is abandoned.
+
+        The SDK drives the refresh as a generator: ``_refresh_token`` yields a
+        request and ``_handle_refresh_response`` consumes the response. If the
+        caller cancels in between (timeout, task cancellation, transport
+        teardown), GeneratorExit/CancelledError is raised at the yield and
+        ``_handle_refresh_response`` never runs. Without this wrapper the fence
+        file would stay locked for the life of the process and every later
+        refresh would fail closed -- trading a race for a deadlock.
+
+        When a peer already rotated the grant while we waited for the fence,
+        ``_refresh_token`` adopts it and raises ``_RefreshCompletedByPeer``;
+        the SDK flow is then restarted so it re-evaluates validity and sends
+        the original request with the winner's access token, never POSTing
+        the burned refresh token.
+        """
+        while True:
+            inner = super().async_auth_flow(request)
+            discovery_failures: list[str] = []
+            try:
+                sent, thrown = None, None
+                while True:
+                    try:
+                        if thrown is not None:
+                            exc, thrown = thrown, None
+                            out = await inner.athrow(exc)
+                        else:
+                            out = await inner.asend(sent)
+                    except StopAsyncIteration:
+                        return
+                    except _RefreshCompletedByPeer:
+                        break
+                    except Exception as exc:
+                        from mcp.client.auth.oauth2 import OAuthRegistrationError
+                        if (isinstance(exc, OAuthRegistrationError) and discovery_failures
+                                and self.context.oauth_metadata is None):
+                            raise _with_discovery_context(exc, discovery_failures) from exc
+                        raise
+                    if out is not request:
+                        stamp_default_user_agent(out)
+                    # Full bidirectional delegation: the SDK drives this flow with
+                    # asend(response), so `async for` would swallow the response and
+                    # feed the inner generator None. Async generators have no
+                    # `yield from`, hence the manual pump.
+                    try:
+                        sent = yield out
+                    except GeneratorExit:
+                        await inner.aclose()
+                        raise
+                    except BaseException as exc:
+                        sent, thrown = None, exc
+                    else:
+                        failure = _asm_discovery_failure(sent)
+                        if failure:
+                            discovery_failures.append(failure)
+            finally:
+                await self._hermes_release_refresh_fence()
+
     async def _refresh_token(self):
+        """Take the refresh fence, then build the request from the token we own.
+
+        The fence is acquired BEFORE the final read of the refresh token and is
+        released only after _handle_refresh_response has persisted the
+        replacement, so one refresh generation is consumed by exactly one
+        process. See tools.mcp_oauth.acquire_refresh_fence for the interleaving this
+        closes.
+
+        Holding a lock across ``yield`` in the SDK's generator-based auth flow
+        is safe here because the SDK already serializes the whole flow under
+        ``self.context.lock``: the generator is always driven to completion (or
+        aborted) by one task, and async_auth_flow cannot interleave two
+        refreshes inside one process.
+        """
         self._coerce_client_secret_post()
-        return self._prepare_token_request(await super()._refresh_token())
+        await self._hermes_acquire_refresh_fence()
+        try:
+            # Re-read under the fence: a peer may have rotated while we waited
+            # for it, in which case the token we were about to POST is dead.
+            # If disk already holds a different refresh token, the peer that held
+            # the fence before us won this generation; its value is the only one
+            # the provider will still accept, so install it even when its access
+            # token has already expired (the POST we build needs the new grant).
+            candidate = await self._hermes_rotated_candidate()
+            if candidate is not None:
+                if not self._hermes_install_disk_pair(candidate):
+                    # Issuer binding stripped the peer's refresh token: nothing
+                    # left to POST. Restart the flow so the SDK lands in 401 ->
+                    # full authorization instead of raising over a dead grant.
+                    raise _RefreshCompletedByPeer
+                if self._hermes_live_ttl() and self.context.is_token_valid():
+                    # The peer's access token is live: presenting our copy of the
+                    # refresh token would only burn a generation on a single-use
+                    # provider. Skip the POST and let the flow restart.
+                    raise _RefreshCompletedByPeer
+            return self._prepare_token_request(await super()._refresh_token())
+        except BaseException:
+            # Never hold the fence when no POST will follow.
+            await self._hermes_release_refresh_fence()
+            raise
+
+    def _hermes_live_ttl(self) -> bool:
+        """True when the installed token is not known to be past due.
+
+        Storage clamps a past-due token to ``expires_in == 0`` on read (see
+        HermesTokenStorage.get_tokens); the SDK's is_token_valid() compares
+        ``time.time() <= expiry`` and still reports True for that boundary,
+        which would make us adopt a token the server rejects immediately.
+        ``expires_in`` is optional in RFC 6749: None means no expiry was
+        issued, which the SDK treats as valid, so it counts as live here too.
+        """
+        if self.context.current_tokens is None:
+            return False
+        exp = getattr(self.context.current_tokens, "expires_in", None)
+        return exp is None or int(exp) > 0
+
+    async def _hermes_acquire_refresh_fence(self) -> None:
+        """Enter the fence, or let RefreshFenceTimeout abort this attempt.
+
+        Fails closed on purpose: a refresh we are not certain we own must not
+        be POSTed. A stale fence from an aborted attempt is replaced rather
+        than stacked, so a crashed generator cannot leak ownership.
+        """
+        from tools.mcp_oauth import acquire_refresh_fence
+
+        await self._hermes_release_refresh_fence()
+        storage = self.context.storage
+        tokens_path = getattr(storage, "_tokens_path", None)
+        if tokens_path is None:  # pragma: no cover - non-Hermes storage
+            return
+        self._hermes_fence = await acquire_refresh_fence(tokens_path())
+
+    async def _hermes_release_refresh_fence(self) -> None:
+        """Release the fence if held. Idempotent and never raises."""
+        from tools.mcp_oauth import release_refresh_fence
+
+        fd, self._hermes_fence = self._hermes_fence, None
+        if fd is not None:
+            release_refresh_fence(fd)
+
+    async def _hermes_rotated_candidate(self):
+        """The on-disk pair, if a peer rotated it past the one we hold.
+
+        A candidate must carry a refresh token different from ours (same
+        token: disk has nothing newer) and a non-empty access token. A disk
+        entry with no refresh token is never adopted: its access token may
+        still be inside its TTL, but taking it trades an explicit reauth now
+        for a silent one at expiry with no way to refresh in between.
+        ``get_tokens`` already returns None for absent or corrupt files.
+        """
+        stored = await self.context.storage.get_tokens()
+        if stored is None:
+            return None
+        current = self.context.current_tokens
+        stored_refresh = getattr(stored, "refresh_token", None)
+        if not stored_refresh or not getattr(stored, "access_token", None):
+            return None
+        if stored_refresh == getattr(current, "refresh_token", None):
+            return None
+        return stored
+
+    def _hermes_install_disk_pair(self, tokens) -> bool:
+        """Publish a disk pair to the context and re-run issuer binding on it.
+
+        Returns False when the enforcer strips the refresh token (the pair was
+        minted by a different issuer): there is nothing left to refresh with,
+        and each caller decides what that means for its own flow.
+        """
+        self.context.current_tokens = tokens
+        self.context.update_token_expiry(tokens)
+        enforce_refresh_token_issuer(self.context)
+        return bool(getattr(self.context.current_tokens, "refresh_token", None))
 
     async def _initialize(self) -> None:
         """Load stored state, restore persisted server metadata when the SDK has none (so the issuer
@@ -107,9 +355,29 @@ class HermesProviderMixin:
         await self._store_tokens(token_response)
 
     async def _handle_refresh_response(self, response) -> bool:
-        """Accept any 2xx refresh response; never log the body."""
+        """Accept any 2xx refresh response; never log the body.
+
+        Always releases the refresh fence: this is the single exit point of the
+        fenced section, whatever the outcome.
+        """
+        try:
+            return await self._hermes_handle_refresh_response(response)
+        finally:
+            await self._hermes_release_refresh_fence()
+
+    async def _hermes_handle_refresh_response(self, response) -> bool:
         if not (200 <= response.status_code < 300):
             self._hermes_logger.warning("Token refresh failed: %s", response.status_code)
+            # A writer outside the fence (interactive `hermes mcp login`, or a
+            # pre-fence Hermes sharing this HERMES_HOME) may have rotated the
+            # grant and persisted the replacement. Providers issuing single-use
+            # refresh tokens reject our stale copy with a 400. Re-read disk
+            # before destroying the session.
+            if await self._hermes_reload_tokens_after_refresh_failure():
+                self._hermes_logger.info(
+                    "Recovered a peer-rotated refresh token instead of clearing the session"
+                )
+                return True
             self.context.clear_tokens()
             return False
         from httpx import HTTPError
@@ -133,6 +401,37 @@ class HermesProviderMixin:
                 token_response.scope = prior.scope
         await self._store_tokens(token_response)
         return True
+
+    async def _hermes_reload_tokens_after_refresh_failure(self) -> bool:
+        """Re-read tokens from disk after a rejected refresh.
+
+        Returns True only when disk holds a pair that is BOTH different from
+        the one we just failed with AND still live. That is the signature of
+        a writer outside the fence (an interactive ``hermes mcp login`` or a
+        pre-fence Hermes) having rotated the grant between our read and our
+        POST -- a recoverable race, not a dead credential.
+
+        Returns False for the genuinely-expired case (nobody wrote a newer
+        pair), so the caller still clears state and surfaces the reauth
+        prompt.
+        """
+        candidate = await self._hermes_rotated_candidate()
+        if candidate is None:
+            return False
+        # Publish, then restore on rejection. is_token_valid() reads the
+        # context rather than taking a token argument, so the candidate has
+        # to be installed to be tested; a losing probe must leave the context
+        # exactly as it found it.
+        previous_tokens = self.context.current_tokens
+        if (
+            self._hermes_install_disk_pair(candidate)
+            and self._hermes_live_ttl()
+            and self.context.is_token_valid()
+        ):
+            return True
+        self.context.current_tokens = previous_tokens
+        self.context.update_token_expiry(previous_tokens)
+        return False
 
 
 def _metadata_issuer(context: Any) -> str | None:
@@ -203,7 +502,7 @@ def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy
     return {
         "client_metadata": client_metadata,
         "storage": storage,
-        "redirect_handler": mo._make_redirect_handler(port, redirect_uri=redirect_uri),
+        "redirect_handler": mo._make_redirect_handler(port, redirect_uri=redirect_uri, redirect_host=cfg.get("redirect_host")),
         # mcp 2.0 dropped OAuthClientProvider's own `timeout`; the configured
         # `oauth.timeout` bounds the callback waiter's poll loop instead.
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),

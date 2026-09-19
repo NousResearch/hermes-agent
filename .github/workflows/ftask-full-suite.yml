@@ -1,0 +1,12 @@
+name: ftask full suite
+
+on:
+  pull_request:
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run canonical full suite
+        run: ./scripts/run_tests.sh

@@ -250,6 +250,7 @@ def _maybe_autoinstall_chromium() -> bool:
     """
     _bt = _origin()
     if _bt._chromium_autoinstall_attempted:
+        _bt._cached_chromium_installed = None  # re-probe: the user may have installed it manually since the last attempt
         return _chromium_installed()
     _bt._chromium_autoinstall_attempted = True
     if _running_in_docker():

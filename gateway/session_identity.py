@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from contextlib import suppress
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,6 +84,15 @@ def identity_of(source: Any) -> Optional[RoutingIdentity]:
     """The identity pinned on *source* by :func:`resolve_identity`, if any."""
     identity = getattr(source, _IDENTITY_ATTR, None)
     return identity if isinstance(identity, RoutingIdentity) else None
+
+
+def clear_identity(source: Any) -> None:
+    """Drop the pinned identity so the next :func:`canonical_identity` re-resolves — for sources a
+    caller reuses across events whose routing may differ (a guild's cached voice source is shared by
+    every speaker, and ``profile_routes[].user_id`` routes per speaker)."""
+    for attr in (_IDENTITY_ATTR, "profile_route_rejected"):
+        with suppress(AttributeError):
+            delattr(source, attr)
 
 
 def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":

@@ -249,8 +249,11 @@ class GatewayVoiceMixin:
         if not text_ch_id:
             return
         source = self._voice_input_source(adapter, guild_id, user_id, text_ch_id)
-        # Cached source still carries the previous speaker's routed profile.
-        if not self._stamp_routed_profile(source, getattr(adapter, "_owner_profile", None)):
+        # The cached source still carries the previous speaker's identity (per-sender routes,
+        # #106019): drop the pin so the seam re-resolves for THIS speaker.
+        from gateway.session_identity import clear_identity
+        clear_identity(source)
+        if self._canonicalize(source, transport_profile=getattr(adapter, "_owner_profile", None)) is None:
             logger.warning("Dropping voice input: its profile route targets an unserved profile")
             return
         # Validate the session owner against the current allowlist before auto-resuming. A session created

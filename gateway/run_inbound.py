@@ -176,21 +176,12 @@ class GatewayInboundMixin:
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
 
-        # Most adapters resolve profile routes in build_source(); internal/voice paths construct
-        # SessionSource directly, so resolve those here as the shared fail-closed ingress gate.
-        # Strict boolean marker: require the literal True so duck-typed test/internal sources with
-        # dynamic attributes are not mistaken for a rejection.
-        if (
-            getattr(_config, "multiplex_profiles", False)
-            and not getattr(source, "profile", None)
-            and getattr(source, "profile_route_rejected", False) is not True
-        ):
-            from gateway.profile_routing import ProfileRouteRejected
-
-            try:
-                source.profile = self._profile_name_for_source(source)
-            except ProfileRouteRejected:
-                source.profile_route_rejected = True
+        # Identity FIRST. Most adapters canonicalize at their own ingress; internal/voice paths
+        # construct SessionSource directly, so this is the shared fail-closed gate. Strict boolean
+        # marker: require the literal True so duck-typed test/internal sources with dynamic
+        # attributes are not mistaken for a rejection.
+        if getattr(_config, "multiplex_profiles", False):
+            self._canonicalize(source)
         if getattr(source, "profile_route_rejected", False) is True:
             logger.warning(
                 "Dropping inbound message because its explicit profile route "

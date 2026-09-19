@@ -26,6 +26,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli.kanban_completion_evidence import CompletionEvidenceError
 from hermes_cli.kanban import run_slash
 
 
@@ -153,6 +154,7 @@ def test_notify_sub_crud(kanban_home):
         assert len(kbn.list_notify_subs(conn, tid)) == 1
     finally:
         conn.close()
+
 
 
 def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
@@ -1126,6 +1128,33 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
 # ---------------------------------------------------------------------------
 
 
+def test_evidence_required_completion_rejects_then_retries_and_legacy_cards_stay_compatible(kanban_home):
+    """Regression for #110394: the shared completion boundary is opt-in and retry-safe."""
+    conn = kbc.connect()
+    try:
+        required = kb.create_task(
+            conn, title="receipt required", completion_contract="evidence-required",
+        )
+        assert kb.claim_task(conn, required)
+        with pytest.raises(CompletionEvidenceError):
+            kb.complete_task(conn, required, summary="finished")
+        assert kb.get_task(conn, required).status == "running"
+
+        assert kb.complete_task(
+            conn, required, summary="finished",
+            evidence=[{"kind": "test", "detail": "scripts/run_tests.sh tests/hermes_cli/test_kanban_core_functionality.py"}],
+        )
+        run = kb.latest_run(conn, required)
+        assert run.metadata["completion_evidence"] == [{
+            "kind": "test", "detail": "scripts/run_tests.sh tests/hermes_cli/test_kanban_core_functionality.py",
+        }]
+
+        legacy = kb.create_task(conn, title="legacy local completion")
+        assert kb.complete_task(conn, legacy, summary="still compatible")
+    finally:
+        conn.close()
+
+
 
 
 def test_complete_can_retry_after_phantom_rejection(kanban_home):
@@ -1414,8 +1443,6 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
-
 _WORKER_LOG_TAIL = (
     "Query: work kanban task\n"
     "╭─ ☤ Hermes ───────────────────╮\n"

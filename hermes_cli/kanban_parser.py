@@ -287,6 +287,8 @@ _SPECS = [
         _arg("--force", action="store_true",
              help="Override the live-claim guard: complete a running, claimed task "
                   "even without owning its run (closes the worker's run)."),
+        _arg("--evidence",
+              help='JSON list of concrete receipts (e.g. \'[{"kind":"test", "detail":"scripts/run_tests.sh tests/..."}]\'). Required by evidence-required cards.'),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

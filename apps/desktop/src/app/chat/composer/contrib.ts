@@ -13,6 +13,9 @@
  *   data kinds (`data`):      composer.middleware    (ComposerMiddleware)
  *                             composer.attachments   (ComposerAttachmentProvider)
  *                             composer.microActions  (ComposerMicroActionProvider)
+ *                             composer.modelRowExtras (ModelRowExtra) — trailing
+ *                                                    content on every row of the
+ *                                                    composer's model menu
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
@@ -22,6 +25,7 @@
 
 import { useMemo } from 'react'
 
+import type { ModelRowExtra } from '@/app/shell/model-catalog-menu'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import type { TodoItem } from '@/lib/todos'
@@ -37,6 +41,9 @@ export const COMPOSER_AREAS = {
   middleware: 'composer.middleware',
   attachments: 'composer.attachments',
   microActions: 'composer.microActions',
+  /** Trailing content on every row of the model menu (the model pill's menu) —
+   *  the one composer surface that has no other seam. */
+  modelRowExtras: 'composer.modelRowExtras',
   atCompletions: 'composer.atCompletions'
 } as const
 
@@ -156,6 +163,21 @@ export function useComposerMicroActionProviders(): ComposerMicroActionProvider[]
 
   return useMemo(
     () => contributions.map(c => c.data as ComposerMicroActionProvider).filter(p => typeof p?.resolve === 'function'),
+    [contributions]
+  )
+}
+
+/**
+ * Resolve every registered `composer.modelRowExtras` contribution, in
+ * registration order. Core contributes nothing, so a stock composer renders
+ * bare model rows and an unpatched host simply never reads this — a plugin that
+ * registers one degrades to nothing rather than to a broken menu.
+ */
+export function useComposerModelRowExtras(): ModelRowExtra[] {
+  const contributions = useContributions(COMPOSER_AREAS.modelRowExtras)
+
+  return useMemo(
+    () => contributions.map(c => c.data as ModelRowExtra).filter(e => typeof e?.component === 'function'),
     [contributions]
   )
 }

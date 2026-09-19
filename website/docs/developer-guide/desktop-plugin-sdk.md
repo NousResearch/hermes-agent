@@ -217,6 +217,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Model menu row | `COMPOSER_AREAS.modelRowExtras` | `data: { component }` — rendered at the trailing edge of EVERY row of the model menu; your component receives `{ model, provider }` |
 
 ### Panes
 
@@ -405,6 +406,23 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 `middleware`) let a plugin add controls around the message composer, provide an
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
+
+`COMPOSER_AREAS.modelRowExtras` reaches inside the model menu itself — the one
+composer surface with no render slot. Register a `component` and it renders at
+the trailing edge of every model row, told which row it is on:
+
+```javascript
+ctx.register({
+  id: 'row-price',
+  area: COMPOSER_AREAS.modelRowExtras,
+  data: {
+    component: ({ model, provider }) => jsx('span', { className: 'shrink-0', children: priceOf(provider, model) })
+  }
+})
+```
+
+It is decoration only: the row still selects on click, so return `null` for rows
+you have nothing to say about and never swallow the click.
 
 ### Transcript directives — inline components the model addresses
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import logging
 import asyncio
 import json
 import sqlite3
@@ -228,6 +229,7 @@ def direct_runtime(tmp_path, monkeypatch):
     )
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
+    relay_runtime._CURRENT_TURN.set(None)
     _mgr = PluginManager()
     # Pin as discovered: hook queries lazy-discover plugins (#64178), and
     # this test's contract is a runtime with ZERO plugins loaded.
@@ -236,6 +238,7 @@ def direct_runtime(tmp_path, monkeypatch):
     yield fake
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
+    relay_runtime._CURRENT_TURN.set(None)
 
 
 @pytest.fixture
@@ -2614,3 +2617,212 @@ def test_skill_lifecycle_does_not_fallback_across_an_explicit_session(
         for event in direct_runtime.events
         if event[0] == "scope.event" and event[1] == "hermes.skill.lifecycle"
     ] == []
+
+
+def test_concurrent_turn_task_close_when_handle_already_drained_by_turn(
+    direct_runtime, caplog
+):
+    """Regression for #115471: task scope close does not warn when already drained by turn."""
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="shared-session",
+        platform="cli",
+    )
+    first = coordinator.begin_turn(lease, turn_id="first", task_id="first-task")
+    relay_shared_metrics.observe_lifecycle(
+        "pre_llm_call",
+        session_id="shared-session",
+        task_id="first-task",
+        turn_id="first",
+        platform="cli",
+    )
+    second = coordinator.begin_turn(lease, turn_id="second", task_id="second-task")
+
+    task_pushes = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push" and event[1] == relay_shared_metrics.TASK_SCOPE
+    ]
+    assert len(task_pushes) == 1
+
+    coordinator.end_turn(first, outcome="success")
+
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "shared-session"})
+    assert session is not None
+    assert "first-task" in session.tasks
+
+    with caplog.at_level(
+        logging.WARNING, logger="hermes_cli.observability.relay_shared_metrics"
+    ):
+        relay_shared_metrics.finish_task_run(
+            session_id="shared-session",
+            task_id="first-task",
+            platform="cli",
+        )
+
+    warnings = [
+        r.message
+        for r in caplog.records
+        if "shared-metrics task close failed" in r.message
+    ]
+    assert warnings == [], "task close when drained by turn should not log a warning"
+    assert "first-task" not in session.tasks
+
+    # Verify that the session root scope was NOT prematurely popped by task close
+    session_pops = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == lease.session.handle
+    ]
+    assert len(session_pops) == 0, "session root handle must not be popped during task drain"
+
+    coordinator.end_turn(second, outcome="success")
+    coordinator.release_conversation(lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="shared-session",
+    )
+
+    # Session root pops only upon final conversation teardown
+    session_pops = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == lease.session.handle
+    ]
+    assert len(session_pops) == 1, "session root handle must pop cleanly on final conversation teardown"
+
+
+def test_task_close_when_concurrent_scope_on_top_logs_debug_not_warning(
+    direct_runtime, caplog
+):
+    """When a task handle is not at the top of stack due to concurrent turn scope, close tolerates race."""
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "sess-race"})
+    assert session is not None
+
+    task = runtime.start_task({
+        "session_id": "sess-race",
+        "task_id": "task-race",
+        "platform": "cli",
+    })
+    assert task is not None
+
+    # Simulate task.handle having been popped/drained by a concurrent turn teardown
+    task.context.run(direct_runtime.scope.pop, task.handle)
+
+    with caplog.at_level(
+        logging.WARNING, logger="hermes_cli.observability.relay_shared_metrics"
+    ):
+        finished = runtime._finish_task(session, "task-race", {"status": "success"})
+
+    assert finished is True
+    assert "task-race" not in session.tasks
+    warnings = [
+        r.message
+        for r in caplog.records
+        if "shared-metrics task close failed" in r.message
+    ]
+    assert warnings == []
+
+
+def test_task_close_drains_child_scope_and_records_terminal_metrics(direct_runtime):
+    """When an unclosed child scope blocks task.handle, task close drains the child and pops task."""
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="session-child",
+        platform="cli",
+    )
+    turn = coordinator.begin_turn(lease, turn_id="turn-child", task_id="task-child")
+    relay_shared_metrics.start_task_run(
+        session_id="session-child",
+        task_id="task-child",
+        platform="cli",
+    )
+
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "session-child"})
+    assert session is not None
+    task = session.tasks.get("task-child")
+    assert task is not None
+
+    # Push an unclosed child scope under the task context
+    child_handle = task.context.run(
+        direct_runtime.scope.push,
+        "unclosed.tool",
+        direct_runtime.ScopeType.Function,
+    )
+
+    # Now finish the task
+    finished = runtime._finish_task(
+        session, "task-child", {"status": "success", "completed": True}
+    )
+    assert finished is True
+    assert "task-child" not in session.tasks
+
+    popped = [
+        event for event in direct_runtime.events if event[0] == "scope.pop"
+    ]
+    # Child scope popped first with orphan drain output
+    assert popped[0][1] == child_handle
+    assert popped[0][2]["output"].get("hermes.orphan_drain") is True
+
+    # Task scope popped second with terminal fields
+    assert popped[1][1] == task.handle
+    assert popped[1][2]["output"]["outcome"] == "success"
+
+    coordinator.end_turn(turn, outcome="success")
+    coordinator.release_conversation(lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="session-child",
+    )
+
+
+def test_concurrent_turn_skips_task_scope_creation(direct_runtime):
+    """An uninstrumented concurrent turn must not push a task scope onto Relay stack."""
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="shared-concurrent",
+        platform="cli",
+    )
+    first = coordinator.begin_turn(lease, turn_id="first", task_id="first-task")
+    second = coordinator.begin_turn(lease, turn_id="second", task_id="second-task")
+
+    assert second.relay_enabled is False
+
+    # Attempt to start task run on uninstrumented concurrent turn
+    relay_shared_metrics.start_task_run(
+        session_id="shared-concurrent",
+        task_id="second-task",
+        platform="cli",
+    )
+
+    task_pushes = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push"
+        and event[1] == relay_shared_metrics.TASK_SCOPE
+        and event[3].get("input", {}).get("task_id") == "second-task"
+    ]
+    assert len(task_pushes) == 0, "concurrent uninstrumented turn must not push TASK_SCOPE"
+
+    coordinator.end_turn(first, outcome="success")
+    coordinator.end_turn(second, outcome="success")
+    coordinator.release_conversation(lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="shared-concurrent",
+    )
+
+
+

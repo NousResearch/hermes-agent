@@ -127,6 +127,7 @@ class _TaskRun:
     completed_tool_call_ids: set[tuple[str, str, str]] = field(default_factory=set)
     unidentified_tool_calls: int = 0
     retry_count: int = 0
+    closed: bool = False
 
 
 @dataclass
@@ -230,6 +231,7 @@ class _Runtime:
                 turn_id = _text(event, "turn_id")
                 if (
                     session.closing
+                    or not relay_runtime.relay_instrumentation_enabled()
                     or (turn_id and turn_id in session.retired_turn_ids)
                     or session.relay_session.context is None
                 ):
@@ -724,6 +726,56 @@ class _Runtime:
         candidates = [candidate for candidate in session.model_calls if candidate[1] == request_id]
         return candidates[0] if len(candidates) == 1 else None
 
+    def _close_task_scope(
+        self, session: _MetricsSession, task: _TaskRun, fields: dict[str, Any]
+    ) -> None:
+        if task.closed or task.handle is None:
+            return
+        task.closed = True
+        metadata = self._event_metadata()
+
+        def _drain_and_pop() -> None:
+            top = relay_runtime._current_top(self.relay)
+            if top is not None and relay_runtime._same_handle(top, task.handle):
+                relay_runtime.pop_relay_scope(
+                    self.relay, task.handle, output=fields, metadata=metadata
+                )
+                return
+
+            session_root = session.relay_session.handle
+            for _ in range(32):
+                top = relay_runtime._current_top(self.relay)
+                if top is None or relay_runtime._same_handle(top, task.handle):
+                    break
+                if session_root is not None and relay_runtime._same_handle(top, session_root):
+                    break
+                try:
+                    orphan_output = {"outcome": "cancelled", "hermes.orphan_drain": True}
+                    relay_runtime.pop_relay_scope(
+                        self.relay, top, output=orphan_output, metadata=metadata
+                    )
+                except Exception:
+                    break
+
+            top = relay_runtime._current_top(self.relay)
+            if top is not None and relay_runtime._same_handle(top, task.handle):
+                relay_runtime.pop_relay_scope(
+                    self.relay, task.handle, output=fields, metadata=metadata
+                )
+                return
+
+            logger.debug(
+                "Hermes shared-metrics task scope %s already drained or obstructed on concurrent turn",
+                task.task_id,
+            )
+
+        self._guarded(
+            "Hermes shared-metrics task close failed",
+            self._run_in_task,
+            task,
+            _drain_and_pop,
+        )
+
     def _finish_task(self, session: _MetricsSession, task_id: str, event: dict[str, Any]) -> bool:
         task = session.tasks.get(task_id)
         if task is None:
@@ -738,11 +790,7 @@ class _Runtime:
             retry_count=task.retry_count,
         )
         try:
-            self._guarded(
-                "Hermes shared-metrics task close failed",
-                self._run_in_task, task, relay_runtime.pop_relay_scope, self.relay, task.handle,
-                output=fields, metadata=self._event_metadata(),
-            )
+            self._close_task_scope(session, task, fields)
         finally:
             session.tasks.pop(task_id, None)
             session.retired_turn_ids.extend(task.turn_ids)
@@ -961,6 +1009,8 @@ def start_task_run(
     *, session_id: str, task_id: str, platform: str, parent_session_id: str = ""
 ) -> None:
     """Start task metrics at the outer Hermes execution boundary."""
+    if not relay_runtime.relay_instrumentation_enabled():
+        return
     _run_task_hook(
         "start_task", retry_failed=True, session_id=session_id, task_id=task_id,
         platform=platform, parent_session_id=parent_session_id,

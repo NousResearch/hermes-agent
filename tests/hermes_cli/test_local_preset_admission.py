@@ -6,6 +6,29 @@ from hermes_cli.local_runtime import presets, supervisor
 from hermes_cli.local_runtime.estimator import HardwareBudget, ModelProfile
 
 
+def test_policy_flags_reach_the_preset_ini():
+    """Every flag the window policy emits must have an INI key.
+
+    llama-server reads the launch shape from presets.ini, and _args_to_keys drops an unmapped
+    flag in silence — so a policy flag with no INI key never reaches the runtime at all.
+    """
+    from hermes_cli.local_runtime.context_policy import WindowDecision, launch_args
+    from hermes_cli.local_runtime.estimator import LayerKind, ModelProfile
+
+    profile = ModelProfile(name="m", weights_bytes=6 << 30, embd_table_bytes=0,
+                           n_ctx_train=262144, layers=[(LayerKind.FULL, 1024)] * 32)
+    resident = WindowDecision(window=65536, spill_bytes=0, kv_on_gpu=True)
+    spilled = WindowDecision(window=65536, spill_bytes=4 << 30, kv_on_gpu=True)
+
+    for decision in (resident, spilled):
+        args = launch_args(profile, decision, mtp_capable=False)
+        unmapped = [a for a in args if a.startswith("-") and a not in presets._FLAG_TO_KEY]
+        assert not unmapped, f"flags dropped before presets.ini: {unmapped}"
+
+    keys = presets._args_to_keys(launch_args(profile, resident, mtp_capable=False))
+    assert keys["n-gpu-layers"] == str(len(profile.layers) + 1), "offload must survive the preset"
+
+
 def test_preset_roundtrip_keeps_refusals_and_dense_spill(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     mdir = tmp_path / "models"

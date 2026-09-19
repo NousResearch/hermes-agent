@@ -241,8 +241,17 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
         args += ["-b", "2048", "-ub", "2048"]
     if flash_attention:
         args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
-    if decision.spilled and not uma:
-        args += spill_overrides(profile)
+    if decision.spilled:
+        if not uma:
+            args += spill_overrides(profile)
+    elif profile.layers:
+        # A resident decision already says the weights fit beside the held window
+        # (spill_bytes == 0), so the flags have to commit to it. With only -c set, fit's own
+        # preference is spill-weights-and-hold-ctx: it leaves layers on the host even when the
+        # card has room. Measured on the pinned build (9B IQ4_XS, c=65536, q8 KV, -fa on): the
+        # model settled half on the host at 15.2 tok/s and reached 50.9 tok/s with every layer
+        # offloaded, same window held either way.
+        args += ["-ngl", str(len(profile.layers) + 1)]
     return args
 
 

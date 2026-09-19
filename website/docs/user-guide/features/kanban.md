@@ -71,8 +71,15 @@ store PR URL, SHA, required contexts, check IDs/URLs, classifications and recove
 instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
 infrastructure checks or wait, then retry completion. Use `kanban_block` when
 human action is needed. Generic GitHub `failure` cannot establish whether a test
-or artifact upload failed; inspect its retained URL. Explicit infrastructure
-conclusions and API failures are classified separately. No extra worker is spawned.
+or artifact upload failed; inspect its retained URL. Infrastructure subprocess
+failures are typed — `capability` (no `gh` binary), `auth_unavailable` (login
+banner, HTTP 401/403), `rate_limited`, `network` (timeout), `provider_error`
+(other exits, 404) — with generic `infra` kept only as the final net, so a
+delivered green PR is never reduced to one ambiguous null-head receipt.
+Receipts bind the PR URL and head SHA before the first API call, so
+auth/provider refusals still name the exact PR. `gh` stderr is never persisted:
+it only classifies the failure, and every stored detail is a fixed secret-free
+sentence. No extra worker is spawned.
 
 Receipt persistence and the terminal write recheck run/status/contract ownership
 under one SQLite lock: a reclaimed worker cannot complete or attach acceptance to

@@ -430,6 +430,7 @@ import {
   parseCompare,
   rateLimitFromHeaders
 } from './update-api-check'
+import { updateCheckAgent } from './update-api-proxy'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -3451,6 +3452,7 @@ function fetchGitHubApiOnce(url, accept, token) {
     const req = https.get(
       url,
       {
+        agent: updateCheckAgent(url),
         headers: githubApiHeaders(
           {
             Accept: accept,

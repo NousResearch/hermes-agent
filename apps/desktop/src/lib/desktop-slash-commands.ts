@@ -1,3 +1,4 @@
+import { translateNow } from '@/i18n'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
 import desktopSlashRegistry from './desktop-slash-registry.json'
@@ -580,7 +581,15 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
+  const canonical = canonicalDesktopSlashCommand(command)
+  const key = `composer.commandDescs.${canonical}`
+  const translated = translateNow(key)
+
+  if (translated !== key) {
+    return translated
+  }
+
+  return SPEC_BY_NAME.get(canonical)?.description || fallback
 }
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {

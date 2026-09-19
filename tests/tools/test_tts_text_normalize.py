@@ -1,3 +1,5 @@
+import pytest
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from tools.tts_text_normalize import prepare_spoken_text
@@ -47,3 +49,23 @@ def test_prepare_spoken_text_polish_edge_cases():
     assert "and/or" in prepare_spoken_text("choose and/or option")
     assert "N/A" in prepare_spoken_text("status N/A here")
     assert "2026/06/02" in prepare_spoken_text("due 2026/06/02 ok")
+
+
+@pytest.mark.parametrize(("opening", "closing", "code"), [
+    ("```", "```", "print('not spoken')"),
+    ("~~~", "~~~", "print('not spoken')"),
+    ("~~~~", "~~~~", "~~~\nnot spoken\n~~~"),
+    ("~~~", "~~~~", "print('not spoken')"),
+    ("   ~~~", "   ~~~", "print('not spoken')"),
+])
+def test_prepare_spoken_text_omits_fenced_code_for_supported_markdown_fences(opening, closing, code):
+    spoken = prepare_spoken_text(
+        f"Before\n{opening}python\n{code}\n{closing}\nAfter"
+    )
+
+    assert "Before" in spoken and "After" in spoken
+    assert "not spoken" not in spoken
+
+
+def test_inline_tilde_runs_do_not_hide_spoken_prose():
+    assert "keep these words" in prepare_spoken_text("Before ~~~keep these words~~~ After")

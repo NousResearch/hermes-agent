@@ -456,8 +456,8 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+const modelLabel = (model: string, effort?: string, fast?: boolean, provider?: string) =>
+  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : '', provider].filter(Boolean).join(' ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -496,6 +496,7 @@ export function StatusRule({
   statusColor,
   model,
   modelFast,
+  modelProvider,
   modelReasoningEffort,
   indicatorStyle = 'kaomoji',
   notice,
@@ -533,7 +534,7 @@ export function StatusRule({
       : ''
 
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelProvider)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
@@ -947,6 +948,7 @@ interface StatusRuleProps {
   cwdLabel: string
   model: string
   modelFast?: boolean
+  modelProvider?: string
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null

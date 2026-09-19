@@ -241,3 +241,45 @@ class TestWebSocketHostOriginGuard:
                 pass
 
         assert exc.value.code == 4403
+
+
+class TestConfiguredPublicWebSocketOrigin:
+    def test_public_origin_requires_exact_scheme_host_and_port(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import hermes_cli.web_server as ws
+        import hermes_cli.web_server_chat as wsc
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.dashboard_auth.prefix.resolve_public_url",
+            lambda: "https://public.example:8443",
+        )
+
+        def fake(origin):
+            return SimpleNamespace(
+                headers={"host": "127.0.0.1:9119", "origin": origin},
+                client=SimpleNamespace(host="127.0.0.1"),
+            )
+
+        assert wsc._ws_host_origin_reason(fake("https://public.example:8443")) is None
+        for origin in (
+            "http://public.example:8443",
+            "https://public.example:9443",
+            "http://[",
+            "https://public.example\\\\evil",
+            "https://public.example:0",
+        ):
+            assert wsc._ws_host_origin_reason(fake(origin)) is not None
+
+        monkeypatch.setattr(
+            "hermes_cli.dashboard_auth.prefix.resolve_public_url",
+            lambda: "https://public.example\\\\evil/path",
+        )
+        assert wsc._ws_host_origin_reason(fake("https://public.example\\\\evil")) is not None
+
+        monkeypatch.setattr(
+            "hermes_cli.dashboard_auth.prefix.resolve_public_url",
+            lambda: "https://public.example:0",
+        )
+        assert wsc._ws_host_origin_reason(fake("https://public.example:0")) is not None

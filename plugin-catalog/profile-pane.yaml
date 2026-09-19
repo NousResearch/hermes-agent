@@ -1,0 +1,15 @@
+name: profile-pane
+repo: https://github.com/taxbax/profile-pane
+sha: 88186a52bfd0a002790b4169804cfcfe2fd72fa6
+description: Native Hermes desktop pane for cross-profile configuration — stage skills onto profiles
+  and sync SOUL / memory / user / profile layers to a group's anchor, on demand or on a schedule.
+maintainer: taxbax
+tier: community
+category: desktop
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+platforms:
+- macos

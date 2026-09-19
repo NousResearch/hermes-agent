@@ -13,6 +13,7 @@ import { atom } from 'nanostores'
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
 import { isTimeoutError, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
@@ -121,6 +122,15 @@ interface Secondary {
   offState: () => void
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
+  /**
+   * Consecutive unanswered wake-probe pings on this entry's current socket;
+   * drives the same streak tolerance the primary's probe applies
+   * (decideLivenessForceClose). Reset on every answered probe and on every
+   * fresh socket open.
+   */
+  livenessProbeFailures: number
+  /** Pending deferred liveness re-probe after an in-flight-work deferral. */
+  livenessReprobeTimer: ReturnType<typeof setTimeout> | null
   /** Consecutive automatic dials that stalled (slot wait / dial timeout)
    *  rather than failing fast; see SECONDARY_STALLED_DIAL_BUDGET. */
   stalledDials: number
@@ -736,6 +746,9 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 
     entry.openedOnce = true
     entry.lastOpenedAt = Date.now()
+    // A fresh socket owes nothing to a previous socket's missed pings.
+    entry.livenessProbeFailures = 0
+    clearSecondaryLivenessReprobe(entry)
     openedScopes.add(entry.scope)
 
     try {
@@ -926,6 +939,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     offState: () => {},
     reconnectTimer: null,
     reconnectAttempt: 0,
+    livenessProbeFailures: 0,
+    livenessReprobeTimer: null,
     stalledDials: 0,
     reconnecting: false,
     pendingConnectionRedial: false,
@@ -1919,27 +1934,79 @@ const SECONDARY_WAKE_PROBE_TIMEOUT_MS = 5_000
 // is 30 minutes. Closing arms the entry's ordinary reconnect backoff via its
 // onState('closed') handler; a healthy-but-busy backend answers the ping and
 // keeps its socket (#94769 review).
+// A deferred liveness re-probe for one entry: cleared when the probe is
+// answered, the socket is redialed (fresh streak), or the entry is disposed.
+function clearSecondaryLivenessReprobe(entry: Secondary): void {
+  if (entry.livenessReprobeTimer !== null) {
+    clearTimeout(entry.livenessReprobeTimer)
+    entry.livenessReprobeTimer = null
+  }
+}
+
 function probeSecondaryLiveness(entry: Secondary): void {
   if (typeof entry.gateway.request !== 'function') {
     return
   }
 
-  void entry.gateway.request('ping', {}, SECONDARY_WAKE_PROBE_TIMEOUT_MS).catch((error: unknown) => {
-    // -32601 (method not found) = a version-skewed but HEALTHY backend that
-    // predates the ping method — the same compatibility carve-out the
-    // primary's probe makes in use-gateway-boot.
-    if (error instanceof JsonRpcGatewayError && error.code === -32601) {
-      return
-    }
+  void entry.gateway.request('ping', {}, SECONDARY_WAKE_PROBE_TIMEOUT_MS).then(
+    () => {
+      entry.livenessProbeFailures = 0
+      clearSecondaryLivenessReprobe(entry)
+    },
+    (error: unknown) => {
+      // -32601 (method not found) = a version-skewed but HEALTHY backend that
+      // predates the ping method — the same compatibility carve-out the
+      // primary's probe makes in use-gateway-boot.
+      if (error instanceof JsonRpcGatewayError && error.code === -32601) {
+        entry.livenessProbeFailures = 0
+        clearSecondaryLivenessReprobe(entry)
 
-    // The entry may have been pruned or redialed while the probe was
-    // pending; only the very same socket may be torn down.
-    if (g.secondaries.get(entry.scope) !== entry || !isOpen(entry.gateway)) {
-      return
-    }
+        return
+      }
 
-    entry.gateway.close()
-  })
+      // The entry may have been pruned or redialed while the probe was
+      // pending; only the very same socket may be torn down.
+      if (g.secondaries.get(entry.scope) !== entry || !isOpen(entry.gateway)) {
+        return
+      }
+
+      // ONE missed ping is not proof of death: a live backend mid tool call
+      // can starve its event loop past the probe budget, and force-closing it
+      // feeds the backend's ws_orphan_reap, interrupting the valid turn
+      // (#94769 review). Apply the SAME streak policy as the primary's probe
+      // (decideLivenessForceClose): defer the first failure while work is
+      // in flight behind a bounded re-probe, close only when the streak is
+      // exhausted — or immediately when nothing is in flight to protect.
+      entry.livenessProbeFailures += 1
+
+      const decision = decideLivenessForceClose({
+        workingSessionCount: entry.activeRequests,
+        consecutiveFailures: entry.livenessProbeFailures
+      })
+
+      if (!decision.close) {
+        if (entry.livenessReprobeTimer === null) {
+          entry.livenessReprobeTimer = setTimeout(() => {
+            entry.livenessReprobeTimer = null
+
+            // The entry may have been pruned or redialed while the re-probe
+            // waited; only the same open socket may be probed again.
+            if (g.secondaries.get(entry.scope) !== entry || !isOpen(entry.gateway)) {
+              return
+            }
+
+            probeSecondaryLiveness(entry)
+          }, LIVENESS_REPROBE_DELAY_MS)
+        }
+
+        return
+      }
+
+      entry.livenessProbeFailures = 0
+      clearSecondaryLivenessReprobe(entry)
+      entry.gateway.close()
+    }
+  )
 }
 
 // Recovery signal: nudge every live secondary back open. Power-resume/network
@@ -2071,6 +2138,7 @@ export function parkSecondariesForRetiredBackend(poolKey: string): string[] {
 function disposeSecondary(entry: Secondary): void {
   entry.wantOpen = false
   clearTimer(entry)
+  clearSecondaryLivenessReprobe(entry)
   entry.offEvent()
   entry.offRequest()
   entry.offState()

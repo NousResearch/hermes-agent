@@ -1,0 +1,8 @@
+name: freemaxxing
+kind: model-provider
+version: "0.3.0"
+description: "Opt-in free-route pooling with authenticated atomic completion recovery"
+author: Axl Ibiza
+license: MIT
+homepage: "https://github.com/NousResearch/hermes-agent"
+tags: [free, failover, routing, local, authenticated]

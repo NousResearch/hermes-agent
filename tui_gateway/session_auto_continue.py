@@ -54,6 +54,43 @@ def _auto_continue_note(prompt: str) -> str:
             f"finish the task. The interrupted request was:]\n\n{prompt}")
 
 
+def _turn_boundary_continue_note() -> str:
+    return (
+        "[System note: The previous turn reached its model-call limit before "
+        "the task was complete. Continue the unfinished work now. Check the "
+        "current state before repeating any action, and do not wait for another "
+        "user message.]"
+    )
+
+
+_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY = "_turn_boundary_continue_attempts"
+
+
+def _plan_turn_boundary_continue(session: dict, result: object) -> str | None:
+    reason = (
+        str(result.get("turn_exit_reason") or "")
+        if isinstance(result, dict)
+        else ""
+    )
+    reached_limit = (
+        isinstance(result, dict)
+        and result.get("completed") is False
+        and reason.startswith("max_iterations_reached")
+    )
+    if not reached_limit:
+        session.pop(_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY, None)
+        return None
+
+    enabled, _freshness_secs, max_attempts = _auto_continue_config()
+    attempts = int(session.get(_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY, 0) or 0)
+    if not enabled or attempts >= max_attempts:
+        session.pop(_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY, None)
+        return None
+
+    session[_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY] = attempts + 1
+    return _turn_boundary_continue_note()
+
+
 def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
     """Kick off a continuation turn for a crash-interrupted session (session.resume cold paths). Returns a descriptor
     for the resume payload when scheduled, else None. The turn runs on a background thread after the deferred agent

@@ -511,3 +511,63 @@ def test_failed_agent_build_leaves_marker_for_retry(
 
 # ── End to end: continuation runs a real turn and clears the marker ────
 
+
+
+def test_max_iteration_boundary_continues_without_user_nudge(
+    emits, turn_env, marker_home
+):
+    calls: list[str] = []
+
+    def _run(message, **kwargs):
+        calls.append(message)
+        if len(calls) == 1:
+            return {
+                "final_response": "",
+                "completed": False,
+                "turn_exit_reason": "max_iterations_reached(16/16)",
+            }
+        return {"final_response": "done", "completed": True}
+
+    agent = types.SimpleNamespace(
+        session_id="session-key", run_conversation=_run, clear_interrupt=lambda: None
+    )
+    session = _session(agent=agent, running=True)
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    assert len(calls) == 2
+    assert calls[1].startswith(
+        "[System note: The previous turn reached its model-call limit"
+    )
+    assert session["running"] is False
+
+
+def test_max_iteration_boundary_honors_auto_continue_attempt_limit(
+    emits, turn_env, marker_home, monkeypatch
+):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"desktop": {"auto_continue": {"max_attempts": 1}}},
+    )
+    calls: list[str] = []
+
+    def _run(message, **kwargs):
+        calls.append(message)
+        if len(calls) < 3:
+            return {
+                "final_response": "",
+                "completed": False,
+                "turn_exit_reason": "max_iterations_reached(16/16)",
+            }
+        return {"final_response": "done", "completed": True}
+
+    agent = types.SimpleNamespace(
+        session_id="session-key", run_conversation=_run, clear_interrupt=lambda: None
+    )
+    session = _session(agent=agent, running=True)
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    assert len(calls) == 2
+    assert session["running"] is False

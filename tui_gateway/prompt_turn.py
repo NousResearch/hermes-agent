@@ -433,6 +433,40 @@ def _run_post_turn_followups(
             _enqueue_prompt(session, steer, session.get("transport"))
     if _drain_queued_prompt(rid, sid, session):
         return
+    # A model-call limit is a turn boundary, not task completion. Continue
+    # through the normal synthesized-turn path instead of waiting for the
+    # user to send a nudge (which previously became the turn that finally
+    # triggered preflight compression).
+    _turn_boundary_followup = _plan_turn_boundary_continue(session, result)
+    if _turn_boundary_followup:
+        with session["history_lock"]:
+            if session.get("running"):
+                return
+            session["running"] = True
+        try:
+            _emit(
+                "status.update",
+                sid,
+                {"kind": "process", "text": "Continuing unfinished turn…"},
+            )
+            _emit("message.start", sid)
+            _run_prompt_submit(
+                rid,
+                sid,
+                session,
+                _turn_boundary_followup,
+                display_kind="auto_continue",
+            )
+        except Exception as _cont_exc:
+            print(
+                f"[tui_gateway] turn-boundary continuation failed: "
+                f"{type(_cont_exc).__name__}: {_cont_exc}",
+                file=sys.stderr,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+        return
+
     if goal_followup:
         with _session_turn_admission(session) as admitted:
             if not admitted or session.get("running"):
@@ -930,6 +964,11 @@ def _run_prompt_submit(
     if admitted is None:
         return False
     images, agent = admitted
+    # Read the caller's kind BEFORE the diagnostic mute below can rewrite it to
+    # "hidden": a muted auto-continue is still an auto-continue, and resetting
+    # its attempt budget here would uncap the continue loop.
+    if display_kind != "auto_continue":
+        session.pop(_TURN_BOUNDARY_CONTINUE_ATTEMPTS_KEY, None)
     from gateway.warning_notifications import diagnostic_turn_muted
     from agent.notification_presentation import notification_config_snapshot
     with _session_profile_runtime_scope(session):

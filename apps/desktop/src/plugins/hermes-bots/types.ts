@@ -77,6 +77,11 @@ export interface BotMeta {
   created?: number
 }
 
+/** NOTE: the subset of these fields actually observed by the roster pane must
+ *  stay in sync with `sessionFingerprint()` in `roster-fingerprint.ts` — the
+ *  5s poll's republish guard compares that allowlist, so a new pane-visible
+ *  field added here but not mirrored there stays stale until some other
+ *  detected change triggers a republish. */
 export interface RosterRow {
   name: string
   canonical_session?: CanonicalSession | null

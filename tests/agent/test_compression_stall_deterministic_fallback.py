@@ -73,6 +73,15 @@ def _stalling_call_llm(compressor, calls, *, fail_when_pinned=False):
     return _call
 
 
+def _wait_for_detached_compression_workers(deadline_s: float = 10.0) -> None:
+    """Block until every admitted compression-pool job has released its slot (the done-callback runs
+    after the worker's whole unwind, durable writes included)."""
+    deadline = time.monotonic() + deadline_s
+    while cc._compress_admitted_count and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert cc._compress_admitted_count == 0, "a cancelled compression worker never finished unwinding"
+
+
 def _summary_rows(messages):
     return [m for m in messages if isinstance(m.get("content"), str) and m["content"].startswith(SUMMARY_PREFIX)]
 
@@ -97,6 +106,11 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
         assert compressor._consecutive_timeout_failures >= 1
         assert compressor._summary_failure_cooldown_until > time.monotonic()
         assert calls == ["primary"], "no deterministic rung on the FIRST stall: the LLM route gets its backoff retry"
+
+        # The idle-stall host returns without joining its cancelled worker, which persists its own
+        # stall_interrupted backoff while unwinding on the pool. Let that detached unwind finish before
+        # lapsing the backoff, or its late row re-arms the cooldown and gates the second attempt.
+        _wait_for_detached_compression_workers()
 
         # The backoff lapses; the still-oversized context re-triggers compression (the reporter's next turn).
         compressor._summary_failure_cooldown_until = 0.0

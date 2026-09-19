@@ -150,6 +150,20 @@ def normalize_origin(url_or_origin: str) -> str:
     return f"{scheme}://{host}:{port}"
 
 
+def sanitize_vault_metadata(text: str) -> str:
+    """Strip invisible TAG/bidi/zero-width characters from agent-visible vault metadata.
+
+    ``label``/``identifier`` originate from password-manager entry fields (shared,
+    synced or imported vaults included), so a database writer can hide model-visible
+    text there. Single choke point for every metadata serialization consumer; the
+    encrypted store keeps the original values — display/handle resolution never
+    changes. Delegates to the shared Unicode smuggler scrubber.
+    """
+    from tools.ansi_strip import strip_unicode_tags
+
+    return strip_unicode_tags(text or "")
+
+
 @dataclass(frozen=True)
 class VaultItemMeta:
     """Metadata-only view of a vault item. Never contains secret values.
@@ -176,12 +190,12 @@ class VaultItemMeta:
         out = {
             "id": self.id,
             "kind": self.kind,
-            "label": self.label,
+            "label": sanitize_vault_metadata(self.label),
             "origin": self.origin,
             "created_at": self.created_at,
         }
         if self.identifier is not None:
-            out["identifier"] = self.identifier
+            out["identifier"] = sanitize_vault_metadata(self.identifier)
             out["identifier_type"] = self.identifier_type
         if self.has_otp:
             out["has_otp"] = True

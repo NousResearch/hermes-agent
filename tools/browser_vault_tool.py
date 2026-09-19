@@ -214,6 +214,7 @@ def browser_vault_list() -> str:
     """
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here
+    from agent.vault_store import sanitize_vault_metadata
 
     items, locked, errors = [], [], []
     for backend in enabled_backends():
@@ -227,14 +228,15 @@ def browser_vault_list() -> str:
             errors.append({"backend": backend.name, "error": str(exc)[:200]})
             continue
         for meta in metas:
-            entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
+            entry = {"handle": meta.id, "backend": backend.name,
+                     "label": sanitize_vault_metadata(meta.label), "kind": meta.kind,
                      "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
             if len(meta.allowed_origins) > 1:
                 entry["allowed_origins"] = list(meta.allowed_origins)
             if meta.has_otp or backend.needs_unlock:
                 entry["two_factor"] = "automatic" if meta.has_otp else "automatic if the manager stores a TOTP seed, else the user is asked"
             if meta.identifier:
-                entry["identifier"] = meta.identifier
+                entry["identifier"] = sanitize_vault_metadata(meta.identifier)
                 entry["identifier_type"] = meta.identifier_type
             items.append(entry)
     out: Dict[str, Any] = {"success": True, "items": items}

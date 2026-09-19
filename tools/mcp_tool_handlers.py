@@ -96,9 +96,9 @@ def _check_circuit_breaker(server_name: str) -> Optional[str]:
         return tool_error(f"MCP server '{server_name}' rejected the last {failures} calls (it is reachable; see the "
                           f"error text those calls returned). Paused for ~{retry_in}s. Do NOT repeat the same call — "
                           f"fix the arguments/URL/target or use a different approach.")
-    return tool_error(f"MCP server '{server_name}' is unreachable after {failures} consecutive failures. "
-                      f"Auto-retry available in ~{retry_in}s. Do NOT retry "
-                      f"this tool yet — use alternative approaches or ask the user to check the MCP server.")
+    return tool_error(f"MCP server '{server_name}' is temporarily unavailable "
+                      f"({failures} consecutive failures). It will auto-retry in ~{retry_in}s. "
+                      f"Alternative approaches may be used in the meantime.")
 
 
 def _acquire_call_server(server_name: str, tool_timeout: float):
@@ -113,8 +113,9 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
         return server, None
     _core._bump_server_error(server_name)
     if server and _loop._signal_reconnect(server):
-        return None, tool_error(f"MCP server '{server_name}' transport is down; reconnect requested. Do NOT retry this "
-                                f"tool immediately — give it a few seconds to come back.")
+        return None, tool_error(f"MCP server '{server_name}' transport is down; reconnect requested. "
+                                f"It may take a few seconds to come back. Alternative approaches may be used "
+                                f"in the meantime.")
     return None, not_connected
 
 

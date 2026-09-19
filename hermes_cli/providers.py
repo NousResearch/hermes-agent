@@ -374,12 +374,22 @@ def _user_pdef(pid: str, name: str, base_url: str, key_env: str, transport: str 
 
 
 def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[ProviderDef]:
-    """Resolve a provider from the user's config.yaml ``providers:`` section."""
+    """Resolve a provider from the user's config.yaml ``providers:`` section.
+
+    A ``providers.<name>`` block that carries no endpoint (``api``/``url``/``base_url``) is not a
+    custom-endpoint definition — it is tuning for a BUILT-IN provider of the same name (e.g.
+    ``providers.bedrock: {stale_timeout_seconds: 600}``, the documented path in
+    ``agent/turn_recovery.py`` / ``thinking_timeout_guidance.py``). Resolving it here would shadow
+    the built-in's real transport/base_url/auth_type with an empty ``openai_chat``/``api_key``
+    stub, routing e.g. AWS Bedrock through the generic custom-endpoint ``/models`` probe (#110402).
+    """
     entry = user_config.get(name) if isinstance(user_config, dict) and user_config else None
     if not isinstance(entry, dict):
         return None
-    return _user_pdef(name, entry.get("name", "") or name,
-                      entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or "",
+    base_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
+    if not base_url:
+        return None
+    return _user_pdef(name, entry.get("name", "") or name, base_url,
                       entry.get("key_env") or entry.get("api_key_env") or "",
                       entry.get("transport", "openai_chat") or "openai_chat")
 

@@ -191,6 +191,7 @@ class ToolEntry:
     description: str
     emoji: str
     max_result_size_chars: int | float | None = None
+    owner_session_key: Optional[str] = None
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
@@ -203,6 +204,14 @@ class _PluginOverridePolicy:
 
     def __init__(self, allowed: bool) -> None:
         self.allowed = bool(allowed)
+
+
+@dataclass(eq=False, frozen=True, slots=True)
+class _SessionToolsetMetadata:
+    """Identity-bearing metadata for one session-toolset generation."""
+
+    description: str
+    direct: bool
 
 
 _OVERRIDE_DENIED_MSG = (
@@ -432,6 +441,9 @@ class ToolRegistry:
         self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
+        # Profile-scoped plugin toolsets. The record identity makes teardown
+        # generation-safe when a session reconnects under the same name.
+        self._session_toolset_metadata: Dict[str, Dict[str, _SessionToolsetMetadata]] = {}
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
@@ -527,6 +539,48 @@ class ToolRegistry:
     def get_toolset_alias_target(self, alias: str) -> Optional[str]:
         with self._lock:
             return self._toolset_aliases.get(alias)
+
+    def register_session_toolset(
+        self, toolset: str, description: str, *, direct: bool, scope: str,
+    ) -> _SessionToolsetMetadata:
+        """Register host-managed metadata for a session-owned plugin toolset."""
+        metadata = _SessionToolsetMetadata(description=description, direct=bool(direct))
+        with self._lock:
+            self._session_toolset_metadata.setdefault(scope, {})[toolset] = metadata
+            self._generation += 1
+        return metadata
+
+    def deregister_session_toolset(
+        self, toolset: str, metadata: _SessionToolsetMetadata, *, scope: str,
+    ) -> bool:
+        """Remove metadata only while *metadata* is still the current generation."""
+        with self._lock:
+            registered = self._session_toolset_metadata.get(scope)
+            if registered is None or registered.get(toolset) is not metadata:
+                return False
+            registered.pop(toolset)
+            if not registered:
+                self._session_toolset_metadata.pop(scope, None)
+            self._generation += 1
+            return True
+
+    def get_plugin_toolset_description(
+        self, toolset: str, *, scope: Optional[str] = None,
+    ) -> Optional[str]:
+        """Description registered for a dynamic plugin toolset, if any."""
+        with self._lock:
+            metadata = self._session_toolset_metadata.get(
+                scope or self.current_scope_key(), {}
+            ).get(toolset)
+            return metadata.description if metadata is not None else None
+
+    def is_direct_toolset(self, toolset: str, *, scope: Optional[str] = None) -> bool:
+        """Whether *toolset* is direct in the active profile."""
+        with self._lock:
+            metadata = self._session_toolset_metadata.get(
+                scope or self.current_scope_key(), {}
+            ).get(toolset)
+            return bool(metadata and metadata.direct)
 
     # ---- Registration ------------------------------------------------
 
@@ -651,7 +705,7 @@ class ToolRegistry:
         check_fn: Callable = None, requires_env: list = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None, override: bool = False,
-        scope: Optional[str] = None):
+        scope: Optional[str] = None, owner_session_key: Optional[str] = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -715,6 +769,7 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
+                owner_session_key=owner_session_key,
                 dynamic_schema_overrides=dynamic_schema_overrides)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
@@ -878,6 +933,9 @@ class ToolRegistry:
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        gateway_session_key = kwargs.pop("gateway_session_key", None)
+        if entry.owner_session_key is not None and gateway_session_key != entry.owner_session_key:
+            return tool_error("Session-owned tool invoked outside its owning session")
         try:
             if entry.is_async:
                 from model_tools import _run_async

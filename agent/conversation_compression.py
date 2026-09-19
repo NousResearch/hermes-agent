@@ -2960,6 +2960,78 @@ def _run_summary_dispatch(
     return compressed
 
 
+def _inject_todo_snapshot_without_reordering_human_intent(
+    messages: list,
+    todo_snapshot: str,
+    *,
+    repair_message_sequence: Optional[Callable[[list], Any]] = None,
+) -> None:
+    """Refresh todo context without making scaffolding the latest user ask.
+
+    A protected stale todo row may survive in a compaction tail. Remove every
+    old snapshot, then fold the refreshed state into the newest real user turn
+    wherever it sits. Only a zero-human transcript retains a flagged snapshot.
+    """
+    from agent.context_compressor import _append_text_to_content
+
+    cleaned: list = []
+    found_stale_snapshot = False
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            cleaned.append(message)
+            continue
+        original_content = message.get("content")
+        stripped_content = _strip_stale_todo_snapshot(original_content)
+        if stripped_content == original_content:
+            cleaned.append(message)
+            continue
+        found_stale_snapshot = True
+        if _todo_snapshot_is_only_content(original_content, stripped_content):
+            continue
+        refreshed = dict(message)
+        _replace_message_content(refreshed, stripped_content)
+        refreshed.pop("_todo_snapshot_synthetic", None)
+        cleaned.append(refreshed)
+    messages[:] = cleaned
+    if found_stale_snapshot and callable(repair_message_sequence):
+        # A standalone snapshot can sit between assistant messages. Remove it
+        # before appending a replacement, then run the normal sequence repair
+        # so every stale boundary (including repeated ones) remains alternating.
+        repair_message_sequence(messages)
+
+    # Preserve normal release behavior: without stale state, only a trailing
+    # real-user turn may absorb the fresh snapshot. The broader scan is only
+    # needed after stale scaffolding survived a newer human correction.
+    candidates = reversed(messages) if found_stale_snapshot else reversed(messages[-1:])
+    for message in candidates:
+        if not _is_real_user_message(message):
+            continue
+        content = message.get("content")
+        snapshot_text = (
+            f"\n\n{todo_snapshot}"
+            if isinstance(content, str) and content
+            else todo_snapshot
+        )
+        _replace_message_content(message, _append_text_to_content(content, snapshot_text))
+        return
+
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
+        # Cleanup can preserve a non-text-only synthetic row (for example an
+        # image/audio part). It is not a real-human anchor, but appending a new
+        # user row would violate strict role alternation. Keep the preserved
+        # payload and attach the refreshed synthetic snapshot to that row.
+        content = messages[-1].get("content")
+        _replace_message_content(messages[-1], _append_text_to_content(content, todo_snapshot))
+        messages[-1]["_todo_snapshot_synthetic"] = True
+        return
+
+    messages.append({
+        "role": "user",
+        "content": todo_snapshot,
+        "_todo_snapshot_synthetic": True,
+    })
+
+
 def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
     """Strip stale todo snapshots from ``compressed`` and fold the live one in (in place)."""
     todo_snapshot = agent._todo_store.format_for_injection()
@@ -3004,34 +3076,9 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
         _reload_notice = _pruned_skill_reload_notice(compressed)
         if _reload_notice:
             todo_snapshot = f"{todo_snapshot}\n\n{_reload_notice}"
-        # Fold the snapshot into a trailing REAL user msg (no synthetic user/user pair);
-        # strip old snapshots first. Scaffolding tails must not absorb it (provenance).
-        # Any snapshot merged at an earlier boundary is stripped first so repeated compactions refresh
-        # rather than accumulate todo state (#26981). Scaffolding tails (continuation marker, summary
-        # handoff, a bare stale snapshot row) must never absorb the snapshot: merging would upgrade them to
-        # "real user" evidence and break zero-user provenance (#69292), so those keep the flagged standalone
-        # append and the real-user preservation pass continues to see todo scaffolding, not human intent.
-        from agent.context_compressor import _append_text_to_content
-        merged = False
-        _tail = compressed[-1] if compressed and isinstance(compressed[-1], dict) else None
-        if _tail is not None and _tail.get("role") == "user":
-            _stripped = _strip_stale_todo_snapshot(_tail.get("content"))
-            _probe = {key: value for key, value in _tail.items() if key != "content"}
-            _probe["content"] = _stripped
-            if _is_real_user_message(_probe):
-                _snapshot_text = f"\n\n{todo_snapshot}" if isinstance(_stripped, str) and _stripped else todo_snapshot
-                _replace_message_content(_tail, _append_text_to_content(_stripped, _snapshot_text))
-                merged = True
-            elif (
-                _stripped != _tail.get("content") and not _message_text({"role": "user", "content": _stripped}).strip()
-            ):
-                # The tail was nothing but an earlier snapshot row —
-                # refresh it in place instead of stacking a duplicate.
-                _replace_message_content(_tail, todo_snapshot)
-                _tail["_todo_snapshot_synthetic"] = True
-                merged = True
-        if not merged:
-            compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
+        _inject_todo_snapshot_without_reordering_human_intent(
+            compressed, todo_snapshot, repair_message_sequence=agent._repair_message_sequence
+        )
 
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:

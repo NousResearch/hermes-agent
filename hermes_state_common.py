@@ -428,6 +428,17 @@ CREATE TABLE IF NOT EXISTS messages (
     display_order INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS decision_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL CHECK(kind IN ('approval', 'denial', 'correction', 'preference')),
+    text TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_ledger_session_id ON decision_ledger(session_id, id);
+
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,

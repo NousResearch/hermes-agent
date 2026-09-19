@@ -84,6 +84,17 @@ def _ic_abort_active_request(agent, reason: str, failure_log: str) -> None:
             logger.debug(failure_log, exc_info=True)
 
 
+def _record_user_decision(agent, kind: str, text: str) -> None:
+    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", "") or ""
+    recorder = getattr(db, "append_decision_ledger_entry", None)
+    if not session_id or not callable(recorder):
+        return
+    try:
+        recorder(session_id, kind, text, turn_id=getattr(agent, "_current_turn_id", "") or "")
+    except Exception:
+        logger.debug("Could not record user decision ledger entry", exc_info=True)
+
+
 def _ic_signal_tool_workers(agent, active: bool, **kw) -> None:
     """Fan the tool interrupt bit out to concurrent-tool worker tids.
 
@@ -250,6 +261,7 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+        _record_user_decision(self, "preference", cleaned)
         return True
 
     def redirect(self, text: str) -> bool:
@@ -300,6 +312,8 @@ class InterruptControlMixin:
             )
             self._interrupt_requested = True
             self._interrupt_message = None
+
+        _record_user_decision(self, "correction", cleaned)
 
         # Interrupt only the model request — no fan-out to tool workers / child agents as interrupt() does.
         _execution_thread_id = getattr(self, "_execution_thread_id", None)

@@ -3034,6 +3034,35 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
             compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
 
 
+_DECISION_LEDGER_HEADER = "[DECISION LEDGER — VERBATIM]"
+_DECISION_LEDGER_FOOTER = "[END DECISION LEDGER]"
+
+
+def _fold_decision_ledger(agent: Any, compressed: list) -> None:
+    """Replace an old ledger handoff with the durable, ordered session ledger."""
+    for index in range(len(compressed) - 1, -1, -1):
+        message = compressed[index]
+        if isinstance(message, dict) and message.get("_decision_ledger_synthetic"):
+            compressed.pop(index)
+    reader = getattr(getattr(agent, "_session_db", None), "get_decision_ledger_entries", None)
+    session_id = getattr(agent, "session_id", "") or ""
+    if not session_id or not callable(reader):
+        return
+    try:
+        entries = reader(session_id)
+    except Exception:
+        logger.debug("Could not load decision ledger for compaction", exc_info=True)
+        return
+    if not entries:
+        return
+    lines = [_DECISION_LEDGER_HEADER]
+    for entry in entries:
+        label = f"{entry.get('kind', 'decision')} ({entry['turn_id']})" if entry.get("turn_id") else entry.get("kind", "decision")
+        lines.append(f"- {label}: {entry.get('text', '')}")
+    lines.append(_DECISION_LEDGER_FOOTER)
+    compressed.append({"role": "user", "content": "\n".join(lines), "_decision_ledger_synthetic": True})
+
+
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     """Refresh tool schemas and rebuild the system prompt at the commit boundary."""
     cached_system_prompt = agent._cached_system_prompt
@@ -3174,6 +3203,8 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
     with _swallow('Could not migrate loop on compression: %s'):
         from hermes_cli.loops import migrate_loop_to_session
         migrate_loop_to_session(old_session_id, agent.session_id, reason="compression")
+    with _swallow('Could not migrate decision ledger on compression: %s'):
+        agent._session_db.copy_decision_ledger_entries(old_session_id, agent.session_id)
     if not old_title:
         return
     _src = None
@@ -3978,6 +4009,7 @@ def compress_context(
                 return messages, _existing_sp
         _warn_summary_or_aux_fallback(agent)
         _fold_todo_snapshot(agent, compressed)
+        _fold_decision_ledger(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(

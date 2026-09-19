@@ -254,6 +254,28 @@ _INHERIT_PARENT_ROUTING_SQL = (
 class SessionSessionsMixin:
     """Session rows: create/inherit, lifecycle flags, model_config, listing, deletion."""
 
+    _DECISION_LEDGER_MAX_ENTRIES = 50
+
+    def append_decision_ledger_entry(self, session_id: str, kind: str, text: str, *, turn_id: str = "") -> None:
+        """Persist one explicit, replayable user decision and retain the newest fixed window."""
+        if kind not in {"approval", "denial", "correction", "preference"}:
+            raise ValueError(f"Unsupported decision ledger kind: {kind!r}")
+        if not isinstance(text, str) or not text:
+            return
+        def _append(conn) -> None:
+            conn.execute("INSERT INTO decision_ledger (session_id, turn_id, kind, text, created_at) VALUES (?, ?, ?, ?, ?)", (session_id, turn_id or "", kind, text, time.time()))
+            conn.execute("DELETE FROM decision_ledger WHERE session_id = ? AND id NOT IN (SELECT id FROM decision_ledger WHERE session_id = ? ORDER BY id DESC LIMIT ?)", (session_id, session_id, self._DECISION_LEDGER_MAX_ENTRIES))
+        self._execute_write(_append)
+
+    def get_decision_ledger_entries(self, session_id: str) -> List[Dict[str, str]]:
+        """Return the oldest-to-newest durable decision entries for one session."""
+        rows = self._read_all("SELECT turn_id, kind, text FROM decision_ledger WHERE session_id = ? ORDER BY id ASC", (session_id,))
+        return [{"turn_id": str(row["turn_id"] or ""), "kind": row["kind"], "text": row["text"]} for row in rows]
+
+    def copy_decision_ledger_entries(self, parent_session_id: str, child_session_id: str) -> None:
+        """Carry a bounded ledger to a compression child without reinterpreting its text."""
+        self._write_sql("INSERT INTO decision_ledger (session_id, turn_id, kind, text, created_at) SELECT ?, turn_id, kind, text, created_at FROM decision_ledger WHERE session_id = ? ORDER BY id ASC", (child_session_id, parent_session_id))
+
     def _own_profile_name(self) -> Optional[str]:
         """The profile owning THIS store, from ``db_path`` alone (``<root>/state.db`` → default,
         ``<root>/profiles/<name>/state.db`` → name): a gateway serving a NON-launch profile opens that

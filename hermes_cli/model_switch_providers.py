@@ -209,31 +209,45 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
 
 
 def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
-    """Fetch stale/missing provider catalogs in parallel before the serial picker loop.
+    """Fetch the provider catalogs the serial picker loop would block on, in parallel.
 
-    On a cold cache the serial loop would block 1-8s per provider; after the prefetch the wait is
-    the slowest single provider. Each worker re-persists through the thread-safe
-    ``update_provider_cache_entry`` so concurrent writes cannot clobber each other."""
+    Only rows the serial call cannot serve from disk are fetched; each worker lets
+    :func:`cached_provider_model_ids` persist its own result under the shared write lock."""
     from hermes_cli.models import (
-        _PROVIDER_MODELS_CACHE_TTL, _credential_fingerprint, _load_provider_models_cache,
-        cached_provider_model_ids, normalize_provider)
+        _OLLAMA_LOCAL_MODELS_CACHE_TTL, _PROVIDER_MODELS_CACHE_TTL,
+        _PROVIDER_MODELS_STALE_SERVE_MAX, _cache_entry_valid, _credential_fingerprint,
+        _load_provider_models_cache, _normalized_cache_slug, cached_provider_model_ids)
 
-    # Read-only staleness check mirroring cached_provider_model_ids (which re-reads the cache
-    # itself, so a concurrent change between check and fetch is harmless).
     now = time.time()
+
+    def _servable_from_disk(key: str, entry) -> bool:
+        """True when the serial ``cached_provider_model_ids(key)`` would not go to the network.
+
+        Mirrors that function at the default ``ttl_seconds`` (no caller overrides it)."""
+        is_ollama = key == "ollama"
+        if not _cache_entry_valid(entry, _credential_fingerprint(key), allow_empty=is_ollama):
+            return False
+        age = now - float(entry["at"])
+        ttl = min(_PROVIDER_MODELS_CACHE_TTL, _OLLAMA_LOCAL_MODELS_CACHE_TTL) if is_ollama \
+            else _PROVIDER_MODELS_CACHE_TTL
+        if age < ttl:
+            return True
+        # Expired non-empty rows are served out to the stale-serve bound while an SWR thread
+        # revalidates; an empty row is authoritative only for ollama's short native TTL above.
+        return bool(entry["models"]) and age < _PROVIDER_MODELS_STALE_SERVE_MAX
+
+    # Gate on the row the serial call actually reads — _normalized_cache_slug keeps a bare
+    # "ollama" as its own key instead of letting normalize_provider fold it into "custom".
+    # cached_provider_model_ids re-reads the cache itself, so a concurrent change between
+    # check and fetch is harmless.
     stale_slugs: list[str] = []
     cache = _load_provider_models_cache()
     for slug in provider_slugs:
-        normalized = normalize_provider(slug) or (slug or "")
-        if not normalized:
-            continue
-        entry = cache.get(normalized)
-        if (
-            isinstance(entry, dict) and entry.get("fp") == _credential_fingerprint(normalized)
-            and isinstance(entry.get("models"), list) and entry["models"]
-            and now - float(entry.get("at", 0)) < _PROVIDER_MODELS_CACHE_TTL):
-            continue
-        stale_slugs.append(normalized)
+        key = _normalized_cache_slug(slug)
+        if key and not _servable_from_disk(key, cache.get(key)):
+            stale_slugs.append(key)
+    # Distinct slugs can normalize to one cache key (aliases); one fetch per row is enough.
+    stale_slugs = list(dict.fromkeys(stale_slugs))
 
     if not stale_slugs:
         return
@@ -241,12 +255,10 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     import concurrent.futures
     def _fetch_one(slug: str) -> None:
         try:
-            models = cached_provider_model_ids(slug, force_refresh=True)
-            # cached_provider_model_ids persists via a non-locked read-modify-write; re-persist
-            # through the locked path so no write is lost under concurrency.
-            if models:
-                from hermes_cli.models import update_provider_cache_entry
-                update_provider_cache_entry(slug, models)
+            # cached_provider_model_ids persists its own result under the shared cache write
+            # lock; re-persisting here would stamp a stale entry as fresh when the forced
+            # fetch came back empty.
+            cached_provider_model_ids(slug, force_refresh=True)
         except Exception:
             pass  # best-effort; picker falls back to curated list
 

@@ -1566,10 +1566,7 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
         try:
             entry = (refresh_fn or _default_refresh)()
             if entry:
-                # Under the write lock: the GUI read path spawns one of these per stale provider, so
-                # the plain load-modify-save would let concurrent warms drop each other's rows.
-                with _cache_write_lock:
-                    _store_cache_entry(cache_key, entry)
+                _persist_cache_entry(cache_key, entry)
         except Exception:
             logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
         finally:
@@ -1677,23 +1674,36 @@ def _save_provider_models_cache(data: dict) -> None:
 
 
 def _store_cache_entry(cache_key: str, entry: dict, cache: Optional[dict] = None) -> None:
-    """Write one row into the disk cache (reloading the latest state unless ``cache`` is given)."""
+    """Write one row into the disk cache, reloading the latest state unless ``cache`` is given.
+
+    Unlocked primitive — callers whose load and save can span a concurrent writer must go
+    through :func:`_persist_cache_entry` instead. ``cache`` is for callers writing several rows
+    out of one already-loaded dict, where the extra reloads would be pure overhead."""
     if cache is None:
         cache = _load_provider_models_cache()
     cache[cache_key] = entry
     _save_provider_models_cache(cache)
 
 
+def _persist_cache_entry(cache_key: str, entry: dict) -> None:
+    """Write one entry into the shared cache file under ``_cache_write_lock``.
+
+    Re-reads inside the lock: the copy that gets saved is the one observed under the lock,
+    never a snapshot loaded before a multi-second ``/v1/models`` round-trip, so a writer can
+    only ever add its own key."""
+    with _cache_write_lock:
+        _store_cache_entry(cache_key, entry)
+
+
 def update_provider_cache_entry(provider: str, models: list[str]) -> None:
-    """Thread-safe single-entry update for parallel prefetch workers: load-modify-save under a lock
-    so concurrent fetches don't clobber each other's rows. Best-effort, silent on any error."""
+    """Thread-safe single-entry update of the provider-models disk cache: load-modify-save under
+    ``_cache_write_lock`` so concurrent writers can't clobber each other's rows. Best-effort."""
     try:
-        normalized = normalize_provider(provider) or (provider or "")
+        normalized = _normalized_cache_slug(provider)
         if not normalized or not models:
             return
         fp = _credential_fingerprint(normalized)
-        with _cache_write_lock:
-            _store_cache_entry(normalized, _cache_entry(fp, models))
+        _persist_cache_entry(normalized, _cache_entry(fp, models))
     except Exception:
         pass
 
@@ -1754,13 +1764,13 @@ def cached_provider_model_ids(
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
-        _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
+        _persist_cache_entry(normalized, _cache_entry(fp, live, now))
         return list(live)
 
     if is_ollama:
         if _ollama_native_probe_reachable():
             # A reachable empty native catalog is authoritative; do not resurrect a stale disk catalog.
-            _store_cache_entry(normalized, _cache_entry(fp, [], now), cache)
+            _persist_cache_entry(normalized, _cache_entry(fp, [], now))
             return []
         # A failed/non-native probe is not authoritative: keep a stale catalog rather than blanking
         # the picker during a transient outage.
@@ -1792,14 +1802,21 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         _copilot_acp_session_memo = None
         if provider is None:
             path = _provider_models_cache_path()
-            if path.exists():
-                path.unlink()
+            # Same lock as the writers: unlinking outside it lets a writer that already
+            # loaded the old snapshot write the whole pre-clear dict back afterwards.
+            with _cache_write_lock:
+                if path.exists():
+                    path.unlink()
             return
-        cache = _load_provider_models_cache()
         normalized = _normalized_cache_slug(provider)
-        if normalized in cache:
-            del cache[normalized]
-            _save_provider_models_cache(cache)
+        # Same lock as the writers: an unlocked delete would save a copy read before a
+        # concurrent refresh landed, resurrecting the entry it just removed and dropping the
+        # refreshed ones.
+        with _cache_write_lock:
+            cache = _load_provider_models_cache()
+            if normalized in cache:
+                del cache[normalized]
+                _save_provider_models_cache(cache)
     except Exception:
         pass
 
@@ -2578,7 +2595,7 @@ def cached_fetch_api_models(
     live = _live()
     if live or isinstance(live, _NativePickerModelList):
         stored = _entry(live, now)
-        _store_cache_entry(cache_key, stored, cache)
+        _persist_cache_entry(cache_key, stored)
         return _catalog(stored)
     # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it
     # (non-empty only: an empty native row is not worth resurrecting over the generic fallback).

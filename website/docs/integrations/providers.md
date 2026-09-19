@@ -1676,7 +1676,17 @@ routing_policy:
     base_url_hosts: [api.z.ai, open.bigmodel.cn]
 ```
 
-Use `require_explicit: true` for profiles where an available credential must never authorize automatic provider selection. Deny entries are case-insensitive; model entries support shell-style patterns, and endpoint entries accept either a host or URL. A route policy does not inspect arbitrary third-party/plugin-owned HTTP clients; it covers Hermes' built-in model transports.
+Use `require_explicit: true` for profiles where an available credential must never authorize automatic provider selection. Deny entries are case-insensitive; model entries support shell-style patterns, and endpoint entries accept either a host or an absolute URL (its host is matched; a URL path is ignored). Invalid enabled policy syntax is rejected rather than silently weakened. A route policy does not inspect arbitrary third-party/plugin-owned HTTP clients; it covers Hermes' built-in model transports.
+
+### Mandatory launch floor
+
+For a supervised or multi-profile runtime, pass a policy file explicitly at process launch:
+
+```text
+hermes --model-policy /etc/hermes/model-policy.yaml gateway run
+```
+
+The selected file must be readable, valid YAML, and set `enabled: true`; otherwise Hermes exits before plugin or credential startup. It is a process-wide floor, not profile inheritance: every served profile retains its own configuration, while its policy can only add restrictions—not weaken the selected file's denials or `require_explicit` setting. The flag is preserved by Hermes self-relaunches. Use an absolute, administrator-controlled path for a service unit.
 
 ## Fallback Providers
 

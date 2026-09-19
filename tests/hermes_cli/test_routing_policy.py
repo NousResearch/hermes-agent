@@ -148,3 +148,50 @@ def test_policy_keeps_unrelated_route_usable():
         model="gpt-5.6-terra",
         base_url="https://chatgpt.com/backend-api/codex",
     )
+
+
+def test_selected_policy_file_is_a_non_weakenable_floor(tmp_path):
+    from hermes_cli.routing_policy import (
+        RoutingPolicyError,
+        clear_model_policy_floor,
+        select_model_policy_file,
+        check_route,
+    )
+
+    policy_file = tmp_path / "mandatory-policy.yaml"
+    policy_file.write_text(
+        "enabled: true\ndeny:\n  providers: [openrouter]\n",
+        encoding="utf-8",
+    )
+    try:
+        select_model_policy_file(policy_file)
+        with pytest.raises(RoutingPolicyError, match="provider"):
+            check_route({"enabled": False}, provider="openrouter", model="allowed", base_url="https://example.test")
+    finally:
+        clear_model_policy_floor()
+
+
+@pytest.mark.parametrize("body", ["deny: []\n", "enabled: true\ndeny:\n  base_url_hosts: [not a host]\n"])
+def test_selected_policy_file_rejects_malformed_content(tmp_path, body):
+    from hermes_cli.routing_policy import RoutingPolicyError, select_model_policy_file
+
+    policy_file = tmp_path / "malformed.yaml"
+    policy_file.write_text(body, encoding="utf-8")
+    with pytest.raises(RoutingPolicyError, match="invalid routing policy"):
+        select_model_policy_file(policy_file)
+
+
+def test_selected_policy_file_rejects_missing_file(tmp_path):
+    from hermes_cli.routing_policy import RoutingPolicyError, select_model_policy_file
+
+    with pytest.raises(RoutingPolicyError, match="could not read"):
+        select_model_policy_file(tmp_path / "missing.yaml")
+
+
+def test_model_policy_flag_is_inherited_top_level_runtime_option():
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, _chat = build_top_level_parser()
+    args = parser.parse_args(["--model-policy", "operator-floor.yaml"])
+
+    assert args.model_policy == "operator-floor.yaml"

@@ -92,6 +92,26 @@ class TestGatewayEmptyModelFallback:
             with pytest.raises(RoutingPolicyError, match="selected model"):
                 runner._resolve_session_agent_runtime()
 
+    def test_require_explicit_rejects_before_catalog_default_or_recovery(self):
+        """Strict policy sees missing intent before gateway-derived model recovery."""
+        import pytest
+        from gateway.run import GatewayRunner
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        runner.config = {"routing_policy": {"enabled": True, "require_explicit": True}}
+
+        with patch("gateway.run._resolve_gateway_model", return_value=""), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "requested_provider": "openai-codex", "provider": "openai-codex",
+                 "base_url": "https://chatgpt.com/backend-api/codex",
+             }), \
+             patch("hermes_cli.models.get_default_model_for_provider", side_effect=pytest.fail) as catalog:
+            with pytest.raises(RoutingPolicyError, match="explicit model"):
+                runner._resolve_session_agent_runtime()
+        assert not catalog.called
+
     def test_persisted_fast_override_is_denied_before_return(self):
         """A durable override with its own API key cannot bypass the gateway policy gate."""
         import pytest

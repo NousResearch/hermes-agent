@@ -2460,6 +2460,11 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
+        # A route policy is a boundary, not merely a dispatch-time warning.  Validate the
+        # whole candidate before the atomic write so generic callers cannot durably stage a
+        # route that a later worker would have to reject.
+        from hermes_cli.routing_policy import check_config_routes
+        check_config_routes(normalized)
         atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
@@ -3734,6 +3739,8 @@ def set_config_value(key: str, value: str, force: bool = False):
         user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
+    from hermes_cli.routing_policy import check_config_routes
+    check_config_routes(user_config)
     _write_user_config(config_path, user_config)
 
     # Keep .env in sync: terminal_tool reads TERMINAL_ENV etc. directly from env vars.

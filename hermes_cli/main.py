@@ -3022,6 +3022,14 @@ def _run_oneshot_from_args(args) -> None:
     )
 
 
+def _activate_selected_model_policy(args) -> None:
+    """Fail closed before plugin/credential startup when an operator selected a policy floor."""
+    policy_path = getattr(args, "model_policy", None)
+    if policy_path:
+        from hermes_cli.routing_policy import select_model_policy_file
+        select_model_policy_file(policy_path)
+
+
 def _light_chat_parser():
     """Top-level + chat parser only (no subcommand tree); chat dispatches to cmd_chat."""
     from hermes_cli._parser import build_top_level_parser
@@ -3117,6 +3125,7 @@ def _try_fast_chat_launch() -> bool:
 
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+    _activate_selected_model_policy(args)
     _prepare_agent_startup(args)
 
     if getattr(args, "oneshot", None):
@@ -3155,6 +3164,8 @@ def _try_termux_fast_cli_launch() -> bool:
 
     parser = _light_chat_parser()
     args = parser.parse_args(_coalesce_session_name_args(argv))
+
+    _activate_selected_model_policy(args)
 
     if getattr(args, "version", False):
         _print_version_info(check_updates=True)
@@ -3205,6 +3216,8 @@ def _try_termux_fast_tui_launch() -> bool:
 
     parser = _light_chat_parser()
     args = parser.parse_args(_coalesce_session_name_args(sys.argv[1:]))
+
+    _activate_selected_model_policy(args)
 
     # Preserve top-level behaviours whose semantics are not "launch chat/TUI".
     if getattr(args, "version", False) or getattr(args, "oneshot", None):
@@ -3515,6 +3528,8 @@ def main():
     # _YOLO_MODE_FROZEN at import; set later (inside cmd_chat) it does nothing.
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+
+    _activate_selected_model_policy(args)
 
     # Plugin discovery + shell hooks once, gated so introspection commands
     # (hooks list, cron list, gateway status, ...) pay no discovery cost and

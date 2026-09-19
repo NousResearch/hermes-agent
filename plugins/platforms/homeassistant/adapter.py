@@ -27,6 +27,30 @@ from gateway.platforms._shared import (
 
 logger = logging.getLogger(__name__)
 
+# Bound HA handshake and teardown waits so a wedged socket cannot stall #67470.
+_HANDSHAKE_TIMEOUT = 30.0
+_DRAIN_TIMEOUT = 5.0
+_TEARDOWN_REGISTRY: Set["asyncio.Task"] = set()
+
+
+async def _run_bounded_close(obj: Any) -> None:
+    async def _close_quietly() -> None:
+        try:
+            await obj.close()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug("Home Assistant close failed (non-fatal): %s", e)
+
+    task = asyncio.create_task(_close_quietly())
+    _TEARDOWN_REGISTRY.add(task)
+    task.add_done_callback(_TEARDOWN_REGISTRY.discard)
+    _, pending = await asyncio.wait({task}, timeout=_DRAIN_TIMEOUT)
+    if pending:
+        logger.warning(
+            "Home Assistant close did not finish within %.0fs; abandoning it",
+            _DRAIN_TIMEOUT)
+
 
 def check_ha_requirements() -> bool:
     """Check if Home Assistant runtime dependencies are available."""
@@ -76,6 +100,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._ws: Optional["aiohttp.ClientWebSocketResponse"] = None
         self._rest_session: Optional["aiohttp.ClientSession"] = None
         self._listen_task: Optional[asyncio.Task] = None
+        self._teardown_tasks: Set["asyncio.Task"] = set()
         self._msg_id: int = 0
         extra = config.extra or {}
         # URL is scoped like the token below: a secondary's HASS_TOKEN must never be posted to the
@@ -129,19 +154,71 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     async def _ws_connect(self) -> bool:
         """Open the WebSocket, authenticate, and subscribe to ``state_changed``."""
         ws_url = self._hass_url.replace("https://", "wss://").replace("http://", "ws://")
-        self._session = self._new_session()
-        self._ws = await self._session.ws_connect(f"{ws_url}/api/websocket", heartbeat=30, timeout=30)
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_required":
-            return await self._handshake_failed("Expected auth_required, got: %s", msg.get("type"))
-        await self._ws.send_json({"type": "auth", "access_token": self._hass_token})
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_ok":
-            return await self._handshake_failed("Auth failed: %s", msg)
-        await self._ws.send_json({"id": self._next_id(), "type": "subscribe_events", "event_type": "state_changed"})
-        msg = await self._ws.receive_json()
-        if not msg.get("success"):
-            return await self._handshake_failed("Failed to subscribe to events: %s", msg)
+        session = self._new_session()
+        ws = None
+
+        async def _handshake(socket):
+            msg = await asyncio.wait_for(
+                socket.receive_json(), timeout=_HANDSHAKE_TIMEOUT)
+            if msg.get("type") != "auth_required":
+                return "Expected auth_required, got: %s", msg.get("type")
+            await asyncio.wait_for(
+                socket.send_json({
+                    "type": "auth",
+                    "access_token": self._hass_token,
+                }),
+                timeout=_HANDSHAKE_TIMEOUT)
+            msg = await asyncio.wait_for(
+                socket.receive_json(), timeout=_HANDSHAKE_TIMEOUT)
+            if msg.get("type") != "auth_ok":
+                return "Auth failed: %s", msg
+            await asyncio.wait_for(
+                socket.send_json({
+                    "id": self._next_id(),
+                    "type": "subscribe_events",
+                    "event_type": "state_changed",
+                }),
+                timeout=_HANDSHAKE_TIMEOUT)
+            msg = await asyncio.wait_for(
+                socket.receive_json(), timeout=_HANDSHAKE_TIMEOUT)
+            if not msg.get("success"):
+                return "Failed to subscribe to events: %s", msg
+            return None
+
+        try:
+            ws = await asyncio.wait_for(
+                session.ws_connect(
+                    f"{ws_url}/api/websocket", heartbeat=30, timeout=30),
+                timeout=_HANDSHAKE_TIMEOUT)
+        except (asyncio.CancelledError, Exception):
+            # Connect failures keep propagating as before; only the local
+            # session is closed first so it cannot leak (#67470).
+            await self._close_connection(None, session)
+            raise
+        try:
+            failure = await _handshake(ws)
+        except asyncio.CancelledError:
+            await self._close_connection(ws, session)
+            raise
+        except asyncio.TimeoutError:
+            logger.error(
+                "[%s] HA WebSocket handshake timed out after %.0fs",
+                self.name, _HANDSHAKE_TIMEOUT)
+            await self._close_connection(ws, session)
+            return False
+        except Exception as e:
+            # Any other handshake failure tears the connection down here rather
+            # than leaking it to a later loop pass (#67470).
+            logger.error("[%s] HA WebSocket handshake failed: %s", self.name, e)
+            await self._close_connection(ws, session)
+            return False
+
+        if failure is not None:
+            await self._close_connection(ws, session)
+            return await self._handshake_failed(*failure)
+
+        self._session = session
+        self._ws = ws
         return True
 
     async def _handshake_failed(self, fmt: str, detail: Any) -> bool:
@@ -151,28 +228,65 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
     @staticmethod
     async def _close(obj) -> None:
-        if obj and not obj.closed:
-            await obj.close()
+        if obj is not None and not obj.closed:
+            await _run_bounded_close(obj)
+
+    def _track_teardown(self, coro: Any) -> "asyncio.Task":
+        task = asyncio.create_task(coro)
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+        return task
+
+    async def _close_connection(self, ws, session) -> None:
+        if ws is None and session is None:
+            return
+
+        async def _close_both() -> None:
+            await self._close(ws)
+            await self._close(session)
+
+        await asyncio.shield(self._track_teardown(_close_both()))
+
+    async def _cancel_task_bounded(
+        self, task: Optional["asyncio.Task"], label: str,
+    ) -> None:
+        if task is None:
+            return
+        task.cancel()
+        done, pending = await asyncio.wait({task}, timeout=_DRAIN_TIMEOUT)
+        if pending:
+            logger.error(
+                "[%s] %s did not exit within %.0fs of cancellation; "
+                "abandoning it",
+                self.name, label, _DRAIN_TIMEOUT)
+            return
+        for finished in done:
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(
+                    "[%s] %s raised on cancel (non-fatal): %s",
+                    self.name, label, e)
 
     async def _cleanup_ws(self) -> None:
-        await self._close(self._ws)
-        self._ws = None
-        await self._close(self._session)
-        self._session = None
+        ws, self._ws = self._ws, None
+        session, self._session = self._session, None
+        await self._close_connection(ws, session)
 
     async def disconnect(self) -> None:
         self._running = False
-        if self._listen_task:
-            self._listen_task.cancel()
-            try:
-                await self._listen_task
-            except asyncio.CancelledError:
-                pass
-            self._listen_task = None
-        await self._cleanup_ws()
-        await self._close(self._rest_session)
-        self._rest_session = None
-        logger.info("[%s] Disconnected", self.name)
+
+        async def _teardown() -> None:
+            listen_task, self._listen_task = self._listen_task, None
+            await self._cancel_task_bounded(listen_task, "listen task")
+            await self._cleanup_ws()
+            rest_session, self._rest_session = self._rest_session, None
+            await self._close(rest_session)
+            logger.info("[%s] Disconnected", self.name)
+
+        await asyncio.shield(self._track_teardown(_teardown()))
 
     # -- Event listener -----------------------------------------------------
 

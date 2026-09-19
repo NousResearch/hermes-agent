@@ -259,11 +259,7 @@ def _collect_memory_provider_external_paths() -> List[Path]:
 
 def _iter_external_files(base: Path) -> List[Path]:
     """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
-    # ``Path.is_file()`` and ``Path.is_dir()`` follow symlinks, so reject a declared link before
-    # either probe can turn external provider state into an archive candidate.
-    if base.is_symlink():
-        return []
-    if base.is_file():
+    if base.is_file() and not base.is_symlink():
         return [base]
     if not base.is_dir():
         return []

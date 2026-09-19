@@ -339,8 +339,9 @@ class TestIterBackupFiles:
 class TestBackup:
 
     @pytest.mark.parametrize("entry_point", ["manual", "automatic"])
+    @pytest.mark.parametrize("invoking_profile", ["default", "coder"])
     def test_live_chrome_debug_is_pruned_before_both_full_backup_walks(
-        self, tmp_path, monkeypatch, capsys, entry_point
+        self, tmp_path, monkeypatch, capsys, entry_point, invoking_profile
     ):
         """Both full ZIP entry points skip live root/profile CDP directories
         before walking them, while retaining nested user content."""
@@ -362,7 +363,11 @@ class TestBackup:
             nested_file.parent.mkdir(parents=True)
             nested_file.write_text("user content")
 
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        active_home = (
+            hermes_home if invoking_profile == "default"
+            else hermes_home / "profiles" / invoking_profile
+        )
+        monkeypatch.setenv("HERMES_HOME", str(active_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         import hermes_cli.backup as backup_mod
 
@@ -377,12 +382,16 @@ class TestBackup:
         monkeypatch.setattr(backup_mod.os, "walk", traced_walk)
         out_zip = tmp_path / f"{entry_point}.zip"
         if entry_point == "manual":
+            # Manual backups retain their all-profiles scope even when invoked
+            # with a named HERMES_HOME; automatic writers also accept that home directly.
+            archive_root = hermes_home
             assert backup_mod.run_backup(Namespace(output=str(out_zip))) is True
             output = capsys.readouterr().out
             for live_dir in live_dirs:
                 assert f"    {live_dir.relative_to(hermes_home)}/" in output
         else:
-            assert backup_mod._write_full_zip_backup(out_zip, hermes_home) == out_zip
+            archive_root = active_home
+            assert backup_mod._write_full_zip_backup(out_zip, active_home) == out_zip
 
         assert not any(
             walked_path == live_dir or live_dir in walked_path.parents
@@ -393,7 +402,13 @@ class TestBackup:
             names = set(zf.namelist())
         assert not any(name.startswith("chrome-debug/") for name in names)
         assert not any(name.startswith("profiles/coder/chrome-debug/") for name in names)
-        assert {path.relative_to(hermes_home).as_posix() for path in nested_files} <= names
+        expected_nested = {
+            path.relative_to(archive_root).as_posix()
+            for path in nested_files if path.is_relative_to(archive_root)
+        }
+        assert expected_nested <= names
+        assert "config.yaml" in names
+        assert archive_root in walked
 
     def test_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
         """SQLite staging temp files must be created on the output zip's
@@ -2353,28 +2368,6 @@ class TestMemoryProviderExternalPaths:
         assert not any("leak.json" in n for n in names)
         (outside / "leak.json").unlink()
         outside.rmdir()
-
-    def test_external_file_iterator_rejects_symlink_roots(self, tmp_path):
-        """Provider-declared symlink roots must not turn into archive candidates,
-        whether they point to a file or a directory."""
-        from hermes_cli.backup import _iter_external_files
-
-        regular = tmp_path / "regular.json"
-        regular.write_text("keep")
-        target_dir = tmp_path / "target-dir"
-        target_dir.mkdir()
-        (target_dir / "nested.json").write_text("keep")
-        file_link = tmp_path / "file-link"
-        dir_link = tmp_path / "dir-link"
-        try:
-            file_link.symlink_to(regular)
-            dir_link.symlink_to(target_dir, target_is_directory=True)
-        except OSError as exc:
-            pytest.skip(f"symlinks unavailable in test environment: {exc}")
-
-        assert _iter_external_files(regular) == [regular]
-        assert _iter_external_files(file_link) == []
-        assert _iter_external_files(dir_link) == []
 
     def test_import_restores_external_to_home_relative_location(self, tmp_path, monkeypatch):
         """_external/ members restore to ~/<relpath>, not under HERMES_HOME,

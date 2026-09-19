@@ -27,10 +27,13 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _build_children,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
 )
+from tools.delegate_tool_config import _resolve_delegation_profile
+from tools.delegate_tool_tasks import _normalize_task_list
 from hermes_state import SessionDB
 
 
@@ -89,6 +92,73 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("acp_command", props["tasks"]["items"]["properties"])
         self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+    def test_schema_advertises_per_task_profile(self):
+        task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        self.assertIn("profile", task_props)
+        self.assertIn("delegation.profiles", task_props["profile"]["description"])
+
+
+class TestDelegationProfiles(unittest.TestCase):
+    def test_profile_overrides_global_route_and_merges_request_overrides(self):
+        cfg = {
+            "model": "default-model",
+            "provider": "openrouter",
+            "request_overrides": {"service_tier": "default", "extra_body": {"provider": {"sort": "price"}}},
+            "profiles": {
+                "coder": {
+                    "model": "code-model",
+                    "provider": "nous",
+                    "request_overrides": {"extra_body": {"provider": {"sort": "throughput"}}},
+                }
+            },
+        }
+
+        resolved, profile = _resolve_delegation_profile(cfg, "coder")
+
+        self.assertEqual(profile, "coder")
+        self.assertEqual(resolved["model"], "code-model")
+        self.assertEqual(resolved["provider"], "nous")
+        self.assertEqual(resolved["request_overrides"]["service_tier"], "default")
+        self.assertEqual(resolved["request_overrides"]["extra_body"]["provider"]["sort"], "throughput")
+
+    def test_unknown_profile_warns_and_uses_global_route(self):
+        cfg = {"model": "default-model", "profiles": {"coder": {"model": "code-model"}}}
+
+        with self.assertLogs("tools.delegate_tool", level="WARNING") as logs:
+            resolved, profile = _resolve_delegation_profile(cfg, "missing")
+
+        self.assertIsNone(profile)
+        self.assertEqual(resolved["model"], "default-model")
+        self.assertIn("Unknown delegation profile 'missing'", logs.output[0])
+
+    def test_profile_must_be_a_nonempty_string(self):
+        tasks, error = _normalize_task_list(
+            None, None, [{"goal": "Investigate the reported routing behavior", "profile": 42}], None, "leaf", 3,
+        )
+
+        self.assertIsNone(tasks)
+        self.assertEqual(error, "Task 0 profile must be a non-empty string.")
+
+    @patch("tools.delegate_tool._build_child_preserving_parent_tools")
+    def test_task_profile_routes_its_child(self, mock_build_child):
+        parent = _make_mock_parent()
+        mock_build_child.return_value = MagicMock()
+        routing_cfg = {
+            "model": "default-model",
+            "profiles": {"coder": {"model": "code-model"}},
+        }
+
+        children, error = _build_children(
+            [{"goal": "Implement the requested change", "profile": "coder"}], [None],
+            top_role="leaf", max_iterations=10, parent_agent=parent, routing_cfg=routing_cfg,
+            live_deleg_id=None, live_writers=[],
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(len(children), 1)
+        self.assertEqual(mock_build_child.call_args.kwargs["model"], "code-model")
+        self.assertEqual(mock_build_child.call_args.kwargs["routing_cfg"]["model"], "code-model")
 
     def test_top_level_description_compact_and_complete(self):
         """The top-level description must stay compact while keeping every

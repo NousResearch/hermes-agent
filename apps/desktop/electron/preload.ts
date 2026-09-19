@@ -435,7 +435,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   terminal: {
     attach: id => ipcRenderer.invoke('hermes:terminal:attach', id),
     cwd: id => ipcRenderer.invoke('hermes:terminal:cwd', id),
-    dispose: id => ipcRenderer.invoke('hermes:terminal:dispose', id),
+    dispose: (id, options) => ipcRenderer.invoke('hermes:terminal:dispose', id, options),
+    killPersist: persistKey => ipcRenderer.invoke('hermes:terminal:kill-persist', persistKey),
     resize: (id, size) => ipcRenderer.invoke('hermes:terminal:resize', id, size),
     start: options => ipcRenderer.invoke('hermes:terminal:start', options),
     write: (id, data) => ipcRenderer.invoke('hermes:terminal:write', id, data),

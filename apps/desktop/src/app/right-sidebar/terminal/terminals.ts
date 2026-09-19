@@ -3,7 +3,7 @@ import { atom, computed } from 'nanostores'
 import { readKey, writeKey } from '@/lib/storage'
 import { $currentCwd } from '@/store/session'
 
-import { setTerminalTakeover } from '../store'
+import { $terminalTakeover, setTerminalTakeover } from '../store'
 
 import { seedAgentTerminalCommand } from './agent-terminal-stream'
 
@@ -33,11 +33,16 @@ export interface TerminalEntry {
    *  background process (`terminal(background=true)`), keyed by `procId`. */
   kind: 'user' | 'agent'
   procId?: string
+  /** Cursor CLI chat to `--resume` if this tab's tmux session is gone. */
+  cursorChatId?: string
+  /** Restored tabs reattach tmux or start Cursor again. Fresh tabs do not. */
+  resumeOnCreate?: boolean
 }
 
 interface PersistedTerminalEntry {
   auto: boolean
   cwd: string
+  cursorChatId?: string
   id: string
   restoreCwd?: string
   reviveBuffer?: string
@@ -67,6 +72,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
   const cwd = typeof record.cwd === 'string' ? record.cwd : ''
   const restoreCwd = typeof record.restoreCwd === 'string' && record.restoreCwd ? record.restoreCwd : undefined
   const reviveBuffer = typeof record.reviveBuffer === 'string' ? record.reviveBuffer : undefined
+  const cursorChatId = typeof record.cursorChatId === 'string' && record.cursorChatId ? record.cursorChatId : undefined
 
   if (!id) {
     return null
@@ -76,6 +82,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
     auto: typeof record.auto === 'boolean' ? record.auto : true,
     cwd,
     id,
+    ...(cursorChatId ? { cursorChatId } : {}),
     ...(restoreCwd ? { restoreCwd } : {}),
     ...(reviveBuffer ? { reviveBuffer } : {}),
     title: title || 'Terminal'
@@ -124,6 +131,7 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
       auto: term.auto,
       cwd: term.cwd,
       id: term.id,
+      ...(term.cursorChatId ? { cursorChatId: term.cursorChatId } : {}),
       ...(term.restoreCwd ? { restoreCwd: term.restoreCwd } : {}),
       ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
       title: term.title
@@ -142,9 +150,32 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
 const restored = loadPersistedTerminals()
 
 export const $terminals = atom<readonly TerminalEntry[]>(
-  restored.terminals.map(term => ({ ...term, kind: 'user' as const }))
+  restored.terminals.map(term => ({ ...term, kind: 'user' as const, resumeOnCreate: true }))
 )
 export const $activeTerminalId = atom<string | null>(restored.activeTerminalId)
+
+if (restored.terminals.length > 0) {
+  setTerminalTakeover(true)
+}
+
+function killPersistedTab(id: string) {
+  void window.hermesDesktop?.terminal?.killPersist?.(id)
+}
+
+/** Reopen the terminal pane when tabs or a live takeover were saved across quit. */
+export function shouldRestoreTerminalPane(): boolean {
+  return $terminalTakeover.get() || $terminals.get().some(term => term.kind === 'user')
+}
+
+export function restorePersistedTerminalPane(): boolean {
+  if (!shouldRestoreTerminalPane()) {
+    return false
+  }
+
+  setTerminalTakeover(true)
+
+  return true
+}
 
 $terminals.subscribe(list => persistTerminals(list, $activeTerminalId.get()))
 $activeTerminalId.subscribe(active => persistTerminals($terminals.get(), active))
@@ -289,6 +320,10 @@ export function closeTerminal(id: string): void {
     return
   }
 
+  if (list[index]?.kind === 'user') {
+    killPersistedTab(id)
+  }
+
   const next = list.filter(term => term.id !== id)
   $terminals.set(next)
 
@@ -331,6 +366,12 @@ export function closeAllTerminals(): void {
     return
   }
 
+  for (const term of $terminals.get()) {
+    if (term.kind === 'user') {
+      killPersistedTab(term.id)
+    }
+  }
+
   $terminals.set([])
   $activeTerminalId.set(null)
   setTerminalTakeover(false)
@@ -340,6 +381,12 @@ export function closeOtherTerminals(id: string): void {
   const keep = $terminals.get().find(term => term.id === id)
 
   if (keep) {
+    for (const term of $terminals.get()) {
+      if (term.kind === 'user' && term.id !== id) {
+        killPersistedTab(term.id)
+      }
+    }
+
     $terminals.set([keep])
     $activeTerminalId.set(keep.id)
   }

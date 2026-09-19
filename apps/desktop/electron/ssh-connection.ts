@@ -36,6 +36,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
+import { buildPersistentRemoteCommand } from './terminal-persist'
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
@@ -301,7 +303,7 @@ function buildMasterArgs(conn, connectTimeoutMs?) {
 //
 // NOTE(remote-terminal): interim until the dashboard /api/terminal WebSocket
 // lands (specs/desktop-remote-terminal.md); delete this path then.
-function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteCommand?) {
+function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteCommand?, persist?) {
   const args = [
     '-tt',
     ...baseSshOptions(conn.controlPath, connectTimeoutMs),
@@ -312,6 +314,21 @@ function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteComma
 
   if (remoteCommand) {
     args.push(remoteCommand)
+
+    return args
+  }
+
+  const persistKey = String(persist?.persistKey || '').trim()
+
+  if (persistKey) {
+    args.push(
+      buildPersistentRemoteCommand({
+        cwd: remoteCwd,
+        persistKey,
+        cursorChatId: persist?.cursorChatId,
+        resumeOnCreate: Boolean(persist?.resumeOnCreate)
+      })
+    )
 
     return args
   }

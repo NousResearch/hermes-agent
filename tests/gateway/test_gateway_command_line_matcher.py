@@ -58,3 +58,21 @@ def test_accepts_real_gateway_run(cmd):
     assert matches(cmd) is True
 
 
+@pytest.mark.parametrize("cmd", REJECT)
+def test_rejects_non_gateway_run(cmd):
+    assert matches(cmd) is False
+
+
+# Atomic Hermes' bundled desktop runner (regression for #22418): it shares
+# HERMES_HOME with the CLI and must be recognised as a gateway so
+# ``gateway run --replace`` enters the replace/lock-handoff path instead of
+# colliding with the desktop runner's still-held scoped locks.
+ATOMIC_DESKTOP = (
+    "/Applications/Atomic Hermes.app/Contents/Resources/python-server/python "
+    "/Applications/Atomic Hermes.app/Contents/Resources/python-server/desktop-gateway.py"
+)
+
+
+def test_accepts_atomic_desktop_gateway():
+    assert matches(ATOMIC_DESKTOP) is True
+    assert matches_runtime(ATOMIC_DESKTOP) is True

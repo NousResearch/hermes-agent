@@ -571,6 +571,11 @@ class TestDetectLocalServerTypeAuth:
 
         resp = MagicMock()
         resp.status_code = 200
+        # LM Studio's native listing shape — detect_local_server_type
+        # discriminates on the payload shape, not on a bare 200.
+        resp.json.return_value = {
+            "models": [{"key": "publisher/model-a", "type": "llm", "state": "loaded"}]
+        }
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
@@ -590,6 +595,11 @@ class TestDetectLocalServerTypeAuth:
 
         resp = MagicMock()
         resp.status_code = 200
+        # LM Studio's native listing shape — detect_local_server_type
+        # discriminates on the payload shape, not on a bare 200.
+        resp.json.return_value = {
+            "models": [{"key": "publisher/model-a", "type": "llm", "state": "loaded"}]
+        }
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock

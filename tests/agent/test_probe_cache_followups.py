@@ -144,7 +144,20 @@ class TestDetectLocalServerTypeCache:
 
         lmstudio_resp = MagicMock()
         lmstudio_resp.status_code = 200
-        lmstudio_resp.json.return_value = {"data": []}
+        # LM Studio's native listing shape (entries keyed under "models" with
+        # LM Studio-specific fields). detect_local_server_type discriminates on
+        # this shape, not on a bare 200, so the fixture has to be a payload a
+        # real LM Studio would send.
+        lmstudio_resp.json.return_value = {
+            "models": [
+                {
+                    "key": "qwen/qwen3-4b",
+                    "type": "llm",
+                    "state": "loaded",
+                    "loaded_instances": [{"config": {"context_length": 8192}}],
+                }
+            ]
+        }
         swap_client = MagicMock()
         swap_client.__enter__ = lambda s: swap_client
         swap_client.__exit__ = MagicMock(return_value=False)
@@ -342,3 +355,184 @@ class TestDetectServerTypeNegativeCaching:
         assert client.get.call_count == 10  # waterfall re-ran after expiry
 
 
+class TestLMStudioDetectionRequiresNativePayload:
+    """A bare 200 on /api/v1/models is not evidence of LM Studio.
+
+    Other OpenAI-compatible local servers serve that path too (e.g. a loopback
+    proxy exposing it for model-name validation). Misdetecting one sends the
+    caller into the LM Studio metadata parser, which reads ``payload["models"]``
+    — a key the OpenAI listing envelope does not have — so ALL advertised
+    metadata is discarded and the caller falls back to a probe-tier default.
+    """
+
+    def _detect(self, payload):
+        from agent import model_metadata
+        from agent.model_metadata import detect_local_server_type
+
+        # Each payload below represents a different server. Do not let the
+        # detector's intentional per-endpoint cache turn this shape test into
+        # an order-dependent assertion about the first example it happened to
+        # run.
+        model_metadata._endpoint_probe_path_cache.clear()
+
+        hit = MagicMock()
+        hit.status_code = 200
+        hit.json.return_value = payload
+        hit.text = ""
+        miss = MagicMock()
+        miss.status_code = 404
+        miss.text = ""
+        miss.json.return_value = {}
+
+        client = MagicMock()
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+        client.get.side_effect = (
+            lambda url, *a, **k: hit if url.endswith("/api/v1/models") else miss
+        )
+        with (
+            patch("httpx.Client", return_value=client),
+            patch("agent.model_metadata._local_probe_disk_get", return_value=None),
+            patch("agent.model_metadata._local_probe_disk_put"),
+        ):
+            return detect_local_server_type("http://127.0.0.1:8080/v1")
+
+    def test_openai_listing_envelope_is_not_lm_studio(self):
+        """The standard OpenAI listing shape must never classify as LM Studio,
+        whatever its entries carry."""
+        assert self._detect(
+            {"object": "list", "data": [{"id": "some-model", "object": "model"}]}
+        ) != "lm-studio"
+        # Even when the entries carry rich metadata, the envelope decides.
+        assert self._detect(
+            {
+                "object": "list",
+                "data": [{"id": "m", "object": "model", "context_length": 1_000_000}],
+            }
+        ) != "lm-studio"
+
+    def test_lm_studio_native_payload_is_still_detected(self):
+        """The feature must survive the fix: LM Studio's own shapes still
+        classify, including an idle server with nothing loaded."""
+        assert self._detect(
+            {
+                "models": [
+                    {
+                        "key": "qwen/qwen3-4b",
+                        "loaded_instances": [{"config": {"context_length": 8192}}],
+                    }
+                ]
+            }
+        ) == "lm-studio"
+        # Idle LM Studio: running, no model loaded.
+        assert self._detect({"models": []}) == "lm-studio"
+        # A data-keyed response remains OpenAI-compatible even when an entry
+        # happens to carry fields also seen in LM Studio's native response.
+        assert self._detect(
+            {"data": [{"id": "m", "type": "llm", "state": "loaded"}]}
+        ) != "lm-studio"
+
+    def test_unparseable_or_ambiguous_payloads_fail_closed(self):
+        """Fail closed, never open: an unrecognised body must not classify as
+        LM Studio, so the caller continues to the OpenAI-compatible path."""
+        assert self._detect("not-a-dict") != "lm-studio"
+        assert self._detect({}) != "lm-studio"
+        # An empty `data` list is indistinguishable from an idle OpenAI server.
+        assert self._detect({"data": []}) != "lm-studio"
+        # The prior predicate accepted these rich data-keyed variants even
+        # though both LM Studio consumers only read payload["models"].
+        assert (
+            self._detect({"data": [{"id": "m", "key": "publisher/m"}]})
+            != "lm-studio"
+        )
+
+    def test_detection_agrees_with_what_the_lm_studio_parser_can_read(self):
+        """Contract between the detector and its consumer: this module's LM
+        Studio parsers read ``payload["models"]``. Classifying a payload as
+        LM Studio when that key is absent guarantees the parser yields nothing,
+        which is exactly the bug. So a NON-empty payload may only be called
+        LM Studio if the parser could actually extract a model id from it."""
+        from agent.model_metadata import _is_lmstudio_models_payload
+
+        def parser_can_read(payload):
+            # Mirrors fetch_endpoint_model_metadata's LM Studio branch.
+            if not isinstance(payload, dict):
+                return False
+            return any(
+                isinstance(m, dict) and (m.get("key") or m.get("id"))
+                for m in payload.get("models", []) or []
+            )
+
+        payloads = [
+            {"object": "list", "data": [{"id": "m", "object": "model"}]},
+            {"data": [{"id": "m", "object": "model", "context_length": 1_000_000}]},
+            {"models": [{"key": "qwen/qwen3-4b", "loaded_instances": []}]},
+            {"models": [{"id": "m", "max_context_length": 4096}]},
+            {"data": [{"id": "m", "type": "llm", "state": "loaded"}]},
+            {},
+            {"models": []},
+        ]
+        for payload in payloads:
+            resp = MagicMock()
+            resp.json.return_value = payload
+            classified = _is_lmstudio_models_payload(resp)
+            if classified and payload.get("models"):
+                assert parser_can_read(payload), (
+                    f"classified as LM Studio but the LM Studio parser reads "
+                    f"nothing from it: {payload}"
+                )
+
+
+class TestOpenAICompatProxyMetadataSurvivesDetection:
+    """End-to-end: an OpenAI-compatible server's advertised context window must
+    reach the caller. The LM Studio branch of fetch_endpoint_model_metadata
+    returns early, so a misdetection discards the payload outright rather than
+    falling through to the working OpenAI parser."""
+
+    def test_advertised_context_window_is_not_discarded(self):
+        from agent import model_metadata
+
+        payload = {
+            "object": "list",
+            "data": [
+                {
+                    "id": "big-ctx-model",
+                    "object": "model",
+                    "context_length": 1_000_000,
+                    # Gateway extension fields may reuse pricing aliases with
+                    # non-scalar values. They must not abort the whole metadata
+                    # parse before the real pricing object is reached.
+                    "modalities": {"input": [], "output": []},
+                    "pricing": {"input": 0, "output": 0},
+                }
+            ],
+        }
+        model_metadata._endpoint_model_metadata_cache.clear()
+        model_metadata._endpoint_model_metadata_cache_time.clear()
+
+        probe = MagicMock()
+        probe.status_code = 200
+        probe.json.return_value = payload
+        probe.text = ""
+        client = MagicMock()
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+        client.get.side_effect = lambda url, *a, **k: probe
+
+        def _requests_get(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = payload
+            resp.raise_for_status = lambda: None
+            return resp
+
+        with patch("httpx.Client", return_value=client), patch(
+            "requests.get", side_effect=_requests_get
+        ):
+            metadata = model_metadata.fetch_endpoint_model_metadata(
+                "http://127.0.0.1:8080/v1", force_refresh=True
+            )
+
+        entry = metadata.get("big-ctx-model", {})
+        assert entry.get("context_length") == 1_000_000
+        assert entry.get("pricing") == {"prompt": 0, "completion": 0}

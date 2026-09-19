@@ -652,6 +652,34 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
         return None, _multimodal_validation_error(exc, param=param)
 
 
+def _adopt_unanswered_dm_row(history: List[Dict[str, Any]], user_message: Any) -> Optional[Dict[str, Any]]:
+    """In-process twin of ``hermes_cli.quiet_single_query.adopt_unanswered_turn`` (#115325).
+
+    The failed attempt's turn-start persist left the DM as the transcript's unanswered tail
+    row, possibly with tool scaffolding behind it (a turn that died mid-way persisted its
+    assistant ``tool_calls`` rows and their ``tool`` results before the failure text was
+    built). Returns the tail user row — stamped durable and removed from ``history`` so the
+    caller can re-stage it as the turn's user message (``pending_cli_user_message``) without
+    a duplicate — when the tail matches ``user_message`` and everything after it is
+    scaffolding. ``None`` otherwise: a re-run that cannot safely resume must never happen,
+    because it would append a duplicate DM row.
+    """
+    idx = next((i for i in range(len(history) - 1, -1, -1)
+                if isinstance(history[i], dict) and history[i].get("role") == "user"), None)
+    if idx is None or history[idx].get("content") != user_message:
+        return None
+    if not all(isinstance(row, dict) and (row.get("role") == "tool"
+               or (row.get("role") == "assistant" and row.get("tool_calls")))
+               for row in history[idx + 1:]):
+        return None
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    tail = history[idx]
+    del history[idx:]
+    tail[_DB_PERSISTED_MARKER] = True
+    return tail
+
+
 def _request_turn_author(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalized body ``author``, None when absent or null, ValueError when not an object. It only labels memory."""
     raw = body.get("author")
@@ -3175,6 +3203,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_id = ctx["session_id"]
         history = await self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
+        result, usage = await self._retry_transient_dm_turn(
+            result, usage, session_id=session_id, user_message=ctx["user_message"],
+            run_kwargs=ctx["run_kwargs"])
         is_dict = isinstance(result, dict)
         effective_session_id = result.get("session_id") if is_dict else session_id
         final_response = _resolve_media_to_data_urls(
@@ -3186,6 +3217,39 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
              "message": {"role": "assistant", "content": final_response}, "usage": usage,
              "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage)},
             headers=headers)
+
+    async def _retry_transient_dm_turn(self, result: Any, usage: Any, *, session_id: str,
+                                       user_message: Any, run_kwargs: Dict[str, Any]) -> tuple:
+        """One policy-gated re-run for a failed peer-DM turn (#115325).
+
+        The local and relay DM lanes re-run a turn once when
+        ``retry_action(classify_agent_error(...))`` says so (429/5xx/runtime-offline resume;
+        context_overflow re-runs so the turn's normal pre-API compaction can run). This lane
+        never did: ``hermes peer dm`` received the provider's failure text as the reply. The
+        same policy applies here — and, like the CLI child's ``adopt_unanswered_turn``, the
+        re-run resumes the DM row the failed attempt already persisted instead of appending a
+        duplicate. Auth/quota/config/model/unknown failures are never retried, and a re-run
+        that cannot safely adopt the persisted tail row is skipped (fail closed).
+        """
+        if not isinstance(result, dict) or not result.get("failed"):
+            return result, usage
+        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action
+
+        # Same text the other lanes classify: the turn's provider prose (final_response) plus
+        # the failure summary; a matched 429/5xx/context class drives the retry.
+        failure_text = "\n".join(
+            str(text) for text in (result.get("error"), result.get("final_response")) if text)
+        if retry_action(classify_agent_error(failure_text)) == RETRY_NONE:
+            return result, usage
+        history = await self._conversation_history_for_session(session_id)
+        adopted = _adopt_unanswered_dm_row(history, user_message)
+        if adopted is None:
+            logger.warning(
+                "peer-DM retry skipped for session=%s: the failed turn's DM row could not be "
+                "safely resumed, so a re-run would append a duplicate message", session_id)
+            return result, usage
+        return await self._run_agent(
+            conversation_history=history, pending_cli_user_message=adopted, **run_kwargs)
 
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
@@ -3738,7 +3802,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result") -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
+        pending_cli_user_message: Optional[Dict[str, Any]] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3746,7 +3811,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``session_history_delivery`` declares #98619 session-id provenance and default-denies: only audited
         producers whose client can address the id again pass "1" (see
         ``_bind_api_server_session``).
-        ``turn_author`` only labels the turn for memory attribution. It grants nothing."""
+        ``turn_author`` only labels the turn for memory attribution. It grants nothing.
+        ``pending_cli_user_message`` (peer-DM retry) re-stages the failed attempt's persisted
+        DM row so the turn resumes it instead of appending a duplicate (#115325)."""
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
@@ -3774,6 +3841,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
                         session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
+                    if pending_cli_user_message is not None:
+                        # Peer-DM retry: re-stage the failed attempt's persisted DM row so
+                        # _stage_turn_user_message reuses it (no second row on flush). Same
+                        # handoff the CLI child performs via adopt_unanswered_turn (#115325).
+                        agent._pending_cli_user_message = pending_cli_user_message
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if active_run_id:

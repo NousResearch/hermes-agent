@@ -1,0 +1,19 @@
+name: hermes-pubky
+repo: https://github.com/MCarlomagno/hermes-pubky
+sha: e4d5ec29e99064758bbc744150d272ec84b29d42
+subdir: plugin
+description: Run a managed Hermes agent whose saved state lives on your Pubky homeserver.
+maintainer: MCarlomagno
+tier: community
+category: memory
+requires_hermes: "==0.19.0"
+docs_url: https://github.com/MCarlomagno/hermes-pubky#readme
+version: "0.2.1"
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

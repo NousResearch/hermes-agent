@@ -67,7 +67,13 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
         return
       }
 
-      const target = String(data.identifier || data.name)
+      if (!data.identifier) {
+        host.notify({ kind: 'error', message: 'Install unavailable: missing canonical identifier' })
+
+        return
+      }
+
+      const target = String(data.identifier)
 
       // Skill identifiers are slugs / owner-name paths — keep anything
       // else out of skills.manage.

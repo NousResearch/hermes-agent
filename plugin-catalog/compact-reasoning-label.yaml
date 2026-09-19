@@ -2,12 +2,14 @@ name: compact-reasoning-label
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
 sha: 37fe9446bed8660fcf6c007a9f80226d6bd9e105
 subdir: plugins/compact-reasoning-label
-description: "Keep the composer model pill to the model name. The thinking level stays in the reasoning dropdown beside it."
+description: Keep the composer model pill to the model name. The thinking level stays in the reasoning
+  dropdown beside it. Disclosure — implemented as a document-wide MutationObserver that rewrites the text
+  of the app's composer model pill (decoration only; no app-store writes).
 maintainer: apoapostolov
 tier: community
 category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/plugins/compact-reasoning-label
-version: "1.0.0"
+version: 1.0.0
 image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/37fe9446bed8660fcf6c007a9f80226d6bd9e105/plugins/compact-reasoning-label/docs/hero.png
 platforms: []
 capabilities:

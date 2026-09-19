@@ -20,7 +20,7 @@ from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
-    _coerce_turn_input_text,
+    _build_turn_input,
 )
 
 
@@ -143,12 +143,25 @@ class TestApprovalChoiceMapping:
 
 
 class TestTurnInputCoercion:
-    def test_list_content_keeps_text_and_marks_images(self):
-        text = _coerce_turn_input_text([
+    def test_image_parts_ride_natively_in_turn_start(self):
+        """#51053: image attachments must reach the model as app-server image inputs, not a text marker."""
+        items, text = _build_turn_input([
             {"type": "text", "text": "caption"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            {"type": "image_url", "image_url": {"url": "/tmp/shot.png"}},
         ])
-        assert text == "caption\n\n[image attached]"
+        assert items == [
+            {"type": "text", "text": "caption"},
+            {"type": "image", "url": "data:image/png;base64,abc"},
+            {"type": "localImage", "path": "/tmp/shot.png"},
+        ]
+        assert text == "caption"
+
+    def test_image_only_turn_gets_default_prompt_and_plain_text_is_unchanged(self):
+        items, text = _build_turn_input([{"type": "image_url", "image_url": {"url": "https://x/a.png"}}])
+        assert items == [{"type": "text", "text": "What do you see in this image?"}, {"type": "image", "url": "https://x/a.png"}]
+        assert text == "What do you see in this image?"
+        assert _build_turn_input("hi") == ([{"type": "text", "text": "hi"}], "hi")
 
 
 # ---- lifecycle ----

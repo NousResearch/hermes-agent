@@ -114,6 +114,7 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
 | `web_search`, `web_extract` | yes | yes (via MCP callback) |
 | Browser automation (Camofox/Browserbase) | yes | yes (via MCP callback) |
 | `vision_analyze`, `image_generate` | yes | yes (via MCP callback) |
+| Image attachments in the user turn (screenshots, pasted images, `/image`) | yes (native multimodal) | yes — sent natively as app-server image inputs (data/http URLs) or local-image paths, never flattened to a text marker |
 | `skill_view`, `skills_list` | yes | yes (via MCP callback) |
 | `text_to_speech` | yes | yes (via MCP callback) |
 | Codex `shell` (terminal/read/write/search/find/run) | — | yes (Codex built-in) |

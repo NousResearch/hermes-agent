@@ -99,22 +99,58 @@ def _notification_belongs_to_turn(note: dict, *, thread_id: Optional[str], turn_
     )
 
 
-def _coerce_turn_input_text(user_input: Any) -> str:
-    """Collapse rich content parts into app-server text (``turn/start`` is text-only; images become a marker)."""
+_TEXT_PART_TYPES = frozenset({"text", "input_text"})
+_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+_IMAGE_URL_SCHEMES = ("data:", "http://", "https://")
+
+
+def _image_part_to_turn_input(item: dict) -> Optional[dict]:
+    """Map one Hermes image part onto the app-server ``UserInput`` shape.
+
+    ``turn/start`` accepts ``{type: image, url}`` (data:/http URLs) and ``{type: localImage, path}``
+    natively (protocol schema ``v2/UserInput``), so nothing here is flattened into a text marker.
+    """
+    ref = item.get("image_url") or item.get("url") or item.get("path") or item.get("image")
+    if isinstance(ref, dict):
+        ref = ref.get("url") or ref.get("path")
+    ref = (ref or "").strip() if isinstance(ref, str) else ""
+    if not ref:
+        return None
+    if ref.startswith(_IMAGE_URL_SCHEMES):
+        return {"type": "image", "url": ref}
+    if ref.startswith("file://"):
+        ref = ref[len("file://"):]
+    return {"type": "localImage", "path": ref}
+
+
+def _build_turn_input(user_input: Any) -> tuple[list[dict], str]:
+    """Build the ``turn/start`` ``input`` list plus the text the wire will echo back.
+
+    Text parts stay text; image parts ride natively (#51053 — a text marker in their place left the
+    model blind to the attachment). Returns ``(input_items, submitted_text)``.
+    """
     if isinstance(user_input, str):
-        return user_input
+        return [{"type": "text", "text": user_input}], user_input
     if not isinstance(user_input, list):
-        return "" if user_input is None else str(user_input)
-    parts: list[str] = []
+        text = "" if user_input is None else str(user_input)
+        return [{"type": "text", "text": text}], text
+    texts: list[str] = []
+    images: list[dict] = []
     for item in user_input:
         if not isinstance(item, dict):
             if item.strip() if isinstance(item, str) else item is not None:
-                parts.append(str(item))
-        elif item.get("type") in {"text", "input_text"}:
-            parts.append(str(item.get("text") or item.get("content") or ""))
-        elif item.get("type") in {"image", "image_url", "input_image"}:
-            parts.append("[image attached]")
-    return "\n\n".join(p for p in parts if p).strip() or "What do you see in this image?"
+                texts.append(str(item))
+        elif item.get("type") in _TEXT_PART_TYPES:
+            texts.append(str(item.get("text") or item.get("content") or ""))
+        elif item.get("type") in _IMAGE_PART_TYPES:
+            mapped = _image_part_to_turn_input(item)
+            if mapped is not None:
+                images.append(mapped)
+    text = "\n\n".join(t for t in texts if t).strip()
+    if not text and images:
+        text = "What do you see in this image?"
+    items: list[dict] = [{"type": "text", "text": text}] if text or not images else []
+    return items + images, text
 
 
 # Substrings in codex stderr / JSON-RPC errors signalling expired OAuth creds.
@@ -343,10 +379,10 @@ class CodexAppServerSession:
             if self._interrupt_event.is_set():
                 result.interrupted = True
             else:
-                result.submitted_user_text = _coerce_turn_input_text(user_input)
+                input_items, result.submitted_user_text = _build_turn_input(user_input)
                 ts = self._request_for(
                     result, "turn/start",
-                    {"threadId": self._thread_id, "input": [{"type": "text", "text": result.submitted_user_text}]},
+                    {"threadId": self._thread_id, "input": input_items},
                     "turn/start",
                 )
                 if ts is not None:

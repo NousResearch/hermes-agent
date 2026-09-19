@@ -111,4 +111,23 @@ describe('terminal error message.complete frames', () => {
     expect(bubble?.error).toBe('rate limited')
     expect(bubble?.errorSurface).toEqual({ layer: 'provider', code: 'rate_limit', retryable: true })
   })
+
+  it('ignores a garbled error_surface payload (older/foreign backends)', async () => {
+    mountStream()
+    await start()
+    await delta('…')
+
+    await completeWithError({
+      text: 'Error: kaput',
+      error: 'kaput',
+      // SAFETY: deliberately off-contract — an older/foreign backend may send a surface the
+      // normaliser (lib/error-surface.ts) must reject instead of attaching garbage to the bubble.
+      error_surface: { layer: 'not-a-layer', code: 42 } as unknown as MessageCompletePayload['error_surface'],
+      recoverable: true
+    })
+
+    const bubble = lastAssistant()
+    expect(bubble?.error).toBe('kaput')
+    expect(bubble?.errorSurface).toBeUndefined()
+  })
 })

@@ -479,7 +479,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
       (hasThreadScopedGroupSession(sessions, onTurnKey) ? null : sessions[onTurnKey])
     : null
 
-  if (onTurn && sessionId) {
+  if (onTurn && typeof sessionId === 'string') {
     try {
       await requestForBot(onTurn, 'session.interrupt', {
         session_id: sessionId

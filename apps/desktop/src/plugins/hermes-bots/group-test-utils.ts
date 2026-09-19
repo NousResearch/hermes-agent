@@ -554,9 +554,12 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
  *  the `vi.mock` factory rather than hoisted alongside it. */
 export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
+  // Real shared adapter: group-turns stamps the contract-7 clarify `kind` through it.
+  const { withClarifyKind } = await import('@hermes/shared/json-rpc-channel')
 
   return {
     atom: nanostores.atom,
+    withClarifyKind,
     // Feature-detected SDK members: the modules read them off the namespace
     // and fall back when absent, but vitest rejects a namespace access with
     // no matching export at all — so they have to be present and undefined.

@@ -1,8 +1,13 @@
-import { type RpcMethods, SERVER_REQUEST_METHODS, type ServerRequestMap } from './gateway-contract.generated.js'
+import {
+  type ClarifyParams,
+  type JsonValue,
+  type RpcMethods,
+  SERVER_REQUEST_METHODS,
+  type ServerRequestMap
+} from './gateway-contract.generated.js'
 import type { GatewayEvent } from './gateway-events.js'
 
-// The current generated contract predates its JsonValue export; import it from there after regeneration lands.
-export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+export type { JsonValue } from './gateway-contract.generated.js'
 
 export type GatewayRequestId = number | string
 
@@ -82,15 +87,27 @@ const isJsonObject = (value: JsonValue): value is Record<string, JsonValue> =>
 const isServerRequestMethod = (method: string): method is keyof ServerRequestMap =>
   SERVER_REQUEST_METHODS.some(serverRequestMethod => serverRequestMethod === method)
 
-/** Contract-7 adapter: a clarify without `kind` is a batch when it carries `questions`, else a single. */
-const withClarifyKind = (params: Record<string, JsonValue>): Record<string, JsonValue> => {
-  if (params.kind === 'single' || params.kind === 'batch') {return params}
+/** Contract-7 adapter: a clarify without `kind` is a batch when it carries `questions`, else a single.
+ *  Generic over the caller's view (raw wire object or the generated `ClarifyParams`); the one cast is
+ *  the wire boundary itself — the frame is JSON and the generated type claims a discriminator the
+ *  older backend does not send. */
+export const withClarifyKind = <T extends ClarifyParams | Record<string, JsonValue>>(params: T): T => {
+  const wire = params as Record<string, JsonValue | undefined>
 
-  if (Array.isArray(params.questions)) {
-    return { ...params, kind: 'batch', answers: params.answers ?? null }
+  if (wire.kind === 'single' || wire.kind === 'batch') {
+    return params
   }
 
-  return { ...params, kind: 'single', choices: params.choices ?? null, multi_select: params.multi_select ?? false }
+  if (Array.isArray(wire.questions)) {
+    return { ...wire, kind: 'batch', answers: wire.answers ?? null } as unknown as T
+  }
+
+  return {
+    ...wire,
+    kind: 'single',
+    choices: wire.choices ?? null,
+    multi_select: wire.multi_select ?? false
+  } as unknown as T
 }
 
 const decodeServerRequest = <M extends keyof ServerRequestMap>(

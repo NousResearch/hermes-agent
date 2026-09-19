@@ -207,26 +207,12 @@ export interface BotRequestOptions {
   spawnPriority?: 'background' | 'foreground'
 }
 
-/* eslint-disable no-redeclare -- overload signatures; the rule predates TS */
 export async function requestForBot<M extends keyof RpcMethods>(
   bot: Partial<RosterRow> | null | undefined,
   method: M,
   params: RpcMethods[M]['params'],
   options?: BotRequestOptions
-): Promise<RpcMethods[M]['result']>
-export async function requestForBot(
-  bot: Partial<RosterRow> | null | undefined,
-  method: string,
-  params?: Record<string, JsonValue>,
-  options?: BotRequestOptions
-): Promise<JsonValue>
-
-export async function requestForBot(
-  bot: Partial<RosterRow> | null | undefined,
-  method: string,
-  params: Record<string, JsonValue> = {},
-  options?: BotRequestOptions
-): Promise<JsonValue> {
+): Promise<RpcMethods[M]['result']> {
   const route = botConnectionRoute(bot)
 
   if (route) {
@@ -235,13 +221,16 @@ export async function requestForBot(
     }
 
     try {
-      const routedParams = scopedBotParams(route, method, params)
+      // SAFETY: the plugin host is the untyped SDK boundary (Record<string, JsonValue> in,
+      // JsonValue out); the contract types on this signature are what every caller sees, so the
+      // two boundary casts here are the only ones hermes-bots needs.
+      const routedParams = scopedBotParams(route, method, params as Record<string, JsonValue>)
 
       // Keep the three-argument shape when no options were given so older
       // desktop shells (and the arity-pinning tests) see the same call.
-      return await (options?.spawnPriority
+      return (await (options?.spawnPriority
         ? host.requestProfile(route, method, routedParams, undefined, { spawnPriority: options.spawnPriority })
-        : host.requestProfile(route, method, routedParams))
+        : host.requestProfile(route, method, routedParams))) as unknown as RpcMethods[M]['result']
     } catch (error) {
       // React 19 formats query errors with `(error.name || '').trim()`. IPC /
       // JSON-RPC rejections are often plain objects whose `name` is a number,
@@ -251,12 +240,11 @@ export async function requestForBot(
   }
 
   try {
-    return await host.request(method, params)
+    return (await host.request(method, params as Record<string, JsonValue>)) as unknown as RpcMethods[M]['result']
   } catch (error) {
     throw asRpcError(error, `Gateway request ${method} failed`)
   }
 }
-/* eslint-enable no-redeclare */
 
 /** A rejection duck-typed across realms: an Error-like whose fields are only
  *  conventionally typed, so every read stays `unknown` until it is checked. */

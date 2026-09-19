@@ -6,10 +6,9 @@
  * Room-level sequencing lives in group-rounds.ts, which drives these.
  */
 
-import { host } from '@hermes/plugin-sdk'
+import { host, withClarifyKind } from '@hermes/plugin-sdk'
 import type {
   ClarifyParams,
-  ClarifyQuestion,
   OpenRequestEntry,
   PendingApproval,
   RpcMethods,
@@ -479,36 +478,6 @@ async function submitGroupTurnPrompt(
 // reached the room (db's Aug 2026 report).
 export const GROUP_TURN_HARD_CAP_MS = 20 * 60000
 
-/** Normalize a wire clarify for the card: a contract-7 backend — the version this Desktop shares a
- *  contract number with — sends NO `kind` at all, and a batch is the shape that carries `questions`
- *  (the same test `main` used before the discriminator existed). Without this a batch narrowed into
- *  the single branch and the card came up with no questions and no question text (@yoniebans).
- *
- *  The one cast is the wire boundary itself: the incoming frame is JSON, and the generated type
- *  claims a discriminator the older backend does not send. */
-function clarifyWithKind(params: ClarifyParams): ClarifyParams {
-  const wire = params as {
-    answers?: Record<string, string> | null
-    choices?: string[] | null
-    kind?: 'batch' | 'single'
-    multi_select?: boolean
-    questions?: ClarifyQuestion[]
-  }
-
-  if (wire.kind === 'batch' || wire.kind === 'single') {
-    return params
-  }
-
-  // The frame is JSON the older backend sent without the discriminator; carry it forward as-is and
-  // stamp only `kind` (plus the defaults the contract requires alongside it).
-  const wireSpread = params as unknown as Record<string, unknown>
-
-  return (Array.isArray(wire.questions)
-    ? { ...wireSpread, kind: 'batch', answers: wire.answers ?? null }
-    : { ...wireSpread, kind: 'single', choices: wire.choices ?? null, multi_select: wire.multi_select ?? false }
-  ) as unknown as ClarifyParams
-}
-
 /** The room card's view of a blocking clarify. A batch carries `questions`
  *  and the card answers them one wire call each, mirroring the 1:1 contract;
  *  a single question is the card's only row. */
@@ -580,7 +549,7 @@ export function syncGroupClarify(
   // `open_requests` blob — stamp the discriminator here exactly as the channel does on
   // the live/replay paths, or a batch takes the single branch and the card is empty.
   const clarify: GroupPendingClarify | null = openClarify
-    ? { ...clarifyWithKind(openClarify.params), request_id: openClarify.id }
+    ? { ...withClarifyKind(openClarify.params), request_id: openClarify.id }
     : null
 
   const approval = state?.pending_approval || null

@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest'
 
-import { $subagentsBySession, reconcileSubagentSnapshot, upsertSubagent } from './subagents'
+import { $subagentsBySession, reconcileSubagentSnapshot, type SubagentPayload, upsertSubagent } from './subagents'
 import { subagentEvent, subagentRosterRow } from './subagents.test-util'
 
 afterEach(() => $subagentsBySession.set({}))
@@ -29,4 +29,20 @@ it('hydrates last tool activity without claiming it is active and preserves stre
   reconcileSubagentSnapshot('owner', [])
   expect($subagentsBySession.get().owner).toEqual([])
   expect($subagentsBySession.get().other).toBe(other)
+})
+
+it('fails closed on an unknown terminal status from a newer emitter (off-contract probe)', () => {
+  upsertSubagent('owner', subagentEvent({ subagent_id: 'worker', goal: 'Future worker', status: 'running' }))
+  upsertSubagent(
+    'owner',
+    subagentEvent({
+      subagent_id: 'worker',
+      // SAFETY: deliberately off-contract — a future backend may add a terminal status this build
+      // does not know; the store must coerce it to 'failed' rather than leave the row spinning.
+      status: 'some_future_terminal_status' as unknown as SubagentPayload['status']
+    }),
+    false,
+    'subagent.complete'
+  )
+  expect($subagentsBySession.get().owner[0].status).toBe('failed')
 })

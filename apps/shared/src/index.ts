@@ -73,7 +73,8 @@ export {
   type JsonRpcTransport,
   type JsonValue,
   type ServerRequest,
-  wireFrameText
+  wireFrameText,
+  withClarifyKind
 } from './json-rpc-channel'
 export {
   type ConnectionState,

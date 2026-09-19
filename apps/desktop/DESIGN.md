@@ -451,6 +451,9 @@ long transcript or a busy terminal.
 - **Update all locales together** — `en`, `ja`, `zh`, `zh-hant`. A string change
   in `en.ts` that skips the others is a regression (drifted punctuation,
   stale labels). Keep trailing-punctuation and tone consistent across all four.
+- **Sparse locales** (`ar`, `ru`) override the English base through
+  `defineLocale()`. Large catalogs are split by topic: the Arabic source lives in
+  `src/i18n/ar_<topic>.ts`, recomposed by `src/i18n/ar.ts`.
 
 ## State (TypeScript)
 

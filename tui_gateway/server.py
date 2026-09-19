@@ -2194,7 +2194,10 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
                 return  # discovery added nothing → don't churn the client
             info = _session_info(agent, session)
         _emit("session.info", sid, info)  # outside the lock — write_json must not block under _sessions_lock
-    threading.Thread(target=_wait_then_refresh, name=f"tui-mcp-late-refresh-{sid}", daemon=True).start()
+    threading.Thread(
+        target=contextvars.copy_context().run, args=(_wait_then_refresh,),
+        name=f"tui-mcp-late-refresh-{sid}", daemon=True,
+    ).start()
 
 
 class _RuntimeFallbackResolution(NamedTuple):

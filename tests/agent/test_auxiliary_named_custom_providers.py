@@ -394,6 +394,25 @@ class TestCustomProviderAliasCollision:
         # Built-in kimi-coding points at api.moonshot.ai
         assert "moonshot" in base_url or "kimi" in base_url, f"unexpected base_url {base_url!r}"
 
+    def test_named_llamacpp_wins_over_local_server_alias(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+            "providers": {
+                "llamacpp": {
+                    "base_url": "http://127.0.0.1:8081/v1",
+                    "model": "local-model",
+                },
+            },
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI
+
+        client, model = resolve_provider_client("llamacpp", model="local-model", raw_codex=True)
+
+        assert isinstance(client, OpenAI)
+        assert str(client.base_url).rstrip("/") == "http://127.0.0.1:8081/v1"
+        assert model == "local-model"
+
     def test_explicit_overrides_applied_on_api_key_branch(self, tmp_path, monkeypatch):
         """Explicit base_url/api_key from the caller must override the
         registered provider's defaults on the API-key branch.  Used by

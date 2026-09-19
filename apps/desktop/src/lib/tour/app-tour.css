@@ -211,6 +211,12 @@
   }
 }
 
+html[data-hermes-interface-surfaces] .driver-popover {
+  border-color: var(--ui-stroke-tertiary);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ui-base) 14%, transparent);
+}
+
 /* THE ACCENT-LIT POPOVER (`accent: true` on a step).
 
    For the one moment in a run that is worth more than a step — right now, the

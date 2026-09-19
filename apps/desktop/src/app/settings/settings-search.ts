@@ -15,6 +15,7 @@ export const APPEARANCE_SETTING_IDS = {
   backdrop: 'appearance.backdrop',
   embeds: 'appearance.embeds',
   introSplash: 'appearance.intro-splash',
+  interfaceStyle: 'appearance.interface-style',
   language: 'appearance.language',
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',

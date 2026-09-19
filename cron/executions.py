@@ -7,6 +7,7 @@ immutable.
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
@@ -22,9 +23,42 @@ from hermes_time import now as _hermes_now
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
 # home.
+logger = logging.getLogger(__name__)
+
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
+# A live-owned claim older than this many inactivity timeouts is old enough
+# to warn about. Warning only — live owners are never reaped here.
+STUCK_CLAIM_TIMEOUT_MULTIPLIER = 3
+# Per-claim warning rate limit: the recovery scan runs every few minutes, so
+# without dedupe the same old claim would re-log on every cycle.
+STUCK_CLAIM_WARN_COOLDOWN_SECONDS = 3600.0
+# Cooldown entries are keyed by (ledger scope, execution id). The scheduler can
+# scan several profile ledgers from one process; a process-global map keyed by
+# bare execution id would let one profile's scan prune another profile's
+# cooldown entry and re-warn the same unchanged claim.
+_stuck_claim_warned_at: Dict[tuple, float] = {}
+
+
+def _stuck_claim_scope(conn: sqlite3.Connection) -> str:
+    """Identify the ledger behind *conn* for cooldown scoping."""
+    try:
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+            path = row["file"] if isinstance(row, sqlite3.Row) else row[2]
+            if name == "main" and path:
+                return str(Path(str(path)).resolve())
+    except Exception:
+        pass
+    try:
+        if EXECUTIONS_FILE is not None:
+            return str(Path(str(EXECUTIONS_FILE)).resolve())
+        return str((get_hermes_home().resolve() / "cron" / "executions.db"))
+    except Exception:
+        return ""
+
+
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -314,9 +348,140 @@ def recover_interrupted_executions() -> int:
                     recovered.append(record)
         if changed:
             _prune_unlocked(conn)
+        try:
+            _warn_stuck_claims_on(conn, _inactivity_timeout_seconds())
+        except Exception:
+            pass
     for record in recovered:
         _emit_execution_state(record)
     return changed
+
+
+def _inactivity_timeout_seconds() -> float:
+    """Mirror of scheduler._cron_inactivity_seconds without the import cycle.
+
+    HERMES_CRON_TIMEOUT seconds; 0 = unlimited (no stuck-claim warnings);
+    missing/bad input = 600.
+    """
+    try:
+        from cron.env_settings import cron_env_setting
+        raw = cron_env_setting("HERMES_CRON_TIMEOUT").strip()
+    except Exception:
+        return 600.0
+    if not raw:
+        return 600.0
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return 600.0
+
+
+def _claim_staleness_seconds(record: Dict[str, Any]) -> Optional[float]:
+    stamp = record.get("started_at") or record.get("claimed_at")
+    if not stamp:
+        return None
+    try:
+        from datetime import datetime, timezone
+        moment = datetime.fromisoformat(str(stamp))
+        now = _hermes_now()
+        if (moment.tzinfo is None) != (now.tzinfo is None):
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            else:
+                moment = moment.replace(tzinfo=None)
+        return (now - moment).total_seconds()
+    except Exception:
+        return None
+
+
+def warn_stuck_claims(*, inactivity_timeout: Optional[float] = None) -> int:
+    """Warn about live-owned claims older than N x the inactivity timeout.
+
+    Warning only: matching rows are never modified. Live-owner reaping stays
+    with the recovery path, which requires proof the owner is gone. Each execution id warns at most once per STUCK_CLAIM_WARN_COOLDOWN_SECONDS so periodic scans do not re-log the same claim every cycle.
+    """
+    limit = inactivity_timeout if inactivity_timeout is not None else _inactivity_timeout_seconds()
+    try:
+        limit = float(limit)
+    except (ValueError, TypeError):
+        return 0
+    if limit <= 0:
+        return 0
+    with _transaction() as conn:
+        return _warn_stuck_claims_on(conn, limit)
+
+
+def _warn_stuck_claims_on(conn: sqlite3.Connection, limit: float, *, threshold: Optional[float] = None) -> int:
+    # The recovery path calls this directly with the raw configured timeout,
+    # so the disabled-timeout (0 = unlimited) guard must live here, not only
+    # in warn_stuck_claims - otherwise every live claim warns on every scan.
+    try:
+        limit = float(limit)
+    except (ValueError, TypeError):
+        return 0
+    if limit <= 0:
+        return 0
+    if threshold is None:
+        threshold = limit * STUCK_CLAIM_TIMEOUT_MULTIPLIER
+    try:
+        threshold = float(threshold)
+    except (ValueError, TypeError):
+        return 0
+    if threshold <= 0:
+        return 0
+    rows = conn.execute(
+        """SELECT id, job_id, status, process_id, pid, process_started_at,
+                  claimed_at, started_at
+           FROM executions
+           WHERE status IN ('claimed','running')"""
+    ).fetchall()
+    candidates = [dict(row) for row in rows]
+    scope = _stuck_claim_scope(conn)
+    now = time.time()
+    try:
+        cooldown = float(STUCK_CLAIM_WARN_COOLDOWN_SECONDS)
+    except (ValueError, TypeError):
+        cooldown = 0.0
+    # Prune only this ledger's scope so multiplex scans cannot drop each
+    # other's cooldown entries; also drop this scope's expired entries so
+    # the map stays bounded without relying on ledger membership.
+    live_ids = {candidate["id"] for candidate in candidates}
+    for known_key in list(_stuck_claim_warned_at):
+        known_scope, known_id = known_key
+        if known_scope != scope:
+            continue
+        if known_id not in live_ids:
+            del _stuck_claim_warned_at[known_key]
+        elif cooldown <= 0 or now - _stuck_claim_warned_at[known_key] >= cooldown:
+            del _stuck_claim_warned_at[known_key]
+    warned = 0
+    for candidate in candidates:
+        try:
+            if not _owner_is_live(int(candidate["pid"]), candidate["process_started_at"]):
+                continue
+            age = _claim_staleness_seconds(candidate)
+        except Exception:
+            continue
+        if age is None or age < threshold:
+            continue
+        last_warned = _stuck_claim_warned_at.get((scope, candidate["id"]))
+        if (
+            last_warned is not None
+            and now - last_warned < STUCK_CLAIM_WARN_COOLDOWN_SECONDS
+        ):
+            continue
+        # claimed_at/started_at never advance on a live owner, so the age is
+        # claim age - not an observed lack of progress. Frame it as an old
+        # live-owned claim without asserting stuckness.
+        logger.warning(
+            "Cron execution %s for job %s is an old live-owned claim: status=%s owned by live pid %s "
+            "for %.0fs (inactivity limit %.0fs); leaving the claim in place",
+            candidate["id"], candidate["job_id"], candidate["status"],
+            candidate["pid"], age, limit,
+        )
+        _stuck_claim_warned_at[(scope, candidate["id"])] = now
+        warned += 1
+    return warned
 
 
 def list_executions(

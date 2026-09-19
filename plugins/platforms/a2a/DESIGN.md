@@ -19,7 +19,8 @@ must not touch core files.** A2A now lives entirely under
 ### Outbound — client tools (`a2a` toolset)
 - `a2a_discover(url)` — fetch + summarize a peer's Agent Card (v1.0
   `supportedInterfaces` aware, tolerates 0.3 cards).
-- `a2a_call(agent, message, context_id?)` — send a JSON-RPC `message/send`
+- `a2a_call(agent, message, context_id?, metadata?)` — send a JSON-RPC
+  `message/send`; optional metadata is placed on the request params
   task to a peer, return the reply. Multi-turn via `context_id` (carried
   inside the Message per v1.0). Surfaces `TASK_STATE_INPUT_REQUIRED` so the
   model knows to answer and continue the context.

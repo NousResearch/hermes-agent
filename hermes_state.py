@@ -881,17 +881,25 @@ class SessionDB(
             self._raise_if_db_corrupt()
             self._raise_if_db_replaced()
             conn = self._conn
+            owner_operation = True
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 # BEGIN can wait on another writer while a pathname/WAL changes.
                 self._raise_if_db_corrupt()
                 self._raise_if_db_replaced()
+                # An exception thrown through yield can belong to a different
+                # database. Only our own operations establish owner provenance.
+                owner_operation = False
                 yield conn
+                owner_operation = True
                 conn.commit()
             except BaseException as exc:
-                if conn.in_transaction:
-                    conn.rollback()
-                if self._is_structural_corruption_error(exc):
+                try:
+                    if conn.in_transaction:
+                        conn.rollback()
+                except Exception:
+                    pass  # Preserve the primary failure, including its origin.
+                if owner_operation and self._is_structural_corruption_error(exc):
                     self._halt_db_corrupt(exc)
                 raise
 

@@ -852,7 +852,8 @@ class CLICommandsMixin:
             _pr(f"  Restored state from: {snap_id}",
                 "  Restart recommended for gateway/dashboard processes to pick up state.db changes.")
         else:
-            print(f"  Snapshot not found: {snap_id}")
+            print(f"  Restore failed or was refused: {snap_id}. "
+                  "Check that the snapshot exists and inspect hermes logs for the cause.")
 
     def _snapshot_prune(self, parts) -> None:
         from hermes_cli.backup import prune_quick_snapshots

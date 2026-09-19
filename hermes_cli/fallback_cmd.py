@@ -138,10 +138,66 @@ def cmd_fallback_list(args) -> None:  # noqa: ARG001
     print("  Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers\n")
 
 
+def _parse_spec(spec: str) -> Optional[Dict[str, Any]]:
+    """Parse a non-interactive fallback spec into a {provider, model, base_url?} entry.
+
+    Accepted forms::
+
+        <provider>/<model>
+        <provider>/<model>@https://base.url/v1
+
+    Returns ``None`` when no spec was provided. Raises ``ValueError`` when a
+    spec IS provided but malformed (missing provider or model separator).
+    """
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+
+    base_url = ""
+    if "@" in spec:
+        spec, base_url = spec.rsplit("@", 1)
+        base_url = base_url.strip()
+
+    provider, sep, model = spec.partition("/")
+    provider = provider.strip()
+    model = model.strip()
+    if not sep or not provider or not model:
+        raise ValueError(
+            f"Invalid fallback spec: {spec!r}. Expected <provider>/<model> "
+            "e.g. openrouter/google/gemini-3.7-flash, optionally with @base_url."
+        )
+
+    entry: Dict[str, Any] = {"provider": provider, "model": model}
+    if base_url:
+        entry["base_url"] = base_url
+    return entry
+
+
 def cmd_fallback_add(args) -> None:
-    """Launch the same picker as `hermes model`, then append the selection to the chain."""
-    from hermes_cli.main import _require_tty, select_provider_and_model
+    """Add a fallback entry.
+
+    Non-interactive when ``args.spec`` is a ``<provider>/<model>`` spec;
+    otherwise launches the same picker as `hermes model` and appends the
+    selection to the chain.
+    """
     from hermes_cli.config import load_config, save_config
+
+    spec = getattr(args, "spec", None)
+    spec_entry = None
+    if spec:
+        try:
+            spec_entry = _parse_spec(spec)
+        except ValueError as exc:
+            print()
+            print(f"  ✗ {exc}")
+            print()
+            raise SystemExit(2)
+    if spec_entry:
+        _append_fallback(spec_entry)
+        return
+
+    from hermes_cli.main import _require_tty, select_provider_and_model
+
     _require_tty("fallback add")
 
     # Snapshot BEFORE the picker runs; both route stores must be restored on every exit path.
@@ -181,11 +237,39 @@ def cmd_fallback_add(args) -> None:
         return
 
     # Reload after primary restoration; picker-created providers/credentials remain.
+    _append_fallback(new_entry)
+
+
+def _append_fallback(new_entry: Dict[str, Any]) -> None:
+    """Validate and append a fallback entry (shared by picker and spec paths)."""
+    from agent.backend_identity import BackendIdentity, same_deployment
+    from hermes_cli.config import load_config, save_config
+
     final_cfg = load_config()
     chain = _read_chain(final_cfg)
-    if any(same_deployment(_identity(existing), new_ident) for existing in chain):
-        print(f"\n  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
-        return
+
+    new_ident = BackendIdentity.build(
+        provider=new_entry.get("provider"),
+        model=new_entry.get("model"),
+        base_url=new_entry.get("base_url"),
+    )
+
+    # Reject exact-duplicate fallback entries (same deployment; a different
+    # explicit base_url is a different endpoint and NOT a duplicate).
+    for existing in chain:
+        if same_deployment(
+            BackendIdentity.build(
+                provider=existing.get("provider"),
+                model=existing.get("model"),
+                base_url=existing.get("base_url"),
+            ),
+            new_ident,
+        ):
+            print()
+            print(f"  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
+            print()
+            return
+
     chain.append(new_entry)
     _write_chain(final_cfg, chain)
     save_config(final_cfg)

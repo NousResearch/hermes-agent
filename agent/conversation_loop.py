@@ -118,6 +118,40 @@ def _review_input_budget_exhausted(agent: Any) -> bool:
     return isinstance(used, int) and not isinstance(used, bool) and used >= budget
 
 
+def format_context_exhausted_message(
+    request_tokens: int, history_tokens: int, context_length: int | None
+) -> str:
+    """Explain a context overflow that history compression cannot fix.
+
+    The compressor only shrinks conversation history. When the request is
+    dominated by non-history content (a huge single message, injected
+    workspace/tool payloads, tool schemas), history can be tiny while the
+    request still exceeds the window — reporting the history size alone
+    ("44 tokens") is misleading. Report the whole request against the window
+    and say what compression could not touch.
+    """
+    window = f"{context_length:,}" if context_length else "the model's"
+    non_history = max(request_tokens - history_tokens, 0)
+    return (
+        f"Context length exceeded: the request is ~{request_tokens:,} tokens "
+        f"against a {window}-token window. Compression only shrinks conversation "
+        f"history (~{history_tokens:,} tokens); ~{non_history:,} tokens are the current "
+        f"message, injected context, and tool schemas, which cannot be compressed. "
+        f"Send a smaller message or switch to a larger-context model."
+    )
+
+
+def uncompressible_overflow_can_failover(agent) -> bool:
+    """True when a fallback rung remains that could absorb an oversized request.
+
+    Pure predicate so the failover-on-overflow decision is testable without the
+    conversation loop: requires a configured fallback chain with entries left.
+    """
+    chain = getattr(agent, "_fallback_chain", None) or []
+    index = getattr(agent, "_fallback_index", 0) or 0
+    return bool(chain) and index < len(chain)
+
+
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
     """Inject the one-time wall-clock wrap-up notice when past 80% of budget.
 

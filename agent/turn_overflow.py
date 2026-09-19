@@ -442,14 +442,33 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
         _retry.restart_with_compressed_messages = True
         return st.done("break")
 
-    # Can't compress further and already at minimum tier.
+    # The request itself does not fit and history can't shrink it. Before failing
+    # the turn, hand it to the next fallback provider — a larger window there
+    # simply works (an 84K request vs a 65K local window fits the 98K fallback
+    # rung). Advances the chain on each pass, so a too-small rung cascades.
+    from agent.conversation_loop import uncompressible_overflow_can_failover
+
+    if uncompressible_overflow_can_failover(agent) and agent._try_activate_fallback():
+        agent._buffer_status(
+            "🔄 Request exceeds this model's context window and cannot be "
+            "compressed — switching to a larger-context fallback model..."
+        )
+        _retry.restart_with_compressed_messages = True
+        return st.done("break")
+
+    # Can't compress further and already at minimum tier. Report the whole
+    # request against the window — compression only shrinks history, so a
+    # tiny-history / huge-request overflow would otherwise read "44 tokens".
+    from agent.conversation_loop import format_context_exhausted_message
+
+    _exhausted = format_context_exhausted_message(
+        st.request_tokens(), new_tokens,
+        getattr(getattr(agent, "context_compressor", None), "context_length", None),
+    )
     return st.fail_turn(
         site_copy("context_overflow", model=agent.model),
-        notices=(
-            f"❌ The conversation is too long for the model ({new_tokens:,} tokens) and cannot be shrunk further.",
-            _RETRY_HINT,
-        ),
-        log=("%sContext length exceeded: %s tokens. Cannot compress further.", agent.log_prefix, f"{new_tokens:,}"),
+        notices=(f"❌ {_exhausted}", _RETRY_HINT),
+        log=("%s%s", agent.log_prefix, _exhausted),
     )
 
 

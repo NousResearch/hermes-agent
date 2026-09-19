@@ -5,7 +5,7 @@ from hermes_state_common import FTS_TOOL_CONTENT_PREFIX_CHARS
 SEARCH_CONTENT_CHARS = 8_192
 SEARCH_TOOL_CALLS_CHARS = 4_096
 SEARCH_TOOL_NAME_CHARS = 256
-POSTGRES_SCHEMA_VERSION = 2
+POSTGRES_SCHEMA_VERSION = 3
 
 DELIVERY_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS delivery_obligations (
@@ -32,6 +32,90 @@ CREATE INDEX IF NOT EXISTS idx_delivery_obligations_recovery
 CREATE INDEX IF NOT EXISTS idx_delivery_obligations_runtime
     ON delivery_obligations(platform, adapter_profile, owner_token)
     WHERE state = 'failed';
+"""
+
+CRON_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS executions (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    process_id TEXT NOT NULL,
+    pid BIGINT NOT NULL,
+    process_started_at BIGINT,
+    status TEXT NOT NULL CHECK(status IN
+        ('claimed', 'running', 'completed', 'failed', 'unknown')),
+    handoff_pending BIGINT NOT NULL DEFAULT 0,
+    handoff_started_at DOUBLE PRECISION,
+    claimed_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    error TEXT,
+    delivery_outcome TEXT,
+    scheduled_instant TEXT,
+    owner_lease_expires_at DOUBLE PRECISION
+);
+
+CREATE INDEX IF NOT EXISTS idx_executions_job_claimed
+    ON executions(job_id, claimed_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_executions_status_claimed
+    ON executions(status, claimed_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_executions_occurrence
+    ON executions(job_id, scheduled_instant) WHERE status = 'completed';
+CREATE INDEX IF NOT EXISTS idx_executions_recovery
+    ON executions(status, owner_lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS cron_incidents (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    error_sig TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('detected', 'alerted', 'closed')),
+    failure_type TEXT NOT NULL DEFAULT 'unknown',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    acked_at TEXT,
+    closed_at TEXT,
+    error TEXT NOT NULL,
+    output_file TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_cron_incidents_job ON cron_incidents(job_id);
+CREATE INDEX IF NOT EXISTS idx_cron_incidents_state ON cron_incidents(state);
+
+CREATE TABLE IF NOT EXISTS deliveries (
+    execution_id TEXT PRIMARY KEY,
+    job_json TEXT NOT NULL,
+    content TEXT NOT NULL,
+    for_failure BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK(status IN
+        ('pending', 'delivering', 'delivered', 'failed', 'unknown')),
+    owner_process_id TEXT,
+    owner_pid BIGINT,
+    owner_started_at BIGINT,
+    owner_lease_expires_at DOUBLE PRECISION,
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_deliveries_pending
+    ON deliveries(status, created_at, execution_id);
+CREATE INDEX IF NOT EXISTS idx_deliveries_recovery
+    ON deliveries(status, owner_lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS delivery_tombstones (
+    execution_id TEXT PRIMARY KEY,
+    terminal_status TEXT NOT NULL CHECK(terminal_status IN
+        ('delivered', 'failed', 'unknown')),
+    finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cron_notepad (
+    job_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (job_id, key)
+);
 """
 
 POSTGRES_SCHEMA_SQL = """
@@ -270,6 +354,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
 """
 
 POSTGRES_SCHEMA_SQL += DELIVERY_SCHEMA_SQL
+POSTGRES_SCHEMA_SQL += CRON_SCHEMA_SQL
 
 FUNCTION_SQL = """
 CREATE FUNCTION json_valid(raw TEXT) RETURNS INTEGER

@@ -41,7 +41,10 @@ _PROVIDER_DEFAULT_MODELS = {
 }
 # The embedded daemon speaks OpenAI wire format for these providers.
 _OPENAI_WIRE_PROVIDERS = {"openai_compatible", "openrouter"}
-_OBSERVATION_SCOPE_KEYWORDS = {"per_tag", "combined", "all_combinations"}
+# ``shared`` is the mode that deduplicates across volatile per-call provenance
+# tags (a per-session id, a run id): it consolidates every memory into the one
+# untagged scope, so yesterday's observation is still the one being rewritten.
+_OBSERVATION_SCOPE_KEYWORDS = {"per_tag", "combined", "all_combinations", "shared"}
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -83,7 +86,9 @@ def _normalize_observation_scopes(value: Any) -> Any:
     """Normalize observation_scopes to a keyword string, ``list[list[str]]`` (one inner
     list per consolidation pass), or ``None`` (Hindsight's ``combined`` default).
     Accepts a keyword, a JSON-encoded list, a flat tag list (one scope) or a list of
-    tag-lists; anything unrecognized -> ``None`` so we never send an invalid payload."""
+    tag-lists; anything unrecognized -> ``None`` so we never send an invalid payload.
+    An inner list that holds no tags is kept: ``[[]]`` is the explicit spelling of
+    ``shared``, one consolidation pass over the untagged scope."""
     if isinstance(value, str):
         text = value.strip()
         if text in _OBSERVATION_SCOPE_KEYWORDS:
@@ -97,13 +102,23 @@ def _normalize_observation_scopes(value: Any) -> Any:
     if not isinstance(value, (list, tuple)):
         return None
     if all(isinstance(entry, str) for entry in value):  # flat tag list -> one scope
-        value = [value]
-    scopes = [
-        [str(tag).strip() for tag in entry if str(tag).strip()] if isinstance(entry, (list, tuple))
-        else [entry.strip()] if isinstance(entry, str) and entry.strip() else []
-        for entry in value
-    ]
-    return [s for s in scopes if s] or None
+        # A flat list says which tags the one scope carries, so a list with no
+        # usable tag declares nothing and keeps the server default. Asking for
+        # the untagged scope on purpose is spelled with the inner brackets
+        # (``[[]]``) or with the ``shared`` keyword.
+        tags = [entry.strip() for entry in value if entry.strip()]
+        return [tags] if tags else None
+    scopes: list[list[str]] = []
+    for entry in value:
+        if isinstance(entry, (list, tuple)):
+            # An inner list the caller wrote survives even when it holds no tags:
+            # ``[[]]`` is the explicit spelling of ``shared`` — one pass over the
+            # untagged scope. Dropping it would hand back ``None``, i.e. silently
+            # downgrade the caller to ``combined``, the mode they opted out of.
+            scopes.append([str(tag).strip() for tag in entry if str(tag).strip()])
+        elif isinstance(entry, str) and entry.strip():
+            scopes.append([entry.strip()])
+    return scopes or None
 
 
 def _sanitize_bank_segment(value: str) -> str:

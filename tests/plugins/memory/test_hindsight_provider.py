@@ -399,6 +399,53 @@ class TestConfig:
         assert captured["llm_provider"] == "openai"
 
 
+class TestObservationScopes:
+    """The two spellings of 'one shared scope' must survive normalization.
+
+    Both are the only way to deduplicate when tags carry volatile per-call
+    provenance (a session id): under ``combined`` every session writes its own
+    scope, so consolidation never sees yesterday's observation and rewrites
+    nothing. A value that silently normalizes to ``None`` puts the caller back
+    on ``combined`` with no error anywhere.
+    """
+
+    @pytest.mark.parametrize("mode", ["per_tag", "combined", "all_combinations", "shared"])
+    def test_every_server_keyword_survives(self, mode):
+        assert _normalize_observation_scopes(mode) == mode
+
+    def test_shared_keyword_is_not_dropped(self):
+        assert _normalize_observation_scopes("shared") == "shared"
+        assert _normalize_observation_scopes("  shared  ") == "shared"
+
+    def test_explicit_empty_scope_is_the_untagged_scope_not_nothing(self):
+        """``[[]]`` is the JSON spelling of ``shared`` — one untagged pass."""
+        assert _normalize_observation_scopes([[]]) == [[]]
+        assert _normalize_observation_scopes("[[]]") == [[]]
+
+    def test_an_inner_list_of_blanks_still_counts_as_declared(self):
+        assert _normalize_observation_scopes([["", "  "]]) == [[]]
+
+    def test_untagged_scope_survives_next_to_a_tagged_one(self):
+        assert _normalize_observation_scopes([[], ["domain:x"]]) == [[], ["domain:x"]]
+
+    def test_nothing_declared_still_means_the_server_default(self):
+        assert _normalize_observation_scopes([]) is None
+        assert _normalize_observation_scopes("") is None
+        assert _normalize_observation_scopes(None) is None
+
+    def test_garbage_entries_do_not_become_an_untagged_scope(self):
+        """A non-list, non-string entry is dropped, not read as ``[]``."""
+        assert _normalize_observation_scopes([None]) is None
+        assert _normalize_observation_scopes([None, ["domain:x"]]) == [["domain:x"]]
+
+    def test_unknown_keyword_is_still_refused(self):
+        assert _normalize_observation_scopes("per-tag") is None
+
+    def test_shared_reaches_the_provider_config(self, provider_with_config):
+        p = provider_with_config(observation_scopes="shared")
+        assert p._observation_scopes == "shared"
+
+
 class TestPostSetup:
     def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"

@@ -250,7 +250,7 @@ for p in list_providers():
 Point `HERMES_HOME` at a temp directory so you don't pollute your real config:
 
 ```bash
-export HERMES_HOME=/tmp/hermes-plugin-test
+export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-plugin-test
 mkdir -p $HERMES_HOME/plugins/model-providers/my-provider
 cat > $HERMES_HOME/plugins/model-providers/my-provider/__init__.py <<'EOF'
 from providers import register_provider

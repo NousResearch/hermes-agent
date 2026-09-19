@@ -96,9 +96,13 @@ class TestMetadata:
         assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
 
     def test_setup_schema_has_no_required_env_vars(self, provider):
+        """#102144: the keyless row must declare the shared Codex OAuth bootstrap hook (otherwise setup
+        saves the backend without ever signing in) and its hint must name a command that exists."""
         schema = provider.get_setup_schema()
         assert schema["env_vars"] == []
-        assert "hermes auth codex" in schema["post_setup_hint"]
+        assert schema["post_setup"] == "openai_codex"
+        assert "hermes auth add openai-codex" in schema["post_setup_hint"]
+        assert "hermes auth codex`" not in schema["post_setup_hint"]
 
 
 # ── Availability ────────────────────────────────────────────────────────────

@@ -545,6 +545,9 @@ class GatewaySessionCommandsMixin:
         if platform_key is not None:
             runtime_kwargs["platform"] = platform_key
         runtime_kwargs["gateway_session_key"] = session_key
+        # Same reasoning setting as a live turn (session ``/reasoning`` > per-model > global): without it
+        # the transport applies its default effort — a 400 on non-reasoning models.
+        runtime_kwargs["reasoning_config"] = self._resolve_session_reasoning_config(source=source, model=model)
 
         tmp_agent = await self._build_manual_compression_agent(session_entry.session_id, model, runtime_kwargs)
         try:

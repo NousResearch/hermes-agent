@@ -303,7 +303,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   }
 
   const ingest = (flush: boolean) => {
-    const cut = cutSentences(buffer, flush)
+    const cut = cutSentences(buffer, flush, tts.min_len)
     buffer = cut.rest
 
     if (cut.sentences.length > 0) {

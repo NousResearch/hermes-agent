@@ -98,7 +98,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
         job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
-    from hermes_cli.auth import AuthError
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         kwargs = {"requested": requested, "target_model": model}
@@ -106,6 +106,10 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
             kwargs["explicit_base_url"] = job.get("base_url")
         resolve_runtime_provider(**kwargs)
     except AuthError as exc:
+        if is_rate_limited_auth_error(exc):
+            # Quota/rate-limit is not a missing credential: let the real path report it and hold
+            # the job through the provider's window (cron/quota_hold.py, #89376).
+            return None
         return (
             f"provider credential missing: {exc}. "
             "Set the provider API key in .env (or `hermes setup`), or pin a "

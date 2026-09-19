@@ -156,7 +156,7 @@ _DEFAULT_PAYLOADS = {
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",
         "tool_call_history": [{
             "tool_name": "write_file",
-            "tool_input": {"argument_keys": ["content", "path"], "targets": {"path": "/tmp/report.txt"}},
+            "tool_input": {"argument_keys": ["content", "path"], "targets": {"path": "notes/report.txt"}},
             "input_bytes": 128, "output_bytes": 32, "status": "ok",
         }],
         "duration_ms": 1234,

@@ -4137,8 +4137,10 @@ _TRANSIENT_PROVIDER_REASONS = frozenset({
 # ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` so the dispatcher parks the card after ONE spawn with
 # the provider's words as the reason, instead of re-spawning into the same wall until
 # ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
+# ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
+# header change heals it, never a retry.
 _TERMINAL_PROVIDER_REASONS = frozenset({
-    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification",
+    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
 })
 
 

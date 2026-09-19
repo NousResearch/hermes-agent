@@ -164,9 +164,8 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     """Honest readiness state for a provider picker row.
     ``features`` avoids re-fetching portal state per row. ``is_active`` is the completed-setup fallback
     for post_setup hooks with no registered installed-check (selecting a row runs its hook)."""
-    from hermes_cli.tools_config import (
-        _POST_SETUP_READY, _provider_env_ready, _xai_credentials_present, get_nous_subscription_features,
-    )
+    from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready, get_nous_subscription_features
+    from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY
 
     if provider.get("env_vars", []):
         return "ready" if _provider_env_ready(provider) else "needs_keys"
@@ -189,8 +188,9 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
 
     post_setup = provider.get("post_setup")
     if post_setup:
-        if post_setup == "xai_grok":
-            return "ready" if _xai_credentials_present() else "needs_auth"
+        auth_predicate = _POST_SETUP_AUTH_READY.get(post_setup)
+        if auth_predicate is not None:
+            return "ready" if auth_predicate() else "needs_auth"
         predicate = _POST_SETUP_READY.get(post_setup)
         if predicate is not None:
             try:

@@ -337,12 +337,63 @@ def stamp_db_persisted_markers(messages: List[Dict[str, Any]]) -> None:
             msg[_DB_PERSISTED_MARKER] = True
 
 
+def _is_checkpoint_item(item: Any) -> bool:
+    return isinstance(item, dict) and item.get("type") == "compaction"
+
+
+def _newest_checkpoint_carrier(messages: List[Dict[str, Any]], key: str) -> int:
+    """Index of the last assistant message carrying a ``type: "compaction"`` item under *key*, or -1.
+    Transcript-side mirror of ``native_compaction.prune_pre_checkpoint_items``' newest-run-wins rule:
+    the wire builder drops every checkpoint before the last one, so this is the only carrier whose
+    checkpoint can still reach a request."""
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        items = msg.get(key)
+        if isinstance(items, list) and any(_is_checkpoint_item(item) for item in items):
+            return i
+    return -1
+
+
+def _set_sidecar(msg: Dict[str, Any], key: str, kept: List[Any]) -> None:
+    """Filter items, never leave an empty sidecar behind."""
+    if kept:
+        msg[key] = kept
+    else:
+        msg.pop(key, None)
+
+
+def drop_shadowed_checkpoints(
+    messages: List[Dict[str, Any]], key: str = "codex_reasoning_items", *, before: Optional[int] = None,
+) -> List[int]:
+    """Drop ``type: "compaction"`` items from every assistant row older than the newest carrier (rows at
+    index >= *before* are left alone). A checkpoint a newer carrier shadows has no reader on any wire:
+    ``prune_pre_checkpoint_items`` rebuilds each request around the newest checkpoint run and the replay
+    gate drops checkpoints wholesale once native compaction is ineligible. Non-checkpoint items stay.
+    In place; returns the indices rewritten."""
+    newest = _newest_checkpoint_carrier(messages, key)
+    stop = newest if before is None else min(newest, before)
+    rewritten: List[int] = []
+    for i in range(max(stop, 0)):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        items = msg.get(key)
+        if not isinstance(items, list) or not any(_is_checkpoint_item(item) for item in items):
+            continue
+        _set_sidecar(msg, key, [item for item in items if not _is_checkpoint_item(item)])
+        rewritten.append(i)
+    return rewritten
+
+
 def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
     """Strip stale ``codex_reasoning_items`` from assistant turns older than the active one.
     Boundary is the last USER message (a turn spans several assistant rows): the Responses API replays a
     turn's bridging reasoning items together, so cutting at the last ASSISTANT would strip mid-chain.
-    ``type: "compaction"`` items are cumulative context carriers that must survive on every retained
-    message — filter items, never pop the key. In place; returns pruned message count."""
+    Only the NEWEST ``type: "compaction"`` checkpoint survives (``drop_shadowed_checkpoints``): a shadowed
+    one was still copied into the compacted transcript and every child session built from it (#102374).
+    Filter items, never pop the key on the carrier. In place; returns pruned message count."""
     # Active turn = everything after the last real user message; synthetic
     # continuation rows and tool results never mark a turn boundary.
     last_user_idx = _last_index_with_role(messages, "user")
@@ -350,24 +401,22 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
         # No user boundary: prune nothing (fail open toward correctness).
         return 0
 
-    pruned = 0
-    for i in range(last_user_idx):
-        msg = messages[i]
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
-            continue
-        for key in _STALE_REPLAY_PRUNE_KEYS:
+    pruned = set()
+    for key in _STALE_REPLAY_PRUNE_KEYS:
+        pruned.update(drop_shadowed_checkpoints(messages, key, before=last_user_idx))
+        for i in range(last_user_idx):
+            msg = messages[i]
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
             items = msg.get(key)
             if not isinstance(items, list) or not items:
                 continue
-            kept = [item for item in items if isinstance(item, dict) and item.get("type") == "compaction"]
+            kept = [item for item in items if _is_checkpoint_item(item)]
             if len(kept) == len(items):
                 continue  # nothing stale in this sidecar
-            if kept:
-                msg[key] = kept
-            else:
-                msg.pop(key, None)
-            pruned += 1
-    return pruned
+            _set_sidecar(msg, key, kept)
+            pruned.add(i)
+    return len(pruned)
 
 
 # Explicit end boundary: weak models otherwise read quoted headers as fresh
@@ -576,12 +625,14 @@ class _SummaryFailureKind:
     streaming_closed: bool
     empty_content: bool
     truncated: bool
+    overloaded: bool
 
     def fallback_reason(self) -> str:
         """Reason string for the one-shot main-model retry log line, most specific first."""
         reasons = (
             (self.json_decode, "returned invalid JSON"), (self.truncated, "returned a truncated summary (output token cap)"),
-            (self.empty_content, "returned empty content"), (self.model_not_found, "unavailable"),
+            (self.empty_content, "returned empty content"), (self.overloaded, "was overloaded"),
+            (self.model_not_found, "unavailable"),
             (self.streaming_closed, "closed stream prematurely"), (self.timeout, "timed out"),
         )
         return next((reason for flagged, reason in reasons if flagged), "failed")
@@ -608,6 +659,8 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         ),
         # Truncated summary: one main-model retry, then ABORT preserving the session.
         truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
+        overloaded=classify_api_error(e).reason is FailoverReason.overloaded
+        or any(marker in err for marker in ("overloaded", "at capacity", "over capacity")),
     )
 
 
@@ -642,16 +695,29 @@ _TERMINAL_SUMMARY_FAILURES = (
         "preserved unchanged; the session was NOT rotated. This indicates upstream provider degradation: "
         "retry with /compress once the provider recovers, or continue the conversation as-is.",
     ),
+    (
+        "_last_summary_overload_failure",
+        "summary_overload_failure",
+        "Summary generation failed because the provider is overloaded — aborting compression. %d message(s) "
+        "preserved unchanged; the session was NOT rotated. Retry with /compress once capacity recovers, "
+        "or continue the conversation as-is.",
+    ),
 )
 
-# Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer.
+# Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer. Truncated summaries
+# (finish_reason=length) walk the same rungs on their own counter: the output cap is deterministic for an
+# unchanged route and prompt, so a flat 30s cooldown let every async-completion turn re-issue the same
+# capped request after its per-turn attempt budget was refilled (#69637).
 _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
 
 
-def _next_timeout_cooldown(compressor: Any) -> int:
-    """Bump ``compressor._consecutive_timeout_failures`` and return the ladder rung for it.
-    Module-level (not a method) so callers that bind a single real method onto a stub still exercise the ladder."""
-    n = compressor._consecutive_timeout_failures = getattr(compressor, "_consecutive_timeout_failures", 0) + 1
+def _next_timeout_cooldown(compressor: Any, counter: str = "_consecutive_timeout_failures") -> int:
+    """Bump ``compressor.<counter>`` and return the ladder rung for it.
+    Module-level (not a method) so callers that bind a single real method onto a stub still exercise the ladder.
+    ``counter`` stays separate per failure class: the timeout streak also arms the deterministic stall fallback
+    (``_prior_timeout_failures``), which a truncation must not trigger."""
+    n = getattr(compressor, counter, 0) + 1
+    setattr(compressor, counter, n)
     return _TIMEOUT_COOLDOWN_LADDER[min(n, len(_TIMEOUT_COOLDOWN_LADDER)) - 1]
 
 
@@ -2037,7 +2103,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
-        self._consecutive_timeout_failures = 0
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = self._last_feasibility_skip = False
@@ -2072,7 +2138,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._summary_failure_cooldown_until = 0.0
         self._cooldown_persist_failed = False
         self._last_summary_error = None
-        self._consecutive_timeout_failures = self._fallback_compression_streak = 0
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._fallback_compression_streak = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
         self._reset_proactive_prune_rearm()
@@ -2334,7 +2400,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             logger.info("Skipping compression cooldown clear: host already cancelled this compression attempt")
             return
         self._summary_failure_cooldown_until, self._last_summary_error = 0.0, None
-        self._consecutive_timeout_failures, self._cooldown_persist_failed = 0, False
+        self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
+        self._cooldown_persist_failed = False
         ContextCompressor._durable_write(self, "clear_compression_failure_cooldown", "compression failure cooldown clear")
 
     def _compression_cancelled(self) -> bool:
@@ -3720,12 +3787,15 @@ Write only the summary body. Do not include any preamble or prefix."""
             # Retry immediately on the main model.
             return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
-        # Transient errors: short cooldown for JSON-decode/streaming-closed. Timeouts escalate
-        # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung.
+        # Transient errors: short cooldown for JSON-decode/streaming-closed/empty-content. Timeouts escalate
+        # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung; truncation
+        # escalates on its own counter (see _TIMEOUT_COOLDOWN_LADDER).
         if kind.timeout:
             _transient_cooldown = _next_timeout_cooldown(self)
+        elif kind.truncated:
+            _transient_cooldown = _next_timeout_cooldown(self, "_consecutive_truncation_failures")
         else:
-            _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content or kind.truncated) else 60
+            _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content) else 60
         err_text = _short_error_text(e)
         self._record_compression_failure_cooldown(_transient_cooldown, err_text)
         self._last_summary_error = err_text
@@ -3742,6 +3812,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_truncated_failure = True
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
+        elif kind.overloaded:
+            self._last_summary_overload_failure = True
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

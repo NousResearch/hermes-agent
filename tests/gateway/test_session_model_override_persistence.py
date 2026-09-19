@@ -162,6 +162,26 @@ def test_rehydrate_llamacpp_override_follows_live_managed_port(store_factory):
     assert override["api_key"] == "local-key"
 
 
+def test_rehydrate_opencode_override_heals_relay_url_for_rederived_wire(store_factory):
+    """api_mode is re-resolved from the target model, so a relay URL persisted by an older build for the
+    previous wire (/v1-stripped for anthropic_messages) must be healed to match, not kept verbatim (#96066)."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "deepseek-v4-flash-vision-exp", "provider": "opencode-go", "base_url": "https://opencode.ai/zen/go"})
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={"api_key": "go-key", "api_mode": "chat_completions",
+                      "base_url": "https://opencode.ai/zen/go/v1", "provider": "opencode-go"},
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert (override["api_mode"], override["base_url"]) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+
+
 def test_sanitize_model_override():
     assert sanitize_model_override(None) is None
     assert sanitize_model_override({}) is None

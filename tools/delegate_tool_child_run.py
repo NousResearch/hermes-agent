@@ -390,14 +390,27 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     _resweep_timer.start()
 
 def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
-    """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``."""
+    """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
+    serve the child's endpoint: on a mixed same-provider pool the least-leased pick may target another host, so it is
+    released and an endpoint-matching entry is leased by id instead (#68237)."""
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
+    from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
+    base_url = getattr(child, "base_url", None)
     leased_cred_id = child_pool.acquire_lease()
     if leased_cred_id is not None:
         with _quiet("Failed to bind child to leased credential: %s"):
-            leased_entry = child_pool.current()
+            # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
+            # mutable cursor that may already point at someone else's pick.
+            leased_entry = next((e for e in child_pool.entries() if e.id == leased_cred_id), None)
+            if not _entry_serves_endpoint(leased_entry, base_url):
+                child_pool.release_lease(leased_cred_id)
+                leased_entry = next(
+                    (e for e in child_pool.entries() if e.last_status != "dead" and _entry_serves_endpoint(e, base_url)),
+                    None,
+                )
+                leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None
             if leased_entry is not None and hasattr(child, "_swap_credential"):
                 child._swap_credential(leased_entry)
     return child_pool, leased_cred_id

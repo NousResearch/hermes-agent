@@ -1983,7 +1983,15 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
   animation:
     code-card-stream-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both,
-    code-card-stream-glow 1.8s ease-in-out 180ms infinite alternate;
+    code-card-stream-glow 1.8s ease-in-out 180ms alternate forwards;
+  /* box-shadow is a paint property, so an infinite glow keeps the main-thread
+     frame pipeline running for the whole stream, however long that is. Pulse a
+     few times, then hold: the streaming caret and the card's body mask already
+     say "still arriving". With `alternate` and an odd iteration count the held
+     frame is the keyframe's 100% state, so the card rests slightly brighter
+     than its static box-shadow, not dimmer.
+     Knob: --glow-iterations (set it to `infinite` to restore the pulse). */
+  animation-iteration-count: 1, var(--glow-iterations, 3);
   box-shadow:
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 10%, transparent),
     0 0.625rem 1.75rem color-mix(in srgb, var(--dt-ring) 8%, transparent);

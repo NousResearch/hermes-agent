@@ -54,14 +54,19 @@ def _schema_has_external_ref(node: Any) -> bool:
         if key not in _SCHEMA_LITERAL_KEYS)
 
 
-def _validation_path(error: Any) -> str:
-    """Format a jsonschema error path as a compact argument path."""
+def _validation_path(error: Any, params: dict) -> str:
+    """Format an argument path using the property names shown to the model."""
+    from tools.schema_sanitizer import _rename_property_keys
     path = "arguments"
+    schema = params
     for part in getattr(error, "absolute_path", ()):
-        if isinstance(part, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part):
-            path += f".{part}"
+        props = schema.get("properties") or {} if isinstance(schema, dict) else {}
+        display = _rename_property_keys(props, path).get(part, part) if isinstance(part, str) else part
+        if isinstance(display, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", display):
+            path += f".{display}"
         else:
-            path += f"[{part if isinstance(part, int) else json.dumps(part, ensure_ascii=False)}]"
+            path += f"[{display if isinstance(display, int) else json.dumps(display, ensure_ascii=False)}]"
+        schema = props.get(part, {}) if isinstance(part, str) else schema.get("items", {})
     return path
 
 
@@ -91,14 +96,21 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         params = fn.get("parameters") if isinstance(fn, dict) else None
         if not isinstance(params, dict):
             return None
+        from tools.schema_sanitizer import (
+            _rename_property_keys, sanitize_tool_schemas, unrename_tool_args)
+        check_args = unrename_tool_args(params, args)
+        display_params = sanitize_tool_schemas([
+            {"type": "function", "function": {"name": name, "parameters": params}}
+        ])[0]["function"]["parameters"]
+        renames = _rename_property_keys(params.get("properties") or {}, name)
         required = params.get("required")
-        missing = ([r for r in required if isinstance(r, str) and r not in args]
+        missing = ([r for r in required if isinstance(r, str) and r not in check_args]
                    if isinstance(required, list) else [])
         if missing:
             return _validation_error(
                 f"tool_call to '{name}' is missing required argument(s): "
-                f"{', '.join(missing)}. The tool was NOT invoked.",
-                path="arguments", constraint="required", parameters=params)
+                f"{', '.join(renames.get(r, r) for r in missing)}. The tool was NOT invoked.",
+                path="arguments", constraint="required", parameters=display_params)
         validation_schema = _schema_for_local_validation(params)
         if _schema_has_external_ref(validation_schema):
             logger.debug("Skipping local deferred-argument validation for %s: external $ref", name)
@@ -110,7 +122,7 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
             candidate_args = coerce_tool_args(name, dict(args))
         except Exception:
             logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
-            candidate_args = dict(args)
+            candidate_args = dict(check_args)
         try:
             from jsonschema.exceptions import best_match
             from jsonschema.validators import validator_for
@@ -122,7 +134,7 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         validation_error = best_match(validator_cls(validation_schema).iter_errors(candidate_args))
         if validation_error is None:
             return None
-        path = _validation_path(validation_error)
+        path = _validation_path(validation_error, params)
         constraint = str(getattr(validation_error, "validator", None) or "schema")
         detail = re.sub(r"\s+", " ", str(validation_error.message)).strip()
         if len(detail) > 600:
@@ -130,7 +142,7 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         return _validation_error(
             f"tool_call to '{name}' failed argument validation at {path} "
             f"({constraint}): {detail}. The tool was NOT invoked.",
-            path=path, constraint=constraint, parameters=params)
+            path=path, constraint=constraint, parameters=display_params)
     except Exception:  # pragma: no cover — never block dispatch on validator bugs
         logger.debug("validate_deferred_call_args failed for %s", name, exc_info=True)
         return None

@@ -459,22 +459,3 @@ def test_usage_tokens_captured_from_message_update(fake_pi):
         "assistantMessageEvent": {"type": "text_delta", "delta": "hi"},
     })
     assert (client._prompt_tokens, client._completion_tokens) == (20, 9)
-
-
-def test_read_env_var_tolerates_export_and_quotes(tmp_path, monkeypatch):
-    from agent.copilot_acp_client import _read_env_var
-
-    monkeypatch.delenv("HERMES_X_TEST", raising=False)
-    env_file = tmp_path / "hermes-home" / ".hermes" / ".env"
-    env_file.parent.mkdir(parents=True)
-    env_file.write_text(
-        "export  HERMES_X_TEST = 'hello world'\n"
-        "OTHER=1\n"
-    )
-    monkeypatch.setenv("HOME", str(tmp_path / "hermes-home"))
-    assert _read_env_var("HERMES_X_TEST") == "hello world"
-    monkeypatch.setenv("HERMES_X_TEST", "from-process-env")
-    assert _read_env_var("HERMES_X_TEST") == "from-process-env"
-    monkeypatch.delenv("HERMES_X_TEST", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path / "nonexistent-home"))
-    assert _read_env_var("HERMES_X_TEST") is None

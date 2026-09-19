@@ -109,6 +109,59 @@ def _cmdline_or_empty(proc) -> str:
         return ""
 
 
+def _cmdline_tokens(proc) -> list[str]:
+    """argv of a psutil process as separate tokens (unlike the joined form, paths with spaces stay whole)."""
+    try:
+        return [str(part) for part in (proc.cmdline() or [])]
+    except Exception:
+        return []
+
+
+def _normalized_arg_tokens(tokens: list[str]) -> list[str]:
+    """argv tokens lower-cased with surrounding quotes stripped, for exact comparisons only."""
+    return [str(tok).strip('"').strip("'").lower() for tok in tokens]
+
+
+def _token_is_path_under(tok: str, dir_prefix: str) -> bool:
+    """True when the WHOLE token is the directory itself or a path inside it (either separator).
+
+    Prefix equality on a complete argv token — never a substring test: ``venv-backup`` must not
+    claim to be ``venv\``, and a file merely named after the venv path must not match at all.
+    """
+    base = dir_prefix.rstrip("\\/").lower()
+    tok = tok.strip('"').strip("'").lower()
+    if tok.endswith(":"):
+        tok += "\\"
+    return tok == base or tok.startswith(base + "\\") or tok.startswith(base + "/")
+
+
+def _cmdline_indicates_venv_holder(
+    tokens: list[str], *, venv_prefix: str, root_prefix: str, get_cwd=None
+) -> bool:
+    """Token-exact holder test for a plausible candidate whose exe lives OUTSIDE the venv.
+
+    A trampoline (uv / base interpreter) holds the venv's ``.pyd`` files when its argv references
+    a path inside the venv as a WHOLE token (``venv\\Scripts\\python.exe``), or invokes
+    ``-m hermes_cli.main`` while anchored to the project root by a whole token or by its cwd.
+    Substring matches are forbidden (the ``"serve" in cmdline`` class, #87594/#90778): the
+    consumer of this classification is ``taskkill /T /F`` — an unrelated command that merely
+    mentions the venv path inside an argument (``--source=...``, a ``-c`` snippet, a file named
+    after the venv) must never be nominated. ``get_cwd`` is called lazily, only when the
+    module-invocation form needs the cwd anchor (process.cwd() is one of the expensive calls
+    this scan avoids).
+    """
+    norm = _normalized_arg_tokens(tokens)
+    if any(_token_is_path_under(tok, venv_prefix) for tok in norm):
+        return True
+    for i, tok in enumerate(norm):
+        if tok != "hermes_cli.main" or i == 0 or norm[i - 1] != "-m":
+            continue
+        if any(_token_is_path_under(anchor, root_prefix) for anchor in norm):
+            return True
+        return bool(get_cwd is not None and get_cwd().startswith(root_prefix))
+    return False
+
+
 def _lower_dir_prefix(path: Path) -> str:
     """``str(path)`` lower-cased with one trailing separator, resolved when possible (prefix matching)."""
     try:
@@ -172,14 +225,17 @@ def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> li
         name_low = name.lower()
         if not (in_venv or name_low.startswith(("python", "pypy")) or name_low in {"uv.exe", "uvx.exe", "hermes.exe"}):
             continue
-        cmdline_raw = _cmdline_or_empty(proc)
-        cmdline_low = cmdline_raw.lower()
+        cmdline_tokens = _cmdline_tokens(proc)
         # Fallback: uv/base-interpreter trampolines have an exe OUTSIDE the venv yet hold
-        # its .pyd files — match cmdline (venv path, or `-m hermes_cli.main` + root/cwd).
-        if in_venv or venv_prefix in cmdline_low or (
-            "hermes_cli.main" in cmdline_low and (root_prefix in cmdline_low or _cwd_prefix(proc).startswith(root_prefix))
+        # its .pyd files — match whole argv tokens (a venv path, or `-m hermes_cli.main`
+        # + root/cwd anchor). Never substrings: this classification feeds `taskkill /T /F`.
+        if in_venv or _cmdline_indicates_venv_holder(
+            cmdline_tokens,
+            venv_prefix=venv_prefix,
+            root_prefix=root_prefix,
+            get_cwd=lambda: _cwd_prefix(proc),
         ):
-            matches.append((int(pid), name, cmdline_raw))
+            matches.append((int(pid), name, " ".join(cmdline_tokens)))
     return matches
 
 

@@ -1158,6 +1158,13 @@ DEFAULT_CONFIG = {
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
     },
+    # Native vision embeds (vision_analyze / browser screenshots on vision-capable main models) ride
+    # conversation history and are re-sent on every later API call.
+    "vision": {
+        # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for dense phone
+        # screenshots of tables the model calls "unreadable" at 256 KB.
+        "embed_target_bytes": 256 * 1024,
+    },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.
     "wake_word": {

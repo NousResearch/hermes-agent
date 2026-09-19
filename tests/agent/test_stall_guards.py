@@ -379,6 +379,36 @@ def test_ignores_plain_final_answers():
     assert not trailing_continue_intent(None)
 
 
+def test_detects_bare_forms_without_now():
+    """The bare forms are what models actually write. Measured across 73 agent runs, the
+    "now"-only alternation fired 0 times on 32 transcripts that ended on an announced-but-
+    unperformed action; every one of these shapes appeared in that set."""
+    assert trailing_continue_intent("Let me search for the registry file.")
+    assert trailing_continue_intent("Now I need to check the Prisma schema to understand the phase fields.")
+    assert trailing_continue_intent("I need to read the file first to see its current content.")
+    assert trailing_continue_intent("The file is named `registry` without extension. Let me read it.")
+    assert trailing_continue_intent("Let's run the test suite")
+    assert trailing_continue_intent("I'm going to update the handler")
+
+
+def test_bare_forms_still_require_the_tail_anchor():
+    # Same phrases, but the model kept going afterwards — nothing is dangling.
+    assert not trailing_continue_intent(
+        "Let me explain the design. The registry is keyed by entity name, and each entry "
+        "carries the model, a description, and the field list used by the validator."
+    )
+    assert not trailing_continue_intent(
+        "I need to be clear about the tradeoff here: caching keeps the prefix stable, which "
+        "is why the system prompt is never rebuilt mid-conversation."
+    )
+
+
+def test_let_me_know_is_a_handoff_not_a_stall():
+    # Stopping to ask is correct behavior; re-prompting would talk over the user.
+    assert not trailing_continue_intent("I've pushed the branch. Let me know if you want the CI run too.")
+    assert not trailing_continue_intent("That's the full diff — let me know how you'd like to proceed.")
+
+
 def test_ignores_conversational_future_offers():
     # "I will" without the immediate-action shape must not trip the guard.
     assert not trailing_continue_intent(

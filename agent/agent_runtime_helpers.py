@@ -2961,9 +2961,32 @@ def looks_like_codex_intermediate_ack(
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
 # message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+#
+# The alternation previously required the word "now" (`let me now`, `i'll now`, `now i will`)
+# or `next, i`. Measured against 73 real agent runs over 6 coding tasks, the guard fired
+# 0 times on 32 transcripts that ended on an announced-but-unperformed next action, because
+# models overwhelmingly write the BARE forms instead:
+#
+#     "Let me search for the registry file."
+#     "Now I need to check the Prisma schema to understand the phase fields."
+#     "Let me create the executor file with the required functions."
+#
+# Four runs of one task ended on the identical sentence "Now I need to check the Prisma
+# schema…" and none of them were caught: the pattern had `now i'll` and `now i will` but not
+# `now i need to`. A model that stalls this way scores zero on the task, which reads as a
+# capability result rather than as the loop declining to continue.
+#
+# Widened to the bare forms. The end-anchor below is what keeps this narrow — the intent must
+# be the LAST thing in the message, with at most ~100 trailing characters — so an intent
+# followed by substantive content still does not match. `let me know` stays excluded; it is a
+# handoff to the user, not a stall.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
-    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
+    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b"
+    r"|\blet(?:'|\u2019)?s\b|\blet me\b(?!\s+know)"
+    r"|\bi(?:['\u2019])?ll\b|\bi will\b"
+    r"|\bi need to\b|\bi(?:['\u2019])?m going to\b"
+    r"|\bnext[,:]?\s+i\b|\bproceeding to\b|\bmoving on to\b)"
     r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
 )
 

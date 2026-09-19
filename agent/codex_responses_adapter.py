@@ -357,9 +357,21 @@ def _assistant_message_item(
     )
 
 
+def _apply_azure_output_text_annotations(parts: List[Dict[str, Any]]) -> None:
+    """Add Azure's required annotations field to output_text parts only.
+
+    Azure validates replayed assistant output blocks more strictly than the
+    generic Responses endpoint. Never add this field to input_image parts.
+    """
+    for part in parts:
+        if isinstance(part, dict) and part.get("type") == "output_text":
+            part.setdefault("annotations", [])
+
+
 def _replay_reasoning_items(
     msg: Dict[str, Any], *, seen_item_ids: set, current_issuer_kind: Optional[str],
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool,
+    is_azure_foundry: bool = False,
 ) -> List[Dict[str, Any]]:
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
@@ -392,7 +404,17 @@ def _replay_reasoning_items(
                 )
                 _CROSS_ISSUER_WARN_EMITTED = True
             continue
-        replayed.append({k: v for k, v in ri.items() if k not in ("id", "_issuer_kind", "_issuer_model")})
+        if is_azure_foundry:
+            replay_item = {
+                "type": "reasoning",
+                "encrypted_content": ri["encrypted_content"],
+                "summary": ri.get("summary") if isinstance(ri.get("summary"), list) else [],
+            }
+            if isinstance(item_id, str) and item_id:
+                replay_item["id"] = item_id
+        else:
+            replay_item = {k: v for k, v in ri.items() if k not in ("id", "_issuer_kind", "_issuer_model")}
+        replayed.append(replay_item)
         if item_id:
             seen_item_ids.add(item_id)
     return replayed
@@ -493,6 +515,7 @@ def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool = False,
+    is_azure_foundry: bool = False,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -565,22 +588,26 @@ def _chat_messages_to_responses_input(
         reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
             current_issuer_model=current_issuer_model, native_compaction_eligible=native_compaction_eligible,
+            is_azure_foundry=is_azure_foundry,
         )
         emit(reasoning_items, msg)
         message_items = _replay_message_items(
             msg, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
         )
+        if is_azure_foundry:
+            for message_item in message_items:
+                _apply_azure_output_text_annotations(message_item.get("content", []))
         emit(message_items, msg)
         fallback = None
         if not message_items:
             fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
         tool_items = _replay_tool_call_items(msg, start_index=len(items) + (fallback is not None), wire_ids=wire_ids)
-        # A function_call already follows its reasoning. Inventing an empty assistant
-        # message between them changes the replayed turn (Muse can emit corrupt finals).
-        # Keep a follower only for reasoning with no other following item, and make it
-        # non-empty: strict Responses-compatible providers reject "" with 400.
+        # A function_call already follows its reasoning; preserve the current-main
+        # follower ordering and only add a non-empty follower when needed.
         if fallback is not None and not (fallback == "" and tool_items):
             follower = " " if fallback == "" else fallback
+            if is_azure_foundry and isinstance(follower, list):
+                _apply_azure_output_text_annotations(follower)
             emit([{"role": "assistant", "content": follower}], msg)
         emit(tool_items, msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
@@ -694,7 +721,8 @@ def estimate_native_responses_preflight_tokens(
 # --- Input preflight / validation --------------------------------------------
 
 _PreflightCtx = NamedTuple("_PreflightCtx", [
-    ("sanitize_text", Callable[[str], str]), ("sanitize_harmony_tokens", bool), ("is_github_responses", bool), ("seen_ids", set),
+    ("sanitize_text", Callable[[str], str]), ("sanitize_harmony_tokens", bool), ("is_github_responses", bool),
+    ("is_azure_foundry", bool), ("seen_ids", set),
 ])
 
 
@@ -744,10 +772,13 @@ def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> 
             return None
         ctx.seen_ids.add(item_id)
     summary = _as_list(item.get("summary"))
-    return {
+    reasoning_item = {
         "type": "reasoning", "encrypted_content": encrypted,
         "summary": _neutralize_harmony_structure(summary) if ctx.sanitize_harmony_tokens else summary,
     }
+    if ctx.is_azure_foundry and _nonempty_str(item_id):
+        reasoning_item["id"] = item_id
+    return reasoning_item
 
 
 def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
@@ -766,6 +797,8 @@ def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Di
                 f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
             )
         normalized_content.append({"type": "output_text", "text": ctx.sanitize_text(_str_or_empty(part.get("text", "")))})
+    if ctx.is_azure_foundry:
+        _apply_azure_output_text_annotations(normalized_content)
     if not normalized_content:
         raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
     return _assistant_message_item(item, normalized_content, is_github_responses=ctx.is_github_responses)
@@ -801,6 +834,8 @@ def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) 
             raise ValueError(
                 f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
             )
+    if ctx.is_azure_foundry and role == "assistant":
+        _apply_azure_output_text_annotations(validated)
     return {"role": role, "content": validated}
 
 
@@ -811,12 +846,13 @@ _PREFLIGHT_ITEM_HANDLERS: Dict[str, Callable[..., Optional[Dict[str, Any]]]] = {
 
 
 def _preflight_codex_input_items(
-    raw_items: Any, *, is_github_responses: bool = False, sanitize_harmony_tokens: bool = False,
+    raw_items: Any, *, is_github_responses: bool = False, is_azure_foundry: bool = False,
+    sanitize_harmony_tokens: bool = False,
 ) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
     sanitize_text = _neutralize_harmony_tokens if sanitize_harmony_tokens else (lambda text: text)
-    ctx = _PreflightCtx(sanitize_text, sanitize_harmony_tokens, is_github_responses, set())
+    ctx = _PreflightCtx(sanitize_text, sanitize_harmony_tokens, is_github_responses, is_azure_foundry, set())
     normalized: List[Dict[str, Any]] = []
     for idx, item in enumerate(raw_items):
         if not isinstance(item, dict):
@@ -880,7 +916,7 @@ def _optional_dict(api_kwargs: Dict[str, Any], key: str) -> Optional[Dict[str, A
 
 def _preflight_codex_api_kwargs(
     api_kwargs: Any, *, allow_stream: bool = False, is_github_responses: bool = False,
-    sanitize_harmony_tokens: bool = False,
+    is_azure_foundry: bool = False, sanitize_harmony_tokens: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
@@ -893,7 +929,8 @@ def _preflight_codex_api_kwargs(
     if sanitize_harmony_tokens:
         instructions = _neutralize_harmony_tokens(instructions)
     input_items = _preflight_codex_input_items(
-        api_kwargs.get("input"), is_github_responses=is_github_responses, sanitize_harmony_tokens=sanitize_harmony_tokens,
+        api_kwargs.get("input"), is_github_responses=is_github_responses, is_azure_foundry=is_azure_foundry,
+        sanitize_harmony_tokens=sanitize_harmony_tokens,
     )
     normalized: Dict[str, Any] = {
         "model": model.strip(), "instructions": instructions, "input": input_items, "store": False,

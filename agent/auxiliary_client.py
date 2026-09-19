@@ -1439,7 +1439,13 @@ class _CodexCompletionsAdapter:
         input_items = _chat_messages_to_responses_input(
             replay_messages, is_github_responses=is_copilot,
             current_issuer_kind=_classify_responses_issuer(base_url=host, **route._asdict()),
-            current_issuer_model=wire_model, native_compaction_eligible=False,
+            current_issuer_model=wire_model,
+            native_compaction_eligible=False,
+            is_azure_foundry=(
+                str(_runtime_main_value("provider") or "").strip().lower() == "azure-foundry"
+                or base_url_host_matches(host, "services.ai.azure.com")
+                or base_url_host_matches(host, "openai.azure.com")
+            ),
         )
         resp_kwargs: Dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.

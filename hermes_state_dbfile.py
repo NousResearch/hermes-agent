@@ -338,15 +338,42 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     return holders
 
 
+# One stranded writer produced hundreds of identical ERROR lines a day (the gateway's cron
+# multiplexer refuses on every profile tick), burying the one fact the operator needs: WHO
+# holds the deleted inode. First refusal per (db_path, holder-set) logs ERROR with the holder
+# PIDs; repeats of the same refusal log WARNING with a counter.
+_refusal_notice_count: Dict[Tuple[str, tuple], int] = {}
+_refusal_notice_lock = threading.Lock()
+
+
 def refuse_deleted_wal_generation(db_path) -> None:
     """Raise if any process holds a deleted WAL/SHM generation for *db_path*; called
-    *before* ``sqlite3.connect`` so a second opener cannot mint a replacement WAL inode."""
+    *before* ``sqlite3.connect`` so a second opener cannot mint a replacement WAL inode.
+
+    The message names the holder PIDs — the canonical remediation is "stop the writers", and
+    the operator cannot stop writers they cannot identify. Repeated refusals of the same
+    (db_path, holder-set) degrade to WARNING so the refusal cannot flood errors.log; the
+    holder-set changes (a writer stopped or a new one stranded) reset it to ERROR."""
     from hermes_state import DeletedWalGenerationError
     from hermes_state_errors import _DELETED_WAL_GENERATION_MSG
-    if not iter_deleted_sqlite_sidecar_holders(db_path):
+    holders = iter_deleted_sqlite_sidecar_holders(db_path)
+    if not holders:
         return
-    logger.error(_DELETED_WAL_GENERATION_MSG)
-    raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+    pids = tuple(sorted({pid for pid, _target in holders}))
+    holder_note = f" Holder PID(s): {', '.join(str(pid) for pid in pids)}." if pids else ""
+    key = (os.path.abspath(os.fspath(db_path)), pids)
+    with _refusal_notice_lock:
+        count = _refusal_notice_count.get(key, 0)
+        _refusal_notice_count[key] = count + 1
+    if count == 0:
+        logger.error(_DELETED_WAL_GENERATION_MSG + holder_note)
+    else:
+        logger.warning(
+            "%s%s (refusal #%d for this db and holder set; the first was ERROR, repeats stay "
+            "WARNING until the holder set changes)",
+            _DELETED_WAL_GENERATION_MSG, holder_note, count + 1,
+        )
+    raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG + holder_note)
 
 
 # ── Retired WAL generation capture ──────────────────────────────────────────────────────────────

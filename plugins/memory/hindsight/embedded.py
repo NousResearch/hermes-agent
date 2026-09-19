@@ -161,7 +161,14 @@ def _may_rewrite_profile_env(config: dict[str, Any]) -> bool:
 
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
-    """Build the profile-scoped env that standalone hindsight-embed consumes."""
+    """Build the profile-scoped env that standalone hindsight-embed consumes.
+
+    Keys the builder does not manage are carried forward from the existing
+    file (multilingual embeddings / reranker / failover blocks): without this the
+    start-worker compare always differs and the rewrite silently drops
+    operator-owned daemon config. Managed keys always win, so rotation
+    semantics (including key-to-empty) are preserved.
+    """
     if llm_api_key is None:
         llm_api_key = _embedded_llm_api_key(config)
     env_values = {
@@ -184,6 +191,12 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         idle_timeout = os.environ.get("HINDSIGHT_IDLE_TIMEOUT")
     if idle_timeout is not None and idle_timeout != "":
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(_parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT))
+    # Carry forward operator-owned keys (extra daemon env the builder does
+    # not manage). Managed keys above always win; missing file → {}.
+    with contextlib.suppress(Exception):
+        existing = _load_simple_env(_embedded_profile_env_path(config))
+        for key, value in existing.items():
+            env_values.setdefault(key, value)
     return env_values
 
 

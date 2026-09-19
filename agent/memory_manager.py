@@ -280,6 +280,29 @@ def build_memory_context_block(raw_context: str) -> str:
     )
 
 
+_DATA_URI_RE = re.compile(r"data:[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+")
+
+
+def _strip_data_uris(text: str) -> str:
+    """Strip base64 data URIs from text before provider persistence."""
+    if not isinstance(text, str) or "data:" not in text:
+        return text if isinstance(text, str) else ""
+    return _DATA_URI_RE.sub("[embedded data]", text)
+
+
+def _strip_data_uris_from_value(value: Any) -> Any:
+    """Copy JSON-like provider input while replacing data URIs in every nested string value."""
+    if isinstance(value, str):
+        return _strip_data_uris(value)
+    if isinstance(value, list):
+        return [_strip_data_uris_from_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_data_uris_from_value(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _strip_data_uris_from_value(item) for key, item in value.items()}
+    return value
+
+
 class MemoryManager:
     """Builtin provider (always first) plus at most one external provider.
 
@@ -487,17 +510,19 @@ class MemoryManager:
         ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
         """
         providers = list(self._providers)
-        clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
+        clean_user_content = _strip_data_uris(self._strip_skill_scaffolding(user_content)) if providers else None
+        clean_assistant_content = _strip_data_uris(assistant_content) if providers else ""
+        clean_messages = _strip_data_uris_from_value(messages) if messages is not None else None
         if not clean_user_content:
             return
-        optional_kwargs = {"messages": messages, "turn_author": turn_author}
+        optional_kwargs = {"messages": clean_messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
             kwargs: Dict[str, Any] = {"session_id": session_id}
             for keyword, value in optional_kwargs.items():
                 if value is not None and self._provider_sync_accepts(provider, keyword):
                     kwargs[keyword] = value
-            provider.sync_turn(clean_user_content, assistant_content, **kwargs)
+            provider.sync_turn(clean_user_content, clean_assistant_content, **kwargs)
 
         self._submit_background(
             lambda: self._each_provider("sync_turn failed", _sync, level=logging.WARNING, providers=providers)
@@ -608,7 +633,8 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
+        clean_messages = _strip_data_uris_from_value(messages)
+        self._each_provider("on_session_end failed", lambda p: p.on_session_end(clean_messages), level=logging.WARNING,
                             exc_info=True)
 
     def commit_session_boundary_async(self, messages: List[Dict[str, Any]], *, new_session_id: str,
@@ -682,13 +708,17 @@ class MemoryManager:
         """
         parts = []
         checkpoint_succeeded = False
+        clean_messages = _strip_data_uris_from_value(messages)
+        clean_evidence_messages = (
+            _strip_data_uris_from_value(evidence_messages) if evidence_messages is not None else None
+        )
         for provider in self._providers:
             version = self._checkpoint_api_version(provider)
             if version is None:
                 version = _LEGACY_PRE_COMPRESS_API_VERSION
             is_checkpoint_provider = version >= checkpoint_api_version
-            use_evidence = is_checkpoint_provider and evidence_messages is not None
-            provider_messages = evidence_messages if use_evidence else messages
+            use_evidence = is_checkpoint_provider and clean_evidence_messages is not None
+            provider_messages = clean_evidence_messages if use_evidence else clean_messages
             kwargs: Dict[str, Any] = {}
             # v1 providers and bare-shape v2 providers never see the signal.
             if is_checkpoint_provider and _accepts_require_checkpoint(provider.on_pre_compress):

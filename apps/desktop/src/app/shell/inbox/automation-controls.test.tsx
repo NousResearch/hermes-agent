@@ -9,6 +9,11 @@ vi.mock('@/store/gateway', () => ({ $gateway: { get: vi.fn() } }))
 
 vi.mock('@/store/profile', () => ({ $activeGatewayProfile: { get: vi.fn(() => 'test-profile') } }))
 
+vi.mock('@/store/inbox', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  refreshInbox: vi.fn().mockResolvedValue({ published: true, snapshot: null })
+}))
+
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
@@ -49,6 +54,10 @@ describe('AutomationControls', () => {
       })
     })
     expect(onChanged).toHaveBeenCalled()
+
+    const { refreshInbox } = await import('@/store/inbox')
+
+    expect(vi.mocked(refreshInbox)).toHaveBeenCalledWith('test-profile', expect.any(Function))
   })
 
   it('offers Resume for a paused loop', async () => {
@@ -114,6 +123,10 @@ describe('AutomationControls', () => {
     const [, payload] = gw.request.mock.calls[0]
     expect('session_id' in payload).toBe(false)
     expect(onChanged).toHaveBeenCalled()
+
+    const { refreshInbox } = await import('@/store/inbox')
+
+    expect(vi.mocked(refreshInbox)).toHaveBeenCalledWith('test-profile', expect.any(Function))
   })
 
   it('makes no live-status claim while details are still loading', async () => {
@@ -149,5 +162,9 @@ describe('AutomationControls', () => {
       expect(screen.getByRole('alert').textContent).toContain('session is not live')
     })
     expect(onChanged).not.toHaveBeenCalled()
+
+    const { refreshInbox } = await import('@/store/inbox')
+
+    expect(vi.mocked(refreshInbox)).not.toHaveBeenCalled()
   })
 })

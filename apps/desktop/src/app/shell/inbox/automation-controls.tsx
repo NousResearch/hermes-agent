@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { $gateway } from '@/store/gateway'
-import { type InboxAutomationAction, type InboxRequest, runInboxAutomationAction } from '@/store/inbox'
+import { type InboxAutomationAction, type InboxRequest, refreshInbox, runInboxAutomationAction } from '@/store/inbox'
 import { $activeGatewayProfile } from '@/store/profile'
 
 interface AutomationControlsProps {
@@ -56,6 +56,16 @@ export function AutomationControls({ kind, liveSessionId, onChanged, sessionKey,
       const boundRequest: InboxRequest = (method, params) => currentGateway.request(method, params ?? {})
 
       await runInboxAutomationAction({ action, liveSessionId, profile: currentProfile, request: boundRequest, sessionKey })
+
+      // The control's own state lives in the inbox LIST item, not the request details: pull the
+      // fresh snapshot so the button flips as soon as the write is confirmed. Without this the
+      // flip waits for the background poll (up to 15s), which reads as a failed click.
+      try {
+        await refreshInbox(currentProfile, boundRequest)
+      } catch {
+        /* the action landed; the background poll will refresh the list */
+      }
+
       onChanged?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

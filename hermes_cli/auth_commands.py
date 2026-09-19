@@ -3,10 +3,12 @@
 from __future__ import annotations
 from hermes_cli.cli_output import line_input
 
+import json
 import math
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 import uuid
@@ -461,6 +463,9 @@ def _is_free_tier_entry(entry) -> bool:
 
 def auth_list_command(args) -> None:
     provider_filter = _normalize_provider(getattr(args, "provider", "") or "")
+    if getattr(args, "all_profiles", False):
+        _auth_list_all_profiles(provider_filter)
+        return
     if provider_filter:
         providers = [provider_filter]
     else:
@@ -502,6 +507,128 @@ def _print_external_login_notice() -> None:
     from agent.credential_sources import EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE, adopt_external_logins_enabled
     if not adopt_external_logins_enabled():
         print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
+
+
+def _read_auth_store_readonly(path: Path):
+    """One profile's auth.json, or None when unreadable. A plain read on purpose:
+    ``_load_auth_store`` writes an ``auth.json.corrupt`` copy on bad JSON and raises on
+    a read error, and a sweep over OTHER profiles must do neither."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _refresh_token_sites(store: dict, provider_filter: str):
+    """Yield ``(provider, label, fingerprint, last_error_reason)`` per refresh token in either
+    store layout (``credential_pool`` entries, the legacy ``providers.<id>.tokens`` singleton).
+    Only the fingerprint leaves here; the token bytes are never printed."""
+    pool = store.get("credential_pool")
+    if isinstance(pool, dict):
+        for provider, entries in pool.items():
+            if provider_filter and provider != provider_filter:
+                continue
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                fingerprint = auth_mod._token_fingerprint(entry.get("refresh_token"))
+                if fingerprint:
+                    label = str(entry.get("label") or entry.get("id") or "?")
+                    yield provider, label, fingerprint, entry.get("last_error_reason")
+    providers = store.get("providers")
+    if isinstance(providers, dict):
+        for provider, state in providers.items():
+            if provider_filter and provider != provider_filter:
+                continue
+            tokens = state.get("tokens") if isinstance(state, dict) else None
+            if not isinstance(tokens, dict):
+                continue
+            fingerprint = auth_mod._token_fingerprint(tokens.get("refresh_token"))
+            if fingerprint:
+                yield provider, "legacy singleton", fingerprint, None
+
+
+def _auth_list_all_profiles(provider_filter: str) -> None:
+    """Every profile's credential store, plus refresh tokens held in more than one file.
+    Rotating providers issue single-use refresh tokens, so two separate auth.json files
+    holding the same one revoke each other on the first refresh (#43589 / #48415); the root
+    write-through covers an inherited grant, not a copied one. A symlink is one file, and a
+    profile without auth.json reads the root store."""
+    from hermes_cli.profiles import list_profiles
+
+    sites_by_fingerprint: dict = {}
+    owner_by_file: dict = {}
+    for info in list_profiles():
+        store_path = info.path / "auth.json"
+        # exists() is False for a dangling symlink too — nothing to read either way.
+        if not store_path.exists():
+            if info.is_default:
+                print(f"{info.name}  (no auth.json)")
+            else:
+                print(f"{info.name}  (no auth.json — reads the default profile's store)")
+            print()
+            continue
+        try:
+            resolved = store_path.resolve()
+        except OSError:
+            resolved = store_path
+        owner = owner_by_file.get(resolved)
+        if owner is not None:
+            print(f"{info.name}  (same file as {owner}: {store_path} -> {resolved})")
+            print()
+            continue
+        owner_by_file[resolved] = info.name
+        store = _read_auth_store_readonly(store_path)
+        if store is None:
+            print(f"{info.name}  ({store_path}: unreadable — skipped)")
+            print()
+            continue
+        print(f"{info.name}  ({store_path})")
+        pool = store.get("credential_pool")
+        shown = 0
+        if isinstance(pool, dict):
+            for provider in sorted(pool):
+                if provider_filter and provider != provider_filter:
+                    continue
+                entries = [e for e in (pool[provider] or []) if isinstance(e, dict)]
+                if not entries:
+                    continue
+                labels = ", ".join(str(e.get("label") or e.get("id") or "?") for e in entries)
+                print(f"  {provider} ({len(entries)} credentials): {labels}")
+                shown += 1
+        if not shown:
+            print("  (no pooled credentials)")
+        print()
+        for provider, label, fingerprint, reason in _refresh_token_sites(store, provider_filter):
+            sites_by_fingerprint.setdefault(fingerprint, []).append(
+                (info.name, provider, label, reason)
+            )
+
+    # One profile == one file here (stores were deduplicated by resolved path
+    # above), so "more than one profile" is exactly "more than one file".
+    shared = {
+        fingerprint: sites
+        for fingerprint, sites in sites_by_fingerprint.items()
+        if len({site[0] for site in sites}) > 1
+    }
+    if not shared:
+        print("No refresh token is stored in more than one profile's file.")
+        return
+    print("Refresh tokens stored in more than one file:")
+    for fingerprint, sites in sorted(shared.items(), key=lambda item: item[1][0]):
+        provider = sites[0][1]
+        places = ", ".join(
+            f"{profile} ({label})" + (f" — last error: {reason}" if reason else "")
+            for profile, _provider, label, reason in sites
+        )
+        print(f"  {provider} refresh token {fingerprint} in {len(sites)} files: {places}")
+    print()
+    print("  Rotating providers issue single-use refresh tokens: the first file to refresh")
+    print("  revokes the copies. Keep one copy (`hermes auth remove <provider> <label>` in")
+    print("  the other profiles) or point those profiles at one shared auth.json.")
 
 
 def auth_remove_command(args) -> None:

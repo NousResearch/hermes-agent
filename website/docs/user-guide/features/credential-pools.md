@@ -116,6 +116,7 @@ Type [1/2]:
 | `hermes auth` | Interactive pool management wizard |
 | `hermes auth list` | Show all pools and credentials |
 | `hermes auth list <provider>` | Show a specific provider's pool |
+| `hermes auth list --all-profiles` | Show every profile's store and flag refresh tokens held in more than one file (rotating providers issue single-use tokens, so copies revoke each other) |
 | `hermes auth add <provider>` | Add a credential (prompts for type and key) |
 | `hermes auth add <provider> --type api-key --api-key <key>` | Add an API key non-interactively |
 | `hermes auth add <provider> --type oauth` | Add an OAuth credential via browser login |

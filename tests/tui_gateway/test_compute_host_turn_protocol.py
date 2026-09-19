@@ -116,6 +116,81 @@ def test_turn_start_streams_deltas_then_turn_end_with_history_identity(turn_env)
     assert "ended_ns" in end
 
 
+def test_work_observations_are_atomic_with_turn_admission_and_settlement(turn_env, monkeypatch):
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    session = _session(_agent(["done"]))
+    monkeypatch.setattr(server, "_sessions", {"s1": session})
+    observations = []
+    snapshot_captured = threading.Event()
+    release_snapshot = threading.Event()
+    admission_reached = threading.Event()
+    publication_order = []
+    original_write = host._transport.write
+    original_reply = host._reply
+
+    def observe(message):
+        if message.get("method") == "compute_host.work":
+            observations.append(message)
+            publication_order.append("work")
+            # A writer paused here must exclude admission and turn.end until
+            # its snapshot is on the pipe; otherwise an old False can win.
+            assert session["history_lock"].locked()
+            snapshot_captured.set()
+            assert release_snapshot.wait(5)
+        return original_write(message)
+
+    def observe_reply(kind, *args, **kwargs):
+        if kind == "turn.end":
+            publication_order.append("turn.end")
+        return original_reply(kind, *args, **kwargs)
+
+    monkeypatch.setattr(host._transport, "write", observe)
+    monkeypatch.setattr(host, "_reply", observe_reply)
+    original_install = server._install_borrowed_lease
+
+    def mark_admission(*args):
+        original_install(*args)
+        admission_reached.set()
+
+    monkeypatch.setattr(server, "_install_borrowed_lease", mark_admission)
+    try:
+        # Admission itself publishes token + running under one lock, so there is
+        # no observable pre-admission snapshot for the new generation.
+        host._publish_session_work()
+        assert not observations
+
+        # Recreate the formerly dangerous captured-False state explicitly. The
+        # publisher pauses after observing False but before writing; admission
+        # must wait on the same lock, making False arrive before turn.end.
+        session["_compute_host_work_token"] = "generation"
+        publisher = threading.Thread(target=host._publish_session_work)
+        publisher.start()
+        assert snapshot_captured.wait(5)
+        turn = threading.Thread(target=host._run_real_turn, args=({
+            "sid": "s1", "request_id": "request", "turn_id": "generation", "text": "hello"},))
+        turn.start()
+        assert admission_reached.wait(5)
+        assert not any(f.get("type") == "turn.end" for f in _frames(out))
+        release_snapshot.set()
+        publisher.join(5)
+        turn.join(5)
+        assert not publisher.is_alive() and not turn.is_alive()
+        assert publication_order == ["work", "turn.end"]
+        assert observations[0]["params"]["pending_work"] is False
+    finally:
+        release_snapshot.set()
+        server._sessions.pop("s1", None)
+        host.close()
+
+
+def test_scheduled_auto_continue_is_compute_host_owned_work(turn_env):
+    session = _session(_agent([]))
+    session["_auto_continue_scheduled"] = True
+
+    assert ComputeHost._session_work_pending(server, "s1", session)
+
+
 def test_turn_start_without_sid_is_a_turn_error(turn_env):
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)

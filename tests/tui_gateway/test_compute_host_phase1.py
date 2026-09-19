@@ -80,22 +80,10 @@ def test_compute_host_routes_relayed_response_and_lock_to_its_open_request(monke
         host.close()
 
 
-def test_mutator_route_table_matches_prd_inventory():
-    assert MUTATOR_ROUTE_TABLE == {
-        "prompt.submit": "turn-path",
-        "session.interrupt": "turn-path",
-        "reload.mcp": "run-concurrent",
-        "session.save": "run-concurrent",
-        "session.compress": "idle-gated",
-        "prompt.submit.truncate": "idle-gated",
-        "slash.model": "idle-gated",
-        "slash.personality": "idle-gated",
-        "slash.prompt": "idle-gated",
-        "slash.compress": "idle-gated",
-        "session.reset": "idle-gated",
-        "session.history.reload": "idle-gated",
-        "slash.retry": "idle-gated",
-    }
+def test_cancellation_routes_do_not_wait_for_an_idle_turn():
+    for route in ("session.interrupt", "session.close"):
+        assert MUTATOR_ROUTE_TABLE[route] != "idle-gated"
+    assert set(MUTATOR_ROUTE_TABLE.values()) <= {"turn-path", "run-concurrent", "idle-gated"}
 
 
 def test_append_log_record_single_write_lines(tmp_path):

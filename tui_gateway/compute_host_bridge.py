@@ -120,6 +120,34 @@ def _relay_compute_host_rpc(message: dict) -> bool:
     """Relay host frames to the client while mirroring the server→client request the host has open, so a
     reconnecting client gets it back through ``open_requests``."""
     params = message.get("params") if isinstance(message, dict) else None
+    if isinstance(message, dict) and message.get("method") == "compute_host.lost":
+        if isinstance(params, dict):
+            sid = str(params.get("session_id") or "")
+            session = _sessions.get(sid)
+            report = False
+            if session is not None:
+                with _history_lock(session):
+                    if (params.get("work_token")
+                            and session.get("_compute_host_work_token") == params["work_token"]):
+                        report = bool(session.get("_compute_host_pending_work") and not session.get("running"))
+                        session.pop("_compute_host_work_token", None)
+                        session["_compute_host_pending_work"] = False
+                        session.pop("_compute_host_turn_id", None)
+                        session.pop("_compute_host_activity_ns", None)
+                        session.pop("_compute_host_open_request", None)
+            if report:
+                _emit("error", sid, {"message": str(params.get("message") or "compute host exited")})
+        return True
+    if isinstance(message, dict) and message.get("method") == "compute_host.work":
+        if isinstance(params, dict):
+            session = _sessions.get(str(params.get("session_id") or ""))
+            if session is not None:
+                with _history_lock(session):
+                    if (params.get("work_token")
+                            and session.get("_compute_host_work_token") == params["work_token"]):
+                        session["_compute_host_pending_work"] = params.get("pending_work") is not False
+                        _compute_host_adopt_frame_meta(session, params)
+        return True
     if isinstance(message, dict) and message.get("method") == "compute_host.activity":
         if isinstance(params, dict):
             session = _sessions.get(str(params.get("session_id") or ""))
@@ -231,6 +259,11 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
 def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
     with session["history_lock"]:
         _compute_host_adopt_frame_meta(session, frame)
+        if ("pending_work" in frame
+                and session.get("_compute_host_work_token") == frame.get("request_id")):
+            session["_compute_host_pending_work"] = bool(frame["pending_work"])
+        elif frame.get("reason") == "crash":
+            session["_compute_host_pending_work"] = False
         session["running"] = False
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
@@ -260,6 +293,7 @@ def _submit_prompt_to_compute_host(
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
     with session["history_lock"]:
         session["_compute_host_turn_id"] = turn_id
+        session["_compute_host_work_token"] = turn_id
         session.pop("_compute_host_activity_ns", None)
 
     def _complete(done: dict) -> None:

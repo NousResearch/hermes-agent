@@ -1012,6 +1012,12 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
+        # Present-but-blank path is not a missing key: dict.get / kwargs still
+        # forward "" or whitespace. Apply the documented cwd default before
+        # search keys, existence probes, and the not-found cache so every
+        # caller (handler, execute_code, direct search_tool) agrees.
+        if not isinstance(path, str) or not path.strip():
+            path = "."
         offset, limit = normalize_search_pagination(offset, limit)
 
         # Pagination args (and order) are part of the key so paging through truncated

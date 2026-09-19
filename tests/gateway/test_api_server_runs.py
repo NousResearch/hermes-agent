@@ -408,6 +408,51 @@ class TestRunStatus:
                 assert mock_agent.run_conversation.call_args.kwargs["task_id"] == "space-session"
                 assert status["session_id"] == "space-session"
 
+    @pytest.mark.asyncio
+    async def test_status_completed_run_reports_served_runtime_and_cache_tokens(self, adapter):
+        """After a fallback_providers switch the run record carries the runtime that actually
+        served the turn plus cache-read tokens, next to the requested ``model`` (#102101).
+
+        ``agent.provider`` / ``agent.model`` still hold the fallback pair when
+        ``run_conversation()`` returns: the primary is only restored at the start of the NEXT
+        turn, so they are the served pair, while the top-level ``model`` echoes the request.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.provider = "openai-codex"
+                mock_agent.model = "gpt-5.6-luna"
+                mock_agent.session_prompt_tokens = 100
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 105
+                mock_agent.session_cache_read_tokens = 84
+                mock_agent.session_cache_write_tokens = 11
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello", "model": "deepseek-v4-pro"})
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(40):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["status"] == "completed"
+                # Top-level model still echoes the request; the served pair is disclosed alongside.
+                assert status["model"] == "deepseek-v4-pro"
+                # Canonical api_server runtime shape (same as /v1/chat/completions), not a thinner twin.
+                assert status["runtime"] == {
+                    "provider": "openai-codex", "model": "gpt-5.6-luna", "route_source": "raw_request",
+                    "requested": {"provider": "", "model": "deepseek-v4-pro"},
+                }
+                assert status["usage"] == {
+                    "input_tokens": 100, "output_tokens": 5, "total_tokens": 105,
+                    "cache_read_tokens": 84, "cache_write_tokens": 11,
+                }
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id}/events — SSE event stream
@@ -465,6 +510,50 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_completed_event_carries_served_runtime_and_cache_tokens(self, adapter):
+        """The run.completed SSE event discloses the same served runtime and cache tokens as the
+        pollable status, so streaming clients get identical cost-attribution data (#102101)."""
+        import json as _json
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "served"}
+                mock_agent.provider = "openai-codex"
+                mock_agent.model = "gpt-5.6-luna"
+                mock_agent.session_prompt_tokens = 774050
+                mock_agent.session_completion_tokens = 6286
+                mock_agent.session_total_tokens = 780336
+                mock_agent.session_cache_read_tokens = 650000
+                mock_agent.session_cache_write_tokens = 42
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello", "model": "deepseek-v4-pro"})
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                completed = None
+                for frame in body.split("\n"):
+                    if frame.startswith("data: "):
+                        try:
+                            payload = _json.loads(frame[len("data: "):])
+                        except ValueError:
+                            continue
+                        if payload.get("event") == "run.completed":
+                            completed = payload
+                            break
+                assert completed is not None, "run.completed event missing from stream"
+                assert completed["runtime"]["provider"] == "openai-codex"
+                assert completed["runtime"]["model"] == "gpt-5.6-luna"
+                assert completed["runtime"]["requested"]["model"] == "deepseek-v4-pro"
+                assert completed["usage"]["cache_read_tokens"] == 650000
+                assert completed["usage"]["cache_write_tokens"] == 42
 
 
     @pytest.mark.asyncio

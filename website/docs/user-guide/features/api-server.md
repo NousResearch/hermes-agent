@@ -465,9 +465,12 @@ Poll the current run state. This is useful for dashboards that need status witho
   "session_id": "space-session",
   "model": "hermes-agent",
   "output": "Done.",
-  "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250}
+  "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250, "cache_read_tokens": 40, "cache_write_tokens": 0},
+  "runtime": {"provider": "openai", "model": "gpt-5", "route_source": "global"}
 }
 ```
+
+`model` echoes what the request asked for. On a completed run, `runtime` is the provider/model pair that actually served the turn — after a [fallback provider](fallback-providers.md) switch it names the fallback pair, so a cost-attribution poller books the run to the right provider. `usage.cache_read_tokens` / `usage.cache_write_tokens` are the session's prompt-cache reads and writes, so cached input is not priced as full-price input. `runtime` has the same shape as on `/v1/chat/completions` and `/v1/responses`: `route_source` says how the runtime was chosen (`global`, `raw_request`, `model_routes`), and a request that named a `model`/`provider` also gets `requested: {provider, model}` so the asked-for and served pairs can be compared. The `run.completed` event on the events stream carries the same `usage` and `runtime` fields.
 
 Statuses are retained briefly after terminal states (`completed`, `failed`, `cancelled`, or `interrupted`) for polling and UI reconciliation. When the gateway shuts down while a run is active, the run is persisted as `interrupted` (error `Gateway shutdown interrupted the run.`, terminal event `run.interrupted`) before the agent is asked to stop, so a durable run never survives a restart as `running`; a late result from the interrupted turn cannot overwrite it.
 

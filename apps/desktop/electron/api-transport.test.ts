@@ -418,7 +418,9 @@ describe('htmlResponseError', () => {
     expect(redirected).toContain('to https://sso.example.com/login?next=%2Fapi%2Fprofiles')
     expect(redirected).toMatch(/authentication proxy/)
     expect(redirected).not.toContain('endpoint is likely missing')
-    expect(htmlResponseError('https://gateway.example.com/api/profiles', 307).message).toMatch(/redirected \(status 307\)\. This is usually/)
+    expect(htmlResponseError('https://gateway.example.com/api/profiles', 307).message).toMatch(
+      /redirected \(status 307\)\. This is usually/
+    )
     expect(htmlResponseError('https://gateway.example.com/api/missing', 200).message).toContain(
       'endpoint is likely missing'
     )
@@ -437,6 +439,8 @@ describe('htmlResponseError', () => {
       expect(message).not.toMatch(/authentication proxy/)
     }
 
-    expect(htmlResponseError('https://gateway.example.com/api/profiles', 302, 'https://gateway.example.com/login').message).toMatch(/authentication proxy/)
+    expect(
+      htmlResponseError('https://gateway.example.com/api/profiles', 302, 'https://gateway.example.com/login').message
+    ).toMatch(/authentication proxy/)
   })
 })

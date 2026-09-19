@@ -374,6 +374,8 @@ describe('server→client request routing without a registry handler (#112791)',
     expect(dispatchPrimaryServerRequest(request as never, 'work')).toBe(true)
     expect(request.fail).not.toHaveBeenCalled()
     expect(onServerRequest).toHaveBeenCalledTimes(1)
-    expect(onServerRequest).toHaveBeenCalledWith(expect.objectContaining({ id: 'srq-1', method: 'clarify', profile: 'work' }))
+    expect(onServerRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srq-1', method: 'clarify', profile: 'work' })
+    )
   })
 })

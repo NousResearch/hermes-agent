@@ -21,6 +21,28 @@ _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {".pdf", ".doc", ".docx", ".txt"
 # Native caption limits (chars): Telegram caps photo/video at 1024; one conservative shared ceiling elsewhere.
 _TELEGRAM_CAPTION_LIMIT = 1024
 _DEFAULT_CAPTION_LIMIT = 4096
+# Per-platform caps where the caption lands as native text: Discord rides it as message *content*
+# (2000) and WhatsApp caps media captions at 1024. Unlisted platforms keep the shared ceiling.
+_TAG_CAPTION_LIMITS = {"telegram": _TELEGRAM_CAPTION_LIMIT, "discord": 2000, "whatsapp": 1024}
+
+
+def _tag_caption_limit(platform) -> int:
+    """Caption cap (chars) for ``platform``; the shared ceiling when the platform is unknown."""
+    platform = getattr(platform, "value", platform)
+    return _TAG_CAPTION_LIMITS.get(str(platform or "").strip().lower(), _DEFAULT_CAPTION_LIMIT)
+
+
+def _bound_caption(caption, platform):
+    """Truncate a ``MEDIA:<path> | <caption>`` caption to the platform's caption cap.
+
+    A tag caption is user-authored and, unlike the text-derived one (``_media_caption_split``),
+    was previously unbounded — an over-long caption could exceed the platform's native cap and
+    fail a media send that delivered fine before the caption rode the bubble.
+    """
+    if not caption:
+        return caption
+    cap = _tag_caption_limit(platform)
+    return caption[:cap] if len(caption) > cap else caption
 
 
 def _media_caption_split(text, media_files, *, max_caption_len):
@@ -35,6 +57,29 @@ def _media_caption_split(text, media_files, *, max_caption_len):
             or os.path.splitext(media[0][0])[1].lower() not in _CAPTIONABLE_EXTS):
         return None, text
     return stripped, ""
+
+
+def _fold_captions_into_text(message, media_files, media_captions, *, exclude=None):
+    """Append ``MEDIA:<path> | <caption>`` captions that no media path can carry to the body text.
+
+    Used where the platform (or the route) has no caption field: the caption would otherwise
+    vanish with the tag, because ``extract_media`` already deleted it from the body. ``exclude``
+    is the path whose caption rides the media bubble — it must not repeat as text.
+    """
+    captions = [media_captions[path] for path, _ in (media_files or [])
+                if path != exclude and media_captions.get(path)]
+    if not captions:
+        return message
+    body = (message or "").strip()
+    return "\n\n".join([body, *captions]) if body else "\n\n".join(captions)
+
+
+def _chunk_text(message, max_len):
+    """Split ``message`` on the platform's own limit (no-op when the platform has none)."""
+    if not max_len:
+        return [message]
+    from gateway.platforms.base import BasePlatformAdapter
+    return BasePlatformAdapter.truncate_message(message, max_len)
 
 
 _URL_SECRET_QUERY_RE = re.compile(
@@ -236,8 +281,12 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False,
+                         media_captions=None):
+    """One-shot Telegram Bot API send; parse failures fall back to plain text.
+
+    ``media_captions`` maps a delivered media path to its ``MEDIA:<path> | <caption>`` caption;
+    such a caption wins over the text-derived one for that file."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)
@@ -247,6 +296,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # See #13206.
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
+        media_captions = media_captions or {}
         thread_kwargs = _telegram_thread_kwargs(thread_id)
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
@@ -254,28 +304,41 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)
-        if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
+        # The text-derived caption needs the (single) captionable file's bubble. A tag caption owns
+        # that bubble, so the body must stay a separate message — otherwise it would be suppressed
+        # here and then never consumed by the loop (silent text loss).
+        _tag_owns_bubble = bool(_cap is not None and media_files and media_captions.get(media_files[0][0]))
+        if _cap is not None and not _tag_owns_bubble and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
         for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
+            # An explicit tag caption wins and is consumed by its own file; the text-derived caption
+            # (if any) falls back to the first file left without a tag caption.
+            _tag_caption = _bound_caption(media_captions.get(media_path), "telegram")
+            if _tag_caption:
+                caption = _tag_caption
+            elif _tg_caption is not None:
+                caption = _tg_caption
+                _tg_caption = None
+            else:
+                caption = None
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
                 logger.warning(warnings[-1])
                 # Caption mode suppressed the text send; the file is gone, so deliver the words alone.
-                if _tg_caption is not None and last_msg is None:
+                if caption is not None and last_msg is None:
                     try:
                         last_msg = await _send_telegram_message_with_retry(
-                            bot, chat_id=int_chat_id, text=_tg_caption, parse_mode=send_parse_mode, **text_kwargs)
-                        _tg_caption = None  # delivered — don't re-caption a later file
+                            bot, chat_id=int_chat_id, text=caption, parse_mode=send_parse_mode, **text_kwargs)
                     except Exception as _cap_err:
                         logger.warning("Telegram caption-fallback send failed for missing media: %s",
                                        _sanitize_error_text(_cap_err))
                 continue
             try:
                 last_msg = await _telegram_send_one_media(
-                    bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
+                    bot, int_chat_id, media_path, is_voice, caption=caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
@@ -497,7 +560,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
 
 # "ephemeral connect (may re-init E2EE per send, see #46310)",
-async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
+async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None, media_captions=None):
     """Matrix adapter send (native media preserved). Prefer the live gateway adapter's persistent
     olm/megolm session: ephemeral per-send connects re-init E2EE and claim one-time keys, which
     under bursts exhausts recipient OTKs and silently drops messages — ephemeral is cron-only.
@@ -514,7 +577,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         "ephemeral connect (may re-init E2EE per send)"))
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
-        return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+        return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata, media_captions)
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
@@ -523,7 +586,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     try:
         if not await adapter.connect():
             return _error("Matrix connect failed")
-        return await _matrix_send_core(adapter, chat_id, message, media_files, metadata)
+        return await _matrix_send_core(adapter, chat_id, message, media_files, metadata, media_captions)
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
     finally:
@@ -531,8 +594,11 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             await adapter.disconnect()
 
 
-async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
-    """Core send logic shared by live and ephemeral Matrix adapters."""
+async def _matrix_send_core(adapter, chat_id, message, media_files, metadata, media_captions=None):
+    """Core send logic shared by live and ephemeral Matrix adapters. A ``MEDIA:<path> | <caption>``
+    caption rides its own file's bubble (passed only when present, so the call shape is unchanged
+    for adapters that predate captions)."""
+    media_captions = media_captions or {}
     last_result = None
     if message.strip():
         last_result = await adapter.send(chat_id, message, metadata=metadata)
@@ -543,7 +609,9 @@ async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
             return _error(f"Media file not found: {media_path}")
         ext = os.path.splitext(media_path)[1].lower()
         method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
-        last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata)
+        caption = media_captions.get(media_path)
+        cap_kwargs = {"caption": caption} if caption else {}
+        last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata, **cap_kwargs)
         if not last_result.success:
             return _error(f"Matrix media send failed: {last_result.error}")
     return {"error": _NO_DELIVERABLE} if last_result is None else _success("matrix", chat_id, message_id=last_result.message_id)

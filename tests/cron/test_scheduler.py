@@ -1937,6 +1937,26 @@ class TestSendMediaViaAdapter:
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
 
+    def test_enum_platform_bounds_tag_caption(self, tmp_path, monkeypatch):
+        from gateway.config import Platform
+
+        adapter = MagicMock()
+        adapter.platform = Platform.DISCORD
+        photo_path = self._safe_media_path(tmp_path, monkeypatch, "photo.jpg")
+        from concurrent.futures import Future
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            completed = Future()
+            completed.set_result(MagicMock(success=True))
+            return completed
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _send_media_via_adapter(
+                adapter, "123", [(str(photo_path), False)], None, MagicMock(), {"id": "j4"},
+                media_captions={str(photo_path): "x" * 2500})
+        assert len(adapter.send_image_file.call_args.kwargs["caption"]) == 2000
+
 
 class TestParallelTick:
     """Verify that tick() runs due jobs concurrently and isolates ContextVars."""

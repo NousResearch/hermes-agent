@@ -2108,7 +2108,10 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
-    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT)
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
+    REPLACE_TAKEOVER_GRACE_UNKNOWN_LEASE_FLOOR_S,
+    resolve_gateway_stop_budget_s,
+    resolve_replace_takeover_grace_s)
 
 
 logger = logging.getLogger(__name__)
@@ -3442,6 +3445,14 @@ class GatewayRunner(
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
+        # These two are frozen for this incarnation's lifetime — ``stop()`` drains from them and
+        # never rereads config. Publish the resulting budget so a later ``--replace`` successor
+        # sizes its SIGKILL deadline from OUR lease instead of from config it re-reads in its own
+        # process (which may have been lowered since). #113355, caught by @andrexibiza.
+        with suppress(Exception):
+            from gateway.status import publish_stop_budget
+            publish_stop_budget(resolve_gateway_stop_budget_s(
+                self._restart_drain_timeout, self._cron_drain_timeout))
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -4402,6 +4413,11 @@ class GatewayRunner(
         is_current: Any = None
 
 
+# Captured at definition time so ``--replace`` can read the stop budget even when a test
+# monkeypatches the module-level ``GatewayRunner`` name.
+_REAL_GATEWAY_RUNNER_CLASS = GatewayRunner
+
+
 def _run_planned_stop_watcher(
     stop_event: threading.Event, runner, loop: asyncio.AbstractEventLoop, shutdown_handler, *,
     poll_interval: float = 0.5) -> None:
@@ -4868,6 +4884,46 @@ async def _wait_for_pid_exit(pid: int, attempts: int, delay: float) -> bool:
     return False
 
 
+def _replace_takeover_grace_s(existing_pid: Optional[int] = None) -> float:
+    """Drain-aware SIGKILL grace for ``--replace``, bound to the OLD gateway's stop lease.
+
+    The old ``GatewayRunner`` froze ``_restart_drain_timeout`` / ``_cron_drain_timeout`` at ITS
+    construction and ``stop()`` drains from those retained values; re-reading config HERE answers
+    for a different generation. It publishes that frozen budget in its PID record
+    (``publish_stop_budget``), so read it and never grant less. When the old lease is UNKNOWN
+    (legacy record, unreadable file) we fail CLOSED on the conservative floor instead of letting
+    current config mint a shorter destructive deadline — and a config-loader failure must not
+    shorten the lease either. #113355, both witnesses caught by @andrexibiza.
+    """
+    config_readable = True
+    try:
+        drain_s = _REAL_GATEWAY_RUNNER_CLASS._load_restart_drain_timeout()
+        cron_s = _REAL_GATEWAY_RUNNER_CLASS._load_cron_drain_timeout()
+    except Exception:
+        # Fail closed: an unreadable config says nothing about the old generation's lease, and
+        # (0, 0) would mint the SHORTEST one.
+        config_readable = False
+        drain_s, cron_s = 0.0, 0.0
+    old_budget_s: Optional[float] = None
+    if existing_pid is not None:
+        try:
+            from gateway.status import read_published_stop_budget_s
+            old_budget_s = read_published_stop_budget_s(existing_pid)
+        except Exception:
+            old_budget_s = None
+    if old_budget_s is None:
+        # Unknown old lease: never shorter than the conservative floor.
+        return max(
+            resolve_replace_takeover_grace_s(
+                drain_s, cron_s, floor_s=REPLACE_TAKEOVER_GRACE_UNKNOWN_LEASE_FLOOR_S),
+            REPLACE_TAKEOVER_GRACE_UNKNOWN_LEASE_FLOOR_S)
+    grace = resolve_replace_takeover_grace_s(
+        drain_s, cron_s, old_generation_budget_s=old_budget_s)
+    if not config_readable:
+        grace = max(grace, REPLACE_TAKEOVER_GRACE_UNKNOWN_LEASE_FLOOR_S)
+    return grace
+
+
 async def _start_gateway_replace_existing_instance(existing_pid: int, replace: bool) -> bool:
     """Handle a live gateway PID under this HERMES_HOME: replace it (``--replace``) or refuse.
     Returns False when startup must abort (refused, permission denied, target still alive)."""
@@ -4916,9 +4972,15 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
         logger.error("Permission denied killing PID %d. Cannot replace.", existing_pid)
         _clear_takeover_marker_quiet()
         return False
-    # Up to 10s for SIGTERM, then SIGKILL.
-    if not await _wait_for_pid_exit(existing_pid, 20, 0.5):
-        logger.warning("Old gateway (PID %d) did not exit after SIGTERM, sending SIGKILL.", existing_pid)
+    # Wait the old gateway's FULL graceful-stop budget (restart_drain_timeout / cron_drain_timeout
+    # + headroom) before SIGKILL — the same budget systemd's TimeoutStopSec covers. A fixed 10s
+    # force-killed a draining gateway mid-SQLite-write on every busy restart (state.db malformed).
+    grace_s = _replace_takeover_grace_s(existing_pid)
+    logger.info("Waiting up to %.0fs for old gateway (PID %d) to drain and exit before force-kill",
+                grace_s, existing_pid)
+    if not await _wait_for_pid_exit(existing_pid, max(1, int(grace_s / 0.5)), 0.5):
+        logger.warning("Old gateway (PID %d) did not exit within %.0fs after SIGTERM, sending SIGKILL.",
+                       existing_pid, grace_s)
         old_gateway_exited = False
         try:
             terminate_pid(existing_pid, force=True, expected_start_time=existing_start_time)

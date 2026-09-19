@@ -35,6 +35,9 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+# Stop-drain budget (seconds) this process snapshotted at startup, published into its PID record
+# via publish_stop_budget(). None = never published (legacy / non-runner process).
+_PUBLISHED_STOP_BUDGET_S: Optional[float] = None
 # Windows byte-range locks are mandatory for other readers: lock a byte well past
 # the JSON payload so status/PID readers can read while another process holds it.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
@@ -452,13 +455,60 @@ def _record_matches_live_gateway_pid(
 
 
 def _build_pid_record() -> dict:
-    return {
+    record = {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": list(sys.argv),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
     }
+    # Stop lease of THIS incarnation, published beside the PID + start-time fingerprint so a
+    # successor's ``--replace`` sizes its SIGKILL deadline from the budget we actually drain from
+    # rather than from config it re-reads later (which may have been lowered since we started).
+    # Absent when unset (legacy record) -> the successor must fail closed, not fast.
+    if _PUBLISHED_STOP_BUDGET_S is not None:
+        record["stop_budget_s"] = _PUBLISHED_STOP_BUDGET_S
+    return record
+
+
+def publish_stop_budget(seconds: Optional[float]) -> None:
+    """Record the stop-drain budget this process snapshotted at startup, for its PID record.
+
+    ``GatewayRunner`` freezes ``restart_drain_timeout`` / ``cron_drain_timeout`` at construction
+    and ``stop()`` drains from those retained values; config read later, in another process, is a
+    different generation's answer. Publishing the frozen budget is what lets a ``--replace``
+    successor bind its destructive deadline to OUR lease (#113355, caught by @andrexibiza).
+    """
+    global _PUBLISHED_STOP_BUDGET_S
+    if seconds is None:
+        _PUBLISHED_STOP_BUDGET_S = None
+        return
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return
+    if math.isfinite(value) and value >= 0.0:
+        _PUBLISHED_STOP_BUDGET_S = value
+
+
+def read_published_stop_budget_s(pid: int, record: Optional[dict[str, Any]] = None) -> Optional[float]:
+    """The stop budget ``pid`` published in the PID record, or None when unknown.
+
+    None means "this gateway never published a lease, or the record does not describe it" — an
+    unknown lease, which callers must treat conservatively (never as the shortest lease).
+    """
+    if record is None:
+        record = _read_pid_record()
+    if not isinstance(record, dict) or _pid_from_record(record) != int(pid):
+        return None
+    raw = record.get("stop_budget_s")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value >= 0.0 else None
 
 
 def _get_code_identity_fields() -> dict[str, Any]:

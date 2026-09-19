@@ -172,6 +172,23 @@ def resolve_cron_drain_budget(
     return max(drain, min(floor, ceiling))
 
 
+def resolve_gateway_stop_budget_s(
+    drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, *,
+    cleanup_reserve_s: float = CRON_DRAIN_CLEANUP_RESERVE_S,
+) -> float:
+    """Seconds a gateway's ``stop()`` path may spend draining, headroom excluded.
+
+    This is the value a GatewayRunner effectively drains from: it snapshots
+    ``restart_drain_timeout`` / ``cron_drain_timeout`` at ITS construction and never rereads
+    config, so this budget belongs to that process incarnation, not to whatever config says
+    later. A zero cron timeout is an opt-out.
+    """
+    drain = _seconds(drain_timeout)
+    cron = _seconds(cron_drain_timeout)
+    cron_budget = (cron + _seconds(cleanup_reserve_s)) if cron > 0.0 else 0.0
+    return max(drain, cron_budget)
+
+
 def resolve_systemd_timeout_stop_sec(
     drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, *,
     cleanup_reserve_s: float = CRON_DRAIN_CLEANUP_RESERVE_S, headroom_s: float = SYSTEMD_STOP_HEADROOM_S,
@@ -183,10 +200,52 @@ def resolve_systemd_timeout_stop_sec(
 
     ``restart_drain_timeout`` is only the chat-turn interrupt budget (default 0). See #94759.
     """
-    drain = _seconds(drain_timeout)
-    cron = _seconds(cron_drain_timeout)
-    cron_budget = (cron + _seconds(cleanup_reserve_s)) if cron > 0.0 else 0.0
-    return int(max(_seconds(floor_s), max(drain, cron_budget) + _seconds(headroom_s)))
+    budget = resolve_gateway_stop_budget_s(
+        drain_timeout, cron_drain_timeout, cleanup_reserve_s=cleanup_reserve_s)
+    return int(max(_seconds(floor_s), budget + _seconds(headroom_s)))
+
+
+# ``--replace`` takeover: how long the NEW gateway waits for the OLD one to finish its graceful
+# stop before escalating SIGTERM -> SIGKILL. Must cover the same stop budget systemd's
+# TimeoutStopSec covers (#94759); a fixed 10s SIGKILLs a draining gateway mid-drain / mid-SQLite
+# write and leaves ``state.db`` malformed. The 10s historical floor keeps an idle gateway fast.
+REPLACE_TAKEOVER_GRACE_FLOOR_S = 10.0
+REPLACE_TAKEOVER_GRACE_HEADROOM_S = 30.0
+# Floor used when the OLD incarnation's stop lease is UNKNOWN — it published no budget (a gateway
+# started before this field existed) or its record/config is unreadable. An unknown lease must not
+# be treated as the shortest lease: config is re-read in the REPLACEMENT process and can have been
+# lowered (or made unparseable) since the old process snapshotted its own, so a config-derived
+# answer can authorize a SIGKILL while the old gateway is still legitimately draining. Fail closed
+# on the same conservative bound systemd already uses for "stuck". Caught by @andrexibiza.
+REPLACE_TAKEOVER_GRACE_UNKNOWN_LEASE_FLOOR_S = SYSTEMD_TIMEOUT_STOP_SEC_FLOOR
+
+
+def resolve_replace_takeover_grace_s(
+    drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, *,
+    cleanup_reserve_s: float = CRON_DRAIN_CLEANUP_RESERVE_S,
+    headroom_s: float = REPLACE_TAKEOVER_GRACE_HEADROOM_S,
+    floor_s: float = REPLACE_TAKEOVER_GRACE_FLOOR_S,
+    old_generation_budget_s: float | None = None,
+) -> float:
+    """Seconds ``--replace`` waits for the old gateway before SIGKILL.
+
+    Same budget model as :func:`resolve_systemd_timeout_stop_sec` (max(drain, cron+reserve) +
+    headroom, floored) so both supervisors agree on "stuck" versus merely draining.
+
+    ``old_generation_budget_s`` is the stop budget the OLD incarnation snapshotted at ITS start
+    and actually drains from (published in its PID record). The successor's current config is a
+    DIFFERENT generation's value and may be strictly shorter — lowering
+    ``restart_drain_timeout`` 180 -> 0 between the old start and ``--replace`` would otherwise
+    mint a ~30s lease against a live 180s drain. The lease never shortens below the old lease;
+    pass ``None`` only when it is genuinely unknown (then use the unknown-lease floor).
+    """
+    grace = float(resolve_systemd_timeout_stop_sec(
+        drain_timeout, cron_drain_timeout, cleanup_reserve_s=cleanup_reserve_s,
+        headroom_s=headroom_s, floor_s=floor_s))
+    if old_generation_budget_s is None:
+        return grace
+    return max(grace, _seconds(old_generation_budget_s) + _seconds(headroom_s))
+
 
 
 def resolve_restart_exit_wait_budget(drain_timeout: float, after_turn_timeout: float, *, headroom: float = 15.0) -> float:

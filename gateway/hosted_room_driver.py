@@ -760,6 +760,30 @@ def requeue_deferred_task(
         now=now, set_params=(now,))
 
 
+def defer_not_admitted_task(
+    db_path: DbPath, attempt: TaskAttempt, *, reason: Any, clock: Clock,
+) -> dict[str, Any]:
+    """Release sibling member turns after proven non-admission, not unknown work.
+
+    Retains the historical member-deferral contract using the current exact
+    running-attempt fence. Retrying a deferred member still requires explicit
+    requeue_deferred_task; publication alone cannot allocate a new generation.
+    """
+    _check_same_room(attempt.lease, attempt.identity)
+    reason = _identifier(reason, label="defer_reason")
+    result_json = _canonical_json({"reason": reason, "retryable": True})
+    now = _timestamp(clock)
+    def replay(row: sqlite3.Row) -> dict[str, Any] | None:
+        deferred = _generations_match(row, "deferred", attempt.execution_generation, attempt.cancel_generation)
+        same_run = (row["run_gateway_id"], row["run_process_generation"], row["run_lease_generation"]) == _run_fence(attempt.lease)
+        return _task_from_row(row, idempotent=True) if deferred and same_run and row["result_json"] == result_json else None
+    sql = _generation_update("status='deferred', result_json=?, terminal_at=?, updated_at=?", "running") + f" AND {_RUN_FENCE}"
+    return _run_fence_transition(
+        db_path, attempt, guard_stale="not-admitted task attempt lost its fence",
+        lease_generation=lambda value: int(value or 0), now=now, replay=replay, sql=sql,
+        set_params=(result_json, now, now), stale="not-admitted task changed during deferral")
+
+
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:
     """Return a running task to its durable queue after proven non-admission."""
     now = _timestamp(clock)

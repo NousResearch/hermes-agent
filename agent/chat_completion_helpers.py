@@ -1808,6 +1808,26 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     return False
 
 
+def _pin_matches_fallback_model(pin: str, pin_provider: str, fb_model: str, fb_provider: str) -> bool:
+    """True when the fallback slug is the same model identity as the effective pin.
+
+    Compare provider-normalized ids, not raw config strings: the primary is already
+    normalized on the agent, the chain entry is not (that happens after this guard).
+    """
+    from hermes_cli.model_normalize import normalize_model_for_provider
+    pin = (pin or "").strip()
+    fb_model = (fb_model or "").strip()
+    if not pin or not fb_model:
+        return False
+    fb_n = normalize_model_for_provider(fb_model, fb_provider)
+    if fb_n == pin:
+        return True
+    # Re-express the already-normalized pin in the fallback provider's namespace
+    # (gpt-5.4 vs openai/gpt-5.4). Do not run the fallback slug through the pin
+    # provider — OpenRouter "deepseek-chat" is not DeepSeek's retired alias.
+    return normalize_model_for_provider(pin, fb_provider) == fb_n
+
+
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
     to the backend that just failed (falling back to it would loop the failure)."""
@@ -1815,6 +1835,17 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
         return True
     if not fb_provider or not fb_model:
+        return True
+    pin = getattr(agent, "_fallback_pin_model", None)
+    if isinstance(pin, str):
+        pin = pin.strip() or None
+    else:
+        pin = None
+    pin_provider = getattr(agent, "provider", "") or ""
+    if pin and not _pin_matches_fallback_model(pin, pin_provider, fb_model, fb_provider):
+        logger.info(
+            "Fallback skip: %s/%s differs from pinned model %s",
+            fb_provider, fb_model, pin)
         return True
     from agent.fallback_cooldown import _is_entitlement_rejected
     if _is_entitlement_rejected(agent, fb_provider, fb_model):

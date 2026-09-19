@@ -2214,7 +2214,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
-    return AIAgent(
+    agent = AIAgent(
         model=setup.model,
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -2246,6 +2246,11 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         session_id=session_id,
         session_db=session_db,
     )
+    from cron.jobs import _normalize_job_optional_text
+    if _normalize_job_optional_text(job.get("model")):
+        # Effective initialized model (AIAgent already normalized aliases like deepseek-chat).
+        agent._fallback_pin_model = agent.model
+    return agent
 
 
 class _FireAudit:

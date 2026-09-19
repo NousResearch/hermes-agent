@@ -12,6 +12,9 @@ import threading
 import time
 import sqlite3
 import weakref
+from contextvars import ContextVar
+
+_held_selection = ContextVar("held_selected_route", default=None)
 
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
@@ -435,9 +438,11 @@ def hold_selected_route(scope, binding):
                 if binding._state != 'READY' or binding._material is not material:
                     raise SelectedRouteUnavailable('not_ready')
                 binding._state, binding._held_thread = 'HELD', threading.get_ident()
+            token = _held_selection.set(binding)
             try:
                 yield binding
             finally:
+                _held_selection.reset(token)
                 binding._held_thread = None
     finally:
         binding.close()
@@ -467,6 +472,53 @@ def consume_selected_route(scope, binding):
         yield material
     finally:
         binding.close()
+
+
+def held_selected_route(runner=None):
+    """A copied context cannot inherit the operation's thread-owned hold."""
+    b = _held_selection.get()
+    if (b is None or b._state != 'HELD' or b._held_thread != threading.get_ident()
+            or runner is not None and b._scope.runner is not runner):
+        return None
+    return b
+
+
+def session_store_guard(runner):
+    b = held_selected_route(runner)
+    return nullcontext() if b is not None else runner.session_store._lock
+
+
+@contextmanager
+def own_session_creation(authority, session_id, source, storage_source, connection):
+    """Allow only this held operation's own canonical absent→present SQL write.
+
+    The caller enters before inspecting/inserting the row and exits on the same
+    owner transaction. Existing rows cannot change selection revisions here.
+    """
+    b = held_selected_route(authority.runner)
+    if b is None:
+        yield
+        return
+    scope = b._scope
+    if (scope.purpose != 'admit' or scope.authority is not authority
+            or scope.session_id != session_id or scope.source_value != source.to_dict()
+            or storage_source != 'bot_room' or not connection.in_transaction
+            or not scope.current(connection)
+            or not peek_selected_route(scope, b, connection).supports_prepared_files):
+        raise SelectedRouteUnavailable('selection_changed')
+    before = scope.revision
+    yield
+    after = scope._revision(connection)
+    if before is None:
+        if after != (0, None, None, 'bot_room', scope.session_key):
+            raise SelectedRouteUnavailable('selection_changed')
+        row = connection.execute('SELECT hidden,origin_json FROM sessions WHERE id=?', (session_id,)).fetchone()
+        import json
+        if row is None or row[0] != 1 or json.loads(row[1]) != scope.source_value:
+            raise SelectedRouteUnavailable('selection_changed')
+        scope.revision = after
+    elif after != before:
+        raise SelectedRouteUnavailable('selection_changed')
 
 
 def _credential_deadline(runtime, ceiling):

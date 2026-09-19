@@ -1382,6 +1382,29 @@ class TestPruneSessions:
             older_than_days=90, source="cron", archived=False
         )} == {"ended"}
 
+    def test_negative_older_than_days_rejected(self, db):
+        """A negative bound builds a FUTURE cutoff, matching every ended session —
+        it must raise instead of mass-deleting (config-fed via sessions.retention_days)."""
+        db.create_session(session_id="ended", source="cli")
+        db.end_session("ended", "done")
+        with pytest.raises(ValueError, match="older_than_days"):
+            db.prune_sessions(older_than_days=-1)
+        with pytest.raises(ValueError, match="older_than_days"):
+            db.list_prune_candidates(older_than_days=-1)
+        with pytest.raises(ValueError, match="older_than_days"):
+            db.count_prune_matches(older_than_days=-1)
+        assert db.get_session("ended") is not None
+
+    def test_negative_never_active_keyed_rejected(self, db):
+        """list_never_active_keyed_sessions shares the same future-cutoff hazard."""
+        db.create_session(session_id="keyed", source="telegram",
+                          session_key="telegram:dm:1")
+        with pytest.raises(ValueError, match="older_than_days"):
+            db.list_never_active_keyed_sessions(older_than_days=-1)
+        with pytest.raises(ValueError, match="older_than_days"):
+            db.prune_never_active_keyed_sessions(older_than_days=-1)
+        assert db.get_session("keyed") is not None
+
 
 
 
@@ -3902,6 +3925,18 @@ class TestAutoMaintenance:
         assert second["skipped"] is True
         assert second["pruned"] == 0
         assert db.get_session("old2") is not None  # untouched
+
+    def test_negative_retention_days_skips_maintenance(self, db):
+        """sessions.retention_days: -1 in config reaches here via cli.py/gateway:
+        a future cutoff would match every ended session, so maintenance must
+        warn and skip, not delete."""
+        self._make_old_ended(db, "old", days_old=100)
+        result = db.maybe_auto_prune_and_vacuum(
+            retention_days=-1, min_interval_hours=0
+        )
+        assert result["skipped"] is True
+        assert result["pruned"] == 0
+        assert db.get_session("old") is not None
 
 
 

@@ -8,6 +8,8 @@ protocol violation against a diagnostic the worker had no way to satisfy.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from hermes_constants import FINISH_REASON_LENGTH, PARTIAL_STREAM_STUB_ID
 
 # Dummy fixture credential (concatenated so no literal key-shaped string appears).
@@ -144,3 +146,19 @@ class TestTruncationKanbanBlock:
         block.assert_called_once()
         assert verdict.action == "return"
         assert (verdict.result or {}).get("failure_reason") == "truncated"
+
+    def test_cleanup_failure_still_files_the_block(self, monkeypatch):
+        # The block is filed BEFORE _cleanup_task_resources: a cleanup blow-up on the
+        # way out must not cost the worker the only durable record of the cause.
+        _, block = _patch_board(monkeypatch)
+        _patch_worker_env(monkeypatch)
+        agent = _make_agent()
+        monkeypatch.setattr(
+            agent, "_cleanup_task_resources",
+            MagicMock(side_effect=RuntimeError("cleanup exploded")),
+        )
+
+        with pytest.raises(RuntimeError, match="cleanup exploded"):
+            _run_recovery(agent)
+
+        block.assert_called_once()

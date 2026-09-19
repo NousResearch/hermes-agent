@@ -362,8 +362,8 @@ def _kanban_block_on_truncation(agent: Any, *, stream_stall: bool) -> None:
             conn.close()
     except Exception:
         # Runs on the way out of an already-failed turn: board bookkeeping must never
-        # mask the truncation verdict.
-        pass
+        # mask the truncation verdict — a debug line keeps the no-op diagnosable.
+        logger.debug("on-behalf kanban block after truncation failed", exc_info=True)
 
 
 def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
@@ -397,8 +397,11 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             force=True, diagnostic=True,
         )
         _final_response = _TRUNCATED_FINAL
-    agent._cleanup_task_resources(st.effective_task_id)
+    # The on-behalf block must run BEFORE cleanup: _kanban_block_on_truncation never
+    # raises, but a cleanup failure on the way out must not cost the worker the only
+    # durable record of the real failure cause.
     _kanban_block_on_truncation(agent, stream_stall=st.is_stub)
+    agent._cleanup_task_resources(st.effective_task_id)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
     close_interrupted_tool_sequence(st.messages, _final_response)
     return st.end_turn(

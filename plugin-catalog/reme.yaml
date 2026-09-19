@@ -1,0 +1,15 @@
+name: reme
+repo: https://github.com/agentscope-ai/ReMe
+sha: 5231f3970c550bb0bc5d1bc7fbc85534274ca530
+subdir: integrations/hermes_agent
+description: Local-first, file-native long-term memory with HTTP and embedded ReMe backends.
+maintainer: agentscope-ai
+tier: community
+category: memory
+requires_hermes: ">=0.21"
+docs_url: https://github.com/agentscope-ai/ReMe/tree/main/integrations/hermes_agent
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

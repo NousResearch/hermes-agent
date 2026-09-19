@@ -1181,8 +1181,10 @@ def _detection_candidates(name: str, current_provider: str):
 
     # OpenRouter catalog (exact slug, then bare model part). Never pull a session off a custom
     # endpoint: with the full live catalog in the picker, bare names (``laguna-s-2.1``) collide with
-    # OpenRouter slugs, and the user's own endpoint is an explicit choice. Only this rung is skipped
-    # — an explicit ``vendor/model`` prefix naming a declared provider still resolves below.
+    # OpenRouter slugs, and the user's own endpoint is an explicit choice. Returning here also ends
+    # the prefix rung below (a ``return`` ends a generator), so an explicit ``vendor/model`` prefix
+    # naming a declared provider is left to ``detect_provider_for_model``'s own trailing
+    # ``_resolve_provider_prefix`` fallback — which resolves it as a selection, not a guess.
     _current = (current_provider or "").strip().lower()
     if _current == "custom" or _current.startswith("custom:"):
         return

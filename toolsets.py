@@ -68,6 +68,16 @@ def _core_without(*excluded, kanban=True):
 # tts, image_gen, home-assistant, cron, kanban and computer-use.
 _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", *_HA_TOOLS, kanban=False)
 
+# Lean setup/configure flow (#115482): minimal schema to avoid 20-30k tool tax on
+# trivial tasks. Filtered against _HERMES_CORE_TOOLS so no new tool definitions.
+_SETUP_LEAN_TOOLS = [
+    t for t in (
+        "web_search", "terminal", "read_file", "write_file", "patch",
+        "search_files", "skills_list", "skill_view", "clarify",
+    ) if t in _HERMES_CORE_TOOLS
+]
+assert all(t in _HERMES_CORE_TOOLS for t in _SETUP_LEAN_TOOLS), "setup lean tool not in core tools"
+
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories
@@ -179,6 +189,10 @@ TOOLSETS = {
         "delegate, vision, browser",
         _CODING_TOOLS,
         posture=True,
+    ),
+    "setup": _ts(
+        "Lean setup/configure flow — minimal schema to avoid 20-30k tool tax on trivial tasks",
+        _SETUP_LEAN_TOOLS,
     ),
 
     # Full Hermes toolsets (CLI + messaging platforms). All share the core tools;

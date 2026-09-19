@@ -1248,6 +1248,12 @@ uninstall skills you don't need (`hermes skills`). Context files (AGENTS.md,
 .cursorrules) in your current directory also count toward the total.
 :::
 
+### Lean setup flow
+
+Lean setup flow: setup/configure intent skips memory prefetch, clamps iterations to 12, skips background curator, offers the `setup` toolset (9 tools) and caches tools_config discovery per registry generation. Cache-safe: no mid-conversation toolset swap.
+
+Opt in with `hermes chat --toolsets setup` (or `enabled_toolsets=["setup"]` / `disabled_toolsets=[...]` in code), then compare the fixed cost with `hermes prompt-size` before and after.
+
 ## `hermes config`
 
 ```bash

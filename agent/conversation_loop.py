@@ -68,6 +68,42 @@ _STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 # Shared by _apply_active_turn_redirect and the api_messages ghost-row filter so both sites cannot drift.
 _INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
 
+# Lean budget for trivial setup tasks (#115482): a setup-intent turn clamps effective
+# iterations to 12 for this run only. Never persisted onto the agent; the curator's
+# idle fork reads ``lean_setup_active`` as its setup gate fallback.
+# Intent classification lives in one place (agent.memory_provider.is_setup_intent);
+# this module only unwraps message shapes and holds the per-turn flag.
+_SETUP_LEAN_ITERATION_CAP = 12
+lean_setup_active = False
+
+
+def _initial_message_text(user_message: Any) -> str:
+    """Best-effort plain text of the turn's initial user message (str or content blocks)."""
+    if isinstance(user_message, str):
+        return user_message
+    if isinstance(user_message, list):
+        parts = [b.get("text", "") for b in user_message if isinstance(b, dict)]
+        return "\n".join(p for p in parts if isinstance(p, str))
+    return str(user_message or "")
+
+
+def is_setup_message(text: Any) -> bool:
+    """True when ``text`` looks like a trivial setup task (#115482).
+
+    Thin wrapper over :func:`agent.memory_provider.is_setup_intent` (the single
+    source of truth); returns False when the classifier is unavailable rather
+    than maintaining a second regex.
+    """
+    try:
+        from agent.memory_provider import is_setup_intent as _is_setup
+    except Exception:
+        return False
+    plain = text if isinstance(text, str) else _initial_message_text(text)
+    try:
+        return bool(_is_setup(plain))
+    except Exception:
+        return False
+
 
 # One-time wrap-up notice appended when a wall-clock run budget (--run-budget) crosses 80%.
 RUN_BUDGET_WRAPUP_NOTICE = (
@@ -1600,7 +1636,21 @@ def run_conversation(
     """
     from agent.turn_context import export_current_turn_boundary
 
-    result = _run_conversation_turn(
+    global lean_setup_active
+    _saved_max_iterations = getattr(agent, "max_iterations", None)
+    _lean_clamped = False
+    try:
+        if (
+            isinstance(_saved_max_iterations, int)
+            and not isinstance(_saved_max_iterations, bool)
+            and _saved_max_iterations > _SETUP_LEAN_ITERATION_CAP
+            and is_setup_message(persist_user_message or user_message)
+        ):
+            agent.max_iterations = _SETUP_LEAN_ITERATION_CAP
+            lean_setup_active = True
+            _lean_clamped = True
+            logger.debug("setup lean budget clamped to 12")
+        result = _run_conversation_turn(
         agent,
         user_message,
         system_message=system_message,
@@ -1615,6 +1665,10 @@ def run_conversation(
         moa_config=moa_config,
         turn_author=turn_author,
     )
+    finally:
+        if _lean_clamped:
+            agent.max_iterations = _saved_max_iterations
+            lean_setup_active = False
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result

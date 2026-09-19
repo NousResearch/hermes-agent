@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
-from agent.memory_provider import is_trivial_prompt
+from agent.memory_provider import is_setup_intent, is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
@@ -797,7 +797,7 @@ def _memory_turn_start_and_prefetch(
         )
     ext_prefetch_cache = ""
     with suppress(Exception):
-        if not is_trivial_prompt(_query):
+        if not is_trivial_prompt(_query) and not is_setup_intent(_query):
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
     # Deterministic recall indicator via _emit_status so the model can't silently
     # drop injected memory.

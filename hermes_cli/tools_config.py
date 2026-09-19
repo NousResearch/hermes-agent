@@ -134,8 +134,22 @@ def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     return default if not allowed or default in allowed else sorted(allowed)[0]
 
 
+# Generation-keyed cache for _get_effective_configurable_toolsets (same dict pattern as
+# _tool_token_cache): repeated renders reuse the built list without re-running discovery.
+_effective_toolsets_cache: Dict[int, list] = {}
+
+
 def _get_effective_configurable_toolsets():
-    """CONFIGURABLE_TOOLSETS + plugin toolsets (appended after built-ins; a plugin key already built-in is skipped)."""
+    """CONFIGURABLE_TOOLSETS + plugin toolsets (appended after built-ins; a plugin key already built-in is skipped).
+
+    Cached per tool-registry generation so repeated renders skip ``discover_plugins()`` (#115482)."""
+    try:
+        from tools.registry import registry as _tool_registry
+        _generation = _tool_registry._generation
+    except Exception:
+        _generation = None
+    if _generation is not None and _generation in _effective_toolsets_cache:
+        return list(_effective_toolsets_cache[_generation])
     result = list(CONFIGURABLE_TOOLSETS)
     seen = {ts_key for ts_key, _, _ in result}
     try:
@@ -147,6 +161,10 @@ def _get_effective_configurable_toolsets():
                 result.append(entry)
     except Exception:
         pass
+    if _generation is not None:
+        _effective_toolsets_cache[_generation] = list(result)
+        while len(_effective_toolsets_cache) > 4:
+            _effective_toolsets_cache.pop(next(iter(_effective_toolsets_cache)))
     return result
 
 

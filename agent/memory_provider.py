@@ -72,6 +72,27 @@ def is_trivial_prompt(text: Optional[str]) -> bool:
     return bool(TRIVIAL_PROMPT_RE.match(stripped))
 
 
+# Setup/configure intent; single source of truth for the setup-lean prefetch skip
+# (#115482). Keyword-anchored (re.search), so "how do I setup telegram?" matches
+# while "write a poem" does not.
+SETUP_INTENT_RE = re.compile(
+    r'set\s*up|setup|configur\w*|\bconfig\b|install\w*|'
+    r'hermes\s+(tools|setup|config|auth|mcp)|'
+    r'\bset\b.{0,30}\bapi\b.{0,10}\bkey\b|'
+    r'\bconnect\b|integrat\w+|'
+    r'\badd\b.{0,30}\b(key|token)\b',
+    re.IGNORECASE,
+)
+
+
+def is_setup_intent(text: Optional[str]) -> bool:
+    """True when *text* expresses a setup/configure intent (lean setup flow)."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    return bool(SETUP_INTENT_RE.search(stripped))
+
+
 class MemoryProvider(ABC):
     """Abstract base class for memory providers."""
 

@@ -1088,9 +1088,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
 # --- Public entrypoint for the session-start hook ---
 
-def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: Optional[Callable[[str], None]] = None) -> Optional[Dict[str, Any]]:
+def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: Optional[Callable[[str], None]] = None, setup_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Best-effort: run a curator pass if all gates pass. Returns the result dict if a pass was started, else None. Never raises."""
     try:
+        try:
+            from agent.conversation_loop import is_setup_message, lean_setup_active
+        except Exception:
+            is_setup_message, lean_setup_active = None, False
+        if lean_setup_active or (isinstance(setup_hint, str) and is_setup_message and is_setup_message(setup_hint)):
+            logger.debug("curator skipped: setup session")
+            return None
         # Idle gating: only enforce when the caller provided a measurement.
         if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
             return None

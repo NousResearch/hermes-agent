@@ -77,6 +77,7 @@ Or in-session:
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search` (via `includes`) | Read-only research + media generation. No file writes, no terminal, no code execution. |
 | `search` | `web_search` | Web search only (without extract). |
 | `session_search` | `session_search` | Search past conversation sessions. |
+| `setup` | `web_search`, `terminal`, `read_file`, `write_file`, `patch`, `search_files`, `skills_list`, `skill_view`, `clarify` | Lean setup/configure flow — minimal schema (9 tools) that avoids the 20-30k tool tax on trivial setup tasks. See [Lean setup flow](#lean-setup-flow). |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
 | `spotify` | `spotify_albums`, `spotify_devices`, `spotify_library`, `spotify_playback`, `spotify_playlists`, `spotify_queue`, `spotify_search` | Native Spotify control (playback, queue, search, playlists, albums, library). Registered by the bundled `spotify` plugin. |
 | `terminal` | `process`, `terminal` | Shell command execution and background process management. |
@@ -167,5 +168,11 @@ A handful of tools have an additional availability check on top of toolset membe
 ## Relationship to `hermes tools`
 
 The `hermes tools` command provides a curses-based UI for toggling individual tools on or off per platform. This operates at the tool level (finer than toolsets) and persists to `config.yaml`. Disabled tools are filtered out even if their toolset is enabled.
+
+## Lean setup flow
+
+Lean setup flow: setup/configure intent skips memory prefetch, clamps iterations to 12, skips background curator, offers the `setup` toolset (9 tools) and caches tools_config discovery per registry generation. Cache-safe: no mid-conversation toolset swap.
+
+To opt into the `setup` toolset explicitly, pass it as an allowlist (`enabled_toolsets=["setup"]` in Python, or `hermes chat --toolsets setup`), or keep the default toolsets and exclude what you don't need via `disabled_toolsets`. Check the fixed prompt cost before and after with `hermes prompt-size`.
 
 See also: [Tools Reference](./tools-reference.md) for the complete list of individual tools and their parameters.

@@ -720,8 +720,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         for msg_data in await resp.json():
                             event = await self._build_message_event(msg_data)
                             if event:
+                                # Claim before text debounce or base-adapter queueing so one native
+                                # event never becomes part of a normal Hermes turn. Polls/reactions
+                                # remain native Hermes interactions on the stock path.
+                                native_type = str((event.metadata or {}).get("whatsapp_native_type") or "").lower()
+                                claimed = False if native_type.startswith(("poll", "reaction")) else await self.dispatch_exclusive_inbound(event)
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
+                                if claimed:
+                                    continue
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:

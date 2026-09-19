@@ -449,6 +449,10 @@ class PluginDispatchMixin:
         """Return a stable snapshot of callbacks registered for a hook."""
         return tuple(self._hooks.get(hook_name, ()))
 
+    def iter_exclusive_inbound_handlers(self, name: str) -> tuple[Callable, ...]:
+        """Return a stable snapshot; callers reject zero or multiple callbacks."""
+        return tuple(self._exclusive_inbound_handlers.get(name, ()))
+
     def render_system_prompt_sections(
         self, session_info: Mapping[str, Any]
     ) -> List[RenderedPluginSystemPromptSection]:

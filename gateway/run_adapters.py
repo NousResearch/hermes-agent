@@ -1092,11 +1092,13 @@ class GatewayAdapterLifecycleMixin:
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        busy_text_mode: Optional[str] = None,
+        busy_text_mode: Optional[str] = None, profile_name: Optional[str] = None,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
         adapter.set_message_handler(message_handler or self._primary_message_handler())
+        from gateway.exclusive_inbound import configure_exclusive_inbound
+        configure_exclusive_inbound(self, adapter, profile_name=profile_name)
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(busy_session_handler or self._primary_busy_session_handler())
@@ -1136,6 +1138,7 @@ class GatewayAdapterLifecycleMixin:
                 if isinstance(text_modes, dict)
                 else self._busy_text_mode
             ),
+            profile_name=profile_name,
         )
         # Voice transcripts from this bot's channels dispatch through THIS adapter.
         self._bind_voice_input_callback(adapter)

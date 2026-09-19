@@ -33,6 +33,8 @@ Suite layout:
               （E2 以 XFAIL strict 文档化，交给 post-hoc 完整性层兜底）。
   Section F — 2026-09-19：Windows 形态路径按大小写折叠比较（POSIX 保持大小写敏感），
               修正「受保护 Windows home 的小写拼写逃过不变量」这一真实绕过。
+  Section G — 2026-09-19：Windows 命名空间前缀（长路径 `?` 前缀 / 设备前缀 / UNC 形式）与
+              尾随空格、点同样抵达同一文件，一并闭合；POSIX 侧不得折叠（控制组）。
 
 All Section B tests were empirically verified to FAIL on head 5902589454
 (auto-approve in local CLI) and PASS on the fix head — they pin the fixes.
@@ -1260,3 +1262,54 @@ def test_posix_paths_stay_case_sensitive(monkeypatch):
     assert _write_target_is_sensitive("/etc/passwd") is True
     assert _write_target_is_sensitive("/ETC/passwd") is False
     assert _write_target_is_sensitive("/Root/.hermes/config.yaml") is False
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Section G — Windows 命名空间前缀与尾随空格 / 点（2026-09-19）
+# ═════════════════════════════════════════════════════════════════════════
+#
+# 同一对象在 Windows 上还有更多写法：长路径前缀（问号 + 反斜杠）、设备前缀、以及「UNC +
+# localhost + 盘符共享」形式都抵达同一个盘符路径；尾随空格 / 点在被打开时被丢弃，所以
+# `...config.yaml ` 就是 `...config.yaml`。实测修复前这四种形态全部放行，现按同一把折叠键处理。
+# 8.3 短名（`PROBE~1`）与符号链接别名需要文件系统查询，静态层无法解析，仍属文档化残余。
+
+
+def test_windows_namespace_prefixes_blocked(monkeypatch):
+    """G1: namespace prefixes name the same file and must not slip past."""
+    _point_home_at(monkeypatch, _WIN_HOME)
+    assert _write_target_is_sensitive(
+        "\\\\?\\C:\\Users\\probe\\AppData\\Local\\hermes\\config.yaml") is True
+    assert _write_target_is_sensitive(
+        "\\\\.\\C:\\Users\\probe\\AppData\\Local\\hermes\\config.yaml") is True
+    assert _write_target_is_sensitive(
+        "\\\\?\\UNC\\localhost\\c$\\Users\\probe\\AppData\\Local\\hermes\\config.yaml") is True
+
+
+def test_windows_folded_after_prefix_is_dropped(monkeypatch):
+    """G2: the folded key still applies once the prefix is stripped (lower-cased spelling)."""
+    _point_home_at(monkeypatch, _WIN_HOME)
+    assert _write_target_is_sensitive(
+        "\\\\?\\c:/users/probe/appdata/local/hermes/config.yaml") is True
+
+
+def test_windows_trailing_space_and_dot_blocked(monkeypatch):
+    """G3: Windows drops trailing spaces/dots, so these spellings reach the same file."""
+    _point_home_at(monkeypatch, _WIN_HOME)
+    assert _write_target_is_sensitive(
+        "C:/Users/probe/AppData/Local/hermes/config.yaml ") is True
+    assert _write_target_is_sensitive(
+        "C:/Users/probe/AppData/Local/hermes/config.yaml.") is True
+
+
+def test_posix_trailing_space_stays_a_different_file(monkeypatch):
+    """G4 control: on POSIX a trailing space is part of the name, so it must not be folded."""
+    _point_home_at(monkeypatch, "/root/.hermes")
+    assert _write_target_is_sensitive("/root/.hermes/config.yaml") is True
+    assert _write_target_is_sensitive("/root/.hermes/config.yaml ") is False
+
+
+def test_namespace_prefix_keeps_workspace_writable(monkeypatch):
+    """G5: no new false positive — a non-boundary file under the home is still writable."""
+    _point_home_at(monkeypatch, _WIN_HOME)
+    assert _write_target_is_sensitive(
+        "\\\\?\\C:\\Users\\probe\\AppData\\Local\\hermes\\skills\\a.json") is False

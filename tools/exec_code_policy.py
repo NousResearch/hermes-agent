@@ -1639,11 +1639,40 @@ def _is_in_process_namespace_call(func) -> bool:
 _WINDOWS_SHAPED_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
 
 
+def _strip_windows_namespace_prefix(path: str) -> str:
+    r"""Drop the Win32 namespace prefixes that name the same object as a plain path.
+
+    ``\\?\C:\x``, ``\\.\C:\x`` and ``\\?\UNC\localhost\c$\x`` all reach ``C:\x``, but the literal
+    comparison saw four different strings and let three of them through (2026-09-19 probe).  Only
+    the localhost admin-share form is mapped back to a drive letter; a remote share stays distinct.
+    """
+    for prefix in ("\\\\?\\UNC\\localhost\\", "\\\\?\\unc\\localhost\\"):
+        if path.startswith(prefix):
+            rest = path[len(prefix):]
+            drive, sep, tail = rest.partition("\\")
+            if len(drive) == 2 and drive.endswith("$"):
+                return f"{drive[0]}:\\{tail}" if sep else f"{drive[0]}:\\"
+            return rest
+    for prefix in ("\\\\?\\", "\\\\.\\"):
+        if path.startswith(prefix):
+            return path[len(prefix):]
+    return path
+
+
 def _comparison_keys(raw: str, normalized: str) -> tuple:
-    """Keys to compare *normalized* by: itself, plus a case-folded twin for Windows shapes."""
-    if _WINDOWS_SHAPED_RE.match(raw.strip()):
-        return (normalized, normalized.lower())
-    return (normalized,)
+    """Keys to compare *normalized* by, given the path was written as *raw*.
+
+    A drive-letter or UNC literal names a case-insensitive filesystem where one file has many
+    spellings: the case-folded twin covers letter case, and Windows drops trailing spaces/dots per
+    component (``...config.yaml `` is that same file).  POSIX keeps both distinctions — ``/ETC/passwd``
+    and ``/etc/passwd`` differ, and so do ``x`` and ``x `` — so nothing is folded there.
+    """
+    probe = raw.strip()
+    if not (_WINDOWS_SHAPED_RE.match(probe)
+            or _WINDOWS_SHAPED_RE.match(_strip_windows_namespace_prefix(probe))):
+        return (normalized,)
+    trimmed = normalized.rstrip(" .")
+    return tuple(dict.fromkeys((normalized, normalized.lower(), trimmed, trimmed.lower())))
 
 
 def _write_target_is_sensitive(path: str) -> bool:
@@ -1652,7 +1681,10 @@ def _write_target_is_sensitive(path: str) -> bool:
     own enforcement path, and agent-instruction files — not whole directory trees."""
     if not path:
         return False
-    expanded = os.path.expanduser(os.path.expandvars(path))
+    # A Windows-shaped literal is trimmed and its namespace prefix dropped first — both name the same
+    # object as the plain form.  POSIX paths are kept exactly as written (``x `` is a different file).
+    source = path.strip() if _WINDOWS_SHAPED_RE.match(path.strip()) else path
+    expanded = os.path.expanduser(os.path.expandvars(_strip_windows_namespace_prefix(source)))
     normalized = posixpath.normpath(expanded.replace("\\", "/"))
     # POSIX 规范：路径以 // 开头是实现定义，Linux 下 // == /；但
     # posixpath.normpath 会保留开头的双斜杠前缀，导致后续 startswith

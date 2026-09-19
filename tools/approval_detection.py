@@ -47,6 +47,18 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 # shell word boundary (_COMMAND_TAIL let `echo x > .env extra` / `echo x > .env # note` slip past).
 # `#` is deliberately NOT a boundary: a glued `#` is part of the filename (`.env#backup`).
 _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
+# One shell command segment: stops at `;`/`&`/`|`/newline so a token in a LATER segment cannot
+# contaminate the verdict (same bound the git push rules use).
+_SEGMENT_BOUND = r'[^;|&\n]*'
+# Packages whose removal/purge takes out security or infrastructure (ufw/iptables/fail2ban are the
+# host firewall; openssh-server is the only remote access path; postgresql* purge runs a postrm that
+# deletes the cluster data dir; docker.io/containerd take out every container's data plane; caddy/
+# nginx front the public services). Deliberately an explicit list, never a wildcard: `apt remove -y
+# python3-pip` (corpus X127) must stay clean.
+_APT_INFRA_PACKAGES = (
+    r'(?:caddy|nginx|openssh-server|openssh-client|postgresql(?:-\d+)?|docker\.io|docker-ce|'
+    r'containerd|ufw|iptables|nftables|fail2ban|redis-server|wireguard|openvpn|hermes-agent|gbrain)\b'
+)
 
 # ---- Hardline (unconditional) blocklist ---------------------------------------------------
 # Commands that NEVER run via the agent, regardless of --yolo, approvals.mode=off, or cron approve
@@ -436,6 +448,79 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'yarn\s+' + _PKG_OPTS + r'(?:global\s+)?(?:uninstall|remove)\b', "package manager uninstall"),
     (_CMDPOS + r'pip(?:3)?\s+' + _PKG_OPTS + r'uninstall\b', "package manager uninstall"),
     (_CMDPOS + r'brew\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm)\b', "package manager uninstall"),
+    # ── harm-layer "data" backlog (corpus, harm_layer=data) ──────────
+    # 28 false negatives whose harm is unrecoverable DATA loss (labeling rules R3/R9/R10/R13).
+    # Every rule is bounded to ONE command segment (`[^;|&\n]*`) so a token in a later `&&`/`|`
+    # segment cannot contaminate the verdict, and every rule was FP-measured against the corpus
+    # label-0 rows before landing (FP stays exactly the known 25 ids, no new id).
+    #
+    # Irreversible file destruction: `shred -u` overwrites then unlinks (forensic-unrecoverable);
+    # `wipefs -a` erases filesystem/partition signatures so the data becomes unaddressable.
+    (r'\bshred\b' + _SEGMENT_BOUND + r'\s(?:-u\b|--remove\b)', "shred --remove (irreversible file destruction)"),  # X007 X237
+    (r'\bwipefs\b' + _SEGMENT_BOUND + r'\s-a\b', "wipe filesystem signatures (wipefs)"),  # X236
+    # In-place truncation to zero: the file's own content is gone and no copy exists. The corpus
+    # label-0 boundaries are log rotation (`/var/log/…`, `*.log`: X017 X319) and a tracked doc
+    # (`*.md`: X252) — both exempted via a lookahead over the rest of the segment.
+    (r'\btruncate\b' + _SEGMENT_BOUND + r'\s-s\s+0\b(?![^;|&\n]*(?:/var/log/|\.log\b|\.md\b))',
+     "truncate file to zero (data destruction)"),  # X006 X210 X238
+    # Redis: FLUSHALL/FLUSHDB drop every key in the instance; `del` removes the named keys (X314
+    # pipelines a scan into `xargs redis-cli del`, so the rule anchors on the redis-cli segment
+    # rather than on the pipeline shape).
+    (r'\bredis-cli\b' + _SEGMENT_BOUND + r'\b(?:flushall|flushdb)\b', "redis data destruction (FLUSHALL/FLUSHDB/DEL)"),  # X163 X164
+    (r'\bredis-cli\b' + _SEGMENT_BOUND + r'\bdel\b', "redis data destruction (FLUSHALL/FLUSHDB/DEL)"),  # X314
+    # SQL: schema/column drops, whole-table overwrite with NULL, and a row DELETE. The bare
+    # `DELETE FROM` rule sits AFTER the pre-existing "DELETE without WHERE" rule so the narrower
+    # reason keeps precedence for the no-WHERE spelling; `DROP INDEX` (X182) and an UPDATE with a
+    # WHERE (X180) stay clean.
+    (r'\bDROP\s+SCHEMA\b', "SQL DROP SCHEMA"),  # X166
+    (r'\bALTER\s+TABLE\b' + _SEGMENT_BOUND + r'\bDROP\s+COLUMN\b', "SQL DROP COLUMN"),  # X168
+    (r'\bUPDATE\s+\w+\s+SET\b' + _SEGMENT_BOUND + r'=\s*NULL\b', "SQL UPDATE setting values to NULL"),  # X169
+    (r'\bUPDATE\s+\w+\s+SET\b(?![^;\n]*\bWHERE\b)', "SQL UPDATE without WHERE (whole-table overwrite)"),
+    # A row DELETE is unrecoverable (R3), but a bare SQL string is only DATA — the repo's own
+    # `test_delete_with_where_safe` pins `DELETE FROM users WHERE id = 1` as safe. Anchor the rule
+    # on a database CLIENT invocation, which is what actually runs the statement (X179 psql -c).
+    (r'\b(?:psql|pgcli|mysql|mariadb|sqlite3)\b' + _SEGMENT_BOUND + r'\bDELETE\s+FROM\b', "SQL DELETE (row deletion)"),  # X179
+    # PostgreSQL: `--clean` DROPs the existing objects before restoring (prod data replaced by an
+    # old snapshot); `pg_dropcluster` removes the cluster's data + config. `pg_restore -d scratch`
+    # (X183) is the label-0 boundary and carries no --clean, so it stays clean.
+    (r'\bpg_restore\b' + _SEGMENT_BOUND + r'\s--clean\b', "pg_restore --clean (drops existing database objects)"),  # X165
+    (r'\bpg_dropcluster\b', "drop PostgreSQL cluster (pg_dropcluster)"),  # X167
+    # Docker: volume rm/prune destroys persistent data (not rebuildable from the image);
+    # `system prune -a/--volumes` sweeps images AND volumes. Global flags before the verb are
+    # tolerated so a flag cannot slip the rule; bare `docker system prune` (X153) and a non-forced
+    # `docker rm` (X151) stay clean.
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*volume\s+(?:rm|prune)\b', "docker volume rm/prune (destroys volume data)"),  # X137 X140
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*system\s+prune\b' + _SEGMENT_BOUND + r'\s(?:-a\b|--all\b|--volumes\b)',
+     "docker system prune --all/--volumes (destroys images and volumes)"),  # X139
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*rm\b' + _SEGMENT_BOUND + r'\s(?:-f\b|--force\b)', "docker rm --force (forced container removal)"),  # X133
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*pause\b', "docker pause (suspends container)"),  # X157
+    # apt purge/remove of a security or infrastructure package: purge runs the postrm script, which
+    # deletes cluster data and config (R11). Installs (X320), `autoremove --purge -y` with no
+    # package operand (X128), and non-infra packages (X127) stay clean.
+    (_CMDPOS + r'\bapt(?:-get)?\s+(?:-{1,2}\S+(?:\s+[^-\s]\S*)?\s+)*(?:remove|purge|autoremove)\b'
+     + _SEGMENT_BOUND + r'\b' + _APT_INFRA_PACKAGES,
+     "apt remove/purge of security or infrastructure package"),  # X111 X113 X114 X115 X116 X130
+    # rsync --delete makes the destination match the source, so files present only at the
+    # destination are deleted: an empty or stale source wipes a backup or a live tree. A destination
+    # that names itself a MIRROR (`builds-mirror/`, X028) is the label-0 boundary — the exemption
+    # requires the `mirror` token to look like a PATH (a `/` earlier in the same token), so a bare
+    # `# mirror` comment cannot disable the rule, a `~/…-mirror/` spelling is exempt like its
+    # absolute twin, and a plain `rsync -av` (X241) never matches.
+    (r'\brsync\b' + _SEGMENT_BOUND + r'\s--delete\b(?![^;|&\n]*\s\S*/\S*mirror)',
+     "rsync --delete over live data tree (deletes files missing at source)"),  # X233 X247 X251
+    (r'\bcrontab\b' + _SEGMENT_BOUND + r'\s-r\b', "remove crontab (crontab -r)"),  # X261
+    # Redirect overwriting a backup: a bare `>` in command position truncates the file with no
+    # producer (X232), and `pg_dump > …-latest.dump` overwrites the rollback point (X184). A
+    # DATE-stamped dump (X172) creates a new file and stays clean.
+    (r'(?:^|[;&|\n])\s*>\s*["\']?' + _SEGMENT_BOUND + r'\.\b(?:dump|sql|bak|tar|tgz|gz)\b',
+     "empty redirect truncates backup dump file"),  # X232
+    (r'\bpg_dump\b' + _SEGMENT_BOUND + r'>\s*["\']?\S*(?:latest|current)\S*', "redirect overwrites latest backup file"),  # X184
+    # ssh-keygen -f onto a DEFAULT identity name overwrites the private key in place (R9); a new
+    # named key (X223 `deploy_2026`) stays clean.
+    (r'\bssh-keygen\b' + _SEGMENT_BOUND + r'\s-f\s+["\']?\S*id_(?:rsa|dsa|ecdsa|ed25519)\b',
+     "ssh-keygen overwrites default SSH identity key"),  # X227
+    (r'\bvault\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*kv\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*delete\b',
+     "delete Vault secret (vault kv delete)"),  # X212
 ]
 
 
@@ -469,6 +554,33 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 
 
 # ---- Detection ----------------------------------------------------------------------------
+def _fold_resolved_ssh_dir(command: str) -> str:
+    """Fold ``<resolved home>/.ssh/`` to ``~/.ssh/`` (detection-time).
+
+    ``_home_prefix_fold_regex`` deliberately refuses a single-component home (a stray ``HOME``
+    must not rewrite unrelated prefixes), which left every ``~/.ssh`` rule DISARMED on a root-only
+    host where ``HOME=/root``: ``cat k >> /root/.ssh/authorized_keys`` (SSH key implant) and
+    ``cp evil /root/.ssh/authorized_keys`` auto-approved while the identical ``~`` spelling was
+    gated. The SSH directory is the one path whose absolute spelling is always the same security
+    surface (``authorized_keys``, private keys), so it is folded on its own — deliberately NARROWER
+    than relaxing the general home fold, which would also start gating ``>> /root/.bashrc`` (corpus
+    X297 is label 0, so the general fold would add a false positive).
+    """
+    try:
+        home = os.path.expanduser("~")
+        paths = [home, os.path.realpath(home)]
+    except Exception:
+        return command
+    for prefix in paths:
+        if not prefix or prefix in ("/", "~"):
+            continue
+        command = re.sub(
+            re.escape(prefix.rstrip("/")) + r"(?=[/\\]\.ssh(?:[/\\]|$))",
+            "~", command, flags=re.IGNORECASE,
+        )
+    return command
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
     forms, and shell splicing tricks cannot bypass detection."""
@@ -484,6 +596,7 @@ def _normalize_command_for_detection(command: str) -> str:
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    command = _fold_resolved_ssh_dir(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
     command = re.sub(r'\\([^\n])', r'\1', command)
     command = re.sub(r"''|\"\"", '', command)

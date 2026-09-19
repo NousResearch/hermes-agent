@@ -2329,8 +2329,9 @@ def probe_api_models(
             continue
         if _neg_key is not None:
             _probe_neg_cache.pop(_neg_key, None)
+        model_entries = data if isinstance(data, list) else data.get("data", [])
         return _probe_result(
-            [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
+            [m.get("id", "") for m in model_entries], url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
 
     if _neg_key is not None and not reachable:

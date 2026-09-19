@@ -22,6 +22,7 @@ from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
+from hermes_cli.update_lock import _pid_alive as _update_lock_pid_alive
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -577,6 +578,13 @@ class GatewayNotificationsMixin:
 
         Polls ``.update_output.txt`` for new content and sends chunks to the user periodically;
         detects ``.update_prompt.json`` (written when the update process needs input) and forwards it.
+
+        Also detects a *dead* updater: the update driver holds the ``.hermes-update-in-progress``
+        lock (pid + epoch) for its whole run and only removes it on a clean exit, while
+        ``.update_exit_code`` is written by the wrapping bash shell *after* the driver exits. If the
+        lock exists but its pid is gone, the driver was killed (e.g. an external gateway restart
+        SIGKILLed its whole systemd cgroup mid-build) and no exit code will ever arrive — fail fast
+        instead of polling for the full timeout and reporting a spurious timeout.
         """
         paths = self._update_paths()
         loop = asyncio.get_running_loop()
@@ -605,6 +613,33 @@ class GatewayNotificationsMixin:
                     buffer += chunk
 
         while loop.time() < deadline:
+            # Fail fast when the updater died without writing an exit code.
+            # The update driver holds .hermes-update-in-progress (pid\nepoch)
+            # for its whole run; the wrapping bash shell writes
+            # .update_exit_code only AFTER the driver exits. So a lock whose
+            # pid is gone means the driver was killed (e.g. an external
+            # gateway/service restart SIGKILLed the whole systemd cgroup
+            # mid-build, KillMode=mixed) and no exit code will ever arrive.
+            # Previously this polled for the full 30-minute timeout and then
+            # sent a misleading "timed out" message.
+            if not paths.exit_code.exists():
+                from gateway.run import _hermes_home
+                _lock_marker = _hermes_home / ".hermes-update-in-progress"
+                if _lock_marker.exists():
+                    try:
+                        _lock_pid = int(_lock_marker.read_text(encoding="utf-8").splitlines()[0])
+                    except (OSError, ValueError, IndexError):
+                        _lock_pid = -1
+                    if _lock_pid > 0 and not _update_lock_pid_alive(_lock_pid):
+                        logger.warning(
+                            "Update process (pid %s) died without writing an exit code; failing fast",
+                            _lock_pid,
+                        )
+                        # The update died mid-run (e.g. during the desktop
+                        # rebuild). Report the failure with the output tail we
+                        # already streamed instead of waiting out the timeout.
+                        paths.exit_code.write_text("1", encoding="utf-8")
+                        _lock_marker.unlink(missing_ok=True)
             if paths.exit_code.exists():
                 _read_new_output()
                 await _flush_buffer()
@@ -650,6 +685,29 @@ class GatewayNotificationsMixin:
         paths = self._update_paths()
         if not paths.any_pending():
             return False
+        # Fail fast when the updater died without writing an exit code (same
+        # check as in _watch_update_progress). This is the path taken right
+        # after a gateway restart, which is exactly when the updater may have
+        # been killed — the streaming watcher died with the old gateway, so
+        # the stale lock (dead pid, no .update_exit_code) is the only signal.
+        # Report the failure immediately instead of waiting for a watcher to
+        # time out.
+        if not paths.exit_code.exists():
+            from gateway.run import _hermes_home
+            _lock_marker = _hermes_home / ".hermes-update-in-progress"
+            if _lock_marker.exists():
+                try:
+                    _lock_pid = int(_lock_marker.read_text(encoding="utf-8").splitlines()[0])
+                except (OSError, ValueError, IndexError):
+                    _lock_pid = -1
+                if _lock_pid > 0 and not _update_lock_pid_alive(_lock_pid):
+                    logger.warning(
+                        "Update process (pid %s) died without writing an exit code; "
+                        "marking update as failed",
+                        _lock_pid,
+                    )
+                    paths.exit_code.write_text("1", encoding="utf-8")
+                    _lock_marker.unlink(missing_ok=True)
         cleanup = True
         active_pending_path = paths.claimed
 

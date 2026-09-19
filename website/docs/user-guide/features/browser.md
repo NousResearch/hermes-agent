@@ -79,6 +79,15 @@ The mode is a **driver** that composes with your configured browser backend: it 
 
 **Local browsing uses the packaged Chromium, not your own Chrome.** With no cloud provider or `/browser connect` endpoint configured, Hermes launches the same Chromium that the built-in tools use (installed via `hermes tools` → Browser Automation, driven through agent-browser) and points the Browser Use CLI at it. Your installed Chrome is never touched, so there is no `chrome://inspect` remote-debugging toggle to enable and no "Allow remote debugging?" popup — and it works on headless hosts with no Chrome at all. The browser is shared with the built-in stack's lifecycle: it is closed after `browser.inactivity_timeout`, at exit, and by the orphan sweep. To drive a browser you're signed in to, use `/browser connect` or the [real-profile toggle](#real-profile-browsing-use-your-own-logins).
 
+For installations with multiple Chromium-family browsers, pin the isolated automation binary explicitly so agent-browser cannot fall back to a signed-in system Chrome:
+
+```yaml
+browser:
+  chrome_path: /absolute/path/to/Chromium-or-Chrome-for-Testing
+```
+
+Hermes expands `~`, validates that the path is a file, and passes it to agent-browser as `AGENT_BROWSER_EXECUTABLE_PATH`. A missing path is ignored with a warning. Run `agent-browser install` first when no managed binary is present.
+
 **Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that isolates browser work per name on every backend. Each name gets its own harness daemon (its own IPC socket, log, and state) and its own browser (a separate packaged Chromium locally, a separate cloud browser on cloud backends) — so parallel subagents or simultaneous chats no longer clobber a single shared connection. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
 
 To opt out and force the built-in browser tools, use `/browser use off`, or:

@@ -36,10 +36,13 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 
 
 def _build_browser_env() -> dict:
-    """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
-    harnesses stub the ``tools`` package). The passthrough keys are re-added from the active
-    profile's secret scope, never ``os.environ``: under multiplex that holds the LAUNCH profile's
-    Browserbase/Firecrawl keys, and a served profile's browser must run on its own (or none)."""
+    """Credential-scrubbed env for an agent-browser subprocess.
+
+    Browser credentials and ``browser.chrome_path`` resolve from the active
+    profile. The configured executable is exported under agent-browser's
+    documented environment contract so local automation cannot silently fall
+    back to the user's signed Google Chrome application.
+    """
     from agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
     from tools.environments.local import served_profile_child_env
 
@@ -55,6 +58,29 @@ def _build_browser_env() -> dict:
         value = scope.get(key) if routed else get_secret(key)
         if value is not None:
             env[key] = value
+
+    configured_path = str(
+        _browser_cfg("chrome_path", "", lambda value: value or "", "browser.chrome_path")
+    ).strip()
+    if configured_path:
+        try:
+            executable = Path(configured_path).expanduser()
+            exists = executable.is_file()
+        except (OSError, RuntimeError) as exc:
+            logger.warning(
+                "Configured browser.chrome_path is unusable; ignoring it: %s (%s)",
+                configured_path,
+                exc,
+            )
+        else:
+            if exists:
+                env["AGENT_BROWSER_EXECUTABLE_PATH"] = str(executable)
+            else:
+                logger.warning(
+                    "Configured browser.chrome_path does not exist; ignoring it: %s",
+                    executable,
+                )
+
     # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
     # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
     return add_loopback_no_proxy(env)

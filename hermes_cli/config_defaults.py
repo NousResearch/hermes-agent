@@ -392,6 +392,10 @@ DEFAULT_CONFIG = {
         "record_sessions": False,  # auto-record browser sessions as WebM videos
         # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
         "headed": False,
+        # Optional executable for isolated local automation. Exported as
+        # AGENT_BROWSER_EXECUTABLE_PATH only after validating it exists; use this to pin a managed
+        # Chromium/Chrome-for-Testing build instead of agent-browser's system-browser fallback.
+        "chrome_path": "",
         "allow_private_urls": False,  # allow private/internal IPs (localhost, 192.168.x.x, ...)
         # Local browser engine for both drivers. "auto" = Chrome; "lightpanda" = faster navigation,
         # no screenshots (Browser Use mode spawns `lightpanda serve` per session; built-in tools

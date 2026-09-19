@@ -9,6 +9,7 @@ real resolution path, asserting ``copilot-acp`` is unchanged alongside it.
 
 from __future__ import annotations
 
+import importlib
 import os
 import stat
 
@@ -39,6 +40,17 @@ register_provider(
         process_args_env_var="ACME_ACP_ARGS",
     )
 )
+
+
+def test_plugin_external_process_provider_is_added_to_the_picker_catalog():
+    """ACP plugin profiles must be visible anywhere the picker reads its catalog."""
+    import hermes_cli.models_catalog_static as catalog
+
+    catalog = importlib.reload(catalog)
+    slugs = [entry.slug for entry in catalog.CANONICAL_PROVIDERS]
+
+    assert "acme-acp" in slugs
+    assert slugs.count("copilot-acp") == 1
 
 
 @pytest.fixture

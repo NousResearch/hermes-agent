@@ -181,4 +181,3 @@ export {
   type ResolveGatewayWsUrlDeps,
   type WebSocketAuthParam
 } from './websocket-url'
-export { type ConnectionRequestPayload, type ModelOptionProvider, type ModelOptionsResult } from './gateway-contract.generated'

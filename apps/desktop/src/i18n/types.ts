@@ -3701,6 +3701,7 @@ export interface Translations {
         actionCommand: (action: string, command: string) => string
         actionQuoted: (action: string, value: string) => string
         actionTarget: (action: string, target: string) => string
+        additionalFiles: (count: number) => string
         prefixedDone: (prefix: string, action: string) => string
         runningPrefixedTool: (prefix: string, action: string) => string
         runningTool: (action: string) => string

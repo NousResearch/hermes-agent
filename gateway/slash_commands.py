@@ -148,6 +148,65 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
+def _write_docker_host_update_request(request_path: str, event: MessageEvent) -> None:
+    """Atomically hand a Docker update request to the configured host watcher.
+
+    The request path is host-owned configuration, not Telegram input.  The payload contains only
+    routing metadata so the host updater still chooses the release, image, Compose service, and
+    command from its fixed policy.  A descriptor-relative replace prevents a pre-existing symlink
+    at the final path from redirecting the write elsewhere.
+    """
+    import json
+    import stat
+
+    path = Path(request_path)
+    if not path.is_absolute() or not path.name or path.name in {".", ".."}:
+        raise OSError("Docker host-update request path must be absolute")
+    parent = path.parent
+    parent_metadata = parent.lstat()
+    if not stat.S_ISDIR(parent_metadata.st_mode) or parent.is_symlink():
+        raise OSError("Docker host-update request parent is not a real directory")
+
+    source = event.source
+    payload = {
+        "schema": 1,
+        "action": "update",
+        "platform": source.platform.value,
+        "chat_id": source.chat_id,
+        "chat_type": source.chat_type,
+        "user_id": source.user_id,
+        "message_id": getattr(event, "message_id", None),
+        "timestamp": datetime.now().isoformat(),
+    }
+    if getattr(source, "thread_id", None) is not None:
+        payload["thread_id"] = source.thread_id
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    directory_fd = os.open(parent, directory_flags)
+    temporary_name = f".{path.name}.{os.urandom(16).hex()}.tmp"
+    try:
+        temporary_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        temporary_fd = os.open(temporary_name, temporary_flags, 0o600, dir_fd=directory_fd)
+        with os.fdopen(temporary_fd, "w", encoding="utf-8") as temporary_file:
+            json.dump(payload, temporary_file, ensure_ascii=False, separators=(",", ":"))
+            temporary_file.write("\n")
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        os.fsync(directory_fd)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary_name, dir_fd=directory_fd)
+        raise
+    finally:
+        os.close(directory_fd)
+
+
 def _home_thread_from_source(source) -> Optional[str]:
     """The thread id /sethome should persist on the home target, or None.  Slack thread-per-message
     keying stamps a top-level message's own id as ``source.thread_id`` (a session key, not a
@@ -1242,7 +1301,7 @@ class GatewaySlashCommandsMixin(
         restart it may trigger; marker files let this or the next gateway process notify the user."""
         import json
         from gateway.run import _hermes_home, _resolve_hermes_bin
-        from hermes_cli.config import is_managed, format_managed_message
+        from hermes_cli.config import detect_install_method, format_managed_message, is_managed
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
         # allow_update_command=True are also allowed.
         src = event.source
@@ -1256,7 +1315,26 @@ class GatewaySlashCommandsMixin(
                 return t("gateway.update.platform_not_messaging")
         if is_managed():
             return f"✗ {format_managed_message('update Hermes Agent')}"
-        if not (Path(__file__).parent.parent.resolve() / '.git').exists():
+        project_root = Path(__file__).parent.parent.resolve()
+        if not (project_root / ".git").exists():
+            if detect_install_method(project_root) == "docker":
+                request_path = os.environ.get("HERMES_HOST_UPDATE_REQUEST_FILE", "").strip()
+                if not request_path:
+                    return (
+                        "✗ Docker-Update ist auf diesem Host nicht eingerichtet. "
+                        "Bitte den Host-Updater konfigurieren."
+                    )
+                try:
+                    _write_docker_host_update_request(request_path, event)
+                except (OSError, TypeError, ValueError) as exc:
+                    logger.warning("Docker host-update request could not be recorded: %s", exc)
+                    return "✗ Docker-Update konnte nicht sicher angefordert werden."
+                agent_name = os.environ.get("HERMES_UPDATE_AGENT_NAME", "Hermes Agent").strip()
+                agent_name = agent_name or "Hermes Agent"
+                return (
+                    f"⏳ Sichere Docker-Aktualisierung angefordert. {agent_name} "
+                    "aktualisiert sich im Hintergrund und startet danach neu."
+                )
             return t("gateway.update.not_git_repo")
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:

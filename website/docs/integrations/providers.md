@@ -1230,6 +1230,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | Provider | Base URL | Notes |
 |----------|----------|-------|
 | [Together AI](https://together.ai) | `https://api.together.xyz/v1` | Cloud-hosted open models |
+| [ai&](https://aiand.com) | `https://api.aiand.com/v1` | Open-weight models; get a key at [console.aiand.com](https://console.aiand.com) |
 | [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |

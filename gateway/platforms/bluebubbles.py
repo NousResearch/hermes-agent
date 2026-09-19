@@ -256,7 +256,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         shared = getattr(self, "_shared_ingress_url", None)
         if shared:
             return shared
-        host = "localhost" if self.webhook_host in _LOCAL_HOSTS else self.webhook_host
+        # The listener binds the configured host (default 127.0.0.1, IPv4 only). Registering
+        # "localhost" here breaks with BlueBubbles' Node runtime, which resolves it to ::1 first and
+        # fails with ECONNREFUSED — so hand the server a literal loopback address instead.
+        host = self.webhook_host
+        if host in _LOCAL_HOSTS:
+            host = "[::1]" if host == "::" else "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     def _webhook_register_url_with(self, password_param: str) -> str:

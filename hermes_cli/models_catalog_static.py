@@ -466,6 +466,10 @@ _PROVIDER_ALIASES = dict((
     ("lm_studio", "lmstudio"),
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
     ("ollama_cloud", "ollama-cloud"),
+    # Local OpenAI-compatible servers route through the generic "custom" provider
+    # (parity with hermes_cli.auth and hermes_cli.providers). Issue #62213.
+    ("local", "custom"), ("vllm", "custom"), ("llamacpp", "custom"),
+    ("llama.cpp", "custom"), ("llama-cpp", "custom"),
 ))
 
 

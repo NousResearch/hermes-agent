@@ -868,11 +868,8 @@ class GatewayStartupMixin:
     )
     _BUILTIN_ALLOW_ALL_VARS = tuple(f"{p}_ALLOW_ALL_USERS" for p in _ALLOWLIST_ENV_PLATFORMS)
 
-    def _start_check_access_policy(self) -> bool:
-        """Warn about missing allowlists; return True when startup must be refused."""
-        from gateway.run import (
-            _OWN_POLICY_OPEN_ENV, _own_policy_open_startup_violation, _write_runtime_status_quiet
-        )
+    def _start_warn_missing_allowlist(self) -> None:
+        """Warn about missing allowlists. Call only after enabled platforms are known."""
         # Plugin platforms declare their own allowed_users_env / allow_all_env.
         allowed_vars = list(self._BUILTIN_ALLOWED_USERS_VARS)
         allow_all_vars = ["GATEWAY_ALLOW_ALL_USERS", *self._BUILTIN_ALLOW_ALL_VARS]
@@ -890,6 +887,19 @@ class GatewayStartupMixin:
                 "TELEGRAM_ALLOWED_USERS=your_id) or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true "
                 "plus dm_policy/group_policy: open on the platform."
             )
+
+    def _start_check_access_policy(self, *, warn_missing_allowlist: bool = True) -> bool:
+        """Refuse startup on open-policy violations; return True when startup must stop.
+
+        The missing-allowlist warning is gated on enabled platforms by the caller: start
+        passes warn_missing_allowlist=False and re-emits it after adapter creation, skipped
+        when enabled_platform_count is zero.
+        """
+        from gateway.run import (
+            _OWN_POLICY_OPEN_ENV, _own_policy_open_startup_violation, _write_runtime_status_quiet
+        )
+        if warn_missing_allowlist:
+            self._start_warn_missing_allowlist()
         reason = _own_policy_open_startup_violation(self.config)
         if reason:
             platform_value = reason.split(":", 1)[0]
@@ -1424,7 +1434,7 @@ class GatewayStartupMixin:
         self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():
             return True
-        if self._start_check_access_policy():
+        if self._start_check_access_policy(warn_missing_allowlist=False):
             return True
         await self._start_recover_previous_run()
         # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
@@ -1449,6 +1459,8 @@ class GatewayStartupMixin:
         ) = await self._start_prefilter_platforms()
         if _aborted:
             return True
+        if enabled_platform_count > 0:
+            self._start_warn_missing_allowlist()
         if await self._abort_startup_if_shutdown_requested():
             return True
         _raw = await self._start_connect_pending(_pending_connects)

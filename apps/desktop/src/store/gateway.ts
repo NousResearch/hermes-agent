@@ -1124,6 +1124,24 @@ export async function requestGatewayForProfile<T>(
   signal?: AbortSignal,
   { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
+  const key = normKey(profile)
+  const activeConnectionId = activeGatewayConnectionId()
+
+  // Legacy/session callers can carry only a profile name. If it names the
+  // active registry route, use the socket selected by the composite route
+  // directly; resolving the bare name would spawn a same-named LOCAL backend.
+  if (activeConnectionId && key === activeGatewayProfileKey()) {
+    const gateway = activeGateway()
+
+    if (!gateway) {
+      throw new Error(`Hermes gateway unavailable for active registry profile "${key}"`)
+    }
+
+    return timeoutMs === undefined && signal === undefined
+      ? gateway.request<T>(method, params)
+      : gateway.request<T>(method, params, timeoutMs, signal)
+  }
+
   // A user-initiated Settings-scoped RPC (the Vault tab's "Applies to" pick)
   // dials `foreground` so a cold profile spawn is not queued behind background
   // work (#111651); ambient callers keep the background default.
@@ -1763,6 +1781,24 @@ export async function ensureGatewayForAgent(
   // recompute firing mid-spawn would otherwise dispose it and this
   // activation would fail (#89622).
   entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
+
+  // Electron may have replaced the exact registry backend while this renderer
+  // still holds an open WebSocket to the dashboard that died. Retire the
+  // renderer half too so openSecondary binds to the recovered descriptor.
+  if (isOpen(entry.gateway) && window.hermesDesktop?.revalidateConnectionFor) {
+    const revalidated = await window.hermesDesktop.revalidateConnectionFor({
+      connectionId,
+      profile: entry.profile
+    })
+
+    if (revalidated.rebuilt) {
+      clearTimer(entry)
+      entry.wantOpen = false
+      entry.gateway.close()
+      entry.connection = null
+      entry.wantOpen = true
+    }
+  }
 
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)

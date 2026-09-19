@@ -51,6 +51,12 @@ declare global {
       // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
       // remote cache was dropped.
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
+      // Foreground registry-profile activation: probe that exact cached backend
+      // and retire its pool/transport scope immediately when stale.
+      revalidateConnectionFor?: (payload: {
+        connectionId?: null | string
+        profile?: null | string
+      }) => Promise<{ ok: boolean; rebuilt: boolean }>
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active. `activeTurn` reports whether
       // a prompt turn leases the backend (early skip for cooperative

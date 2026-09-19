@@ -199,14 +199,14 @@ delegate_task(
 
 ## 约束条件
 
-- **默认 3 个并行任务**：批次默认并发 3 个子代理（可通过 config.yaml 中的 `delegation.max_concurrent_children` 配置，无硬性上限，最低为 1）
+- **默认 10 个并行任务**：批次默认并发 10 个子代理（可通过 config.yaml 中的 `delegation.max_concurrent_children` 配置，无硬性上限，最低为 1）
 - **嵌套委托需显式启用**：叶子子代理（默认）无法调用 `delegate_task`、`clarify`、`memory`、`send_message` 或 `execute_code`。编排器子代理（`role="orchestrator"`）保留 `delegate_task` 以支持进一步委托，但仅在 `delegation.max_spawn_depth` 高于默认值 1 时生效（支持 1-3）；其余四项仍被禁用。可通过 `delegation.orchestrator_enabled: false` 全局禁用。
 
 ### 调整并发数与深度
 
 | 配置项 | 默认值 | 范围 | 效果 |
 |--------|---------|-------|--------|
-| `max_concurrent_children` | 3 | >=1 | 每次 `delegate_task` 调用的并行批次大小 |
+| `max_concurrent_children` | 10 | >=1 | 每次 `delegate_task` 调用的并行批次大小 |
 | `max_spawn_depth` | 1 | 1-3 | 可进一步生成子代理的委托层级数 |
 
 示例：运行 30 个并行 worker 并启用嵌套子代理：
@@ -219,7 +219,7 @@ delegation:
 
 - **独立终端** — 每个子代理拥有独立的终端会话，具有独立的工作目录和状态
 - **无对话历史** — 子代理只能看到父代理调用 `delegate_task` 时传入的 `goal` 和 `context`
-- **默认 50 次迭代** — 对简单任务设置较低的 `max_iterations` 以节省成本
+- **默认 250 次迭代** — 对简单任务设置较低的 `max_iterations` 以节省成本
 - **非持久性** — 顶层委派会在后台运行并稍后发送结果，但仍依赖所属会话和 Hermes 进程。会话关闭、`/stop`、`/new` 或进程重启都可能取消或遗留正在执行的工作。对于必须跨越这些边界继续运行的任务，请使用 `cronjob` 或 `terminal(background=True, notify_on_complete=True)`。
 
 ---

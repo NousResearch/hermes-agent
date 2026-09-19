@@ -20,7 +20,7 @@ Hermes Agent 包含一套丰富的能力，远超基础聊天范畴。从持久�
 ## 自动化
 
 - **[定时任务（Cron）](cron.md)** — 使用自然语言或 cron 表达式调度自动运行的任务。任务可附加技能、将结果推送至任意平台，并支持暂停/恢复/编辑操作。
-- **[子 Agent 委派](delegation.md)** — `delegate_task` 工具可生成具有独立上下文、受限工具集和独立终端会话的子 Agent 实例。默认并发运行 3 个子 Agent（可配置），支持并行工作流。
+- **[子 Agent 委派](delegation.md)** — `delegate_task` 工具可生成具有独立上下文、受限工具集和独立终端会话的子 Agent 实例。默认并发运行 10 个子 Agent（可配置），支持并行工作流。
 - **[代码执行](code-execution.md)** — `execute_code` 工具允许 Agent 编写以编程方式调用 Hermes 工具的 Python 脚本，通过沙箱 RPC 执行将多步骤工作流压缩为单次 LLM 调用。
 - **[事件 Hook](hooks.md)** — 在关键生命周期节点运行自定义代码。Gateway hook 处理日志、告警和 webhook；plugin hook 处理工具拦截、指标和护栏。
 - **[批处理](batch-processing.md)** — 跨数百或数千个 prompt（提示词）并行运行 Hermes Agent，生成 ShareGPT 格式的结构化轨迹数据，用于训练数据生成或评估。

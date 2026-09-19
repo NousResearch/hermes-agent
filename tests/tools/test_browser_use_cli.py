@@ -16,7 +16,9 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -963,6 +965,173 @@ class TestSkillTextDescription:
         assert "uv tool install browser-use" in desc
 
 
+class TestBrowserUseManagedLifecycle:
+    @pytest.fixture(autouse=True)
+    def _reset_lifecycle(self):
+        bu_cli._browser_use_sessions.clear()
+        yield
+        bu_cli._browser_use_sessions.clear()
+
+    def test_runtime_is_scoped_to_profile_process_and_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        env = {}
+
+        state = bu_cli._managed_browser_use_state("research", env, ["browser-use"])
+
+        assert state is not None
+        assert state["session"] == "research"
+        assert env["BH_RUNTIME_DIR"] == env["BH_TMP_DIR"]
+        assert str(os.getpid()) in env["BH_RUNTIME_DIR"]
+        assert env["BH_RUNTIME_DIR"].endswith("research")
+        if os.name != "nt":
+            assert len(f"{env['BH_RUNTIME_DIR']}/bu.sock".encode()) < 104
+
+    def test_operator_runtime_override_opts_out(self):
+        env = {"BH_RUNTIME_DIR": "/operator/runtime"}
+
+        assert bu_cli._managed_browser_use_state("research", env, ["browser-use"]) is None
+        assert env == {"BH_RUNTIME_DIR": "/operator/runtime"}
+
+    def test_idle_cleanup_removes_state_only_after_confirmed_reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        state = bu_cli._managed_browser_use_state("research", {}, ["browser-use"])
+        assert state is not None
+        state["last_activity"] = 0.0
+        monkeypatch.setattr(bu_cli, "_browser_use_inactivity_timeout", lambda: 30)
+        monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda current: True)
+
+        bu_cli._expire_idle_browser_use_sessions(now=31.0)
+
+        assert bu_cli._browser_use_sessions == {}
+
+    def test_idle_cleanup_retains_state_when_reload_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        state = bu_cli._managed_browser_use_state("research", {}, ["browser-use"])
+        assert state is not None
+        state["last_activity"] = 0.0
+        monkeypatch.setattr(bu_cli, "_browser_use_inactivity_timeout", lambda: 30)
+        monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda current: False)
+
+        bu_cli._expire_idle_browser_use_sessions(now=31.0)
+
+        assert len(bu_cli._browser_use_sessions) == 1
+
+    def test_browser_exec_holds_session_lock_for_full_cli_call(self, tmp_path, monkeypatch):
+        cli = _fake_cli(tmp_path, "cat > /dev/null\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        state = bu_cli._managed_browser_use_state("research", {}, [cli])
+        assert state is not None
+        monkeypatch.setattr(bu_cli, "_managed_browser_use_state", lambda *_args: state)
+        real_run = bu_cli.subprocess.run
+
+        def checked_run(*args, **kwargs):
+            assert state["operation_lock"].acquire(blocking=False) is False
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(bu_cli.subprocess, "run", checked_run)
+
+        result = json.loads(bu_cli.browser_exec("print(1)", session="research"))
+
+        assert result["success"] is True
+
+    def test_timeout_cleanup_preserves_queued_session_serialization(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"])
+        monkeypatch.setattr(bu_cli, "_base_subprocess_env", lambda: {})
+        monkeypatch.setattr(bu_cli, "_blocked_url_in_code", lambda code: None)
+        monkeypatch.setattr(bu_cli, "_route_backend", lambda *args: None)
+        monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *args: None)
+        monkeypatch.setattr(bu_cli, "_workspace_dir", lambda *args: None)
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {})
+        monkeypatch.setattr(bu_cli, "_ensure_browser_use_cleanup_thread", lambda: None)
+        monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda state: True)
+        first_running = threading.Event()
+        second_registered = threading.Event()
+        second_running = threading.Event()
+        third_registered = threading.Event()
+        release_second = threading.Event()
+        states = []
+        register = bu_cli._managed_browser_use_state
+
+        def tracked_register(*args):
+            state = register(*args)
+            states.append(state)
+            if len(states) == 2:
+                second_registered.set()
+            elif len(states) == 3:
+                third_registered.set()
+            return state
+
+        def run(cmd, code, env, timeout):
+            if code == "first":
+                first_running.set()
+                assert second_registered.wait(10)
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            if code == "second":
+                second_running.set()
+                assert release_second.wait(10)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(bu_cli, "_managed_browser_use_state", tracked_register)
+        monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", run)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            first = pool.submit(bu_cli.browser_exec, "first")
+            assert first_running.wait(10)
+            second = pool.submit(bu_cli.browser_exec, "second")
+            try:
+                first_result = first.result(timeout=10)
+                assert isinstance(first_result, str)
+                assert "timed out" in json.loads(first_result)["error"]
+                assert second_running.wait(10)
+                third = pool.submit(bu_cli.browser_exec, "third")
+                assert third_registered.wait(10)
+                assert states[1]["operation_lock"] is states[2]["operation_lock"]
+            finally:
+                release_second.set()
+            second.result(timeout=10)
+            third.result(timeout=10)
+
+    def test_call_remains_managed_when_idle_cleanup_wins_registration_race(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"])
+        monkeypatch.setattr(bu_cli, "_base_subprocess_env", lambda: {})
+        monkeypatch.setattr(bu_cli, "_blocked_url_in_code", lambda code: None)
+        monkeypatch.setattr(bu_cli, "_route_backend", lambda *args: None)
+        monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *args: None)
+        monkeypatch.setattr(bu_cli, "_workspace_dir", lambda *args: None)
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {})
+        monkeypatch.setattr(bu_cli, "_ensure_browser_use_cleanup_thread", lambda: None)
+        monkeypatch.setattr(bu_cli, "_browser_use_inactivity_timeout", lambda: 30)
+        stopped = []
+        monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda state: stopped.append(state) or True)
+        monkeypatch.setattr(
+            bu_cli,
+            "_run_cli_killing_process_group",
+            lambda cmd, *args: subprocess.CompletedProcess(cmd, 0, "", ""),
+        )
+        register = bu_cli._managed_browser_use_state
+        registered_state = None
+
+        def expire_before_acquire(*args):
+            nonlocal registered_state
+            registered_state = register(*args)
+            assert registered_state is not None
+            registered_state["last_activity"] = 0
+            bu_cli._expire_idle_browser_use_sessions(now=31)
+            return registered_state
+
+        monkeypatch.setattr(bu_cli, "_managed_browser_use_state", expire_before_acquire)
+
+        result = bu_cli.browser_exec("print(1)")
+        assert isinstance(result, str)
+        assert json.loads(result)["success"] is True
+        assert registered_state is not None
+        bu_cli._expire_idle_browser_use_sessions(now=registered_state["last_activity"] + 31)
+
+        assert stopped == [registered_state, registered_state]
+        assert bu_cli._browser_use_sessions == {}
+
+
 class TestBrowserExec:
     def test_missing_cli_returns_install_hint(self, monkeypatch):
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
@@ -1005,11 +1174,15 @@ class TestBrowserExec:
         assert "boom" in result["stderr"]
 
     def test_timeout_returns_actionable_error(self, tmp_path, monkeypatch):
-        cli = _fake_cli(tmp_path, "cat > /dev/null\nsleep 30\n")
+        cli = _fake_cli(
+            tmp_path,
+            'if [ "${1:-}" = "--reload" ]; then exit 0; fi\ncat > /dev/null\nsleep 30\n',
+        )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         monkeypatch.setattr(bu_cli, "_MIN_TIMEOUT_S", 1)
         result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=1))
         assert "timed out" in result["error"]
+        assert "daemon was stopped" in result["error"]
 
 
 class TestFindCliManagedBin:
@@ -1457,10 +1630,10 @@ class TestTimeoutProcessGroupKill:
         # Pre-fix, this hangs until the 60s sleeps expire — and forever with a daemon child.
         assert elapsed < 30
         # The pipe-holding grandchild died with the group instead of leaking.
-        pid = int(pid_file.read_text().strip())
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
         time.sleep(0.5)
         with pytest.raises(OSError):
-            os.kill(pid, 0)
+            os.kill(pid, 0)  # windows-footgun: ok — this test is skipped on Windows
 
     def test_post_kill_drain_is_bounded(self, monkeypatch):
         """If even the post-kill drain misses its deadline, give up instead of wedging."""

@@ -787,13 +787,11 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         return {"ok": True, "reachable": False, "message": ""}
 
     url, auth = probe
-    if key == "GEMINI_API_KEY":
-        from agent.gemini_native_adapter import normalize_gemini_base_url
-        # A Vertex express key (AQ.) can only 403 on the Studio host; normalize routes it to aiplatform.
-        url = normalize_gemini_base_url(url.rsplit("/models", 1)[0], value) + "/models"
     headers = {"Accept": "application/json"}
     params = {}
-    if auth == "bearer":
+    if key == "GEMINI_API_KEY":
+        headers["x-goog-api-key"] = value
+    elif auth == "bearer":
         headers["Authorization"] = f"Bearer {value}"
     else:
         params["key"] = value

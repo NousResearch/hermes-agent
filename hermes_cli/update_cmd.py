@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
+from hermes_cli import update_handoff as _update_handoff
 from hermes_cli.update_cmd_common import _best_effort
 from hermes_constants import get_default_hermes_root, project_venv_dir, venv_python_path
 
@@ -1381,11 +1382,11 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
     The parent detaches from the receipt and its Windows resume hook — the child owns both —
     and only relays the exit code (``hermes_cli/update_handoff.py``).
     """
-    from hermes_cli.update_handoff import continue_update_in_fresh_interpreter
     from hermes_cli.update_receipt import resume_update_receipt
 
     payload = _post_swap_payload(**payload_kwargs)
-    code = continue_update_in_fresh_interpreter(payload, argv_tail=_post_swap_argv_tail(args))
+    code = _update_handoff.continue_update_in_fresh_interpreter(
+        payload, argv_tail=_post_swap_argv_tail(args))
     token = payload_kwargs.get("_windows_gateway_resume")
     if token and code is not None:
         # The child got its own copy (serialized before this flip) and owns the resume; every
@@ -1408,10 +1409,9 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
 def _run_post_swap_phase(args, gateway_mode: bool) -> None:
     """Child half of the update (``--post-swap``): resume the receipt and finish the run on the
     pulled code."""
-    from hermes_cli.update_handoff import read_handoff
     from hermes_cli.update_receipt import resume_update_receipt
 
-    payload = read_handoff(args.post_swap)
+    payload = _update_handoff.read_handoff(args.post_swap)
     with suppress(OSError):
         Path(args.post_swap).unlink()
     if payload.get("receipt"):

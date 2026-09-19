@@ -26,6 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
+from tools.bot_delivery_queue import STATUS_DETAIL_TARGET_BUSY
 from tools.bot_mode_probe import _default_home, _hermes_root
 from utils import atomic_json_write
 
@@ -479,22 +480,42 @@ def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = Non
 # subprocesses, so an in-memory mutex is useless — the lock is a per-profile lockfile under
 # ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly the turn execution window. flock is
 # released by the kernel when the holder's fd closes (including process death), so a crashed turn can never
-# wedge the profile. A queued delivery waits up to ``bot_mode.turn_wait_seconds`` and then fails with a
-# structured 'target_busy' refusal instead of blocking forever.
+# wedge the profile. On the DELIVERY path the lock is a mutual-exclusion primitive, never a waiting room
+# (§2.5 step 1): a held lock raises at once and the delivery is handed to the receiver queue, which re-offers
+# it when the turn slot frees. ``bot_mode.turn_wait_seconds`` stays the budget for callers that take the
+# lock without their own timeout.
 class TurnBusyError(RuntimeError):
     """A delivery turn is already running for the target profile (``waited_seconds`` ≈ time queued).
 
     ``reason`` is 'target_busy' — extends the #93091 item-1 structured refusal enum. ``waited_seconds`` is
-    roughly how long the caller queued behind the current turn before giving up.
+    roughly how long the caller queued behind the current turn before the delivery was handed to the
+    receiver queue. This is no longer a failure: the delivery is durably queued and the drainer re-offers
+    it, so the sender gets a receipt (``attempts`` 0, ``busy`` true) and must NOT resend (§3.1).
     """
 
     reason = "target_busy"
+    #: The receipt's ``status_detail`` (§3.1) — the same string ``tools.bot_delivery_queue``
+    #: stamps, so a sender that greps for ``target_busy`` still finds it there, never as a reason.
+    status_detail = STATUS_DETAIL_TARGET_BUSY
 
     def __init__(self, profile: str, waited_seconds: float):
         self.profile, self.waited_seconds = profile, waited_seconds
         super().__init__(f"target_busy: another delivery turn is already running for profile '{profile}' — "
-                         f"queued behind it for ~{int(round(waited_seconds))}s without it finishing. "
-                         "The message was NOT delivered; retry shortly.")
+                         f"queued behind it for ~{int(round(waited_seconds))}s. The delivery is durably "
+                         "queued; the receiver re-offers it when the turn slot frees "
+                         f"(status_detail: '{STATUS_DETAIL_TARGET_BUSY}'). Do not resend.")
+
+
+def acquire_delivery_turn_lock(root: Path | str, profile: str) -> Iterator[Path]:
+    """The DELIVERY path's turn lock: a NON-blocking probe (§2.5 step 1, P10).
+
+    The lock is a mutual-exclusion primitive on this path, never a waiting room: a held
+    lock raises :class:`TurnBusyError` immediately (``timeout_seconds=0``) instead of
+    parking the sender, and the caller hands the delivery to the receiver queue, which
+    re-offers it when the turn slot frees. Callers that take the lock without a timeout
+    of their own still get ``turn_wait_seconds`` as the budget.
+    """
+    return acquire_turn_lock(root, profile, timeout_seconds=0)
 
 
 def turn_wait_seconds() -> float:

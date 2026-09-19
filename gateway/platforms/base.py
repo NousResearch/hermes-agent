@@ -1137,9 +1137,15 @@ def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional
 def _media_file_identity(path: str) -> tuple:
     """Stable identity for one on-disk file. Symlink / bind-mount aliases
     collapse; distinct copies keep distinct identities so legitimate pairs
-    still send twice."""
+    still send twice.
+
+    ``st_ino == 0`` is not a real inode (Windows, some SMB mounts). Using it
+    as a key silently collapses every file on that volume to one identity.
+    """
     try:
         st = os.stat(path)
+        if not st.st_ino:
+            return ("path", path)
         return ("ino", st.st_dev, st.st_ino)
     except OSError:
         return ("path", path)

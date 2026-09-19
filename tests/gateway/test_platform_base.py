@@ -273,6 +273,27 @@ class TestExtractMedia:
         media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{a}\nMEDIA:{b}")
         assert media == [(str(a), False), (str(b), False)]
 
+    def test_extract_media_keeps_distinct_files_when_inode_is_zero(self, tmp_path, monkeypatch):
+        """Windows/SMB often report st_ino==0; that must not drop the second file."""
+        import gateway.platforms.base as base
+
+        a = tmp_path / "a.pdf"
+        b = tmp_path / "b.pdf"
+        a.write_bytes(b"%PDF-1.4\n")
+        b.write_bytes(b"%PDF-1.4\n")
+        orig = base.os.stat
+
+        def fake_stat(path, *args, **kwargs):
+            st = orig(path, *args, **kwargs)
+            seq = list(st)
+            seq[1] = 0  # st_ino
+            return os.stat_result(seq)
+
+        monkeypatch.setattr(base.os, "stat", fake_stat)
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{a}\nMEDIA:{b}")
+        assert media == [(str(a), False), (str(b), False)]
+        assert base._media_file_identity(str(a)) == ("path", str(a))
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
@@ -667,6 +688,32 @@ class TestMediaDeliveryDefaultMode:
             pytest.skip("hard links not available")
         out = BasePlatformAdapter.filter_local_delivery_paths([str(real), str(alias)])
         assert out == [str(real.resolve())]
+
+    def test_filter_media_keeps_distinct_files_when_inode_is_zero(self, tmp_path, monkeypatch):
+        """st_ino==0 must fall back to path identity, not collapse the batch."""
+        import gateway.platforms.base as base
+
+        self._patch_roots(monkeypatch)
+        a = tmp_path / "a.pdf"
+        b = tmp_path / "b.pdf"
+        a.write_bytes(b"%PDF-1.4\n")
+        b.write_bytes(b"%PDF-1.4\n")
+        orig = base.os.stat
+
+        def fake_stat(path, *args, **kwargs):
+            st = orig(path, *args, **kwargs)
+            seq = list(st)
+            seq[1] = 0  # st_ino
+            return os.stat_result(seq)
+
+        monkeypatch.setattr(base.os, "stat", fake_stat)
+        out = BasePlatformAdapter.filter_media_delivery_paths(
+            [(str(a), False), (str(b), False)]
+        )
+        assert {(p, v) for p, v in out} == {
+            (str(a.resolve()), False),
+            (str(b.resolve()), False),
+        }
 
 
     @pytest.mark.parametrize(

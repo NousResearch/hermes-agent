@@ -85,6 +85,11 @@ def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeyp
 
     assert root == str(repo)
     assert gated is True
+    # The diagnostics path logs through eventlog; its cwd-relative shortener must
+    # not raise either, or the write succeeds with diagnostics silently dropped.
+    from agent.lsp.eventlog import _short_path
+
+    assert _short_path(str(file_path)) == str(file_path)
 
 
 def test_normalize_path_expands_tilde(monkeypatch):

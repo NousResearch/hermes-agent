@@ -32,7 +32,9 @@ def _short_path(file_path: str) -> str:
         return file_path
     try:
         rel = os.path.relpath(file_path)
-    except ValueError:
+    except (ValueError, OSError):
+        # Different drive (ValueError) or the process cwd was removed (OSError from getcwd):
+        # a log-line shortener must never turn a delivered diagnostic into a swallowed error.
         return file_path
     return file_path if rel.startswith(".." + os.sep) or rel == ".." else rel
 

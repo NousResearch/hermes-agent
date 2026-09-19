@@ -13,14 +13,14 @@ import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { PendingApprovalStack } from './approval'
 
-function Runtime({ children }: { children: ReactNode }) {
-  const runtime = useExternalStoreRuntime<ThreadMessage>({ messages: [], isRunning: false, onNew: async () => {} })
+function Runtime({ children, messages = [] }: { children: ReactNode; messages?: ThreadMessage[] }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({ messages, isRunning: false, onNew: async () => {} })
 
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
 }
 
-function render(children: ReactNode) {
-  return renderUi(<Runtime>{children}</Runtime>)
+function render(children: ReactNode, messages?: ThreadMessage[]) {
+  return renderUi(<Runtime messages={messages}>{children}</Runtime>)
 }
 
 beforeAll(() => {
@@ -66,6 +66,53 @@ afterEach(() => {
 })
 
 describe('PendingApprovalStack', () => {
+  it('renders a computer_use approval inline with its pending action and responds on Run', async () => {
+    const request = mockGateway()
+    setRequest('computer_use: type "hello"', undefined, { requestId: 'apr-computer' })
+
+    const messages = [
+      {
+        id: 'assistant-computer-use',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'computer-use-1',
+            toolName: 'computer_use',
+            args: { action: 'type', text: 'hello' },
+            argsText: '{"action":"type","text":"hello"}'
+          }
+        ],
+        status: { type: 'running' },
+        createdAt: new Date('2026-09-17T00:00:00.000Z'),
+        metadata: {
+          unstable_state: null,
+          unstable_annotations: [],
+          unstable_data: [],
+          steps: [],
+          custom: {}
+        }
+      }
+    ] as ThreadMessage[]
+
+    const { container } = render(<PendingApprovalStack />, messages)
+    const stack = container.querySelector('[data-approval-stack]') as HTMLElement
+
+    expect(stack.dataset.approvalPlacement).toBe('inline')
+    expect(within(stack).getByText('Using 1 tool')).toBeTruthy()
+
+    fireEvent.click(within(stack).getByRole('button', { name: /Run/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('approval.respond', {
+        all: false,
+        choice: 'once',
+        request_id: 'apr-computer',
+        session_id: 'sess-1'
+      })
+    })
+  })
+
   it('retains an empty host without consuming keyboard input', () => {
     const { container } = render(<PendingApprovalStack />)
 

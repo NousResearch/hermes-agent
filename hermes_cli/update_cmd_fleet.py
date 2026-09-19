@@ -1648,6 +1648,16 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 if _ur._current is not None:
                     _ur._current.data["runtime_outcomes"] = _runtime_outcomes
 
+    # Post-RESTART state.db integrity sweep (#110007): the maintenance-phase guard
+    # runs while the OLD gateway may still hold the DB, and both reported
+    # corruptions were born in the drain→restart handoff — a fresh-connection
+    # integrity_check per home here is the only boot-time backstop for that
+    # window. Runs BEFORE receipt finalize so the per-home results persist in
+    # the finalized receipt (post_restart_state_db_integrity steps).
+    with _best_effort('Post-restart state.db integrity sweep failed: %s'):
+        from hermes_cli.update_cmd_maint import _verify_state_dbs_after_fleet_restart
+        _verify_state_dbs_after_fleet_restart()
+
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
         _receipt_path = finalize_update_receipt(

@@ -485,6 +485,53 @@ def _verify_and_restore_state_dbs_post_update() -> None:
             _verify_and_restore_one_state_db(profile_home, label=f"profile {name}")
 
 
+def _verify_state_dbs_after_fleet_restart() -> None:
+    """Post-RESTART twin of ``_verify_and_restore_state_dbs_post_update`` (#110007).
+
+    The maintenance-phase guard runs while the OLD gateway may still hold the DB —
+    and the drain→restart handoff is precisely where both reported corruptions were
+    born (13:51 restart; first integrity failure 13:51:19 on a fresh CLI connection;
+    the pre-restart guard had passed minutes earlier). Verify each home's state.db
+    on a fresh connection AFTER the fleet restart, record per-home pass/fail in the
+    update receipt, and quarantine-with-restore (never adopt silently) on failure.
+
+    Never raises: a verification tail that crashes the update is worse than what it
+    detects — same contract as the maintenance-phase guard.
+    """
+    from hermes_cli.update_cmd import _record_update_step, get_hermes_home
+    home = get_hermes_home()
+    homes = [(home, "default home")]
+    try:
+        from hermes_cli.backup import _sibling_profile_homes
+        homes.extend((profile_home, f"profile {name}") for name, profile_home in _sibling_profile_homes(home))
+    except Exception:
+        pass  # best-effort: the root home check alone still runs
+    for one_home, label in homes:
+        detail = ""
+        try:
+            from hermes_cli.backup import verify_sqlite_integrity
+            state_path = one_home / "state.db"
+            if not state_path.exists():
+                continue  # a home without state.db has nothing to verify
+            ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
+            if ok.get("valid"):
+                _record_update_step("post_restart_state_db_integrity", True, f"{label}: ok")
+                continue
+            detail = f"{label}: {ok.get('message', 'unknown error')}"
+            print()
+            print(f"⚠ state.db failed the post-restart integrity check ({label}): "
+                  f"{ok.get('message', 'unknown error')}")
+            # Reuse the maintenance-phase remediation exactly: restore from the
+            # newest valid pre-update snapshot rather than adopting corrupt DB.
+            _verify_and_restore_one_state_db(one_home, label=label)
+        except Exception as exc:
+            detail = f"{label}: guard error {exc}"
+            logger.debug("Post-restart state.db guard (%s) failed: %s", label, exc)
+        finally:
+            if detail:
+                _record_update_step("post_restart_state_db_integrity", False, detail)
+
+
 def _print_bundled_skills_sync_report() -> None:
     """Run ``sync_skills`` (copies new, updates changed, respects user deletions) and print its summary."""
     from tools.skills_sync import sync_skills

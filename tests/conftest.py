@@ -530,6 +530,16 @@ def _hermetic_environment(tmp_path, monkeypatch):
     if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
         monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())
 
+    # 3d. The gateway session context lives in ContextVars and every test in the
+    #     run shares one context. ``clear_session_vars`` deliberately pins the
+    #     vars to "" (not _UNSET) so stale ``os.environ`` values cannot be
+    #     inherited — which then leaks into unrelated LATER tests that legitimately
+    #     expect env-based session resolution (kanban auto-subscribe). Start every
+    #     test unbound, then let tests bind what they need.
+    session_context_mod = sys.modules.get("gateway.session_context")
+    if session_context_mod is not None and hasattr(session_context_mod, "reset_session_vars"):
+        session_context_mod.reset_session_vars()
+
     hermes_state_mod = sys.modules.get("hermes_state")
     if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):
         monkeypatch.setattr(
@@ -738,6 +748,49 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
         raising=False,
     )
     return None
+
+
+# ── sys.modules re-import helper (test isolation) ───────────────────────────
+# A few fixtures need a FRESH import of the hermes_cli / hermes_state modules
+# after pointing HERMES_HOME at a temp dir. Deleting those entries from
+# ``sys.modules`` achieves that, but the deleted module objects must be put
+# back afterwards: every other test module imported them at COLLECTION time and
+# keeps the old references, while fixtures that patch through ``sys.modules``
+# (the ``_kanban_write_guard`` below, and the kanban hook recorders) patch
+# whatever sys.modules holds when the test runs. Leaving the fresh objects in
+# place makes the two diverge, so guards and hooks silently stop applying for
+# the rest of the run — an order-dependent failure set that passes in isolation.
+
+_REIMPORT_MODULE_PREFIXES = ("hermes_cli", "hermes_state")
+
+
+def _is_reimportable_module(name: str) -> bool:
+    return name.startswith(_REIMPORT_MODULE_PREFIXES) or name == "hermes_constants"
+
+
+def drop_hermes_modules_for_reimport(request) -> dict:
+    """Drop the hermes modules so the next import picks up a fresh HERMES_HOME.
+
+    Registers a finalizer that discards the freshly imported modules and
+    restores the originals, so module identity stays stable for every other
+    test in the run. Call from a fixture that has already set HERMES_HOME,
+    then import the module under test.
+    """
+    saved = {
+        name: mod
+        for name, mod in list(sys.modules.items())
+        if _is_reimportable_module(name)
+    }
+    for name in saved:
+        sys.modules.pop(name, None)
+
+    def _restore() -> None:
+        for name in [n for n in sys.modules if _is_reimportable_module(n)]:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved)
+
+    request.addfinalizer(_restore)
+    return saved
 
 
 # ── Kanban write guard (#69283) ─────────────────────────────────────────────

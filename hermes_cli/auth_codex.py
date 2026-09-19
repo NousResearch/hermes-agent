@@ -496,7 +496,24 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
         stored = (state or {}).get("tokens")
         stored = stored if isinstance(stored, dict) else {}
         stored_at, stored_rt = _stripped(stored.get("access_token")), _stripped(stored.get("refresh_token"))
-        if stored_at and stored_rt and stored_rt != _stripped(tokens.get("refresh_token")):
+        # Peer-adopt is only valid WITHIN one account family: the stored singleton pair must
+        # belong to the same ChatGPT principal as the tokens being refreshed. An independent
+        # manual:device_code entry (a second OpenAI account) must NEVER adopt the singleton's
+        # pair — that silently returns the other account's tokens for this entry's request
+        # (wrong identity, and its own live grant sits unused). Compare principals before adopting.
+        adopt_allowed = True
+        if stored_at and _stripped(tokens.get("access_token")):
+            try:
+                from agent.credential_pool import _codex_principal_identity as _cpi
+                stored_principal = _cpi(stored_at)
+                caller_principal = _cpi(_stripped(tokens.get("access_token")))
+                adopt_allowed = (
+                    stored_principal is None or caller_principal is None
+                    or stored_principal == caller_principal)
+            except Exception:
+                adopt_allowed = True  # identity unavailable → legacy behaviour
+        if (stored_at and stored_rt and stored_rt != _stripped(tokens.get("refresh_token"))
+                and adopt_allowed):
             logger.info("Codex refresh token already rotated by a peer — adopting the stored pair.")
             return {**tokens, "access_token": stored_at, "refresh_token": stored_rt}
         try:

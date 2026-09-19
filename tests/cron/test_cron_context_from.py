@@ -439,4 +439,13 @@ class TestContinuityFlag:
         assert "Reported: story A" in prompt
         assert "previous run" in prompt.lower()
 
+    def test_inject_context_from_skips_non_string(self, cron_env):
+        """Defensive skip: non-string items in context_from do not crash _inject_context_from."""
+        from cron.jobs import create_job
+        from cron.scheduler import _build_job_prompt
 
+        job = create_job(prompt="Check things", schedule="every 1h")
+        job["context_from"] = [12345, None, {"bad": "type"}, ""]
+        prompt = _build_job_prompt(job)
+        assert "Check things" in prompt
+        assert "previous run" not in prompt.lower()

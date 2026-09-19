@@ -1325,6 +1325,36 @@ class TestSaveJobOutput:
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
 
+    def test_same_second_runs_preserve_outputs(self, tmp_cron_dir):
+        out1 = save_job_output("test123", "Run 1")
+        out2 = save_job_output("test123", "Run 2")
+        assert out1 != out2
+        assert out1.exists() and out2.exists()
+        assert out1.read_text() == "Run 1"
+        assert out2.read_text() == "Run 2"
+
+    def test_custom_execution_id_suffix(self, tmp_cron_dir):
+        custom_id = "deadbeef1234"
+        out = save_job_output("test123", "Run Custom", execution_id=custom_id)
+        assert out.name.endswith(f"_{custom_id}.md")
+        assert out.read_text() == "Run Custom"
+
+    def test_acquire_flock_msvcrt_timeout(self, monkeypatch):
+        import io
+        import types
+        from cron.jobs import _acquire_flock
+
+        fake_msvcrt = types.SimpleNamespace(
+            LK_NBLCK=2,
+            locking=lambda fd, mode, n: (_ for _ in ()).throw(OSError("Locked")),
+        )
+        monkeypatch.setattr("cron.jobs.msvcrt", fake_msvcrt)
+        monkeypatch.setattr("cron.jobs.fcntl", None)
+
+        with io.BytesIO() as f:
+            assert _acquire_flock(f, timeout=0.1) is False
+
+
 
 class TestCronOutputRetention:
     """Per-run cron output must self-prune so long deploys don't fill the disk (#52383)."""

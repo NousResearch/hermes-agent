@@ -2299,7 +2299,10 @@ def run_job(
         return early
     from run_agent import AIAgent
 
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _cron_session_id = (
+        f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}_"
+        f"{execution_id or uuid.uuid4().hex}"
+    )
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 

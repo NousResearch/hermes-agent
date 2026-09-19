@@ -2,6 +2,12 @@
 auto-repair and the 3-strike partial exit) and malformed JSON arguments (retry, then
 recovery tool results).
 
+Truncated argument JSON is refused outright (never dispatched). When the provider flagged the
+cut (``finish_reason="length"``) the finish_reason phase already ran the bounded recovery, so
+this module keeps its terminal refusal; when a router HID the truncation behind
+``"tool_calls"``/``"stop"`` this module returns the ``"truncate"`` verdict so the loop can run
+the same bounded chunking recovery instead of ending the turn partial.
+
 Role alternation is preserved on every path: an invalid batch is answered with tool-role
 error results (never a user message), and the exits close any open tool-result tail
 (#48879). Nothing here imports ``agent.conversation_loop`` at module level (cycle).
@@ -20,20 +26,30 @@ from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
 
+# ``finish_reason`` values that mean "the provider itself flagged an output-limit cut". The
+# streaming assembler rewrites a truncated tool call to "length"; a provider/wire path that
+# delivers "length" verbatim lands in the same bucket. Any OTHER reason on a batch whose
+# arguments the provider left incomplete is a router-rewritten (hidden) truncation.
+_PROVIDER_TRUNCATION_FINISH_REASONS = frozenset({"length"})
+
 
 @dataclass
 class ToolValidationVerdict:
     """Outcome of ``validate_tool_calls``.
 
     ``action``: ``"ok"`` (dispatch the calls), ``"continue"`` (re-issue the API call —
-    error results / retry state were recorded) or ``"return"`` (terminal partial
-    result in ``result``). ``mixed_invalid_batch`` is True when the batch contains BOTH
+    error results / retry state were recorded), ``"return"`` (terminal partial result in
+    ``result``) or ``"truncate"`` (a router-hidden truncation the loop must recover from via
+    the bounded chunking path). ``mixed_invalid_batch`` is True when the batch contains BOTH
     valid and unknown tool names: only the invalid calls get error results, the valid
-    ones run."""
+    ones run. ``hidden_truncation`` is set (with ``action="truncate"``) when a
+    router-rewritten truncation needs the loop's bounded chunking recovery instead of a
+    terminal partial exit."""
 
     action: str
     result: Optional[Dict[str, Any]]
     mixed_invalid_batch: bool
+    hidden_truncation: Optional["HiddenTruncationRequest"] = None
 
 
 def _preview_name(name: str) -> str:
@@ -67,6 +83,74 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
     }, "truncated", True)
 
 
+@dataclass
+class HiddenTruncationRequest:
+    """A router-rewritten truncation discovered after the ``finish_reason`` phase.
+
+    ``finish_reason`` was NOT ``"length"``, so ``recover_from_truncation`` never ran; the
+    broken argument JSON is the only evidence. The turn must not end partial here — the loop
+    owns every recovery budget (``_ChunkingProgress`` survives the per-iteration
+    ``TurnRetryState`` rebuild) and runs the bounded chunking recovery on this request.
+
+    ``assistant_message`` is the still-unstaged, unappended normalized message, so the
+    truncation phase can measure the cut-off payload exactly as it does on the ``length``
+    path (``_truncated_payload_size`` reads the raw argument strings).
+    """
+
+    assistant_message: Any
+    finish_reason: Any
+    broken_tools: List[str]
+
+
+def _arguments_cut_off_mid_stream(args: Any) -> bool:
+    """``args`` looks like the provider stopped mid-payload (output limit), not like a
+    complete-but-malformed payload.
+
+    Two independent signals, both required:
+
+    - the argument JSON never closed its braces/brackets (a payload that HAS closed them but
+      is still unparsable is ''complete then garbage'' — e.g. a stray trailing token — and
+      must never be reclassified as an output-limit truncation), and
+    - the stripped string does not end in ``}``/``]`` (the composer never emitted the final
+      structural character).
+
+    Together they keep a genuinely malformed complete payload on the historical path while
+    still recognising every real mid-stream cut (unterminated string, dangling key/delimiter,
+    unbalanced nesting).
+    """
+    if not isinstance(args, str):
+        return False
+    raw = args.rstrip()
+    if raw.endswith(("}", "]")):
+        return False
+    return raw.count("{") > raw.count("}") or raw.count("[") > raw.count("]")
+
+
+def _hidden_truncation_request(
+    agent: Any, assistant_message: Any, finish_reason: Any, incomplete_names,
+) -> Optional[HiddenTruncationRequest]:
+    """The bounded-recovery request for a truncation the router hid behind a non-``length``
+    ``finish_reason``, or ``None`` when this turn must stay ordinary.
+
+    Only calls the provider left incomplete qualify (the same ``_incomplete_tool_call_names``
+    verdict the ``length`` path uses: ``json.loads`` fails AND the repair fallback gives up)
+    AND that additionally look cut off mid-stream (``_arguments_cut_off_mid_stream``). A
+    provider-flagged truncation is therefore recovered in-turn; everything else keeps the
+    existing behaviour untouched.
+    """
+    _incomplete = {
+        tc.function.name for tc in (getattr(assistant_message, "tool_calls", None) or [])
+        if tc.function.name in incomplete_names
+        and _arguments_cut_off_mid_stream(tc.function.arguments)
+    }
+    if not _incomplete:
+        return None
+    return HiddenTruncationRequest(
+        assistant_message=assistant_message, finish_reason=finish_reason,
+        broken_tools=sorted(_incomplete),
+    )
+
+
 def validate_tool_calls(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, effective_task_id: Any,
@@ -81,8 +165,12 @@ def validate_tool_calls(
     tool_calls = assistant_message.tool_calls
     valid_names = agent.valid_tool_names
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolValidationVerdict:
-        return ToolValidationVerdict(action=action, result=result, mixed_invalid_batch=_mixed_invalid_batch)
+    def _verdict(action: str, result: Optional[Dict[str, Any]] = None,
+                 hidden_truncation: Optional[HiddenTruncationRequest] = None) -> ToolValidationVerdict:
+        return ToolValidationVerdict(
+            action=action, result=result, mixed_invalid_batch=_mixed_invalid_batch,
+            hidden_truncation=hidden_truncation,
+        )
 
     # Uniquify duplicate tool-call ids BEFORE any downstream consumer: the
     # pre-API sanitizer keeps only the first call/result per id.
@@ -176,6 +264,40 @@ def validate_tool_calls(
                 force=True, diagnostic=True,
             )
             agent._invalid_json_retries = 0
+            if finish_reason in _PROVIDER_TRUNCATION_FINISH_REASONS:
+                # The provider SAID the output limit was hit (the streaming assembler rewrites
+                # the reason; some providers/wire paths deliver it verbatim).
+                # recover_from_truncation already consumed its budget for this attempt, so
+                # ending here is correct and a second recovery would double-count the same
+                # truncation.
+                agent._cleanup_task_resources(effective_task_id)
+                return _verdict("return", _partial_exit(
+                    agent, messages, conversation_history, api_call_count,
+                    "Response truncated due to output length limit",
+                ))
+            # Hidden truncation, and it was NOT handled at the finish_reason phase: the router
+            # reported e.g. "tool_calls"/"stop" while the output limit cut the arguments off, so
+            # recover_from_truncation never ran and the whole bounded chunking recovery was
+            # skipped. Hand the request to the loop instead of ending the turn partial — the
+            # loop owns the chunking budget (``_ChunkingProgress`` survives the per-iteration
+            # ``TurnRetryState`` rebuild) and applies the exact same semantics as the
+            # ``length`` path.
+            from agent.turn_truncation import _incomplete_tool_call_names
+
+            _hidden = _hidden_truncation_request(
+                agent, assistant_message, finish_reason,
+                _incomplete_tool_call_names(assistant_message),
+            )
+            if _hidden is not None:
+                agent._vprint(
+                    f"{agent.log_prefix}↻ Truncation hidden by finish_reason={finish_reason!r} — "
+                    f"routing to bounded chunking recovery (tool call "
+                    f"{', '.join(_hidden.broken_tools[:3])} was cut off).",
+                    force=True,
+                )
+                return _verdict("truncate", hidden_truncation=_hidden)
+            # Genuinely malformed args the provider did not leave incomplete (they merely do not
+            # end in }/]): nothing proves an output-limit cut, so keep the historical refusal.
             agent._cleanup_task_resources(effective_task_id)
             return _verdict("return", _partial_exit(
                 agent, messages, conversation_history, api_call_count, site_copy("truncated"),

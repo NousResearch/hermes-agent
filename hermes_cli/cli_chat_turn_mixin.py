@@ -222,8 +222,8 @@ class CLIChatTurnMixin:
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
             staged_user_message = stamp_message_timestamp({"role": "user", "content": message})
-            from tools.process_registry_notifications import SubagentNotification
-            if isinstance(message, SubagentNotification):
+            from tools.process_registry_notifications import SubagentNotification, TimelineNotification
+            if isinstance(message, (SubagentNotification, TimelineNotification)):
                 staged_user_message.update(content=str(message), display_kind="async_delegation_complete",
                                            display_metadata={"display_text": message.display_text})
             agent._pending_cli_user_message = staged_user_message

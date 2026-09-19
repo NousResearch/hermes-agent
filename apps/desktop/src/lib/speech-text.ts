@@ -1,12 +1,24 @@
 const EMOJI_RE = /(?:[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]|[\u{FE0F}\u{200D}]|[\u{E0020}-\u{E007F}])+/gu
 
 const FENCED_CODE_RE = /```[\s\S]*?(?:```|$)/g
-const CODE_BLOCK_SUMMARY = ' code block omitted '
 const INLINE_CODE_RE = /`([^`]+)`/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/g
 const PARAGRAPH_BREAK_RE = /[ \t]*\n{2,}[ \t]*/g
 const PUNCTUATED_PARAGRAPH_BREAK_RE = /([.!?])([*_~`>"'’”)}\]]*)[ \t]*\n{2,}[ \t]*/g
 const SOFT_BREAK_RE = /[ \t]*\n[ \t]*/g
+
+const MEDIA_PATH_RE = /MEDIA:\S+/g
+const LINE_FINAL_COLON_RE = /:\s*$/gm
+
+// Bare filesystem paths in prose ("~/.config/himalaya/config.toml", "/etc/hosts",
+// "src/lib/app.ts") have no MEDIA: marker. A path is an address for the screen,
+// not speech: the voice loops on "slash dot config slash himalaya slash config
+// dot toml". Tilde paths are unambiguous; absolute and dot-slash paths need at
+// least one letter (so "/06/02" is left alone); bare relative paths must end in
+// a file extension, which keeps "and/or", "N/A", "2026/06/02", "1.5/2.5" and
+// "5/month" intact. The replacement is "the path": the prose carries the meaning.
+const PATH_TOKEN_RE =
+  /~\/(?:[\w.-]+\/)*[\w.-]+(?:\.[A-Za-z]{1,8})?|(?:\.\/|\/)(?=[\w.-]*[A-Za-z])(?:[\w.-]+\/)+[\w.-]+(?:\.[A-Za-z]{1,8})?|(?:\.\/|\/)[\w.-]+\.[A-Za-z]{1,8}|(?<![\w/])[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z]{1,8}/g
 
 const THINKING_PREFIX_RE =
   /^\s*(?:\([^)\n]{1,48}\)\s*)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
@@ -151,17 +163,50 @@ function normalizeLineBreaks(text: string): string {
     .replace(SOFT_BREAK_RE, ' ')
 }
 
+function expandSymbols(text: string): string {
+  return text
+    .replace(/~(?=\s*\d)/g, ' about ') // "~100" -> "about 100"
+    .replace(/~/g, '') // stray tildes (e.g. ~~strike~~) are silence
+    .replace(/(?<=\d)\s*×\s*/g, ' times ') // "2×5090" -> "2 times 5090"
+    .replace(/→/g, ' to ')
+    .replace(/⇒/g, ' to ')
+    .replace(/(\d)\s*[—–]\s*(\d)/g, '$1 to $2') // ranges: "pages 5–10" -> "5 to 10"
+    .replace(/\s*[—–]\s*(?=[A-Z])/g, '. ') // "peek — Done" -> "peek. Done"
+    .replace(/\s*[—–]\s*/g, ', ') // everything left is a comma pause
+    .replace(/≈/g, ' about ')
+    .replace(/&/g, ' and ')
+    .replace(/(?<=\d)\s*%/g, ' percent ')
+    .replace(/€\s*([\d,]*\d)/g, '$1 euros') // "€5" -> "5 euros"
+    .replace(/([\d,]*\d)\s*€/g, '$1 euros') // PT/ES suffix: "1.499,90 €" -> "1.499,90 euros"
+    .replace(/€/g, ' euros ') // bare remainder ("prices in €")
+    .replace(/…/g, '...')
+}
+
 export function sanitizeTextForSpeech(text: string): string {
-  return normalizeLineBreaks(stripMarkdownTables(text))
-    .replace(FENCED_CODE_RE, CODE_BLOCK_SUMMARY)
+  // Tables first: their right-align marker is a trailing colon (":-"), and
+  // closing colons before the table detector runs would mangle it.
+  const withoutTables = stripMarkdownTables(String(text))
+
+  // Close line-final colons BEFORE newlines are flattened: "the regex list:"
+  // followed by a code block keeps its colon if this runs after the flatten,
+  // and the voice hangs on it. Closing early turns it into "the regex list.".
+  const pre = withoutTables.replace(LINE_FINAL_COLON_RE, '.')
+
+  const cleaned = normalizeLineBreaks(pre)
+    .replace(FENCED_CODE_RE, '')
     .replace(THINKING_PREFIX_RE, ' ')
     .replace(MARKDOWN_LINK_RE, '$1')
     .replace(INLINE_CODE_RE, '$1')
-    .replace(URL_RE, ' link ')
+    .replace(URL_RE, '')
+    .replace(MEDIA_PATH_RE, '')
+    .replace(PATH_TOKEN_RE, ' the path ')
     .replace(EMOJI_RE, ' ')
     .replace(/^#{1,6}\s+/gm, '')
-    .replace(/[*_~>#]/g, '')
+    .replace(/[*_>#]/g, '')
     .replace(/^\s*[-+*]\s+/gm, '')
+
+  return expandSymbols(cleaned)
+    .replace(/:\s*$/, '.') // colon orphaned when its link/code was stripped
     .replace(/\s+/g, ' ')
     .trim()
 }

@@ -19,12 +19,18 @@ provider configured as ``web.extract_backend`` falls through):
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Optional
 
 from agent.provider_registry import ProviderRegistry, is_available_safe
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
+
+_KEYLESS_POLICY_WARNING_COOLDOWN_SECONDS = 300.0
+_keyless_policy_warning_at: dict[str, float] = {}
+_keyless_policy_warning_lock = threading.Lock()
 
 
 _registry: ProviderRegistry[WebSearchProvider] = ProviderRegistry(
@@ -139,16 +145,65 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     return None
 
 
+def _warn_keyless_policy(reason: str, message: str, *args: object) -> None:
+    """Warn once per cooldown when malformed policy disables keyless web."""
+    now = time.monotonic()
+    with _keyless_policy_warning_lock:
+        last_warning = _keyless_policy_warning_at.get(reason)
+        if (
+            last_warning is not None
+            and now - last_warning < _KEYLESS_POLICY_WARNING_COOLDOWN_SECONDS
+        ):
+            return
+        _keyless_policy_warning_at[reason] = now
+    logger.warning(message, *args)
+
+
 def _keyless_tier_enabled() -> bool:
-    """Read ``web.keyless_fallback`` from config.yaml (default: enabled)."""
+    """Read the authoritative anonymous-egress policy from config.yaml.
+
+    A valid config with no explicit setting retains the fresh-install default
+    (enabled).  Invalid/unavailable policy state fails closed: inability to
+    establish the user's opt-out state is not permission to send queries or
+    URLs to anonymous third-party endpoints.
+    """
     try:
         from hermes_cli.config import load_config
 
-        web_cfg = load_config().get("web") or {}
-        return bool(web_cfg.get("keyless_fallback", True))
+        config = load_config()
+        if not isinstance(config, dict):
+            _warn_keyless_policy(
+                "config-root",
+                "Keyless web fallback disabled: config root must be a mapping, got %s",
+                type(config).__name__,
+            )
+            return False
+        web_cfg = config.get("web")
+        if web_cfg is None:
+            return True
+        if not isinstance(web_cfg, dict):
+            _warn_keyless_policy(
+                "web-section",
+                "Keyless web fallback disabled: web config must be a mapping, got %s",
+                type(web_cfg).__name__,
+            )
+            return False
+        value = web_cfg.get("keyless_fallback", True)
+        if isinstance(value, bool):
+            return value
+        _warn_keyless_policy(
+            "keyless-value",
+            "Keyless web fallback disabled: web.keyless_fallback must be boolean, got %s",
+            type(value).__name__,
+        )
+        return False
     except Exception as exc:  # noqa: BLE001 — config layer optional
-        logger.debug("keyless_fallback config read failed: %s", exc)
-        return True
+        _warn_keyless_policy(
+            "config-read",
+            "Keyless web fallback disabled: could not read configuration (%s)",
+            type(exc).__name__,
+        )
+        return False
 
 
 def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Optional[str] = None) -> Optional[str]:

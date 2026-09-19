@@ -511,9 +511,19 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:
-    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
-    ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
-    return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, ("kanban", "workspaces"), "workspaces")
+    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins).
+
+    The default lives beside, rather than below, the dot-prefixed Hermes home:
+    web-framework file senders commonly reject an otherwise safe absolute path
+    when any ancestor is a dot-directory.
+    """
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    return kanban_home().parent / "hermes-workspaces" / slug
 
 
 def attachments_root(board: Optional[str] = None) -> Path:

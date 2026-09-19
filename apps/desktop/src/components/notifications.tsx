@@ -201,7 +201,16 @@ export function NotificationDeck({
       onSwipe={(notification, _side, action) => {
         void action.depart(() => dismissNotification(notification.id))
       }}
-      surfaceClassName={cn(STACK_SURFACE, 'rounded-lg')}
+      surfaceClassName={cn(
+        STACK_SURFACE,
+        'rounded-lg',
+        // A collapsed card must never outgrow the viewport: an oversized
+        // message (model-switch confirmations run ~800 chars) previously blew
+        // the card past the screen bottom, putting its action buttons
+        // unreachable. Clamped + scrollable while collapsed; expanded the
+        // stack itself scrolls, so the cap is unnecessary there.
+        !expanded && 'notification-collapsed-clamp'
+      )}
       swipeDirections={['left', 'right']}
     >
       {(notification, action) => <NotificationItem notification={notification} stack={action} />}

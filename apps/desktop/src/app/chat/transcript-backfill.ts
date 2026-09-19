@@ -19,6 +19,8 @@ import { getOlderSessionMessages } from '@/hermes'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { recordTranscriptBackfillPage, type TranscriptProfileScope, transcriptTailState } from '@/store/transcript-tail'
 
+import { graftRefreshedTailOntoBackfill as graftRefreshedTail } from './transcript-backfill-helpers'
+
 /** Older rows likely exist beyond what the in-memory store holds. */
 export function transcriptBackfillAvailable(
   storedSessionId: null | string | undefined,
@@ -71,25 +73,12 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
  * tail begins inside the previous transcript and keep the older prefix.
  * When no anchor is found (compaction rewrite, different session), the
  * refreshed tail is authoritative — same behavior as before backfill existed.
+ * Delegates to `transcript-backfill-helpers.ts`, which additionally preserves
+ * locally-preserved rows (user prompt + failed assistant) that trail the
+ * refreshed tail instead of dropping them on every graft.
  */
 export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
-  if (refreshedTail.length === 0 || previous.length === 0) {
-    return refreshedTail
-  }
-
-  const first = refreshedTail[0]
-
-  const anchor = previous.findIndex(
-    message =>
-      (first.rowId !== undefined && message.rowId !== undefined && message.rowId === first.rowId) ||
-      message.id === first.id
-  )
-
-  if (anchor <= 0) {
-    return refreshedTail
-  }
-
-  return [...previous.slice(0, anchor), ...refreshedTail]
+  return graftRefreshedTail(refreshedTail, previous)
 }
 
 export interface BackfillRequest {

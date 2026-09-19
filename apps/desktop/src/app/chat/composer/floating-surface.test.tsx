@@ -23,8 +23,11 @@ function Surface({ id, visible = true, groupId = id }: { id: string; visible?: b
               data-tree-group={groupId}
             >
               <button>Focus {id}</button>
+              <div data-clarify-choices="2">
+                <textarea aria-label={`Clarify ${id}`} />
+              </div>
               <FloatingComposerSurface>
-                <input aria-label={`Draft ${id}`} defaultValue={id} />
+                <input aria-label={`Draft ${id}`} data-slot="composer-rich-input" defaultValue={id} />
               </FloatingComposerSurface>
             </div>
           </ComposerSurfaceProvider>
@@ -85,6 +88,20 @@ it('shares one visible composer while preserving each editor and draft across ho
   expect((b as HTMLInputElement).value).toBe('draft for b')
   expect(hostA.closest('[data-chat-surface]')).toBe(screen.getByTestId('pane-a'))
   expect(hostB.closest('[data-chat-surface]')).toBe(screen.getByTestId('pane-b'))
+})
+
+it('keeps a focused clarify field focused while the pointer moves in its chat surface', () => {
+  render(<Surface id="a" />)
+
+  const clarify = screen.getByLabelText('Clarify a')
+  const draft = screen.getByLabelText('Draft a')
+
+  fireEvent.pointerDown(clarify, { clientX: 80, clientY: 80 })
+  clarify.focus()
+  fireEvent.pointerMove(screen.getByTestId('pane-a'), { clientX: 100, clientY: 100 })
+
+  expect(document.activeElement).toBe(clarify)
+  expect(document.activeElement).not.toBe(draft)
 })
 
 it.each([false, true])('keeps pointer-selected ownership through delayed events (floating=%s)', floating => {

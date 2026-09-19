@@ -175,8 +175,9 @@ function trackPointer(event: PointerEvent) {
 
   const alreadyTyping =
     active instanceof HTMLElement &&
-    active.dataset.slot === 'composer-rich-input' &&
-    active.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner === id
+    (active.closest('[data-clarify-choices], [data-clarify-batch]') ||
+      (active.dataset.slot === 'composer-rich-input' &&
+        active.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner === id))
 
   if (event.type === 'pointermove' && !alreadyTyping && !keepsOwnFocus(active)) {
     focusSelectedComposer()

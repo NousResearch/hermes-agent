@@ -4465,7 +4465,10 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
                 cli._preload_skills_error = exc
 
         cli._preload_skills_requested = [*auto_load_names, *(s for s in parsed_skills if s not in auto_load_names)]
-        cli._preload_skills_thread = threading.Thread(target=_load_preloaded_skills, name="skills-preload", daemon=True)
+        # Preserve the caller's profile home across the preload thread boundary.
+        from agent.memory_provider import spawn_context_thread
+        cli._preload_skills_thread = spawn_context_thread(
+            _load_preloaded_skills, name="skills-preload", daemon=True)
         cli._preload_skills_thread.start()
     return cli
 

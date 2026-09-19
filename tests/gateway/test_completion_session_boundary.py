@@ -39,11 +39,14 @@ def isolated_registry(tmp_path, monkeypatch):
 
 
 class _SessionDB:
-    def __init__(self, row, tip=None):
+    def __init__(self, row, tip=None, tip_row=None):
         self._row = row
         self._tip = tip
+        self._tip_row = tip_row
 
     async def get_session(self, session_id):
+        if session_id == self._tip:
+            return self._tip_row
         return self._row
 
     async def get_compression_tip(self, session_id):
@@ -276,6 +279,35 @@ def test_terminal_verdict_returns_none_without_injection():
 
     assert result is None
     adapter.handle_message.assert_not_awaited()
+
+
+def test_missing_parent_with_live_compression_successor_delivers():
+    """A pruned parent can still have a durable, live compression successor."""
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(
+        adapter,
+        session_db=_SessionDB(
+            None,
+            tip="sess-successor",
+            tip_row={"ended_at": None},
+        ),
+    )
+
+    verdict = asyncio.run(runner._classify_completion_target("sess-pruned"))
+
+    assert verdict == "deliver"
+
+
+def test_unknown_completion_target_is_terminal_and_operator_visible(caplog):
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter, session_db=_SessionDB(None))
+
+    with caplog.at_level("WARNING", logger="gateway.run"):
+        verdict = asyncio.run(runner._classify_completion_target("sess-gone"))
+
+    assert verdict == "terminal"
+    assert "sess-gone" in caplog.text
+    assert "no live lineage successor" in caplog.text
 
 
 # ---------------------------------------------------------------------------

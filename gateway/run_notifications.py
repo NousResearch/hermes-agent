@@ -1279,6 +1279,35 @@ class GatewayNotificationsMixin:
             logger.debug("Async-completion pre-flight parent lookup failed for %s", parent_session_id, exc_info=True)
             return "retry"
         if parent is None:
+            # Pruning can remove the parent row after compression while its durable lineage entry
+            # still points to the live continuation. Check that bounded successor before treating
+            # the target as permanently gone; never infer an unrelated chat's current session.
+            try:
+                tip_session_id = await session_db.get_compression_tip(parent_session_id)
+                tip = (
+                    await session_db.get_session(tip_session_id)
+                    if tip_session_id and tip_session_id != parent_session_id
+                    else None
+                )
+            except Exception:
+                logger.debug(
+                    "Async-completion pre-flight successor lookup failed for %s",
+                    parent_session_id,
+                    exc_info=True,
+                )
+                return "retry"
+            if tip is not None and not tip.get("ended_at"):
+                logger.info(
+                    "Async-completion target %s is pruned; delivering through live lineage successor %s.",
+                    parent_session_id,
+                    tip_session_id,
+                )
+                return "deliver"
+            logger.warning(
+                "Async-completion target %s has no live lineage successor; "
+                "terminally dropping completion delivery.",
+                parent_session_id,
+            )
             return "terminal"
         if not parent.get("ended_at"):
             return "deliver"

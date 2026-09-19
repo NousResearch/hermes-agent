@@ -16,6 +16,26 @@ from tools import mcp_tool_sampling as _sampling
 logger = logging.getLogger("tools.mcp_tool")
 
 
+def _disabled_in_live_config(name: str) -> bool:
+    """Whether ``mcp_servers.<name>`` in config.yaml says ``enabled: false`` *right now*.
+
+    The run task holds a STARTUP SNAPSHOT of its entry (``self._config``), so a server switched off
+    while the process runs still looks enabled to it — and a parked task would rebuild its transport
+    every ``_PARKED_RETRY_INTERVAL`` for the life of the process, re-driving OAuth and logging its
+    WARNING pair per tick for a server the user disabled. This reads the file (mtime-cached) so the
+    disable is honoured without a restart. A server ABSENT from the config, or a config we cannot
+    read (``_load_mcp_config`` also returns ``{}`` on error and in safe mode), is not "disabled":
+    the retry guarantee wins.
+    """
+    try:
+        from tools.mcp_tool_config import _load_mcp_config
+        from tools.mcp_tool_discovery import _enabled
+        config = (_load_mcp_config() or {}).get(name)
+    except Exception:  # pragma: no cover - a config read must never break the run task
+        return False
+    return config is not None and not _enabled(config)
+
+
 @dataclass
 class _RetryBudget:
     """Per-run() retry counters (``_reconnect_retries`` stays on the task: handlers/tests read it)."""
@@ -174,7 +194,8 @@ class MCPServerRunMixin:
         """Drop this server's tools and wait for a reconnect request; True when shutdown came instead.
         The run task must NOT exit (it is the only ``_reconnect_event`` listener, so returning
         leaves the server unrevivable). With tools deregistered no call can reach the breaker
-        probe, so the wait is TIMED (one self-probe per ``_PARKED_RETRY_INTERVAL``); an explicit
+        probe, so the wait is TIMED (one self-probe per ``_PARKED_RETRY_INTERVAL``, skipped entirely
+        while config says ``enabled: false``); an explicit
         ``_reconnect_event.set()`` wakes it immediately."""
         # Do NOT return — exiting the task orphans the server: nothing would ever listen for
         # _reconnect_event again and the server would be permanently wedged for the life of the process
@@ -186,10 +207,22 @@ class MCPServerRunMixin:
         self._was_parked = True
         self._park_reason = revival_reason
         self._deregister_tools()
-        self._reconnect_event.clear()
-        outcome = await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL)
-        if outcome == "shutdown":
-            return True
+        while True:
+            self._reconnect_event.clear()
+            outcome = await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL)
+            if outcome == "shutdown":
+                return True
+            # The TIMED wake is the retry loop, and it must not resurrect a server the user switched
+            # off: ``enabled: false`` means no connect, no OAuth and no warning, ever — not "try again
+            # in 5 minutes until the desktop app is restarted". Keep waiting instead; this task stays
+            # the only ``_reconnect_event`` listener, so re-enabling (config edit + discovery /
+            # reconcile) still revives it at once, and an EXPLICIT reconnect — a deliberate request
+            # for this server — is still honoured while disabled.
+            if outcome == "self-probe" and _disabled_in_live_config(self.name):
+                logger.debug("MCP server '%s': parked and disabled in config (enabled: false); skipping "
+                             "the timed self-probe instead of re-authenticating", self.name)
+                continue
+            break
         # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
         # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
         # task-local ContextVar reaches it; it stays set for the task's life — every later

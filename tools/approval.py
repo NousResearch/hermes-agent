@@ -20,7 +20,7 @@ import threading
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
-from tools import approval_context
+from tools import approval_context, approval_session_notify
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
     _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
@@ -128,23 +128,42 @@ def register_gateway_notify(session_key: str, cb) -> None:
 
 def unregister_gateway_notify(session_key: str) -> None:
     """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    they don't hang forever (agent run finished or interrupted).
+
+    Deliberately does NOT remove the session-scoped entry (``approval_session_notify``): turn
+    teardown is exactly the moment the session-scoped approver starts mattering — background SDK
+    prompts fire between turns."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        for entry in _gateway_queues.pop(session_key, []):
-            entry.event.set()
+        entries = _gateway_queues.pop(session_key, [])
+    for entry in entries:
+        # Turn teardown withdraws an unanswered prompt, not a user denial. Preserve a
+        # decision that raced ahead of teardown; otherwise carry the cancellation cause
+        # through the shared wait contract so every surface can attribute it honestly.
+        if entry.result is None:
+            entry.cancelled = "the turn ended before the prompt was answered"
+        entry.event.set()
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None,
+                             tool_use_id: Optional[str] = None) -> int:
     """Unblock waiting agent thread(s) from the gateway's /approve or /deny handler.
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
     (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
     relayed to the agent in the BLOCKED message. Returns the number resolved.
+
+    *tool_use_id* (P2.a): when the resolution carries the SDK's prompt correlator, ONLY the
+    matching pending entry resolves — with parallel prompts, FIFO let tapping prompt B's button
+    grant prompt A. A carried id that matches nothing pending (already resolved/expired)
+    resolves ZERO entries, never queue[0]. Id-less resolutions (text /approve, stale pre-deploy
+    buttons, non-SDK surfaces) keep FIFO, and every single-pop FIFO fallback is logged — that
+    log line is the only observability left for the misroute class this correlator kills.
     """
+    fifo_fallback_pending = 0
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
@@ -157,7 +176,13 @@ def resolve_gateway_approval(session_key: str, choice: str,
         elif resolve_all:
             targets = list(queue)
             queue.clear()
+        elif tool_use_id:
+            targets = [entry for entry in queue if entry.data.get("tool_use_id") == tool_use_id][:1]
+            if not targets:
+                return 0
+            queue.remove(targets[0])
         else:
+            fifo_fallback_pending = len(queue)
             targets = [queue.pop(0)]
         if not queue:
             _gateway_queues.pop(session_key, None)
@@ -169,6 +194,10 @@ def resolve_gateway_approval(session_key: str, choice: str,
             if reason:
                 entry.reason = reason
             entry.event.set()
+    if fifo_fallback_pending:
+        logger.info("Gateway approval resolved by FIFO fallback (no request_id/tool_use_id): session=%s "
+                    "pending=%d — with parallel prompts this cannot distinguish which prompt was answered",
+                    session_key, fifo_fallback_pending)
     return len(targets)
 
 
@@ -290,11 +319,13 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        for entry in _gateway_queues.pop(session_key, []):
-            # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
-            # the prompt was withdrawn, nobody denied it.
-            entry.cancelled = "the session ended before the prompt was answered"
-            entry.event.set()
+        approval_session_notify.clear_session_notify(session_key)
+        entries = _gateway_queues.pop(session_key, [])
+    for entry in entries:
+        # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
+        # the prompt was withdrawn, nobody denied it.
+        entry.cancelled = "the session ended before the prompt was answered"
+        entry.event.set()
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
     # finished conversation cannot leak a live interpreter.
@@ -880,12 +911,19 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 # still fail closed, but do not attribute a refusal to the user.
                 return deny(spec.gateway_refused, "cancelled",
                             reason=f"approval was withdrawn before the user answered ({decision['cancelled']})",
-                            reason_addendum="", timeout_addendum="", deny_reason=None)
+                            reason_addendum="", timeout_addendum=" Silence is not consent.", deny_reason=None)
             if not decision["resolved"]:
                 return deny(spec.gateway_refused, "timeout", reason="timed out without user response",
                             reason_addendum="", timeout_addendum=" Silence is not consent.",
                             deny_reason=deny_reason)
-            if choice is None or choice == "deny":
+            if choice in (None, "expired"):
+                # Turn teardown expired the prompt before anyone answered — honest attribution
+                # (never "denied by user"); still not consent.
+                return deny(spec.gateway_refused, "expired",
+                            reason="approval expired when the turn ended, before the user responded",
+                            reason_addendum="", timeout_addendum=" Silence is not consent.",
+                            deny_reason=deny_reason)
+            if choice == "deny":
                 return deny(spec.gateway_refused, "denied", reason="denied by user",
                             reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
                             timeout_addendum="", deny_reason=deny_reason)

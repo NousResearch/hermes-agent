@@ -232,6 +232,12 @@ class PluginDispatchMixin:
         truncates the message so a hook that embeds tool args in its error cannot grow the set
         per call; the set is cleared on unload alongside the timeout-suppression map.
         """
+        from hermes_cli.lifecycle import current_observer_failure_log
+
+        fixed_log = current_observer_failure_log()
+        if fixed_log is not None:
+            logger.debug("%s", fixed_log)
+            return
         callback_name = getattr(cb, "__name__", repr(cb))
         key = (hook_name, getattr(cb, "__module__", ""), getattr(cb, "__qualname__", callback_name),
                type(exc).__name__, str(exc)[:200])

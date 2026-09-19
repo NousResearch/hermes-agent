@@ -173,6 +173,42 @@ def _register_capturing_resolver(session_key: str, result):
     return seen
 
 
+def test_guard_teardown_cancelled_blocks_without_user_attribution(gw_session):
+    """W11: turn teardown withdraws the prompt without implying a user denial.
+    The no-consent / do-NOT-retry framing still applies."""
+    def teardown_notify(_data):
+        A.unregister_gateway_notify(gw_session)
+
+    with A._lock:
+        A._gateway_notify_cbs[gw_session] = teardown_notify
+
+    res = A.check_execute_code_guard("import os", "local")
+
+    assert res["approved"] is False
+    assert res["outcome"] == "cancelled"
+    msg = res["message"]
+    assert "the turn ended before the prompt was answered" in msg
+    assert "has NOT consented" in msg
+    assert "Do NOT retry" in msg
+    assert "Silence is not consent." in msg
+    assert "denied by user" not in msg
+
+
+def test_elicitation_expired_at_teardown_maps_to_cancel(gw_session):
+    """W11: an elicitation prompt expired by turn teardown mirrors the
+    timeout outcome ("cancel") — a prompt that died unanswered is not a
+    user decline."""
+    def teardown_notify(_data):
+        A.unregister_gateway_notify(gw_session)
+
+    with A._lock:
+        A._gateway_notify_cbs[gw_session] = teardown_notify
+
+    from tools.approval_prompt import request_elicitation_consent
+
+    assert request_elicitation_consent("share data?", "consent") == "cancel"
+
+
 def test_guard_isolated_backend_approved():
     # Container backends already sandbox the child — no-op approve.
     assert A.check_execute_code_guard("import os", "docker")["approved"] is True

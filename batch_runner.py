@@ -294,8 +294,32 @@ def _process_single_prompt(
 
 def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
     """Append one JSON row and fsync so a crash never loses an acknowledged prompt."""
-    with open(path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    encoded = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+    with open(path, 'a+b') as f:
+        end = f.tell()
+        if end:
+            f.seek(end - 1)
+            if f.read(1) != b"\n":
+                # A crash may leave a partial row (even a partial UTF-8 character).
+                # Keep complete rows, but never glue new output onto a torn tail.
+                start = end
+                while start:
+                    chunk_start = max(0, start - 8192)
+                    f.seek(chunk_start)
+                    chunk = f.read(start - chunk_start)
+                    newline = chunk.rfind(b"\n")
+                    if newline >= 0:
+                        start = chunk_start + newline + 1
+                        break
+                    start = chunk_start
+                f.seek(start)
+                try:
+                    json.loads(f.read())
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    f.truncate(start)
+                else:
+                    f.write(b"\n")
+        f.write(encoded)
         f.flush()
         os.fsync(f.fileno())
 

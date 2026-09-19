@@ -228,6 +228,38 @@ def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
     return isinstance(status, int) and status in (401, 403)
 
 
+def _sync_errcode(exc: BaseException) -> str:
+    errcode = getattr(exc, "errcode", None)
+    return errcode.strip().lower() if isinstance(errcode, str) else ""
+
+
+def _sync_http_status(exc: BaseException) -> Optional[int]:
+    status = getattr(exc, "http_status", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_rejected_sync_cursor(exc: BaseException, *, has_cursor: bool) -> bool:
+    """True when a persisted ``since`` token was rejected and should be cleared.
+
+    Structured attrs only — never substring-scan HTML/message text. Token
+    failures (401 / ``M_UNKNOWN_TOKEN`` / ``M_MISSING_TOKEN``) are never
+    treated as cursor resets. ``403`` / ``M_FORBIDDEN`` *with a live cursor*
+    is a poisoned pagination token on some homeservers and reverse proxies;
+    the same signal *without* a cursor remains permanent auth.
+    """
+    if not has_cursor:
+        return False
+    errcode = _sync_errcode(exc)
+    status = _sync_http_status(exc)
+    if errcode in {"m_unknown_token", "m_missing_token"} or status == 401:
+        return False
+    if errcode == "m_unknown_pos":
+        return True
+    if errcode == "m_forbidden" or status == 403:
+        return True
+    return False
+
+
 def _split_reply_fallback(body: str) -> tuple[str, str]:
     """Split ``> quote\\n\\nreply`` into ``(quote_block, reply_text)``; ``("", body)`` when absent.
 
@@ -1827,19 +1859,42 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _sync_loop(self) -> None:
         client = self._client
         next_batch = await client.sync_store.get_next_batch()  # resume from the initial sync
+        cursor_resets = 0
+        max_cursor_resets = 3
         while not self._closing:
             try:
                 # 45s outer cap guards TCP-level hangs the 30s long-poll timeout cannot catch.
                 # mautrix raises on every non-2xx, so a non-dict here is never an error object.
                 sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
                 if isinstance(sync_data, dict):
-                    next_batch = await self._absorb_sync(client, sync_data) or next_batch
+                    next_batch = await self._absorb_sync(
+                        client, sync_data, initial=not next_batch) or next_batch
+                    # Budget is consecutive poisoned cursors, not process lifetime.
+                    if next_batch:
+                        cursor_resets = 0
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
             except asyncio.CancelledError:
                 return
             except Exception as exc:
                 if self._closing:
                     return
+                if _is_rejected_sync_cursor(exc, has_cursor=bool(next_batch)):
+                    cursor_resets += 1
+                    if cursor_resets > max_cursor_resets:
+                        logger.error(
+                            "Matrix: sync cursor rejected %d times — stopping after reset budget",
+                            cursor_resets)
+                        return
+                    logger.warning(
+                        "Matrix: sync cursor rejected (%s) — resetting cursor (%d/%d)",
+                        exc, cursor_resets, max_cursor_resets)
+                    next_batch = None
+                    try:
+                        await client.sync_store.put_next_batch(None)
+                    except Exception as store_exc:
+                        logger.warning("Matrix: failed to persist cleared sync cursor: %s", store_exc)
+                    await asyncio.sleep(5)
+                    continue
                 # Detect permanent auth/permission failures. Transient 5xx outages must retry.
                 if _is_permanent_matrix_auth_error(exc):
                     logger.error("Matrix: permanent auth error, stopping sync: %s", exc)
@@ -1852,13 +1907,23 @@ class MatrixAdapter(BasePlatformAdapter):
         The initial (full-state) sync also seeds the DM cache and dispatches so the OlmMachine sees
         to-device key shares queued while offline."""
         self._last_sync_ts = time.time()
-        rooms_join = sync_data.get("rooms", {}).get("join", {})
+        rooms_join = set((sync_data.get("rooms", {}) or {}).get("join", {}) or {})
+        rooms_leave = set((sync_data.get("rooms", {}) or {}).get("leave", {}) or {})
+        if initial:
+            # A sync without since is a fresh snapshot, including after cursor
+            # recovery. Departed rooms may be absent rather than listed in leave.
+            rooms_leave.update(self._joined_rooms.difference(rooms_join))
+            rooms_leave.update(set(self._dm_rooms.keys()) - rooms_join)
         if rooms_join or initial:
-            self._joined_rooms.update(rooms_join.keys())
+            self._joined_rooms.update(rooms_join)
             self._invalidate_room_identities()
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if nb:
             await client.sync_store.put_next_batch(nb)
+        self._joined_rooms.difference_update(rooms_leave)
+        for room_id in rooms_leave:
+            self._dm_rooms.pop(room_id, None)
+            self._invalidate_room_identities(room_id)
         if initial:
             logger.info("Matrix: initial sync complete, joined %d rooms", len(self._joined_rooms))
             await self._refresh_dm_cache()

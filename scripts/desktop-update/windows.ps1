@@ -122,38 +122,85 @@ function Get-UiHtmlPath {
     return $null
 }
 
-function Get-DefaultBrowserExe {
-    # The OS default browser, read from the UserChoice ProgId that the
-    # Windows Settings app writes (https first, http as fallback). Only
-    # Chromium-family browsers (ChromeHTML / MSEdgeHTM) support the
-    # --app + --user-data-dir combo the shim relies on; any other
-    # default browser returns $null and degrades to the WinForms card.
-    $progId = $null
-    foreach ($proto in @("https", "http")) {
-        try {
-            $progId = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\UserChoice" -Name ProgId -ErrorAction Stop).ProgId
-        } catch { continue }
-        if ($progId) { break }
-    }
-    if (-not $progId) { return $null }
-    $family = switch ($progId) {
-        "ChromeHTML" { "Google\Chrome\Application\chrome.exe" }
-        "MSEdgeHTM"  { "Microsoft\Edge\Application\msedge.exe" }
-        default      { $null }
-    }
-    if (-not $family) { return $null }
-    # Exact path from the ProgId's open command first, then standard roots.
+function Get-AssocQueryStringProgId([string]$Scheme) {
+    # ASSOCSTR_PROGID = 20 (shlwapi.h). Do NOT query the executable string:
+    # on Win11 25H2 that returns 0x80070483 (ERROR_NO_ASSOCIATION) even
+    # when ASSOCSTR_PROGID correctly yields ChromeHTML. Fail-open to the
+    # next ProgId source on Add-Type failure or a non-zero HRESULT.
     try {
-        $cmd = (Get-ItemProperty -Path "Registry::HKEY_CLASSES_ROOT\$progId\shell\open\command" -ErrorAction Stop).'(default)'
-        if ($cmd -and $cmd -match '"([^"]+\.exe)"') {
-            $exe = $Matches[1]
-            if (Test-Path -LiteralPath $exe) { return $exe }
+        if (-not ("HermesHandoff.AssocQuery" -as [type])) {
+            Add-Type -Namespace HermesHandoff -Name AssocQuery -MemberDefinition @'
+[DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+public static extern int AssocQueryStringW(uint flags, uint str, string pszAssoc, string pszExtra, System.Text.StringBuilder pszOut, ref uint pcchOut);
+'@ -ErrorAction Stop
         }
+        $ASSOCSTR_PROGID = [uint32]20
+        $pcchOut = [uint32]1024
+        $sb = New-Object System.Text.StringBuilder ([int]$pcchOut)
+        $hr = [HermesHandoff.AssocQuery]::AssocQueryStringW(0, $ASSOCSTR_PROGID, $Scheme, $null, $sb, [ref]$pcchOut)
+        if ($hr -ne 0) { return $null }
+        $result = $sb.ToString()
+        if ($result) { return $result }
     } catch {}
-    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
-        if (-not $root) { continue }
-        $p = Join-Path $root $family
-        if (Test-Path -LiteralPath $p) { return $p }
+    return $null
+}
+
+function Get-DefaultBrowserExe {
+    # The OS default browser. Win11 25H2 / build 26200 Settings writes the
+    # choice to UserChoiceLatest\ProgId\ProgId and no longer mirrors it into
+    # the legacy UserChoice\ProgId (#108051). Keep a defensive compatibility
+    # probe for the value on the UserChoiceLatest parent.
+    # Resolve a ProgId per scheme (https then http) from the nested latest key,
+    # the parent latest key, AssocQueryStringW (ASSOCSTR_PROGID), then legacy
+    # UserChoice. Only Chromium-family browsers (ChromeHTML / MSEdgeHTM)
+    # support the --app + --user-data-dir combo the shim relies on; any other
+    # default browser returns $null and degrades to the WinForms card. A
+    # Chromium-family ProgId whose exe is missing on disk (stale uninstalled
+    # Edge) falls through to the next ProgId source instead of returning $null.
+    foreach ($proto in @("https", "http")) {
+        $sources = @()
+        try {
+            $nestedLatest = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\UserChoiceLatest\ProgId" -Name ProgId -ErrorAction Stop).ProgId
+            if ($nestedLatest -and $sources -notcontains $nestedLatest) { $sources += @($nestedLatest) }
+        } catch {}
+        try {
+            $parentLatest = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\UserChoiceLatest" -Name ProgId -ErrorAction Stop).ProgId
+            if ($parentLatest -and $sources -notcontains $parentLatest) { $sources += @($parentLatest) }
+        } catch {}
+        $assoc = Get-AssocQueryStringProgId $proto
+        if ($assoc -and $sources -notcontains $assoc) { $sources += @($assoc) }
+        try {
+            $legacy = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\UserChoice" -Name ProgId -ErrorAction Stop).ProgId
+            if ($legacy -and $sources -notcontains $legacy) { $sources += @($legacy) }
+        } catch {}
+        foreach ($progId in $sources) {
+            if (-not $progId) { continue }
+            $family = switch ($progId) {
+                "ChromeHTML" { "Google\Chrome\Application\chrome.exe" }
+                "MSEdgeHTM"  { "Microsoft\Edge\Application\msedge.exe" }
+                default      { $null }
+            }
+            if (-not $family) {
+                # Non-Chromium ProgId is the user's real default for this
+                # source: degrade to WinForms. Do not skip it to hunt for
+                # a stale Chromium ProgId.
+                return $null
+            }
+            # Exact path from the ProgId's open command first, then standard roots.
+            try {
+                $cmd = (Get-ItemProperty -Path "Registry::HKEY_CLASSES_ROOT\$progId\shell\open\command" -ErrorAction Stop).'(default)'
+                if ($cmd -and $cmd -match '"([^"]+\.exe)"') {
+                    $exe = $Matches[1]
+                    if (Test-Path -LiteralPath $exe) { return $exe }
+                }
+            } catch {}
+            foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+                if (-not $root) { continue }
+                $p = Join-Path $root $family
+                if (Test-Path -LiteralPath $p) { return $p }
+            }
+            # Chromium-family but exe missing: fall through to the next ProgId source.
+        }
     }
     return $null
 }

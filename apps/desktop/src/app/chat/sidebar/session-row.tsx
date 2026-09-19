@@ -21,6 +21,7 @@ import { middleClickHandlers } from '@/lib/middle-click'
 import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
+import { isLargeChat } from '@/lib/session-token-size'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -180,12 +181,17 @@ function SidebarSessionRowImpl({
   // tile opens or closes, and the boolean bails every unaffected row out.
   const openUnfocused = useStoreSelector($openStoredSessionIds, open => !isSelected && open.has(session.id))
   const totalTokens = session.input_tokens + session.output_tokens
+  // A chat past a full context window surfaces its token figure unbidden and in
+  // red (isLargeChat): the "start fresh" nudge has to reach a user who never
+  // turned the Tokens column on. When oversized it renders as its own red chip
+  // below, so the plain figure is suppressed here to avoid showing twice.
+  const oversized = isLargeChat(totalTokens)
   const cost = sessionCostUsd(session)
 
   // Tokens, cost and age share one figure rather than each claiming a column:
   // several switched on read as one number, not as a widening gutter.
   const figures = [
-    rowMeta.includes('tokens') && totalTokens > 0 ? compactNumber(totalTokens) : null,
+    rowMeta.includes('tokens') && totalTokens > 0 && !oversized ? compactNumber(totalTokens) : null,
     // Sub-cent spend rounds to "$0.00", which reads as a bug rather than as a
     // cheap session — below a cent the row says nothing at all.
     rowMeta.includes('cost') && cost >= 0.01 ? `$${cost.toFixed(2)}` : null
@@ -206,6 +212,27 @@ function SidebarSessionRowImpl({
 
   if (pr) {
     trailing.push({ key: 'pr', node: <PrTag pr={pr} /> })
+  }
+
+  // The red overflow figure: shown whenever a chat is oversized, independent of
+  // the Tokens column, so the warning reaches everyone. Its own chip (not a
+  // `figures` entry) so it can be red and carry the hover warning without
+  // recolouring the joined figure string. Placed before the figures/age slot so
+  // it reads left of the age.
+  if (oversized) {
+    trailing.push({
+      key: 'oversized',
+      node: (
+        <Tip label={r.largeChat} side="top">
+          <span
+            aria-label={r.largeChat}
+            className="pointer-events-auto whitespace-nowrap text-[0.625rem] font-medium leading-none text-destructive"
+          >
+            {compactNumber(totalTokens)}
+          </span>
+        </Tip>
+      )
+    })
   }
 
   const showAge = pinnedAge || card

@@ -2,11 +2,16 @@ import type { HermesConnection } from '@/global'
 
 let generation = 0
 let connectionIdentity = ''
+let credentialIdentity = ''
 const invalidationListeners = new Set<() => void>()
 
 export interface CronModelImpactScopeSnapshot {
   connection: string
   generation: number
+}
+
+export function cronModelImpactScopeIsLocal(): boolean {
+  return connectionIdentity.startsWith('local\u0000')
 }
 
 export function getCronModelImpactScope(): CronModelImpactScopeSnapshot {
@@ -43,8 +48,16 @@ function identityForConnection(connection: HermesConnection | null): string {
   return [connection.mode ?? '', connection.remoteKind ?? '', backendIdentity, connection.profile ?? ''].join('\u0000')
 }
 
-/** Keep pending responses and action closures bound to the backend that issued
- * them without storing or comparing connection secrets. */
+function credentialsForConnection(connection: HermesConnection): string {
+  return JSON.stringify([
+    connection.authMode ?? '',
+    connection.token ?? '',
+    Object.entries(connection.headers ?? {}).sort(([left], [right]) => left.localeCompare(right))
+  ])
+}
+
+/** Keep pending responses and action closures bound to the exact backend owner
+ * that issued them. The exposed scope identity remains credential-free. */
 export function syncCronModelImpactConnection(connection: HermesConnection | null): void {
   // A null descriptor is an ordinary reconnect state, not evidence that the
   // user selected another backend. Retain the last durable identity so the
@@ -54,10 +67,12 @@ export function syncCronModelImpactConnection(connection: HermesConnection | nul
   }
 
   const next = identityForConnection(connection)
+  const nextCredentials = credentialsForConnection(connection)
 
-  if (connectionIdentity && connectionIdentity !== next) {
+  if (connectionIdentity && (connectionIdentity !== next || credentialIdentity !== nextCredentials)) {
     invalidateCronModelImpactScopeState()
   }
 
   connectionIdentity = next
+  credentialIdentity = nextCredentials
 }

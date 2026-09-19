@@ -47,4 +47,23 @@ describe('cron model impact backend identity', () => {
 
     expect(getCronModelImpactScope()).toEqual(first)
   })
+
+  it('invalidates when credentials or tenant-selecting headers change at the same URL', () => {
+    syncCronModelImpactConnection(
+      connection('https://one.example', 'wss://one.example', {
+        token: 'first-token',
+        headers: { 'X-Team': 'one' }
+      })
+    )
+    const first = getCronModelImpactScope()
+
+    syncCronModelImpactConnection(
+      connection('https://one.example', 'wss://one.example', {
+        token: 'second-token',
+        headers: { 'X-Team': 'two' }
+      })
+    )
+
+    expect(getCronModelImpactScope().generation).toBe(first.generation + 1)
+  })
 })

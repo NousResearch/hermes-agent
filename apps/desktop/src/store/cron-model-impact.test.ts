@@ -1,15 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $cronReviewRequest } from '@/store/cron'
+import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import { $notifications, clearNotifications, dismissNotification } from '@/store/notifications'
 import type { ModelAssignmentResponse } from '@/types/hermes'
 
 const setModelAssignment = vi.fn()
 const getApiRequestProfile = vi.fn<() => string | null>(() => 'default')
+const getApiRequestConnection = vi.fn<() => string | null>(() => null)
 
 vi.mock('@/hermes', () => ({
   setModelAssignment: (...args: unknown[]) => setModelAssignment(...args),
-  getApiRequestProfile: () => getApiRequestProfile()
+  getApiRequestProfile: () => getApiRequestProfile(),
+  getApiRequestConnection: () => getApiRequestConnection()
 }))
 
 import {
@@ -53,11 +56,41 @@ beforeEach(() => {
   setModelAssignment.mockReset()
   getApiRequestProfile.mockReset()
   getApiRequestProfile.mockReturnValue('default')
+  getApiRequestConnection.mockReset()
+  getApiRequestConnection.mockReturnValue(null)
   clearNotifications()
   invalidateCronModelImpactScope({ clearNotification: false })
 })
 
 describe('setMainModelAssignment', () => {
+  it('publishes cron impact for an active legacy-remote owner', async () => {
+    setModelAssignment.mockResolvedValue(response(positive()))
+
+    await setMainModelAssignment(
+      { provider: 'nous', model: 'new/model' },
+      {
+        connectionId: null,
+        profile: 'default',
+        legacyConnection: { mode: 'remote', baseUrl: 'https://legacy.invalid', token: 'fixture' }
+      }
+    )
+
+    expect($notifications.get().some(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)).toBe(true)
+  })
+
+  it('publishes cron impact for the active legacy-local owner normalized by Settings', async () => {
+    setModelAssignment.mockResolvedValue(response(positive()))
+    getApiRequestConnection.mockReturnValue(null)
+    syncCronModelImpactConnection({ mode: 'local' } as never)
+
+    await setMainModelAssignment(
+      { provider: 'nous', model: 'new/model' },
+      { connectionId: 'local', profile: 'default' }
+    )
+
+    expect($notifications.get().some(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)).toBe(true)
+  })
+
   it('shows one consumer warning and routes via a read-only review action', async () => {
     setModelAssignment.mockResolvedValue(response(positive()))
     const requestCount = $cronReviewRequest.get()

@@ -7,10 +7,10 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
-import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
+import { requestModelOptions } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
@@ -63,7 +63,8 @@ export {
   sortProviders
 } from './providers'
 
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import { $settingsOwner } from '@/store/settings-scope'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -131,7 +132,7 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 // other api_key provider is appended with a generic "paste {KEY}" affordance.
 // OAuth / external providers are intentionally excluded here — they go through
 // the OAuth picker / sign-in flow, not a pasted key.
-function useApiKeyCatalog(): ApiKeyOption[] {
+function useApiKeyCatalog(ctx: OnboardingContext): ApiKeyOption[] {
   const [rows, setRows] = useState<ModelOptionProvider[]>([])
 
   useEffect(() => {
@@ -141,7 +142,14 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
     // tests) is funneled into the same .catch instead of escaping.
     void Promise.resolve()
-      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }))
+      .then(() =>
+        requestModelOptions({
+          explicitOnly: false,
+          profile: ctx.profile,
+          request: ctx.requestGateway,
+          scope: ctx.scope ?? ctx.profile
+        })
+      )
       .then(res => {
         if (!cancelled) {
           setRows(res.providers ?? [])
@@ -154,7 +162,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [ctx])
 
   return useMemo(() => {
     const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
@@ -211,17 +219,41 @@ export function DesktopOnboardingOverlay({
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
   const targetProfile = onboarding.targetProfile ?? profile
+  const targetScope = onboarding.targetScope
 
   // Async flows retain the initiating route even after the overlay closes.
   const ctx = useMemo<OnboardingContext>(
     () => ({
       profile: targetProfile,
-      requestGateway: onboarding.targetProfile
-        ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
-        : requestGateway,
+      scope: targetScope,
+      requestGateway:
+        targetScope && typeof targetScope === 'object' && targetScope.connectionId
+          ? async (method, params) => {
+              if (targetScope.connectionOwner && $settingsOwner.get() !== targetScope) {
+                throw new Error('The Settings gateway changed during provider setup. Reopen setup and try again.')
+              }
+
+              return requestGatewayForAgent(targetScope.connectionId ?? null, targetProfile, method, params)
+            }
+          : targetScope && typeof targetScope === 'object' && targetScope.legacyConnection
+            ? async (method, params) => {
+                const currentOwner = $settingsOwner.get()
+
+                if (
+                  currentOwner?.legacyConnection !== targetScope.legacyConnection ||
+                  currentOwner?.profile !== targetProfile
+                ) {
+                  throw new Error('The Settings gateway changed during provider setup. Reopen setup and try again.')
+                }
+
+                return requestGatewayForProfile(targetProfile, method, params)
+              }
+          : onboarding.targetProfile
+            ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
+            : requestGateway,
       onCompleted: () => onCompletedRef.current?.()
     }),
-    [onboarding.targetProfile, targetProfile, requestGateway]
+    [onboarding.targetProfile, requestGateway, targetProfile, targetScope]
   )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
@@ -606,7 +638,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
-  const apiKeyOptions = useApiKeyCatalog()
+  const apiKeyOptions = useApiKeyCatalog(ctx)
 
   // localEndpoint forces the key form regardless of `mode` (which a manual
   // provider refresh may flip back to 'oauth'); it preselects the local option

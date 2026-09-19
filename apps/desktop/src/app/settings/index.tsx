@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from 'react-router'
 import { codiconIcon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
-import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { getHermesConfigDefaults, getHermesConfigRecord, profileScopeKey, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import {
@@ -35,8 +35,9 @@ import { $activeConnectionId } from '@/store/connections'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsOwner, $settingsScopeProfile } from '@/store/settings-scope'
 
+import { invalidateHermesConfig } from '../hooks/use-config-record'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -76,6 +77,12 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
+  const settingsOwner = useStore($settingsOwner)
+
+  const settingsOwnerKey = settingsOwner
+    ? profileScopeKey(settingsOwner)
+    : vaultOwnerKey(activeConnectionId, scopeProfile)
+
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
@@ -135,8 +142,21 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
   const exportConfig = async () => {
+    const owner = $settingsOwner.get()
+
+    if (!owner) {
+      notifyError(new Error(t.settings.config.failedLoad), t.settings.config.failedLoad)
+
+      return
+    }
+
     try {
-      const cfg = await getHermesConfigRecord()
+      const cfg = await getHermesConfigRecord(owner)
+
+      if ($settingsOwner.get() !== owner) {
+        return
+      }
+
       const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -151,20 +171,38 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }
 
   const resetConfig = async () => {
+    const owner = $settingsOwner.get()
+
+    if (!owner) {
+      notifyError(new Error(t.settings.config.failedLoad), t.settings.config.failedLoad)
+
+      return
+    }
+
     const ok = await confirm({
       confirmLabel: t.settings.resetToDefaults,
       destructive: true,
       title: t.settings.resetConfirm
     })
 
-    if (!ok) {
+    if (!ok || $settingsOwner.get() !== owner) {
       return
     }
 
     try {
-      await saveHermesConfig(await getHermesConfigDefaults())
-      triggerHaptic('success')
-      onConfigSaved?.()
+      const defaults = await getHermesConfigDefaults(owner)
+
+      if ($settingsOwner.get() !== owner) {
+        return
+      }
+
+      await saveHermesConfig(defaults, owner)
+      void invalidateHermesConfig(owner)
+
+      if ($settingsOwner.get() === owner) {
+        triggerHaptic('success')
+        onConfigSaved?.()
+      }
     } catch (err) {
       notifyError(err, t.settings.resetFailed)
     }
@@ -419,7 +457,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       />
     ) : activeView === 'providers' ? (
       <ProvidersSettings
-        key={scopeProfile}
+        key={settingsOwnerKey}
         onClose={onClose}
         onConfigSaved={onConfigSaved}
         onMainModelChanged={onMainModelChanged}
@@ -427,7 +465,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         view={providerView}
       />
     ) : activeView === 'keys' ? (
-      <KeysSettings view={keysView} />
+      <KeysSettings key={settingsOwnerKey} view={keysView} />
     ) : activeView === 'notifications' ? (
       <NotificationsSettings />
     ) : activeView === 'billing' ? (

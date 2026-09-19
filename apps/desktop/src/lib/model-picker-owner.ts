@@ -1,3 +1,4 @@
+import type { ProfileScope } from '@/hermes'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 
 interface ModelPickerOwnerInput {
@@ -15,6 +16,22 @@ export interface ModelPickerOwner {
   connectionId?: string
   profile: string
   route?: SessionOwnerRoute
+}
+
+export function resolveModelPickerProviderSetupScope(
+  owner: ModelPickerOwner,
+  ambientScope?: ProfileScope
+): ProfileScope | undefined {
+  if (ambientScope && typeof ambientScope === 'object') {
+    const ambientProfile = (ambientScope.profile ?? '').trim() || 'default'
+    const ambientConnectionId = (ambientScope.connectionId ?? '').trim() || undefined
+
+    if (ambientProfile === owner.profile && ambientConnectionId === owner.connectionId) {
+      return ambientScope
+    }
+  }
+
+  return undefined
 }
 
 /** Resolve one coherent owner for every picker operation. A tile route wins

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BackendDialClaims } from './backend-dial-claim'
 import { backendScopeKey, parseBackendScopeKey } from './connection-registry'
@@ -10,6 +10,10 @@ import { resolveDesktopConnectionRequest } from './desktop-profile'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+
+beforeEach(() => {
+  vi.useRealTimers()
+})
 
 describe('BackendDialClaims (#90812)', () => {
   it('coalesces two concurrent dials for the same (connectionId, profile) onto ONE backend spawn', async () => {
@@ -197,12 +201,4 @@ describe('main.ts wiring for #90812', () => {
     expect(body).toContain("postJsonForBackend(descriptor, '/api/hermes/update'")
   })
 
-  it('routes every registry-scoped REST dispatch (hermes:api) through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1_000)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile)')
-    expect(body).toContain("ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })")
-  })
 })

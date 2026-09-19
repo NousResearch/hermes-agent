@@ -14,6 +14,7 @@ import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from 
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
+import type { ProfileScope } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
@@ -25,6 +26,7 @@ import { HighlightMatches } from './ui/highlight-matches'
 import { Skeleton } from './ui/skeleton'
 
 interface ModelPickerDialogProps {
+  allowProviderSetup?: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
   gw?: HermesGateway
@@ -33,6 +35,7 @@ interface ModelPickerDialogProps {
   currentProvider: string
   onSelect: (selection: { provider: string; model: string }) => void
   ownerConnectionId?: string
+  providerSetupScope?: ProfileScope
   profile?: string
   request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /**
@@ -45,6 +48,7 @@ interface ModelPickerDialogProps {
 }
 
 export function ModelPickerDialog({
+  allowProviderSetup = true,
   open,
   onOpenChange,
   gw,
@@ -53,6 +57,7 @@ export function ModelPickerDialog({
   currentProvider,
   onSelect,
   ownerConnectionId,
+  providerSetupScope,
   profile = 'default',
   request,
   contentClassName
@@ -68,7 +73,14 @@ export function ModelPickerDialog({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
+    queryFn: () =>
+      requestModelOptions({
+        gateway: gw,
+        profile,
+        request,
+        scope: providerSetupScope ?? (ownerConnectionId ? { connectionId: ownerConnectionId, profile } : profile),
+        sessionId
+      }),
     enabled: open
   })
 
@@ -172,7 +184,7 @@ export function ModelPickerDialog({
   // model-confirm) instead of duplicating provider UI here. Closes the picker
   // so the onboarding overlay isn't rendered underneath it.
   const addProvider = () => {
-    startManualOnboarding()
+    startManualOnboarding(undefined, providerSetupScope)
     onOpenChange(false)
   }
 
@@ -209,9 +221,11 @@ export function ModelPickerDialog({
         </Command>
 
         <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
-          <Button onClick={addProvider} variant="ghost">
-            {copy.addProvider}
-          </Button>
+          {allowProviderSetup && (
+            <Button onClick={addProvider} variant="ghost">
+              {copy.addProvider}
+            </Button>
+          )}
           <Button onClick={() => onOpenChange(false)} variant="outline">
             {t.common.cancel}
           </Button>

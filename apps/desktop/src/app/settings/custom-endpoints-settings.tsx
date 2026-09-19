@@ -7,6 +7,7 @@ import {
   activateCustomEndpoint,
   deleteCustomEndpoint,
   getCustomEndpoints,
+  type ProfileScope,
   saveCustomEndpoint,
   validateCustomEndpoint
 } from '@/hermes'
@@ -16,14 +17,16 @@ import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
+import { $settingsOwner, $settingsScopeOverride } from '@/store/settings-scope'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
-import { ActiveProfileNote } from './profile-scope'
+import { SettingsProfileScope } from './profile-scope'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
+  scope: ProfileScope
 }
 
 interface EndpointForm {
@@ -77,9 +80,8 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
   }
 }
 
-export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, scope }: CustomEndpointsSettingsProps) {
   const { t } = useI18n()
-  const mounted = useRef(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -88,23 +90,38 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   const [endpoints, setEndpoints] = useState<CustomEndpoint[]>([])
   const [form, setForm] = useState<EndpointForm>(EMPTY_FORM)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
+  const mounted = useRef(true)
+
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle guard, not a reactive-value mirror
+  useEffect(() => {
+    mounted.current = true
+
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  const isCurrentOwner = () => mounted.current && $settingsOwner.get() === scope
+  const isForegroundOwner = () => isCurrentOwner() && $settingsScopeOverride.get() == null
 
   async function refresh() {
-    const data = await getCustomEndpoints()
+    const data = await getCustomEndpoints(scope)
 
-    if (mounted.current) {
-      setEndpoints(data.endpoints)
+    if (!isCurrentOwner()) {
+      return false
     }
+
+    setEndpoints(data.endpoints)
+
+    return true
   }
 
-  // eslint-disable-next-line no-restricted-syntax -- lifecycle guard drops stale async completions; it does not mirror an atom
   useEffect(() => {
     let cancelled = false
-    mounted.current = true
 
     async function load() {
       try {
-        const data = await getCustomEndpoints()
+        const data = await getCustomEndpoints(scope)
 
         if (cancelled) {
           return
@@ -118,7 +135,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
           setDiscoveredModels(current.models)
         }
       } catch (err) {
-        notifyError(err, 'Could not load custom endpoints')
+        if (!cancelled) {
+          notifyError(err, 'Could not load custom endpoints')
+        }
       } finally {
         if (!cancelled) {
           setLoading(false)
@@ -130,16 +149,15 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     return () => {
       cancelled = true
-      mounted.current = false
     }
-  }, [])
+  }, [scope])
 
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
+      const response = await saveCustomEndpoint(toPayload(form, discoveredModels), scope)
 
-      if (!mounted.current) {
+      if (!isCurrentOwner()) {
         return
       }
 
@@ -151,19 +169,23 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         setDiscoveredModels(saved.models)
       }
 
-      if (saved && saved.is_current) {
+      if (saved?.is_current && isForegroundOwner()) {
         onMainModelChanged?.(saved.id, saved.model)
       }
 
       triggerHaptic('success')
-      onConfigSaved?.()
+
+      if (isForegroundOwner()) {
+        onConfigSaved?.()
+      }
+
       notify({ kind: 'success', message: 'Custom endpoint saved.' })
     } catch (err) {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         notifyError(err, 'Save failed')
       }
     } finally {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         setSaving(false)
       }
     }
@@ -172,9 +194,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleValidate() {
     try {
       setTesting(true)
-      const response = await validateCustomEndpoint(toPayload(form))
+      const response = await validateCustomEndpoint(toPayload(form), scope)
 
-      if (!mounted.current) {
+      if (!isCurrentOwner()) {
         return
       }
 
@@ -198,11 +220,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         })
       }
     } catch (err) {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         notifyError(err, 'Validation failed')
       }
     } finally {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         setTesting(false)
       }
     }
@@ -211,27 +233,24 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleActivate(endpoint: CustomEndpoint) {
     try {
       setActivating(endpoint.id)
-      const response = await activateCustomEndpoint(endpoint.id)
+      const response = await activateCustomEndpoint(endpoint.id, scope)
 
-      if (!mounted.current) {
+      if (!isCurrentOwner() || !(await refresh())) {
         return
       }
 
-      await refresh()
-
-      if (!mounted.current) {
-        return
+      if (isForegroundOwner()) {
+        onConfigSaved?.()
+        onMainModelChanged?.(response.provider, response.model)
       }
 
-      onConfigSaved?.()
-      onMainModelChanged?.(response.provider, response.model)
       triggerHaptic('success')
     } catch (err) {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         notifyError(err, 'Activation failed')
       }
     } finally {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         setActivating(null)
       }
     }
@@ -243,11 +262,15 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       return
     }
 
+    if (!isCurrentOwner()) {
+      return
+    }
+
     try {
       setDeleting(endpoint.id)
-      const response = await deleteCustomEndpoint(endpoint.id)
+      const response = await deleteCustomEndpoint(endpoint.id, scope)
 
-      if (!mounted.current) {
+      if (!isCurrentOwner()) {
         return
       }
 
@@ -258,14 +281,17 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         setDiscoveredModels([])
       }
 
-      onConfigSaved?.()
+      if (isForegroundOwner()) {
+        onConfigSaved?.()
+      }
+
       triggerHaptic('success')
     } catch (err) {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         notifyError(err, 'Delete failed')
       }
     } finally {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         setDeleting(null)
       }
     }
@@ -280,7 +306,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   return (
     <SettingsContent>
-      <ActiveProfileNote className="mb-5" />
+      <SettingsProfileScope className="mb-5" />
       <div className="space-y-6">
         <section>
           <SectionHeading icon={Globe} meta={`${endpoints.length}`} title={t.settings.customEndpoints.title} />

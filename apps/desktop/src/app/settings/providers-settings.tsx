@@ -18,6 +18,7 @@ import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
@@ -26,7 +27,7 @@ import { confirm } from '@/store/confirm'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsOwner } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
@@ -141,11 +142,11 @@ function OAuthPicker({
 }: {
   disconnecting: null | string
   onDisconnect: (provider: OAuthProvider) => void
-  onTerminalDisconnect: (provider: OAuthProvider) => void
+  onTerminalDisconnect?: (provider: OAuthProvider) => void
   onWantApiKey: () => void
   onWantLocalModels: () => void
   providers: OAuthProvider[]
-  profile?: string
+  profile?: ProfileScope
 }) {
   const { t } = useI18n()
   const p = t.settings.providers
@@ -243,7 +244,7 @@ function ConnectedProviderRow({
   disconnecting: boolean
   onDisconnect: (provider: OAuthProvider) => void
   onSelect: (provider: OAuthProvider) => void
-  onTerminalDisconnect: (provider: OAuthProvider) => void
+  onTerminalDisconnect?: (provider: OAuthProvider) => void
   provider: OAuthProvider
 }) {
   const { t } = useI18n()
@@ -252,9 +253,12 @@ function ConnectedProviderRow({
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
   // Hermes can clear this provider's creds via the API.
   const canDisconnect = provider.disconnectable ?? provider.flow !== 'external'
+
   // External (CLI-managed) provider Hermes can't clear via the API, but ships a
   // command we can run in the embedded terminal (Electron shell only).
-  const terminalDisconnect = !canDisconnect && Boolean(provider.disconnect_command) && canRunInTerminal()
+  const terminalDisconnect =
+    !canDisconnect && Boolean(provider.disconnect_command) && Boolean(onTerminalDisconnect) && canRunInTerminal()
+
   // Only fall back to a static "remove it elsewhere" hint when we offer no button.
   const showHint = !canDisconnect && !terminalDisconnect
 
@@ -293,7 +297,7 @@ function ConnectedProviderRow({
           <Tip label={copy.disconnectInTerminal}>
             <Button
               aria-label={`${copy.disconnect} ${title}`}
-              onClick={() => onTerminalDisconnect(provider)}
+              onClick={() => onTerminalDisconnect?.(provider)}
               size="icon-xs"
               type="button"
               variant="ghost"
@@ -355,8 +359,8 @@ export function ProvidersSettings({
   view
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
-  const scopeProfile = useStore($settingsRequestProfile)
-  const { rowProps, vars } = useEnvCredentials(scopeProfile)
+  const settingsOwner = useStore($settingsOwner)
+  const { rowProps, vars } = useEnvCredentials(settingsOwner)
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
@@ -369,9 +373,13 @@ export function ProvidersSettings({
 
   const refreshOAuthProviders = useCallback(async () => {
     // OAuth providers are best-effort — a failure here just hides the panel.
-    const { providers } = await listOAuthProviders(scopeProfile)
+    if (!settingsOwner) {
+      return
+    }
+
+    const { providers } = await listOAuthProviders(settingsOwner)
     setOauthProviders(providers)
-  }, [scopeProfile])
+  }, [settingsOwner])
 
   useEffect(() => {
     let cancelled = false
@@ -382,7 +390,11 @@ export function ProvidersSettings({
       }
 
       try {
-        const { providers } = await listOAuthProviders(scopeProfile)
+        if (!settingsOwner) {
+          return
+        }
+
+        const { providers } = await listOAuthProviders(settingsOwner)
 
         if (!cancelled) {
           setOauthProviders(providers)
@@ -393,7 +405,7 @@ export function ProvidersSettings({
     })()
 
     return () => void (cancelled = true)
-  }, [onboardingActive, scopeProfile])
+  }, [onboardingActive, settingsOwner])
 
   // External (CLI-managed) providers can't be cleared via the API by design —
   // Hermes never deletes creds another tool owns behind a silent API call.
@@ -444,7 +456,11 @@ export function ProvidersSettings({
     setDisconnecting(provider.id)
 
     try {
-      await disconnectOAuthProvider(provider.id, scopeProfile)
+      if (!settingsOwner) {
+        return
+      }
+
+      await disconnectOAuthProvider(provider.id, settingsOwner)
       notify({
         durationMs: 3_000,
         kind: 'success',
@@ -459,7 +475,7 @@ export function ProvidersSettings({
     }
   }
 
-  if (!vars) {
+  if (!vars || !settingsOwner) {
     return <SettingsSkeleton search sections={[{ rows: 6 }]} />
   }
 
@@ -484,7 +500,7 @@ export function ProvidersSettings({
     return (
       <SettingsContent>
         <SettingsProfileScope className="mb-5" />
-        <LocalEndpointRow onOpen={reason => startManualLocalEndpoint(reason, scopeProfile)} />
+        <LocalEndpointRow onOpen={reason => startManualLocalEndpoint(reason, settingsOwner ?? undefined)} />
         {keyGroups.length > 0 ? (
           <div className="grid gap-3">
             <SearchField
@@ -521,7 +537,13 @@ export function ProvidersSettings({
   }
 
   if (view === 'custom-endpoints') {
-    return <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
+    return (
+      <CustomEndpointsSettings
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+        scope={settingsOwner}
+      />
+    )
   }
 
   if (view === 'local') {
@@ -537,10 +559,14 @@ export function ProvidersSettings({
       <OAuthPicker
         disconnecting={disconnecting}
         onDisconnect={provider => void handleDisconnect(provider)}
-        onTerminalDisconnect={provider => void handleTerminalDisconnect(provider)}
+        onTerminalDisconnect={
+          typeof settingsOwner === 'object' && settingsOwner.connectionOwner?.mode === 'local'
+            ? provider => void handleTerminalDisconnect(provider)
+            : undefined
+        }
         onWantApiKey={() => onViewChange('keys')}
         onWantLocalModels={() => onViewChange('local')}
-        profile={scopeProfile}
+        profile={settingsOwner ?? undefined}
         providers={oauthProviders}
       />
     </SettingsContent>

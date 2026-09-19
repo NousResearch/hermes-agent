@@ -1,8 +1,9 @@
-import { getApiRequestProfile, setModelAssignment } from '@/hermes'
+import { getApiRequestConnection, getApiRequestProfile, type ProfileScope, setModelAssignment } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { requestCronReview } from '@/store/cron'
 import {
   beginCronModelImpactAssignment,
+  cronModelImpactScopeIsLocal,
   getCronModelImpactScope,
   invalidateCronModelImpactScopeState,
   onCronModelImpactScopeInvalidated
@@ -108,6 +109,19 @@ function currentActionScope(profile: string, connection: string): boolean {
   return profileIdentity() === profile && getCronModelImpactScope().connection === connection
 }
 
+function scopeTargetsActiveOwner(scope: Exclude<ProfileScope, null | string | undefined>, profile: string): boolean {
+  if (scope.profile !== profile) {
+    return false
+  }
+
+  const connectionId = scope.connectionId ?? null
+
+  return (
+    connectionId === (getApiRequestConnection() ?? null) ||
+    (connectionId === 'local' && cronModelImpactScopeIsLocal())
+  )
+}
+
 function detailFor(impact: CronModelImpact): string {
   const visible = impact.jobs.slice(0, 3).map(job => job.name)
   const remaining = impact.affected_count - visible.length
@@ -147,7 +161,7 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
 
 export async function setMainModelAssignment(
   request: Omit<ModelAssignmentRequest, 'scope'>,
-  scopeProfile?: null | string,
+  scopeProfile?: ProfileScope,
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()
@@ -188,10 +202,9 @@ export async function setMainModelAssignment(
     throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
   }
 
-  // A scoped assignment targets ANOTHER profile's backend: its cron impact
-  // belongs to that profile, and the review action would open the ACTIVE
-  // profile's cron view — skip the warning rather than mis-route it.
-  if (scopeProfile != null) {
+  // Explicit Settings pins can target the active owner too. Only that owner's
+  // impact can offer a review action into the active cron view.
+  if (scopeProfile != null && !(typeof scopeProfile === 'object' && scopeTargetsActiveOwner(scopeProfile, profile))) {
     return result
   }
 

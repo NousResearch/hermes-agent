@@ -17,6 +17,7 @@ vi.mock('@/hermes', () => ({
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
+  profileScopeKey: (scope: { connectionId: string; profile: string }) => `${scope.connectionId}::${scope.profile}`,
   setApiRequestProfile: () => {}
 }))
 
@@ -30,6 +31,7 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 // scope chip it renders also reads the selected profile and the loud-note
 // selector, so those are stubbed to the single-profile default shape.
 vi.mock('@/store/settings-scope', () => ({
+  $settingsOwner: atom({ connectionId: 'local', profile: 'default' }),
   $settingsRequestProfile: atom<string | undefined>(undefined),
   $settingsScopeEditsNonDefault: atom(false),
   $settingsScopeOverride: atom<null | string>(null),
@@ -100,7 +102,10 @@ describe('ConfigSettings autosave', () => {
       await vi.advanceTimersByTimeAsync(700)
 
       await vi.waitFor(() =>
-        expect(saveHermesConfig).toHaveBeenCalledWith({ compression: { codex_gpt55_autoraise: false } }, undefined)
+        expect(saveHermesConfig).toHaveBeenCalledWith(
+          { compression: { codex_gpt55_autoraise: false } },
+          { connectionId: 'local', profile: 'default' }
+        )
       )
     } finally {
       vi.useRealTimers()

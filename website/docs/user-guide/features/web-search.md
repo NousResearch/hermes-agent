@@ -411,6 +411,12 @@ When a per-capability key is empty, that capability falls through to `web.backen
 
 If no shared backend has **ever** been selected (no `web.backend` written by you or `hermes tools`), Hermes picks the first available one based on which credentials are set:
 
+:::note
+
+The literal value `auto` (e.g. `web.backend: auto`) means exactly this: "pick for me". It is never written by `hermes tools`, but it is a common hand edit — other Hermes sections use `auto` as their default sentinel — and older Hermes versions silently ignored it. Setting `web.backend: auto` (or `search_backend: auto` / `extract_backend: auto`) behaves like leaving the key empty and triggers credential-based auto-detection below.
+
+:::
+
 | Credential present | Auto-selected backend |
 |--------------------|-----------------------|
 | `TAVILY_API_KEY` | tavily |

@@ -1104,6 +1104,31 @@ class TestModelOverrides:
             ctx = _override_context_window("upstage", "syn-pro")
         assert ctx is None
 
+    def test_override_matches_litellm_prefixed_key_for_bare_model(self):
+        """A custom override keyed litellm.<model> applies when callers pass
+        the bare id (dashboard/runtime), as it does for the prefixed id
+        (switch dialog). Regression for #88931."""
+        overrides = {
+            "custom": {
+                "litellm.qwen36-35b": {"context_window": 99000},
+            },
+        }
+        with self._setup_overrides(overrides):
+            assert _override_context_window("custom", "qwen36-35b") == 99000
+            assert _override_context_window("custom", "litellm.qwen36-35b") == 99000
+
+    def test_override_exact_key_still_wins_over_prefixed_variant(self):
+        """Both spellings present: the caller's exact id keeps precedence."""
+        overrides = {
+            "custom": {
+                "qwen36-35b": {"context_window": 77000},
+                "litellm.qwen36-35b": {"context_window": 99000},
+            },
+        }
+        with self._setup_overrides(overrides):
+            assert _override_context_window("custom", "qwen36-35b") == 77000
+            assert _override_context_window("custom", "litellm.qwen36-35b") == 99000
+
     def test_malformed_context_window_warns_once(self, caplog):
         """Garbage values are rejected with a one-shot warning, not silence."""
         import logging

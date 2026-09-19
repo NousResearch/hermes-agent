@@ -31,6 +31,7 @@ A2A_CLIENT_TOOLS = {
     "a2a_list",
     "a2a_orchestrate",
 }
+BUZZ_CLIENT_TOOLS = {"buzz_read_message_link"}
 
 
 # ── synthetic platform plugin helpers ──────────────────────────────────────
@@ -161,6 +162,38 @@ def clean_registry():
 
 
 # ── the reported symptom, against the real a2a plugin ──────────────────────
+
+
+class TestBuzzClientToolInCliProcess:
+    def test_manifest_declares_the_message_link_reader(self):
+        manifest_path = (
+            Path(__file__).resolve().parents[2]
+            / "plugins"
+            / "platforms"
+            / "buzz"
+            / "plugin.yaml"
+        )
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+        assert set(manifest.get("provides_tools") or []) == BUZZ_CLIENT_TOOLS
+
+    def test_tool_resolves_without_materializing_the_buzz_adapter(self):
+        from hermes_cli.plugins import PluginManager
+        from toolsets import resolve_toolset
+
+        manager = PluginManager()
+        manager.discover_and_load()
+
+        buzz = manager._plugins.get("buzz-platform")
+        assert buzz is not None, "bundled Buzz platform plugin was not discovered"
+        assert buzz.deferred is True
+        assert BUZZ_CLIENT_TOOLS.issubset(set(resolve_toolset("buzz")))
+        assert BUZZ_CLIENT_TOOLS.issubset(set(resolve_toolset("hermes-buzz")))
+        assert not any(
+            name.startswith("hermes_plugins.buzz_platform")
+            and name.endswith(".adapter")
+            for name in sys.modules
+        )
 
 
 class TestA2AClientToolsInCliProcess:

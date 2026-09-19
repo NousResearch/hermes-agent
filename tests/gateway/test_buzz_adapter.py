@@ -3281,6 +3281,92 @@ class TestEnvEnablement:
 
 class TestBuzzPluginRegistration:
 
+    def test_registers_standard_message_link_reader_in_buzz_toolset(self):
+        ctx = MagicMock()
+
+        register(ctx)
+
+        ctx.register_tool.assert_called_once()
+        kwargs = ctx.register_tool.call_args.kwargs
+        assert kwargs["name"] == "buzz_read_message_link"
+        assert kwargs["toolset"] == "buzz"
+        assert kwargs["is_async"] is True
+
+    def test_reader_check_accepts_standard_yaml_config(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_cli.config as config_mod
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {
+                "gateway": {
+                    "platforms": {
+                        "buzz": {
+                            "enabled": True,
+                            "extra": {
+                                "relay_url": "https://yaml-relay.example",
+                                "cli_path": str(fake_cli),
+                            },
+                        }
+                    }
+                }
+            },
+        )
+        ctx = MagicMock()
+
+        register(ctx)
+
+        assert ctx.register_tool.call_args.kwargs["check_fn"]() is True
+
+    def test_real_registration_preserves_core_tools_with_link_reader(self):
+        """Drive the adapter's real registration seam, not a synthetic probe."""
+        from dataclasses import fields
+
+        from gateway.platform_registry import PlatformEntry, platform_registry
+        from hermes_cli.tools_config import _get_platform_tools
+        from tools.registry import registry
+        from toolsets import resolve_toolset
+
+        tool_name = "buzz_read_message_link"
+        previous_tool = registry.snapshot_registration(tool_name)
+        previous_platform = platform_registry.get("buzz")
+
+        class RealRegistrationContext:
+            def register_tool(self, **kwargs):
+                registry.register(**kwargs, override=True)
+
+            def register_platform(self, **kwargs):
+                accepted = {field.name for field in fields(PlatformEntry)}
+                platform_registry.register(
+                    PlatformEntry(
+                        **{key: value for key, value in kwargs.items() if key in accepted}
+                    )
+                )
+
+        try:
+            register(RealRegistrationContext())
+
+            composite = resolve_toolset("hermes-buzz")
+            enabled = _get_platform_tools({}, "buzz")
+
+            assert tool_name in composite
+            assert "terminal" in enabled
+            assert "file" in enabled
+            assert "read_file" in composite
+            assert "write_file" in composite
+        finally:
+            current_tool = registry.snapshot_registration(tool_name)
+            if current_tool is not None:
+                registry.restore_registration(tool_name, current_tool, previous_tool)
+            platform_registry.unregister("buzz")
+            if previous_platform is not None:
+                platform_registry.register(previous_platform)
+
     def test_register_platform_contract(self):
         from gateway.platform_registry import platform_registry
 
@@ -3296,6 +3382,482 @@ class TestBuzzPluginRegistration:
         assert callable(kwargs["standalone_sender_fn"])
         assert callable(kwargs["env_enablement_fn"])
         assert set(kwargs["required_env"]) == {"BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"}
+        assert "buzz://message" in kwargs["platform_hint"]
+        assert "buzz_read_message_link" in kwargs["platform_hint"]
+
+
+class TestBuzzMessageLinkReader:
+    LINK = (
+        "buzz://message?"
+        f"channel={CHANNEL}&"
+        f"id={'1' * 64}&"
+        f"thread={'2' * 64}"
+    )
+
+    def test_parses_only_canonical_message_links(self):
+        assert _buzz_mod._parse_buzz_message_link(self.LINK) == {
+            "channel": CHANNEL,
+            "id": "1" * 64,
+            "thread": "2" * 64,
+        }
+        invalid = [
+            "https://example.com/message?channel=x&id=y",
+            f"buzz://message?channel=not-a-uuid&id={'1' * 64}",
+            f"buzz://message?channel={CHANNEL}&id=ABC",
+            f"buzz://message?channel={CHANNEL}&id={'1' * 64}&thread=bad",
+            f"buzz://message?channel={CHANNEL}&id={'1' * 64}&extra=1",
+            f"buzz://user@message?channel={CHANNEL}&id={'1' * 64}",
+            f"buzz://message:443?channel={CHANNEL}&id={'1' * 64}",
+        ]
+        for link in invalid:
+            with pytest.raises(ValueError):
+                _buzz_mod._parse_buzz_message_link(link)
+
+    def test_rejects_trailing_slash_as_noncanonical(self):
+        trailing_slash = self.LINK.replace("buzz://message?", "buzz://message/?")
+
+        with pytest.raises(ValueError):
+            _buzz_mod._parse_buzz_message_link(trailing_slash)
+
+    def test_rejects_channel_uuid_with_invalid_variant(self):
+        invalid_channel = CHANNEL[:19] + "1" + CHANNEL[20:]
+        invalid_link = self.LINK.replace(CHANNEL, invalid_channel)
+
+        with pytest.raises(ValueError):
+            _buzz_mod._parse_buzz_message_link(invalid_link)
+
+    def test_normalizes_uppercase_identifiers_like_buzz(self):
+        uppercase_link = (
+            "buzz://message?"
+            f"channel={CHANNEL.upper()}&"
+            f"id={'A' * 64}&"
+            f"thread={'B' * 64}"
+        )
+
+        assert _buzz_mod._parse_buzz_message_link(uppercase_link) == {
+            "channel": CHANNEL,
+            "id": "a" * 64,
+            "thread": "b" * 64,
+        }
+
+    def test_normalizes_uri_scheme_and_host_like_buzz(self):
+        uppercase_authority = self.LINK.replace("buzz://message", "BUZZ://MESSAGE")
+
+        assert _buzz_mod._parse_buzz_message_link(uppercase_authority) == {
+            "channel": CHANNEL,
+            "id": "1" * 64,
+            "thread": "2" * 64,
+        }
+
+    @pytest.mark.parametrize(
+        "noncanonical",
+        [
+            f"{LINK}#",
+            f" {LINK}",
+            f"{LINK} ",
+            LINK.replace("buzz://message", "buzz:\n//message"),
+            LINK.replace("buzz://message", "buzz://mes\tsage"),
+        ],
+    )
+    def test_rejects_inputs_urlsplit_would_normalize(self, noncanonical):
+        with pytest.raises(ValueError):
+            _buzz_mod._parse_buzz_message_link(noncanonical)
+
+    @pytest.mark.asyncio
+    async def test_handler_returns_safe_error_for_invalid_link(self):
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": "not-a-link"})
+        )
+        assert result == {"error": "expected a canonical buzz://message link"}
+
+    @pytest.mark.asyncio
+    async def test_handler_fails_closed_when_buzz_is_unconfigured(self, monkeypatch):
+        async def unexpected_exec(*args, **kwargs):
+            raise AssertionError("CLI must not run without Buzz configuration")
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", unexpected_exec)
+
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+        )
+
+        assert result == {"error": "Buzz is not configured"}
+
+    def test_classifies_only_marked_replies_as_thread_members(self):
+        root = "a" * 64
+        parent = "b" * 64
+
+        assert (
+            _buzz_mod._buzz_message_thread_root(
+                {
+                    "tags": [
+                        ["e", root, "", "root"],
+                        ["e", parent, "", "reply"],
+                    ]
+                }
+            )
+            == root
+        )
+        assert (
+            _buzz_mod._buzz_message_thread_root(
+                {"tags": [["e", parent, "", "reply"]]}
+            )
+            == parent
+        )
+        assert (
+            _buzz_mod._buzz_message_thread_root(
+                {"tags": [["e", root, "", "root"]]}
+            )
+            == ""
+        )
+        assert (
+            _buzz_mod._buzz_message_thread_root({"tags": [["e", root]]}) == ""
+        )
+
+    @pytest.mark.asyncio
+    async def test_reads_exact_link_without_putting_secret_in_argv(
+        self, monkeypatch, tmp_path
+    ):
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://relay.example")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        target = {
+            "id": "1" * 64,
+            "pubkey": "3" * 64,
+            "content": "linked report",
+            "created_at": 1234,
+            "kind": 9,
+            "tags": [
+                ["h", CHANNEL],
+                ["e", "2" * 64, "", "root"],
+                ["e", "4" * 64, "", "reply"],
+            ],
+        }
+        captured = {}
+
+        async def fake_exec(cli_path, args, **kwargs):
+            captured.update(cli_path=cli_path, args=list(args), **kwargs)
+            return 0, json.dumps([target]), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        raw = await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+
+        assert json.loads(raw) == {
+            "channel": CHANNEL,
+            "id": "1" * 64,
+            "thread": "2" * 64,
+            "pubkey": "3" * 64,
+            "created_at": 1234,
+            "content": "linked report",
+        }
+        assert captured["args"] == [
+            "messages",
+            "thread",
+            "--channel",
+            CHANNEL,
+            "--event",
+            "1" * 64,
+            "--limit",
+            "1",
+        ]
+        assert captured["relay_url"] == "https://relay.example"
+        assert captured["private_key"] == "nsec1secret"
+        assert all("nsec1secret" not in str(arg) for arg in captured["args"])
+        assert "nsec1secret" not in raw
+
+    @pytest.mark.asyncio
+    async def test_cli_failure_returns_safe_error_without_stderr(
+        self, monkeypatch, tmp_path
+    ):
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://relay.example")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+
+        async def fake_exec(*args, **kwargs):
+            return 2, "", '{"error":"auth","message":"rejected nsec1secret"}'
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        raw = await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+
+        assert json.loads(raw) == {"error": "Buzz CLI failed (exit 2)"}
+        assert "nsec1secret" not in raw
+        assert "rejected" not in raw
+
+    @pytest.mark.asyncio
+    async def test_queries_exact_event_id_without_timestamp_pagination(
+        self, monkeypatch, tmp_path
+    ):
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://relay.example")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        target = {
+            "id": "1" * 64,
+            "content": "older exact event",
+            "created_at": 499,
+            "tags": [
+                ["h", CHANNEL],
+                ["e", "2" * 64, "", "root"],
+                ["e", "4" * 64, "", "reply"],
+            ],
+        }
+        calls = []
+
+        async def fake_exec(cli_path, args, **kwargs):
+            calls.append(list(args))
+            if args != [
+                "messages",
+                "thread",
+                "--channel",
+                CHANNEL,
+                "--event",
+                "1" * 64,
+                "--limit",
+                "1",
+            ]:
+                raise AssertionError("lookup did not use the exact event-id query")
+            return 0, json.dumps([target]), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+        )
+
+        assert result["id"] == "1" * 64
+        assert result["content"] == "older exact event"
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_rejects_exact_event_from_another_channel(
+        self, monkeypatch, tmp_path
+    ):
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://relay.example")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        event = {
+            "id": "1" * 64,
+            "content": "wrong channel",
+            "created_at": 1234,
+            "tags": [
+                ["h", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"],
+                ["e", "2" * 64, "", "reply"],
+            ],
+        }
+
+        async def fake_exec(*args, **kwargs):
+            return 0, json.dumps([event]), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+        )
+
+        assert result == {
+            "error": "linked event does not belong to the requested channel"
+        }
+
+    @pytest.mark.asyncio
+    async def test_rejects_event_outside_linked_thread(
+        self, monkeypatch, tmp_path
+    ):
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://relay.example")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        event = {
+            "id": "1" * 64,
+            "content": "wrong thread",
+            "created_at": 1234,
+            "tags": [
+                ["h", CHANNEL],
+                ["e", "4" * 64, "", "root"],
+                ["e", "5" * 64, "", "reply"],
+            ],
+        }
+
+        async def fake_exec(*args, **kwargs):
+            return 0, json.dumps([event]), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+        )
+
+        assert result == {
+            "error": "linked event does not belong to the requested thread"
+        }
+
+    @pytest.mark.asyncio
+    async def test_reply_cannot_claim_its_own_id_as_thread_root(
+        self, monkeypatch, tmp_path
+    ):
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://relay.example")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        event = {
+            "id": "1" * 64,
+            "content": "reply with another root",
+            "created_at": 1234,
+            "tags": [
+                ["h", CHANNEL],
+                ["e", "4" * 64, "", "root"],
+                ["e", "5" * 64, "", "reply"],
+            ],
+        }
+        self_root_link = (
+            "buzz://message?"
+            f"channel={CHANNEL}&"
+            f"id={'1' * 64}&"
+            f"thread={'1' * 64}"
+        )
+
+        async def fake_exec(*args, **kwargs):
+            return 0, json.dumps([event]), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": self_root_link})
+        )
+
+        assert result == {
+            "error": "linked event does not belong to the requested thread"
+        }
+
+    @pytest.mark.asyncio
+    async def test_returns_safe_not_found_error(self, monkeypatch, tmp_path):
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://relay.example")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+
+        async def fake_exec(*args, **kwargs):
+            return 0, json.dumps([]), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+        )
+
+        assert result == {"error": "linked Buzz message was not found"}
+
+
+    @pytest.mark.asyncio
+    async def test_reads_connection_from_standard_yaml_config(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_cli.config as config_mod
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {
+                "gateway": {
+                    "platforms": {
+                        "buzz": {
+                            "enabled": True,
+                            "extra": {
+                                "relay_url": "https://yaml-relay.example",
+                                "cli_path": str(fake_cli),
+                            },
+                        }
+                    }
+                }
+            },
+        )
+        captured = {}
+        event = {
+            "id": "1" * 64,
+            "content": "yaml configured",
+            "created_at": 1234,
+            "tags": [
+                ["h", CHANNEL],
+                ["e", "2" * 64, "", "root"],
+                ["e", "4" * 64, "", "reply"],
+            ],
+        }
+
+        async def fake_exec(cli_path, args, **kwargs):
+            captured.update(cli_path=cli_path, **kwargs)
+            return 0, json.dumps([event]), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+        )
+
+        assert result["content"] == "yaml configured"
+        assert captured["cli_path"] == str(fake_cli)
+        assert captured["relay_url"] == "https://yaml-relay.example"
+
+    @pytest.mark.asyncio
+    async def test_rejects_malformed_cli_payload(self, monkeypatch, tmp_path):
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://relay.example")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+
+        async def fake_exec(*args, **kwargs):
+            return 0, '{"unexpected":"object"}', ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+        )
+
+        assert result == {"error": "buzz messages thread returned malformed data"}
+
+    @pytest.mark.asyncio
+    async def test_rejects_matching_event_with_malformed_tags(
+        self, monkeypatch, tmp_path
+    ):
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://relay.example")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1secret")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        event = {
+            "id": "1" * 64,
+            "content": "malformed event",
+            "created_at": 1234,
+            "tags": None,
+        }
+
+        async def fake_exec(*args, **kwargs):
+            return 0, json.dumps([event]), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = json.loads(
+            await _buzz_mod._handle_buzz_read_message_link({"link": self.LINK})
+        )
+
+        assert result == {
+            "error": "buzz messages thread returned malformed event data"
+        }
 
 
 class TestStandaloneSend:

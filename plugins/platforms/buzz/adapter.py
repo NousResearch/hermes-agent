@@ -23,7 +23,7 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 # Profile-scoped read (adapter startup, Slack pattern #59739): a scoped read honors the profile's own
 # secret; only an UNSCOPED read under multiplex (default-profile startup loop) falls back to the process
@@ -1984,8 +1984,197 @@ def interactive_setup() -> None:
     print_info("Restart the gateway for changes to take effect: hermes gateway restart")
 
 
+def _configured_buzz_extra() -> dict:
+    """Return the enabled Buzz platform's standard YAML ``extra`` mapping."""
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+    except Exception:
+        return {}
+    platform = (
+        ((config.get("gateway") or {}).get("platforms") or {}).get("buzz") or {}
+    )
+    if not isinstance(platform, dict) or platform.get("enabled") is False:
+        return {}
+    extra = platform.get("extra") or {}
+    return extra if isinstance(extra, dict) else {}
+
+
+def _buzz_link_reader_connection() -> Tuple[str, str, str]:
+    extra = _configured_buzz_extra()
+    relay = (os.getenv("BUZZ_RELAY_URL") or extra.get("relay_url") or "").strip()
+    cli_path = _resolve_cli_path(
+        os.getenv("BUZZ_CLI_PATH") or str(extra.get("cli_path") or "")
+    )
+    return relay, cli_path, _resolve_private_key(extra)
+
+
+def _check_buzz_link_reader() -> bool:
+    return all(_buzz_link_reader_connection())
+
+
+def _buzz_message_thread_root(event: dict) -> str:
+    e_tags = [
+        tag
+        for tag in event.get("tags", [])
+        if isinstance(tag, list) and len(tag) >= 4 and tag[0] == "e"
+    ]
+    reply_tag = next((tag for tag in reversed(e_tags) if tag[3] == "reply"), None)
+    if reply_tag is None:
+        return ""
+    root_tag = next((tag for tag in e_tags if tag[3] == "root"), None)
+    return root_tag[1] if root_tag is not None else reply_tag[1]
+
+
+async def _handle_buzz_read_message_link(args: dict, **_kwargs) -> str:
+    """Resolve one Buzz deep link without exposing credential material."""
+    try:
+        link = _parse_buzz_message_link(args.get("link", ""))
+    except (AttributeError, ValueError) as exc:
+        return json.dumps({"error": str(exc)})
+    relay, cli_path, private_key = _buzz_link_reader_connection()
+    if not relay or not private_key:
+        return json.dumps({"error": "Buzz is not configured"})
+    if not cli_path:
+        return json.dumps({"error": "buzz CLI binary not found"})
+    command = [
+        "messages",
+        "thread",
+        "--channel",
+        link["channel"],
+        "--event",
+        link["id"],
+        "--limit",
+        "1",
+    ]
+    code, out, _err = await _exec_buzz(
+        cli_path, command, relay_url=relay, private_key=private_key
+    )
+    if code != 0:
+        return json.dumps({"error": f"Buzz CLI failed (exit {code})"})
+    try:
+        rows = json.loads(out)
+    except (TypeError, ValueError):
+        rows = None
+    if not isinstance(rows, list):
+        return json.dumps({"error": "buzz messages thread returned malformed data"})
+    event = next(
+        (
+            row
+            for row in rows
+            if isinstance(row, dict) and row.get("id") == link["id"]
+        ),
+        None,
+    )
+    if event is None:
+        return json.dumps({"error": "linked Buzz message was not found"})
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return json.dumps({"error": "buzz messages thread returned malformed event data"})
+    channel_tags = [
+        tag[1]
+        for tag in tags
+        if isinstance(tag, list)
+        and len(tag) >= 2
+        and tag[0] == "h"
+        and isinstance(tag[1], str)
+    ]
+    if channel_tags != [link["channel"]]:
+        return json.dumps(
+            {"error": "linked event does not belong to the requested channel"}
+        )
+    thread = link.get("thread", "")
+    event_root = _buzz_message_thread_root(event)
+    expected_thread = event_root or event["id"]
+    if thread and thread != expected_thread:
+        return json.dumps(
+            {"error": "linked event does not belong to the requested thread"}
+        )
+    return json.dumps(
+        {
+            "channel": link["channel"],
+            "id": event["id"],
+            "thread": thread or event_root or None,
+            "pubkey": event.get("pubkey"),
+            "created_at": event.get("created_at"),
+            "content": event.get("content", ""),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _parse_buzz_message_link(link: str) -> Dict[str, str]:
+    """Parse one canonical ``buzz://message`` deep link fail closed."""
+    raw_link = str(link or "")
+    if "#" in raw_link or any(
+        character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+        for character in raw_link
+    ):
+        raise ValueError("expected a canonical buzz://message link")
+    parsed = urlsplit(raw_link)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("expected a canonical buzz://message link") from exc
+    if (
+        parsed.scheme != "buzz"
+        or parsed.hostname != "message"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.path
+        or parsed.fragment
+    ):
+        raise ValueError("expected a canonical buzz://message link")
+    try:
+        query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as exc:
+        raise ValueError("malformed Buzz message link query") from exc
+    if not set(query).issubset({"channel", "id", "thread"}):
+        raise ValueError("unsupported Buzz message link parameter")
+    if any(len(values) != 1 for values in query.values()):
+        raise ValueError("duplicate Buzz message link parameter")
+    channel = (query.get("channel") or [""])[0].lower()
+    event_id = (query.get("id") or [""])[0].lower()
+    thread = (query.get("thread") or [""])[0].lower()
+    if not re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+        channel,
+    ):
+        raise ValueError("invalid Buzz channel id")
+    if not re.fullmatch(r"[0-9a-f]{64}", event_id):
+        raise ValueError("invalid Buzz event id")
+    if "thread" in query and not re.fullmatch(r"[0-9a-f]{64}", thread):
+        raise ValueError("invalid Buzz thread id")
+    result = {"channel": channel, "id": event_id}
+    if thread:
+        result["thread"] = thread
+    return result
+
+
 def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
+    ctx.register_tool(
+        name="buzz_read_message_link",
+        toolset="buzz",
+        schema={
+            "name": "buzz_read_message_link",
+            "description": "Read the exact Buzz message referenced by a canonical buzz://message link.",
+            "parameters": {
+                "type": "object",
+                "properties": {"link": {"type": "string"}},
+                "required": ["link"],
+                "additionalProperties": False,
+            },
+        },
+        handler=_handle_buzz_read_message_link,
+        check_fn=_check_buzz_link_reader,
+        requires_env=["BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"],
+        is_async=True,
+        description="Read the exact Buzz message referenced by a canonical buzz://message link.",
+        emoji="🐝",
+    )
     ctx.register_platform(
         name="buzz", label="Buzz", adapter_factory=lambda cfg: BuzzAdapter(cfg), check_fn=check_requirements,
         validate_config=validate_config, is_connected=is_connected, required_env=["BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"],
@@ -1999,6 +2188,8 @@ def register(ctx):
             "You are collaborating in a Buzz workspace (Block's Nostr-based "
             "human+agent platform). Markdown IS supported. Users address you "
             "by @-mentioning your name or npub in channels; direct messages "
-            "reach you without a mention. Keep responses conversational."
+            "reach you without a mention. Keep responses conversational. When "
+            "the user supplies a buzz://message link, call buzz_read_message_link "
+            "before making claims about its contents."
         ),
     )

@@ -22,6 +22,7 @@ import {
 } from "react-router";
 import {
   Activity,
+  AudioLines,
   BarChart3,
   BookOpen,
   Clock,
@@ -37,6 +38,7 @@ import {
   KeyRound,
   Menu,
   MessageSquare,
+  Mic,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -226,6 +228,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
 
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Activity,
+  AudioLines,
   BarChart3,
   Clock,
   Cpu,
@@ -233,6 +236,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   FolderOpen,
   KeyRound,
   MessageSquare,
+  Mic,
   Package,
   Settings,
   Puzzle,

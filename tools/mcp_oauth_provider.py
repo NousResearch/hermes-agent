@@ -85,12 +85,23 @@ class HermesProviderMixin:
 
     def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
         super().__init__(*args, **kwargs)
+        # The MCP SDK replaces client_metadata.scope with the provider metadata
+        # scopes after a 401. Keep an explicitly configured scope as the
+        # authorization ceiling so providers cannot silently broaden consent.
+        self._hermes_configured_scope = self.context.client_metadata.scope
         self._hermes_oauth_flow = oauth_flow
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
 
+    def _restore_configured_scope(self) -> None:
+        """Restore the explicit config scope after SDK metadata discovery."""
+        scope = getattr(self, "_hermes_configured_scope", None)
+        if scope:
+            self.context.client_metadata.scope = scope
+
     async def _perform_authorization(self):
+        self._restore_configured_scope()
         info = self.context.client_info
         grants = getattr(info, "grant_types", None) or []
         if (getattr(self, "_hermes_oauth_flow", "browser") == "device"

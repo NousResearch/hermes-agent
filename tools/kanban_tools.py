@@ -20,10 +20,10 @@ from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
-    KANBAN_ATTACH_SCHEMA,
+    KANBAN_ARCHIVE_SCHEMA, KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
-    KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
+    KANBAN_LIST_SCHEMA, KANBAN_REASSIGN_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
     KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
@@ -1098,10 +1098,72 @@ def _handle_link(args: dict, **kw) -> str:
                    **({"gated_by": parent_id} if gated else {}))
 
 
+def _require_same_board_task(kb, conn, tid: str, tool_name: str):
+    """Resolve *tid*, rejecting an unknown id. The connection already pins the board
+    (``_board(args.get("board"))`` -> the env-resolved active board when omitted), so this
+    is the same "no cross-board reach" guarantee ``_board`` gives every other kanban tool —
+    named explicitly here because kanban_reassign/kanban_archive are routing tools a
+    coordinator calls with ids it read off ITS board, and a typo'd id must 404, not silently
+    no-op against the wrong database."""
+    task = kb.get_task(conn, tid)
+    _check(task is not None, f"{tool_name}: unknown task {tid!r} on this board")
+    return task
+
+
+@_kanban_handler("kanban_reassign")
+def _handle_reassign(args: dict, **kw) -> str:
+    """Reassign a task on the active board — the routing half of create/comment's trust
+    model, gated like kanban_unblock: orchestrator-only (no per-task ownership check,
+    since routing means acting on OTHER cards, not just your own), never a dispatcher
+    task worker, and never a delegate_task child. Registered under
+    _check_kanban_orchestrator_mode (hidden from worker schemas) AND enforced again here
+    at runtime — schema visibility alone is not a security boundary against a direct or
+    prompt-injected call (a worker scoped to its own card could otherwise reassign/archive
+    a sibling and, for archive, kill its running worker process; see #19534/#19713)."""
+    _reject_delegated_child_mutation("kanban_reassign")
+    _require_orchestrator_tool("kanban_reassign")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    raw_assignee = args.get("assignee")
+    assignee = (str(raw_assignee).strip() or None) if raw_assignee is not None else None
+    reclaim = bool(args.get("reclaim") or False)
+    reason = args.get("reason")
+    with _board(args.get("board")) as (kb, conn):
+        _require_same_board_task(kb, conn, tid, "kanban_reassign")
+        ok = kb.reassign_task(conn, tid, assignee, reclaim_first=reclaim, reason=reason)
+        _check(ok, f"cannot reassign {tid} (still running — pass reclaim=true to release its claim first)")
+        return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status", "assignee")))
+
+
+@_kanban_handler("kanban_archive")
+def _handle_archive(args: dict, **kw) -> str:
+    """Archive a stale/duplicate task on the active board — reversible retirement, the
+    routing half create/comment already had and reassign/archive lacked (t_cbdadd9d).
+    Gated like kanban_unblock: orchestrator-only, never a dispatcher task worker, and
+    never a delegate_task child. archive_task() SIGTERMs the target's live worker_pid by
+    design, so this is destructive, not additive — schema-hiding via
+    _check_kanban_orchestrator_mode is reinforced with the same runtime check
+    kanban_unblock uses, so a direct or prompt-injected call from a task worker fails
+    closed instead of being able to kill a sibling's running worker (#19534/#19713)."""
+    _reject_delegated_child_mutation("kanban_archive")
+    _require_orchestrator_tool("kanban_archive")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    with _board(args.get("board")) as (kb, conn):
+        _require_same_board_task(kb, conn, tid, "kanban_archive")
+        ok = kb.archive_task(conn, tid)
+        _check(ok, f"cannot archive {tid} (already archived, or a concurrent archiver won)")
+        return _ok(task_id=tid, status="archived")
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# Board-routing tools, hidden from task workers: kanban_list (discovery),
+# kanban_unblock (lifecycle), kanban_reassign/kanban_archive (destructive — see
+# _handle_reassign/_handle_archive docstrings, t_cbdadd9d).
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_reassign", "kanban_archive"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1115,6 +1177,8 @@ _TOOLS = (
     ("kanban_attach_url", KANBAN_ATTACH_URL_SCHEMA, _handle_attach_url, "📎"),
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
+    ("kanban_reassign", KANBAN_REASSIGN_SCHEMA, _handle_reassign, "🔀"),
+    ("kanban_archive", KANBAN_ARCHIVE_SCHEMA, _handle_archive, "🗄"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 

@@ -1118,6 +1118,98 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         self.assertTrue(ok, reason)
 
+    def test_quoted_reason_is_not_a_passing_method(self):
+        ok, reason = self._verify("admin@example.com", [
+            'mx.google.com; dkim=fail reason="diagnostic; dkim=pass header.i=@example.com "; '
+            'spf=fail smtp.mailfrom=x@evil.example'
+        ])
+        self.assertFalse(ok, reason)
+
+    def test_comment_cannot_inject_method_or_identity(self):
+        for header in [
+            "mx.google.com; x=fail (diagnostic; dkim=pass header.i=@example.com )",
+            'mx.google.com; dkim=pass reason="header.i=@example.com"',
+            "mx.google.com; dkim=pass (header.i=@example.com)",
+        ]:
+            with self.subTest(header=header):
+                ok, reason = self._verify("admin@example.com", [header])
+                self.assertFalse(ok, reason)
+
+    def test_leading_and_nested_comments_allow_real_verdict(self):
+        ok, reason = self._verify("admin@example.com", [
+            "mx.google.com; (receiver (nested) comment) dkim (signature) = pass header.i=@example.com"
+        ])
+        self.assertTrue(ok, reason)
+
+    def test_unterminated_quote_or_comment_fails_closed(self):
+        for header in [
+            'mx.google.com; dkim=pass header.i=@example.com reason="unfinished',
+            'mx.google.com; dkim=pass header.i=@example.com (unfinished',
+        ]:
+            with self.subTest(header=header):
+                ok, reason = self._verify("admin@example.com", [header])
+                self.assertFalse(ok, reason)
+
+    def test_gmail_header_i_and_later_dara(self):
+        ok, reason = self._verify("admin@example.com", [
+            "mx.google.com; dkim=pass header.i=@example.com header.s=google; "
+            "spf=neutral smtp.mailfrom=admin@example.com; dara=pass header.i=@gmail.com"
+        ])
+        self.assertTrue(ok, reason)
+
+    def test_later_dara_cannot_rescue_misaligned_dkim(self):
+        ok, reason = self._verify("admin@example.com", [
+            "mx.google.com; dkim=pass header.i=@evil.example; dara=pass header.i=@example.com"
+        ])
+        self.assertFalse(ok, reason)
+
+    def test_later_failed_dkim_cannot_rescue_unaligned_pass(self):
+        ok, reason = self._verify("admin@example.com", [
+            "mx.google.com; dkim=fail header.d=example.com; dkim=pass header.i=@evil.example"
+        ])
+        self.assertFalse(ok, reason)
+
+    def test_other_clause_header_d_cannot_rescue_dkim(self):
+        ok, reason = self._verify("admin@example.com", [
+            "mx.google.com; dkim=pass header.d=evil.example; dara=pass header.d=example.com"
+        ])
+        self.assertFalse(ok, reason)
+
+    def test_multiple_dkim_preserves_valid_signature(self):
+        ok, reason = self._verify("admin@example.com", [
+            "mx.google.com; dkim=pass header.i=@example.com; dkim=fail header.d=elsewhere.example"
+        ])
+        self.assertTrue(ok, reason)
+
+    def test_dkim_header_d_takes_precedence_over_header_i(self):
+        ok, reason = self._verify("admin@example.com", [
+            "mx.google.com; dkim=pass header.d=evil.example header.i=@example.com"
+        ])
+        self.assertFalse(ok, reason)
+
+    def test_extension_cannot_rescue_spf(self):
+        ok, reason = self._verify("admin@example.com", [
+            "mx.google.com; spf=pass smtp.mailfrom=x@evil.example; "
+            "dara=pass smtp.mailfrom=admin@example.com"
+        ])
+        self.assertFalse(ok, reason)
+
+    def test_missing_authentication_header_stays_rejected(self):
+        ok, reason = self._verify("admin@example.com")
+        self.assertFalse(ok, reason)
+
+    def test_dkim_identity_folded_quoted_case_insensitive(self):
+        ok, reason = self._verify("admin@example.com", [
+            'mx.google.com;\r\n DKIM=pass header.i="@EXAMPLE.COM"; dara=pass header.i=@gmail.com'
+        ])
+        self.assertTrue(ok, reason)
+
+    def test_comment_method_token_is_not_a_verdict(self):
+        ok, reason = self._verify("admin@example.com", [
+            "mx.google.com; x-unrelated=fail (dkim=pass header.d=example.com)"
+        ])
+        self.assertFalse(ok, reason)
+
     def test_spf_pass_misaligned_rejected(self):
         # SPF passes for the envelope domain, but it doesn't match From: domain.
         ok, reason = self._verify(

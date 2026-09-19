@@ -55,7 +55,7 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
               (re.compile(r"&amp;"), "&"), (re.compile(r"&lt;"), "<"), (re.compile(r"&gt;"), ">"), (re.compile(r"\n{3,}"), "\n\n"))
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
-_AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
+_AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|header\.i|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -259,12 +259,96 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
+def _parse_authentication_clauses(value: str) -> list:
+    """Read method/property tokens without interpreting quotes or comments as code.
+
+    Semicolons only delimit clauses outside quoted strings and nested comments.
+    Tokens carry a quoted flag so reason="dkim=pass ..." cannot become a verdict.
+    Malformed, unterminated quotes/comments fail closed for the whole header.
+    """
+    groups, tokens, word = [], [], []
+    quoted, escaped, depth = False, False, 0
+
+    def flush():
+        if word:
+            tokens.append(("".join(word), False))
+            word.clear()
+
+    for char in value:
+        if depth:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            continue
+        if quoted:
+            if escaped:
+                word.append(char)
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                tokens.append(("".join(word), True))
+                word.clear()
+                quoted = False
+            else:
+                word.append(char)
+            continue
+        if char == '"':
+            flush()
+            quoted = True
+        elif char == "(":
+            flush()
+            depth = 1
+        elif char == ")":
+            return []
+        elif char.isspace():
+            flush()
+        elif char in ";=":
+            flush()
+            if char == ";":
+                groups.append(tokens)
+                tokens = []
+            else:
+                tokens.append((char, False))
+        else:
+            word.append(char)
+    if quoted or depth or escaped:
+        return []
+    flush()
+    groups.append(tokens)
+    clauses = []
+    for fields in groups[1:]:  # the first group is the receiving server identity
+        if len(fields) < 3 or any(flag for _, flag in fields[:3]) or fields[1][0] != "=":
+            continue
+        method, result = fields[0][0].lower(), fields[2][0].lower()
+        if method not in {"dmarc", "dkim", "spf"}:
+            continue
+        props = {}
+        index = 3
+        while index + 2 < len(fields):
+            (key, key_quoted), equals, (item, _) = fields[index:index + 3]
+            if not key_quoted and equals == ("=", False):
+                match = _AUTH_PROP_RE.fullmatch(key + "=" + item)
+                if match:
+                    props[match[1].lower()] = match[2]
+                index += 3
+            else:
+                index += 1
+        clauses.append((method, result, props))
+    return clauses
+
+
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str = "") -> Tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so the FIRST
     instance is trusted and an injected copy sorts below it; pinned to *authserv_id* when given.
-    True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header → fail-closed
+    True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d`` or ``header.i``) pass. No header → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
     if not from_domain:
@@ -276,16 +360,24 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
                     or _domains_aligned(serv, authserv_id)), None)
     if trusted is None:
         return False, "no Authentication-Results from trusted authserv-id"
-    methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
-    props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
-    if methods.get("dmarc") == "pass":  # DMARC already enforces From alignment
+    # Keep each method's properties in its own clause. Gmail's later
+    # dara=pass header.i=@gmail.com must not overwrite a DKIM identity,
+    # and a failed or unrelated clause must never authenticate a passing one.
+    clauses = _parse_authentication_clauses(trusted)
+    if any(method == "dmarc" and result == "pass" for method, result, _ in clauses):
         return True, "dmarc=pass"
-    if methods.get("spf") == "pass":  # envelope/MAIL FROM domain must align with From
+    for method, result, props in clauses:
+        if method != "spf" or result != "pass":
+            continue
         spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
         if _domains_aligned(_domain_of(spf_domain) if "@" in spf_domain else spf_domain, from_domain):
             return True, "spf=pass aligned"
-    if methods.get("dkim") == "pass":  # signing domain header.d must align with From
-        dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.from", ""))
+    for method, result, props in clauses:
+        if method != "dkim" or result != "pass":
+            continue
+        # Prefer the signing domain when supplied; Gmail often reports only
+        # the signing identity (header.i). Never borrow another clause's value.
+        dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.i", "")) or _domain_of(props.get("header.from", ""))
         if _domains_aligned(dkim_domain, from_domain):
             return True, "dkim=pass aligned"
     return False, f"authentication failed ({trusted[:120]})"

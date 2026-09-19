@@ -25,7 +25,13 @@ const { FakeWebSocket } = vi.hoisted(() => {
 
     static reset() {
       FakeWebSocket.instances = []
+      FakeWebSocket.silentCloseNext = false
     }
+
+    // When set, the next close() flips readyState but never dispatches the
+    // 'close' event — a silently dropped TCP socket, the failure mode the
+    // heartbeat exists to catch (#32997).
+    static silentCloseNext = false
 
     addEventListener(type: string, callback: (event: any) => void, options?: unknown) {
       const once =
@@ -67,6 +73,11 @@ const { FakeWebSocket } = vi.hoisted(() => {
       }
 
       this.readyState = FakeWebSocket.CLOSED
+
+      if (FakeWebSocket.silentCloseNext) {
+        return
+      }
+
       this.emit('close', { code })
     }
 
@@ -600,6 +611,56 @@ describe('GatewayClient websocket attach mode', () => {
       await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
       await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS)
       expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
+  it('reconnects even when a silently dropped socket never emits close (zombie transport, issue #32997)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    try {
+      gw.start()
+      const first = FakeWebSocket.instances[0]!
+
+      first.open()
+      first.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: { heartbeat: true } }
+        })
+      )
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+
+      // Simulate the real-world silent drop: the OS discards the TCP socket
+      // without an RST, so close() state flips but the 'close' event NEVER
+      // dispatches. Waiting for the close event here strands the client on a
+      // zombie transport forever — the exit path must run directly.
+      FakeWebSocket.silentCloseNext = true
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
+      FakeWebSocket.silentCloseNext = false
+
+      expect(gw.getLogTail(20)).toContain('[lifecycle] transport exit code=1006')
+
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS)
+      expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+
+      // The reconnected transport is live again: heartbeats resume.
+      const second = FakeWebSocket.instances[1]!
+      second.open()
+      second.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: { heartbeat: true } }
+        })
+      )
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      expect(JSON.parse(second.sent.at(-1) ?? '{}')).toMatchObject({ method: 'gateway.ping' })
     } finally {
       gw.kill()
       vi.useRealTimers()

@@ -235,8 +235,8 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
-  // The shared heartbeat found no inbound frame for a full deadline: force the
-  // socket closed so the ordinary close path reconnects (issue #32997).
+  // The shared heartbeat found no inbound frame for a full deadline: drop the
+  // transport so the ordinary exit path reconnects (issue #32997).
   private onHeartbeatFailure() {
     const ws = this.ws
 
@@ -246,11 +246,28 @@ export class GatewayClient extends EventEmitter {
 
     this.lifecycle('[lifecycle] websocket silent drop detected (heartbeat ack timeout); forcing reconnect')
 
+    this.dropSocket(ws, 'gateway websocket silent drop (heartbeat ack timeout)')
+  }
+
+  // A silently dropped TCP socket never emits 'close' — that is exactly the
+  // failure the heartbeat exists to catch (issue #32997) — so waiting for the
+  // close event here strands the client on a zombie transport: no events, no
+  // reconnect, no session resume. Detach the socket FIRST, then run the exit
+  // path directly; the late 'close' for the same socket is ignored by the
+  // identity guard in the close listener, and the exit path runs exactly once.
+  private dropSocket(ws: WebSocket, reason: string) {
+    if (this.ws === ws) {
+      this.ws = null
+      this.wsConnectPromise = null
+    }
+
     try {
       ws.close()
     } catch {
-      // ignore
+      // best effort
     }
+
+    this.handleTransportExit(1006, reason)
   }
 
   private scheduleReconnect() {

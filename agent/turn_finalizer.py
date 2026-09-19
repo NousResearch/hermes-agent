@@ -81,6 +81,30 @@ def _record_kanban_budget_exhausted(
         )
 
 
+def _record_worker_budget(
+    agent: Any, messages: Any, _turn_exit_reason: Any, *, handoff_used: bool, logger: logging.Logger
+) -> None:
+    """Record the terminal worker-budget snapshot for a kanban worker (#111303).
+
+    Phase is ``handoff`` when the reserved toolless handoff/verification call was spent,
+    else ``terminal``. Opt-in and best-effort: no kanban task, telemetry off, or any
+    failure is a silent no-op — this can never change a turn's outcome.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return
+    try:
+        from hermes_cli.kanban_worker_budget import PHASE_HANDOFF, PHASE_TERMINAL, emit
+
+        emit(
+            agent,
+            phase=PHASE_HANDOFF if handoff_used else PHASE_TERMINAL,
+            exit_reason=str(_turn_exit_reason) if _turn_exit_reason else None,
+            messages=messages,
+        )
+    except Exception:
+        logger.debug("worker-budget: terminal snapshot failed", exc_info=True)
+
+
 def _drop_verification_continuation_scaffolding(messages) -> None:
     """Remove verification-continuation nudges in place; only the synthetic nudges carry
     these flags, so the real attempted final answer persisted to state.db survives."""
@@ -477,6 +501,18 @@ def finalize_turn(
         and not failed
         and not interrupted
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
+    )
+
+    # Terminal worker-budget snapshot (#111303) — after the exit reason is final, so a
+    # kanban worker leaves the same normalized record whether it finished, yielded, or
+    # exhausted its budget. Phase ``handoff`` when the reserved toolless handoff call ran.
+    _record_worker_budget(
+        agent, messages, _turn_exit_reason,
+        handoff_used=(
+            preserved_verification_fallback
+            or str(_turn_exit_reason).startswith("max_iterations_reached")
+        ),
+        logger=logger,
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)

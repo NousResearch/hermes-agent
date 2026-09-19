@@ -398,6 +398,21 @@ _SPECS = [
          help="Print the worker log for a task (from <kanban-root>/kanban/logs/)"),
     _cmd("runs", [_TASK_ID, _json_flag(), *_run_state_args("filter runs by task_runs column")],
          help="Show attempt history for a task (one row per run: profile, outcome, elapsed, summary)"),
+    _cmd("worker-budget", [
+        _TASK_ID,
+        _arg("--run", dest="run_id", type=int, metavar="N",
+             help="Report this run id (default: the task's most recent run)"),
+    ], help="Machine-readable worker turn/phase budget + handoff telemetry (JSON, opt-in producer)",
+         description=(
+             "Print the normalized budget record for a worker run as JSON: identity, turn "
+             "budget with reserved verification/handoff capacity, phase, productive/no-action "
+             "turn counts, retry/failure accounting, wall time, token/cost, termination and "
+             "handoff reference. The schema is versioned ('hermes.kanban.worker_budget/1'); every "
+             "field that could not be observed is null and named in 'unavailable' (never 0). "
+             "Live fields come from snapshots the worker records when telemetry is opted in via "
+             "kanban.worker_budget_telemetry or HERMES_KANBAN_WORKER_BUDGET_TELEMETRY=1; "
+             "board-derived fields (attempts, time, handoff) are always present."
+         )),
     _cmd("heartbeat", [
         _TASK_ID,
         _arg("--note", help="Optional short note attached to the heartbeat event"),

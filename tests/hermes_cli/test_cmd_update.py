@@ -187,7 +187,7 @@ class TestCmdUpdateTermuxUvBootstrap:
 
         pkg_uv = "/data/data/com.termux/files/usr/bin/uv"
         monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
-        # Production resolve_uv only checks $HERMES_HOME/bin/uv; model an empty
+        # Production resolve_uv only checks $HERMES_HOME/uv/uv; model an empty
         # managed dir so the PATH probe is what surfaces the packaged uv.
         monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: None)
         monkeypatch.setattr("shutil.which", lambda name: pkg_uv if name == "uv" else None)
@@ -335,6 +335,57 @@ class TestRepairCurrentCheckoutRuntimeRepair:
         assert calls == ["memory"]
         assert restored[-1][0] == "tools"
 
+    def test_venv_repair_path_refreshes_memory_provider(self, monkeypatch, tmp_path):
+        """The unhealthy-venv repair path heals memory-provider bridge packages too
+        (parity with pull/ZIP, #113741). Drives _repair_venv_on_current_checkout."""
+        from hermes_cli import main as hm
+
+        calls: list = []
+        monkeypatch.setattr(hm, "_abort_dependency_sync_if_self_locked", lambda *_a, **k: None)
+        monkeypatch.setattr(update_cmd, "_write_update_incomplete_marker", lambda: None)
+        monkeypatch.setattr(update_cmd, "_venv_core_imports_healthy", lambda: (True, "ok"))
+        monkeypatch.setattr(update_cmd, "project_venv_dir", lambda _root: tmp_path / "venv")
+        monkeypatch.setattr(
+            update_cmd, "venv_python_path", lambda _d, **k: tmp_path / "venv" / "bin" / "python")
+        monkeypatch.setattr(update_cmd, "_pip_install_prefix", lambda _uv: (["uv", "pip"], {}))
+        monkeypatch.setattr(
+            hm, "_install_python_dependencies_with_optional_fallback", lambda *_a, **k: None)
+        monkeypatch.setattr(hm, "_refresh_active_lazy_features", lambda *a, **k: True)
+        monkeypatch.setattr(hm, "_restore_active_tool_dependencies", lambda *a, **k: None)
+        monkeypatch.setattr(
+            hm, "_refresh_active_memory_provider_dependencies", lambda: calls.append("memory"))
+        monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: None)
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda **k: "uv")
+
+        # The venv is missing, so the repair shells out to `uv venv`. Capture it
+        # instead of running a real uv against the checkout, and pin the env:
+        # uv venv can hit the download cache and the python store.
+        uv_calls: list = []
+
+        def fake_run(cmd, **kwargs):
+            uv_calls.append((cmd, kwargs))
+
+            class R:
+                returncode = 0
+
+            return R()
+
+        monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
+
+        assert update_cmd._repair_venv_on_current_checkout(
+            assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+            had_desktop_app_before_update=False, active_lazy_features=[],
+            active_tool_dependencies=[], _windows_gateway_resume=None,
+        )
+        assert calls == ["memory"]
+        ((venv_cmd, venv_kwargs),) = [
+            (cmd, kw) for cmd, kw in uv_calls if cmd[:2] == ["uv", "venv"]
+        ]
+        assert venv_cmd[2] == "venv"
+        from hermes_constants import get_hermes_home
+
+        assert venv_kwargs["env"]["UV_CACHE_DIR"] == str(get_hermes_home() / "cache" / "uv")
 
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""

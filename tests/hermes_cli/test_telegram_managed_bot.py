@@ -29,16 +29,17 @@ class TestQRCode:
 
     def test_print_qr_code_tip_targets_active_interpreter(self, capsys):
         # Regression for #111695: a bare `pip install` targets the wrong
-        # environment when Hermes runs in an isolated venv (which has no pip
-        # module at all). The fallback tip must name the interpreter that is
-        # actually running, via uv.
+        # environment when Hermes runs in an isolated venv.  Resolution is
+        # managed-only, so with no managed uv the tip names the running
+        # interpreter's own pip (never a bare `pip`, never a bare `uv`).
         import sys
 
-        with patch.dict("sys.modules", {"qrcode": None}):
+        with patch.dict("sys.modules", {"qrcode": None}), \
+             patch("hermes_cli.managed_uv.resolve_uv", return_value=None):
             print_qr_code("https://t.me/newbot/Bot/test_bot")
         captured = capsys.readouterr()
-        assert f"uv pip install --python {sys.executable} qrcode" in captured.out
-        assert " pip install qrcode)" not in captured.out
+        assert f"{sys.executable} -m pip install qrcode" in captured.out
+        assert ": pip install qrcode)" not in captured.out
 
 
 class TestCreatePairing:

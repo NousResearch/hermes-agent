@@ -89,9 +89,9 @@ class TestAllowlist:
         venv = ld.feature_install_command("platform.teams", venv_pip=True)
         assert default is not None and venv is not None
         assert venv.startswith(f"{_sys.executable} -m pip install ")
-        assert default.startswith("uv pip install ")
-        # Same spec tail on both forms.
-        assert venv.split(" -m pip install ", 1)[1] == default.split("uv pip install ", 1)[1]
+        # Resolution is managed-only: with no managed uv the default form IS
+        # the interpreter's own pip, carrying the same specs.
+        assert default == venv
 
 
 # ---------------------------------------------------------------------------

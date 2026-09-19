@@ -1,6 +1,6 @@
 """Guard: Hermes-owned subprocesses must not resolve managed runtimes by bare PATH.
 
-Hermes installs runtimes for itself — ``uv`` at ``$HERMES_HOME/bin/uv``, Node at
+Hermes installs runtimes for itself — ``uv`` at ``$HERMES_HOME/uv/uv``, Node at
 ``$HERMES_HOME/node``. Neither directory is on the ambient PATH of an arbitrary
 process, so ``shutil.which("uv")`` / ``shutil.which("node")`` in Hermes's own
 code has two failure modes:
@@ -75,22 +75,19 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
+    ("tools/environments/local.py", "uv"): (
+        "_pin_managed_uv_state_when_managed_uv_would_run()'s PATH probe: the "
+        "question really is 'does a user uv shadow the managed one on the "
+        "terminal PATH', so it must ask that PATH (with the managed dir "
+        "removed) — resolve_uv() would answer about the managed copy instead."
+    ),
     ("hermes_cli/update_cmd_deps.py", "uv"): (
         "Termux fallback: a pkg-installed uv lands on PATH but not in the "
-        "managed bin dir, and it is checked only after resolve_uv() misses."
+        "managed dir, and it is checked only after resolve_uv() misses."
     ),
     ("hermes_cli/update_cmd_deps.py", "npm"): (
         "WSL diagnostic: deliberately inspects what PATH resolves so it can "
         "warn that the only reachable npm is the Windows one."
-    ),
-    ("tools/lazy_deps.py", "uv"): (
-        "Fallback after resolve_uv(), plus the except-branch for the "
-        "hermes_cli import guard."
-    ),
-    ("tools/browser_use_cli.py", "uv"): (
-        "install_cli()'s fallback after ensure_uv() misses — a user-installed "
-        "uv on PATH is a legitimate last rung before giving up with install "
-        "guidance."
     ),
     ("hermes_cli/gateway_service_unit.py", "node"): (
         "Fallback rung of _append_node_dir_for_service(), after the managed "
@@ -330,7 +327,7 @@ def test_no_unreviewed_bare_managed_runtime_lookups():
     assert not unexpected, (
         "Bare PATH lookup for a Hermes-managed runtime.\n\n"
         + "\n".join(f"  {rel}:{lineno}  which({cmd!r})" for rel, cmd, lineno in unexpected)
-        + "\n\n$HERMES_HOME/bin (uv) and $HERMES_HOME/node are not on an "
+        + "\n\n$HERMES_HOME/uv (uv) and $HERMES_HOME/node are not on an "
         "arbitrary process's PATH, so this resolves a system copy — or nothing "
         "— on an install that has a managed one.\n"
         "Use instead:\n"
@@ -352,7 +349,4 @@ def test_allowlist_has_no_stale_entries():
         "fixed or moved. Remove them:\n"
         + "\n".join(f"  {rel} ({cmd})" for rel, cmd in stale)
     )
-
-
-
 

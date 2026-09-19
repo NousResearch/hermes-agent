@@ -39,9 +39,15 @@ class TestInstallDependenciesRunner:
     pip when uv is unavailable, and an ensurepip bootstrap for pip-less venvs
     instead of dead-ending with "cannot install"."""
 
-    def _run_with_missing_dep(self, tmp_path, which_side_effect, run_behavior=None):
+    def _run_with_missing_dep(self, tmp_path, which_side_effect, run_behavior=None,
+                              managed_uv=None):
         """Drive _install_dependencies for a plugin that declares one missing
-        pip dep, capturing every subprocess.run argv issued by the ladder."""
+        pip dep, capturing every subprocess.run argv issued by the ladder.
+
+        ``managed_uv`` is what ``managed_uv.resolve_uv()`` reports: resolution
+        is managed-only (``tools/lazy_deps._uv_binary`` never falls back to a
+        uv merely present on PATH), so a uv tier is exercised by stubbing it.
+        """
         import os
         import sys
         from unittest.mock import patch as _patch
@@ -65,16 +71,28 @@ class TestInstallDependenciesRunner:
         with _patch.dict(os.environ, {"HERMES_DISABLE_LAZY_INSTALLS": "0"}), \
              patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
              patch("hermes_cli.tools_config_cua.shutil.which", side_effect=which_side_effect), \
+             patch("hermes_cli.managed_uv.resolve_uv", return_value=managed_uv), \
              patch("hermes_cli.tools_config_cua.subprocess.run", fake_run):
             memory_setup._install_dependencies("x")
         return calls, sys.executable
 
     def test_uses_uv_when_available(self, tmp_path):
+        """A managed uv resolves -> ``uv pip install``. Resolution is
+        managed-only, so a bare PATH uv is deliberately NOT used."""
         calls, _ = self._run_with_missing_dep(
-            tmp_path, lambda b: "/usr/bin/uv" if b == "uv" else None
+            tmp_path, lambda b: None, managed_uv="/usr/bin/uv"
         )
         assert calls
         assert calls[0][:3] == ["/usr/bin/uv", "pip", "install"]
+
+    def test_ignores_uv_on_path_when_managed_uv_absent(self, tmp_path):
+        """A uv on PATH must not drive the install ladder: resolution is
+        managed-only, so with no managed uv the ladder falls to pip."""
+        calls, py = self._run_with_missing_dep(
+            tmp_path, lambda b: "/usr/bin/uv" if b == "uv" else None
+        )
+        assert calls
+        assert calls[0][:3] == [py, "-m", "pip"]
 
     def test_falls_back_to_pip_when_uv_missing(self, tmp_path):
         """No uv but pip importable -> python -m pip install."""

@@ -219,7 +219,7 @@ def test_repair_install_prefers_uv_when_base_is_externally_managed(
     calls = []
 
     def fake_run(cmd, **kwargs):
-        calls.append(cmd)
+        calls.append((cmd, kwargs))
 
         class R:
             returncode = 0
@@ -233,10 +233,15 @@ def test_repair_install_prefers_uv_when_base_is_externally_managed(
     assert er._run_repair_install(["cryptography==50.0.0"], root) is True
 
     assert len(calls) == 1
-    cmd = calls[0]
+    cmd, kwargs = calls[0]
     assert cmd[:3] == ["/fake/uv", "pip", "install"]
     assert "--force-reinstall" in cmd
     assert "cryptography==50.0.0" in cmd
+    # Stdlib-only repair: sandbox uv's download cache by hand, or this write
+    # lands in the user's own ~/.cache/uv.
+    from hermes_constants import get_hermes_home
+
+    assert kwargs["env"]["UV_CACHE_DIR"] == str(get_hermes_home() / "cache" / "uv")
 
 
 def test_repair_install_uv_sets_virtual_env_to_project_venv(tmp_path, monkeypatch):
@@ -264,6 +269,71 @@ def test_repair_install_uv_sets_virtual_env_to_project_venv(tmp_path, monkeypatc
     # uv's venv resolution.
     assert "PYTHONHOME" not in seen_env
     assert "PYTHONPATH" not in seen_env
+
+
+def test_uv_isolation_env_overrides_inherited(tmp_path, monkeypatch):
+    """The stdlib-only repair must OVERRIDE an inherited user UV_* environment,
+    not respect it — every write dir is pinned inside HERMES_HOME."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("UV_CACHE_DIR", "/evil/cache")
+    monkeypatch.setenv("UV_TOOL_DIR", "/evil/tools")
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", "/evil/bin")
+
+    env = er._uv_isolation_env()
+
+    assert env["UV_CACHE_DIR"] == str(tmp_path / "cache" / "uv")
+    assert env["UV_TOOL_DIR"] == str(tmp_path / "uv" / "tools")
+    assert env["UV_TOOL_BIN_DIR"] == str(tmp_path / "bin")
+    assert env["UV_PYTHON_INSTALL_DIR"] == str(tmp_path / "python")
+    assert env["UV_PYTHON_INSTALL_BIN"] == "0"
+    assert env["UV_PYTHON_INSTALL_REGISTRY"] == "0"
+
+
+def test_hermes_root_maps_named_profile_to_default_root(tmp_path, monkeypatch):
+    """The managed uv binary is per-machine: from ``<root>/profiles/<name>``
+    the stdlib-only resolver must look under ``<root>``, where the installer
+    actually placed it — not inside the profile home."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "root" / "profiles" / "b"))
+    assert er._hermes_root() == tmp_path / "root"
+
+
+def test_hermes_root_is_hermes_home_when_not_a_profile(tmp_path, monkeypatch):
+    """A custom HERMES_HOME (Docker/custom root) is its own root."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "custom"))
+    assert er._hermes_root() == tmp_path / "custom"
+
+
+def test_find_uv_binary_resolves_shared_root_from_named_profile(tmp_path, monkeypatch):
+    """A named profile finds the one shared managed uv under the default root,
+    not a never-written ``<profile>/uv`` copy."""
+    root = tmp_path / "root"
+    profile = root / "profiles" / "b"
+    profile.mkdir(parents=True)
+    exe = "uv.exe" if sys.platform == "win32" else "uv"
+    managed = root / "uv" / exe
+    managed.parent.mkdir(parents=True)
+    managed.write_text("fake", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    assert er._find_uv_binary() == str(managed)
+
+
+def test_resolve_install_target_pins_uv_cache_to_hermes_home(tmp_path, monkeypatch):
+    """The update-time venv repair path (``_install_repair``) must pin uv's
+    download cache inside HERMES_HOME too — same containment as
+    ``managed_uv_env()`` but without importing ``managed_uv`` (stdlib-only)."""
+    from hermes_cli import _install_repair as ir
+
+    root = _project(tmp_path)
+    monkeypatch.setattr(ir._er, "_find_uv_binary", lambda: "/fake/uv")
+
+    from hermes_constants import get_hermes_home
+
+    cmd, env = ir._resolve_install_target(root)
+
+    assert cmd == ["/fake/uv", "pip"]
+    assert env["VIRTUAL_ENV"] == str(root / "venv")
+    assert env["UV_CACHE_DIR"] == str(get_hermes_home() / "cache" / "uv")
 
 
 def test_repair_install_falls_back_to_break_system_packages_without_uv(

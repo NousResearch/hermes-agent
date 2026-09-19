@@ -217,7 +217,10 @@ class TestQrRegister:
 
         output = capsys.readouterr().out
         assert "https://example.com/qr" in output
-        assert sys.executable in output
+        # Managed-only resolution: no managed uv -> the running interpreter's
+        # own pip, never a bare `pip`/`uv`.
+        assert f"{sys.executable} -m pip install qrcode" in output
+        assert "Tip: pip install qrcode" not in output
 
     # -- Contract: expected errors → None, unexpected errors → propagate --
 

@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { readDesktopFileDataUrl } = vi.hoisted(() => ({ readDesktopFileDataUrl: vi.fn() }))
+const { readDesktopFileDataUrl, readDesktopFileText } = vi.hoisted(() => ({
+  readDesktopFileDataUrl: vi.fn(),
+  readDesktopFileText: vi.fn()
+}))
 
 vi.mock('@/lib/desktop-fs', () => ({
   isDesktopFsRemoteMode: () => true,
   readDesktopFileDataUrl,
-  readDesktopFileText: vi.fn()
+  readDesktopFileText
 }))
 
 import {
@@ -195,5 +198,32 @@ describe('PDF previews', () => {
       previewKind: 'pdf'
     })
     expect(readDesktopFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  // Remote text files must arrive at the preview already enriched (binary flag,
+  // byte size, language) so LocalFilePreview can gate editing on COMPLETE
+  // readable content without a second read.
+  it('enriches a remote text target with binary/size/language metadata', async () => {
+    vi.clearAllMocks()
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async () => null)
+    } as never
+    readDesktopFileText.mockResolvedValue({
+      binary: false,
+      byteSize: 2048,
+      language: 'markdown',
+      mimeType: 'text/markdown',
+      text: '# hi'
+    })
+
+    await expect(normalizeOrLocalPreviewTarget('/remote/README.md')).resolves.toMatchObject({
+      binary: false,
+      byteSize: 2048,
+      kind: 'file',
+      language: 'markdown',
+      large: false,
+      previewKind: 'text'
+    })
+    expect(readDesktopFileText).toHaveBeenCalledWith('/remote/README.md')
   })
 })

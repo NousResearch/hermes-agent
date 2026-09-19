@@ -17,26 +17,26 @@ import type { Locale, Translations } from './types'
 export { LOCALE_META } from './languages'
 
 export interface I18nConfigClient {
-  getConfig: () => Promise<HermesConfigRecord>
-  saveConfig: (config: HermesConfigRecord) => Promise<{ ok: boolean }>
+  getConfig: (profile?: string | null) => Promise<HermesConfigRecord>
+  saveConfig: (config: HermesConfigRecord, profile?: string | null) => Promise<{ ok: boolean }>
 }
 
 const defaultConfigClient: I18nConfigClient = {
-  getConfig: () => {
+  getConfig: profile => {
     if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
       return Promise.resolve({})
     }
 
     // Merged defaults make an unset language indistinguishable from saved English.
     // Older backends ignore the option and keep returning English as before.
-    return getHermesConfigRecord(undefined, { includeDefaults: false })
+    return getHermesConfigRecord(profile, { includeDefaults: false })
   },
-  saveConfig: config => {
+  saveConfig: (config, profile) => {
     if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
       return Promise.resolve({ ok: true })
     }
 
-    return saveHermesConfig(config, undefined, { preserveLanguage: true })
+    return saveHermesConfig(config, profile, { preserveLanguage: true })
   }
 }
 
@@ -84,9 +84,26 @@ export interface I18nProviderProps {
   children: ReactNode
   configClient?: I18nConfigClient | null
   initialLocale?: unknown
+  /**
+   * Config scope the persisted locale is read from and written to.
+   *
+   * The window's active profile settles AFTER mount — `$activeGatewayProfile`
+   * boots as `'default'` while the backend pool resolves the real one — and a
+   * profile-less request lands on whichever profile is ambient at that moment.
+   * Reading the locale against that placeholder, then persisting an explicit
+   * pick against the settled profile, is how the user's choice gets written to
+   * a config nothing ever reads back (#113980). Passing the profile in keeps
+   * both ends on one scope, and re-reads when it changes.
+   */
+  profile?: string | null
 }
 
-export function I18nProvider({ children, configClient = defaultConfigClient, initialLocale }: I18nProviderProps) {
+export function I18nProvider({
+  children,
+  configClient = defaultConfigClient,
+  initialLocale,
+  profile
+}: I18nProviderProps) {
   const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
@@ -119,6 +136,11 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     // settles on English so the UI stays usable — but bounded retries recover
     // transient startup failures, applying the persisted display.language once
     // the backend comes up.
+    //
+    // `profile` is a dependency, not just a parameter: the window's profile
+    // scope resolves after mount, and a read issued against the placeholder
+    // scope can never agree with the write an explicit pick performs later
+    // (#113980). Re-running here is what lets the settled scope win.
     const MAX_LOCALE_RETRIES = 10
     const LOCALE_RETRY_DELAY_MS = 3_000
 
@@ -127,7 +149,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       setConfigLoadError(null)
 
       return configClient
-        .getConfig()
+        .getConfig(profile)
         .then(async config => {
           if (cancelled || userLocaleRef.current) {
             return
@@ -181,7 +203,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
         clearTimeout(retryTimer)
       }
     }
-  }, [configClient, initialLocale])
+  }, [configClient, initialLocale, profile])
 
   const setLocale = useCallback(
     async (next: Locale) => {
@@ -198,8 +220,8 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       setIsSavingLocale(true)
 
       try {
-        const latestConfig = await configClient.getConfig()
-        const result = await configClient.saveConfig(withConfigDisplayLanguage(latestConfig, next))
+        const latestConfig = await configClient.getConfig(profile)
+        const result = await configClient.saveConfig(withConfigDisplayLanguage(latestConfig, next), profile)
 
         if (!result.ok) {
           throw new Error('Failed to save language')
@@ -215,7 +237,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
         setIsSavingLocale(false)
       }
     },
-    [configClient]
+    [configClient, profile]
   )
 
   const value = useMemo<I18nContextValue>(

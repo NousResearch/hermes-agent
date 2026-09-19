@@ -13,7 +13,7 @@ Hermes Agent 会自动发现并加载上下文文件，以塑造其行为方式�
 | 文件 | 用途 | 发现方式 |
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | 项目指令（最高优先级） | 向上遍历至 git 根目录 |
-| **AGENTS.md** | 项目指令、规范、架构说明 | 启动时的 CWD 及子目录（渐进式） |
+| **AGENTS.md** | 项目指令、规范、架构说明 | 启动时按 git 根目录 → CWD 目录链；子目录渐进式 |
 | **CLAUDE.md** | Claude Code 上下文文件（同样支持检测） | 启动时的 CWD 及子目录（渐进式） |
 | **SOUL.md** | 当前 Hermes 实例的全局个性与语气定制 | 仅 `HERMES_HOME/SOUL.md` |
 | **.cursorrules** | Cursor IDE 编码规范 | 仅 CWD |
@@ -29,7 +29,7 @@ Hermes Agent 会自动发现并加载上下文文件，以塑造其行为方式�
 
 ### 渐进式子目录发现
 
-会话启动时，Hermes 将工作目录中的 `AGENTS.md` 加载到系统 prompt（提示词）中。在会话期间，当 agent 通过 `read_file`、`terminal`、`search_files` 等工具导航进入子目录时，它会**渐进式发现**这些目录中的上下文文件，并在其变得相关的时刻将其注入对话。
+会话启动时，Hermes 将 `AGENTS.md` 目录链（git 根目录 → 工作目录）加载到系统 prompt（提示词）中。在会话期间，当 agent 通过 `read_file`、`terminal`、`search_files` 等工具导航进入子目录时，它会**渐进式发现**这些目录中的上下文文件，并在其变得相关的时刻将其注入对话。
 
 ```
 my-project/
@@ -109,7 +109,7 @@ Hermes 兼容 Cursor IDE 的 `.cursorrules` 文件和 `.cursor/rules/*.mdc` 规�
 1. **扫描工作目录** — 依次检查 `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`（先匹配先生效）
 2. **读取内容** — 以 UTF-8 文本读取每个文件
 3. **安全扫描** — 检查内容是否存在 prompt 注入模式
-4. **截断** — 超过 20,000 个字符的文件进行首尾截断（70% 头部，20% 尾部，中间插入标记）
+4. **截断** — 超过上限的文件进行首尾截断（70% 头部，20% 尾部，中间插入标记）。上限在 config.yaml 中显式设置 `context_file_max_chars` 时以该值为准；否则随模型上下文窗口动态缩放（下限 20,000 字符，上限 500,000）
 5. **组装** — 所有部分合并在 `# Project Context` 标题下
 6. **注入** — 组装后的内容添加到系统 prompt
 
@@ -119,9 +119,9 @@ Hermes 兼容 Cursor IDE 的 `.cursorrules` 文件和 `.cursor/rules/*.mdc` 规�
 
 1. **路径提取** — 每次工具调用后，从参数（`path`、`workdir`、shell 命令）中提取文件路径
 2. **祖先目录遍历** — 检查该目录及最多 5 个父目录（跳过已访问的目录）
-3. **提示加载** — 若发现 `AGENTS.md`、`CLAUDE.md` 或 `.cursorrules`，则加载（每个目录先匹配先生效）
+3. **提示加载** — 若发现 `AGENTS.override.md`、`AGENTS.md`、`CLAUDE.md` 或 `.cursorrules`，则加载（每个目录先匹配先生效）
 4. **安全扫描** — 与启动文件相同的 prompt 注入扫描
-5. **截断** — 每个文件最多 8,000 个字符
+5. **截断** — 每个文件最多 32,000 个字符（超出部分首尾截断并插入标记）
 6. **注入** — 追加到工具结果中，使模型在上下文中自然看到
 
 最终 prompt 部分大致如下：
@@ -171,7 +171,7 @@ The following project context files have been loaded and should be followed:
 
 | 限制 | 值 |
 |-------|-------|
-| 每个文件最大字符数 | 20,000（约 7,000 个 token） |
+| 每个文件最大字符数 | 设置 `context_file_max_chars` 时以该值为准；否则动态缩放（随模型上下文窗口，下限 20,000，上限 500,000 字符） |
 | 头部截断比例 | 70% |
 | 尾部截断比例 | 20% |
 | 截断标记 | 10%（显示字符数并建议使用文件工具） |

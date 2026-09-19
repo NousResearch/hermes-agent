@@ -78,6 +78,18 @@ class CredentialPoolAdminMixin:
             self._persist()
             return self._find(lambda e: e.id == credential_id)
 
+    def rename_entry(self, credential_id: str, new_label: str) -> Optional[PooledCredential]:
+        """Relabel one entry by id and persist. Returns the updated entry, None when missing."""
+        with self._lock:
+            entry = self._find(lambda e: e.id == credential_id)
+            if entry is None:
+                return None
+            updated = replace(entry, label=new_label)
+            self._replace_entry(entry, updated)
+            self._persist()
+            return updated
+
+
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
         if not raw:

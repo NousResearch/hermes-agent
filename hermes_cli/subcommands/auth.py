@@ -37,6 +37,12 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         "remove", help="Remove a pooled credential by index, id, or label")
     auth_remove.add_argument("provider", help="Provider id")
     auth_remove.add_argument("target", help="Credential index, entry id, or exact label")
+    auth_rename = auth_subparsers.add_parser(
+        "rename", help="Rename a pooled credential by index, id, or label")
+    auth_rename.add_argument("provider", help="Provider id")
+    auth_rename.add_argument("target", help="Credential index, entry id, or exact label")
+    auth_rename.add_argument(
+        "new_label", help="New display label (must be unique within the provider)")
     auth_reset = auth_subparsers.add_parser(
         "reset", help="Clear exhaustion status for a provider's credentials (all, or one target)")
     auth_reset.add_argument("provider", help="Provider id")

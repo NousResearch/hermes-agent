@@ -1247,3 +1247,185 @@ def test_openrouter_loopback_callback_binds_nonce_path_and_rejects_forged_redire
     assert seen["forged_status"] == 404
     assert seen["genuine_status"] == 200
     assert code == "good-code"
+
+
+def _write_two_credential_store(tmp_path) -> None:
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant...mary",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-ant...dary",
+                    },
+                ]
+            },
+        },
+    )
+
+
+def _isolated_pool(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+
+
+def test_auth_rename_persists_new_label(tmp_path, monkeypatch, capsys):
+    _isolated_pool(monkeypatch, tmp_path)
+    _write_two_credential_store(tmp_path)
+
+    from hermes_cli.auth_commands import auth_rename_command
+
+    class _Args:
+        provider = "anthropic"
+        target = "1"
+        new_label = "renamed"
+
+    auth_rename_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["anthropic"]
+    assert entries[0]["label"] == "renamed"
+    assert entries[1]["label"] == "secondary"
+    out = capsys.readouterr().out
+    assert "renamed" in out
+
+
+def test_auth_rename_rejects_duplicate_label_case_insensitive(tmp_path, monkeypatch):
+    _isolated_pool(monkeypatch, tmp_path)
+    _write_two_credential_store(tmp_path)
+
+    from hermes_cli.auth_commands import auth_rename_command
+
+    class _Args:
+        provider = "anthropic"
+        target = "1"
+        new_label = "SECONDARY"
+
+    with pytest.raises(SystemExit):
+        auth_rename_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["anthropic"]
+    assert entries[0]["label"] == "primary"
+
+
+def test_auth_rename_rejects_blank_label(tmp_path, monkeypatch):
+    _isolated_pool(monkeypatch, tmp_path)
+    _write_two_credential_store(tmp_path)
+
+    from hermes_cli.auth_commands import auth_rename_command
+
+    class _Args:
+        provider = "anthropic"
+        target = "1"
+        new_label = "   "
+
+    with pytest.raises(SystemExit):
+        auth_rename_command(_Args())
+
+
+def test_auth_rename_unknown_target(tmp_path, monkeypatch):
+    _isolated_pool(monkeypatch, tmp_path)
+    _write_two_credential_store(tmp_path)
+
+    from hermes_cli.auth_commands import auth_rename_command
+
+    class _Args:
+        provider = "anthropic"
+        target = "nope"
+        new_label = "renamed"
+
+    with pytest.raises(SystemExit):
+        auth_rename_command(_Args())
+
+
+def test_auth_rename_updates_nous_singleton_label_when_matching(tmp_path, monkeypatch):
+    _isolated_pool(monkeypatch, tmp_path)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {"nous": {"label": "primary"}},
+            "credential_pool": {
+                "nous": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "token",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_rename_command
+
+    class _Args:
+        provider = "nous"
+        target = "1"
+        new_label = "renamed"
+
+    auth_rename_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["credential_pool"]["nous"][0]["label"] == "renamed"
+    assert payload["providers"]["nous"]["label"] == "renamed"
+
+
+def test_auth_rename_leaves_singleton_label_when_not_matching(tmp_path, monkeypatch):
+    _isolated_pool(monkeypatch, tmp_path)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {"nous": {"label": "other-account"}},
+            "credential_pool": {
+                "nous": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "token",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_rename_command
+
+    class _Args:
+        provider = "nous"
+        target = "1"
+        new_label = "renamed"
+
+    auth_rename_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["credential_pool"]["nous"][0]["label"] == "renamed"
+    assert payload["providers"]["nous"]["label"] == "other-account"

@@ -522,6 +522,46 @@ def auth_remove_command(args) -> None:
         print(line)
 
 
+def _mirror_renamed_singleton_label(provider: str, old_label: str, new_label: str) -> None:
+    # Keep providers.<provider>.label in sync when it mirrors the renamed entry.
+    # Singleton-backed providers (Nous device-code, openai-codex ChatGPT) carry the
+    # credential label in the provider state so re-seeding keeps it. Conditional: only
+    # when the stored label matches the pre-rename label, else the singleton tracks a
+    # different credential and must be left alone. Must run inside _auth_store_lock.
+    auth_store = auth_mod._load_auth_store()
+    providers = auth_store.get("providers")
+    state = providers.get(provider) if isinstance(providers, dict) else None
+    if not isinstance(state, dict) or "label" not in state:
+        return
+    if str(state.get("label") or "").strip() != old_label.strip():
+        return
+    state["label"] = new_label
+    auth_mod._save_auth_store(auth_store)
+
+
+def auth_rename_command(args) -> None:
+    """`hermes auth rename <provider> <target> <new_label>`: relabel one pooled credential."""
+    provider = _normalize_provider(getattr(args, "provider", ""))
+    target = getattr(args, "target", None)
+    new_label = str(getattr(args, "new_label", "") or "").strip()
+    if not new_label:
+        raise SystemExit("New credential label must not be blank.")
+    pool = load_pool(provider)
+    index, matched, error = pool.resolve_target(target)
+    if matched is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+    for entry in pool.entries():
+        if entry.id != matched.id and entry.label.strip().lower() == new_label.lower():
+            raise SystemExit(f'A {provider} credential is already labeled "{entry.label}".')
+    old_label = matched.label
+    with auth_mod._auth_store_lock():
+        renamed = pool.rename_entry(matched.id, new_label)
+        if renamed is None:
+            raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
+        _mirror_renamed_singleton_label(provider, old_label, new_label)
+    print(f'Renamed {provider} credential #{index} ("{old_label}" -> "{renamed.label}")')
+
+
 def auth_reset_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     target = getattr(args, "target", None)
@@ -808,6 +848,7 @@ def auth_upgrade_command(args) -> None:
 
 _AUTH_ACTIONS = {
     "add": auth_add_command, "list": auth_list_command, "remove": auth_remove_command,
+    "rename": auth_rename_command,
     "reset": auth_reset_command, "priority": auth_priority_command, "refresh": auth_refresh_command, "status": auth_status_command,
     "logout": auth_logout_command, "upgrade": auth_upgrade_command,
     "spotify": auth_spotify_command}

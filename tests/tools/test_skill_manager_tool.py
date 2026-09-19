@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import threading
 from contextlib import contextmanager
 from contextvars import copy_context
@@ -397,6 +398,51 @@ class TestDeleteSkill:
         assert result["success"] is False
         assert "cannot equal" in result["error"]
         assert (tmp_path / "narrow").exists()
+
+    @pytest.mark.parametrize("locked", ["skill_tree", "category_dir"])
+    def test_delete_from_read_only_location_refuses_and_removes_nothing(self, tmp_path, locked):
+        """Regression for #50938: a read-only skill (bundled into an image, or under a
+        read-only category) raised PermissionError out of rmtree, and the agent retried the
+        crash in a loop. Worse, rmtree deletes children first, so a writable skill under a
+        read-only category lost SKILL.md and references/ before the error surfaced. The
+        delete must refuse cleanly with the skill left intact."""
+        if getattr(os, "geteuid", lambda: -1)() == 0:
+            pytest.skip("directory write bits are not enforced for root")
+        with _skill_dir(tmp_path):
+            _create_skill("bundled", VALID_SKILL_CONTENT, category="dev")
+            skill = tmp_path / "dev" / "bundled"
+            (skill / "references").mkdir()
+            (skill / "references" / "notes.md").write_text("keep me", encoding="utf-8")
+            read_only = [skill / "references", skill] if locked == "skill_tree" else [skill.parent]
+            for d in read_only:
+                d.chmod(0o555)
+            try:
+                result = _delete_skill("bundled")
+            finally:
+                for d in read_only:
+                    d.chmod(0o755)
+
+        assert result["success"] is False
+        assert "read-only" in result["error"]
+        assert (skill / "SKILL.md").exists()
+        assert (skill / "references" / "notes.md").read_text(encoding="utf-8") == "keep me"
+
+    def test_delete_succeeds_when_empty_category_cleanup_is_refused(self, tmp_path):
+        """#50938 sibling: removing the emptied category dir is housekeeping. When the
+        skills root is read-only it raised after the skill was already gone, reporting a
+        failure for a delete that happened."""
+        if getattr(os, "geteuid", lambda: -1)() == 0:
+            pytest.skip("directory write bits are not enforced for root")
+        with _skill_dir(tmp_path):
+            _create_skill("only-one", VALID_SKILL_CONTENT, category="solo")
+            tmp_path.chmod(0o555)
+            try:
+                result = _delete_skill("only-one")
+            finally:
+                tmp_path.chmod(0o755)
+
+        assert result["success"] is True
+        assert not (tmp_path / "solo" / "only-one").exists()
 
 # ---------------------------------------------------------------------------
 # write_file / remove_file

@@ -31,7 +31,8 @@ from agent.skill_utils import (
 from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
-    _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
+    _org_mirror_write_guard, _pinned_guard, _read_only_delete_target, _validate_delete_target, _is_background_review,
+    _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
@@ -536,8 +537,16 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
         return {"success": True,
                 "message": f"Skill '{name}' archived ({archive_msg}).{absorbed_note}",
                 "_archived": True}
-    shutil.rmtree(skill_dir)
-    _rmdir_if_empty(skill_dir.parent, skills_root)  # empty category dir, never the root
+    if read_only := _read_only_delete_target(skill_dir):
+        return _err(read_only)
+    try:
+        shutil.rmtree(skill_dir)
+    except OSError as e:  # ACLs, immutable flags, Windows read-only files: invisible to os.access
+        logger.warning("skill_manage: deleting skill '%s' failed: %s", name, e)
+        return _err(f"Deleting skill '{name}' failed: {e}. The delete may be incomplete; "
+                    f"inspect '{skill_dir}' before retrying.")
+    with suppress(OSError):  # housekeeping only: the skill is already gone
+        _rmdir_if_empty(skill_dir.parent, skills_root)  # empty category dir, never the root
     return {"success": True, "message": f"Skill '{name}' deleted.{absorbed_note}"}
 
 

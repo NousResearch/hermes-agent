@@ -1,6 +1,6 @@
 ---
 slug: gateway-plugin-import-deadlock
-generated_at: 2026-09-19T04:37:48.189Z
+generated_at: 2026-09-19T04:41:42.567Z
 spec_revision: 9145c40a89a0
 surfaces: [cli]
 scenarios:
@@ -25,7 +25,7 @@ scenarios:
     observed: |
       
     verdict: pass
-code_diff_hash: 3b9cb3ff82960f7c78469bc8b73ecd9e0239daff404c20ee36d3deb19332d631
+code_diff_hash: ff15b2efed6f3d2faa96cc719e1084c35ae7eb663446be436f9c719f42c7c4bd
 ---
 
 # Simulation trace — gateway-plugin-import-deadlock
@@ -46,37 +46,37 @@ Verdict legend:
 ## Captured runs (ftask --capture audit trail; do NOT hand-edit — re-run --capture to refresh)
 
 - scenario_id: 1
-  at: 2026-09-19T04:37:56.705Z
+  at: 2026-09-19T04:41:52.202Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_is_not_backgrounded_for_gateway"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 959
+  duration_ms: 843
   stdout_tail: |
     .                                                                        [100%]
-    1 passed in 0.21s
+    1 passed in 0.16s
   stderr_tail: |
     (empty)
 
 - scenario_id: 2
-  at: 2026-09-19T04:37:59.061Z
+  at: 2026-09-19T04:41:54.906Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_runs_for_plain_chat"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 759
+  duration_ms: 366
   stdout_tail: |
     .                                                                        [100%]
-    1 passed in 0.18s
+    1 passed in 0.19s
   stderr_tail: |
     (empty)
 
 - scenario_id: 3
-  at: 2026-09-19T04:38:01.410Z
+  at: 2026-09-19T04:41:56.936Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_skipped_for_tui_launch"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 748
+  duration_ms: 412
   stdout_tail: |
     .                                                                        [100%]
-    1 passed in 0.17s
+    1 passed in 0.24s
   stderr_tail: |
     (empty)

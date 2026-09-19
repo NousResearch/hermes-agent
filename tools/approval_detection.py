@@ -575,10 +575,12 @@ _INTERPRETER_NAME_RES = tuple((family, re.compile(pattern)) for family, pattern 
     ("python", r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?"), ("node", r"node(?:js)?(?:\.exe)?"),
     ("perl", r"perl[0-9]*(?:\.\d+)*(?:\.exe)?"), ("ruby", r"ruby[0-9.]*(?:\.exe)?"), ("php", r"php(?:\.exe)?"),
     ("powershell", r"powershell(?:\.exe)?|pwsh(?:\.exe)?"),
+    ("bun", r"bun(?:\.exe)?"), ("deno", r"deno(?:\.exe)?"),
 ))
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl": {"-e", "--eval"}, "ruby": {"-e"},
     "php": {"-r"}, "powershell": {"-command", "-c", "-file", "-f"},
+    "bun": {"-e", "--eval"}, "deno": {"eval", "-e", "--eval"},
 }
 _INTERPRETER_WITH_ARG = {
     "python": {"-W", "-X", "--check-hash-based-pycs"},
@@ -588,6 +590,10 @@ _INTERPRETER_WITH_ARG = {
     "php": {"-c", "-d", "-z"},
     "powershell": {"-configurationname", "-custompipename", "-executionpolicy", "-inputformat", "-outputformat",
                    "-settingsfile", "-version", "-windowstyle", "-workingdirectory"},
+    # Deno deliberately maps to no value-taking globals: its inline-script entry is the
+    # bare `eval` subcommand (first-arg fast path below), and its dash flags that precede
+    # `eval` (--ext, --no-check, ...) never swallow the next token as a value.
+    "bun": {"--config", "--cwd", "--env-file", "--preload", "--require"}, "deno": set(),
 }
 _READ_TOOL_EXEC_FLAGS = {
     "sort": {"--compress-program"}, "rg": {"--pre", "--hostname-bin"}, "ag": {"--pager"},
@@ -834,6 +840,10 @@ def _iter_top_level_shell_segments(command: str):
 def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
     """Return an execution-bearing interpreter option, if present."""
     flags, with_arg = _INTERPRETER_EXEC_FLAGS[family], _INTERPRETER_WITH_ARG[family]
+    # Deno evaluates inline scripts via a bare `eval` subcommand rather than a dash flag, and
+    # only as the first argument; a later positional `eval` stays data.
+    if family == "deno" and args and args[0].lower() == "eval":
+        return "eval"
     powershell = family == "powershell"
     skip_value = False
     for token in args:

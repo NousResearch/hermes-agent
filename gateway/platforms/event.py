@@ -88,6 +88,13 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Native-interaction echo handoff. Set by an adapter that owns an OPEN, already-deferred
+    # platform interaction it will answer itself (Discord native slash commands): the inline
+    # command-dispatch paths then hand their reply back via ``_deferred_reply_text`` instead of
+    # publishing a public channel message, so one command yields ONE delivery instead of two.
+    # Adapters that never defer an interaction leave this False and the public echo is unchanged.
+    _suppress_public_echo: bool = field(default=False, init=False, repr=False, compare=False)
+    _deferred_reply_text: Optional[str] = field(default=None, init=False, repr=False, compare=False)
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

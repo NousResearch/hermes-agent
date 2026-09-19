@@ -4337,12 +4337,34 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             "Executing command anyway, skipping interaction followup.", command_text,
         )
         event = self._build_slash_event(interaction, command_text)
+        # We own an open, deferred interaction and answer it below, so the inline
+        # command-dispatch paths must not ALSO publish the reply publicly — that
+        # delivered every followup_msg command twice (public + ephemeral). Only set
+        # when the defer succeeded: an expired interaction has no ephemeral surface
+        # left, so its public echo is the user's only delivery.
+        if deferred_response:
+            event._suppress_public_echo = True
         await self.handle_message(event)
         if not deferred_response:
             return
+        # Prefer the gateway's OWN reply: the hardcoded followup can contradict it
+        # (it dropped /queue's "(N queued)" depth suffix and masked usage errors).
+        # Fall back to followup_msg when the gateway produced no inline text — that
+        # is what followup_msg is for.
+        gateway_text = event._deferred_reply_text
+        if gateway_text and len(gateway_text) > self.MAX_MESSAGE_LENGTH:
+            # Discord rejects an interaction response over 2000 chars (error 50035);
+            # publish it on the channel instead, where send() chunks it.
+            try:
+                await self._send_with_retry(chat_id=event.source.chat_id, content=gateway_text)
+            except Exception as e:
+                logger.error("[%s] slash %s: oversized reply publish failed: %s",
+                             self.name, command_text, e)
+            gateway_text = None
+        reply_text = gateway_text or followup_msg
         try:
-            if followup_msg:
-                await interaction.edit_original_response(content=followup_msg)
+            if reply_text:
+                await interaction.edit_original_response(content=reply_text)
             else:
                 await interaction.delete_original_response()
         except Exception as e:

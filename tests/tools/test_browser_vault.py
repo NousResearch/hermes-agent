@@ -866,3 +866,39 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field" and "device" in out["error"]
+
+    def test_fill_retries_once_and_reports_no_bound_tab(self, store):
+        """A transient "no page" must not read as a missing credential: one bounded retry,
+        then a typed refusal that names the origin and the tab rule, with no secret in it."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", return_value=None) as focus, \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value=None) as read, \
+             patch.object(browser_vault_tool.time, "sleep") as slept:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False
+        assert out["error_type"] == "no_bound_tab"
+        assert "https://example.com" in out["error"] and "leave the tab open" in out["error"]
+        attempts = browser_vault_tool._ORIGIN_READ_ATTEMPTS
+        assert focus.call_count == attempts and read.call_count == attempts
+        assert slept.call_count == attempts - 1
+        assert "s3cret-pw" not in json.dumps(out)
+
+    def test_origin_read_recovers_on_retry(self):
+        """The retry, not the error text, is what makes a mid-re-attach supervisor recoverable."""
+        from tools import browser_vault_tool
+
+        reads = []
+
+        def flaky_read(task_id):
+            reads.append(task_id)
+            return None if len(reads) == 1 else "https://example.com"
+
+        with patch.object(browser_vault_tool, "_focus_bound_origin", return_value=None), \
+             patch.object(browser_vault_tool, "_current_page_origin", side_effect=flaky_read), \
+             patch.object(browser_vault_tool.time, "sleep") as slept:
+            assert browser_vault_tool._resolve_page_origin(
+                "t", ["https://example.com"], "login") == "https://example.com"
+        assert len(reads) == 2 and slept.call_count == 1

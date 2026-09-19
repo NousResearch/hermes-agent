@@ -1753,6 +1753,52 @@ class GatewayTurnMixin:
             )
         return response, session_entry
 
+    async def _hmwa_guardrail_rejection_reset(self, response, session_entry, session_key, source):
+        """Auto-rotate the session when the final reply is a router guardrail rejection, so the
+        user's next message starts a fresh session without typing /new (the rejected exchange is
+        persisted into the OLD session, which is then rotated away — the new session is clean).
+
+        Opt-in via config.yaml:
+            guardrail_rejection_reset:
+              enabled: true
+              pattern: "(?s)^This channel is scoped to EAT Cafe.*\\[smart-router/v"
+
+        `pattern` is a regex (re.search, DOTALL via inline flag) matched against the delivered
+        reply text — typically the llm-smart-router custom-guardrail rejection message plus its
+        version postfix. Returns the (possibly rotated) session_entry."""
+        if not (response and session_entry and session_key):
+            return session_entry
+        try:
+            from gateway.run import _load_gateway_config
+            _cfg = (_load_gateway_config().get("guardrail_rejection_reset") or {})
+            if not _cfg.get("enabled"):
+                return session_entry
+            import re as _re
+            _pattern = str(_cfg.get("pattern") or "")
+            if not _pattern or not _re.search(_pattern, str(response)):
+                return session_entry
+        except Exception:
+            logger.debug("guardrail_rejection_reset config read failed", exc_info=True)
+            return session_entry
+        logger.info(
+            "Auto-resetting session %s after guardrail rejection reply (guardrail_rejection_reset).",
+            session_entry.session_id,
+        )
+        new_entry = await self.async_session_store.reset_session(session_key)
+        self._evict_cached_agent(session_key)
+        # Conversation boundary: clear every conversation-scoped per-session dict (same funnel as
+        # /new and the compression-exhaustion auto-reset).
+        self._clear_conversation_scope(session_key, reason="guardrail_rejection_reset")
+        if new_entry is not None:
+            session_entry = new_entry
+            # Re-point the Telegram topic binding at the fresh session so the binding-heal walk
+            # doesn't switch the next message back onto the rejected session (see #35809).
+            await asyncio.to_thread(
+                self._sync_telegram_topic_binding, source, session_entry,
+                reason="guardrail-rejection-reset",
+            )
+        return session_entry
+
     @staticmethod
     def _hmwa_user_transcript_entry(event, prepared, ts):
         """Transcript row for the inbound user turn (clean text + event time when captured)."""
@@ -2196,6 +2242,11 @@ class GatewayTurnMixin:
                 response=response, agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
+            )
+            # Guardrail rejection (e.g. llm-smart-router scope guardrail): rotate the session AFTER
+            # the exchange is persisted so the next message starts fresh without /new.
+            session_entry = await self._hmwa_guardrail_rejection_reset(
+                response, session_entry, session_key, source,
             )
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,

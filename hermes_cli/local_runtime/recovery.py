@@ -81,14 +81,19 @@ def _owner_is_dead(state: dict) -> bool:
         return False
 
 
-def _legacy_orphan_process(state: dict):
-    """Older state lacks birth times: require the exact installed binary and launch arguments."""
+def legacy_recorded_process(state: dict):
+    """Match an older record only to the managed binary and its exact launch arguments.
+
+    Legacy records lack process birth identity. A live PID alone is not evidence because the OS
+    can reuse it after llama-server exits. The executable location, state-file age, endpoint key,
+    and launch arguments together keep old records usable without adopting an unrelated process.
+    """
     from urllib.parse import urlsplit
     from hermes_cli.local_runtime.bootstrap import models_dir
     from hermes_cli.local_runtime.supervisor import state_path
 
     # A damaged new record must not fall back to weaker legacy evidence.
-    if os.name != "nt" or is_modern(state):
+    if is_modern(state):
         return None
     try:
         if not _valid_pid(state["pid"]):
@@ -96,10 +101,8 @@ def _legacy_orphan_process(state: dict):
         proc = psutil.Process(state["pid"])
         root = state_path().parent
         exe = Path(proc.exe())
-        relative = exe.relative_to(root)
-        if len(relative.parts) != 3 or exe.name.lower() != "llama-server.exe":
-            return None
-        if proc.parent() is not None or proc.ppid() <= 0:
+        exe.relative_to(root)
+        if exe.name.lower() not in ("llama-server", "llama-server.exe"):
             return None
         if proc.create_time() > state_path().stat().st_mtime:
             return None  # the PID was reused after this record was written
@@ -123,6 +126,26 @@ def _legacy_orphan_process(state: dict):
             return None
         return proc
     except (KeyError, TypeError, ValueError, OSError, psutil.Error):
+        return None
+
+
+def _legacy_orphan_process(state: dict):
+    """Windows-only legacy stop recovery after the process identity is established."""
+    from hermes_cli.local_runtime.supervisor import state_path
+
+    if os.name != "nt":
+        return None
+    proc = legacy_recorded_process(state)
+    if proc is None:
+        return None
+    try:
+        relative = Path(proc.exe()).relative_to(state_path().parent)
+        if len(relative.parts) != 3 or relative.name.lower() != "llama-server.exe":
+            return None
+        if proc.parent() is not None or proc.ppid() <= 0:
+            return None
+        return proc
+    except (OSError, psutil.Error):
         return None
 
 

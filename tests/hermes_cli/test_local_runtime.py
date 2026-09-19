@@ -26,6 +26,25 @@ from hermes_cli.local_runtime.binaries import (
 from hermes_cli.local_runtime.detect import DetectedServer, probe_port
 
 
+def _write_current_process_state(path: Path, *, base_url: str, api_key: str) -> None:
+    """Publish a modern state record for the process hosting the test stub."""
+    import psutil
+
+    proc = psutil.Process()
+    parent = proc.parent()
+    assert parent is not None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "base_url": base_url,
+        "api_key": api_key,
+        "pid": proc.pid,
+        "create_time": proc.create_time(),
+        "executable": proc.exe(),
+        "owner_pid": parent.pid,
+        "owner_create_time": parent.create_time(),
+    }), encoding="utf-8")
+
+
 # ── stub llama-server ────────────────────────────────────────
 
 
@@ -356,13 +375,8 @@ def test_llamacpp_endpoint_resolution_prefers_managed(tmp_path, monkeypatch, stu
     from hermes_cli.local_runtime import endpoint as ep
     from hermes_cli.local_runtime.supervisor import state_path
 
-    state_path().parent.mkdir(parents=True, exist_ok=True)
-    state_path().write_text(json.dumps({
-        # A LIVE pid: the ownership guard treats health-200 + dead recorded
-        # pid as a foreign server on our stable port (scratch-profile
-        # collision), so claiming this test process models "our server".
-        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": os.getpid(),
-    }), encoding="utf-8")
+    _write_current_process_state(
+        state_path(), base_url=f"http://127.0.0.1:{port}/v1", api_key="sk-managed")
     resolved = ep.resolve_llamacpp_endpoint()
     assert resolved == {"base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed"}
 
@@ -447,7 +461,8 @@ def test_llamacpp_endpoint_starting_server_resolves(tmp_path, monkeypatch):
         "base_url": f"http://127.0.0.1:{not_listening}/v1",
         "api_key": "sk-starting", "pid": 4242,
     }), encoding="utf-8")
-    monkeypatch.setattr(ep, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.recovery.legacy_recorded_process", lambda state: object())
     resolved = ep.resolve_llamacpp_endpoint()
     assert resolved is not None
     assert resolved["api_key"] == "sk-starting"
@@ -468,7 +483,8 @@ def test_llamacpp_endpoint_waits_for_boot_in_flight(tmp_path, monkeypatch):
 
     # Boot is in flight: runtime enabled + binary installed.
     monkeypatch.setattr(ep, "_boot_in_flight", lambda config: True)
-    monkeypatch.setattr(ep, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.recovery.legacy_recorded_process", lambda state: object())
     # Nothing detected externally.
     monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
 
@@ -506,7 +522,8 @@ def test_resolution_kicks_boot_when_no_thread_is_booting(tmp_path, monkeypatch):
     from hermes_cli.local_runtime.supervisor import state_path
 
     monkeypatch.setattr(ep, "_boot_in_flight", lambda config: True)
-    monkeypatch.setattr(ep, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.recovery.legacy_recorded_process", lambda state: object())
     monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
 
     def _fake_ensure(config, force=False):
@@ -739,13 +756,8 @@ def test_switch_model_explicit_llamacpp_provider(tmp_path, monkeypatch, stub_ser
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime.supervisor import state_path
 
-    state_path().parent.mkdir(parents=True, exist_ok=True)
-    state_path().write_text(json.dumps({
-        "base_url": f"http://127.0.0.1:{port}/v1",
-        # Live pid: ownership guard rejects health-200 + dead recorded pid
-        # (foreign server on our stable port).
-        "api_key": "sk-managed", "pid": os.getpid(),
-    }), encoding="utf-8")
+    _write_current_process_state(
+        state_path(), base_url=f"http://127.0.0.1:{port}/v1", api_key="sk-managed")
 
     from hermes_cli.model_switch import switch_model
 
@@ -768,13 +780,8 @@ def test_runtime_provider_seam_llamacpp_alias(tmp_path, monkeypatch, stub_server
     port, handler = stub_server
     from hermes_cli.local_runtime.supervisor import state_path
 
-    state_path().parent.mkdir(parents=True, exist_ok=True)
-    state_path().write_text(json.dumps({
-        # A LIVE pid: the ownership guard treats health-200 + dead recorded
-        # pid as a foreign server on our stable port (scratch-profile
-        # collision), so claiming this test process models "our server".
-        "base_url": f"http://127.0.0.1:{port}/v1", "api_key": "sk-managed", "pid": os.getpid(),
-    }), encoding="utf-8")
+    _write_current_process_state(
+        state_path(), base_url=f"http://127.0.0.1:{port}/v1", api_key="sk-managed")
 
     from hermes_cli.runtime_provider import _resolve_named_custom_runtime
 

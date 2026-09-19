@@ -27,7 +27,7 @@ from hermes_cli.sizefmt import format_bytes
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_KEEP = 5
+DEFAULT_KEEP = 2
 
 # Never rolled into a snapshot: .hub/ is owned by the skills hub (rolling it back breaks lockfile invariants); .curator_backups
 # is the backup dir itself; .git is repository metadata — rolling it back breaks git tracking, and snapshots that include it grow
@@ -173,9 +173,16 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         shutil.rmtree(dest, ignore_errors=True)  # clean up partial snapshot
         return None
 
-    _prune_old(keep=get_keep(), protect=protect_ids)
+    # A same-second id reuse after a prune (`...Z` next to a surviving `...Z-02`) sorts BELOW its sibling;
+    # the snapshot just written must never be its own prune victim.
+    _prune_old(keep=get_keep(), protect=(protect_ids or set()) | {snap_id})
     logger.info("Curator snapshot created: %s (%s)", snap_id, reason)
     return dest
+
+
+def prune_old_snapshots() -> List[str]:
+    """Apply ``curator.backup.keep`` without taking a new snapshot (the prune-only curator pass)."""
+    return _prune_old(keep=get_keep())
 
 
 def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:

@@ -1429,11 +1429,12 @@ DEFAULT_CONFIG = {
         # TTL purge of skills/.archive/: 0 = never; > 0 lets the explicit `hermes curator purge`
         # delete older archived skills (never automatic; logged in the ledger).
         "archive_ttl_days": 0,
-        # Before every real (non-dry-run) pass, snapshot ~/.hermes/skills/ to
-        # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz (`hermes curator rollback`).
+        # Before a consolidation pass (the only one that rewrites skill content in place), snapshot
+        # ~/.hermes/skills/ to ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz (`hermes curator
+        # rollback`). The prune-only pass just moves directories into .archive/ and takes none.
         "backup": {
             "enabled": True,
-            "keep": 5,  # retain last N regular snapshots
+            "keep": 2,  # retain last N regular snapshots
         },
     },
     # Honcho AI-native memory — ~/.honcho/config.json is the source of truth (apiKey, workspace,

@@ -617,7 +617,9 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
         return False, f"skill '{skill_name}' not found"
     if is_external_skill_path(skill_dir):
         return False, _external_read_only_message(skill_name)
-    dest = _archive_dir() / skill_dir.name
+    # Flatten under the skill NAME, not the directory name: `mlops/training/accelerate` is the skill
+    # `huggingface-accelerate`, and restore/list/purge all key on the name.
+    dest = _archive_dir() / skill_name
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -643,9 +645,12 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     # "<skill>-YYYYMMDDHHMMSS" counts — a bare startswith("<skill>-") would let restoring "git" steal "git-helpers".
     dirs = [p for p in archive_root.rglob("*") if p.is_dir()]
     prefix = f"{skill_name}-"
+    # Older archives were flattened under the DIRECTORY name (`accelerate` for `huggingface-accelerate`),
+    # so fall back to the frontmatter name before giving up.
     candidates = [p for p in dirs if p.name == skill_name] or sorted(
         (p for p in dirs if p.name.startswith(prefix) and len(p.name) - len(prefix) == 14
-         and p.name[len(prefix):].isdigit()), reverse=True)
+         and p.name[len(prefix):].isdigit()), reverse=True) or [
+        p for p in dirs if (p / "SKILL.md").is_file() and _read_skill_name(p / "SKILL.md", fallback=p.name) == skill_name]
     if not candidates:
         return False, f"skill '{skill_name}' not found in archive"
     if (dest := _skills_dir() / skill_name).exists():

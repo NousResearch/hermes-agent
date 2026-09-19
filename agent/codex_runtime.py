@@ -337,6 +337,11 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if isinstance(text, str) and text.strip() and getattr(agent, "show_commentary", True):
             agent_cb("_emit_interim_assistant_message", "_emit_interim_assistant_message raised",
                      args=({"role": "assistant", "content": text},))
+        # Each agentMessage item is its own delivered message: the completed item was just compared
+        # against ITS deltas, so drop them before the next item's deltas arrive. Otherwise the buffer
+        # holds "commentary + final", the final agentMessage no longer prefix-matches, and it is
+        # re-delivered with already_streamed=False as a second copy (#74248 boundary 2).
+        agent._current_streamed_assistant_text = ""
 
     def _on_item(params: dict, completed: bool) -> None:
         item = params.get("item")

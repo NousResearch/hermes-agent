@@ -524,6 +524,9 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     agent._tool_guardrails.reset_for_turn()
+    # Opt-in execution-economy checkpoints: per-turn tracker, never carried across turns.
+    from agent.execution_economy import reset_state as _reset_execution_economy_state
+    _reset_execution_economy_state(agent)
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()

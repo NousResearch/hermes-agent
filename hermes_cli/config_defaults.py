@@ -53,6 +53,11 @@ DEFAULT_CONFIG = {
         # Optional one-time model-visible checkpoint warning before a finite turn cap is exhausted.
         # null = off; set a ratio strictly between 0 and 1 (for example, 0.75).
         "budget_warning_ratio": None,
+        # Opt-in execution-economy checkpoints: when a turn keeps issuing single-call tool rounds
+        # (or repeats a normalized-equivalent call), one bounded advisory line is appended to its
+        # newest unpersisted tool result. Advisory only — it never blocks a tool, denies a call,
+        # changes a budget, or ends the turn. false = off (default).
+        "execution_economy_checkpoints": False,
         # Wall-clock budget (seconds) per run. null = off. When set: one-time wrap-up notice at 80%
         # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
         # `hermes chat --run-budget N`.

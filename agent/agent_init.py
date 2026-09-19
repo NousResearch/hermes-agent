@@ -1317,6 +1317,10 @@ def _apply_agent_section(agent, _agent_cfg):
     agent.budget_warning_ratio = normalize_budget_warning_ratio(
         _agent_section.get("budget_warning_ratio")
     )
+    # Opt-in, advisory-only execution-economy checkpoints (default off; see agent/execution_economy.py).
+    agent._execution_economy_checkpoints = bool(
+        _agent_section.get("execution_economy_checkpoints", False)
+    )
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
     # of each other (gates in agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")

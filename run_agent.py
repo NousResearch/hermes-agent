@@ -1308,6 +1308,10 @@ class AIAgent(
         tool_calls = assistant_message.tool_calls
         args = (assistant_message, messages, effective_task_id, api_call_count)
         self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
+        # Opt-in, advisory only: count this round's call pattern so a crossed threshold can
+        # annotate the round's tool result at its incremental flush (agent/execution_economy.py).
+        from agent.execution_economy import observe_tool_round
+        observe_tool_round(self, tool_calls)
         try:
             if len(tool_calls) <= 1:
                 return self._execute_tool_calls_sequential(*args)

@@ -188,6 +188,8 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
     # this tool result as durable. Already-written rows must never be rewritten later.
     _maybe_inject_run_budget_wrapup(agent, messages)
     _maybe_inject_iteration_budget_warning(agent, messages)
+    from agent.execution_economy import inject_execution_economy_checkpoint
+    inject_execution_economy_checkpoint(agent, messages)
     try:
         persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:

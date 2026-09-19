@@ -251,16 +251,35 @@ def stream_current(
     return managed.final_response if managed.final_response is not None else managed
 
 
-def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> None:
-    """Await ``stream.aclose()`` on ``loop`` when the stream exposes one."""
+_ACLOSE_TIMEOUT = 10.0
+
+
+def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> bool:
+    """Await ``stream.aclose()`` on ``loop`` when the stream exposes one.
+
+    Returns True when the close finished; False when a hung close was
+    abandoned after ``_ACLOSE_TIMEOUT`` (callers must then skip
+    ``loop.close()`` while still finishing the logical scope and
+    releasing the runtime lease).
+    """
     close = getattr(stream, "aclose", None)
     if not callable(close):
-        return
+        return True
 
     async def close_stream() -> None:  # create the coroutine on ``loop``, not the caller's thread
         await close()
 
-    loop.run_until_complete(close_stream())
+    try:
+        relay_runtime._run_on_daemon_thread(
+            lambda: loop.run_until_complete(close_stream()),
+            name="hermes-relay-aclose",
+            timeout=_ACLOSE_TIMEOUT,
+            timeout_message="Relay stream aclose timed out",
+        )
+    except TimeoutError:
+        logger.warning("Relay stream aclose timed out after %.1fs; abandoning close", _ACLOSE_TIMEOUT)
+        return False
+    return True
 
 
 class ManagedLlmStream(Iterator[Any]):
@@ -480,11 +499,13 @@ class ManagedLlmStream(Iterator[Any]):
         self._loop, self._stream, self._raw_stream_resource, self._accept_chunk = None, iter(pending), None, None
         try:
             if loop is not None:
+                aclose_finished = True
                 try:
-                    _aclose_on_loop(loop, relay_stream)
+                    aclose_finished = _aclose_on_loop(loop, relay_stream)
                 except Exception:
                     logger.debug("Relay stream cleanup failed during provider fallback", exc_info=True)
-                loop.close()
+                if aclose_finished:
+                    loop.close()
             self._finish_logical("success")
         finally:
             self._release_runtime_lease()
@@ -514,15 +535,16 @@ class ManagedLlmStream(Iterator[Any]):
         self._prefetched_chunks.clear()
         try:
             loop, self._loop = self._loop, None
+            aclose_finished = True
             if loop is None:
                 self._close_provider_resources()
             else:
                 try:
-                    _aclose_on_loop(loop, self._stream)
+                    aclose_finished = _aclose_on_loop(loop, self._stream)
                 except Exception as exc:
                     self._keep_first_close_error(exc)
             self._finish_logical(logical_outcome)
-            if loop is not None:
+            if loop is not None and aclose_finished:
                 loop.close()
         finally:
             self._release_runtime_lease()

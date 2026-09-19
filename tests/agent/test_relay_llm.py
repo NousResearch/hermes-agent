@@ -1375,3 +1375,66 @@ def test_stream_current_inside_managed_callback_returns_raw(relay_turn):
     assert list(stream) == []
     assert stream.final_response is not None
     assert stream.final_response.choices[0].message.content == "done"
+
+
+def test_aclose_on_loop_bounded_when_close_hangs(monkeypatch):
+    """Hung ``stream.aclose()`` must not wedge shutdown: bounded, returns False."""
+    import time
+
+    monkeypatch.setattr(relay_llm, "_ACLOSE_TIMEOUT", 0.2, raising=False)
+
+    async def hung_aclose():
+        await asyncio.sleep(10)
+
+    loop = asyncio.new_event_loop()
+    try:
+        start = time.monotonic()
+        finished = relay_llm._aclose_on_loop(loop, SimpleNamespace(aclose=hung_aclose))
+        elapsed = time.monotonic() - start
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass  # abandoned: worker thread may still own the loop
+    assert finished is False
+    assert elapsed < 5
+
+
+def test_close_releases_lease_when_aclose_hangs(monkeypatch):
+    """``_close`` with a hung aclose returns quickly and still releases the lease."""
+    import time
+
+    monkeypatch.setattr(relay_llm, "_ACLOSE_TIMEOUT", 0.2, raising=False)
+
+    async def hung_aclose():
+        await asyncio.sleep(10)
+
+    released = []
+    stream = relay_llm.ManagedLlmStream.__new__(relay_llm.ManagedLlmStream)
+    stream._closed = False
+    stream._prefetched_chunks = []
+    stream._loop = asyncio.new_event_loop()
+    stream._stream = SimpleNamespace(aclose=hung_aclose)
+    stream._raw_stream_resource = None
+    stream._runtime_lease = SimpleNamespace(release=lambda: released.append(True))
+    stream._logical = None
+    stream._defer_logical_completion = True
+    stream._close_error = None
+    stream._logical_model_name = None
+    stream._logical_provider_name = None
+    stream._logical_response_model_name = None
+
+    outcome = {}
+
+    def target():
+        stream._close(logical_outcome="cancelled")
+        outcome["done"] = True
+
+    worker = threading.Thread(target=target, daemon=True)
+    start = time.monotonic()
+    worker.start()
+    worker.join(15)
+    elapsed = time.monotonic() - start
+    assert outcome.get("done") is True
+    assert released == [True]
+    assert elapsed < 5

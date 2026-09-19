@@ -229,6 +229,12 @@ class _ProcessRelayPluginConfiguration:
                 return _RelayPluginConfigurationState.DISABLED
         except Exception as exc:
             self._activation = None
+            if _is_relay_host_conflict(exc):
+                logger.warning(
+                    "A process-global Relay plugin configuration is already active outside Hermes native "
+                    "ownership; leaving it unchanged and disabling Hermes-managed Relay middleware for this process"
+                )
+                return _RelayPluginConfigurationState.FOREIGN
             logger.warning("Hermes Relay plugin initialization failed: %s", exc, exc_info=True)
             return _RelayPluginConfigurationState.FAILED
         self._relay = relay
@@ -241,41 +247,18 @@ class _ProcessRelayPluginConfiguration:
                 "Hermes Relay plugin cleanup is still pending; refusing to replace the process-global configuration"
             )
             return _RelayPluginConfigurationState.FAILED
-        try:
-            existing_report = relay.plugin.report()
-        except Exception:
-            logger.warning(
-                "Hermes could not determine whether a process-global Relay plugin configuration is already "
-                "active; refusing to replace it", exc_info=True,
-            )
-            return _RelayPluginConfigurationState.FAILED
-        if existing_report is not None:
-            logger.warning(
-                "A process-global Relay plugin configuration is already active outside Hermes native ownership; "
-                "leaving it unchanged and disabling Hermes-managed Relay middleware for this process"
-            )
-            return _RelayPluginConfigurationState.FOREIGN
         return None
 
     def _initialize(self, relay: Any) -> bool:
         """Initialize Relay from the selected plugins.toml; False when none is selected."""
-        configured_inputs = _configured_plugin_inputs(relay)
-        if configured_inputs is None:
+        config_path = _configured_plugin_inputs()
+        if config_path is None:
             return False
-        plugin_config, dynamic_plugins = configured_inputs
-        if dynamic_plugins:
-            try:
-                initialize = relay.plugin.initialize_with_dynamic_plugins
-                activation = _resolve_plugin_awaitable(initialize(plugin_config, dynamic_plugins))
-                if activation is None:
-                    raise RuntimeError("NeMo Relay dynamic plugin initialization returned no activation handle")
-                self._activation = activation
-            except Exception as exc:
-                raise RuntimeError("Hermes Relay dynamic plugin activation failed") from exc
-        if self._activation is None:
-            # Reached only after explicit opt-in. Relay 0.8 no longer layers repository-local
-            # configuration onto this explicitly selected payload.
-            _resolve_plugin_awaitable(relay.plugin.initialize(plugin_config))
+        # Relay replaces the user file with the explicit file, then applies the system file above it.
+        activation = _resolve_plugin_awaitable(relay.plugin.initialize({}, additional_plugins_toml=config_path))
+        if activation is None:
+            raise RuntimeError("NeMo Relay plugin initialization returned no activation handle")
+        self._activation = activation
         return True
 
     def release(self, owner: Any) -> None:
@@ -303,11 +286,9 @@ class _ProcessRelayPluginConfiguration:
             return True
 
         def close_configuration() -> Any:
-            if activation is None:
-                return _resolve_plugin_awaitable(relay.plugin.clear_async())
             if callable(close := getattr(activation, "close", None)):
                 return _resolve_plugin_awaitable(close())
-            raise RuntimeError("NeMo Relay dynamic plugin activation has no close method")
+            raise RuntimeError("NeMo Relay plugin activation has no close method")
 
         for what, step in (
             ("subscriber flush", lambda: _resolve_plugin_awaitable(relay.subscribers.flush_async())),
@@ -815,6 +796,7 @@ class RelayTurnContext:
     task_id: str
     handle: Any = None
     logical_llm_calls: dict[str, Any] = field(default_factory=dict, repr=False)
+    logical_llm_outputs: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     logical_llm_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     finalize_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     _previous_turn: RelayTurnContext | None = field(default=None, repr=False)
@@ -1070,30 +1052,86 @@ class RelaySessionCoordinator:
             if not turn.closed:
                 self._finish_logical_calls(turn, outcome=outcome)
 
+    def complete_logical_call(
+        self,
+        turn: RelayTurnContext,
+        *,
+        request_id: str,
+        handle: Any,
+        output: dict[str, Any],
+        operation_lease: RelayOperationLease | None = None,
+    ) -> None:
+        """Close completed logical calls once they reach the Relay stack top."""
+        with turn.finalize_lock:
+            with turn.logical_llm_lock:
+                if turn.logical_llm_calls.get(request_id) is not handle:
+                    return
+                turn.logical_llm_outputs[request_id] = dict(output)
+            self._drain_completed_logical_calls(
+                turn,
+                operation_lease=operation_lease,
+            )
+
+    def _finish_logical_calls(self, turn: RelayTurnContext, *, outcome: str) -> None:
+        with turn.logical_llm_lock:
+            for request_id in turn.logical_llm_calls:
+                turn.logical_llm_outputs.setdefault(
+                    request_id,
+                    {"outcome": outcome},
+                )
+        self._drain_completed_logical_calls(turn, allow_orphan_drain=True)
+
     @staticmethod
-    def _finish_logical_calls(turn: RelayTurnContext, *, outcome: str) -> None:
+    def _drain_completed_logical_calls(
+        turn: RelayTurnContext,
+        *,
+        operation_lease: RelayOperationLease | None = None,
+        allow_orphan_drain: bool = False,
+    ) -> None:
         lease = turn.lease
         host = lease.live_runtime()
-        if host is None:
+        session = lease.session
+        if host is None or session is None:
             return
-        with turn.logical_llm_lock:
-            logical_calls = list(turn.logical_llm_calls.items())
-            turn.logical_llm_calls.clear()
-        while logical_calls:
-            _request_id, logical_handle = logical_calls[-1]
-            failure = host._close_scope_handle(
-                lease.session, logical_handle, output={"outcome": outcome},
-                failure_label="logical LLM scope close failed",
-            )
-            if failure is None:
-                logical_calls.pop()
-                continue
+        while True:
             with turn.logical_llm_lock:
-                # Stack-owned: if the newest handle cannot close even after drain, older ones cannot either.
-                for pending_request_id, pending_handle in logical_calls:
-                    turn.logical_llm_calls.setdefault(pending_request_id, pending_handle)
-            logger.warning("Hermes Relay logical LLM finalization failed: %s", failure)
-            break
+                if not turn.logical_llm_calls:
+                    turn.logical_llm_outputs.clear()
+                    return
+                request_id = next(reversed(turn.logical_llm_calls))
+                output = turn.logical_llm_outputs.get(request_id)
+                if output is None:
+                    return
+                logical_handle = turn.logical_llm_calls[request_id]
+            if allow_orphan_drain:
+                failure = host._close_scope_handle(
+                    session,
+                    logical_handle,
+                    output=output,
+                    failure_label="logical LLM scope close failed",
+                )
+                if failure is not None:
+                    logger.warning("Hermes Relay logical LLM finalization failed: %s", failure)
+                    return
+            else:
+                try:
+                    (operation_lease or host).run_in_session(
+                        session,
+                        pop_relay_scope,
+                        host.relay,
+                        logical_handle,
+                        output=output,
+                        metadata=runtime_metadata(host.runtime_id),
+                    )
+                except Exception:
+                    # Provider results are authoritative. Retain the completion
+                    # so turn finalization can retry without changing the result.
+                    logger.warning("Hermes Relay logical LLM finalization failed", exc_info=True)
+                    return
+            with turn.logical_llm_lock:
+                if turn.logical_llm_calls.get(request_id) is logical_handle:
+                    del turn.logical_llm_calls[request_id]
+                    turn.logical_llm_outputs.pop(request_id, None)
 
     @staticmethod
     def _reset_turn_context(turn: RelayTurnContext) -> None:
@@ -1213,8 +1251,8 @@ def _load_nemo_relay() -> Any:
     return importlib.import_module("nemo_relay")
 
 
-def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]] | None:
-    """Load selected plugin inputs, or return ``None`` when none were selected."""
+def _configured_plugin_inputs() -> Path | None:
+    """Return the selected plugins.toml once it parses, or ``None`` when none was selected."""
     configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
     if not configured:
         if legacy_vars := configured_legacy_relay_env_vars(os.environ):
@@ -1232,12 +1270,26 @@ def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]] | 
             config = tomllib.load(config_file)
         if "dynamic_plugins" in config:
             raise ValueError("Hermes [[dynamic_plugins]] records are unsupported; use Relay [[plugins.dynamic]] records")
-        dynamic_plugins = relay.plugin.load_dynamic_plugin_activation_specs(config_path) if "plugins" in config else []
-        return {k: v for k, v in config.items() if k != "plugins"}, dynamic_plugins
+        return config_path
     except Exception as exc:
         raise _RelayPluginConfigurationLoadError(
             f"Hermes Relay plugin configuration could not be loaded from {config_path}; continuing without Relay plugins"
         ) from exc
+
+
+# Relay 0.9 exposes no active-host query; only initialize's two Conflict messages signal one.
+_RELAY_HOST_CONFLICT_MESSAGES = frozenset(
+    {
+        "conflict: a static plugin configuration is already active; to combine static and dynamic plugins, "
+        "provide the static components as the base configuration to dynamic plugin activation before calling "
+        "plugin initialization",
+        "conflict: plugin configuration is owned by an active dynamic plugin host",
+    }
+)
+
+
+def _is_relay_host_conflict(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and str(exc) in _RELAY_HOST_CONFLICT_MESSAGES
 
 
 def _resolve_plugin_awaitable(value: Any) -> Any:

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Optional
 
 from hermes_cli.relay_plugin_cutover import (
@@ -125,25 +126,34 @@ def dumps_toml(document: Mapping[str, Any]) -> str:
 
 
 def validate_relay_plugin_payload(payload: Mapping[str, Any]) -> list:
-    """Activate the payload once through Relay's own validator and clear it; returns the diagnostics
-    (empty = clean). Raises when Relay rejects the document outright."""
-    import asyncio
+    """Validate the serialized payload through the same file layering the runtime uses.
+
+    Returns warnings (empty = clean) and raises when Relay rejects the document,
+    including by error-level diagnostics or a failed dynamic plugin that Relay
+    did not select for activation.
+    """
     from nemo_relay import plugin
 
-    async def _probe():
-        try:
-            report = await plugin.initialize(dict(payload))
-        finally:
-            await plugin.clear_async()
-        return list((report or {}).get("diagnostics") or []) if isinstance(report, dict) else []
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_probe())
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(lambda: asyncio.run(_probe())).result()
+    with TemporaryDirectory(prefix="hermes-relay-validation-") as directory:
+        config_path = Path(directory) / RELAY_PLUGINS_TOML_NAME
+        config_path.write_text(dumps_toml(payload), encoding="utf-8")
+        report = plugin.validate({}, additional_plugins_toml=config_path)
+    diagnostics = list(report["config"]["diagnostics"])
+    # Relay 0.8's initialize() raised on these; 0.9's validator only reports them.
+    errors = [str(d.get("message") or d.get("code") or d) for d in diagnostics if d.get("level") == "error"]
+    for dynamic in report["dynamic_plugins"]:
+        failure = dynamic.get("failure")
+        # Optional trust failures remain selected in Relay 0.9. Required failures are deselected
+        # and initialize() rejects them; any failed, unselected requested plugin is unsafe to migrate.
+        if failure is None or dynamic.get("selected") is not False:
+            continue
+        plugin_id = str(dynamic.get("plugin_id") or dynamic.get("manifest_ref") or "unknown")
+        code = str(failure.get("code") or "validation_failed")
+        message = str(failure.get("message") or code)
+        errors.append(f"dynamic plugin {plugin_id!r} ({code}): {message}")
+    if errors:
+        raise ValueError("; ".join(errors))
+    return diagnostics
 
 
 def _comment_out_legacy_lines(lines: list[str], names: set[str]) -> list[str]:

@@ -47,3 +47,21 @@ def test_prepare_spoken_text_polish_edge_cases():
     assert "and/or" in prepare_spoken_text("choose and/or option")
     assert "N/A" in prepare_spoken_text("status N/A here")
     assert "2026/06/02" in prepare_spoken_text("due 2026/06/02 ok")
+
+
+def test_prepare_spoken_text_strips_reasoning_display_blocks():
+    # Gateway reasoning display blocks (show_reasoning) are display-only — never speech.
+    # subtext style (Discord default)
+    assert prepare_spoken_text("-# 💭 Reasoning\n-# think about it\n\nAnswer.") == "Answer."
+    # blockquote style
+    assert prepare_spoken_text("> 💭 **Reasoning:**\n> think\n\nAnswer.") == "Answer."
+    # code-fence style
+    assert prepare_spoken_text("💭 **Reasoning:**\n```\nthink\n```\n\nAnswer.") == "Answer."
+
+
+def test_prepare_spoken_text_literal_think_mention_not_swallowed():
+    # A literal "<think>" mention (not a real block) must not eat the rest of the message.
+    assert "Here is the answer" in prepare_spoken_text(
+        "You asked about <think> blocks. Here is the answer.")
+    # Same inside a reasoning display block: it is stripped WITH the reasoning, answer survives.
+    assert prepare_spoken_text("-# 💭 Reasoning\n-# rather than <think> variants\n\nReal answer.") == "Real answer."

@@ -315,6 +315,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    smart_mention: bool = False
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
 
 
@@ -326,6 +327,7 @@ class FeishuGroupRule:
     allowlist: set[str] = field(default_factory=set)
     blacklist: set[str] = field(default_factory=set)
     require_mention: Optional[bool] = None  # None = inherit global
+    smart_mention: Optional[bool] = None  # None = inherit global
 
 
 @dataclass
@@ -337,7 +339,7 @@ class FeishuBatchState:
 
 # --- Admission: policy types ---
 
-RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected"]
+RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "mentions_other_party", "group_policy_rejected"]
 
 
 def _is_bot_sender(sender: Any) -> bool:
@@ -1365,6 +1367,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     blacklist=_id_set(rule_cfg.get("blacklist", [])),
                     # Only override when explicitly set — missing vs false must not collapse.
                     require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
+                    smart_mention=_to_boolean(rule_cfg["smart_mention"]) if "smart_mention" in rule_cfg else None,
                 )
 
         # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
@@ -1410,6 +1413,7 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            smart_mention=_to_boolean(extra.get("smart_mention", _get_scoped_secret("FEISHU_SMART_MENTION", "false"))),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -3369,6 +3373,19 @@ class FeishuAdapter(BasePlatformAdapter):
             return None if sender_ids & self._allowed_group_users else "dm_policy_rejected"
         if not self._allow_group_message(getattr(sender, "sender_id", None), chat_id, is_bot=is_bot):
             return "group_policy_rejected"
+        if self._smart_mention_for(chat_id):
+            # Smart mention gating: when a message explicitly @-mentions
+            # someone else (another bot or user), stay silent and let that
+            # party handle it — no interjecting, no interrupting our own
+            # work.  Messages with no mentions pass (the sender may have
+            # forgotten to @ anyone), as do messages that mention this bot
+            # or @_all (checked inside _mentions_self).
+            mentions = getattr(message, "mentions", None) or []
+            if mentions and not self._mentions_self(message):
+                # Explicitly addressed to someone else (another bot or user),
+                # not a forgotten @ of this bot — keep the drop reason distinct
+                # from bot_not_mentioned so gateway logs stay unambiguous.
+                return "mentions_other_party"
         if require_mention and not self._mentions_self(message):
             return "group_policy_rejected"
         return None
@@ -3398,6 +3415,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    def _smart_mention_for(self, chat_id: str) -> bool:
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if rule and rule.smart_mention is not None:
+            return rule.smart_mention
+        return self._smart_mention
 
     def _allow_group_message(self, sender_id: Any, chat_id: str = "", *, is_bot: bool = False) -> bool:
         """Per-group policy gate for non-DM traffic."""

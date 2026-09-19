@@ -383,6 +383,37 @@ const BATCH_CLARIFY_TURN: ScriptedTurn = {
   toolCalls: [{ name: 'clarify', args: { questions: BATCH_CLARIFY_QUESTIONS } }],
 }
 
+/**
+ * A marker that makes the mock ask a THREE-choice clarify question. The inbox
+ * tests use it to prove the panel letters the options A–C and gives the
+ * type-your-own row the next letter (D), matching the chat card. Falls through
+ * to the canned reply once the answered tool result is in history.
+ */
+export const INBOX_CLARIFY_TRIGGER = 'E2E_INBOX_CLARIFY_TRIGGER'
+export const INBOX_CLARIFY_QUESTION = 'Which surface should carry the inbox check?'
+export const INBOX_CLARIFY_CHOICES = ['Desktop', 'Web', 'Terminal']
+
+const INBOX_CLARIFY_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'clarify', args: { question: INBOX_CLARIFY_QUESTION, choices: INBOX_CLARIFY_CHOICES } }],
+}
+
+function includesInboxClarifyTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(INBOX_CLARIFY_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesInboxClarifyTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesInboxClarifyTrigger)
+  }
+
+  return false
+}
+
 function includesBatchClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BATCH_CLARIFY_TRIGGER)
@@ -672,6 +703,21 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
                 streamScriptedTurn(res, model, APPROVAL_COMMAND_TURN)
               } else {
                 nonStreamingScriptedTurn(res, model, APPROVAL_COMMAND_TURN)
+              }
+
+              return
+            }
+          }
+
+          if (includesInboxClarifyTrigger(parsed.messages)) {
+            const hasToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
+
+            if (!hasToolResult) {
+              if (stream) {
+                streamScriptedTurn(res, model, INBOX_CLARIFY_TURN)
+              } else {
+                nonStreamingScriptedTurn(res, model, INBOX_CLARIFY_TURN)
               }
 
               return

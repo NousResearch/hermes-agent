@@ -425,6 +425,15 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "PHOTON_HOME_CHANNEL",
     "PHOTON_HOME_CHANNEL_THREAD_ID",
     "PHOTON_HOME_CHANNEL_NAME",
+    "NTFY_TOPIC",
+    "NTFY_SERVER_URL",
+    "NTFY_TOKEN",
+    "NTFY_PUBLISH_TOPIC",
+    "NTFY_MARKDOWN",
+    "NTFY_ALLOWED_USERS",
+    "NTFY_ALLOW_ALL_USERS",
+    "NTFY_HOME_CHANNEL",
+    "NTFY_HOME_CHANNEL_NAME",
     # API server bind/auth settings are common in local gateway profiles and
     # change adapter defaults plus load_gateway_config() enablement. Tests that
     # need them set opt in explicitly with monkeypatch.
@@ -592,6 +601,51 @@ def _hermetic_environment(tmp_path, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_session_context():
+    """Reset the gateway session ContextVars around every test.
+
+    ``gateway.session_context`` keeps the ``HERMES_SESSION_*`` routing ids in
+    ContextVars, and ``clear_session_vars`` deliberately writes ``""`` (not
+    ``_UNSET``) so ``get_session_env`` stops falling back to ``os.environ`` —
+    correct in the gateway, where every turn owns its own task/context, but in
+    pytest the whole process shares one context: a test that binds a session and
+    then clears it (the documented ``set_session_vars`` / ``clear_session_vars``
+    pair) leaves every session var explicitly EMPTY for every later test. Tests
+    that supply routing ids the CLI/cron way (``monkeypatch.setenv`` +
+    ``os.environ`` fallback) then read "" and silently lose their channel —
+    ``tests/tools/test_kanban_provenance.py`` poisoned
+    ``tests/tools/test_kanban_tools.py::test_create_subscribes_gateway_session``
+    exactly this way (auto-subscribe target resolved to None -> subscribed=False).
+
+    Same snapshot/restore shape as tests/tools/test_local_env_session_leak.py's
+    local ``_isolate_session_context`` fixture, hoisted here so every test file
+    gets it without opting in.
+    """
+    try:
+        import gateway.session_context as _sc
+    except Exception:
+        yield
+        return
+    saved_ctx = {name: var.get() for name, var in _sc._VAR_MAP.items()}
+    saved_engaged = _sc._session_context_engaged
+    saved_env = {name: os.environ.get(name) for name in _sc._VAR_MAP}
+    for var in _sc._VAR_MAP.values():
+        var.set(_sc._UNSET)
+    _sc._session_context_engaged = False
+    try:
+        yield
+    finally:
+        for (name, var), val in zip(_sc._VAR_MAP.items(), saved_ctx.values()):
+            var.set(val)
+        _sc._session_context_engaged = saved_engaged
+        for name, val in saved_env.items():
+            if val is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = val
 
 
 @pytest.fixture(autouse=True)

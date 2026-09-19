@@ -1077,6 +1077,28 @@ class TestClassifyApiError:
             for r in caplog.records
         ), "Expected a distinct warning identifying the malformed-body 400"
 
+    def test_400_top_level_detail_body_is_not_a_bare_400_on_large_session(self):
+        """FastAPI-style ``{"detail": "..."}`` bodies (Codex gateway, Starlette relays) →
+        the descriptive text is read, so the large-session heuristic does not route a
+        model entitlement/retirement rejection into compression (#81558, #106475).
+        ``str(error)`` is the SDK's ``Error code: 400 - {...}`` form, exactly as on the wire.
+        Salvaged from #100783 (@i-Hun)."""
+        detail = "The 'gpt-5.5-codex' model is not supported when using Codex with a ChatGPT account."
+        large = dict(provider="openai-codex", model="gpt-5.5-codex",
+                     approx_tokens=109_962, context_length=272_000, num_messages=223)
+        for body in ({"detail": detail}, {"detail": {"message": detail}}):
+            e = MockAPIError(f"Error code: 400 - {body!r}", status_code=400, body=body)
+            result = classify_api_error(e, **large)  # type: ignore[arg-type]
+            assert result.reason is not FailoverReason.context_overflow, body
+            assert result.should_compress is False
+            assert result.should_fallback is True
+            assert result.message == detail
+        # Control: the genuinely bare body the heuristic exists for still compresses.
+        bare = classify_api_error(
+            MockAPIError("Error code: 400 - {'error': {'message': 'Error'}}", status_code=400,
+                         body={"error": {"message": "Error"}}), **large)  # type: ignore[arg-type]
+        assert bare.reason is FailoverReason.context_overflow
+
 
     # ── Peer closed + large session ──
 

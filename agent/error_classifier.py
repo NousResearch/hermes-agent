@@ -1141,12 +1141,18 @@ def _build_error_msg(error: Exception, body: Any) -> str:
 
 
 def _body_message_candidates(body: dict) -> Iterator[Any]:
-    """Body message fields in priority order (OpenAI, flat, litellm/Bedrock proxy shapes)."""
+    """Body message fields in priority order (OpenAI, flat, litellm/Bedrock proxy, FastAPI shapes)."""
     yield _error_obj(body).get("message")
     yield body.get("message")
     yield body.get("errorMessage")
     args = body.get("errorArgs")
     yield args.get("reason") if isinstance(args, dict) else None
+    # FastAPI/Starlette relays and the Codex gateway answer {"detail": "..."} (or a nested
+    # OpenAI-ish object); without it a descriptive rejection reads as a bare 400 and the
+    # large-session heuristic sends it into compression (#81558). A list here is pydantic's
+    # validation shape, read by _oversized_message_content_rejection.
+    detail = body.get("detail")
+    yield detail.get("message") if isinstance(detail, dict) else detail if isinstance(detail, str) else None
 
 
 def _from_cause_chain(error: Exception, pick: Callable[[Any], Any], default: Any) -> Any:

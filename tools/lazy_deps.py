@@ -143,7 +143,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "qrcode==7.4.2",
     ),
     "platform.feishu": (
-        "lark-oapi==1.6.8",
+        # 1.6.8 connects but receives no ws event pushes (Feishu protocol drift);
+        # 1.7.3 verified receiving im.message.receive_v1 (2026-09-06).
+        "lark-oapi==1.7.3",
         "qrcode==7.4.2",
     ),
     # WeCom callback adapter parses untrusted XML POST bodies -> defusedxml.

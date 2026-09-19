@@ -230,13 +230,15 @@ function buildPosixManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId
     `${launcherWord} update --yes`
 
   const inner =
-    `set +e; if [ -r "/proc/$$/stat" ]; then ` +
+    `set +e; echo "managed-update start pid=$$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; ` +
+    `if [ -r "/proc/$$/stat" ]; then ` +
     `intent_creation="linux:$(awk '{print $22}' "/proc/$$/stat")"; ` +
     `else intent_creation="darwin:$(ps -o lstart= -p "$$" | sed 's/^ *//')"; fi; ` +
     `intent_tmp=${intentWord}."$$".tmp; ` +
     `printf '{"correlation":"%s","pid":%s,"creation":"%s"}' ${shq(correlation)} "$$" "$intent_creation" > "$intent_tmp" && ` +
     `mv -f "$intent_tmp" ${intentWord} || exit 70; ` +
     `${updateCommand}; rc=$?; ` +
+    `echo "managed-update exit rc=$rc $(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; ` +
     `if [ "$rc" -ne ${UPDATE_EXIT_INDEPENDENT_HANDOFF} ] && [ ! -e ${statusWord} ]; then ` +
     `tmp=${statusWord}."$$".tmp; umask 077; ` +
     `printf "%s" "$rc" > "$tmp" && mv -f "$tmp" ${statusWord}; fi; ` +

@@ -829,6 +829,7 @@ _GOOGLE_HIDDEN_MODELS = frozenset({
     # Stale/retired Google slugs that 404 on the current endpoints.
     "gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.5-flash-8b",
     "gemini-2.0-flash", "gemini-2.0-flash-lite",
+    "gemini-3-pro-preview", "gemini-3.1-flash-lite-preview",
 })
 
 

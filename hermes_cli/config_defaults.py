@@ -1423,9 +1423,10 @@ DEFAULT_CONFIG = {
         # aux-model cost. `hermes curator run --consolidate` overrides once.
         "consolidate": False,
         # Also prune bundled built-ins (a suppression list stops `hermes update` restoring them);
-        # hub-installed skills are NEVER pruned. A built-in's clock starts when the curator first
-        # sees it, so never a mass-prune on the first run. false = keep all.
-        "prune_builtins": True,
+        # hub-installed skills are NEVER pruned. OFF by default: shipped skills vanishing from
+        # `skills_list` because nobody loaded them for 30 days surprised people (57 gone in one
+        # startup tick). true = built-ins age out like agent-created skills.
+        "prune_builtins": False,
         # TTL purge of skills/.archive/: 0 = never; > 0 lets the explicit `hermes curator purge`
         # delete older archived skills (never automatic; logged in the ledger).
         "archive_ttl_days": 0,

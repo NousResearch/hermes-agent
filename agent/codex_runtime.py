@@ -540,6 +540,14 @@ _CODEX_PROGRESS_DELTA_TYPES = frozenset({
     "response.refusal.delta",
 })
 
+# Provider-side transient codes on a terminal ``response.failed`` frame. These mean the server
+# could not complete the generation, not that the request was wrong, so one in-stream retry is
+# worth it. Codes that indicate a permanent request or policy failure are deliberately absent and
+# keep the existing fail-fast behaviour.
+_CODEX_RETRYABLE_TERMINAL_ERROR_CODES = frozenset({
+    "server_error", "internal_error", "overloaded_error", "server_overloaded",
+})
+
 
 def _codex_event_has_content(event: Any) -> bool:
     """Whether a Codex Responses event carries substantive forward progress.
@@ -843,6 +851,32 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
     return sanitized
 
 
+def _codex_terminal_error_code(final: Any) -> str:
+    """Lowercased ``error.code`` from a terminal ``response.failed`` frame, ``""`` when absent.
+
+    ``response.error`` arrives as a dict or a namespace depending on the transport, so both
+    shapes are read.
+    """
+    error = getattr(final, "error", None)
+    if error is None:
+        return ""
+    code = error.get("code") if isinstance(error, dict) else getattr(error, "code", None)
+    return str(code or "").strip().lower()
+
+
+def _is_retryable_terminal_failure(final: Any) -> bool:
+    """True when a stream ended in ``response.failed`` with a transient provider error code.
+
+    A failed stream produced no answer to preserve, so retrying it cannot duplicate output. Only
+    provider-side transient codes qualify: a permanent failure (bad request, policy block) would
+    fail identically on every attempt and only burn the budget. ``status=incomplete`` never
+    qualifies, because a retry there re-burns the completion budget for the same truncation.
+    """
+    if str(getattr(final, "status", "") or "").strip().lower() != "failed":
+        return False
+    return _codex_terminal_error_code(final) in _CODEX_RETRYABLE_TERMINAL_ERROR_CODES
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
@@ -969,6 +1003,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 watchdog_state.retry_started_ts = time.time()
         intercepted_events: list = []
         writer_token["value"] = event_stream = None
+        # Per attempt: a superseded attempt's bytes must not inflate the streamed_chars diagnostic
+        # or leak into the next attempt's accounting.
+        agent._codex_streamed_text_parts = []
         try:
             try:
                 event_stream = relay_llm.stream(
@@ -1014,6 +1051,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                                "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",
                                final.status, final.incomplete_details, final.error,
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
+            if _is_retryable_terminal_failure(final) and attempt < max_stream_retries:
+                # The provider ended the stream with a transient error and produced no answer, so
+                # there is nothing to preserve. Retry in-stream instead of surfacing a hard failure
+                # the outer turn loop has to absorb.
+                logger.debug("Codex Responses stream terminal failure is retryable (code=%s, attempt %s/%s); "
+                             "retrying. %s", _codex_terminal_error_code(final), attempt + 1,
+                             max_stream_retries + 1, agent._client_log_context())
+                continue
             return final
         finally:
             _close_event_stream(event_stream)

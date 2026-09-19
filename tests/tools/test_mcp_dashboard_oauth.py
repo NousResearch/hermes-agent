@@ -26,8 +26,8 @@ def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
         "error": None,
     }
 
-    flow.deliver_callback(code="code-1", state="s1", error=None)
-    assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1")
+    flow.deliver_callback(code="code-1", state="s1", error=None, iss=None)
+    assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1", None)
 
 
 def test_dashboard_flow_accepts_only_one_concurrent_callback():
@@ -48,7 +48,7 @@ def test_dashboard_flow_accepts_only_one_concurrent_callback():
     def deliver(code: str) -> None:
         start.wait()
         try:
-            flow.deliver_callback(code=code, state="state", error=None)
+            flow.deliver_callback(code=code, state="state", error=None, iss=None)
             outcomes.append("accepted")
         except ValueError:
             outcomes.append("rejected")
@@ -91,13 +91,42 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
                 "https://idp.example/authorize?state=state-4"
             )
         )
-        flow.deliver_callback(code="code-4", state="state-4", error=None)
+        flow.deliver_callback(
+            code="code-4",
+            state="state-4",
+            iss="https://idp.example",
+            error=None,
+        )
         # mcp 2.0's callback_handler contract returns an
-        # AuthorizationCodeResult, not the legacy (code, state) tuple.
+        # AuthorizationCodeResult, including RFC 9207's issuer parameter.
         result = asyncio.run(_make_callback_waiter(0)())
-        assert (result.code, result.state) == ("code-4", "state-4")
+        assert (result.code, result.state, result.iss) == (
+            "code-4",
+            "state-4",
+            "https://idp.example",
+        )
 
     assert flow.authorization_url == "https://idp.example/authorize?state=state-4"
+
+
+def test_dashboard_flow_without_iss_keeps_legacy_callback_behavior():
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
+    from tools.mcp_oauth import _make_callback_waiter
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-no-iss",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-no-iss",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=state-no-iss"))
+
+    with dashboard_oauth_flow(flow):
+        flow.deliver_callback(code="code-no-iss", state="state-no-iss", error=None, iss=None)
+        result = asyncio.run(_make_callback_waiter(0)())
+
+    assert (result.code, result.state, result.iss) == ("code-no-iss", "state-no-iss", None)
 
 
 def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatch):

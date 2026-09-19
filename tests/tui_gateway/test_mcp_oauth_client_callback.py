@@ -184,9 +184,15 @@ def teardown_function(_fn):
 
 def test_deliver_callback_accepts_matching_state():
     flow = _make_session()
-    out = deliver_callback_flow("sess-relay-1", "hosp", code="abc", state="s3cr3tstate")
+    out = deliver_callback_flow(
+        "sess-relay-1",
+        "hosp",
+        code="abc",
+        state="s3cr3tstate",
+        iss="https://as.example.com",
+    )
     assert out == {"ok": True, "session_id": "sess-relay-1"}
-    assert flow._callback == ("abc", "s3cr3tstate")
+    assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
 
 
 def test_deliver_callback_rejects_state_mismatch():

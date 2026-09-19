@@ -81,11 +81,11 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
 
     response = TestClient(web_server.app).get(
-        "/api/mcp/oauth/callback/reports?code=abc&state=expected"
+        "/api/mcp/oauth/callback/reports?code=abc&state=expected&iss=https%3A%2F%2Fidp.example"
     )
 
     assert response.status_code == 200
-    assert flow._callback == ("abc", "expected")
+    assert flow._callback == ("abc", "expected", "https://idp.example")
 
 
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):

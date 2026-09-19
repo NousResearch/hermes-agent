@@ -266,6 +266,14 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload["result"] = json.loads(result)
     except Exception:
         payload["result"] = result
+    # Surface a failed tool call on the frame itself: the desktop pet flashes its `failed` pose off
+    # `payload.error`, so without this flag a recovered failure (the turn continues) never reaches
+    # the mascot — only turn-ending errors did. `_detect_tool_failure` is the same verdict the CLI
+    # renders for the row.
+    with contextlib.suppress(Exception):
+        from agent.display import _detect_tool_failure
+        if _detect_tool_failure(name, result)[0]:
+            payload["error"] = True
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary

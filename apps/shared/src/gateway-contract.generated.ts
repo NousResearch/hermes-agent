@@ -3959,6 +3959,7 @@ export interface ToolCompletePayload {
   inline_diff?: string | null
   todos?: unknown[] | null
   revision?: number | null
+  error?: boolean | null
 }
 /** ``agent_callbacks`` tool_gen_callback. */
 export interface ToolGeneratingPayload {

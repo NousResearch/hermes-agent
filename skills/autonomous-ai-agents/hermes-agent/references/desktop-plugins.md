@@ -128,7 +128,7 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `ctx.os.writeClipboard(text)` resolve `false` (never throw) when the
   capability isn't available.
 - `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
-  to your plugin (never edit core `en.ts`). Values are literal strings or
+  to your plugin (never edit the core `src/i18n/en*.ts`). Values are literal strings or
   interpolator functions; nested trees are addressed by dot-path. Read them
   reactively in components with `usePluginI18n(id)` returning `t('key', ...args)`
   (re-renders on a locale switch), or via `ctx.i18n.t` in handlers/stores.

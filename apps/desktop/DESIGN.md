@@ -449,7 +449,8 @@ long transcript or a busy terminal.
 - Every user-facing string goes through `useI18n()` (`src/i18n/context.tsx`).
   No literals in JSX.
 - **Update all locales together** — `en`, `ja`, `zh`, `zh-hant`. A string change
-  in `en.ts` that skips the others is a regression (drifted punctuation,
+  in the English source catalog (`src/i18n/en_<topic>.ts`, recomposed by
+  `src/i18n/en.ts`) that skips the others is a regression (drifted punctuation,
   stale labels). Keep trailing-punctuation and tone consistent across all four.
 
 ## State (TypeScript)

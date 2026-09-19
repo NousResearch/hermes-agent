@@ -11700,6 +11700,54 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
         server._sessions.pop("sid", None)
 
 
+def test_ssh_backend_attachment_ref_reaches_the_agent(monkeypatch, tmp_path):
+    """#110174: gateway container + Remote SSH execution backend.
+
+    ``file.attach`` stages the paste under the session home — this gateway's filesystem —
+    while the workspace (``TERMINAL_CWD``) is a path on the SSH host that does not exist
+    here. The ref the gateway hands the turn must still expand: the gateway owns the bytes,
+    so their content has to reach the agent instead of "path is outside the allowed
+    workspace" with the attachment unreadable.
+    """
+    home = tmp_path / "gateway-data"
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd="/srv/repos", profile_home=str(home))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/Pasted content (3-5.4 KB).txt",
+                    "name": "Pasted content (3-5.4 KB).txt",
+                    "data_url": "data:text/plain;base64,cGFzdGVkIGJvZHk=",
+                },
+            }
+        )
+
+        ref_text = resp["result"]["ref_text"]
+        assert ref_text.startswith("@file:")
+
+        from agent.context_references import preprocess_context_references
+
+        result = preprocess_context_references(
+            f"Summarize {ref_text}", cwd="/srv/repos", allowed_root="/srv/repos", context_length=100_000)
+
+        assert result.warnings == []
+        assert "pasted body" in result.message
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     monkeypatch.setattr(
         server,

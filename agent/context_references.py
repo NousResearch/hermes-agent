@@ -342,12 +342,28 @@ def _is_under(path: Path, root: Path) -> bool:
     return True
 
 
+def _agent_staged_path(path: Path) -> bool:
+    """True when *path* sits in a Hermes dir the gateway stages for the agent — ``attachments/``
+    (``file.attach`` pastes/drops), ``images/`` (``image.attach``) and ``cache/*`` (platform
+    downloads). Those are the gateway's OWN payload, never a workspace escape, and they live
+    outside the workspace by construction: on a remote execution backend the workspace root is
+    a path on THAT host (#110174), so the check below rejected every staged attachment there.
+    The bytes are on the gateway either way, so the ref still expands (text inlines; binaries
+    point at the backend-visible path via ``to_agent_visible_cache_path``)."""
+    try:
+        from tools.credential_files import get_cache_directory_mounts
+        return any(_is_under(path, Path(entry["host_path"]).expanduser().resolve())
+                   for entry in get_cache_directory_mounts())
+    except Exception:
+        return False
+
+
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
     from agent.file_safety import is_nt_namespace_path
     if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
         raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
-    if allowed_root is not None and not _is_under(resolved, allowed_root):
+    if allowed_root is not None and not _is_under(resolved, allowed_root) and not _agent_staged_path(resolved):
         raise ValueError("path is outside the allowed workspace")
     return resolved
 

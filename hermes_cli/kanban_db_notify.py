@@ -25,6 +25,25 @@ if TYPE_CHECKING:
 # (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only.
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
 
+
+def auto_subscribe_delivery_mode(platform: str = "") -> Optional[str]:
+    """Delivery mode stamped onto auto-created subscriptions.
+
+    Reads ``kanban.auto_subscribe_mode``. An unset or invalid value keeps the
+    historical behavior: ``notify+wake`` on gateway platforms, ``None`` (the
+    DB default ``notify``) for TUI. An explicit valid value applies uniformly
+    to every platform — e.g. ``wake`` swaps the passive chat ping for an
+    agent turn at the subscribed session (#108913).
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        mode = str(cfg_get(load_config(), "kanban", "auto_subscribe_mode", default="") or "").strip()
+    except Exception:
+        mode = ""
+    if mode in _NOTIFY_DELIVERY_MODES:
+        return mode
+    return "notify+wake" if platform != "tui" else None
+
 _SCALAR_TYPES = (str, int, float, bool)
 
 # Subscription primary key predicate; every per-row statement below binds

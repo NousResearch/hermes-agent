@@ -13,6 +13,7 @@ export type CredentialSettingsView = 'settings' | 'tools'
 export const APPEARANCE_SETTING_IDS = {
   appActions: 'appearance.app-actions',
   backdrop: 'appearance.backdrop',
+  chatWidth: 'appearance.chat-width',
   embeds: 'appearance.embeds',
   introSplash: 'appearance.intro-splash',
   language: 'appearance.language',

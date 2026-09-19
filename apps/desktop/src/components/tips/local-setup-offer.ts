@@ -22,7 +22,7 @@
  */
 
 import { getLocalCatalog, getLocalModelsStatus } from '@/hermes'
-import type { Translations } from '@/i18n/types'
+import type { Translations } from '@/i18n'
 import { LOCAL_SETUP_TIP_ID, localSetupDue, localSetupEligible } from '@/lib/tips/local-cta'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $connection } from '@/store/session'

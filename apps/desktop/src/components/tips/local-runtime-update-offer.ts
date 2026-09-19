@@ -1,5 +1,5 @@
 import { getLocalModelsJobs, getLocalModelsStatus } from '@/hermes'
-import type { Translations } from '@/i18n/types'
+import type { Translations } from '@/i18n'
 import { localSetupDue } from '@/lib/tips/local-cta'
 import { $activeGatewayRoute } from '@/store/gateway'
 import { $localModelsEnabled } from '@/store/local-models-flag'

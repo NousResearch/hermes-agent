@@ -1903,7 +1903,10 @@ def _maybe_wrap_anthropic(
         "(model=%s, base_url=%s, api_mode=%s)",
         model, base_url[:60] if base_url else "", api_mode or "auto-detected",
     )
-    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=False)
+    from agent.anthropic_credentials import is_native_anthropic_oauth
+    return AnthropicAuxiliaryClient(
+        real_client, model, api_key, base_url, is_oauth=is_native_anthropic_oauth(api_key, base_url)
+    )
 
 
 def _read_nous_auth() -> Optional[dict]:
@@ -2730,12 +2733,16 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
         return None, None, None  # requested='custom' falls back to OpenRouter when unconfigured.
     # Local servers (Ollama, vLLM, ...) ignore auth but the SDK needs a non-empty key.
     # Use a placeholder key — the OpenAI SDK requires a non-empty string but local servers ignore the
-    # Authorization header. Same fix as cli.py _ensure_runtime_credentials() (PR #2556).
-    if not isinstance(custom_key, str) or not custom_key.strip():
+    # Authorization header. Same fix as cli.py _ensure_runtime_credentials() (PR #2556). A callable
+    # (key_cmd / Entra token source) must survive untouched: the wire clients invoke it per request
+    # and an str()/strip() here destroys the credential (#113976, #114967).
+    if callable(custom_key):
+        pass
+    elif not isinstance(custom_key, str) or not custom_key.strip():
         custom_key = "no-key-required"
     if not isinstance(custom_mode, str) or not custom_mode.strip():
         custom_mode = None
-    return custom_base, custom_key.strip(), custom_mode
+    return custom_base, (custom_key if callable(custom_key) else custom_key.strip()), custom_mode
 
 
 def _current_custom_base_url() -> str:
@@ -2799,8 +2806,11 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         return CodexAuxiliaryClient(real_client, model), model
     if custom_mode == "anthropic_messages":
         # Third-party Anthropic-compatible gateway — never OAuth (that's api.anthropic.com only).
+        # A custom route that DOES point at the native host with a key_cmd OAuth token keeps
+        # its identity (#114967); everything else stays non-OAuth.
         try:
             from agent.anthropic_adapter import build_anthropic_client
+            from agent.anthropic_credentials import is_native_anthropic_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
         except ImportError:
             logger.warning(
@@ -2808,7 +2818,13 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
             return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
-        return AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False), model
+        return (
+            AnthropicAuxiliaryClient(
+                real_client, model, custom_key, custom_base,
+                is_oauth=is_native_anthropic_oauth(custom_key, custom_base),
+            ),
+            model,
+        )
     # URL-based anthropic detection for custom endpoints without explicit api_mode.
     _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
     return _maybe_wrap_anthropic(_fallback_client, model, custom_key, custom_base, custom_mode), model
@@ -5058,8 +5074,15 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
             logger.warning("Named custom provider %r declares api_mode=anthropic_messages but the anthropic SDK "
                            "is not installed — falling back to OpenAI-wire.", provider)
             return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key, entry_headers), final_model)
+        from agent.anthropic_credentials import is_native_anthropic_oauth
         return _route_client(
-            req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base, is_oauth=False), final_model)
+            req,
+            AnthropicAuxiliaryClient(
+                real_client, final_model, custom_key, custom_base,
+                is_oauth=is_native_anthropic_oauth(custom_key, custom_base),
+            ),
+            final_model,
+        )
     client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":

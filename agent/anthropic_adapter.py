@@ -336,10 +336,20 @@ def _build_anthropic_client_with_bearer_hook(
     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
+    from agent.anthropic_credentials import is_native_anthropic_oauth
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
-    headers = _beta_header(_common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta))
+    betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
+    if is_native_anthropic_oauth(token_provider, base_url):
+        # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer
+        # without the Claude Code fingerprint gets 429 rate_limit_error'd by
+        # Anthropic (#114967). Same identity headers as the static oauth style.
+        headers = _beta_header(betas + _OAUTH_ONLY_BETAS)
+        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
+        headers["x-app"] = "cli"
+    else:
+        headers = _beta_header(betas)
     return _new_sdk_client(sdk, kwargs, headers)
 
 

@@ -25,6 +25,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -64,6 +65,40 @@ def _is_oauth_token(key: str) -> bool:
     if not key or key.startswith("sk-ant-api"):
         return False
     return key.startswith(("sk-ant-", "eyJ", "cc-"))
+
+
+def routes_to_native_anthropic(base_url: Any) -> bool:
+    """True when *base_url* is empty (the native default route) or its host is exactly api.anthropic.com."""
+    text = str(base_url or "").strip()
+    if not text:
+        return True
+    return (urlparse(text).hostname or "").lower().rstrip(".") == "api.anthropic.com"
+
+
+def is_native_anthropic_oauth(key: Any, base_url: Any) -> bool:
+    """OAuth-identity test for the native Anthropic host only (#114967).
+
+    ``key`` may be a static string or a callable token source (``key_cmd`` /
+    MiniMax per-request provider). A callable is materialized ONCE here purely
+    to test the token shape, so the callable contract is *safe to invoke for
+    classification*: it must serve a cached token or mint idempotently
+    (``CommandTokenSource`` does; a single-use mint would be consumed here).
+    A mint failure simply classifies as non-OAuth (the wire client surfaces
+    the real error when it actually needs the token). Third-party
+    Anthropic-protocol endpoints never qualify: Claude Code identity headers
+    and tool-name transforms are only valid against api.anthropic.com, and
+    injecting them elsewhere 401/403s.
+    """
+    if not routes_to_native_anthropic(base_url):
+        return False
+    if isinstance(key, str):
+        return _is_oauth_token(key)
+    if callable(key):
+        try:
+            return _is_oauth_token(str(key() or ""))
+        except Exception:  # noqa: BLE001 — classification must never raise
+            return False
+    return False
 
 
 class CredentialPersistError(RuntimeError):

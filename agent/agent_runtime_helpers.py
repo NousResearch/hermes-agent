@@ -1953,7 +1953,7 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from agent.anthropic_credentials import resolve_anthropic_token, is_native_anthropic_oauth
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
@@ -1977,7 +1977,7 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
             effective_key, agent._anthropic_base_url,
             timeout=get_provider_request_timeout(agent.provider, agent.model),
         )
-        agent._is_anthropic_oauth = bool(is_native_anthropic and isinstance(effective_key, str) and _is_oauth_token(effective_key))
+        agent._is_anthropic_oauth = is_native_anthropic_oauth(effective_key, agent._anthropic_base_url)
         agent.client = None
         agent._client_kwargs = {}
         return

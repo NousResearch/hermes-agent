@@ -327,6 +327,11 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           {request.command}
         </pre>
       )}
+      {request.description.trim() && (
+        <p className="px-2.5 pb-1 text-xs leading-relaxed text-(--ui-text-secondary)">
+          {request.description}
+        </p>
+      )}
       <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">
         <Button data-approval-deny="" disabled={busy} onClick={() => void respond('deny')} size="sm" variant="text">
           {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}

@@ -200,6 +200,15 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByText(longCommand).className).toContain('overflow-auto')
   })
 
+  it('renders the approval reason directly on the card', () => {
+    setRequest('python -c "print(1)"')
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('python -c "print(1)"')).toBeTruthy()
+    expect(screen.getByText('dangerous command')).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('answers the live approval request with {choice: "deny"} on Reject', async () => {
     const request = mockGateway()
     const respond = liveApproval()

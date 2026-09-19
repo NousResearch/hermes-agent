@@ -1006,3 +1006,37 @@ def test_sync_pipeline_cleans_temp_files(monkeypatch):
     assert created, "expected temp files to be created via mkstemp"
     leftovers = [p for p in created if os.path.exists(p)]
     assert not leftovers, f"temp files not cleaned: {leftovers}"
+
+
+def test_sync_pipeline_plays_reported_artifact_not_requested_stub(monkeypatch):
+    """The artifact the provider REPORTS (suffix rewritten to .wav) is what plays, not the
+    requested .mp3 stub — and the unrealized stub is not leaked (#115029)."""
+    import json
+
+    from tools import tts_tool
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    seen = {"requested": [], "played": []}
+
+    def fake_synth(text, output_path=None):
+        seen["requested"].append(output_path)
+        reported = output_path[:-4] + ".wav"
+        with open(reported, "wb") as fh:
+            fh.write(b"x" * 100)
+        return json.dumps({"success": True, "file_path": reported, "file_paths": [reported]})
+
+    fake_vm = MagicMock()
+    fake_vm.play_audio_file.side_effect = lambda path: seen["played"].append(path)
+    monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_synth)
+    monkeypatch.setitem(__import__("sys").modules, "tools.voice_mode", fake_vm)
+
+    q = _drain_queue(["First full sentence here. "])
+    stop, done = threading.Event(), threading.Event()
+    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
+        stream_tts_to_speaker(q, stop, done)
+
+    assert len(seen["played"]) == 1, seen["played"]
+    assert seen["played"][0].endswith(".wav"), seen["played"]
+    assert done.is_set()
+    leftover = [p for p in (seen["played"][0], seen["requested"][0]) if os.path.exists(p)]
+    assert not leftover, f"artifacts left on disk: {leftover}"

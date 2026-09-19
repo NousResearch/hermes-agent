@@ -11,6 +11,7 @@ playback). Origin seams are resolved through :func:`_origin` at call time.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import platform
@@ -24,6 +25,25 @@ from tools.tts_text_normalize import _strip_markdown_for_tts
 from tools.tts_tool_delivery import _origin, _remove_quietly as _unlink_quietly
 
 logger = logging.getLogger("tools.tts_tool")
+
+def _reported_audio_path(raw: str, fallback: str) -> str:
+    """First artifact ``text_to_speech_tool`` reports writing that exists on disk, else *fallback*.
+
+    Providers may rewrite the requested suffix (``format: wav``) or Opus-convert it away
+    entirely (``voice_compatible``), leaving the requested path a zero-byte stub while the real
+    audio lands elsewhere. The tool's JSON envelope is the only reliable record of where it
+    wrote; the caller cleans the unrealized stub up when the two differ."""
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except ValueError:
+        payload = {}
+    paths = payload.get("file_paths") if isinstance(payload, dict) else None
+    if not paths and isinstance(payload, dict) and payload.get("file_path"):
+        paths = [payload["file_path"]]
+    for path in paths or ():
+        if path and os.path.isfile(path) and os.path.getsize(path) > 0:
+            return path
+    return fallback
 
 def _align_int16_chunks(chunks: Iterable[bytes], stop_evt: threading.Event, *, pad_tail: bool = True) -> Iterator[bytes]:
     """Yield int16-aligned byte chunks; a dangling odd byte is padded at the end (or dropped)."""
@@ -105,8 +125,11 @@ class _SyncSentencePipeline:
         try:
             fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
-            _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
-            return tmp_path
+            raw = _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
+            written = _reported_audio_path(raw, tmp_path)
+            if written != tmp_path:
+                _unlink_quietly(tmp_path)  # requested stub never became audio; don't leak it
+            return written
         except Exception as exc:
             logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
             _unlink_quietly(tmp_path)
@@ -114,16 +137,16 @@ class _SyncSentencePipeline:
 
     def _drain(self) -> None:
         for _sentence, future in iter(self._queue.get, None):
-            tmp_path = None
+            artifact = None
             try:
-                tmp_path = future.result()
-                if tmp_path and not self._stop.is_set() and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+                artifact = future.result()
+                if artifact and not self._stop.is_set() and os.path.isfile(artifact) and os.path.getsize(artifact) > 0:
                     from tools.voice_mode import play_audio_file
-                    play_audio_file(tmp_path)
+                    play_audio_file(artifact)
             except Exception as exc:
                 logger.warning("Sync per-sentence TTS failed: %s", exc)
             finally:
-                _unlink_quietly(tmp_path)
+                _unlink_quietly(artifact)
 
 
 class _StreamerPlayback:

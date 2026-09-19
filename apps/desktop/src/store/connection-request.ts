@@ -74,7 +74,13 @@ const TARGET_STATES: readonly ConnectionTargetState[] = [
 ]
 
 const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
-const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt', 'unavailable']
+const SETTLE_REASONS: readonly ConnectionSettleReason[] = [
+  'all_resolved',
+  'continue',
+  'deadline',
+  'interrupt',
+  'unavailable'
+]
 
 // The wire carries these as typed literals already; the lookups defend against a backend a version ahead.
 const oneOf =
@@ -155,7 +161,9 @@ export function applyOperationStatus(request: ConnectionRequest, status: Connect
     request.settledBy === settledBy &&
     targets.every((target, index) => target === request.targets[index])
 
-  return unchanged ? request : { ...request, deadlineAt: status.deadline_at, settled: status.settled, settledBy, targets }
+  return unchanged
+    ? request
+    : { ...request, deadlineAt: status.deadline_at, settled: status.settled, settledBy, targets }
 }
 
 function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
@@ -239,7 +247,10 @@ export const hasConnectionRequest = (sessionId: string | null | undefined): bool
 
 /** Drive the operation. The entry stays in the store: the backend answers with `connection.update`
  *  and the card re-renders from that; only settlement removes it. */
-export async function respondToConnectionRequest(request: ConnectionRequest, outcome: ConnectionOutcome): Promise<boolean> {
+export async function respondToConnectionRequest(
+  request: ConnectionRequest,
+  outcome: ConnectionOutcome
+): Promise<boolean> {
   const current = $connectionRequests.get()[keyFor(request.sessionId)]
 
   if (!current || current.opId !== request.opId || current.settled) {

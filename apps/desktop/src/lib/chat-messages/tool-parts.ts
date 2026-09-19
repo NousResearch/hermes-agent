@@ -357,7 +357,12 @@ export function upsertToolPart(
 
   if (index === -1) {
     next.push(base)
-  } else if (phase === 'running' && prev?.type === 'tool-call' && prev.completedAt !== undefined && prev.result === undefined) {
+  } else if (
+    phase === 'running' &&
+    prev?.type === 'tool-call' &&
+    prev.completedAt !== undefined &&
+    prev.result === undefined
+  ) {
     // A settle-time seal (interim boundary, mid-turn user message, lost
     // completion) closed this call without a result. A running event for the
     // same id says the tool is still executing, so the row goes live again

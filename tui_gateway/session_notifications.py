@@ -572,6 +572,21 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
     _notif_dispatch_completions(sid, session, completions, registry, deferred)
 
 
+def _bot_live_delivery_poll_enabled(session: dict) -> bool:
+    """Whether this profile has a configured delivery platform.
+
+    A TUI-only profile cannot receive bot mail, so avoid repeatedly probing its
+    durable mailbox. Configuration lookup remains fail-open: an unavailable
+    config must not strand a delivery for a profile that does have a bot.
+    """
+    try:
+        from gateway.config import load_gateway_config
+        with _session_profile_runtime_scope(session):
+            return bool(load_gateway_config().get_connected_platforms())
+    except Exception:
+        return True
+
+
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
     from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
@@ -682,7 +697,8 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
-        _poll_bot_live_delivery_guarded(sid, session, now)
+        if _bot_live_delivery_poll_enabled(session):
+            _poll_bot_live_delivery_guarded(sid, session, now)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

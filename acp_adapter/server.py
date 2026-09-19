@@ -251,6 +251,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._edit_approval_states: dict[str, Any] = {}
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -912,10 +913,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             send_update = lambda update: _send_update(conn, session_id, loop, update)  # noqa: E731
             cbs.approval_cb = make_approval_callback(conn.request_permission, loop, session_id, send_update=send_update)
             try:
-                from acp_adapter.edit_approval import make_acp_edit_approval_requester
+                from acp_adapter.edit_approval import EditApprovalState, make_acp_edit_approval_requester
 
+                edit_approval_state = self._edit_approval_states.setdefault(session_id, EditApprovalState())
                 cbs.edit_approval_requester = make_acp_edit_approval_requester(
                     conn.request_permission, loop, session_id, auto_approve_getter=policy_getter,
+                    state=edit_approval_state,
                     send_update=send_update,
                 )
             except Exception:

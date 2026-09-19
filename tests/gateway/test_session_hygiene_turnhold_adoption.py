@@ -167,6 +167,10 @@ async def test_turn_hold_keeps_admission_and_adopts_watermark_fenced_summary(
     expiry; its late summary is ADOPTED (committed), not discarded — while
     the turn itself is still released at the budget (#90845 invariant).
     """
+    # The deferral notice is routine progress and honours compression.progress_notices;
+    # this test asserts the notice itself, so enable the gate.
+    monkeypatch.setattr("gateway.run._gateway_compression_progress_notices_enabled", lambda: True)
+
     worker_started = threading.Event()
     release_worker = threading.Event()
     committed = threading.Event()

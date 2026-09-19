@@ -217,6 +217,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "manage_connections": _manage_connections,
     "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+    "model_override": lambda agent, args, ctx: agent._dispatch_model_override(args),
 }
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three

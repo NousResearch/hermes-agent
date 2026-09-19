@@ -224,7 +224,16 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fres
     selection_key = {"tts": "provider", "web": "backend", "browser": "cloud_provider"}.get(ts_key)
     if selection_key:
         section = config.get(ts_key, {})
-        return not isinstance(section, dict) or selection_key not in section
+        if not isinstance(section, dict):
+            return True
+        if selection_key in section:
+            return False
+        # Browser's "Browser Use" provider row writes config[ts_key]["backend"]
+        # (via the browser_backend marker), not "cloud_provider" — recognize
+        # an already-set backend so the provider picker doesn't re-appear.
+        if ts_key == "browser" and _browser_cfg(config, "backend") is not None:
+            return False
+        return True
     if ts_key == "image_gen":  # in-tree FAL backend OR any available plugin image gen provider satisfies
         return not fal_key_is_configured() and not _any_plugin_provider_available("agent.image_gen_registry")
     if ts_key == "video_gen":  # no in-tree fallback — every video backend is a plugin
@@ -409,10 +418,26 @@ def _browser_provider_active(provider: dict, config: dict) -> bool:
     return True
 
 
+def _browser_cfg(config: dict, key: str):
+    """Safely read a value from the ``browser`` config section.
+
+    Returns ``None`` when the section or key is absent, or when the section
+    is not a dict.  Normalises YAML 1.1's quirk where an unquoted ``off``
+    in ``browser.backend`` parses as boolean ``False`` — this keeps the
+    single place that needs the workaround.
+    """
+    section = config.get("browser")
+    if not isinstance(section, dict):
+        return None
+    value = section.get(key)
+    if key == "backend" and value is False:
+        return "off"
+    return value
+
+
 def _browser_backend_active(provider: dict, config: dict) -> bool:
-    backend = cfg_get(config, "browser", "backend")
-    if backend is False:
-        backend = "off"  # YAML 1.1: unquoted `off` parses as boolean False
+    """Check if a provider entry matches the currently active config."""
+    backend = _browser_cfg(config, "backend")
     if backend == provider["browser_backend"]:
         return True
     if backend:

@@ -563,6 +563,18 @@ def _unlink_move_restore_db(src: Path, dst: Path) -> bool:
         return False
 
 
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _is_sqlite_file(abs_path: Path) -> bool:
+    """True when *abs_path* starts with the SQLite magic header; a non-SQLite ``.db`` rides as a plain file."""
+    try:
+        with abs_path.open("rb") as fh:
+            return fh.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+    except OSError:
+        return False
+
+
 def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, out_path: Path) -> Optional[int]:
     """Add a WAL-safe snapshot of *abs_path* to *zf*; return its byte size, or None on failure.
 
@@ -591,7 +603,7 @@ def _write_zip_entries(
     total_bytes = 0
     for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
         try:
-            if abs_path.suffix == ".db":
+            if abs_path.suffix == ".db" and _is_sqlite_file(abs_path):
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
                 if size is None:
                     on_db_failure(rel_path)

@@ -1211,7 +1211,12 @@ export const host = {
   openWorkspace: (
     id: string,
     options: {
-      dock?: { before?: null | string; pane: string; pos: 'bottom' | 'center' | 'left' | 'right' | 'top' }
+      dock?: {
+        before?: null | string
+        enforce?: boolean
+        pane: string
+        pos: 'bottom' | 'center' | 'left' | 'right' | 'top'
+      }
       headerVeto?: boolean
       minWidth?: string
       onClose?: () => void

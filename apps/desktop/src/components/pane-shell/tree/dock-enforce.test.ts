@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Enforced dock invariants: a pane whose dock hint carries `enforce: true`
-// (Bot Mode's Bots pane) re-homes onto its center anchor at EVERY boot's
-// first adoption pass — persisted layouts otherwise pin the stale stacked
-// arrangement forever, because adoption only ever places panes MISSING from
-// the tree. Unlike the retired one-time heal, nothing exempts the pane: not
-// a previously burned heal token, not $userPlacedPanes. The invariant is
-// boot-scoped, so an intra-session drag sticks until the next launch.
+// (Bot Mode's Bots pane, the newswire ticker) re-homes onto its declared
+// anchor at EVERY boot's first adoption pass — persisted layouts otherwise
+// pin a stale stranded arrangement forever, because adoption only ever
+// places panes MISSING from the tree. Unlike the retired one-time heal,
+// nothing exempts the pane: not a previously burned heal token, not
+// $userPlacedPanes. The invariant is boot-scoped, so an intra-session drag
+// sticks until the next launch.
 
 const TREE_KEY = 'hermes.desktop.layoutTree.v2'
 const USER_PLACED_KEY = 'hermes.desktop.userPlacedPanes.v1'
@@ -34,6 +35,61 @@ const stackedTree = {
   ]
 }
 
+async function setupTree(initialTree: object, options: { routines?: boolean; ticker?: boolean } = {}) {
+  window.localStorage.setItem(TREE_KEY, JSON.stringify(initialTree))
+
+  const tree = await import('@/components/pane-shell/tree/store')
+  const model = await import('@/components/pane-shell/tree/model')
+  const { registry } = await import('@/contrib/registry')
+
+  registry.register({
+    id: 'workspace',
+    area: 'panes',
+    title: 'chat',
+    data: { placement: 'main' },
+    render: () => null
+  })
+  registry.register({
+    id: 'sessions',
+    area: 'panes',
+    title: 'sessions',
+    data: { placement: 'left' },
+    render: () => null
+  })
+  registry.register({
+    id: 'hermes-bots:pane',
+    area: 'panes',
+    title: 'Bots',
+    data: {
+      placement: 'left',
+      dock: { pane: 'sessions', pos: 'center', enforce: true }
+    },
+    render: () => null
+  })
+
+  if (options.routines) {
+    registry.register({
+      id: 'hermes-bots:routines',
+      area: 'panes',
+      title: 'Cronjobs',
+      data: { placement: 'main', dock: { pane: 'workspace', pos: 'right', enforce: true } },
+      render: () => null
+    })
+  }
+
+  if (options.ticker) {
+    registry.register({
+      id: 'ticker',
+      area: 'panes',
+      title: 'Newswire',
+      data: { placement: 'main', dock: { pane: 'workspace', pos: 'bottom', enforce: true } },
+      render: () => null
+    })
+  }
+
+  return { model, registry, tree }
+}
+
 describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -43,51 +99,6 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
   afterEach(() => {
     vi.resetModules()
   })
-
-  async function setupTree(initialTree: object, options: { routines?: boolean } = {}) {
-    window.localStorage.setItem(TREE_KEY, JSON.stringify(initialTree))
-
-    const tree = await import('@/components/pane-shell/tree/store')
-    const model = await import('@/components/pane-shell/tree/model')
-    const { registry } = await import('@/contrib/registry')
-
-    registry.register({
-      id: 'workspace',
-      area: 'panes',
-      title: 'chat',
-      data: { placement: 'main' },
-      render: () => null
-    })
-    registry.register({
-      id: 'sessions',
-      area: 'panes',
-      title: 'sessions',
-      data: { placement: 'left' },
-      render: () => null
-    })
-    registry.register({
-      id: 'hermes-bots:pane',
-      area: 'panes',
-      title: 'Bots',
-      data: {
-        placement: 'left',
-        dock: { pane: 'sessions', pos: 'center', enforce: true }
-      },
-      render: () => null
-    })
-
-    if (options.routines) {
-      registry.register({
-        id: 'hermes-bots:routines',
-        area: 'panes',
-        title: 'Cronjobs',
-        data: { placement: 'main', dock: { pane: 'workspace', pos: 'right', enforce: true } },
-        render: () => null
-      })
-    }
-
-    return { model, registry, tree }
-  }
 
   async function setup() {
     return setupTree(stackedTree)
@@ -273,5 +284,88 @@ describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', 
     tree.watchContributedPanes()
 
     expect(tree.$layoutTree.get()).toEqual(dockedRoutinesTree)
+  })
+})
+
+describe('enforced bottom dock (newswire ticker pinned to the workspace floor)', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  // The stranded shape the newswire-takeover bug left behind: the ticker is a
+  // tab beside sessions instead of a split below the workspace.
+  const strandedTickerTree = {
+    type: 'split',
+    id: 'root',
+    orientation: 'row',
+    weights: [1, 3],
+    children: [
+      {
+        type: 'group',
+        id: 'g-left',
+        panes: ['sessions', 'hermes-bots:pane', 'ticker'],
+        active: 'hermes-bots:pane'
+      },
+      { type: 'group', id: 'g-main', panes: ['workspace'], active: 'workspace' }
+    ]
+  }
+
+  // The correct docked shape: a column [ workspace | ticker ] as the main zone.
+  const dockedTickerTree = {
+    type: 'split',
+    id: 'root',
+    orientation: 'row',
+    weights: [1, 3],
+    children: [
+      {
+        type: 'group',
+        id: 'g-left',
+        panes: ['sessions', 'hermes-bots:pane'],
+        active: 'hermes-bots:pane'
+      },
+      {
+        type: 'split',
+        id: 'main-col',
+        orientation: 'column',
+        weights: [1, 1],
+        children: [
+          { type: 'group', id: 'g-main', panes: ['workspace'], active: 'workspace' },
+          { type: 'group', id: 'g-ticker', panes: ['ticker'], active: 'ticker' }
+        ]
+      }
+    ]
+  }
+
+  it('re-homes a ticker stranded in the sessions strip onto the workspace floor', async () => {
+    const { model, tree } = await setupTree(strandedTickerTree, { ticker: true })
+
+    tree.watchContributedPanes()
+
+    const tickerGroup = model.findGroupOfPane(tree.$layoutTree.get()!, 'ticker')!
+
+    // Own zone, no longer a tab beside sessions.
+    expect(tickerGroup.panes).toEqual(['ticker'])
+
+    // Directly below the workspace in a column split.
+    const parent = model.findParentSplit(tree.$layoutTree.get()!, tickerGroup.id)!
+
+    expect(parent.orientation).toBe('column')
+    expect(parent.children.map(c => c.id)).toEqual(['g-main', tickerGroup.id])
+
+    // The workspace survives the re-home untouched.
+    expect(model.findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes).toEqual(['workspace'])
+  })
+
+  it('leaves the ticker alone when it already sits at the workspace floor', async () => {
+    const { tree } = await setupTree(dockedTickerTree, { ticker: true })
+
+    tree.watchContributedPanes()
+
+    expect(tree.$layoutTree.get()).toEqual(dockedTickerTree)
   })
 })

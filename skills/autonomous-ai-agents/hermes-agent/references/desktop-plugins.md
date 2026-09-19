@@ -99,6 +99,15 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `review`, `logs`), `pos` is `'top'|'bottom'|'left'|'right'|'center'`.
   E.g. "below the conversation" = `dock: { pane: 'workspace', pos: 'bottom' }`
   — declare a `height` (e.g. `'200px'`) so it doesn't take half the zone.
+- `dock.enforce: true` — a STANDING invariant instead of a one-shot
+  placement: the pane is re-homed onto the dock's anchor at every boot's
+  first adoption pass when it isn't already there (a persisted tree
+  stranded it somewhere, an old layout bug, a drag). Nothing exempts the
+  pane — not user placement records, not a burned heal token. The invariant
+  is boot-scoped: an intra-session drag sticks until the next launch.
+  Use it for panes that are part of the surface's identity (Bot Mode's
+  Bots/Cronjobs panes, the newswire ticker) — not for panes whose position
+  belongs to the user.
 - Full PAGES: register `area: ROUTES_AREA` with `data: { path: '/my-page' }`
   and a `render` — the page mounts in the workspace (main) pane like any
   built-in view. Make it reachable with a sidebar nav row:

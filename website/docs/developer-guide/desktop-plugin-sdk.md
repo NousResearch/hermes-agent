@@ -252,6 +252,16 @@ data: {
 `'top' | 'bottom' | 'left' | 'right' | 'center'`. Declare a `width`/`height` so
 the pane doesn't claim half the zone.
 
+`dock.enforce: true` turns the one-shot gesture into a standing invariant:
+the pane is re-homed onto the dock's anchor at every boot's first adoption
+pass whenever it isn't already in the declared relationship — a persisted tree
+stranded it somewhere, an old layout bug moved it, or a drag persisted a new
+spot. Nothing exempts the pane (not user placement records, not a burned heal
+token), but the invariant is boot-scoped: an intra-session drag sticks until
+the next launch. Reserve it for panes that are part of the surface's identity
+(the newswire ticker's bottom strip, Bot Mode's panes), not for panes whose
+position belongs to the user.
+
 Closing the only pane contributed by a plugin disables that plugin, which can
 be re-enabled from **Capabilities → Plugins**. When a plugin contributes multiple
 panes, closing one dismisses only that pane and leaves the plugin's other panes,

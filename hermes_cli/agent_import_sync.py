@@ -40,6 +40,11 @@ def _iter_sync_files(agent: str, source_root: Path) -> Iterator[Path]:
         paths = [source_root / "AGENTS.md", source_root / "config.toml"]
         paths.extend(sorted((source_root / "memories").glob("*.md")))
     paths.extend(p for p in sorted((source_root / "skills").rglob("*")) if p.is_file())
+    if agent == "claude-code":
+        # Match the command importer's refusal to read redirected sources.
+        commands = source_root / "commands"
+        if not commands.is_symlink():
+            paths.extend(p for p in sorted(commands.glob("*.md")) if not p.is_symlink())
     for path in paths:
         if path.name not in _CREDENTIAL_FILENAMES and path.is_file():
             yield path
@@ -117,8 +122,16 @@ def update_sync_manifest(agent: str, source_root: Path, target_root: Path,
         entry = {}
     skills = managed_skills(entry)
     for item in report.get("items", []):
-        if item.get("kind") == "skill" and item.get("status") == "imported" and item.get("destination"):
-            skills[Path(item["destination"]).name] = skill_tree_digest(Path(item["destination"]))
+        if item.get("kind") not in {"skill", "slash-command"}:
+            continue
+        if item.get("status") != "imported" or not item.get("destination"):
+            continue
+        destination = Path(item["destination"])
+        if item["kind"] == "slash-command":
+            # Destination is the SKILL.md file; the managed unit is its command directory.
+            skills[f"claude-code-commands/{destination.parent.name}"] = skill_tree_digest(destination.parent)
+        else:
+            skills[destination.name] = skill_tree_digest(destination)
     entry.update({"source": str(source_root), "overwrite": bool(overwrite),
                   "last_import": int(time.time()), "imported_skills": dict(sorted(skills.items()))})
     if refresh_digest or "digest" not in entry:

@@ -21,7 +21,9 @@ import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
   getVenvSitePackagesEntries,
-  resolveVenvHermesCommand
+  resolveVenvHermesCommand,
+  resolveVenvRoot,
+  venvBaseInterpreterPresent
 } from './windows-hermes-path'
 
 test('buildPathExtCandidates: Windows tries PATHEXT extensions before the empty extension', () => {
@@ -82,6 +84,103 @@ test('chooseUpdaterArgs: passes the branch through unchanged in both modes', () 
     chooseUpdaterArgs({ hasBootstrapMarker: false, hasVenvHermes: false, hasVenvPython: false }, 'release/1.2'),
     ['--repair', '--branch', 'release/1.2']
   )
+})
+
+test('resolveVenvRoot: prefers .venv and falls back to venv in backend-discovery order', () => {
+  const joinPath = (...segments: string[]) => segments.join('/')
+
+  assert.equal(
+    resolveVenvRoot('/source', {
+      isWindows: true,
+      joinPath,
+      fileExists: filePath => filePath === '/source/.venv/Scripts/python.exe',
+      directoryExists: () => true
+    }),
+    '/source/.venv'
+  )
+  assert.equal(
+    resolveVenvRoot('/source', {
+      isWindows: true,
+      joinPath,
+      fileExists: filePath => filePath === '/source/venv/Scripts/python.exe',
+      directoryExists: () => true
+    }),
+    '/source/venv'
+  )
+})
+
+test('resolveVenvRoot: retains a partial .venv for recovery when no interpreter remains', () => {
+  assert.equal(
+    resolveVenvRoot('/source', {
+      isWindows: true,
+      joinPath: (...segments) => segments.join('/'),
+      fileExists: () => false,
+      directoryExists: directoryPath => directoryPath === '/source/.venv'
+    }),
+    '/source/.venv'
+  )
+})
+
+test('venvBaseInterpreterPresent: allows --update when the recorded Windows base interpreter exists', () => {
+  const present = venvBaseInterpreterPresent('venv', {
+    isWindows: true,
+    joinPath: (...segments) => segments.join('/'),
+    readFile: filePath => {
+      assert.equal(filePath, 'venv/pyvenv.cfg')
+      return 'home = uv-base'
+    },
+    fileExists: filePath => filePath === 'uv-base/python.exe'
+  })
+
+  assert.equal(present, true)
+  assert.deepEqual(
+    chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: true, hasVenvPython: present }, 'main'),
+    ['--update', '--branch', 'main']
+  )
+})
+
+test('venvBaseInterpreterPresent: defaults to the Windows base interpreter name', () => {
+  const present = venvBaseInterpreterPresent('venv', {
+    joinPath: (...segments) => segments.join('/'),
+    readFile: () => 'home = uv-base',
+    fileExists: filePath => filePath === 'uv-base/python.exe'
+  })
+
+  assert.equal(present, true)
+})
+
+test('venvBaseInterpreterPresent: forces --repair when a Windows venv base interpreter is missing', () => {
+  const present = venvBaseInterpreterPresent('venv', {
+    isWindows: true,
+    joinPath: (...segments) => segments.join('/'),
+    readFile: () => 'home = deleted-uv-base',
+    fileExists: () => false
+  })
+
+  assert.equal(present, false)
+  assert.deepEqual(
+    chooseUpdaterArgs({ hasBootstrapMarker: true, hasVenvHermes: true, hasVenvPython: present }, 'main'),
+    ['--repair', '--branch', 'main']
+  )
+})
+
+test('venvBaseInterpreterPresent: keeps unknown config states on the non-destructive path', () => {
+  let checkedBase = false
+  const logs: string[] = []
+  const present = venvBaseInterpreterPresent('venv', {
+    isWindows: true,
+    joinPath: (...segments) => segments.join('/'),
+    readFile: () => undefined,
+    fileExists: () => {
+      checkedBase = true
+      return false
+    },
+    rememberLog: message => logs.push(message)
+  })
+
+  assert.equal(present, true)
+  assert.equal(checkedBase, false)
+  assert.match(logs[0], /unable to read venv configuration at venv\/pyvenv\.cfg/)
 })
 
 function makeDeps(overrides: Partial<Parameters<typeof resolveVenvHermesCommand>[2]> = {}) {

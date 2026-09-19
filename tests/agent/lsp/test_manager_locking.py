@@ -57,3 +57,18 @@ def test_reused_multiroot_client_attaches_outside_state_lock(monkeypatch):
     result = asyncio.run(service._get_or_spawn("/repo/worktree-b/example.py"))
 
     assert result is client
+
+
+def test_delta_baseline_is_capped_by_write_recency():
+    """Baselines beyond _DELTA_BASELINE_CAP evict the path written longest ago, and rewriting a
+    path refreshes it instead of aging it out ahead of paths never touched again."""
+    service = LSPService(enabled=False, wait_mode="document", wait_timeout=0.1,
+                         install_strategy="manual", idle_timeout=0)
+    cap = manager._DELTA_BASELINE_CAP
+    for i in range(cap):
+        service._set_delta_baseline(f"/repo/f{i}.py", [])
+    service._set_delta_baseline("/repo/f0.py", [{"message": "rewritten"}])
+    service._set_delta_baseline("/repo/new.py", [])
+    assert len(service._delta_baseline) == cap
+    assert "/repo/f1.py" not in service._delta_baseline
+    assert service._delta_baseline["/repo/f0.py"] == [{"message": "rewritten"}]

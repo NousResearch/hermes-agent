@@ -143,3 +143,30 @@ async def test_shutdown_never_signals_a_server_that_honours_exit(tmp_path: Path)
 
     assert signals == []
     assert proc.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_docs_cache_is_lru_bounded_and_reopens_evicted(tmp_path: Path, monkeypatch):
+    """`_docs` never exceeds MAX_TRACKED_FILES; an evicted file is didClose'd and re-didOpen'ed
+    (version 0) with diagnostics flowing again, so the cap is invisible to callers."""
+    import agent.lsp.client as client_mod
+
+    monkeypatch.setattr(client_mod, "MAX_TRACKED_FILES", 3)
+    files = [tmp_path / f"f{i}.py" for i in range(5)]
+    for f in files:
+        f.write_text("print('hi')\n")
+
+    client = _client(tmp_path, "errors")
+    await client.start()
+    try:
+        for f in files:
+            await client.open_file(str(f), language_id="python")
+        assert len(client._docs) == 3
+        assert str(files[0]) not in client._docs  # least recently touched went first
+        version = await client.open_file(str(files[0]), language_id="python")
+        assert version == 0  # fresh didOpen, not a didChange against dropped state
+        assert len(client._docs) == 3
+        await client.wait_for_diagnostics(str(files[0]), version, mode="document")
+        assert client.diagnostics_for(str(files[0]))
+    finally:
+        await client.shutdown()

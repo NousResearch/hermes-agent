@@ -1085,13 +1085,10 @@ class HindsightMemoryProvider(MemoryProvider):
         # Advance the watermark only after the delta is queued so a later retain
         # doesn't re-ship turns already handed to the writer.
         if update_mode == "append":
-            # Every buffered turn has now been shipped (the retain content was
-            # snapshotted into the closure above). Append retains only ever read
-            # the un-retained tail — sync_turn slices from the watermark and
-            # flush-on-switch flushes what's left — so drop the retained turns
-            # instead of letting the buffer grow for the whole session. Overwrite
-            # mode is deliberately untouched: it resends the full session each
-            # retain and must keep every turn.
+            # The job above holds its own copy, and append retains (here and flush-on-switch) only
+            # ever read the un-retained tail — so drop shipped turns instead of pinning every turn
+            # of a never-ending session (#62950). Overwrite mode resends the whole session and
+            # must keep them all.
             self._session_turns.clear()
             self._last_retained_turn_count = 0
 

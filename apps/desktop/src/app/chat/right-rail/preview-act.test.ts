@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
 
-import { actOnActivePreview } from './preview-act'
+import { actOnActivePreview, isWitnessTargetMatch } from './preview-act'
 import { registerPreviewInput } from './preview-input'
 import { registerPreviewNav } from './preview-nav'
 import { registerPreviewScriptRunner } from './preview-script-runner'
@@ -373,5 +373,235 @@ describe('actOnActivePreview (drive_preview tool)', () => {
 
   it('reports history verbs with no pane to drive', async () => {
     expect((await actOnActivePreview({ kind: 'reload' })).error).toContain('open_preview')
+  })
+
+  it('scales pointer coordinates by the guest page zoomFactor when zoom is not 100%', async () => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({
+              acted: 'looking at button "MITTE"',
+              point: { x: 500, y: 310 },
+              success: true,
+              zoomFactor: 0.9
+            })
+          : JSON.stringify({
+              elements: [],
+              hit: { matched: true, tag: 'BUTTON', trusted: true },
+              success: true
+            })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
+    expect(result.success).toBe(true)
+
+    const downEvent = send.mock.calls.map(([event]) => event).find(event => event.type === 'mouseDown')
+    expect(downEvent).toBeDefined()
+    // At zoom 90%, 500 * 0.9 = 450, 310 * 0.9 = 279
+    expect(downEvent).toMatchObject({
+      x: 450,
+      y: 279
+    })
+  })
+
+  it('reports failure when the click witness records that the pointer hit the wrong element', async () => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({
+              acted: 'looking at button "MITTE"',
+              point: { x: 500, y: 310 },
+              success: true
+            })
+          : JSON.stringify({
+              elements: [],
+              hit: { matched: false, tag: 'DIV', trusted: true },
+              success: true
+            })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/wrong target|target mismatch|missed the target/i)
+  })
+
+  it('does not consider clicks on parent containers or document body as target matches', async () => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+    let locateScript = ''
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code => {
+        if (code.includes('"kind":"locate"')) {
+          locateScript = code
+          return JSON.stringify({
+            acted: 'looking at button "Submit"',
+            point: { x: 100, y: 50 },
+            success: true
+          })
+        }
+        return JSON.stringify({
+          elements: [],
+          hit: {
+            aimedId: 'submit-btn',
+            aimedTag: 'BUTTON',
+            matched: false,
+            tag: 'DIV',
+            targetId: 'parent-card',
+            trusted: true
+          },
+          success: true
+        })
+      })
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/pointer missed the target/i)
+
+    // Verify witness script does not allow target.contains(aimed) (which would falsely match parent containers)
+    expect(locateScript).toContain('aimed.contains(target)')
+    expect(locateScript).not.toContain('target.contains(aimed)')
+  })
+
+  describe('isWitnessTargetMatch (guest witness predicate)', () => {
+    it('matches when target is the aimed element itself', () => {
+      const button = document.createElement('button')
+      expect(isWitnessTargetMatch(button, button)).toBe(true)
+    })
+
+    it('matches when target is a child element inside the aimed element', () => {
+      const button = document.createElement('button')
+      const icon = document.createElement('span')
+      button.appendChild(icon)
+      expect(isWitnessTargetMatch(button, icon)).toBe(true)
+    })
+
+    it('rejects when target is a parent container (falsification: old formula target.contains(aimed) was true)', () => {
+      const container = document.createElement('div')
+      const button = document.createElement('button')
+      container.appendChild(button)
+
+      // Falsification: under the buggy formula, container.contains(button) is true (false success!)
+      // Under the fixed formula, container is not aimed and aimed does not contain container -> false (fail closed!)
+      expect(isWitnessTargetMatch(button, container)).toBe(false)
+    })
+
+    it('rejects when target is the document body containing the element', () => {
+      const button = document.createElement('button')
+      document.body.appendChild(button)
+      try {
+        expect(isWitnessTargetMatch(button, document.body)).toBe(false)
+      } finally {
+        document.body.removeChild(button)
+      }
+    })
+
+    it('rejects when target is an unrelated sibling element', () => {
+      const container = document.createElement('div')
+      const button = document.createElement('button')
+      const sibling = document.createElement('div')
+      container.appendChild(button)
+      container.appendChild(sibling)
+      expect(isWitnessTargetMatch(button, sibling)).toBe(false)
+    })
+
+    it('treats null or undefined aimed element as unconstrained match', () => {
+      const button = document.createElement('button')
+      expect(isWitnessTargetMatch(null, button)).toBe(true)
+      expect(isWitnessTargetMatch(undefined, button)).toBe(true)
+    })
+  })
+
+  it('queries zoomFactor from input handle when not provided in locate payload', async () => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({
+              acted: 'looking at button "Zoomed"',
+              point: { x: 400, y: 200 },
+              success: true
+            })
+          : JSON.stringify({
+              elements: [],
+              hit: { matched: true, tag: 'BUTTON', trusted: true },
+              success: true
+            })
+      )
+    )
+    cleanups.push(
+      registerPreviewInput(tabId, {
+        focus: vi.fn(),
+        send,
+        zoomFactor: () => 0.8
+      })
+    )
+
+    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
+    expect(result.success).toBe(true)
+
+    const downEvent = send.mock.calls.map(([event]) => event).find(event => event.type === 'mouseDown')
+    expect(downEvent).toMatchObject({
+      x: 320, // 400 * 0.8
+      y: 160 // 200 * 0.8
+    })
+  })
+
+  it('scales coordinates using guest DPR relative to host display scaling', async () => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code =>
+        code.includes('"kind":"locate"')
+          ? JSON.stringify({
+              acted: 'looking at button "DPR"',
+              dpr: 1.125, // 1.25 display scale * 0.9 zoom
+              point: { x: 500, y: 300 },
+              success: true
+            })
+          : JSON.stringify({
+              elements: [],
+              hit: { matched: true, tag: 'BUTTON', trusted: true },
+              success: true
+            })
+      )
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    const originalDpr = window.devicePixelRatio
+    const originalHermes = (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1.125 })
+      ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+        zoom: { factor: () => 0.9 }
+      }
+
+      const result = await actOnActivePreview({ kind: 'click', ref: '@e1' })
+      expect(result.success).toBe(true)
+
+      const downEvent = send.mock.calls.map(([event]) => event).find(event => event.type === 'mouseDown')
+      expect(downEvent).toMatchObject({
+        x: 450, // 500 * (1.125 / 1.25) = 500 * 0.9 = 450
+        y: 270 // 300 * 0.9 = 270
+      })
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: originalDpr })
+      ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = originalHermes
+    }
   })
 })

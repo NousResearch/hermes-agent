@@ -148,13 +148,27 @@ ${preamble()}
   // ignored, and the agent would report success either way.
   w.__hermesHit = null;
   document.addEventListener('pointerdown', function (e) {
-    w.__hermesHit = { tag: e.target ? e.target.tagName : '?', trusted: e.isTrusted === true };
+    var target = e.target;
+    var aimed = (holder && holder.aimed) || (w && w.__hermesActHolder && w.__hermesActHolder.aimed) || null;
+    var matched =
+      !aimed ||
+      target === aimed ||
+      Boolean(aimed.contains && aimed.contains(target));
+    w.__hermesHit = {
+      aimedId: aimed && aimed.id ? aimed.id : undefined,
+      aimedTag: aimed ? aimed.tagName : undefined,
+      matched: matched,
+      tag: target ? target.tagName : '?',
+      targetId: target && target.id ? target.id : undefined,
+      trusted: e.isTrusted === true
+    };
   }, { capture: true, once: true });
   // Measure again once the scroll has stopped: real input is aimed at a fixed
   // viewport coordinate, so it has to be where the target ENDS UP.
   return restAfterScroll().then(function () {
     var settled = act(locate);
     var best = settled.success ? settled : found;
+    best.dpr = window.devicePixelRatio;
     var at = best.point;
     // Last line of defence before the pointer is sent somewhere real. An element
     // that is still outside the viewport after we scrolled to it is hidden, not
@@ -333,7 +347,61 @@ function describeDone(action: PreviewActAction, target: string): string {
   return 'clicked ' + target
 }
 
-/** Look at the target, walk the pointer over, and act on it for real. */
+/** Determine whether an intercepted pointerdown target matches the aimed element.
+ *  Returns true if the target is the aimed element itself or is contained within it.
+ *  Hits on background parent containers or unrelated elements return false. */
+export function isWitnessTargetMatch(
+  aimed: { contains?: (other: any) => boolean } | null | undefined,
+  target: unknown,
+): boolean {
+  if (!aimed) return true
+  if (target === aimed) return true
+  return Boolean(aimed.contains && aimed.contains(target))
+}
+
+/** Resolve the effective zoom factor between guest page CSS coordinates and
+ *  webview input coordinates. Scales coordinates so sendInputEvent lands
+ *  pixel-exact regardless of page zoom or display scaling. */
+async function resolveGuestZoom(
+  input: PreviewInputHandle,
+  reportedZoom?: number,
+  reportedDpr?: number
+): Promise<number> {
+  if (typeof reportedZoom === 'number' && Number.isFinite(reportedZoom) && reportedZoom > 0) {
+    return reportedZoom
+  }
+
+  if (input.zoomFactor) {
+    try {
+      const z = await input.zoomFactor()
+      if (typeof z === 'number' && Number.isFinite(z) && z > 0) {
+        return z
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (typeof reportedDpr === 'number' && Number.isFinite(reportedDpr) && reportedDpr > 0) {
+    const hostZoom =
+      (typeof window !== 'undefined' &&
+        (window as unknown as { hermesDesktop?: { zoom?: { factor?: () => number } } }).hermesDesktop?.zoom?.factor?.()) ||
+      1
+    const hostDpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1
+    const displayScale = hostDpr / (hostZoom || 1)
+    if (displayScale > 0) {
+      const zoom = reportedDpr / displayScale
+      if (Number.isFinite(zoom) && zoom > 0) {
+        return zoom
+      }
+    }
+  }
+
+  return 1
+}
+
+/** Drive the page via Chromium input events, falling back to script when the
+ *  tab exposes no input channel. */
 async function driveAction(
   run: PreviewScriptRunner,
   input: PreviewInputHandle,
@@ -351,7 +419,7 @@ async function driveAction(
     return { acted: action.kind, note: NAVIGATED, success: true }
   }
 
-  const found = trip.result
+  const found = trip.result as PreviewActResult & { dpr?: number; zoomFactor?: number }
 
   if (!found.success) {
     return found
@@ -361,7 +429,13 @@ async function driveAction(
     return { error: 'Could not work out where that element is on screen.', success: false }
   }
 
-  await glideTo(input, found.point)
+  const zoomFactor = await resolveGuestZoom(input, found.zoomFactor, found.dpr)
+  const targetPoint =
+    zoomFactor !== 1
+      ? { x: Math.round(found.point.x * zoomFactor), y: Math.round(found.point.y * zoomFactor) }
+      : found.point
+
+  await glideTo(input, targetPoint)
 
   if (action.kind === 'click') {
     await clickAt(input)
@@ -402,7 +476,16 @@ async function driveAction(
     return { acted, note: NAVIGATED, success: true }
   }
 
-  const { hit, ...result } = after.result as PreviewActResult & { hit?: { tag: string; trusted: boolean } | null }
+  const { hit, ...result } = after.result as PreviewActResult & {
+    hit?: {
+      aimedId?: string
+      aimedTag?: string
+      matched?: boolean
+      tag: string
+      targetId?: string
+      trusted: boolean
+    } | null
+  }
 
   // The witness the locate trip armed. No record means the input never reached
   // the document, which the agent must hear about — every other signal here
@@ -411,6 +494,20 @@ async function driveAction(
     return {
       ...result,
       error: 'The pointer input never reached the page, so nothing was ' + acted.split(' ')[0] + '.',
+      success: false
+    }
+  }
+
+  if (hit && hit.tag === 'HERMES-WATCH') {
+    return { ...result, acted, note: hitNote(hit), success: true }
+  }
+
+  if (hit && hit.matched === false && CLICKS.indexOf(action.kind) !== -1) {
+    const got = hit.targetId ? `<${hit.tag.toLowerCase()} id="${hit.targetId}">` : `<${hit.tag.toLowerCase()}>`
+    const wanted = hit.aimedTag ? `<${hit.aimedTag.toLowerCase()}>` : target
+    return {
+      ...result,
+      error: `The pointer missed the target: clicked ${got} instead of ${wanted}. The page may have scrolled, layout may have shifted, or zoom scaling differed.`,
       success: false
     }
   }
@@ -432,6 +529,7 @@ ${preamble()}
   var sc = document.scrollingElement || document.documentElement;
   var track = sc.clientHeight || window.innerHeight;
   return Promise.resolve(JSON.stringify({
+    dpr: window.devicePixelRatio,
     page: Math.round(window.innerHeight * 0.9),
     point: { x: Math.round(window.innerWidth / 2), y: Math.round(track / 2) },
     span: sc.scrollHeight - track,
@@ -461,7 +559,7 @@ async function driveScroll(
     return { acted: 'scrolled', note: NAVIGATED, success: true }
   }
 
-  const anchor = trip.result as PreviewActResult & { page?: number; span?: number }
+  const anchor = trip.result as PreviewActResult & { dpr?: number; page?: number; span?: number; zoomFactor?: number }
 
   if (!anchor.span) {
     return { ...anchor, acted: 'scrolled the page', note: 'The page has nothing to scroll — it all fits already.' }
@@ -470,7 +568,12 @@ async function driveScroll(
   // A person does not move the mouse to scroll; the wheel turns wherever their
   // hand already is. Only send it somewhere if it has never been anywhere.
   if (!pointerPlaced() && anchor.point) {
-    await glideTo(input, anchor.point)
+    const zoomFactor = await resolveGuestZoom(input, anchor.zoomFactor, anchor.dpr)
+    const pt =
+      zoomFactor !== 1
+        ? { x: Math.round(anchor.point.x * zoomFactor), y: Math.round(anchor.point.y * zoomFactor) }
+        : anchor.point
+    await glideTo(input, pt)
   }
 
   await wheelBy(input, action.amount ?? anchor.page ?? 600)

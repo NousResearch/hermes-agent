@@ -95,6 +95,7 @@ type PreviewWebview = HTMLElement & {
   replaceMisspelling?: (word: string) => void
   selectAll?: () => void
   sendInputEvent?: (event: PreviewInputEvent) => void
+  getZoomFactor?: () => Promise<number | undefined> | number | undefined
 }
 
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
@@ -821,6 +822,23 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         }
 
         webview.sendInputEvent(event)
+      },
+      zoomFactor: async () => {
+        const webview = webviewRef.current
+        if (!webview) {
+          return undefined
+        }
+        if (typeof webview.getZoomFactor === 'function') {
+          try {
+            const factor = await webview.getZoomFactor()
+            if (typeof factor === 'number' && Number.isFinite(factor) && factor > 0) {
+              return factor
+            }
+          } catch {
+            // guest may be navigating or busy; fallback to DPR
+          }
+        }
+        return undefined
       }
     })
   }, [isRemoteHtml, isWebPreview, tabId])

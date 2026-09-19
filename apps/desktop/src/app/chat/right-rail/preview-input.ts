@@ -12,9 +12,9 @@
  * webContents does not reach a guest (electron/electron#20333), which is why
  * this is a per-pane registry rather than something main could do.
  *
- * Coordinates are relative to the webview, and the webview IS the guest
- * viewport — so a rect the act engine measured inside the page needs no
- * conversion on the way back out.
+ * Coordinates are relative to the webview element. When the guest page is
+ * zoomed (zoomFactor !== 1.0), coordinates measured inside the page (CSS pixels)
+ * must be scaled by the guest zoomFactor to match the webview element's DIP input space.
  */
 
 import { $rightRailActiveTabId } from '@/store/layout'
@@ -31,6 +31,8 @@ export interface PreviewInputHandle {
   /** Give the guest keyboard focus, so key events reach its active element. */
   focus: () => void
   send: (event: PreviewInputEvent) => void
+  /** Effective zoom factor of the guest page (1 = 100%). Undefined if unknown. */
+  zoomFactor?: () => Promise<number | undefined> | number | undefined
 }
 
 const handles = new Map<string, PreviewInputHandle>()

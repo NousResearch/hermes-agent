@@ -98,6 +98,10 @@ EMAIL_SMTP_HOST=smtp.gmail.com
 
 # Security (recommended)
 EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
+# Exact authserv-id on the receiving MTA's topmost Authentication-Results header.
+# With an allowlist, leave sender authentication enabled only after confirming
+# that MTA strips inbound headers claiming this id before adding its own stamp.
+EMAIL_AUTHSERV_ID=mx.google.com
 
 # Optional
 EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
@@ -174,6 +178,8 @@ Email access is stricter by default than chat-style platforms:
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → any sender is accepted (use with caution)
 4. **`platforms.email.unauthorized_dm_behavior: pair`** → unknown senders receive a pairing code
 
+When `EMAIL_ALLOWED_USERS` grants access, sender authentication is enabled by default. Set `EMAIL_AUTHSERV_ID` to the exact id stamped on the **topmost** `Authentication-Results` header by your receiving MTA. Hermes fails closed without that pin, or when the top header does not match it. Confirm that your MTA strips inbound `Authentication-Results` headers claiming its id before it prepends its own; a copied id alone does not prove provenance. If your provider cannot meet this requirement, you may explicitly accept the risk with `platforms.email.require_authenticated_sender: false` or `EMAIL_TRUST_FROM_HEADER=true`.
+
 :::warning
 **Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.
 :::
@@ -186,7 +192,7 @@ Email access is stricter by default than chat-style platforms:
 |---------|----------|
 | **"IMAP connection failed"** at startup | Verify `EMAIL_IMAP_HOST` and `EMAIL_IMAP_PORT`. Ensure IMAP is enabled on the account. For Gmail, enable it in Settings → Forwarding and POP/IMAP. |
 | **"SMTP connection failed"** at startup | Verify `EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT`. Check that your password is correct (use App Password for Gmail). |
-| **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. Check spam folder — some providers flag automated replies. |
+| **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. With an allowlist, set `EMAIL_AUTHSERV_ID` to the exact receiving-MTA stamp and verify it is the topmost `Authentication-Results` header. Check spam folder — some providers flag automated replies. |
 | **"Authentication failed"** | For Gmail, you must use an App Password, not your regular password. Ensure 2FA is enabled first. |
 | **Duplicate replies** | Ensure only one gateway instance is running. Check `hermes gateway status`. |
 | **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). |
@@ -202,6 +208,7 @@ Email access is stricter by default than chat-style platforms:
 
 - Use **App Passwords** instead of your main password (required for Gmail with 2FA)
 - Set `EMAIL_ALLOWED_USERS` to restrict who can interact with the agent
+- With an allowlist, set `EMAIL_AUTHSERV_ID` to the exact id of the receiving MTA's topmost `Authentication-Results` stamp, and verify that MTA strips inbound headers claiming that id
 - The password is stored in `~/.hermes/.env` — protect this file (`chmod 600`)
 - IMAP uses SSL (port 993) and SMTP uses STARTTLS (port 587) by default — connections are encrypted
 
@@ -219,5 +226,6 @@ Email access is stricter by default than chat-style platforms:
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
+| `EMAIL_AUTHSERV_ID` | No | — | Exact authserv-id on the receiving MTA's topmost `Authentication-Results`; required when using an allowlist unless sender authentication is disabled |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |

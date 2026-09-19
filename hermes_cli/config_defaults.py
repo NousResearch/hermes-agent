@@ -1188,11 +1188,12 @@ DEFAULT_CONFIG = {
         "surface": "auto",  # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
         "input_device": None,  # PortAudio input device index/name; null = process default
         "capture": "auto",  # auto | local | client (desktop streams mic via wake.feed)
-        # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine"
+        # "openwakeword" (free, local) | "sherpa" (free, ANY English phrase, no training) |
+        # "whisper" (free, ANY phrase in ANY language via local faster-whisper) | "porcupine"
         # (premium; needs PORCUPINE_ACCESS_KEY)
         "provider": "openwakeword",
-        # sherpa: this IS the detected phrase; other engines: cosmetic label (detection is keyed by
-        # the model/keyword below)
+        # sherpa/whisper: this IS the detected phrase; other engines: cosmetic label (detection is
+        # keyed by the model/keyword below)
         "phrase": "hey hermes",
         "sensitivity": 0.6,  # 0.0-1.0 threshold, consistent across engines (higher = stricter)
         # openWakeWord only: consecutive over-threshold frames to fire (higher = fewer false
@@ -1212,6 +1213,19 @@ DEFAULT_CONFIG = {
         "sherpa": {
             # sherpa-onnx KWS model dir; empty = auto-download the small English zipformer
             "model_dir": "",
+        },
+        "whisper": {
+            # faster-whisper size ("tiny", "base", "small", ...); empty = stt.local.model, else "tiny"
+            "model": "",
+            # language code ("pt", "es", ...); empty = stt.language, else Whisper auto-detect
+            "language": "",
+            # speech gate: RMS above this counts as speech; an utterance ends after silence_duration
+            # seconds of silence (or at max_speech_seconds) and is transcribed if it held at least
+            # min_speech_seconds of speech
+            "silence_threshold": 200,
+            "silence_duration": 0.5,
+            "min_speech_seconds": 0.3,
+            "max_speech_seconds": 3.0,
         },
         "porcupine": {
             # built-in keyword ("jarvis", "computer", ...) or path to a custom .ppn

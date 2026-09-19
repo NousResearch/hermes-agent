@@ -536,6 +536,62 @@ def recover_from_cache_point_rejection(exc: BaseException, kwargs: Dict[str, Any
     return retry_kwargs
 
 
+# --- Encrypted-content redacted-reasoning suppression ---
+# Redacted thinking blobs are sealed to the issuing model/flow; replaying them after a model switch or
+# across regions fails with an encrypted-content ValidationException. Drop the redacted blocks and
+# resend once (mirrors the cachePoint self-heal above: same-object return means no retry can help).
+_REDACTED_REASONING_REJECTION_PATTERN = re.compile(
+    r"ValidationException.*(?:redacted|encrypt)", re.IGNORECASE | re.DOTALL,
+)
+
+
+def _without_redacted_reasoning(blocks):
+    """``blocks`` minus reasoningContent entries carrying redactedContent, or None if not a list /
+    nothing removed. Pure reasoningText blocks are kept."""
+    if not isinstance(blocks, list):
+        return None
+    cleaned = [b for b in blocks if not (
+        isinstance(b, dict) and isinstance(b.get("reasoningContent"), dict)
+        and "redactedContent" in b["reasoningContent"]
+    )]
+    return None if len(cleaned) == len(blocks) else cleaned
+
+
+def strip_redacted_reasoning(kwargs):
+    """Copy of Converse kwargs with redacted reasoning blocks removed; the SAME object
+    back when nothing was stripped (callers use identity to decide a retry cannot help).
+    Turns left with empty content are dropped (they carried no replayable signal)."""
+    messages = kwargs.get("messages")
+    if not isinstance(messages, list):
+        return kwargs
+    cleaned_contents = [
+        _without_redacted_reasoning(msg.get("content") if isinstance(msg, dict) else None)
+        for msg in messages
+    ]
+    if all(content is None for content in cleaned_contents):
+        return kwargs
+    return {**kwargs, "messages": [
+        {**msg, "content": content} for msg, content in zip(messages, cleaned_contents)
+        if content is None or len(content) > 0 or not isinstance(msg, dict)
+    ]}
+
+
+def recover_from_redacted_reasoning_rejection(exc, kwargs):
+    """Return retry kwargs with redacted reasoning blocks stripped, or None when the error
+    was not an encrypted-content rejection / nothing redacted remained (caller re-raises)."""
+    if not _REDACTED_REASONING_REJECTION_PATTERN.search(str(exc)):
+        return None
+    retry_kwargs = strip_redacted_reasoning(kwargs)
+    if retry_kwargs is kwargs:
+        return None
+    logger.warning(
+        "bedrock: %s rejected replayed redacted reasoning (encrypted content is sealed to the issuing "
+        "model/flow) - stripping redacted blocks and resending once.",
+        str(kwargs.get("modelId", "")) or "model",
+    )
+    return retry_kwargs
+
+
 # One optional regional/global inference-profile prefix, then the Claude model family.
 _ANTHROPIC_BEDROCK_MODEL_RE = re.compile(
     r"^(?:(?:global|us|eu|apac|ap|au|jp|ca|sa|me|af)\.)?anthropic\.claude", re.IGNORECASE,
@@ -632,15 +688,15 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
             reasoning = block["reasoningContent"]
             if not isinstance(reasoning, dict):
                 continue
-            replay = {"text": reasoning["text"]} if isinstance(reasoning.get("text"), str) else {}
+            # ReasoningContentBlock is a tagged union: reasoningText and redactedContent must go
+            # out as separate blocks (#115865). Undecodable redacted entries are skipped alone.
+            if isinstance(reasoning.get("text"), str):
+                content_blocks.append({"reasoningContent": {"reasoningText": {"text": reasoning["text"]}}})
             encoded = reasoning.get("redactedContentBase64")
             if isinstance(encoded, str) and encoded:
                 redacted = _decode_redacted(encoded)
-                if redacted is None:
-                    continue
-                replay["redactedContent"] = redacted
-            if replay:
-                content_blocks.append({"reasoningContent": replay})
+                if redacted is not None:
+                    content_blocks.append({"reasoningContent": {"redactedContent": redacted}})
         elif "toolUse" in block and isinstance(block["toolUse"], dict):
             tu = block["toolUse"]
             content_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
@@ -955,6 +1011,9 @@ def call_converse(
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
             return normalize_converse_response(client.converse(**retry_kwargs))
+        redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
+        if redacted_retry_kwargs is not None:
+            return normalize_converse_response(client.converse(**redacted_retry_kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
                 "bedrock: stale-connection error on converse(region=%s, model=%s): "
@@ -1237,6 +1296,11 @@ def call_converse_stream(
         if retry_kwargs is not None:
             return normalize_converse_stream_events(
                 client.converse_stream(**retry_kwargs)
+            )
+        redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
+        if redacted_retry_kwargs is not None:
+            return normalize_converse_stream_events(
+                client.converse_stream(**redacted_retry_kwargs)
             )
         if is_streaming_access_denied_error(exc):
             # IAM allows bedrock:InvokeModel but not

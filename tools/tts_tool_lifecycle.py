@@ -10,6 +10,7 @@ resolved through :func:`_origin` per call.
 
 from __future__ import annotations
 
+from contextvars import copy_context
 import logging
 import threading
 import time
@@ -67,7 +68,8 @@ def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) 
                         env_passthrough=_command_provider_env_passthrough(cfg))
                 except Exception as exc:  # noqa: BLE001 — best-effort hook
                     logger.debug("[TTS] %s_command for %s failed: %s", hook, name, exc)
-            threading.Thread(target=_run, name=f"tts-{hook}-{name}", daemon=True).start()
+            threading.Thread(target=copy_context().run, args=(_run,),
+                             name=f"tts-{hook}-{name}", daemon=True).start()
             return hook
         plugin_provider = _lookup_plugin_provider(name)
         if plugin_provider is None:

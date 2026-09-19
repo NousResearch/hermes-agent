@@ -7,6 +7,7 @@ list_apps, CLI --version). Exit codes: 0 overall=="ok"; 1 degraded/failed; 2 bin
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform as _platform_mod
 import re
@@ -17,6 +18,8 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.permissions import _child_env as _sanitized_cua_env
+
+logger = logging.getLogger("tools.computer_use.doctor")
 
 # Match the ALLOWED_STATUS_VALUES + ALLOWED_OVERALL_VALUES the cua-driver integration test pins.
 _STATUS_GLYPH = {"pass": "✅", "fail": "❌", "skip": "⏭️"}
@@ -287,6 +290,68 @@ def _wayland_environment_context(report: Report) -> Optional[Report]:
         return None
     return {"scope": "cli_process", "gateway_environment_checked": False}
 
+def _daemon_status() -> Optional[Report]:
+    """``cua_driver_daemon_status()``, or None when the probe itself failed — a diagnostics failure must not
+    become a doctor failure the operator cannot act on."""
+    from tools.computer_use import cua_daemon_health
+    try:
+        return cua_daemon_health.cua_driver_daemon_status()
+    except Exception as e:  # pragma: no cover - the module already swallows; this is belt-and-suspenders
+        logger.debug("cua daemon diagnostics unavailable: %s", e)
+        return None
+
+# The machine-wide `serve` daemon is a separate failure domain from the driver binary the contract inspects:
+# a unit whose ExecStart points into a pruned packages/releases/<version>/ dir leaves computer_use dead while
+# every version/platform/AX check passes (46h / 45k journal lines before anyone noticed, #114748). Rows are
+# reported only when a daemon is actually configured on this host — no unit means nothing to check, so a
+# healthy setup gains no new failure item.
+def _apply_daemon_guard(report: Report) -> Report:
+    """Additively append the daemon-liveness rows and degrade an 'ok' report when a configured daemon is dead."""
+    checks = report.get("checks")
+    if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
+        return report
+    status = _daemon_status()
+    if status is None:
+        return report
+    seen = {c.get("name") for c in checks}
+    state, reason, hint = status.get("state"), status.get("reason") or "", status.get("hint") or ""
+    rows: List[Report] = []
+
+    def row(name: str, status_value: str, message: str, extra: Optional[Report] = None) -> None:
+        if name not in seen:  # never shadow a check cua-driver reported itself
+            rows.append({"name": name, "status": status_value, "message": message, **(extra or {})})
+
+    if state == "not_configured":
+        return report  # nothing on this host starts a daemon — no row to add, and no row that could ever fail
+    if state == "not_installed":
+        row("daemon_reachable", "skip", reason, {"hint": hint})
+    elif state == "unknown":
+        row("daemon_reachable", "skip", reason, {"hint": hint, "data": {"daemon_state": state}})
+    elif state == "running":
+        row("daemon_service_path", "pass", "every cua-driver serve reference points at an existing binary")
+        row("daemon_reachable", "pass", "cua-driver serve is reachable" + (f" ({status['socket']})" if status.get("socket") else ""))
+    else:  # not_running — say which half is broken, and that a reinstall is the wrong reflex
+        missing = status.get("missing_targets") or []
+        if missing:
+            # The path row carries the exact missing target and the fix; the reachability row just states the
+            # consequence, so the operator does not read the same paragraph twice.
+            row("daemon_service_path", "fail",
+                f"{status['references'][0]['path']} starts the daemon from a path that does not exist: {missing[0]}",
+                {"hint": hint, "data": {"missing_targets": missing}})
+            row("daemon_reachable", "fail",
+                "no cua-driver serve daemon is reachable — the unit cannot exec its binary"
+                + (f" ({status['socket']})" if status.get("socket") else ""), {"data": {"daemon_state": state}})
+        else:
+            row("daemon_service_path", "pass",
+                "every cua-driver serve reference points at an existing binary — the daemon is not running")
+            row("daemon_reachable", "fail", reason or "no cua-driver serve daemon is reachable",
+                {"hint": hint, "data": {"daemon_state": state}})
+    if rows:
+        checks.extend(rows)
+        if report.get("overall") == "ok" and any(r["status"] == "fail" for r in rows):
+            report["overall"] = "degraded"
+    return report
+
 def _print_text_report(report: Report, color: bool, *, identity: Optional[Report] = None,
                        environment: Optional[Report] = None) -> None:
     """Render like `cua-driver call health_report`: header (CLI --version preferred over health_report's stale
@@ -352,6 +417,7 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2
     report = _apply_display_count_guard(report)
+    report = _apply_daemon_guard(report)
     identity = _build_identity(binary, report)
     environment = _wayland_environment_context(report)
     if json_output:

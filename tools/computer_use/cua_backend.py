@@ -178,14 +178,45 @@ _update_checked = False
 # Guarded so a failing installer can't loop — the second start() goes straight to the error.
 _contract_repair_attempted = False
 
+def _daemon_problem() -> Optional[Dict[str, Any]]:
+    """The machine-wide ``serve`` daemon's diagnosis when a unit / desktop entry starts a daemon that is dead
+    (stale ``ExecStart`` target, or nothing listening on the configured socket), else None. That failure mode
+    is not a binary problem: reinstalling the driver cannot fix it and only writes ``.release_installed/<ver>``,
+    which makes the install look repaired afterwards (issue #114748)."""
+    from tools.computer_use.cua_daemon_health import cua_driver_daemon_status
+    try:
+        status = cua_driver_daemon_status()
+    except Exception as exc:  # pragma: no cover - the probe never raises by contract
+        logger.debug("computer_use: cua daemon diagnosis unavailable: %s", exc)
+        return None
+    return status if status.get("state") == "not_running" else None
+
+def _not_ready_hint(contract: Dict[str, Any]) -> str:
+    """What the operator must actually do about a not-ready contract. The dead-daemon case never says
+    "install": the binary is fine, so a reinstall is a no-op that writes ``.release_installed/<ver>`` and makes
+    the install look repaired (#114748)."""
+    if contract.get("daemon_problem"):
+        return ("The machine-wide cua-driver serve daemon is also dead, and reinstalling the driver will not fix "
+                f"that: {contract['daemon_problem']}")
+    if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+        return "Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
+    return "Run `hermes computer-use install` to repair it."
+
 def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
     """Try one automatic driver repair; return the post-repair contract (or the original when no repair was
     attempted / it failed). Never raises. An explicit ``HERMES_CUA_DRIVER_CMD`` override is authoritative even
-    when broken, and a missing binary means installation was never requested."""
+    when broken, and a missing binary means installation was never requested. A dead machine-wide daemon is
+    reported instead of reinstalled: the driver binary is not what is broken."""
     global _contract_repair_attempted
     if contract.get("ready") or _contract_repair_attempted or os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() or not contract.get("binary"):
         return contract
     _contract_repair_attempted = True
+    daemon = _daemon_problem()
+    if daemon is not None:
+        problem = " ".join(part for part in (daemon.get("reason"), daemon.get("hint")) if part)
+        logger.warning("computer_use: cua-driver reinstall skipped — the driver binary is installed, the "
+                       "machine-wide serve daemon is not running: %s", problem)
+        return {**contract, "daemon_problem": problem}
     logger.info("computer_use: installed cua-driver is not usable (%s); attempting automatic repair",
                 contract.get("reason") or "runtime contract is incomplete")
     try:
@@ -251,8 +282,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             contract = _maybe_repair_runtime_contract(contract)
         if not contract.get("ready"):
             raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
-                               + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
-                                  if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
+                               + _not_ready_hint(contract))
         _maybe_nudge_update()
         # `mcp` is an optional extra: lazy-install on first use (gated by `security.allow_lazy_installs`); failure
         # raises FeatureUnavailable with the exact `uv pip install` hint.

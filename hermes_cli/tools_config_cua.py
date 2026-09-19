@@ -551,6 +551,13 @@ def _print_cua_platform_notes(is_windows: bool, is_linux: bool, *, fresh_install
         _print_info("    Windows/SmartScreen may prompt the first time it runs.")
     elif is_linux:
         _print_warning("    Linux support is alpha.")
+        # A hand-written user unit is the only way to manage the daemon on Linux (no `cua-driver autostart`,
+        # which is Windows-only), so the path guidance belongs here: the installer repoints
+        # packages/current on every upgrade and prunes the versioned release dirs it replaced (last 5 kept),
+        # which is how a working unit turns into a 203/EXEC crash loop after an upgrade (#114748).
+        from tools.computer_use.cua_daemon_health import STABLE_CUA_DRIVER_LAUNCHER
+        _print_info(f"    Running the daemon as a user service? Point ExecStart at {STABLE_CUA_DRIVER_LAUNCHER} —")
+        _print_info("    versioned ~/.cua-driver/packages/releases/<version>/ paths are pruned on upgrade.")
     else:
         _print_info("    IMPORTANT — grant macOS permissions now:" if fresh_install
                     else "    Grant macOS permissions if not done yet:")

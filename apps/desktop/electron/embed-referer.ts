@@ -1,7 +1,7 @@
 import { session } from 'electron'
 
 const EMBED_SESSION_PARTITION = 'persist:hermes-embed'
-const EMBED_REFERER = 'https://www.youtube.com/'
+const EMBED_REFERER = 'https://com.nousresearch.hermes/'
 
 const YOUTUBE_REFERER_HOST_RE =
   /(^|\.)(youtube\.com|youtube-nocookie\.com|googlevideo\.com|ytimg\.com|youtubei\.googleapis\.com)$/i
@@ -36,12 +36,19 @@ function installEmbedRefererForSession(embedSession) {
   })
 }
 
-/** Stamp Referer on YouTube requests in the embed webview partition only. */
+/** Stamp Referer on YouTube requests used by plain iframes and embed webviews. */
 function installEmbedReferer() {
-  try {
-    installEmbedRefererForSession(session.fromPartition(EMBED_SESSION_PARTITION))
-  } catch {
-    // Non-fatal: embeds still render; YouTube may show referer errors.
+  const sessionFactories = [
+    () => session.defaultSession,
+    () => session.fromPartition(EMBED_SESSION_PARTITION)
+  ]
+
+  for (const getSession of sessionFactories) {
+    try {
+      installEmbedRefererForSession(getSession())
+    } catch {
+      // Non-fatal: one failed session must not disable embeds in the other.
+    }
   }
 }
 

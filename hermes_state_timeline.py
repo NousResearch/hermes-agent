@@ -10,7 +10,7 @@ from agent.context_compressor import user_originated_turn_view
 
 
 _SYNTHETIC_PROMPT = re.compile(
-    r"^\s*(?:\[IMPORTANT: Background process |\[ASYNC (?:DELEGATION )?(?:BATCH )?COMPLETE\b|"
+    r"^\s*(?:\[IMPORTANT: Background process |\[ASYNC (?:DELEGATION )?(?:BATCH COMPLETE|TASK FAILED|COMPLETE)\b|"
     r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
     r"A background subagent you dispatched earlier has finished\.)",
     re.IGNORECASE,

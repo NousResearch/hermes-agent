@@ -3141,7 +3141,7 @@ def _compute_mcp_rev() -> str:
     with contextlib.suppress(Exception):
         cfg = _load_cfg()
         rev_src = json.dumps({k: cfg.get(k) for k in ("mcp", "mcp_servers", "tools")}, sort_keys=True, default=str)
-        return hashlib.sha1(rev_src.encode()).hexdigest()[:12]
+        return hashlib.sha1(rev_src.encode(), usedforsecurity=False).hexdigest()[:12]
     return ""
 
 

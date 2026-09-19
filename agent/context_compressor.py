@@ -2312,6 +2312,17 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             logger.debug("compression cancellation check failed", exc_info=True)
             return False
 
+    def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
+        """The trigger ``update_model`` would install for ``model``/``context_length``, without mutating
+        state — the model-switch guard quotes it in its preflight-compression warning."""
+        config_percent = getattr(self, "_config_threshold_percent", self.threshold_percent)
+        base_percent = resolve_model_threshold(model, self.model_thresholds, config_percent, provider)
+        threshold_percent = self._effective_threshold_percent(context_length, base_percent)
+        threshold = self._compute_threshold_tokens(context_length, threshold_percent, self.max_tokens)
+        if self.threshold_tokens_cap is not None and self.threshold_tokens_cap > 0:
+            threshold = min(threshold, self.threshold_tokens_cap, context_length)
+        return threshold
+
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: Any = "", provider: str = "",
         api_mode: str = "", max_tokens: int | None = None,

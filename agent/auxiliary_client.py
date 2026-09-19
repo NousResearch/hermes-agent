@@ -2087,7 +2087,18 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                     fallback=DEFAULT_XAI_OAUTH_BASE_URL,
                 )
                 if api_key and base_url:
-                    return api_key, base_url
+                    # xai-oauth raw client hardening: pool entries store the
+                    # access token as-is with no refresh — handing back an
+                    # expired bearer poisons fallback activation with a
+                    # guaranteed 401. Skip stale tokens and fall through to
+                    # the singleton resolver, which refreshes. Non-JWT keys
+                    # (no exp claim) pass through unchanged.
+                    from hermes_cli.auth import _xai_access_token_is_expiring
+                    if not _xai_access_token_is_expiring(api_key, skew_seconds=60):
+                        return api_key, base_url
+                    logger.debug(
+                        "Auxiliary xAI OAuth: pool token expiring/expired; "
+                        "falling through to singleton refresh path")
     except Exception as exc:
         logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
     try:
@@ -4952,6 +4963,38 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
 def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
     """xAI Grok OAuth (device code → Responses API). Without this branch xai-oauth falls to the generic
     oauth_external arm, returns (None, None), and silently re-routes every aux task to the Step-2 fallback."""
+    if req.raw_codex:
+        # xai-oauth raw client (fallback activation): the main agent needs
+        # direct responses.stream() access, exactly like _resolve_codex_branch.
+        # The wrapped aux path below returns a CodexAuxiliaryClient whose
+        # translation shim is silently dropped whenever the agent rebuilds its
+        # client from _client_kwargs, and _resolve_xai_oauth_for_aux's
+        # pool-first path hands back stale tokens with no refresh — both fatal
+        # for try_activate_fallback. Resolve a REFRESHED token first.
+        if not req.model:
+            logger.warning(
+                "resolve_provider_client: xai-oauth requested without a "
+                "model; pass model explicitly.")
+            return None, None
+        _xo_key, _xo_base = "", ""
+        try:
+            from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+            _xo_creds = resolve_xai_oauth_runtime_credentials()
+            _xo_key = str(_xo_creds.get("api_key") or "").strip()
+            _xo_base = str(_xo_creds.get("base_url") or "").strip().rstrip("/")
+        except Exception as _xo_exc:
+            logger.debug("xai-oauth raw resolution via auth store failed: %s", _xo_exc)
+        if not _xo_key or not _xo_base:
+            _xo_resolved = _resolve_xai_oauth_for_aux()
+            if _xo_resolved is None:
+                logger.warning(
+                    "resolve_provider_client: xai-oauth requested but no "
+                    "usable xAI OAuth token found (run: hermes model -> "
+                    "xAI Grok OAuth — SuperGrok / Premium+)")
+                return None, None
+            _xo_key, _xo_base = _xo_resolved
+        return (_create_openai_client(api_key=_xo_key, base_url=_xo_base),
+                _normalize_resolved_model(req.model, req.provider))
     client, default = _build_xai_oauth_aux_client(req.model)
     return _route_or_warn(req, client, default,
                           "resolve_provider_client: xai-oauth requested but no xAI "

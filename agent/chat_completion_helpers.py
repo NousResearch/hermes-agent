@@ -1775,7 +1775,11 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
 def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
     """Re-detect api_mode from provider / resolved base URL / model when the hint pass
     landed on the chat_completions default (never called for an explicit api_mode)."""
-    if fb_provider == "openai-codex":
+    if fb_provider in {"openai-codex", "xai", "xai-oauth"}:
+        # xai / xai-oauth serve grok via /v1/responses only. agent_init.
+        # _resolve_api_mode pins codex_responses for exactly this set; this
+        # resolver listed only openai-codex, so an xai fallback activated on
+        # chat_completions and every request 404'd. Keep the two sets in sync.
         return "codex_responses"
     from hermes_cli.models import opencode_model_api_mode
     from hermes_cli.runtime_provider_custom import _opencode_family_for_custom

@@ -2,11 +2,13 @@
 
 The ledger records what is known about each attempt; it is not a retry queue. Interrupted attempts
 become ``unknown`` only after their exact owner process is proved gone. Terminal states are
-immutable.
+immutable, with one exception: ``unknown`` means the ledger never learned the outcome, so that row
+may be closed ONCE against external evidence (``reconcile_execution`` / ``hermes cron reconcile``).
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 import threading
@@ -14,7 +16,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
@@ -82,6 +84,19 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
+    # Reconcile provenance. ``status`` keeps its original CHECK list: an outcome supplied from
+    # outside is still one of the outcomes the enum already names (``completed``/``failed``) — the
+    # interruption that hid it belongs to the job record, not to the attempt's own outcome. Columns
+    # are added in place, so every existing ledger upgrades without a table rebuild. The evidence is
+    # stored as the path it resolved to plus a digest of its bytes at reconcile time, because the
+    # conclusion has to stay checkable after the file moves, is rewritten, or expires.
+    add_column_if_missing(conn, "executions", "reconciled_at", "reconciled_at TEXT")
+    add_column_if_missing(conn, "executions", "reconciled_by", "reconciled_by TEXT")
+    add_column_if_missing(conn, "executions", "reconciled_note", "reconciled_note TEXT")
+    add_column_if_missing(conn, "executions", "reconciled_evidence", "reconciled_evidence TEXT")
+    add_column_if_missing(
+        conn, "executions", "reconciled_evidence_sha256", "reconciled_evidence_sha256 TEXT",
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
@@ -317,6 +332,107 @@ def recover_interrupted_executions() -> int:
     for record in recovered:
         _emit_execution_state(record)
     return changed
+
+
+def _caller_profile() -> Optional[str]:
+    """Best-effort name of the profile closing the row, or ``None``.
+
+    Late import (see ``_connect``: a daemon that outlived an on-disk upgrade has the old
+    ``hermes_cli`` cached) and deliberately forgiving — provenance is worth a name, but not worth
+    failing a reconcile over.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or None
+    except Exception:
+        return None
+
+
+def _evidence_record(evidence: str) -> Tuple[str, str]:
+    """Resolve *evidence* and hash its bytes: ``(absolute path, sha256 hex digest)``.
+
+    The path is stored resolved and the digest taken NOW, at reconcile time: evidence is whatever
+    the operator had in hand, and it is expected to move, be rewritten, or expire. The digest is
+    what keeps the conclusion checkable afterwards. ``ValueError`` unless it is an existing regular
+    file — a reconcile that cannot show its evidence is a guess, and the ledger records outcomes,
+    not guesses.
+    """
+    try:
+        path = Path(str(evidence)).expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"evidence path does not exist: {evidence}") from exc
+    if not path.is_file():
+        raise ValueError(f"evidence path is not a file: {path}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return str(path), digest.hexdigest()
+
+
+def reconcile_execution(
+    execution_id: str, *, status: str, evidence: str, note: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Close an ``unknown`` attempt with an outcome established outside the ledger.
+
+    ``unknown`` is the ledger admitting it never learned how the attempt ended: the owner is
+    provably gone and nothing durable recorded a result. The outcome is often knowable anyway —
+    the run's own report, an idempotency check against the system it wrote to — and leaving the
+    row ``unknown`` forever costs the operator the one thing the ledger is for. So ONE operator
+    assertion, backed by *evidence*, may close it. It is durable: who did it, when, on what path,
+    with which digest, plus the operator's *note*.
+
+    Deliberately narrow, and narrow on purpose rather than by omission:
+
+    * Any row that is not ``unknown`` is refused. ``claimed``/``running`` have a live owner and an
+      outcome that is not yet known; ``completed``/``failed`` are the ledger's own observations.
+      A second reconcile of the same row is refused for the same reason — evidence is not silently
+      replaceable. The refusal is the guarded ``UPDATE``, so two concurrent reconciles cannot both
+      win, and a row that moved on between the read and the write loses cleanly.
+    * *status* is ``completed`` or ``failed``: the ledger records what happened, not why the row was
+      dark (the interruption stays on the job record).
+    * ``finished_at`` is left as it is. It is the instant the ledger closed the row; the true finish
+      time is exactly the thing nobody knows, and stamping the reconcile time over it would invent
+      an instant to hide a gap.
+    * ``error`` follows the outcome: cleared for ``completed`` (a completed attempt has no error, as
+      ``finish_execution`` keeps it), and for ``failed`` the note when one was given, otherwise the
+      text the row already carried.
+
+    This is not a run: no slot, no claim, no ``next_run_at``. Repairing the job record that read
+    ``interrupted`` is a separate, more narrowly guarded step — ``cron.jobs.reconcile_job_record``.
+    """
+    if status not in ("completed", "failed"):
+        raise ValueError(f"reconcile status must be 'completed' or 'failed', not {status!r}")
+    evidence_path, evidence_digest = _evidence_record(evidence)
+    normalized_note = str(note).strip() if note is not None else ""
+    normalized_note = normalized_note or None
+    now = _hermes_now().isoformat()
+    with _transaction() as conn:
+        previous = _fetch(conn, str(execution_id))
+        if previous is None or previous.get("status") != "unknown":
+            return None
+        cur = conn.execute(
+            """UPDATE executions
+               SET status=?, error=?, reconciled_at=?, reconciled_by=?,
+                   reconciled_note=?, reconciled_evidence=?, reconciled_evidence_sha256=?
+               WHERE id=? AND status='unknown'""",
+            (
+                status,
+                None if status == "completed" else (normalized_note or previous.get("error")),
+                now,
+                _caller_profile(),
+                normalized_note,
+                evidence_path,
+                evidence_digest,
+                str(execution_id),
+            ),
+        )
+        if cur.rowcount != 1:
+            return None
+        record = _fetch(conn, str(execution_id))
+    _emit_execution_state(record)
+    return record
 
 
 def list_executions(

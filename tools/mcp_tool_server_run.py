@@ -115,10 +115,13 @@ class MCPServerRunMixin:
                     if (not self._session_proven and proof_at is not None
                             and time.monotonic() >= proof_at):
                         if self._stdio_children_dead():
-                            # The child died before the session ever proved itself: no
-                            # lifecycle event will ever fire and the zero-timeout wait
-                            # would spin forever — reconnect now, failing stale
-                            # in-flight calls at the tail below (#115483).
+                            # A dead child never fires a lifecycle event, so continuing here
+                            # would spin on zero-timeout waits forever (#115483). No mark_suspect:
+                            # the reconnect rebuilds the transport and the new child's handshake is
+                            # the health check.
+                            logger.warning("MCP server '%s' stdio child exited before the session proved "
+                                           "healthy; triggering reconnect (state: connected → degraded)",
+                                           self.name)
                             break
                         self._mark_session_proven()
                     continue

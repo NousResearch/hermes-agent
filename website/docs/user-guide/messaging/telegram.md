@@ -180,6 +180,48 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+### Ignore edited messages
+
+By default, Telegram edits are handled like ordinary inbound messages. If an edited message should never begin a second agent turn, opt in per profile:
+
+```yaml
+telegram:
+  ignore_edited_messages: true
+```
+
+The default is `false`, preserving existing bot behavior. When enabled, edits to text, commands, location/venue messages, and media messages are ignored by the normal agent-turn handlers. This does not disable the separate `message_edited` platform event for installed event hooks; that observer is not the normal reply path.
+
+Equivalent environment variable:
+
+```bash
+TELEGRAM_IGNORE_EDITED_MESSAGES=true
+```
+
+### Limiting how late an edit may still count
+
+Instead of dropping every edit, a profile can bound how old an edit may be and still begin a turn. This
+suits groups where a resident commonly fixes a just-sent message — for example adding the bot mention
+they forgot — while an edit made long after the original must not wake the bot:
+
+```yaml
+telegram:
+  edited_message_max_age_sec: 600
+```
+
+The value is the maximum number of seconds between the original send (`message.date`) and the edit
+(`message.edit_date`). Edits within that window are handled like ordinary inbound messages; older edits
+are ignored by the normal agent-turn handlers, exactly as with `ignore_edited_messages`. Unset (the
+default) means no ceiling — every edit is handled, which is the framework's existing behavior. A value of
+`0`, a negative number, or anything non-numeric is treated as unset, so an unusable value disables the
+ceiling rather than blocking every edit. The ceiling is ignored when `ignore_edited_messages: true` is
+set, since that drops all edits.
+
+Equivalent environment variable:
+
+```bash
+TELEGRAM_EDITED_MESSAGE_MAX_AGE_SEC=600
+```
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

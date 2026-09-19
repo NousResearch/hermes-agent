@@ -2537,6 +2537,25 @@ class TestAuxiliaryTaskExtraBody:
         assert kwargs["reasoning_effort"] == "low"
         assert "extra_body" not in kwargs or "reasoning" not in kwargs["extra_body"]
 
+    def test_explicit_reasoning_config_replaces_task_reasoning_wire(self, monkeypatch):
+        """A per-call config must not coexist with the task's normalized reasoning shape."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda _task: {"reasoning_effort": "none"})
+
+        kwargs = aux._build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=aux._get_task_extra_body("compression"),
+            reasoning_config={"enabled": True, "effort": "low"},
+            task="compression",
+        )
+
+        assert kwargs["reasoning_effort"] == "low"
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+        assert "reasoning" not in kwargs["extra_body"]
+
     def test_explicit_deepseek_thinking_disable_beats_profile_default(self):
         """An explicit vendor control is authoritative when no normalized config is present."""
         import agent.auxiliary_client as aux

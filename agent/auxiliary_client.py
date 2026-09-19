@@ -6484,12 +6484,13 @@ def _build_call_kwargs(
     # main transport applies (#89503); MoA aggregator/reference and aux calls 400'd without it (#112010).
     from agent.reasoning_effort import clamp_reasoning_config
     from agent.auxiliary_reasoning_floor import known_reasoning_floor
-    if reasoning_config is None and isinstance(extra_body, dict):
+    if isinstance(extra_body, dict):
         task_reasoning = extra_body.get("reasoning")
         if isinstance(task_reasoning, dict) and "enabled" in task_reasoning:
-            reasoning_config = task_reasoning
             extra_body = dict(extra_body)
             extra_body.pop("reasoning")
+            if reasoning_config is None:
+                reasoning_config = task_reasoning
     reasoning_config = clamp_reasoning_config(
         known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)

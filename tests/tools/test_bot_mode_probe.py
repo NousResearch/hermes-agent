@@ -309,3 +309,68 @@ def test_roster_resolves_default_to_root_home_over_stray_directory(tmp_path):
     assert homes["researcher"] == home / "profiles" / "researcher"
     names = [name for name, _ in roster]
     assert names.count("default") == 1
+
+
+def _set_private(profile_dir, value="true"):
+    """Mark an existing bot profile private, preserving its other ui_meta keys."""
+    (profile_dir / "profile.yaml").write_text(
+        textwrap.dedent(
+            f"""\
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+                private: {value}
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    ("lucky_private", "force_private", "viewer", "researcher_listed", "lucky_listed"),
+    [
+        (True, None, "home", True, False),
+        (True, None, "lucky", True, None),  # private is about what OTHERS see: lucky keeps its own section
+        (False, "true", "home", False, False),  # the install-wide switch outranks every agent's choice
+        (True, "false", "home", True, False),
+        (True, None, "solo", None, False),  # an all-private install still looks managed
+    ],
+    ids=["private-leaves-the-roster", "private-keeps-its-own-section", "force-private", "force-private-off", "all-private-still-managed"],
+)
+def test_a_private_agent_leaves_the_mesh_but_keeps_working(tmp_path, lucky_private, force_private, viewer, researcher_listed, lucky_listed):
+    """Filtering must happen in ``_visible_roster``, not ``_roster``: the latter also feeds
+    ``_any_managed``, and an all-private install must not switch Bot Mode off for everyone."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    if viewer != "solo":
+        _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    if lucky_private:
+        _set_private(lucky)
+    if force_private is not None:
+        (home / "config.yaml").write_text(f"bots:\n  force_private: {force_private}\n", encoding="utf-8")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(lucky if viewer == "lucky" else home)
+
+    assert section.startswith("## Messaging other agents")
+    assert bot_mode_probe._any_managed(home) is True
+    if viewer == "lucky":
+        assert "You are `@lucky`" in section
+    if researcher_listed is not None:
+        assert ("@researcher" in section) is researcher_listed
+    if lucky_listed is not None:
+        assert ("@lucky" in section) is lucky_listed
+
+
+@pytest.mark.parametrize(
+    ("value", "private"),
+    [("yes", True), ("on", True), ("1", True), ("True", True), ("false", False), ("no", False), ("0", False), ("maybe", False), ("''", False)],
+)
+def test_the_flag_reads_every_yaml_spelling_of_on_and_fails_open_on_the_rest(tmp_path, value, private):
+    """A typo must not silently remove an agent from the mesh."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    _set_private(_make_bot_profile(home, "lucky"), value)
+
+    assert ("@lucky" in bot_mode_probe.get_bot_mode_protocol_section(home)) is (not private)

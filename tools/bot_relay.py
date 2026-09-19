@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
-from tools.bot_mode_probe import _default_home, _hermes_root
+from tools.bot_mode_probe import _boolish, _default_home, _hermes_root
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,10 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
     handle = str(row.get("handle") or "").strip().lstrip("@") or ("hermes" if profile == "default" else profile)
     connection_id = str(row.get("connection_id") or "").strip()
     if not profile or not connection_id or not all(_HANDLE_RE.match(v) for v in (handle, profile, connection_id)):
+        return None
+    # Dropped on the consuming side too: a peer on an older build advertises every managed
+    # profile and must not put a private agent back into this roster. Same truth as the local flag.
+    if _boolish(row.get("private")):
         return None
     out = {
         "profile": profile, "handle": handle, "connection_id": connection_id,

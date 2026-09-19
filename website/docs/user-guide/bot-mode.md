@@ -333,6 +333,28 @@ Each local Bot runs in its own backend process, and Desktop keeps at most **Sett
 
 Reads of another Bot's chat history and background transcript refreshes do **not** take a slot — only an interactive open or a running turn does. If you drive a large fleet (group chats with many members, or Kanban dispatch across many profiles), raise Warm Bot Backends toward the number of Bots you expect to be active at the same time and give the machine the memory to match. Setting it higher than the profiles you actually use only adds startup work.
 
+## Keeping a Bot out of the mesh
+
+Every Bot is normally a teammate to every other Bot: it appears in their rosters with its title and description, and any of them can message it. Two switches take a Bot out of that mesh while it keeps running and stays fully reachable by you.
+
+- **Per Bot** — in that profile's `profile.yaml`, inside the metadata block the desktop already manages:
+
+  ```yaml
+  ui_meta:
+    hermes-bots:
+      private: true
+  ```
+
+  A private Bot is dropped from every other Bot's roster on this machine and stops resolving as a `message_agent` target — a teammate reaching for it gets the same answer as for a name that does not exist. Rows arriving over the Desktop relay flagged `private` are dropped the same way. The private Bot's own roster is unchanged: it still sees its teammates, and your chats with it work as before.
+
+  In the desktop, right-click a Bot → **Make private** sets the flag for you (**Make public** clears it), and the desktop stops publishing private Bots to other connected machines, so they leave remote rosters as well.
+
+- **Install-wide** — `bots.force_private: true` in the **root** `config.yaml` (not a profile's) takes every Bot out at once, whatever each one's own flag says. Use it on a machine whose Bots must never talk to each other.
+
+Both flags fail open: only `true`, `yes`, `on`, or `1` count, and anything else leaves the Bot public, so a typo never quietly removes a working teammate.
+
+This is different from **Hide Bot** in the [desktop](./desktop.md), which only tucks a row away in your own sidebar and changes nothing about what other Bots see.
+
 ## Turning it off
 
 Bot Mode is a bundled desktop plugin. Flip its **Desktop** switch off in **Capabilities → Plugins → Bots** — the roster, the Routines pane, and the composer middleware unregister live, no restart needed. Your profiles, sessions, and cron jobs are untouched either way; Bot Mode never owns your data, it only renders it.

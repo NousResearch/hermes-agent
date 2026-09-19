@@ -341,6 +341,31 @@ describe('watchSessionPins remote pull', () => {
     expect(patch).toHaveBeenCalledWith('failed', true, undefined)
   })
 
+  it('keeps the unpin and retries when the write itself fails', async () => {
+    // Adopt a server-side pin first, so it's held locally and mirrored.
+    $sessions.set([row('stuck', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('stuck')
+    patch.mockClear()
+
+    // The user unpins, but the PATCH fails.
+    patch.mockImplementationOnce(() => Promise.reject(new Error('offline')))
+    $pinnedSessionIds.set([])
+    await flush()
+    await flush()
+    patch.mockClear()
+
+    // The PATCH never landed, so the next refresh still says pinned=true —
+    // but that's OUR undelivered intent, not a remote decision. The unpin
+    // must stay and the next reconcile retries it instead of resurrecting
+    // the pin.
+    $sessions.set([row('stuck', { pinned: true })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('stuck')
+    expect(patch).toHaveBeenCalledWith('stuck', false, undefined)
+  })
+
   it('does not oscillate when two profiles share a session id with conflicting pins', async () => {
     // The cross-profile list can hold the same durable id twice with opposite
     // `pinned` flags (copied/imported profile DBs). A profile-blind pull would

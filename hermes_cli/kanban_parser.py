@@ -288,6 +288,11 @@ _SPECS = [
              help="Override the live-claim guard: complete a running, claimed task "
                   "even without owning its run (closes the worker's run)."),
     ], help="Mark one or more tasks done"),
+    _cmd("reconcile", [
+        _TASK_ID,
+        _arg("--reason", required=True,
+             help="Required audit reason explaining why no worker completion is needed"),
+    ], help="Administratively reconcile an already-resolved triage task to done"),
     _cmd("edit", [
         _TASK_ID,
         _arg("--result", required=True, help="Backfilled task result text for a done task"),

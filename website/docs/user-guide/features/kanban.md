@@ -397,6 +397,23 @@ hermes kanban unblock  t_abc t_def
 hermes kanban block    t_abc "need input" --ids t_def t_hij
 ```
 
+### Reconcile an already-resolved triage card
+
+When the underlying work was completed outside the board, an operator can
+close a leftover triage card without fabricating a worker run:
+
+```bash
+hermes kanban reconcile t_abc --reason "Deployment verified in the release system"
+```
+
+`reconcile` only accepts `triage` tasks. It refuses cards with an active worker
+or run and cards whose parent dependencies are still open. The status change
+and its `administratively_reconciled` audit event are committed atomically;
+repeating the command returns success without adding another event. Existing
+assignee, dependency links, workspace, runs, comments, and provenance remain
+unchanged. Orchestrator profiles can perform the same operation with the
+orchestrator-only `kanban_reconcile` tool; dispatcher-spawned workers cannot.
+
 :::note Where an unblocked task lands
 `unblock` restores the safe source phase: **`review`** for reviewer-origin work
 whose parents are complete, **`ready`** for implementation work whose parents
@@ -460,6 +477,7 @@ Dispatcher-owned workers receive their task lifecycle tools automatically.
 | `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. Returns `gated: true` + `gated_by` when an open parent parked the new card in `todo`. | `title`, `assignee` |
 | `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. Returns `gated: true` when the child was `ready` and got demoted back to `todo` because the parent is not done — the child will only run after the parent completes. Refused with `child is already running` when the child is already claimed — an edge added after the claim cannot serialise the run (a worker may still link its *own* running card ahead of a `kind=dependency` block). | `parent_id`, `child_id` |
 | `kanban_unblock` | (Orchestrators) restore a blocked task to its source phase (`review` or `ready`), or `todo` while a parent remains open. | `task_id` |
+| `kanban_reconcile` | (Orchestrators) reconcile an already-resolved `triage` task to `done` without recording worker completion. | `task_id`, `reason` |
 
 A typical worker turn looks like:
 
@@ -496,7 +514,7 @@ kanban_create(
 kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
 ```
 
-The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
+The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, `kanban_reconcile`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
 
 ### Why tools instead of shelling to `hermes kanban`
 
@@ -951,6 +969,7 @@ hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
 hermes kanban claim <id> [--ttl SECONDS]
 hermes kanban comment <id> "<text>" [--author NAME]
+hermes kanban reconcile <id> --reason "<why already resolved>"
 
 # Bulk verbs — accept multiple ids:
 hermes kanban complete <id>... [--result "..."] [--force]

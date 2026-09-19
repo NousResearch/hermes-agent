@@ -32,7 +32,7 @@ def test_portal_account_timeout_does_not_join_stalled_worker(monkeypatch, fetche
     started = time.monotonic()
     try:
         with pytest.raises(concurrent.futures.TimeoutError):
-            account_usage._fetch_portal_account(0.05)
+            fetcher(0.05)
         assert time.monotonic() - started < 2.0
     finally:
         release.set()

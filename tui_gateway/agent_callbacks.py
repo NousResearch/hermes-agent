@@ -161,19 +161,38 @@ def _agent_cbs(sid: str) -> dict:
     return callbacks
 
 
-def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
+def _apply_project_workspace(task_id: str, path: str, _name: str = "", *, session_key: str | None = None) -> dict | None:
     """Intentional workspace move from the project_* tools: re-anchor the live session's cwd
     and push session.info. The ONLY auto-cwd path — an explicit tool call, never a `cd`."""
     if not path:
         return
     # task_id is the durable session_key; _sessions (and desktop event routing) key by sid.
     key = str(task_id or "")
+    current_home = get_hermes_home().resolve()
     with _sessions_lock:
         sid, session = (key, _sessions[key]) if key in _sessions else next(
             ((s, c) for s, c in _sessions.items()
-             if c.get("session_key") == key or getattr(c.get("agent"), "session_id", None) == key),
+             if (c.get("session_key") == key or getattr(c.get("agent"), "session_id", None) == key)
+             and (session_key is None or Path(c.get("profile_home") or _hermes_home).resolve() == current_home)),
             ("", None))
     resolved = os.path.abspath(os.path.expanduser(str(path)))
+    if session_key is not None:
+        if session is None or session.get("_finalized"):
+            return {"success": False, "error": "calling Desktop session is no longer available"}
+        home = Path(session.get("profile_home") or _hermes_home).resolve()
+        if home != current_home:
+            return {"success": False, "error": "project and calling session profiles do not match"}
+        params = {"session_key": session_key, "cwd": resolved}
+        if home != Path(_hermes_home).resolve():
+            profile = profile_name_for_home(home)
+            if not profile:
+                return {"success": False, "error": "calling session profile cannot be resolved"}
+            params["profile"] = profile
+        # Reuse the sidebar's operation in this gateway, never a discovered loopback port.
+        response = _methods["session.workspace.move"](None, params)
+        if "error" in response:
+            return {"success": False, "error": response["error"]["message"]}
+        return {"success": True, "session_key": session_key, **response["result"]}
     if session is None or not os.path.isdir(resolved):
         return
     # explicit switch supersedes a settle-adopted cwd

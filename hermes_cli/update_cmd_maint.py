@@ -976,6 +976,12 @@ def _run_post_update_maintenance(
     except Exception:
         logger.debug("macOS TCC anchor refresh skipped", exc_info=True)
 
+    try:
+        from hermes_cli.macos_gateway_app import ensure_gateway_app
+        ensure_gateway_app()
+    except Exception:
+        logger.debug("macOS gateway helper refresh skipped", exc_info=True)
+
     # state.db integrity guard for root home AND every profile; restore from own snapshot.
     with _best_effort('Post-update state.db integrity check failed: %s'):
         _verify_and_restore_state_dbs_post_update()

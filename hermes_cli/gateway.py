@@ -3945,10 +3945,14 @@ def generate_launchd_plist() -> str:
     sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping stderr.
-    prog_args_xml = "\n        ".join(
-        f"<string>{part}</string>"
-        for part in _timestamped_stderr_gateway_command(log_dir / "gateway.error.log", external_supervisor=True)
-    )
+    # On macOS the venv Python is wrapped by a helper .app so Local Network Privacy can prompt (#71206).
+    command = _timestamped_stderr_gateway_command(log_dir / "gateway.error.log", external_supervisor=True)
+    try:
+        from hermes_cli.macos_gateway_app import launchd_python_command
+        command = launchd_python_command(command, get_python_path())
+    except Exception:
+        logger.debug("macOS gateway helper wrap skipped", exc_info=True)
+    prog_args_xml = "\n        ".join(f"<string>{part}</string>" for part in command)
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.
@@ -4218,6 +4222,9 @@ def launchd_install(force: bool = False):
     print("  hermes gateway status             # Check status")
     from hermes_constants import display_hermes_home as _dhh
     print(f"  tail -f {_dhh()}/logs/gateway.log  # View logs")
+    if is_macos():
+        print("  Allow Hermes Gateway under System Settings → Privacy & Security → Local Network")
+        print("  if LAN devices (Home Assistant, local models) fail with No route to host.")
 
 
 def launchd_uninstall():
@@ -4229,6 +4236,11 @@ def launchd_uninstall():
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
+    try:
+        from hermes_cli.macos_gateway_app import remove_gateway_app
+        remove_gateway_app()
+    except Exception:
+        logger.debug("macOS gateway helper removal skipped", exc_info=True)
     print("✓ Service uninstalled")
 
 

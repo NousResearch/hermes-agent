@@ -318,3 +318,20 @@ class TestWsUrlConstruction:
         ws_url = adapter._hass_url.replace("http://", "ws://").replace("https://", "wss://")
         assert ws_url == "ws://ha:8123"
 
+
+class TestLocalNetworkConnectHint:
+    def test_ehostunreach_names_local_network_settings(self):
+        from plugins.platforms.homeassistant.adapter import _connect_error_detail
+
+        err = OSError(65, "No route to host")
+        detail = _connect_error_detail(err)
+        assert "No route to host" in detail
+        assert "Local Network" in detail
+        assert "hermes gateway restart" in detail
+        assert "71206" in detail
+
+    def test_other_errors_stay_plain(self):
+        from plugins.platforms.homeassistant.adapter import _connect_error_detail
+
+        assert _connect_error_detail(RuntimeError("auth failed")) == "auth failed"
+

@@ -6,6 +6,8 @@ import logging
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -416,6 +418,33 @@ PROJECT_SKILLS_SUBDIRS = (os.path.join(".hermes", "skills"), os.path.join(".agen
 
 _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
+# start-cwd -> (expiry, root). Skill-index scans resolve this once PER SKILL.md
+# (``is_external_skill_path`` -> ``get_project_skills_dirs`` -> here), so a library
+# of N skills re-walked the same ancestors N times: 131 skills ≈ 0.12 s per scan,
+# and one curator archive pass runs several scans per archived skill. The walk is a
+# property of the cwd, so memoising it collapses the per-skill cost to a dict lookup.
+_PROJECT_ROOT_CACHE: Dict[str, Tuple[float, Optional[Path]]] = {}
+_PROJECT_ROOT_CACHE_LOCK = threading.Lock()
+_PROJECT_ROOT_CACHE_MAX = 256  # distinct cwds kept before the table is dropped
+_PROJECT_ROOT_CACHE_TTL_DEFAULT = 30.0  # seconds
+
+
+def _project_root_cache_ttl() -> float:
+    """``HERMES_PROJECT_ROOT_CACHE_TTL`` seconds (default 30; ``0`` disables the cache)."""
+    raw = os.environ.get("HERMES_PROJECT_ROOT_CACHE_TTL")
+    if raw is None or not raw.strip():
+        return _PROJECT_ROOT_CACHE_TTL_DEFAULT
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return _PROJECT_ROOT_CACHE_TTL_DEFAULT
+
+
+def _project_root_cache_clear() -> None:
+    """Test hook — drop the in-process cache."""
+    with _PROJECT_ROOT_CACHE_LOCK:
+        _PROJECT_ROOT_CACHE.clear()
+
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
@@ -428,27 +457,50 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     jobs use (a cron job sets it from its per-job ``workdir`` without chdir'ing the scheduler process),
     which lets non-interactive surfaces inherit a prior interactive trust decision by project identity —
     and a surface with no workdir in a trusted repo simply resolves no project and loads nothing (#48975).
+
+    Memoised per resolved start-cwd for ``HERMES_PROJECT_ROOT_CACHE_TTL`` seconds (default 30, ``0``
+    disables): the skill index asks this once per skill, so a scan walks the same ancestors N times for
+    an N-skill library, and one curator archive pass runs several scans per archived skill.
     """
+    ttl = _project_root_cache_ttl()
     try:
         if start is None:
             from agent.runtime_cwd import resolve_agent_cwd
             start = resolve_agent_cwd()
+    except OSError:
+        return None
+    # ``start`` may still be None when the surface resolves no working directory; keep the
+    # uncached path there so this stays a pure memoisation of the same walk.
+    key = str(start) if (ttl > 0 and start is not None) else ""
+    if key:
+        with _PROJECT_ROOT_CACHE_LOCK:
+            hit = _PROJECT_ROOT_CACHE.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return hit[1]
+    try:
         cur = Path(start).resolve()
     except OSError:
         return None
     home = Path.home().resolve()
+    result: Optional[Path] = None
     try:
         for _ in range(_PROJECT_ROOT_MAX_DEPTH):
             if (cur / ".git").exists():
                 # A dotfiles checkout AT home would make every session
                 # project-scoped; treat home itself as non-project.
-                return None if cur == home else cur
+                result = None if cur == home else cur
+                break
             if cur.parent == cur:
-                return None
+                break
             cur = cur.parent
     except OSError:
-        pass
-    return None
+        result = None
+    if key:
+        with _PROJECT_ROOT_CACHE_LOCK:
+            if len(_PROJECT_ROOT_CACHE) >= _PROJECT_ROOT_CACHE_MAX:
+                _PROJECT_ROOT_CACHE.clear()
+            _PROJECT_ROOT_CACHE[key] = (time.monotonic() + ttl, result)
+    return result
 
 
 def _project_trusted_dirs_from_config() -> Set[Path]:

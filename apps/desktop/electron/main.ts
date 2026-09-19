@@ -234,6 +234,7 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
+  homeRelativeAttachmentCandidates,
   readFileDataUrlForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
@@ -6428,6 +6429,21 @@ async function previewFileTarget(rawTarget, baseDir) {
     baseDir: base,
     purpose: 'Preview target'
   })
+
+  // Attachment references stored in chat history are frequently HOME-relative
+  // (e.g. "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
+  // ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to the
+  // agent's working directory. The primary resolution above only tries
+  // `base` (the working dir), so such a ref never exists there and the
+  // preview/download 404s even though the file is present on disk (#115609).
+  if (!fileExists(resolved) && !directoryExists(resolved)) {
+    for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), HERMES_HOME)) {
+      if (fileExists(candidate)) {
+        resolved = candidate
+        break
+      }
+    }
+  }
 
   if (directoryExists(resolved)) {
     resolved = path.join(resolved, 'index.html')

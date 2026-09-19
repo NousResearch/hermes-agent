@@ -14,6 +14,7 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
+  homeRelativeAttachmentCandidates,
   readFileDataUrlForIpc,
   resolveDirectoryForIpc,
   resolvePersistedRemoteToken,
@@ -1044,4 +1045,58 @@ test('saveRegistryConnection republishes the registry to renderers on EVERY succ
     /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'saved' \}\)/,
     'a non-dial-material save must republish the registry snapshot (#95393)'
   )
+})
+
+// ---------------------------------------------------------------------------
+// homeRelativeAttachmentCandidates (#115609)
+// ---------------------------------------------------------------------------
+
+test('homeRelativeAttachmentCandidates tries the home dir and the HERMES_HOME attachments dir', () => {
+  const candidates = homeRelativeAttachmentCandidates(
+    'AppData/Local/hermes/attachments/foo.xlsx',
+    '/Users/alice',
+    '/Users/alice/AppData/Local/hermes'
+  )
+
+  assert.deepEqual(candidates, [
+    path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'),
+    path.join('/Users/alice/AppData/Local/hermes', 'attachments', 'foo.xlsx')
+  ])
+})
+
+test('homeRelativeAttachmentCandidates normalizes Windows backslashes before joining', () => {
+  const candidates = homeRelativeAttachmentCandidates(
+    'AppData\\Local\\hermes\\attachments\\foo.xlsx',
+    '/Users/alice',
+    '/Users/alice/.hermes'
+  )
+
+  assert.equal(candidates[0], path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'))
+})
+
+test('homeRelativeAttachmentCandidates returns nothing for an absolute path', () => {
+  assert.deepEqual(homeRelativeAttachmentCandidates('/already/absolute/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'), [])
+})
+
+test('homeRelativeAttachmentCandidates returns nothing for a file: URL', () => {
+  assert.deepEqual(
+    homeRelativeAttachmentCandidates('file:///already/resolved/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    []
+  )
+})
+
+test('homeRelativeAttachmentCandidates returns nothing for empty input', () => {
+  assert.deepEqual(homeRelativeAttachmentCandidates('', '/Users/alice', '/Users/alice/.hermes'), [])
+  assert.deepEqual(homeRelativeAttachmentCandidates('   ', '/Users/alice', '/Users/alice/.hermes'), [])
+})
+
+test('homeRelativeAttachmentCandidates second candidate falls back to basename only', () => {
+  // A ref that lost its directory prefix entirely still has a shot via the
+  // well-known attachments dir + basename, matching the reported repro shape.
+  const candidates = homeRelativeAttachmentCandidates('foo.xlsx', '/Users/alice', '/Users/alice/.hermes')
+
+  assert.deepEqual(candidates, [
+    path.join('/Users/alice', 'foo.xlsx'),
+    path.join('/Users/alice/.hermes', 'attachments', 'foo.xlsx')
+  ])
 })

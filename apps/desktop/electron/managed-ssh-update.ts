@@ -858,7 +858,7 @@ async function runManagedSshUpdate<TScope extends ManagedSshScope>(
     }
 
     try {
-      if (recoveryPrepared && !restorationBlocked && restoreResults.every(result => result.restored)) {
+      if (recoveryPrepared && !restorationBlocked) {
         await deps.completeRecovery?.()
       }
     } catch (error) {
@@ -939,12 +939,12 @@ async function recoverManagedSshScopes<TScope>(deps: {
   await deps.afterClearance?.()
   const results = await Promise.allSettled(deps.scopes.map(scope => deps.restoreScope(scope)))
 
-  if (results.every(result => result.status === 'fulfilled')) {
-    // This intentionally runs for an empty scope list. An inactive connection
-    // still journals the detached mutator so a crash/relaunch remains fenced;
-    // positive marker clearance is what authorizes removing that durable gate.
-    await deps.completeRecovery()
-  }
+  // This intentionally runs for an empty scope list and for partial restore
+  // failure. An inactive connection still journals the detached mutator so a
+  // crash/relaunch remains fenced; positive marker clearance is what authorizes
+  // removing that durable gate. A missing restore target must not leave the
+  // connection paused forever.
+  await deps.completeRecovery()
 
   return results
 }

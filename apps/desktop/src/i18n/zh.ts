@@ -325,6 +325,7 @@ export const zh = defineLocale({
   },
 
   backworkspace: {
+    askNobody: '用 @ 提及一个智能体，即可从此页面提问。',
     askPending: name => `${name} 正在回答…`,
     askFailed: name => `${name} 无法回答，页面未改动。`,
     askUnreachable: name => `${name} 在此窗口中不可用。`,

@@ -120,6 +120,37 @@ describe('BackworkspacePage', () => {
     expect(view.state.doc.toString().startsWith('@asking what is this?\n\n>')).toBe(true)
   })
 
+  it('continues with the last agent when a later paragraph mentions nobody', async () => {
+    request.mockResolvedValue({ page: { content: '@continuing hello', id: '20260920_101010_abcdef', path: '/p.md' } })
+    askAgent.mockResolvedValue('first answer')
+    $activeGatewayProfile.set('continuing')
+
+    renderPage()
+
+    const host = await screen.findByLabelText('Back workspace', { selector: '.cm-content' })
+    const view = EditorView.findFromDOM(host as HTMLElement)!
+    const mod = /Mac/i.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true }
+
+    fireEvent.keyDown(view.contentDOM, { key: 'Enter', ...mod })
+    // Wait for the whole first exchange, reply included — a second question is
+    // refused while one is still in flight.
+    await vi.waitFor(() => expect(view.state.doc.toString()).toContain('> continuing · '))
+
+    // A new paragraph with no mention at all.
+    act(() => {
+      const end = view.state.doc.length
+      const added = '\n\nand what about this?'
+
+      view.dispatch({ changes: { from: end, insert: added }, selection: { anchor: end + added.length } })
+    })
+    askAgent.mockResolvedValue('second answer')
+    fireEvent.keyDown(view.contentDOM, { key: 'Enter', ...mod })
+
+    await vi.waitFor(() => expect(askAgent).toHaveBeenCalledTimes(2))
+    expect(askAgent.mock.calls[1][0]).toMatchObject({ handle: '@continuing' })
+    expect(askAgent.mock.calls[1][1]).toBe('and what about this?')
+  })
+
   it('opens the stored page in the editor, ready to type', async () => {
     request.mockResolvedValue({ page: { content: 'text from the file', id: '20260920_101010_abcdef' } })
     $activeGatewayProfile.set('with-a-page')

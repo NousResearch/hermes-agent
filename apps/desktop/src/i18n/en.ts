@@ -366,6 +366,7 @@ export const en: Translations = {
   },
 
   backworkspace: {
+    askNobody: 'Mention an agent with @ to ask this page.',
     askPending: name => `${name} is answering…`,
     askFailed: name => `${name} could not answer. The page is unchanged.`,
     askUnreachable: name => `${name} is not reachable from this window.`,

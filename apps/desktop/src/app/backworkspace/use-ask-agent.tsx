@@ -6,7 +6,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 
 import { COMPOSER_AREAS } from '@/app/chat/composer/contrib'
 import { useContributions } from '@/contrib/react/use-contributions'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { $activeConnectionId } from '@/store/connections'
 import { $activeGatewayProfile } from '@/store/profile'
 
@@ -18,7 +18,23 @@ import { resolveMentionRoute } from './use-mention-popup'
 
 interface AskState {
   handle: string
-  status: 'asking' | 'failed' | 'unreachable'
+  status: 'asking' | 'failed' | 'nobody' | 'unreachable'
+}
+
+// Who each page last asked, so a conversation continues without retyping the
+// mention. Keyed by owner, because a profile's page has its own thread.
+const lastAsked = new Map<string, string>()
+
+function noticeForAsk(state: AskState, copy: Translations['backworkspace']): string {
+  if (state.status === 'nobody') {
+    return copy.askNobody
+  }
+
+  if (state.status === 'unreachable') {
+    return copy.askUnreachable(state.handle)
+  }
+
+  return state.status === 'failed' ? copy.askFailed(state.handle) : copy.askPending(state.handle)
 }
 
 /**
@@ -72,10 +88,21 @@ export function useAskAgent(pagePath: null | string): { extension: Extension; no
 
       const current = context.current
       const paragraph = paragraphAt(view.state.doc.toString(), view.state.selection.main.head)
-      const handle = paragraph.text ? firstMentionIn(paragraph.text) : null
+
+      if (!paragraph.text) {
+        return false
+      }
+
+      const owner = `${current.connectionId ?? ''}:${current.profile}`
+      // A paragraph with no mention continues the last conversation on this
+      // page: the session is already open, and the status line names who it
+      // went to, so the caret never has to go back for an `@`.
+      const handle = firstMentionIn(paragraph.text) ?? lastAsked.get(owner) ?? null
 
       if (!handle) {
-        return false
+        setState({ handle: '', status: 'nobody' })
+
+        return true
       }
 
       const self: BackworkspaceRoute = { connectionId: current.connectionId, profile: current.profile }
@@ -90,6 +117,7 @@ export function useAskAgent(pagePath: null | string): { extension: Extension; no
       const question = paragraph.text
 
       asking.current = true
+      lastAsked.set(owner, handle)
       setState({ handle, status: 'asking' })
       void askBackworkspace({ handle, route }, question, current.pagePath)
         .then(text => {
@@ -110,13 +138,7 @@ export function useAskAgent(pagePath: null | string): { extension: Extension; no
   // (insert blank line), so without this the question is never sent.
   const extension = useMemo(() => Prec.highest(keymap.of([{ key: 'Mod-Enter', run: ask }])), [ask])
 
-  const notice = state
-    ? state.status === 'asking'
-      ? t.backworkspace.askPending(state.handle)
-      : state.status === 'unreachable'
-        ? t.backworkspace.askUnreachable(state.handle)
-        : t.backworkspace.askFailed(state.handle)
-    : null
+  const notice = state ? noticeForAsk(state, t.backworkspace) : null
 
   return { extension, notice }
 }

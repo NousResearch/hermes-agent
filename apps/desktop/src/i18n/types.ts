@@ -405,6 +405,7 @@ export interface Translations {
   }
 
   backworkspace: {
+    askNobody: string
     askPending: (name: string) => string
     askFailed: (name: string) => string
     askUnreachable: (name: string) => string

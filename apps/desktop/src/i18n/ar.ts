@@ -265,6 +265,7 @@ export const ar = defineLocale({
   },
 
   backworkspace: {
+    askNobody: 'اذكر وكيلاً بعلامة @ لتسأل من هذه الصفحة.',
     askPending: name => `${name} يجيب الآن…`,
     askFailed: name => `${name} لم يستطع الإجابة. الصفحة لم تتغيّر.`,
     askUnreachable: name => `${name} غير متاح من هذه النافذة.`,

@@ -296,6 +296,7 @@ export const ja = defineLocale({
   },
 
   backworkspace: {
+    askNobody: '@ でエージェントを指定すると、このページから質問できます。',
     askPending: name => `${name} が回答中…`,
     askFailed: name => `${name} は回答できませんでした。ページはそのままです。`,
     askUnreachable: name => `${name} にはこのウィンドウから接続できません。`,

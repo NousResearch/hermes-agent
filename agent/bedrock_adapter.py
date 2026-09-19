@@ -15,7 +15,7 @@ import time
 import traceback
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -619,9 +619,12 @@ def _decode_redacted(encoded) -> Optional[bytes]:
         return None
 
 
-def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
+def _replay_ordered_blocks(ordered_blocks: List, tool_call_ids: Set[str]) -> List[Dict]:
     """Rebuild the exact Bedrock block sequence captured at normalization time; redacted reasoning is
-    stored base64 (JSON-safe sidecar) and undecodable entries are skipped."""
+    stored base64 (JSON-safe sidecar) and undecodable entries are skipped. A toolUse whose id is no
+    longer in ``tool_calls`` is skipped too: post-call guardrails (identical-call dedup, delegate cap)
+    drop calls after capture, and replaying one sends a toolUse with no toolResult (ValidationException
+    "Expected toolResult blocks")."""
     content_blocks: List[Dict] = []
     for block in ordered_blocks:
         if not isinstance(block, dict):
@@ -643,6 +646,8 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
                 content_blocks.append({"reasoningContent": replay})
         elif "toolUse" in block and isinstance(block["toolUse"], dict):
             tu = block["toolUse"]
+            if tu.get("toolUseId", "") not in tool_call_ids:
+                continue
             content_blocks.append(_tool_use_block(tu.get("toolUseId", ""), tu.get("name", ""), tu.get("input", {})))
     return content_blocks
 
@@ -655,12 +660,28 @@ def _parse_tool_args(args) -> Any:
         return {}
 
 
+def _tool_call_blocks(tool_calls: List) -> List[Dict]:
+    """OpenAI ``tool_calls`` → Converse toolUse blocks."""
+    return [
+        _tool_use_block(tc.get("id", ""), fn.get("name", ""), _parse_tool_args(fn.get("arguments", "{}")))
+        for tc in tool_calls if isinstance(tc, dict)
+        for fn in [tc.get("function") or {}]
+    ]
+
+
 def _assistant_blocks(msg: Dict, content) -> List[Dict]:
-    """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative;
-    otherwise redacted thinking from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
+    """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative
+    for block order, ``tool_calls`` for which toolUse blocks exist: ids it lacks are skipped by the replay
+    and ids the replay lost are appended, so every toolResult that follows has its toolUse. Without a
+    sidecar: redacted thinking from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
     ordered_blocks = msg.get("bedrock_content_blocks")
-    if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks)):
-        return content_blocks
+    tool_calls = msg.get("tool_calls") or []
+    tool_call_ids = {tc.get("id", "") for tc in tool_calls if isinstance(tc, dict)}
+    if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks, tool_call_ids)):
+        replayed = {block["toolUse"]["toolUseId"] for block in content_blocks if "toolUse" in block}
+        return content_blocks + _tool_call_blocks(
+            [tc for tc in tool_calls if isinstance(tc, dict) and tc.get("id", "") not in replayed]
+        )
     redacted = [
         _decode_redacted(d.get("data") or d.get("redactedContentBase64"))
         for d in (msg.get("reasoning_details") or []) if isinstance(d, dict) and d.get("type") == "redacted_thinking"
@@ -670,9 +691,7 @@ def _assistant_blocks(msg: Dict, content) -> List[Dict]:
         content_blocks.append({"text": content})
     elif isinstance(content, list):
         content_blocks.extend(_convert_content_to_converse(content))
-    for tc in (msg.get("tool_calls", []) or []):
-        fn = tc.get("function", {})
-        content_blocks.append(_tool_use_block(tc.get("id", ""), fn.get("name", ""), _parse_tool_args(fn.get("arguments", "{}"))))
+    content_blocks.extend(_tool_call_blocks(tool_calls))
     return content_blocks
 
 

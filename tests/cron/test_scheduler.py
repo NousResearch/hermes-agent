@@ -2641,7 +2641,7 @@ class TestCronContinuableSurfaceInChannel:
             def __init__(self, *a, **k):
                 pass
 
-            async def _deliver_to_platform(self, target, text, metadata):
+            async def _deliver_to_platform(self, target, text, metadata, transport=None):
                 captured["target"] = target
                 return {"success": True, "message_id": "msg_1"}
 
@@ -2680,7 +2680,7 @@ class TestCronContinuableSurfaceInChannel:
             def __init__(self, *a, **k):
                 pass
 
-            async def _deliver_to_platform(self, target, text, metadata):
+            async def _deliver_to_platform(self, target, text, metadata, transport=None):
                 captured["metadata"] = metadata
                 return {"success": True, "message_id": "msg_1"}
 
@@ -2712,7 +2712,7 @@ class TestCronContinuableSurfaceInChannel:
             def __init__(self, *a, **k):
                 pass
 
-            async def _deliver_to_platform(self, target, text, metadata):
+            async def _deliver_to_platform(self, target, text, metadata, transport=None):
                 captured["metadata"] = metadata
                 return {"success": True, "message_id": "msg_1"}
 

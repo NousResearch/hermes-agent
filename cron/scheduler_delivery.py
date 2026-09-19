@@ -1444,8 +1444,12 @@ def _live_send_text(
         platform=t.platform, chat_id=str(t.chat_id), thread_id=route_thread_id, is_explicit=True)
     # Thread routing goes via the target, not a bare metadata "thread_id": the router only applies
     # its Telegram DM-topic detection when thread_id/message_thread_id are absent from metadata.
+    # Send through the already-authorized transport: re-resolving from the plain target_adapters
+    # dict cannot re-derive the SharedRouteAdapters satellite grant (the satellite owned
+    # platforms.<p> block is disabled), yields None, and drops the delivery (#115656).
     future = safe_schedule_threadsafe(
-        router._deliver_to_platform(route_target, text_to_send, route_metadata), t.loop)
+        router._deliver_to_platform(
+            route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
     if future is None:
         target_errors.append("live adapter event loop scheduling failed")
         return False, False, None

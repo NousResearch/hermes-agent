@@ -157,7 +157,7 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
 
     router = MagicMock()
 
-    async def _deliver_to_platform(target, text, metadata):
+    async def _deliver_to_platform(target, text, metadata, transport=None):
         router_calls.append({"target": target, "text": text, "metadata": metadata})
         return send_result
 

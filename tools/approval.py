@@ -17,6 +17,9 @@ import importlib
 import logging
 import os
 import threading
+import time
+
+from hermes_constants import get_hermes_home
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
@@ -1037,6 +1040,75 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
         return False
 
 
+def _log_approval_event(pattern_key, description, command, result, surface=""):
+    """Append a JSONL record of an approval decision (observability only).
+
+    Never raises: approval is safety-critical, logging is not.
+
+    The command is redacted before writing (it may contain secrets). If
+    redaction itself fails, the raw command is NEVER written as a fallback —
+    that would defeat the entire point — a placeholder replaces it instead.
+
+    The session key is hashed rather than stored raw: it is built as
+    ``f"{platform}:{chat_id}"`` and can embed a phone number or a Matrix user
+    id, so a raw copy in this file would leak PII (same reasoning as
+    ``gateway.slash_commands._redact_matrix_session_key``).
+
+    The file is opened with O_NOFOLLOW + 0o600 (tightened on every write in
+    case it pre-existed under a slacker umask): a same-uid attacker who plants
+    ``approvals.jsonl`` as a symlink to e.g. ``~/.ssh/authorized_keys`` should
+    not cause every approval decision to be appended there instead.
+
+    Feeds the approval-mining loop (`hermes approvals suggest` + future
+    allowlist proposals).
+    """
+    import json
+
+    try:
+        from agent.redact import redact_sensitive_text
+
+        command_safe = redact_sensitive_text(command, force=True)
+        description = redact_sensitive_text(description, force=True) if description else description
+    except Exception:
+        command_safe = f"[redaction unavailable, {len(command)} chars omitted]"
+        description = "[redaction unavailable]"
+    try:
+        approved = bool(result.get("approved", False)) if isinstance(result, dict) else False
+        outcome = (result.get("outcome") if isinstance(result, dict) else None) or (
+            "approved" if approved else "unknown"
+        )
+        session_key = get_current_session_key(default="")
+        session_key_hash = (
+            "sha256:" + hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:12]
+            if session_key else ""
+        )
+        record = {
+            "ts": time.time(),
+            "pattern_key": pattern_key,
+            "description": description,
+            "command": command_safe,
+            "approved": approved,
+            "outcome": outcome,
+            "surface": surface,
+            "session_key": session_key_hash,
+        }
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        home = str(get_hermes_home())
+        log_path = os.path.join(home, "logs", "approvals.jsonl")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        open_flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        if hasattr(os, "O_NOFOLLOW"):
+            open_flags |= os.O_NOFOLLOW
+        fd = os.open(log_path, open_flags, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except Exception as exc:  # noqa: BLE001 — observability must never break approval
+        logger.debug("approval log write failed: %s", exc)
+
+
 def _user_deny_block(command: str) -> dict | None:
     """The operator's ``approvals.deny`` rules are documented as never bypassable — not by yolo,
     not by mode=off, and not by an isolated container either: they express intent about what the
@@ -1083,13 +1155,16 @@ def check_dangerous_command(command: str, env_type: str,
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return _approved()
-    return _run_approval_gate(
+    result = _run_approval_gate(
         pattern_key=pattern_key, description=description, display_target=command, approval_callback=approval_callback,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
         advice="Find an alternative approach that avoids this command.",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
     )
 
+    _log_approval_event(pattern_key=pattern_key, description=description, command=command,
+        result=result, surface="command")
+    return result
 
 def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
@@ -1106,7 +1181,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     if not rule_key:
         rule_key = f"{tool_name}:{hashlib.sha256(description.encode('utf-8')).hexdigest()[:12]}"
     subject = f"Tool '{tool_name}' requires approval ({description})"
-    return _run_approval_gate(
+    result = _run_approval_gate(
         # Namespaced so plugin-rule approvals share the allowlist machinery without ever colliding with a real
         # command pattern key; the display target is a synthetic label for the display/allowlist layer.
         pattern_key=f"plugin_rule:{rule_key}", description=description,
@@ -1118,6 +1193,10 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
                                 "to approve it. A plugin flagged this action for human confirmation."),
     )
 
+    _log_approval_event(pattern_key=f"plugin_rule:{rule_key}", description=description,
+        command=f"<{tool_name}> (plugin approval rule)",
+        result=result, surface="tool")
+    return result
 
 # --- Combined pre-exec guard (tirith + dangerous command detection) -------------------------------------------------
 
@@ -1156,6 +1235,31 @@ def _tirith_scan(command: str) -> dict:
 
 
 def check_all_command_guards(command: str, env_type: str,
+                             approval_callback=None,
+                             has_host_access: bool = False) -> dict:
+    """Run all pre-exec security checks and log the decision. See
+    ``_check_all_command_guards_impl`` for the actual guard logic — this
+    thin wrapper is the real production entry point (``terminal_tool.py``
+    imports it directly), so it is where the approval-audit hook lives.
+    ``check_dangerous_command`` has its own hook but no production caller.
+    """
+    result = _check_all_command_guards_impl(
+        command, env_type,
+        approval_callback=approval_callback,
+        has_host_access=has_host_access,
+    )
+    if result != {"approved": True, "message": None}:
+        _log_approval_event(
+            pattern_key=result.get("pattern_key", ""),
+            description=result.get("description", ""),
+            command=command,
+            result=result,
+            surface="terminal",
+        )
+    return result
+
+
+def _check_all_command_guards_impl(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
     """Run all pre-exec security checks and return a single approval decision. Tirith and
@@ -1229,7 +1333,28 @@ _EXECUTE_CODE_DESCRIPTION = (
 )
 
 
-def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
+def check_execute_code_guard(code: str, env_type: str,
+                             has_host_access: bool = False) -> dict:
+    """Approve an execute_code script and log the decision. See
+    ``_check_execute_code_guard_impl`` for the actual guard logic — this
+    thin wrapper is the real production entry point (``code_execution_tool.py``
+    imports it directly), so it is where the approval-audit hook lives.
+    """
+    result = _check_execute_code_guard_impl(
+        code, env_type, has_host_access=has_host_access,
+    )
+    if result != {"approved": True, "message": None}:
+        _log_approval_event(
+            pattern_key=result.get("pattern_key", ""),
+            description=result.get("description", ""),
+            command=code,
+            result=result,
+            surface="execute_code",
+        )
+    return result
+
+
+def _check_execute_code_guard_impl(code: str, env_type: str, has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
     The script can call ``subprocess``/``os.system``/``ctypes`` directly, none of which pass

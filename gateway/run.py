@@ -1714,26 +1714,32 @@ def _profile_runtime_scope(
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import set_secret_scope, reset_secret_scope
 
-    home_token = set_hermes_home_override(str(profile_home))
-    if prepared_secret_scope is not None:
-        secrets = prepared_secret_scope
-    elif hydrate_secrets:
-        secrets = _load_profile_secret_scope(Path(profile_home))
-    else:
-        from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
-        secrets = build_profile_secret_scope(Path(profile_home))
-    secret_token = set_secret_scope(secrets)
-    # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
-    # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
-    # pinned (first-writer-wins backend leak; #68559).
+    # Every token is unwound in ONE finally, including when a LATER setup step raises. Secret
+    # hydration and the terminal-policy install both touch the filesystem and can fail, and the
+    # home token is already installed by then — leaving it set stranded the calling thread with the
+    # failed profile as its get_hermes_home() (#110405 review).
     from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
-    with install_and_reset_profile_terminal_scope(Path(profile_home)):
-        try:
+    home_token = set_hermes_home_override(str(profile_home))
+    secret_token = None
+    try:
+        if prepared_secret_scope is not None:
+            secrets = prepared_secret_scope
+        elif hydrate_secrets:
+            secrets = _load_profile_secret_scope(Path(profile_home))
+        else:
+            from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
+            secrets = build_profile_secret_scope(Path(profile_home))
+        secret_token = set_secret_scope(secrets)
+        # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
+        # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may
+        # have pinned (first-writer-wins backend leak; #68559).
+        with install_and_reset_profile_terminal_scope(Path(profile_home)):
             yield
-        finally:
+    finally:
+        if secret_token is not None:
             reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+        reset_hermes_home_override(home_token)
 
 
 @_asynccontextmanager
@@ -4536,20 +4542,87 @@ def _housekeeping_org_skill_sync() -> None:
     maybe_pull_org_skills()
 
 
-def _housekeeping_auto_archive() -> None:
-    """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
-    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
+def _auto_archive_one_home(db_path=None) -> None:
+    """Run the config-gated auto-archive sweep for one store. ``db_path`` None = this
+    process's own (launch-profile) store. The caller scopes HERMES_HOME so that
+    ``load_config()`` reads *that* profile's ``sessions`` block."""
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
-    if _sess_cfg.get("auto_archive", False):
-        _adb = acquire()
+    if not _sess_cfg.get("auto_archive", False):
+        return
+    _adb = acquire(db_path)
+    try:
+        _adb.maybe_auto_archive(
+            idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
+            min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
+    finally:
+        release_or_close(_adb)
+
+
+def _housekeeping_auto_archive(runner=None) -> None:
+    """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
+    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound.
+
+    Sweeps the launch profile **and every served satellite profile**. A served profile writes no
+    ``gateway.pid`` of its own, so the dashboard stands down for it (``_auto_archive_owned_by_gateway``
+    in ``hermes_cli/web_server_sessions.py``) to avoid tearing the WAL this process holds — which
+    means the multiplexer is the only remaining sweeper for those stores. Before #109727 this swept
+    only ``acquire()`` (the launch home) and a satellite with ``auto_archive`` enabled never archived.
+
+    Every home is isolated, including the launch one: ``GatewayRunner._init_session_db()`` tolerates a
+    failed primary-store init and keeps running, so a multiplexer can serve healthy satellites while its
+    OWN store is unavailable. Letting a launch-side raise escape would abandon the satellites on every
+    tick — and the dashboard has already stood down for them.
+
+    Each satellite runs under ``_profile_runtime_scope``, not a bare HERMES_HOME override: ``load_config()``
+    expands ``${VAR}`` through ``agent.secret_scope``, so without the profile's secret scope a value like
+    ``auto_archive_days: ${ARCHIVE_DAYS}`` silently resolves against the LAUNCH process environment (or
+    fails conversion and skips the profile entirely).
+    """
+    def _sweep(label: str, db_path=None) -> None:
         try:
-            _adb.maybe_auto_archive(
-                idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
-                min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
-        finally:
-            release_or_close(_adb)
+            _auto_archive_one_home(db_path)
+        except Exception as exc:
+            # One unreadable store must never strand the others.
+            logger.debug("Auto-archive tick skipped for %s: %s", label, exc)
+
+    _sweep("the launch profile")
+
+    homes = dict(getattr(runner, "_served_profile_homes", None) or {}) if runner is not None else {}
+    if not homes:
+        return
+    from pathlib import Path as _Path
+
+    from hermes_constants import get_hermes_home
+
+    # Same failure boundary as the satellite loop below, for the same reason: Path.resolve()
+    # raises RuntimeError (not OSError) on a cyclic symlink, and this runs BEFORE the loop — so
+    # one bad launch path would stop every healthy served profile being swept this tick (#110405
+    # review). launch_home is only used to skip a duplicate sweep, so None simply means "cannot
+    # dedupe"; _auto_archive_one_home is idempotent under the min_interval_hours gate.
+    launch_home = None
+    try:
+        launch_home = get_hermes_home()
+        launch_home = launch_home.resolve()
+    except Exception as exc:
+        logger.debug("Auto-archive tick could not resolve the launch home: %s", exc)
+    for _name, _home in homes.items():
+        # Path construction and resolution are INSIDE the boundary: a cyclic profile symlink makes
+        # Path.resolve() raise RuntimeError (not OSError) on 3.11, which would escape the tick and
+        # strand every following healthy satellite (#110405 review).
+        try:
+            try:
+                home = _Path(_home).resolve()
+            except (OSError, RuntimeError, ValueError):
+                home = _Path(_home)
+            if launch_home is not None and home == launch_home:
+                continue  # already swept above as this process's own store
+            # Scope construction itself (secret hydration, terminal policy) can fail.
+            with _profile_runtime_scope(home):
+                _sweep(f"profile {_name}", home / "state.db")
+        except Exception as exc:
+            logger.debug("Auto-archive tick skipped profile %s: %s", _name, exc)
 
 
 def _housekeeping_deferred_fts_retry() -> None:
@@ -4640,7 +4713,7 @@ def _start_gateway_housekeeping(
         (60, "Curator tick", _housekeeping_curator),
         (60, "Sync pull tick", _housekeeping_skill_sync),
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
-        (60, "Auto-archive tick", _housekeeping_auto_archive),
+        (60, "Auto-archive tick", lambda: _housekeeping_auto_archive(runner)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),

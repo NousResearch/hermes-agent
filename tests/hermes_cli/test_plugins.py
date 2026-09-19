@@ -968,6 +968,65 @@ class TestAsyncHookCallbacks:
         assert asyncio.run(driver()) == ["from-async:profile-b"]
 
 
+def _run_distinct_hook_calls_concurrently(manager, hook_name, payloads, identity_field):
+    """Run distinct hook payloads in one proven overlap window, without scheduler sleeps."""
+    release = threading.Event()
+    all_calls_observed = threading.Event()
+    launch = threading.Barrier(len(payloads) + 1)
+    lock = threading.Lock()
+    starts = []
+    observed = set()
+    failures = []
+
+    def observe(identity, *, started=False):
+        with lock:
+            if started:
+                starts.append(identity)
+            observed.add(identity)
+            if len(observed) == len(payloads):
+                all_calls_observed.set()
+
+    def recorder(**kwargs):
+        identity = kwargs[identity_field]
+        observe(identity, started=True)
+        release.wait(timeout=10.0)
+        return "ok"
+
+    manager._hooks[hook_name] = [recorder]
+
+    def fire(payload):
+        identity = payload[identity_field]
+        try:
+            launch.wait(timeout=5.0)
+            manager.invoke_hook(hook_name, **payload)
+        except Exception as exc:
+            # Surface worker-thread failures only after releasing and joining every callback.
+            failures.append(exc)
+        finally:
+            observe(identity)
+
+    threads = [
+        threading.Thread(target=fire, args=(payload,), daemon=True)
+        for payload in payloads
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        launch.wait(timeout=5.0)
+        overlap_observed = all_calls_observed.wait(timeout=5.0)
+    finally:
+        release.set()
+    for thread in threads:
+        thread.join(timeout=5.0)
+
+    assert overlap_observed, (
+        "not every concurrent invocation entered or left the hook gate"
+    )
+    assert not any(thread.is_alive() for thread in threads)
+    assert failures == []
+    return starts
+
+
 class TestForceReloadSymmetry:
     """Force rediscovery restores non-plugin state it wiped (#64178)."""
 
@@ -1182,49 +1241,248 @@ class TestForceReloadSymmetry:
         assert elapsed < 5.0
         hold.set()
 
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            (
+                {
+                    "tool_call_id": "tool-call",
+                    "turn_id": "turn",
+                    "session_id": "session",
+                },
+                "tool-call",
+            ),
+            (
+                {"tool_call_id": "", "turn_id": "turn", "session_id": "session"},
+                "turn",
+            ),
+            (
+                {"tool_call_id": "", "turn_id": "", "session_id": "session"},
+                "session",
+            ),
+            ({"tool_call_id": "", "turn_id": "", "session_id": ""}, None),
+            ({"session_id": 123}, None),
+        ],
+    )
+    def test_hook_call_identity_priority_and_normalization(self, payload, expected):
+        from hermes_cli.plugins_dispatch import _hook_call_identity
+
+        assert _hook_call_identity(payload) == expected
+
     def test_concurrent_same_tool_calls_with_distinct_ids_both_run(self, monkeypatch):
-        """Two concurrent calls of one tool are different work, not a duplicate (#98382)."""
-        import time
+        """Tool-call identity stays ahead of session identity in the gate (#98382)."""
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
         )
+        mgr = PluginManager()
+        payloads = [
+            {
+                "tool_name": "read_file",
+                "tool_input": {},
+                "session_id": "s1",
+                "turn_id": "same-turn",
+                "tool_call_id": call_id,
+            }
+            for call_id in ("call-a", "call-b")
+        ]
 
-        hold = threading.Event()
+        starts = _run_distinct_hook_calls_concurrently(
+            mgr, "pre_tool_call", payloads, "tool_call_id"
+        )
+
+        assert sorted(starts) == ["call-a", "call-b"]
+
+    def test_concurrent_distinct_session_starts_both_run(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+        mgr = PluginManager()
+        payloads = [
+            {"session_id": session_id, "model": "test", "platform": "cli"}
+            for session_id in ("session-a", "session-b")
+        ]
+
+        starts = _run_distinct_hook_calls_concurrently(
+            mgr, "on_session_start", payloads, "session_id"
+        )
+
+        assert sorted(starts) == ["session-a", "session-b"]
+
+    def test_ten_concurrent_healthy_session_starts_all_run(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+        mgr = PluginManager()
+        session_ids = [f"session-{index:02d}" for index in range(10)]
+        payloads = [
+            {"session_id": session_id, "model": "test", "platform": "gateway"}
+            for session_id in session_ids
+        ]
+
+        starts = _run_distinct_hook_calls_concurrently(
+            mgr, "on_session_start", payloads, "session_id"
+        )
+
+        assert sorted(starts) == session_ids
+
+    def test_concurrent_distinct_pre_verify_sessions_both_run(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+        mgr = PluginManager()
+        payloads = [
+            {
+                "session_id": session_id,
+                "platform": "cli",
+                "model": "test",
+                "coding": True,
+                "attempt": 0,
+                "final_response": "done",
+                "changed_paths": [],
+            }
+            for session_id in ("verify-a", "verify-b")
+        ]
+
+        starts = _run_distinct_hook_calls_concurrently(
+            mgr, "pre_verify", payloads, "session_id"
+        )
+
+        assert sorted(starts) == ["verify-a", "verify-b"]
+
+    def test_session_end_turn_identity_remains_ahead_of_session_identity(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+        mgr = PluginManager()
+        payloads = [
+            {
+                "session_id": "same-session",
+                "turn_id": turn_id,
+                "completed": True,
+                "interrupted": False,
+            }
+            for turn_id in ("turn-a", "turn-b")
+        ]
+
+        starts = _run_distinct_hook_calls_concurrently(
+            mgr, "on_session_end", payloads, "turn_id"
+        )
+
+        assert sorted(starts) == ["turn-a", "turn-b"]
+
+    def test_reduced_session_end_shapes_use_distinct_session_identity(
+        self, monkeypatch
+    ):
+        """CLI/TUI teardown shapes can omit turn_id but always carry session_id."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+        mgr = PluginManager()
+        payloads = [
+            {
+                "session_id": session_id,
+                "completed": False,
+                "interrupted": True,
+                "model": "test",
+                "platform": platform,
+            }
+            for session_id, platform in (("cli-end", "cli"), ("tui-end", "tui"))
+        ]
+
+        starts = _run_distinct_hook_calls_concurrently(
+            mgr, "on_session_end", payloads, "session_id"
+        )
+
+        assert sorted(starts) == ["cli-end", "tui-end"]
+
+    def test_repeated_same_session_start_still_deduplicated(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+        release = threading.Event()
+        first_started = threading.Event()
+        second_returned = threading.Event()
         starts = []
 
-        def recorder(**_kwargs):
-            starts.append(1)
-            hold.wait(timeout=10.0)
+        def blocker(**kwargs):
+            starts.append(kwargs["session_id"])
+            first_started.set()
+            release.wait(timeout=10.0)
             return "ok"
 
         mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [recorder]
+        mgr._hooks["on_session_start"] = [blocker]
 
-        def fire(call_id):
+        def fire(done=None):
             mgr.invoke_hook(
-                "pre_tool_call",
-                tool_name="read_file",
-                tool_input={},
-                session_id="s1",
-                tool_call_id=call_id,
+                "on_session_start",
+                session_id="same-session",
+                model="test",
+                platform="cli",
             )
+            if done is not None:
+                done.set()
 
-        first = threading.Thread(target=fire, args=("call-a",), daemon=True)
+        first = threading.Thread(target=fire, daemon=True)
         first.start()
-        time.sleep(0.1)  # let the first invocation occupy the gate
-        second = threading.Thread(target=fire, args=("call-b",), daemon=True)
+        assert first_started.wait(timeout=5.0)
+        second = threading.Thread(target=fire, args=(second_returned,), daemon=True)
         second.start()
-        time.sleep(0.4)
-        hold.set()
-        first.join(5.0)
-        second.join(5.0)
+        assert second_returned.wait(timeout=5.0)
 
-        assert len(starts) == 2
+        assert starts == ["same-session"]
+        release.set()
+        first.join(timeout=5.0)
+        second.join(timeout=5.0)
+        assert not first.is_alive()
+        assert not second.is_alive()
+
+    def test_hung_session_start_still_suppresses_other_sessions(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+        release = threading.Event()
+        started = threading.Event()
+        finished = threading.Event()
+        starts = []
+
+        def blocker(**kwargs):
+            starts.append(kwargs["session_id"])
+            started.set()
+            release.wait(timeout=10.0)
+            finished.set()
+            return "late"
+
+        mgr = PluginManager()
+        mgr._hook_timeout_suppression_seconds = 0.0
+        mgr._hooks["on_session_start"] = [blocker]
+
+        assert (
+            mgr.invoke_hook(
+                "on_session_start", session_id="hung-a", model="test", platform="cli"
+            )
+            == []
+        )
+        assert started.wait(timeout=1.0)
+        assert (
+            mgr.invoke_hook(
+                "on_session_start", session_id="hung-b", model="test", platform="cli"
+            )
+            == []
+        )
+
+        assert starts == ["hung-a"]
+        assert mgr._hook_abandoned
+        release.set()
+        assert finished.wait(timeout=5.0)
 
     def test_repeated_same_call_identity_still_deduplicated(self, monkeypatch):
         """Negative control: the same call identity stays a duplicate while its worker
         is still running, so the running gate (not timeout suppression) dedupes it."""
         import time
+
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
         )

@@ -266,6 +266,25 @@ def test_explicit_subprocess_base_never_reads_late_home_policy(
     assert result["HERMES_REAL_HOME"] == str(real_home)
     assert result["HOME"] == str(real_home)
 
+    # Snapshot-owned variables used inside HERMES_HOME must not be expanded from
+    # the later process environment on the strict child path.
+    snapshot_root = tmp_path / "snapshot-root"
+    snapshot_profile = snapshot_root / "profile"
+    (snapshot_profile / "home").mkdir(parents=True)
+    late_root = tmp_path / "late-root"
+    (late_root / "profile" / "home").mkdir(parents=True)
+    monkeypatch.setenv("PROFILE_ROOT", str(late_root))
+    snapshot_env = {
+        "HERMES_HOME": "$PROFILE_ROOT/profile",
+        "PROFILE_ROOT": str(snapshot_root),
+        "HOME": str(real_home),
+        "TERMINAL_HOME_MODE": "profile",
+    }
+    assert hermes_constants.get_subprocess_home(
+        snapshot_env, allow_process_fallback=False
+    ) == str(snapshot_profile / "home")
+    assert hermes_constants.get_process_hermes_home(snapshot_env) == snapshot_profile
+
     # The canonical default launch home is part of the same snapshot authority:
     # resolving it must not consult later HOME/LOCALAPPDATA process mutations.
     monkeypatch.setattr(sys, "platform", "linux")
@@ -300,6 +319,104 @@ def test_explicit_home_lookup_never_reads_os_account(monkeypatch):
     assert hermes_constants.get_real_home(
         {}, allow_process_fallback=False
     ) == "/tmp"
+
+
+def test_strict_home_normalization_never_reads_ambient_home(tmp_path, monkeypatch):
+    """A relative snapshot home is anchored to its captured PWD, not live cwd."""
+    launch_cwd = tmp_path / "launch-cwd"
+    (launch_cwd / "home").mkdir(parents=True)
+    late_cwd = tmp_path / "late-cwd"
+    late_cwd.mkdir()
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+    snapshot = {
+        "HERMES_HOME": ".",
+        "HOME": "home",
+        "PWD": str(launch_cwd),
+        "TERMINAL_HOME_MODE": "profile",
+    }
+
+    monkeypatch.chdir(launch_cwd)
+    assert hermes_constants.get_subprocess_home(
+        snapshot, allow_process_fallback=False
+    ) == str(launch_cwd / "home")
+    assert hermes_constants.get_process_hermes_home(snapshot) == launch_cwd
+    monkeypatch.chdir(late_cwd)
+    assert hermes_constants.get_subprocess_home(
+        snapshot, allow_process_fallback=False
+    ) == str(launch_cwd / "home")
+    assert hermes_constants.get_process_hermes_home(snapshot) == launch_cwd
+
+
+def test_explicit_named_tilde_does_not_use_live_expanduser(monkeypatch):
+    """An explicit mapping never resolves ``~user`` through ambient OS state."""
+    def _unexpected_expanduser(_path):
+        raise AssertionError("explicit snapshot called live expanduser")
+
+    monkeypatch.setattr(os.path, "expanduser", _unexpected_expanduser)
+    assert hermes_constants.get_process_hermes_home(
+        {"HERMES_HOME": "~other/profile", "HOME": "/snapshot-home"}
+    ) == Path("~other/profile")
+
+
+@pytest.mark.parametrize("raw_home", ["$MISSING/profile", "~other/profile"])
+def test_strict_unresolved_profile_home_does_not_probe_live_cwd(
+    raw_home, tmp_path, monkeypatch
+):
+    """Literal unresolved homes remain stable even if a same-named cwd path exists."""
+    first_cwd = tmp_path / "first"
+    second_cwd = tmp_path / "second"
+    (first_cwd / raw_home / "home").mkdir(parents=True)
+    second_cwd.mkdir()
+    snapshot = {
+        "HERMES_HOME": raw_home,
+        "HOME": "/snapshot-home",
+        "PWD": str(tmp_path),
+        "TERMINAL_HOME_MODE": "profile",
+    }
+    expected = str(Path(raw_home) / "home")
+
+    monkeypatch.chdir(first_cwd)
+    assert hermes_constants.get_subprocess_home(
+        snapshot, allow_process_fallback=False
+    ) == expected
+    monkeypatch.chdir(second_cwd)
+    assert hermes_constants.get_subprocess_home(
+        snapshot, allow_process_fallback=False
+    ) == expected
+
+
+def test_strict_subprocess_home_ignores_late_container_env(tmp_path, monkeypatch):
+    """Container policy for an explicit snapshot cannot read a later Kubernetes marker."""
+    profile = tmp_path / "profile"
+    (profile / "home").mkdir(parents=True)
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    snapshot = {
+        "HERMES_HOME": str(profile),
+        "HOME": str(real_home),
+        "PWD": str(tmp_path),
+    }
+    original_exists = os.path.exists
+    monkeypatch.setattr(
+        os.path,
+        "exists",
+        lambda path: False
+        if path in {"/.dockerenv", "/run/.containerenv"}
+        else original_exists(path),
+    )
+    monkeypatch.setattr(hermes_constants, "_proc_file_has_marker", lambda *_args: False)
+    monkeypatch.setattr(hermes_constants, "_root_mount_has_marker", lambda *_args: False)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setattr(hermes_constants, "_container_detected", None)
+    assert hermes_constants.get_subprocess_home(
+        snapshot, allow_process_fallback=False
+    ) is None
+
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "late-poison")
+    monkeypatch.setattr(hermes_constants, "_container_detected", None)
+    assert hermes_constants.get_subprocess_home(
+        snapshot, allow_process_fallback=False
+    ) is None
 
 
 

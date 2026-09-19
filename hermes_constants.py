@@ -55,17 +55,29 @@ def _expand_hermes_home(
         return Path(os.path.expanduser(os.path.expandvars(path)))
 
     def _replace_var(match: re.Match[str]) -> str:
-        name = match.group(1) or match.group(2) or match.group(3)
+        name = next(group for group in match.groups() if group is not None)
         return env.get(name, match.group(0))
 
-    expanded = re.sub(r"\$(\w+)|\$\{([^}]+)\}|%([^%]+)%", _replace_var, path)
+    pattern = r"\$(\w+)|\$\{([^}]+)\}"
+    if sys.platform == "win32":
+        pattern += r"|%([^%]+)%"
+    expanded = re.sub(pattern, _replace_var, path)
     if expanded == "~" or expanded.startswith(("~/", "~\\")):
         user_home = env.get("HOME", "").strip() or env.get("USERPROFILE", "").strip()
         if user_home:
             expanded = user_home + expanded[1:]
-    elif expanded.startswith("~"):
-        expanded = os.path.expanduser(expanded)
-    return Path(expanded)
+    result = Path(expanded)
+    unresolved = re.search(r"\$(?:\w+|\{[^}]+\})|%[^%]+%", expanded)
+    captured_cwd = env.get("PWD", "").strip()
+    if (
+        not result.is_absolute()
+        and not expanded.startswith("~")
+        and unresolved is None
+        and captured_cwd
+        and Path(captured_cwd).is_absolute()
+    ):
+        result = Path(captured_cwd) / result
+    return result
 
 
 def _get_platform_default_hermes_home(env: Mapping[str, str] | None = None) -> Path:
@@ -912,13 +924,19 @@ def secure_parent_dir(path: Path) -> None:
         os.chmod(parent, 0o700)
 
 
-def _norm_home_path(path: str | None) -> str:
-    """Return a comparable absolute path string, or ``""`` for empty input."""
+def _norm_home_path(
+    path: str | None, *, env: Mapping[str, str] | None = None
+) -> str:
+    """Return a comparable path string, or ``""`` for empty input."""
     raw = (path or "").strip()
     if not raw:
         return ""
     try:
-        return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+        if env is None:
+            normalized = os.path.abspath(os.path.expanduser(raw))
+        else:
+            normalized = os.path.normpath(_expand_hermes_home(raw, env))
+        return os.path.normcase(str(normalized))
     except Exception:
         return os.path.normcase(raw)
 
@@ -932,12 +950,25 @@ def _profile_home_path(
         hermes_home = get_hermes_home_override() or hermes_home or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
-    profile_home = str(_expand_hermes_home(hermes_home) / "home")
+    expansion_env = None if allow_process_fallback else env
+    profile_home = str(_expand_hermes_home(hermes_home, expansion_env) / "home")
+    if not allow_process_fallback and not Path(profile_home).is_absolute():
+        return profile_home
     return profile_home if os.path.isdir(profile_home) else None
 
 
-def _is_profile_home(candidate: str | None, profile_home: str | None) -> bool:
-    return bool(candidate and profile_home and _norm_home_path(candidate) == _norm_home_path(profile_home))
+def _is_profile_home(
+    candidate: str | None,
+    profile_home: str | None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    return bool(
+        candidate
+        and profile_home
+        and _norm_home_path(candidate, env=env)
+        == _norm_home_path(profile_home, env=env)
+    )
 
 
 def _env_get(
@@ -988,15 +1019,16 @@ def get_real_home(
     already running with ``HOME={HERMES_HOME}/home`` is repaired back when possible.
     """
     profile_home = _profile_home_path(env, allow_process_fallback=allow_process_fallback)
+    expansion_env = None if allow_process_fallback else env
     seen: set[str] = set()
     for candidate in _iter_real_home_candidates(
         env, allow_process_fallback=allow_process_fallback
     ):
-        key = _norm_home_path(candidate)
+        key = _norm_home_path(candidate, env=expansion_env)
         if not key or key in seen:
             continue
         seen.add(key)
-        if not _is_profile_home(candidate, profile_home):
+        if not _is_profile_home(candidate, profile_home, env=expansion_env):
             return candidate
     return "/tmp"
 
@@ -1024,13 +1056,20 @@ def get_subprocess_home(
         return profile_home
     real_home = get_real_home(env, allow_process_fallback=allow_process_fallback)
     current_home = _env_get(env, "HOME", allow_process_fallback=allow_process_fallback)
-    repaired = real_home if _norm_home_path(real_home) != _norm_home_path(current_home) else None
+    expansion_env = None if allow_process_fallback else env
+    repaired = (
+        real_home
+        if _norm_home_path(real_home, env=expansion_env)
+        != _norm_home_path(current_home, env=expansion_env)
+        else None
+    )
     if mode == "real":
         return repaired
 
-    if profile_home and is_container():
+    container = is_container() if allow_process_fallback else _detect_container(env)
+    if profile_home and container:
         return profile_home
-    if _is_profile_home(current_home, profile_home):
+    if _is_profile_home(current_home, profile_home, env=expansion_env):
         return repaired
     return None
 
@@ -1252,11 +1291,12 @@ def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
     return any(marker in content for marker in markers)
 
 
-def _detect_container() -> bool:
+def _detect_container(env: Mapping[str, str] | None = None) -> bool:
+    source = os.environ if env is None else env
     if (
         os.path.exists("/.dockerenv")
         or os.path.exists("/run/.containerenv")
-        or os.environ.get("KUBERNETES_SERVICE_HOST")
+        or source.get("KUBERNETES_SERVICE_HOST")
         or _proc_file_has_marker("/proc/1/cgroup", ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio"))
     ):
         return True

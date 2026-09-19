@@ -133,3 +133,23 @@ def test_release_resets_every_scope_when_one_reset_fails(two_homes, monkeypatch)
     assert current_secret_scope() is None
     assert get_hermes_home_override() is None
     assert Path(server._hermes_home) == root
+
+
+def test_capture_launch_authority_freezes_relative_home_to_capture_cwd(
+    tmp_path, monkeypatch
+):
+    launch_cwd = tmp_path / "launch-cwd"
+    late_cwd = tmp_path / "late-cwd"
+    launch_cwd.mkdir()
+    late_cwd.mkdir()
+    monkeypatch.chdir(launch_cwd)
+    monkeypatch.setenv("HERMES_HOME", ".")
+    monkeypatch.delenv("PWD", raising=False)
+    monkeypatch.setattr(lpp, "_authority", None)
+
+    authority = lpp.capture_launch_authority()
+    assert authority.home == launch_cwd
+    assert authority.env["PWD"] == str(launch_cwd)
+
+    monkeypatch.chdir(late_cwd)
+    assert lpp.launch_home() == launch_cwd

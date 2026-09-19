@@ -39,6 +39,14 @@ class LaunchProfileAuthority:
 _authority: Optional[LaunchProfileAuthority] = None
 
 
+def _live_launch_env() -> Dict[str, str]:
+    """Snapshot process values and pin a missing shell ``PWD`` to the capture cwd."""
+    snapshot = dict(os.environ)
+    if "PWD" not in snapshot:
+        snapshot["PWD"] = os.getcwd()
+    return snapshot
+
+
 def capture_launch_authority() -> LaunchProfileAuthority:
     """Freeze launch values and resolved home atomically; the first capture wins."""
     global _authority
@@ -46,7 +54,7 @@ def capture_launch_authority() -> LaunchProfileAuthority:
         if _authority is None:
             from hermes_constants import get_process_hermes_home
 
-            snapshot = dict(os.environ)
+            snapshot = _live_launch_env()
             home = get_process_hermes_home(snapshot)
             _authority = LaunchProfileAuthority(MappingProxyType(snapshot), home)
         return _authority
@@ -85,7 +93,7 @@ def launch_authority() -> LaunchProfileAuthority:
         if _authority is not None:
             return _authority
         if not is_multiplex_active():
-            env = dict(os.environ)
+            env = _live_launch_env()
             home = get_process_hermes_home(env)
             return LaunchProfileAuthority(MappingProxyType(env), home)
     # A harness may flip multiplexing directly without calling activation.

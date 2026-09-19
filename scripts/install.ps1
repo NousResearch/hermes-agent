@@ -3294,8 +3294,10 @@ function Set-PathVariable {
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
     } else {
-        # $HermesHome\bin is the managed binary dir (shared with the managed
-        # uv), OUTSIDE the git checkout: `hermes update`'s autostash
+        # $HermesHome\bin is the managed binary dir (the hermes launchers and
+        # Hermes-installed CLIs such as browser-use; the managed uv lives in the
+        # sibling uv\ dir, which is never on PATH), OUTSIDE the git checkout:
+        # `hermes update`'s autostash
         # (git stash push --include-untracked) deletes untracked files from
         # the working tree, which silently removed the launchers an earlier
         # installer staged under hermes-agent\bin. No git operation can ever

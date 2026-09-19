@@ -557,6 +557,10 @@ async def _handle_runs_body(self, request, body, gateway_session_key, *, _api_se
                 raise ValueError('room session identity conflicts with existing data')
         except Exception as exc:
             return _room_dispatch_error(exc, _openai_error=_openai_error)
+    if _room_binding is None:
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
     run_id = f"run_{uuid.uuid4().hex}"
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).
@@ -594,9 +598,9 @@ async def _handle_runs_body(self, request, body, gateway_session_key, *, _api_se
             from gateway.session_api_turn import check_api_settings
             check_api_settings(self, {'room_dispatch': room_dispatch,
                 'room_execution_policy': room_execution_policy})
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
+            limited = self._concurrency_limited_response()
+            if limited is not None:
+                return limited
         self._run_owners[run_id] = self._run_idempotency_scope(request)
         q = self._run_streams[run_id] = _RunStream()
         created_at = self._run_streams_created[run_id] = time.time()

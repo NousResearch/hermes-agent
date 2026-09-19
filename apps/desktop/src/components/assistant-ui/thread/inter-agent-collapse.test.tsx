@@ -125,9 +125,7 @@ describe('inter-agent collapse gate', () => {
 
   it('still collapses the reply to an unsolicited delivery (dispatch went to another teammate)', async () => {
     render(
-      <Harness
-        messages={[dispatch('a0', 'scribe'), user('u2', DELIVERY), assistant('a1', 'build is green', false)]}
-      />
+      <Harness messages={[dispatch('a0', 'scribe'), user('u2', DELIVERY), assistant('a1', 'build is green', false)]} />
     )
 
     expect(await screen.findByText(/Replied to/)).toBeTruthy()

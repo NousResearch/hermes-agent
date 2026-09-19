@@ -189,7 +189,9 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
       )
 
       const rows = recordOf(reply).targets
-      const minted = Array.isArray(rows) ? rows.map(recordOf).find(row => connectorText(row.name) === target.name) : undefined
+      const minted = Array.isArray(rows)
+        ? rows.map(recordOf).find(row => connectorText(row.name) === target.name)
+        : undefined
       const url = connectorAuthorizationUrl(minted?.connect_url)
 
       if (url) {

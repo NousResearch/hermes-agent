@@ -728,6 +728,8 @@ def reserve_peer_room(
     claims: Mapping[str, Any],
     expires_at: float,
     now: float | None = None,
+    _connection=None,
+    _authorize_write=None,
 ) -> dict[str, Any]:
     """Fence direct Desktop prompts before the first peer run is admitted."""
 
@@ -757,7 +759,14 @@ def reserve_peer_room(
     )
     if values[4] < 1:
         raise HostedRoomError("authority_epoch must be positive")
-    with _transaction(db_path, immediate=True) as conn:
+    with (nullcontext(_connection) if _connection is not None else _transaction(db_path, immediate=True)) as conn:
+        if _connection is not None:
+            if (not conn.in_transaction or not callable(_authorize_write)
+                    or Path(conn.execute('PRAGMA database_list').fetchone()[2]).resolve() != Path(db_path).resolve()):
+                raise HostedRoomError("peer reservation requires its authorized held connection")
+            _authorize_write(conn)
+            if not _schema_is_current(conn):
+                _initialize_schema(conn)
         conn.execute(
             "DELETE FROM hosted_room_peer_reservations WHERE expires_at<=?",
             (timestamp,),

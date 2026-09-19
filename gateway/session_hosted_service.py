@@ -131,6 +131,42 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             raise RuntimeStoreError('permission_denied')
         return row[0]
 
+    def _refresh_peer_attachment_catalog(self, room_id, member_id, route, client):
+        # Canonical targets expose operation-private Files readiness. Revalidate
+        # the invitation and grant, never overwrite it from an idle capability GET.
+        from gateway import hosted_room_links as links, hosted_rooms as rooms
+        from gateway.session_group_setup import verify_invited_catalog
+        def current():
+            self._owned_authority(room_id)
+            room = self._owned_room(room_id)
+            stored = links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)
+            if stored is None:
+                raise RuntimeStoreError('peer_setup_conflict')
+            catalog = stored.catalog
+            member = next((m for m in room['members'] if m['member_id'] == member_id), None)
+            target = member.get('target', {}) if member else {}
+            local = rooms.local_authority_gateway_id()
+            if (stored.status != 'ready' or stored.grant != route.grant
+                    or stored.target_profile != route.target_profile
+                    or stored.cancellation_scope_id != route.cancellation_scope_id or stored.trace_id != route.trace_id
+                    or catalog.installation_id != route.target_install_id
+                    or catalog.catalog_digest != route.capability_digest or catalog.attachments != route.attachments
+                    or catalog.execution_policy.policy_digest != route.execution_policy_digest
+                    or not catalog.persistent_process or not catalog.text
+                    or route.home_install_id != local or room['authority_gateway_id'] != local
+                    or not member or member['profile'] != route.target_profile or target.get('kind') != 'peer'
+                    or target.get('profile') != route.target_profile or target.get('installation_id') != route.target_install_id
+                    or target.get('capability_digest') != route.capability_digest):
+                raise RuntimeStoreError('peer_setup_conflict')
+            scope = dict(room_id=room_id, home_install_id=local, authority_gateway_id=local,
+                         authority_epoch=room['authority_epoch'], member_id=member_id, target_profile=route.target_profile)
+            return stored, scope
+        stored, scope = current()
+        verify_invited_catalog(client, route.grant, stored.catalog, scope)
+        if current() != (stored, scope):
+            raise RuntimeStoreError('peer_setup_conflict')
+        return route
+
     def _resolve_member_transport(self, binding, task):
         if self._member_is_peer(binding.room_id, str(task['payload'].get('target_member_id') or task['payload'].get('target_profile'))):
             return super()._resolve_member_transport(binding, task)

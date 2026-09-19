@@ -225,73 +225,87 @@ def _http_invitation_owner(self, profile):
             self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
 
 
-def _issue_http_invitation(self, body, profile, frozen_owner):
+def _issue_http_invitation(self, body, profile, frozen_owner, *, cancelled, authorize):
     from contextlib import nullcontext
     from gateway.session_peer_input import peer_input_initialized
     from gateway.session_peer_route import prepared_room_route, invitation_identity
     from gateway import hosted_rooms
     from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
     from gateway.session_group_peers import invitation_preflight
+    from hermes_state_runtime import RuntimeStoreError
 
+    def check_request():
+        if cancelled():
+            raise RuntimeStoreError('selection_cancelled')
+        authorize()
+
+    check_request()
     target_install_id = hosted_rooms.local_authority_gateway_id()
     identity, (ttl, status_ttl) = invitation_preflight(body)
     binding = _http_invitation_owner(self, profile)
     if binding != frozen_owner:
-        from hermes_state_runtime import RuntimeStoreError
         raise RuntimeStoreError('profile_mismatch')
-    guard = (prepared_room_route(self, invitation_identity(identity, profile), object(), 'invite', required=False)
+    guard = (prepared_room_route(self, invitation_identity(identity, profile), object(), 'invite',
+                                required=False, cancelled=cancelled)
              if binding is not None and peer_input_initialized(self, profile) else nullcontext())
     with guard:
+        # Credential preparation is complete. No await occurs inside this hold.
+        check_request()
+        if _http_invitation_owner(self, profile) != binding:
+            raise RuntimeStoreError('profile_mismatch')
         execution_policy, catalog = _local_room_catalog(self, profile, target_install_id)
         if not catalog['text'] or execution_policy['approval_mode'] == 'off':
             raise ValueError('remote room execution requires an enabled approval policy')
         permissions = _invitation_permissions(self, profile, catalog)
-        token = issue_room_grant(
-            self._room_grant_secret(),
-            grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
-            **identity,
-            permissions=permissions,
-            target_install_id=target_install_id,
-            target_profile=profile,
-            execution_policy_digest=execution_policy["policy_digest"],
-            issued_at=time.time(),
-            ttl_seconds=ttl,
-            status_ttl_seconds=status_ttl,
-        )
-        claims = decode_room_grant(
-            self._room_grant_secret(), token, permission="status"
-        )
-        from gateway.hosted_room_grant_state import (
-            grant_state_db_paths,
-            reserve_grant_state,
-        )
 
-        reserve_grant_state(
-            grant_state_db_paths(),
-            claims=claims,
-            expires_at=float(claims.get("status_expires_at", claims["expires_at"])),
-        )
+        def mint():
+            token = issue_room_grant(
+                self._room_grant_secret(),
+                grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
+                **identity, permissions=permissions, target_install_id=target_install_id,
+                target_profile=profile, execution_policy_digest=execution_policy["policy_digest"],
+                issued_at=time.time(), ttl_seconds=ttl, status_ttl_seconds=status_ttl)
+            return decode_room_grant(self._room_grant_secret(), token, permission="status"), token
+
         if binding is not None:
             from gateway.session_peer_target import grant_fence, target_policy, require_current_grant
             with grant_fence(self, profile) as (authority, shared):
                 def confirm(conn):
-                    owner, paths, current_policy = target_policy(self, profile, connection=conn)
-                    current_binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
-                                       self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
-                    if owner is not authority or current_binding != binding:
-                        raise ValueError('room target binding changed')
-                    if current_policy != execution_policy:
-                        raise ValueError('room execution policy changed')
-                    _, current_catalog = _local_room_catalog(
-                        self, profile, target_install_id, _connection=conn)
-                    if (current_catalog != catalog
-                            or _invitation_permissions(self, profile, current_catalog, _connection=conn) != permissions):
-                        raise ValueError('room capability catalog changed')
+                    def require_target():
+                        authorize()
+                        owner, paths, current_policy = target_policy(self, profile, connection=conn)
+                        current_binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
+                                           self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
+                        if owner is not authority or current_binding != binding:
+                            raise ValueError('room target binding changed')
+                        if current_policy != execution_policy:
+                            raise ValueError('room execution policy changed')
+                        _, current_catalog = _local_room_catalog(self, profile, target_install_id, _connection=conn)
+                        if (current_catalog != catalog
+                                or _invitation_permissions(self, profile, current_catalog, _connection=conn) != permissions):
+                            raise ValueError('room capability catalog changed')
+                    require_target()
+                    # Issuance linearizes at this last cancellation check under
+                    # both store fences, BEFORE signing or reserving anything.
+                    # A later cancelled waiter cannot undo an accepted issuance.
+                    check_request()
+                    claims, token = mint()
+                    for path, held in zip(binding[-1], (shared, conn), strict=True):
+                        hosted_rooms.reserve_peer_room(path, claims=claims,
+                            expires_at=float(claims['status_expires_at']), _connection=held,
+                            _authorize_write=lambda actual: require_target())
                     require_current_grant(shared, claims)
                     require_current_grant(conn, claims)
-                authority.db._execute_write(confirm)
+                    require_target()
+                    return claims, token
+                claims, token = authority.db._execute_write(confirm)
+        else:
+            from gateway.hosted_room_grant_state import grant_state_db_paths, reserve_grant_state
+            check_request()
+            claims, token = mint()
+            reserve_grant_state(grant_state_db_paths(), claims=claims,
+                                expires_at=float(claims['status_expires_at']))
     return catalog, claims, token
-
 
 async def _handle_room_member_invitation(
     self,
@@ -329,13 +343,25 @@ async def _handle_room_member_invitation(
         if unavailable is not None:
             return unavailable
         frozen_owner = _http_invitation_owner(self, profile)
+        import threading
+        cancelled = threading.Event()
+        def authorize():
+            if self._check_auth(request) is not None:
+                from hermes_state_runtime import RuntimeStoreError
+                raise RuntimeStoreError('permission_denied')
         def issue():
             with self._profile_scope(profile):
-                if self._check_auth(request) is not None:
-                    from hermes_state_runtime import RuntimeStoreError
-                    raise RuntimeStoreError('permission_denied')
-                return _issue_http_invitation(self, body, profile, frozen_owner)
-        catalog, claims, token = await asyncio.to_thread(issue)
+                return _issue_http_invitation(self, body, profile, frozen_owner,
+                                              cancelled=cancelled.is_set, authorize=authorize)
+        task = asyncio.create_task(asyncio.to_thread(issue))
+        try:
+            catalog, claims, token = await asyncio.shield(task)
+        except BaseException:
+            cancelled.set()
+            # The real worker owns all holds and secret cleanup. Observe its
+            # completion even when the HTTP waiter has already left.
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            raise
     except Exception as exc:
         return web.json_response(
             _openai_error(str(exc), code="invalid_room_invitation"),

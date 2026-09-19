@@ -36,7 +36,7 @@ def _text(value, *, limit=256):
     return value
 
 
-def _grant_claims(grant):
+def _grant_claims(grant, *, attachments=False):
     # This is only a conservative local scope/lifetime check. Only the target's
     # authenticated scoped probe verifies the signature; we never borrow its key.
     try:
@@ -51,11 +51,31 @@ def _grant_claims(grant):
         if (type(issued) not in {int, float} or type(expiry) not in {int, float}
                 or not math.isfinite(issued) or not math.isfinite(expiry)
                 or not issued - 30 <= now < expiry
-                or not {'dispatch', 'status', 'stop'} <= set(claims['permissions'])):
+                or not {'dispatch', 'status', 'stop'} <= set(claims['permissions'])
+                or attachments and 'attachment.stage' not in claims['permissions']):
             raise ValueError('unusable grant')
         return claims
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         raise RuntimeStoreError('invalid_room_grant') from exc
+
+
+def verify_invited_catalog(client, grant, catalog, scope):
+    """Authenticate the persisted invitation without caching receiver readiness."""
+    from gateway.hosted_room_peer import _catalog_digest
+    claims = _grant_claims(grant, attachments=catalog.attachments)
+    expected = dict(scope, target_install_id=catalog.installation_id,
+                    execution_policy_digest=catalog.execution_policy.policy_digest)
+    if (type(claims.get('authority_epoch')) is not int or claims.get('version') != PROTOCOL_VERSION
+            or any(claims.get(k) != v for k, v in expected.items())):
+        raise RuntimeStoreError('invalid_room_grant')
+    # The actual scoped endpoint verifies this exact token's signature, target
+    # and current revocation state. Its passive bit never supplies a missing right.
+    probe = client.probe(grant=grant)
+    current = GatewayRoomCatalog.from_mapping(probe.get('catalog')).as_mapping()
+    if (_catalog_digest(dict(current, attachments=catalog.attachments)) != catalog.catalog_digest
+            or type(probe.get('authority_epoch')) is not int
+            or any(probe.get(k) != v for k, v in scope.items())):
+        raise RuntimeStoreError('peer_target_mismatch')
 
 
 def _route_record(conn, room_id, member_id):
@@ -138,9 +158,9 @@ def register_peer(authority, actor, service, params):
                 raise RuntimeStoreError('peer_setup_pending')
             if prior.get('route_digest') != _digest(current):
                 raise RuntimeStoreError('peer_setup_conflict')
-            _grant_claims(grant)
+            _grant_claims(grant, attachments=catalog.attachments)
             return prior, True
-        claims = _grant_claims(grant)
+        claims = _grant_claims(grant, attachments=catalog.attachments)
         scope = dict(room_id=room_id, home_install_id=gateway_id, authority_gateway_id=gateway_id,
             authority_epoch=binding['authority_epoch'], member_id=member_id, target_profile=profile,
             target_install_id=catalog.installation_id, execution_policy_digest=catalog.execution_policy.policy_digest)
@@ -166,7 +186,7 @@ def register_peer(authority, actor, service, params):
         current = _route_record(conn, room_id, member_id)
         if _digest(current) != pending['previous_digest']:
             raise RuntimeStoreError('peer_setup_conflict')
-        _grant_claims(grant)
+        _grant_claims(grant, attachments=catalog.attachments)
         if record is not None:
             conn.execute('UPDATE state_meta SET value=? WHERE key=?',
                 (_json({**pending, 'state': 'completed', 'route_digest': _digest(record)}), key))
@@ -174,13 +194,9 @@ def register_peer(authority, actor, service, params):
 
     client = PeerRunsHTTPClient(base_url=url, api_key='', target_profile=profile, receipt_db_path=service.db_path)
     try:
-        probe = client.probe(grant=grant)
-        if GatewayRoomCatalog.from_mapping(probe.get('catalog')) != catalog:
-            raise RuntimeStoreError('peer_target_mismatch')
         scope = dict(room_id=room_id, home_install_id=gateway_id, authority_gateway_id=gateway_id,
                      authority_epoch=pending['binding']['authority_epoch'], member_id=member_id, target_profile=profile)
-        if type(probe.get('authority_epoch')) is not int or any(probe.get(k) != v for k, v in scope.items()):
-            raise RuntimeStoreError('peer_target_mismatch')
+        verify_invited_catalog(client, grant, catalog, scope)
         route = PeerMemberRoute(home_install_id=gateway_id, member_id=member_id,
             target_install_id=catalog.installation_id, target_profile=profile,
             capability_digest=catalog.catalog_digest, execution_policy_digest=catalog.execution_policy.policy_digest,

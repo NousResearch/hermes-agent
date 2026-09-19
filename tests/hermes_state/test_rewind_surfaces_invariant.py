@@ -49,7 +49,7 @@ def _rewind_via(surface: str, db: SessionDB, sid: str, n: int):
         store._lazy = lambda name, factory: factory()
         store._clear_dirty_transcript = lambda _sid: None
         return store.rewind_session(sid, n)
-    warm = db.get_messages_as_conversation(sid)
+    warm = db.get_messages_as_conversation(sid, repair_alternation=True)
     user_turns = sum(1 for m in warm if m.get("role") == "user")
     ordinal = user_turns - n
     if surface == "cli":
@@ -134,3 +134,20 @@ def test_out_of_range_target_changes_nothing_on_every_surface(db, surface):
                 db.rewind_user_turn(sid + "-empty", -1, warm_history=[])
         assert _active_rows(db, sid + "-empty") == []
     assert _active_rows(db, sid) == before
+
+
+def test_every_surface_persists_the_same_active_set_after_unanswered_turn(db):
+    """When a session has an unanswered user row merged by alternation repair, all surfaces rewind cleanly."""
+    expected = None
+    for surface in SURFACES:
+        sid = f"wedged-{surface}"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, "user", "q1_failed")
+        db.append_message(sid, "user", "q2")
+        db.append_message(sid, "assistant", "a2")
+        assert _rewind_via(surface, db, sid, 1) is not None
+        rows = [(role, content, active) for _id, role, content, active in _active_rows(db, sid)]
+        assert rows == (expected := expected or rows), surface
+    # All 3 messages (q1, q2, a2) soft-deleted on every surface
+    assert [(r, c) for r, c, a in expected if a] == []
+

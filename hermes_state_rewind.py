@@ -65,7 +65,7 @@ class SessionRewindMixin:
         from agent.session_persistence import _is_ephemeral_scaffolding
 
         expected_active_ids = self.get_active_message_ids(session_id)
-        durable = self.get_messages_as_conversation(session_id, include_row_ids=True)
+        durable = self.get_messages_as_conversation(session_id, include_row_ids=True, repair_alternation=True)
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)
@@ -93,10 +93,11 @@ class SessionRewindMixin:
         target_row_id = target.get("_row_id")
         if not isinstance(target_row_id, int):
             raise RuntimeError("rewind target has no durable row identity")
+        expected_target_content = target.get("_unmerged_content", live_view.get("content"))
         try:
             result = self.rewind_to_message(
                 session_id, target_row_id, preserve_compaction_handoff=scaffold is not None,
-                expected_active_ids=expected_active_ids, expected_target_content=live_view.get("content"))
+                expected_active_ids=expected_active_ids, expected_target_content=expected_target_content)
         except ValueError as exc:  # target vanished / changed role under us: same class of failure as out-of-range
             raise RewindTargetUnavailableError(str(exc)) from exc
         if scaffold is not None:

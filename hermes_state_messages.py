@@ -1230,7 +1230,13 @@ class SessionMessagesMixin:
         if isinstance(live_content, str):
             live_content = sanitize_context(live_content).strip()
         if expected_target_content is not None and live_content != expected_target_content:
-            raise RuntimeError("rewind target changed before it could be persisted")
+            is_merged_alternation = (
+                isinstance(expected_target_content, str)
+                and isinstance(live_content, str)
+                and expected_target_content.startswith(live_content + "\n\n")
+            )
+            if not is_merged_alternation:
+                raise RuntimeError("rewind target changed before it could be persisted")
         if preserve_compaction_handoff and handoff is None:
             raise ValueError("preserve_compaction_handoff requires an active composite carrier")
         return handoff if preserve_compaction_handoff else None

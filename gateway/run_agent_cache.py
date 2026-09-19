@@ -480,6 +480,12 @@ class GatewayAgentCacheMixin:
         _generation_at_interrupt = self._interrupt_running_turn(
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
+        if release_running_state:
+            # Release the displaced turn's slot and generation-scoped lease before awaiting optional
+            # stop cleanup. An adapter activity cleanup can fail or stall indefinitely; after the
+            # generation bump above, _drop_turn_slot releases only older tokens and cannot disturb
+            # a successor that claims the slot while the remaining cleanup awaits.
+            self._drop_turn_slot(session_key, run_generation=_generation_at_interrupt)
         from gateway.run import _AGENT_PENDING_SENTINEL
         # The turn's hard interrupt reaches only its in-turn children; background delegations were
         # detached at dispatch and would otherwise run to completion and wake the session later.
@@ -533,10 +539,6 @@ class GatewayAgentCacheMixin:
                 adapter._pending_messages[session_key] = wake
         if state is not None:
             state.persistent.pending_command_text = None
-        if release_running_state:
-            # Guarded release: a message that arrived during the awaits above may already run as
-            # the successor generation — the displaced /stop tail must not wipe its slot.
-            self._drop_turn_slot(session_key, run_generation=_generation_at_interrupt)
 
     async def _refresh_agent_cache_message_count(self, session_key: str, session_id: Optional[str]) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn — the coherence guard

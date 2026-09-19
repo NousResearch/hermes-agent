@@ -1,0 +1,46 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: agent-toolkit
+description: Baizhi Cloud search, parsing, visual and sandbox tools.
+source: https://baizhi.cloud/landing/agent-toolkit
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). The catalog persists the API key in the active
+# profile's .env and keeps only the ${MCP_AGENT_TOOLKIT_API_KEY} reference in
+# the generated Authorization header.
+transport:
+  type: http
+  url: https://agent-toolkit.app.baizhi.cloud/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_AGENT_TOOLKIT_API_KEY
+      prompt: "Baizhi Cloud API key from https://agent-toolkit.app.baizhi.cloud (key only, without Bearer)"
+      required: true
+      secret: true
+
+# Only the read-only web search and webpage parsing tools are preselected; the
+# remaining tools stay opt-in through `hermes mcp configure agent-toolkit`.
+tools:
+  default_enabled:
+    - websearch_search
+    - web_scrape
+    - web_extract
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - agent toolkit
+    - baizhi cloud
+  hosts:
+    - baizhi.cloud
+
+post_install: |
+  Uses your Baizhi Cloud account and service permissions; calls may consume credits.
+  Only web search and webpage parsing tools are preselected. To opt into other
+  tools, run: hermes mcp configure agent-toolkit
+  Verify the connection with: hermes mcp test agent-toolkit
+  Then start a new Hermes session to use the selected tools.

@@ -82,6 +82,12 @@ enable, disable, or uninstall. Catalog entries are stored under
 Nous approval. There is no community submission tier; entries are added by
 merging a PR.
 
+For a hosted API-key example, see
+[Baizhi Cloud Agent Toolkit](../../integrations/baizhi-cloud.md): choose the
+catalog entry, enter a key through Hermes' credential prompt, and verify the
+discovered tools. The guide also covers manual setup when the entry is not
+available in your installed catalog.
+
 Catalog entries can require:
 
 - **API key** — Hermes prompts at install time and writes the value to

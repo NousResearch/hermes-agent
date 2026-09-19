@@ -728,6 +728,7 @@ const sidebars: SidebarsConfig = {
         'integrations/nous-portal',
         'integrations/providers',
         'integrations/buzz',
+        'integrations/baizhi-cloud',
         'user-guide/features/mcp',
         'user-guide/features/acp',
         'user-guide/features/provider-routing',

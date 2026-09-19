@@ -7625,6 +7625,38 @@ def _stamp_latency_once(latency_info: Optional[Dict[str, int]], key: str, starte
         latency_info[key] = _elapsed_ms(started_at)
 
 
+# ── Auxiliary-LLM observers (aux usage accounting) ──────────────────────
+# Plugins (e.g. observability/langfuse with track_aux) subscribe here so
+# auxiliary token usage — compression, vision, web_extract, MoA, … — can be
+# accounted for. The registry is empty by default: no observer, no cost.
+_AUX_LLM_OBSERVERS: List[Callable[[str, Dict[str, Any]], None]] = []
+
+
+def register_aux_llm_observer(observer: Callable[[str, Dict[str, Any]], None]) -> None:
+    """Subscribe ``observer(event, kwargs)`` to every auxiliary LLM call.
+
+    ``event`` is ``"start"``, ``"end"`` or ``"error"``; ``kwargs`` carries
+    task/provider/model and, on ``"end"``, the raw response (usage on
+    ``response.usage``), on ``"error"``, the exception text. Observers must
+    never raise: exceptions are swallowed and logged.
+    """
+    if observer not in _AUX_LLM_OBSERVERS:
+        _AUX_LLM_OBSERVERS.append(observer)
+
+
+def unregister_aux_llm_observer(observer: Callable[[str, Dict[str, Any]], None]) -> None:
+    if observer in _AUX_LLM_OBSERVERS:
+        _AUX_LLM_OBSERVERS.remove(observer)
+
+
+def _notify_aux_llm(event: str, **kwargs: Any) -> None:
+    for observer in tuple(_AUX_LLM_OBSERVERS):
+        try:
+            observer(event, kwargs)
+        except Exception:  # pragma: no cover - fail-open, never break the call
+            logger.debug("aux observer %r failed on %s", observer, event, exc_info=True)
+
+
 @_relay_auxiliary_call
 def call_llm(
     task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
@@ -7644,6 +7676,8 @@ def call_llm(
     if latency_info is not None:
         latency_info["queue_wait_ms"] = _elapsed_ms(queue_started_at, request_started_at)
     prior_progress_hook = getattr(_aux_progress, "hook", None)
+    _notify_aux_llm("start", task=task, provider=provider, model=model,
+                    api_mode=api_mode, messages=messages)
     try:
         with (
             scoped_runtime_main(main_runtime),
@@ -7668,7 +7702,11 @@ def call_llm(
             stream_semaphore = semaphore
             semaphore = None
             return _release_sync_semaphore_after_stream(response, stream_semaphore)
+        _notify_aux_llm("end", task=task, provider=provider, model=model, response=response)
         return response
+    except Exception as exc:
+        _notify_aux_llm("error", task=task, provider=provider, model=model, error=str(exc))
+        raise
     finally:
         if latency_info is not None:
             latency_info["summary_generation_ms"] = _elapsed_ms(request_started_at)
@@ -7935,14 +7973,21 @@ async def async_call_llm(
     semaphore = _acquire_async_aux_semaphore(task)
     if semaphore is not None:
         await semaphore.acquire()
+    _notify_aux_llm("start", task=task, provider=provider, model=model,
+                    api_mode=None, messages=messages)
     try:
         with scoped_runtime_main(main_runtime):
-            return await _async_call_llm_impl(
+            response = await _async_call_llm_impl(
                 task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
                 main_runtime=main_runtime, messages=messages, temperature=temperature,
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, route_info=route_info,
             )
+        _notify_aux_llm("end", task=task, provider=provider, model=model, response=response)
+        return response
+    except Exception as exc:
+        _notify_aux_llm("error", task=task, provider=provider, model=model, error=str(exc))
+        raise
     finally:
         if semaphore is not None:
             semaphore.release()

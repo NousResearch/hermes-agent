@@ -11,6 +11,7 @@ the delegation call and the summary result, never the child's intermediate
 tool calls or reasoning.
 """
 
+import functools
 import logging
 import time
 import weakref
@@ -34,7 +35,9 @@ from tools.delegate_tool_config import (  # noqa: F401
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
-from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
+from tools.delegate_tool_dispatch import (  # noqa: F401
+    _Batch, _Descent, _Rung, _announce_batch, _capture_origin, _run_batch,
+)
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
@@ -50,8 +53,11 @@ from tools.delegate_tool_tasks import (  # noqa: F401
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
 )
 from tools.delegate_tool_toolsets import (  # noqa: F401
-    DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
+    DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _parent_toolsets, _resolve_child_toolsets,
+    _strip_blocked_tools,
+    _unknown_toolset_names,
 )
+from tools.delegate_tool_config import _get_provider_toolsets
 from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
@@ -168,6 +174,15 @@ def _build_child_agent(
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
+    # Per-task reasoning pin from tasks[].reasoning_effort; None = fall back to delegation.reasoning_effort.
+    override_reasoning_effort: Any = None,
+    # True when ``toolsets`` is an explicit per-task pin: the child gets exactly that set, with no MCP re-add.
+    exact_toolsets: bool = False,
+    # Role and ``(enabled, disabled)`` toolsets already resolved by the caller. Both derivations read mutable
+    # global state — the orchestrator kill switch, the depth budget, the MCP alias registry — so a caller that
+    # vetted a child against one answer must hand that answer over rather than let it be computed again here.
+    resolved_role: Optional[str] = None,
+    resolved_toolsets: Optional[tuple[List[str], List[str]]] = None,
 
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
@@ -188,7 +203,9 @@ def _build_child_agent(
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     max_spawn = _get_max_spawn_depth()
-    effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    effective_role = resolved_role if resolved_role is not None else (
+        "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    )
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
@@ -199,7 +216,8 @@ def _build_child_agent(
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
     delegation_cfg = _load_config()
-    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    child_toolsets, child_disabled_toolsets = resolved_toolsets if resolved_toolsets is not None else (
+        _resolve_child_toolsets(parent_agent, toolsets, effective_role, exact=exact_toolsets))
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
@@ -221,7 +239,7 @@ def _build_child_agent(
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
-        routing_cfg=routing_cfg,
+        routing_cfg=routing_cfg, override_reasoning_effort=override_reasoning_effort,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -359,6 +377,283 @@ def _run_single_child(
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
+def _task_route_pin(value: Any) -> Optional[str]:
+    """Non-empty string pin after strip. Non-strings and blanks inherit the batch route."""
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
+
+def _child_credential_overrides(creds_i: Dict[str, Any], routing_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """_build_child_agent credential kwargs for one already-resolved route."""
+    return {
+        "override_provider": creds_i["provider"], "override_base_url": creds_i["base_url"],
+        "override_api_key": creds_i["api_key"], "override_api_mode": creds_i["api_mode"],
+        "override_request_overrides": creds_i.get("request_overrides"),
+        "override_acp_command": creds_i.get("command"),
+        "override_acp_args": creds_i.get("args"),
+        "routing_cfg": routing_cfg,
+    }
+
+
+def _resolve_task_credentials(
+    task: Dict[str, Any], creds: Dict[str, Any], routing_cfg: Dict[str, Any], parent_agent,
+    cache: Dict[tuple, tuple],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Batch creds, or a per-task overlay when provider/model is a non-empty string.
+
+    Cached on the (provider, model) pin pair, not on the provider alone: api_mode and base_url are
+    model-derived for some providers (OpenCode routes gpt-/grok- to codex_responses and qwen to
+    anthropic_messages), so a provider-only key would hand the second model the first model's wire.
+    """
+    pin_provider = _task_route_pin(task.get("provider"))
+    pin_model = _task_route_pin(task.get("model"))
+    if not pin_provider and not pin_model:
+        return creds, routing_cfg
+    key = (pin_provider, pin_model)
+    if key not in cache:
+        overlay = dict(routing_cfg)
+        if pin_provider:
+            # Drop the batch endpoint AND its request_overrides: a leftover base_url would land the child
+            # on the parent's box, and _runtime_provider_credentials merges explicit overrides OVER the
+            # pinned provider's own, so an extra_body tuned for one provider would ride onto another.
+            overlay["provider"], overlay["base_url"] = pin_provider, ""
+            overlay["request_overrides"] = None
+        if pin_model:
+            overlay["model"] = pin_model
+        cache[key] = (_resolve_delegation_credentials(overlay, parent_agent), overlay)
+    return cache[key]
+
+
+def _task_toolsets(
+    task: Dict[str, Any], index: int, parent_universe: set
+) -> tuple[Optional[List[str]], Optional[str]]:
+    """``(toolsets, None)`` for this task's explicit pin, or ``(None, error)`` on a bad one.
+
+    ``None`` inherits the parent's toolsets (the default). An explicit ``[]`` means NO toolsets — a pure
+    reasoning child — and must never fall back to inherit. Unknown names abort the batch rather than being
+    dropped: a child pinned to a narrow set because it runs on a restricted provider must not quietly keep
+    the parent's tools because a name was misspelled.
+    """
+    raw = task.get("toolsets")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, list) or any(not isinstance(name, str) for name in raw):
+        return None, f"Task {index} 'toolsets' must be a list of toolset names."
+    unknown = _unknown_toolset_names(raw)
+    if unknown:
+        return None, (
+            f"Task {index} requested unknown toolset(s): {', '.join(sorted(unknown))}. "
+            f"Use known toolset names, [] for a child with no tools, or omit 'toolsets' to inherit the parent's."
+        )
+    # Distinct from the above: the name exists, the parent just cannot delegate it. _resolve_child_toolsets
+    # drops these silently (it is shared with other callers), which would hand back a child quietly wider or
+    # narrower than the caller asked for.
+    missing = [name for name in raw if name not in parent_universe]
+    if missing:
+        return None, (
+            f"Task {index} requested toolset(s) the parent does not have: {', '.join(sorted(missing))}. "
+            f"A child can only narrow the parent's toolsets, never add to them."
+        )
+    return raw, None
+
+
+def _task_reasoning_effort_error(task: Dict[str, Any], index: int) -> Optional[str]:
+    """Abort message for an unrecognized per-task reasoning_effort, or None.
+
+    Only an explicit per-task pin aborts: it is a promise the caller made about this one task, so silently
+    inheriting a different thinking level is a wrong answer delivered confidently. delegation.reasoning_effort
+    keeps its warn-and-inherit — it is a batch default, not a per-task claim. Absent/blank is not a pin.
+    """
+    raw = task.get("reasoning_effort")
+    # Absent or blank is the only non-pin: 0, [], {} are not levels, and inheriting on them would
+    # contradict this function's whole contract. Bools are pins — ``False`` disables thinking.
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    from agent.reasoning_effort import EFFORT_LADDER
+    from hermes_constants import parse_reasoning_effort
+    if parse_reasoning_effort(raw) is not None:
+        return None
+    return (
+        f"Task {index} has an unrecognized reasoning_effort {raw!r}. "
+        f"Use one of: {', '.join(EFFORT_LADDER)}, or omit it to inherit."
+    )
+
+
+def _task_pin_error(index: int, task: Dict[str, Any], exc: Exception) -> str:
+    """Name the offending task so an aborted batch is diagnosable; unpinned tasks keep the bare message."""
+    pin = _task_route_pin(task.get("provider")) or _task_route_pin(task.get("model"))
+    return f"Task {index} (pinned to '{pin}'): {exc}" if pin else str(exc)
+
+
+def _route_label(creds: Dict[str, Any]) -> str:
+    """``provider/model`` of a resolved route, for the switch stamp. A blank half inherited the parent's."""
+    return f"{creds.get('provider') or 'inherit'}/{creds.get('model') or 'inherit'}"
+
+
+def _same_route(a: tuple, b: tuple) -> bool:
+    """Route pins equal, case-insensitively; ``None`` (inherit) only matches ``None``."""
+    return [x.casefold() if isinstance(x, str) else x for x in a] == [
+        y.casefold() if isinstance(y, str) else y for y in b]
+
+
+def _route_pins(raw: Any, where: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """``({provider, model}, None)`` for one declared route, or ``(None, error)``.
+
+    One shape for both places a route is written down — a task's explicit ``fallback`` and a rung of
+    ``delegation.descent_order`` — so the two cannot disagree about what a route is. A bare string is the
+    common case (a model on the task's own provider); the dict form exists so a ladder can end somewhere
+    else entirely. ``where`` is the caller-facing name of the thing being validated.
+    """
+    if isinstance(raw, str):
+        model = _task_route_pin(raw)
+        if not model:
+            return None, f"{where} is blank. Name the model this route runs."
+        return {"provider": None, "model": model}, None
+    if not isinstance(raw, dict):
+        return None, (
+            f"{where} must be a model name or an object like "
+            f"{{\"model\": \"...\", \"provider\": \"...\"}}, got {type(raw).__name__}."
+        )
+    unsupported = sorted(set(raw) - {"model", "provider"})
+    if unsupported:
+        return None, (
+            f"{where} has unsupported key(s): {', '.join(unsupported)}. A route is {{model, provider}} and "
+            f"nothing else — toolsets, reasoning_effort, goal and context carry over from the task, so a "
+            f"descended child differs from the one it replaces in where it runs and nothing more."
+        )
+    model = _task_route_pin(raw.get("model"))
+    if not model:
+        return None, (
+            f"{where} is missing a 'model'. Name the model this route runs — an inherited model would "
+            f"re-run the walled route under a different name."
+        )
+    return {"provider": _task_route_pin(raw.get("provider")), "model": model}, None
+
+
+# A task opting out of descent entirely, spelled as a value rather than a key so "no fallback" and
+# "deliberately no fallback" stay distinguishable: the first inherits the ladder, the second refuses it.
+_FALLBACK_OPT_OUT = "none"
+
+
+def _task_fallback_mode(task: Dict[str, Any], index: int) -> tuple[str, Optional[Dict[str, Any]], Optional[str]]:
+    """``(mode, pins, error)`` for this task's ``fallback`` key.
+
+    ``mode`` is ``"ladder"`` (absent — walk delegation.descent_order), ``"none"`` (explicit opt-out, for
+    work that must not silently move provider) or ``"explicit"`` (this route and no other, one rung).
+
+    Fail closed, at validation time: a fallback dropped for being malformed would leave the caller
+    believing a quota wall is covered when it is not, and they would only find out at the wall.
+    """
+    raw = task.get("fallback")
+    if raw is None:
+        return "ladder", None, None
+    if isinstance(raw, str) and raw.strip().casefold() == _FALLBACK_OPT_OUT:
+        return "none", None, None
+    pins, err = _route_pins(raw, f"Task {index} 'fallback'")
+    if err:
+        return "explicit", None, (
+            f"{err} Use a model name, {{model, provider}}, or '{_FALLBACK_OPT_OUT}' to opt this task out "
+            f"of descent entirely."
+        )
+    # Deliberately NOT compared against the task's pins here: a fallback that names no provider inherits
+    # the task's, and a task that pins no provider inherits the batch's, so two routes that look different
+    # as pins can be the same route once resolved. The guard lives where both sides are resolved.
+    return "explicit", pins, None
+
+
+def _normalize_descent_order(routing_cfg: Dict[str, Any]) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """``delegation.descent_order`` as normalized route pins, or ``([], error)``.
+
+    The order is an OPERATOR statement of which model to try next when a quota wall closes the current
+    one — it exists nowhere else in the runtime, so an unparseable one aborts rather than degrading to no
+    ladder: silently losing the descent is indistinguishable, from the caller's side, from every rung
+    being walled. Duplicate models abort for the same reason position is looked up by model name.
+    """
+    raw = routing_cfg.get("descent_order") if isinstance(routing_cfg, dict) else None
+    if raw is None or raw == []:
+        return [], None
+    if not isinstance(raw, list):
+        return [], (
+            f"delegation.descent_order must be a list of models, ordered best-first, got "
+            f"{type(raw).__name__}."
+        )
+    order: List[Dict[str, Any]] = []
+    for position, entry in enumerate(raw):
+        pins, err = _route_pins(entry, f"delegation.descent_order[{position}]")
+        if err:
+            return [], err
+        if any(_same_route((p["provider"], p["model"]), (pins["provider"], pins["model"])) for p in order):
+            return [], (
+                f"delegation.descent_order[{position}] repeats {pins['model']!r}. A rung is found by model "
+                f"name, so a repeat has no single position to descend from."
+            )
+        order.append(pins)
+    return order, None
+
+
+def _descent_rungs(
+    creds_i: Dict[str, Any], mode: str, explicit: Optional[Dict[str, Any]], order: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """``(rung_pins_below_this_child, halt_reason)``.
+
+    Every branch that yields NO rungs names why, because "this task failed on a wall and did not descend"
+    is only actionable with the reason attached — an operator cannot tell a deliberate opt-out from a
+    model nobody added to the order from a ladder already at its bottom.
+    """
+    if mode == "none":
+        return [], f"the task set fallback: '{_FALLBACK_OPT_OUT}'"
+    if mode == "explicit":
+        return [explicit], None
+    if not order:
+        return [], "delegation.descent_order is not configured"
+    model = str(creds_i.get("model") or "").strip()
+    provider = str(creds_i.get("provider") or "").strip()
+    for position, rung in enumerate(order):
+        # A rung that named no provider matches on model alone: it is a step within whatever provider the
+        # task is already on, which is what an all-one-provider ladder wants.
+        if not _same_route((rung["model"],), (model,)):
+            continue
+        if rung["provider"] and not _same_route((rung["provider"],), (provider,)):
+            continue
+        below = order[position + 1:]
+        return (below, None) if below else (
+            [], f"{provider or 'inherit'}/{model} is the last rung of delegation.descent_order")
+    return [], (
+        f"{model or 'the inherited model'} is not in delegation.descent_order, so there is no rung below "
+        f"it to descend to")
+
+
+def _cross_provider_toolset_error(index: int, provider: str, child_toolsets: List[str]) -> Optional[str]:
+    """Abort message when a child leaving the parent's provider carries toolsets that provider was never
+    granted. Checked on the FINAL resolved list, so it holds for an explicit pin, for inheritance, and for
+    a batch-level ``delegation.provider`` alike.
+
+    Fail closed: a provider the operator never declared receives nothing, not everything. Matching is on
+    literal names, so a toolset spelled differently in config than in the parent's set is over-denied
+    rather than under-denied — wrong in the recoverable direction.
+    """
+    allowed = _get_provider_toolsets(provider)
+    denied = [name for name in child_toolsets if name not in set(allowed or ())]
+    if not denied:
+        # Nothing crossed, so there is nothing to grant. A toolless child on an undeclared provider is
+        # the one case where "granted nothing" and "allowed" are the same answer.
+        return None
+    if allowed is None:
+        return (
+            f"Task {index} routes to provider '{provider}', which is not the parent's, carrying "
+            f"toolset(s) {', '.join(sorted(denied))} — but no delegation.provider_toolsets entry declares "
+            f"what that provider may receive, and an undeclared provider is granted nothing. Declare one "
+            f"before routing tool-bearing work there."
+        )
+    return (
+        f"Task {index} routes to provider '{provider}' carrying toolset(s) it is not granted: "
+        f"{', '.join(sorted(denied))}. delegation.provider_toolsets['{provider}'] grants: "
+        f"{', '.join(sorted(allowed)) or '(nothing)'}. Narrow the task's 'toolsets', or grant them "
+        f"in config if that provider is trusted with them."
+    )
+
+
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
@@ -368,16 +663,90 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
+    task_creds_cache: Dict[tuple, tuple] = {}
+    # The same set _resolve_child_toolsets will intersect against, so "the parent does not have it" here and
+    # a silent drop there cannot disagree.
+    parent_universe = _expand_parent_toolsets(_parent_toolsets(parent_agent))
+    parent_provider = str(getattr(parent_agent, "provider", None) or "").strip()
+    # Same expression _build_child_agent uses, so the gate below vets the list the child is really built
+    # with rather than a lookalike that could drift from it.
+    _child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
+    effective_role = (
+        "orchestrator" if _get_orchestrator_enabled() and _child_depth < _get_max_spawn_depth() else "leaf"
+    )
+    # Preflight every distinct route before constructing anything: a bad pin must abort the batch without
+    # leaving half-built children (each already holding a child session-db handle) behind. Everything the
+    # construction loop needs is resolved HERE and carried in ``prepared`` — re-deriving any of it below
+    # would mean the gate vetted one answer while the child was built from another, and the widest of the
+    # two answers is the one that wins by default.
+    # Parsed once for the whole batch: it is operator config, identical for every task, and a broken one
+    # must abort before the first child is constructed rather than at the first wall.
+    descent_order, order_err = _normalize_descent_order(routing_cfg)
+    if order_err:
+        return [], order_err
+    prepared: List[tuple] = []
     for i, t in enumerate(task_list):
+        pinned_toolsets, toolsets_err = _task_toolsets(t, i, parent_universe)
+        if toolsets_err:
+            return [], toolsets_err
+        effort_err = _task_reasoning_effort_error(t, i)
+        if effort_err:
+            return [], effort_err
+        try:
+            creds_i, routing_i = _resolve_task_credentials(t, creds, routing_cfg, parent_agent, task_creds_cache)
+        except ValueError as exc:
+            return [], _task_pin_error(i, t, exc)
+        # None = inherit the parent's toolsets; a pinned list is exact, [] meaning no tools at all.
+        resolved_toolsets = _resolve_child_toolsets(
+            parent_agent, pinned_toolsets, effective_role, exact=pinned_toolsets is not None)
+        # A falsy resolved provider means the child stays on the parent's own route, so nothing crossed a
+        # trust boundary and today's behaviour is preserved exactly.
+        child_provider = str(creds_i.get("provider") or "").strip()
+        if child_provider and child_provider.casefold() != parent_provider.casefold():
+            provider_err = _cross_provider_toolset_error(i, child_provider, resolved_toolsets[0])
+            if provider_err:
+                return [], provider_err
+        # EVERY rung below this child is vetted HERE, on the same two gates the primary pin passed
+        # (resolvable credentials, and the cross-provider toolset grant against the SAME resolved toolsets
+        # the child really carries). Vetting a rung only when the walk reaches it would turn a quota wall
+        # into a second, differently-shaped failure three rungs down — and would let a task reach an
+        # ungranted provider by descending onto it. Resolution is cached per (provider, model), so a shared
+        # ladder costs one resolution per distinct rung for the whole batch, not one per task.
+        mode, explicit_pins, fb_err = _task_fallback_mode(t, i)
+        if fb_err:
+            return [], fb_err
+        rung_pins, halted = _descent_rungs(creds_i, mode, explicit_pins, descent_order)
+        rungs = []
+        for rung in rung_pins:
+            try:
+                creds_r, routing_r = _resolve_task_credentials(
+                    rung, creds, routing_cfg, parent_agent, task_creds_cache)
+            except ValueError as exc:
+                return [], f"Task {i} descent rung {rung['model']!r}: {exc}"
+            # Compared resolved, not as pins: a rung naming no provider inherits the child's, so
+            # ``fallback: "<the model I am already on>"`` only looks like a different route until both
+            # sides resolve. Descending onto the walled route buys nothing but a second wall.
+            if _same_route((creds_r.get("provider"), creds_r.get("model")),
+                           (creds_i.get("provider"), creds_i.get("model"))):
+                return [], (
+                    f"Task {i} 'fallback' resolves to {_route_label(creds_r)}, the same route the task "
+                    f"already runs on. A fallback onto the walled route buys nothing but a second wall — "
+                    f"point it at a different provider or model."
+                )
+            rung_provider = str(creds_r.get("provider") or "").strip()
+            if rung_provider and rung_provider.casefold() != parent_provider.casefold():
+                rung_err = _cross_provider_toolset_error(i, rung_provider, resolved_toolsets[0])
+                if rung_err:
+                    return [], f"Task {i} descent rung {rung['model']!r}: {rung_err}"
+            rungs.append(_Rung(_route_label(creds_r), creds_r, routing_r, resolved_toolsets))
+        prepared.append((creds_i, routing_i, resolved_toolsets, tuple(rungs), halted))
+    def _construct(i: int, t: Dict[str, Any], creds_i, routing_i, resolved_toolsets) -> tuple:
+        """``(child, None)`` for one task on one already-vetted route, or ``(None, error)``.
+
+        Shared by the primary build below and the fallback retry (via ``_FallbackRoute.build``) so a
+        retried child differs from the one it replaces in its route and nothing else.
+        """
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -385,12 +754,15 @@ def _build_children(
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                toolsets=None, resolved_role=effective_role, resolved_toolsets=resolved_toolsets,
+                model=creds_i["model"], max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                override_reasoning_effort=t.get("reasoning_effort"),
+                **_child_credential_overrides(creds_i, routing_i),
             )
         except ValueError as exc:
-            return [], str(exc)
+            # Fail loud: one bad pin aborts the whole batch, no child runs, no silent parent fallback.
+            return None, _task_pin_error(i, t, exc)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
@@ -410,6 +782,20 @@ def _build_children(
             _ident_ref = getattr(child, "_progress_identity_ref", None)
             if isinstance(_ident_ref, dict):
                 _ident_ref["delegation_id"] = live_deleg_id
+        return child, None
+
+    for i, t in enumerate(task_list):
+        creds_i, routing_i, resolved_toolsets, rungs, halted = prepared[i]
+        child, err = _construct(i, t, creds_i, routing_i, resolved_toolsets)
+        if err:
+            return [], err
+        # Parked on the child (as _delegate_output_schema/_delegate_images are) so the dispatch layer needs
+        # no new plumbing. Attached even with zero rungs: a walled task that did NOT descend still owes the
+        # caller the reason, and ``halted`` is where it comes from.
+        child._delegate_descent = _Descent(
+            label=_route_label(creds_i), rungs=rungs, halted=halted,
+            build=functools.partial(_construct, i, t),
+        )
         children.append((i, t, child))
     return children, None
 
@@ -564,7 +950,8 @@ _DESCRIPTION_HEAD = (
     "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
-    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
+    "- Children inherit the parent model and toolsets unless a task sets provider/model/reasoning_effort/"
+    "toolsets, or via delegation.provider / delegation.model in config.yaml."
 )
 
 def _build_tasks_param_description() -> str:
@@ -658,6 +1045,49 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "provider": _p(
+                            "string",
+                            "Optional provider pin for THIS child only (named provider or a custom providers: table "
+                            "entry). Resolved like CLI/config. An unresolvable provider aborts the WHOLE call "
+                            "naming this task; omit or leave blank to inherit the batch/parent route. A child "
+                            "routed to a provider other than the parent's may only carry toolsets the operator "
+                            "granted that provider in delegation.provider_toolsets — an inheriting child keeps the "
+                            "parent's MCP servers, so narrow it with 'toolsets'. Carrying an ungranted toolset "
+                            "aborts the WHOLE call naming this task.",
+                        ),
+                        "model": _p(
+                            "string",
+                            "Optional model pin for THIS child only — mix cheap and strong models in one batch. "
+                            "Omit or leave blank to inherit the batch/parent model.",
+                        ),
+                        "reasoning_effort": _p(
+                            "string",
+                            "Optional thinking budget for THIS child only: low, medium, high, xhigh, or "
+                            "'none'/'false' to disable thinking. Omit to use delegation.reasoning_effort, "
+                            "else the parent's level. An unrecognized value aborts the WHOLE call naming this task.",
+                        ),
+                        "fallback": _p(
+                            "string",
+                            "Optional override of where THIS child goes when its route hits a quota wall "
+                            "(billing / rate limit / upstream rate limit). OMIT IT for the normal case: the "
+                            "child then descends delegation.descent_order, moving one model down per wall "
+                            "until the order runs out. Name a model ('qwen3.8-max') to use that ONE route "
+                            "instead of the ladder, or 'none' to opt this task out of descent entirely — do "
+                            "that for work that must not move provider. "
+                            "Only a quota wall ever moves a child: every other failure is returned as a "
+                            "failure and never retried, and an exhausted ladder fails loud. The goal, context, "
+                            "toolsets and reasoning_effort carry over unchanged. A malformed value aborts the "
+                            "WHOLE call naming this task.",
+                        ),
+                        "toolsets": _p(
+                            "array",
+                            "Optional EXACT toolset list for THIS child (e.g. ['web','file']), replacing the "
+                            "parent's — use it to keep a child off tools it should not have, especially when "
+                            "pinning it to a restricted provider. An empty list [] means NO tools at all (a pure "
+                            "reasoning child); OMIT the key to inherit the parent's toolsets. A child can never "
+                            "gain a toolset the parent lacks, and an unknown name aborts the WHOLE call.",
+                            items={"type": "string"},
                         ),
                     },
                     "required": ["goal"],

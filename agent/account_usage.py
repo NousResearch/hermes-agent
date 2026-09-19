@@ -601,9 +601,45 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+_OPENCODE_GO_USAGE_BASE_URL = "https://opencode.ai/zen/go/v1"
+
+
+def _opencode_go_usage_url(base_url: Optional[str]) -> str:
+    """Usage endpoint for an OpenCode Go relay base.
+
+    The inference runtime strips ``/v1`` in ``anthropic_messages`` mode, but
+    ``/usage`` only exists under ``/v1`` — so heal the suffix here instead of
+    reading the runtime URL verbatim. Custom ``OPENCODE_GO_BASE_URL`` relays
+    keep their own host; only the missing version segment is restored.
+    """
+    base = str(base_url or "").strip().rstrip("/") or _OPENCODE_GO_USAGE_BASE_URL
+    if not base.endswith("/v1"):
+        base += "/v1"
+    return base + "/usage"
+
+
+def _fetch_opencode_go_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """Rolling / weekly / monthly subscription windows from the Go relay's ``/usage`` endpoint."""
+    runtime = resolve_runtime_provider(requested="opencode-go", explicit_base_url=base_url, explicit_api_key=api_key)
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    payload = _get_json(
+        _opencode_go_usage_url(runtime.get("base_url")),
+        {"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        timeout=10.0,
+    )
+    windows = _usage_windows(
+        payload.get("usage") or {},
+        (("rolling", "Rolling window"), ("weekly", "Weekly"), ("monthly", "Monthly")),
+        "percent", "resetsAt",
+    )
+    return _snapshot("opencode-go", "go_usage_api", windows, [])
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
-    "openrouter": _fetch_openrouter_account_usage,
+    "openrouter": _fetch_openrouter_account_usage, "opencode-go": _fetch_opencode_go_account_usage,
 }
 
 

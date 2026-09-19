@@ -955,6 +955,9 @@ export const en: Translations = {
       keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.',
       disableF12Title: 'Disable F12 DevTools',
       disableF12Desc: 'Block F12 from opening Developer Tools. Ctrl+Shift+I (or Cmd+Opt+I on Mac) still works.',
+      historyArrowsTitle: 'Recall previous messages with ↑ and ↓',
+      historyArrowsDesc:
+        'Up and Down bring back messages you already sent in this chat. Turn this off to keep the arrows for moving the caret — the / and @ popovers and queued-turn editing still use them.',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',

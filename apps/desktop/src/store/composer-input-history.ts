@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { persistBoolean, storedBoolean } from '@/lib/storage'
+
 /**
  * Per-session input history browse state.
  *
@@ -13,6 +15,9 @@ import { atom } from 'nanostores'
  *     `-1` means "not browsing".
  *   - `draftSnapshot` — the composer text at the moment the user started
  *     browsing, so ArrowDown back to the "present" restores it.
+ *
+ * The file also owns the device-local ↑/↓ recall preference
+ * (`$historyArrowsEnabled`) that turns the whole feature off (issue #51515).
  */
 export interface SessionBrowseState {
   cursor: number
@@ -20,6 +25,48 @@ export interface SessionBrowseState {
 }
 
 const $perSessionBrowse = atom<Record<string, SessionBrowseState>>({})
+
+const HISTORY_ARROWS_KEY = 'hermes.desktop.composerHistory.arrowsEnabled'
+
+// Device-local preference, shared by every composer in the window. Default ON:
+// an unset key keeps today's behavior.
+export const $historyArrowsEnabled = atom<boolean>(storedBoolean(HISTORY_ARROWS_KEY, true))
+
+/** Turn ↑/↓ sent-message recall on or off (Settings → Chat). */
+export function setHistoryArrowsEnabled(enabled: boolean): void {
+  persistBoolean(HISTORY_ARROWS_KEY, enabled)
+  applyHistoryArrowsEnabled(enabled)
+}
+
+/**
+ * Apply the value to this window. Never persists: the sibling-window path
+ * already has it in storage, and writing back would bounce the storage event
+ * between windows forever.
+ */
+function applyHistoryArrowsEnabled(enabled: boolean): void {
+  $historyArrowsEnabled.set(enabled)
+
+  // Recall can only OPEN from an empty composer, so the dropped draftSnapshot
+  // is blank by construction — nothing typed rides in it. The live cursor is
+  // the hazard: use-composer-draft treats it as 'browsing' and skips its draft
+  // persist/stash reads, so a new draft would stop being stashed while off.
+  if (!enabled) {
+    $perSessionBrowse.set({})
+  }
+}
+
+// Cross-window sync (same pattern as store/translucency and the session draft
+// stash): the composer reads this atom imperatively, so without the storage
+// event a second window's arrows would keep recalling until a reload. The
+// listener goes through the same apply as the setter — never the setter itself,
+// which would persist and bounce the event back to the sibling window.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === HISTORY_ARROWS_KEY) {
+      applyHistoryArrowsEnabled(storedBoolean(HISTORY_ARROWS_KEY, true))
+    }
+  })
+}
 
 function ensure(sessionId: string): SessionBrowseState {
   const all = { ...$perSessionBrowse.get() }

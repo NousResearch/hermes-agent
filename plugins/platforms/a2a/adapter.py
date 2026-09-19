@@ -63,6 +63,10 @@ _METHODS: dict[str, tuple[str, bool]] = {
 }
 
 
+def _early_working() -> bool:
+    return os.getenv("A2A_EARLY_WORKING", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _reply_timeout() -> float:
     """Seconds to wait for the agent to answer an inbound task."""
     try:
@@ -662,10 +666,26 @@ class A2AAdapter(BasePlatformAdapter):
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)
-        if task is None:
-            state, reply = self._finalize_task(pending, *self._await_reply(pending))
-            task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
+        if task is not None:
+            return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
+        if _early_working():
+            threading.Thread(
+                target=self._finalize_pending_in_background,
+                args=(pending,), daemon=True,
+            ).start()
+            task = protocol.build_task(
+                pending["task_id"], pending["context_id"],
+                protocol.STATE_WORKING, created_at=pending["created_iso"])
+            return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
+        state, reply = self._finalize_task(pending, *self._await_reply(pending))
+        task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
         return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
+
+    def _finalize_pending_in_background(self, pending: dict) -> None:
+        state, reply = self._await_reply(pending)
+        state, reply = self._finalize_task(pending, state, reply)
+        logger.info("A2A: early-acked task %s finalized: state=%s",
+                    pending["task_id"], state)
 
     @staticmethod
     def _sse_headers(handler) -> None:
@@ -815,7 +835,11 @@ class A2AAdapter(BasePlatformAdapter):
         if signature := self._security_context.sign_push_payload(payload):
             headers["X-A2A-Signature"] = signature
         try:
-            req = urllib.request.Request(callback_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            # Serialize EXACTLY like sign_push_payload does (sorted keys), so a
+            # receiver recomputing HMAC over the raw body matches. Signing one
+            # serialization and sending a different one breaks verification.
+            data = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(callback_url, data=data, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
                 status = resp.status
         except Exception as e:

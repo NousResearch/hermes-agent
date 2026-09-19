@@ -528,6 +528,11 @@ const PROBE_VERDICT_RETRY_MS = 500
 // still removing the lockfile, leaving one orphaned `serve --isolated` per
 // attempt (#111810). Retry over a short window; with no definite answer fail
 // closed with a transient error so callers keep the ownership record.
+//
+// Callers pass their command through withRemoteTimeout() (#110478): runSsh's
+// local exec timeout only SIGKILLs the local ssh child, not a wedged remote
+// `kill -0`/`python3` on a degrading channel — the same orphan risk the
+// hermes-CLI probes were wrapped against, just for a lighter command.
 async function execProbeVerdict(ssh, command, sentinels, failureMessage) {
   for (let attempt = 0; attempt < PROBE_VERDICT_ATTEMPTS; attempt++) {
     if (attempt > 0) {
@@ -562,7 +567,7 @@ async function remotePidAlive(ssh, pid) {
 
   const verdict = await execProbeVerdict(
     ssh,
-    `kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`,
+    withRemoteTimeout(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`),
     ['ALIVE', 'DEAD'],
     'Could not verify the SSH backend process.'
   )
@@ -601,7 +606,7 @@ async function remoteProcessCreationTime(ssh, pid) {
     'print(value)'
 
   try {
-    const value = String(await ssh.exec(`python3 -c ${shq(script)}`)).trim()
+    const value = String(await ssh.exec(withRemoteTimeout(`python3 -c ${shq(script)}`))).trim()
 
     return /^(?:linux:[0-9]+|darwin:[A-Za-z0-9 :+-]+)$/.test(value) ? value : ''
   } catch {
@@ -673,7 +678,7 @@ async function pidIsOurDashboard(
 
   const verdict = await execProbeVerdict(
     ssh,
-    `python3 -c ${shq(script)}`,
+    withRemoteTimeout(`python3 -c ${shq(script)}`),
     ['OWNED', 'FOREIGN'],
     'Could not verify SSH backend process ownership.'
   )

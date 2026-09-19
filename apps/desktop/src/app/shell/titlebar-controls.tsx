@@ -12,6 +12,7 @@ import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
+import { ExternalLink as ExternalLinkAnchor } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
@@ -357,16 +358,15 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
     return (
       <Tip label={tooltipLabel} placement="toolbar">
         <Button asChild className={className} size="icon-titlebar" variant="ghost">
-          <a
+          <ExternalLinkAnchor
             aria-label={tool.label}
+            bare
             data-tour={tool.tour}
-            href={tool.href}
+            href={tool.href} native
             onPointerDown={event => event.stopPropagation()}
-            rel="noreferrer"
-            target="_blank"
           >
             {withCountBadge(tool.icon, tool.badge)}
-          </a>
+          </ExternalLinkAnchor>
         </Button>
       </Tip>
     )

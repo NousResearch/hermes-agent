@@ -138,7 +138,9 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   const linkUrl = target.linkUrl ? normalizeExternalUrl(target.linkUrl) : ''
   const linkIsWeb = isWebUrl(linkUrl)
   const imageIsWeb = isWebUrl(target.imageUrl)
-  const openInApp = !hudForcesNativeLinks()
+  // A menu inside a modal surface portals into it — but the preview pane
+  // paints underneath, so "open in app" would do nothing there.
+  const openInApp = !hudForcesNativeLinks() && target.portalContainer == null
   const showResolvedCopy = linkIsWeb && isRemoteGateway() && isLoopbackUrl(linkUrl)
 
   // The edit verbs and spell-check actions act on the sender's FOCUSED
@@ -703,7 +705,7 @@ export function AppContextMenu() {
         align="start"
         className="w-56"
         onCloseAutoFocus={event => event.preventDefault()}
-        portalContainer={open.kind === 'dom' ? open.target.dialogPortalContainer : undefined}
+        portalContainer={open.kind === 'dom' ? open.target.portalContainer : undefined}
         side="bottom"
       >
         {sections.map((section, index) => (

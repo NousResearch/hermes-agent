@@ -1,9 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import { $freeTierSignIn, openFreeTierSignIn } from '@/store/free-tier-sign-in'
+
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
+let openExternal: ReturnType<typeof vi.fn>
 
 const pollOAuthSession = vi.fn()
 const requestGateway = vi.fn(async () => ({ available: true, has_guest: true }))
@@ -30,6 +34,8 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
 
 beforeEach(() => {
   vi.spyOn(window, 'open').mockReturnValue(null)
+  openExternal = vi.fn().mockResolvedValue(undefined)
+  desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
 })
 
 afterEach(() => {
@@ -38,6 +44,12 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.clearAllMocks()
   vi.useRealTimers()
+
+  if (initialHermesDesktop) {
+    desktopWindow.hermesDesktop = initialHermesDesktop
+  } else {
+    delete desktopWindow.hermesDesktop
+  }
 })
 
 describe('FreeTierSignInDialog', () => {
@@ -76,5 +88,33 @@ describe('FreeTierSignInDialog', () => {
     await waitFor(() => expect(screen.getByText('Signed in as someone@example.com')).toBeTruthy())
     expect(screen.getByText('Your account now carries inference and tools.')).toBeTruthy()
     expect(screen.getByText('Hermes-4-405B')).toBeTruthy()
+  })
+
+  it('opens the sign-in URL in the OS browser', async () => {
+    const url = 'https://portal.example/claim?code=ABCD-EFGH'
+    $freeTierSignIn.set({
+      code: 'ABCD-EFGH',
+      codeCopied: false,
+      sessionId: 'session-1',
+      status: 'code',
+      url,
+      urlCopied: false
+    })
+
+    const { FreeTierSignInDialog } = await import('./sign-in-dialog')
+
+    await act(async () => {
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <FreeTierSignInDialog />
+        </QueryClientProvider>
+      )
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(url))
+    })
+
+    expect(openExternal).toHaveBeenCalledWith(url)
   })
 })

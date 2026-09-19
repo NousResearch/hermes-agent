@@ -90,7 +90,14 @@ describe('resolveDomTarget', () => {
     const host = attach('<div data-slot="dialog-content"><a href="https://example.com">link</a></div>')
     const dialog = host.firstElementChild
 
-    expect(resolveDomTarget(host.querySelector('a')).dialogPortalContainer).toBe(dialog)
+    expect(resolveDomTarget(host.querySelector('a')).portalContainer).toBe(dialog)
+  })
+
+  it('resolves the enclosing onboarding overlay as the menu portal container', () => {
+    const host = attach('<div data-slot="onboarding-overlay"><a href="https://example.com">link</a></div>')
+    const overlay = host.firstElementChild
+
+    expect(resolveDomTarget(host.querySelector('a')).portalContainer).toBe(overlay)
   })
 })
 
@@ -134,6 +141,18 @@ describe('AppContextMenu', () => {
     fireEvent.click(await screen.findByText('Open in in-app browser'))
 
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
+  })
+
+  it('hides open-in-app inside a modal surface where the preview paints underneath', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<div data-slot="onboarding-overlay"><a href="https://example.com/docs">Docs</a></div>')
+
+    fireEvent.contextMenu(host.querySelector('a')!)
+
+    expect(await screen.findByText('Open in external browser')).toBeTruthy()
+    expect(screen.getByText('Copy URL')).toBeTruthy()
+    expect(screen.queryByText('Open in in-app browser')).toBeNull()
   })
 
   it('skips Open in in-app browser on the HUD — that window has no browser pane', async () => {

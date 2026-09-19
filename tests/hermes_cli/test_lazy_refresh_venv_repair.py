@@ -232,6 +232,10 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
     monkeypatch.setattr(m.subprocess, "run", fake_run)
     monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kwargs: None)
     monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kwargs: "uv")
+    # No in-tree venv exists under the tmp PROJECT_ROOT: the running
+    # interpreter's own venv root is the install target — a nonexistent
+    # PROJECT_ROOT/venv must never be fabricated (#116148).
+    monkeypatch.setattr(update_cmd, "running_venv_root", lambda: tmp_path / "runner-venv")
 
     args = SimpleNamespace(
         yes=True,
@@ -247,10 +251,12 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
     # The repair env is now built via managed_python_env (#83914): third-party
     # UV vars are stripped, managed pins set, then VIRTUAL_ENV re-pointed at
     # the install's venv. Assert the CONTRACT, not the raw environ copy.
+    # running_venv_root was pinned above: the expected target is that venv,
+    # not a fabricated PROJECT_ROOT/venv (#116148).
     from hermes_cli.managed_uv import managed_python_env
 
     expected_env = managed_python_env()
-    expected_env["VIRTUAL_ENV"] = str(tmp_path / "venv")
+    expected_env["VIRTUAL_ENV"] = str(tmp_path / "runner-venv")
     assert refresh_calls == [
         (
             ["uv", "pip"],

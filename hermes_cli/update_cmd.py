@@ -18,7 +18,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli.update_cmd_common import _best_effort
-from hermes_constants import get_default_hermes_root, project_venv_dir, venv_python_path
+from hermes_constants import get_default_hermes_root, project_venv_dir, running_venv_root, venv_python_path
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (  # noqa: F401
@@ -677,6 +677,20 @@ def _repair_venv_on_current_checkout(
     )
 
 
+def _resolved_install_venv_dir() -> Path | None:
+    """The venv root ``uv pip`` installs must target: the checkout's in-tree venv when one exists,
+    else the running interpreter's own venv, else ``None`` (uv/pip resolve from ``sys.executable``).
+
+    Never fabricate ``PROJECT_ROOT/venv``: on out-of-tree installs — interpreter under
+    ``$HERMES_HOME\\venvs\\hermes``, no checkout ``venv/``, the layout the shipped Windows
+    gateway launchers pin themselves — that path does not exist, and uv aborts every command
+    with ``Failed to inspect Python interpreter from active virtual environment`` before doing
+    any work, so lazy refreshes and ``hermes tools`` dependency restores silently fail while
+    the update still reports success (#116148).
+    """
+    return project_venv_dir(_m().PROJECT_ROOT) or running_venv_root()
+
+
 def _pip_install_prefix(uv_bin) -> tuple[list[str], dict | None]:
     """``(install prefix, env)``: ``uv pip`` isolated from third-party UV env vars (so a foreign
     UV_PYTHON_INSTALL_DIR can't hijack it), else ``sys.executable -m pip`` (avoids PEP 668 errors)."""
@@ -687,7 +701,9 @@ def _pip_install_prefix(uv_bin) -> tuple[list[str], dict | None]:
         # See #83914.
         from hermes_cli.managed_uv import managed_python_env
         env = managed_python_env()
-        env["VIRTUAL_ENV"] = str(project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv")
+        venv_dir = _resolved_install_venv_dir()
+        if venv_dir is not None:
+            env["VIRTUAL_ENV"] = str(venv_dir)
         return [uv_bin, "pip"], env
     return [sys.executable, "-m", "pip"], None
 

@@ -1469,6 +1469,25 @@ def project_venv_dir(project_root) -> Path | None:
     return next((root / n for n in ("venv", ".venv") if (root / n).is_dir()), None)
 
 
+def running_venv_root() -> Path | None:
+    """The venv root of the running interpreter when ``sys.executable`` lives inside one, else None.
+
+    ``sys.executable`` sits in ``<root>/Scripts`` (Windows) or ``<root>/bin`` (POSIX) of a real
+    venv; ``pyvenv.cfg`` in the parent is what distinguishes that from a system interpreter
+    (``/usr/bin/python`` has the same parent-dir shape and must not read as a venv root).
+    On out-of-tree installs — the layout the shipped Windows gateway launchers pin via
+    ``VIRTUAL_ENV`` (``$HERMES_HOME\\venvs\\hermes``) — this is the env the updater is actually
+    running from, and the target its ``uv pip`` installs must reach (#116148).
+    """
+    try:
+        root = Path(sys.executable).parent.parent
+        if (root / "pyvenv.cfg").is_file():
+            return root
+    except Exception:
+        return None
+    return None
+
+
 def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
     """Path to the Python interpreter inside *venv_dir* (may not exist)."""
     bin_dir = venv_bin_dir(venv_dir, windows=windows)

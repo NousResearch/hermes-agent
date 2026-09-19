@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Collection, Optional
 
 from hermes_cli.update_cmd_common import _best_effort
-from hermes_constants import project_venv_dir
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -389,8 +388,14 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
         # Same UV-env isolation as the main update path: a user-level UV_PYTHON_INSTALL_DIR / UV_PYTHON
         # from unrelated software must not steer which interpreter uv resolves here.
         from hermes_cli.managed_uv import managed_python_env
+        from hermes_cli.update_cmd import _resolved_install_venv_dir
         uv_env = managed_python_env()
-        uv_env["VIRTUAL_ENV"] = str(project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv")
+        # Never fabricate a nonexistent PROJECT_ROOT/venv: out-of-tree installs abort uv
+        # before any work (#116148). Shared resolver: in-tree venv, else the running
+        # interpreter's venv, else unset.
+        venv_dir = _resolved_install_venv_dir()
+        if venv_dir is not None:
+            uv_env["VIRTUAL_ENV"] = str(venv_dir)
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)

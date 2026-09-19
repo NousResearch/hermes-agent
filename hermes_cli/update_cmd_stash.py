@@ -34,6 +34,22 @@ def _git_quiet(git_cmd: list[str], args: list[str], cwd: Path, **kwargs):
         return None
 
 
+def _intent_to_add_paths(porcelain_z: str) -> tuple[str, ...]:
+    """Paths recorded with ``git add -N`` (intent-to-add), read from NUL-separated porcelain output.
+
+    Such an entry carries the empty blob with zeroed stat data, so it is never "uptodate" and
+    ``git stash push`` rejects the whole stash with ``Entry 'X' not uptodate. Cannot merge.`` - a dead
+    end for the user, because that is the state an editor leaves behind when it shows a new file in
+    diffs. Porcelain marks it ``" A"`` (in the worktree, absent from the index); a real staged add is
+    ``"A "`` and an untracked file ``"??"``. Rename records carry a second, prefix-less field, which
+    the leading ``" A"`` test cannot match.
+    """
+    return tuple(
+        record[3:] for record in porcelain_z.split("\0")
+        if len(record) > 3 and record[0] == " " and record[1] == "A"
+    )
+
+
 def _git_paths_z(git_cmd: list[str], args: list[str], cwd: Path):
     """NUL-separated path listing as a set, or None when git failed (surrogateescape keeps odd filenames)."""
     result = _git_quiet(git_cmd, args, cwd, text=True, encoding="utf-8", errors="surrogateescape")
@@ -58,7 +74,7 @@ def _print_first_line(text: str) -> None:
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     from hermes_cli.update_cmd import _git_run
-    status = _git_run(git_cmd, ["status", "--porcelain"], cwd, check=True)
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
     if not status.stdout.strip():
         return None
     # Unmerged index entries (interrupted merge/rebase) make `git stash` fail with
@@ -66,6 +82,17 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     if _git_run(git_cmd, ["ls-files", "--unmerged"], cwd).stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
         subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
+
+    # Intent-to-add entries are the other index state `git stash push` refuses (see
+    # _intent_to_add_paths). Promoting them to real staged adds keeps their content and is lossless
+    # for the user's work; after the restore they come back as staged additions, which is the closest
+    # `git stash` can represent.
+    intent_to_add = _intent_to_add_paths(status.stdout)
+    if intent_to_add:
+        print(f"→ Making {len(intent_to_add)} intent-to-add file(s) stashable...")
+        add = _git_run(git_cmd, ["add", "--", *intent_to_add], cwd)
+        if add.returncode != 0:
+            _print_nonempty(add.stderr)
 
     stash_name = datetime.now(timezone.utc).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")
@@ -81,6 +108,8 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
             print("✗ Could not stash local changes — update aborted.")
             _print_first_line(push.stderr)
             print("  Commit, stash, or clean up your local changes manually, then re-run `hermes update`.")
+            print("  (An index entry from `git add -N` is the usual cause of this error; `git add` the")
+            print("   paths it names, or `git reset` them, and the update will proceed.)")
             raise subprocess.CalledProcessError(push.returncode, push.args, output=push.stdout, stderr=push.stderr)
         # Non-zero but entry created: push saved everything yet couldn't delete some untracked files
         # (e.g. root-owned dir). Not a failure — continue.

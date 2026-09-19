@@ -34,9 +34,21 @@ Reddit's public Atom feeds (`.rss` endpoints), the only unauthenticated route Re
 serves to non-residential IPs. It is throttled to about one request per minute per IP and
 returns thinner data (no scores, top-level comments only), which is fine for a few calls.
 
-**Optional upgrade (app credentials, still no user login):** for sustained use or full
+**DEAD END for self-service (verified 2026-09-19, re-checked against upstream):** Reddit's
+Responsible Builder Policy (announced Nov 2025, r/redditdev by u/redtaboo) closed
+self-service API access: "self-service access to Reddit's public data API will be
+closed... you will need to request approval before gaining access." The prefs/apps
+create-app form is approval-gated: it bounces a reCAPTCHA error and links the policy
+page. OAuth now requires a manual approval request first (Reddit Data API sign-up /
+support ticket); Devvit is the alternative Reddit steers developers to, but it hosts
+apps on-platform and issues no external API credentials. Community reports (mods,
+acads, indie devs) say personal-scope requests are commonly denied or silently ignored.
+Do NOT send users to register an app or drive the registration via browser control.
+The table row below is historical.
+
+~~Optional upgrade (app credentials, still no user login):~~ ~~for sustained use or full
 data, register a free "script" type app at https://www.reddit.com/prefs/apps and put its
-two values in `~/.hermes/.env`:
+two values in `~/.hermes/.env`:~~
 
 ```
 REDDIT_CLIENT_ID=...
@@ -98,10 +110,15 @@ than stopping at titles; the listing only carries the first ~300 characters of e
 ④ Cite the permalink (`url` field), not the listing page, when the result feeds a report.
 `grounded-citations` registers these URLs like any other source.
 
-⑤ If the user needs sustained Reddit access (monitoring, more than ~10 calls), stop and
-ask them to register the app credentials (Prerequisites) rather than grinding through the
-throttle. Tell them plainly: it is a free app registration, not logging Hermes into their
-account. Never ask for a Reddit password or browser cookies.
+⑤ If the user needs sustained Reddit access (monitoring, more than ~10 calls), tell them
+plainly: self-service app registration is closed under Reddit's Responsible Builder
+Policy (Nov 2025) — prefs/apps is approval-gated and a fresh API access request must be
+manually approved first (Data API sign-up / support ticket). Community reports say
+personal-scope requests are often denied or ignored. Options are (a) batch work to fit
+the ~1 req/min anonymous window, (b) file the API access request and wait (slow, opaque,
+long shot for personal scripts), or (c) a paid third-party Reddit API intermediary —
+flag that those front Reddit data against its terms and decline to set one up unless
+the user insists. Never ask for a Reddit password or browser cookies.
 
 ## Pitfalls
 
@@ -115,7 +132,13 @@ account. Never ask for a Reddit password or browser cookies.
   feed at a handful of entries); scores and reply nesting are OAuth-only.
 - Reddit's `limit` on feeds is advisory — expect 5–25 entries regardless of what you ask.
 - Never paste `REDDIT_CLIENT_SECRET` into a chat or log; the script reads it from the
-  environment only.
+environment only.
+- App registration is approval-gated, not broken: since Nov 2025 `reddit.com/prefs/apps`
+  create-app requires a manually-approved Data API access request first and CAPTCHA-loops
+  otherwise. Browser control against the user's real logged-in Chrome gets past the WAF
+  but still cannot create the app — do not retry. Upstream fix pending: as of
+  2026-09-08 upstream moved this skill to optional-skills/social-media/reddit-reading/
+  and both SKILL.md and the website doc copy still advertise self-serve registration.
 - Do not "fix" a 429 by retrying in a loop or adding a proxy; the throttle is per IP and
   the script already waits out the window once. More than one 429 in a row means the
   task needs the app credentials.

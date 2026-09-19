@@ -52,9 +52,16 @@ Reddit's public Atom feeds (`.rss` endpoints), the only unauthenticated route Re
 serves to non-residential IPs. It is throttled to about one request per minute per IP and
 returns thinner data (no scores, top-level comments only), which is fine for a few calls.
 
-**Optional upgrade (app credentials, still no user login):** for sustained use or full
-data, register a free "script" type app at https://www.reddit.com/prefs/apps and put its
-two values in `~/.hermes/.env`:
+**Update (2026-09-19):** Reddit's Responsible Builder Policy (Nov 2025) closed
+self-service API access — see the r/redditdev announcement by u/redtaboo. The
+prefs/apps create-app form is approval-gated: it bounces a reCAPTCHA error until a
+manually-approved Data API access request exists, and community reports say
+personal-scope requests are commonly denied or silently ignored. Do NOT send users
+to register an app; the OAuth row below is historical.
+
+~~Optional upgrade (app credentials, still no user login):~~ ~~for sustained use or
+full data, register a free "script" type app at reddit.com/prefs/apps and put its
+two values in `~/.hermes/.env`:~~
 
 ```
 REDDIT_CLIENT_ID=...
@@ -116,10 +123,15 @@ than stopping at titles; the listing only carries the first ~300 characters of e
 ④ Cite the permalink (`url` field), not the listing page, when the result feeds a report.
 `grounded-citations` registers these URLs like any other source.
 
-⑤ If the user needs sustained Reddit access (monitoring, more than ~10 calls), stop and
-ask them to register the app credentials (Prerequisites) rather than grinding through the
-throttle. Tell them plainly: it is a free app registration, not logging Hermes into their
-account. Never ask for a Reddit password or browser cookies.
+⑤ If the user needs sustained Reddit access (monitoring, more than ~10 calls), tell
+them plainly: self-service app registration is closed under Reddit's Responsible
+Builder Policy (Nov 2025) — prefs/apps is approval-gated and a fresh Data API access
+request must be manually approved first. Community reports say personal-scope
+requests are often denied or ignored. Options are (a) batch work to fit the ~1
+req/min anonymous window, (b) file the API access request and wait (slow, opaque),
+or (c) a paid third-party Reddit API intermediary — flag that those front Reddit
+data against its terms and decline unless the user insists. Never ask for a Reddit
+password or browser cookies.
 
 ## Pitfalls
 

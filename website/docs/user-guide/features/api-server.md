@@ -114,6 +114,13 @@ All SSE streams (Chat Completions, Responses, `/api/sessions/{id}/chat/stream`, 
 - **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
+**Model reasoning** (emitted only when the model actually produces reasoning and the resolved `reasoning` config allows it; the input-side opt-out is `model_options.reasoning.enabled: false`):
+- **Chat Completions**: reasoning deltas arrive as `choices[0].delta.reasoning_content` chunks (the DeepSeek-style field Open WebUI, opencode and the Vercel AI SDK render as a thinking block); answer text stays in `delta.content`.
+- **Responses**: each thinking burst is a spec-native `reasoning` output item — `response.output_item.added` (`item.type: "reasoning"`), `response.reasoning_summary_part.added`, `response.reasoning_summary_text.delta` … `response.reasoning_summary_text.done`, `response.reasoning_summary_part.done`, `response.output_item.done` — closed before the next message or `function_call` item opens, and echoed in the `response.completed` output as `{"id": "rs_…", "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": "…"}]}`. `sequence_number` stays monotonic across reasoning, text and tool events.
+- **Non-streaming**: `/v1/chat/completions` returns the turn's reasoning on `choices[0].message.reasoning_content`; `/v1/responses` returns the same `reasoning` output item(s) ahead of the message (and of that step's `function_call` items), also on `GET /v1/responses/{id}` replay.
+- Echoing a prior response's `output` list back as the next `input` (what Responses SDK clients do) is fine: `reasoning` items are ignored on input rather than parsed as empty user turns.
+- Support is advertised as `features.reasoning_streaming: true` on `GET /v1/capabilities`.
+
 ### POST /v1/responses
 
 OpenAI Responses API format. Supports server-side conversation state via `previous_response_id` — the server stores full conversation history (including tool calls and results) so multi-turn context is preserved without the client managing it.
@@ -145,6 +152,8 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
 ```
 
 Tool calls in the `output` array were already executed server-side by the Hermes agent — they are replayed with `"status": "completed"` for structured tool UI, never as pending calls for the client to execute.
+
+With `"stream": true`, mid-turn assistant commentary (the `openai-codex` backend's `phase="commentary"` progress preambles, or text a model writes alongside its tool calls) arrives as its own completed `message` output item carrying `"phase": "commentary"` (`response.output_item.added` + `response.output_item.done`, also listed in `response.completed`). It is never merged into the final answer item, so clients can render it as live progress and skip it when assembling the reply. Private reasoning never reaches this item. `display.interim_assistant_messages: false` (or the `display.platforms.api_server` override) suppresses it on every API-server surface.
 
 **Inline image input:** `input[].content` can contain `input_text` and `input_image` parts. Both remote URLs and `data:image/...` URLs are supported:
 
@@ -254,7 +263,8 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "reasoning_streaming": true
   }
 }
 ```
@@ -475,6 +485,13 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, `can
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
 
+Mid-turn assistant commentary — the `openai-codex` backend's `phase="commentary"` progress
+preambles, or text a model writes alongside its tool calls — arrives as `message.interim`
+(`text`, `already_streamed`), the same contract the TUI gateway uses. `already_streamed: true`
+means the text also went out as `message.delta`, so clients that render deltas can skip it.
+The final answer still arrives only in `run.completed`; private reasoning never becomes
+`message.interim`. Gate: `display.interim_assistant_messages` (default `true`).
+
 Tool lifecycle events carry `tool.started` (`tool`, `preview` of the arguments) and
 `tool.completed` (`tool`, `duration` in seconds, `error`, and a `preview` of the result). The
 `error` flag reflects the tool's own outcome — a non-zero terminal `exit_code`, a structured
@@ -590,7 +607,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
-| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
+| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 

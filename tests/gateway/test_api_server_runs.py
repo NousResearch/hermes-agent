@@ -338,6 +338,39 @@ class TestStartRun:
         mock_create.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_events_stream_forwards_interim_commentary(self, adapter):
+        """Mid-turn assistant commentary (Codex ``phase="commentary"``) reaches /v1/runs clients
+        as ``message.interim`` {text, already_streamed}; the final answer is unchanged (#67580)."""
+        import json
+
+        app = _create_runs_app(adapter)
+
+        def create_agent(**kwargs):
+            interim = kwargs["interim_assistant_callback"]
+            agent = MagicMock()
+
+            def run_conversation(**_kw):
+                interim("Checking the docs first.", already_streamed=False)
+                interim("Applying the fix.", already_streamed=True)
+                return {"final_response": "Done."}
+
+            agent.run_conversation.side_effect = run_conversation
+            agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+            return agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+        events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+        interim = [(e["text"], e["already_streamed"]) for e in events if e["event"] == "message.interim"]
+        assert interim == [("Checking the docs first.", False), ("Applying the fix.", True)]
+        completed = next(e for e in events if e["event"] == "run.completed")
+        assert completed["output"] == "Done."
+
+    @pytest.mark.asyncio
     async def test_start_passes_request_model_provider_options_to_create_agent(self, adapter):
         app = _create_runs_app(adapter)
         model_options = {"reasoning_effort": "medium", "service_tier": "priority"}

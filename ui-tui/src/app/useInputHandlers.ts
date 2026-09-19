@@ -138,7 +138,7 @@ export function applyVoiceRecordResponse(
 }
 
 export function dismissSensitivePrompt(
-  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
+  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultSaveLogin' | 'vaultUnlock'>,
   rpc: GatewayRpc,
   sys: (text: string) => void
 ) {
@@ -171,6 +171,17 @@ export function dismissSensitivePrompt(
     sys(`${overlay.vaultUnlock.displayName} stays locked`)
 
     respondToServerRequest(requestId, { value: '' })
+  }
+
+  if (overlay.vaultSaveLogin) {
+    const requestId = overlay.vaultSaveLogin.requestId
+
+    patchOverlayState({ vaultSaveLogin: null })
+    sys(`login for ${overlay.vaultSaveLogin.site} not saved`)
+
+    respondToServerRequest(requestId, { value: '' })
+
+    return
   }
 }
 

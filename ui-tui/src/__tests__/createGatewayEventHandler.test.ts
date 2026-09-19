@@ -64,7 +64,10 @@ const buildCtx = (appended: Msg[]) =>
 const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
   const respond = vi.fn()
 
-  const handled = createServerRequestHandler({ ringPromptBell: vi.fn(), setStatus: status => patchUiState({ status }) })({
+  const handled = createServerRequestHandler({
+    ringPromptBell: vi.fn(),
+    setStatus: status => patchUiState({ status })
+  })({
     fail: vi.fn(),
     id,
     method,
@@ -2325,6 +2328,49 @@ describe('createGatewayEventHandler', () => {
       // Turn continues without finalizing or throwing
       expect(getUiState().busy).toBe(true)
       expect(appended).toHaveLength(0)
+    })
+
+    describe('vault.save_login prompt (#109101)', () => {
+      it('opens the two-step save-login card for the server request', () => {
+        const { handled } = serverRequest(
+          'vault.save_login',
+          {
+            origin: 'https://www.linkedin.com',
+            session_id: 'sess',
+            site: 'www.linkedin.com'
+          },
+          'save-9'
+        )
+
+        expect(handled).toBe(true)
+        expect(getOverlayState().vaultSaveLogin).toEqual({
+          origin: 'https://www.linkedin.com',
+          requestId: 'save-9',
+          site: 'www.linkedin.com'
+        })
+        expect(getUiState().status).toBe('save login for www.linkedin.com')
+      })
+
+      it('tears the card down on request.cancel, but only for the matching request', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        serverRequest(
+          'vault.save_login',
+          {
+            origin: 'https://a.example',
+            session_id: 'sess',
+            site: 'a.example'
+          },
+          'save-1'
+        )
+        expect(getOverlayState().vaultSaveLogin).not.toBeNull()
+
+        onEvent({ payload: { id: 'save-2' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultSaveLogin).not.toBeNull()
+
+        onEvent({ payload: { id: 'save-1' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultSaveLogin).toBeNull()
+      })
     })
   })
 })

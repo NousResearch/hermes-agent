@@ -1175,6 +1175,36 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.vaultUnlock, respondWith]
   )
 
+  const answerVaultSaveLogin = useCallback(
+    (identifier: string, password: string) => {
+      if (!overlay.vaultSaveLogin) {
+        return
+      }
+
+      const requestId = overlay.vaultSaveLogin.requestId
+
+      // Either step left empty = declined (CLI parity). The login pair travels
+      // as one JSON value string (ValueResult); an empty value means "not
+      // saving" — the backend treats a password-less login as declined — so
+      // the tool's blocked wait resolves immediately instead of burning its
+      // 180s timeout. Values go only to the encrypted vault, never to the
+      // transcript, logs, or model context.
+      if (!identifier || !password) {
+        patchOverlayState({ vaultSaveLogin: null })
+      }
+
+      return respondWith(
+        requestId,
+        { value: identifier && password ? JSON.stringify({ identifier, password }) : '' },
+        () => {
+          patchOverlayState({ vaultSaveLogin: null })
+          patchUiState({ status: 'running…' })
+        }
+      )
+    },
+    [overlay.vaultSaveLogin, respondWith]
+  )
+
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
     slashRef.current(`/model ${value}`)
@@ -1285,6 +1315,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
@@ -1309,6 +1340,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       closeLiveSession,

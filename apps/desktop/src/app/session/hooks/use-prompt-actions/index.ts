@@ -1039,7 +1039,8 @@ export function usePromptActions({
       truncateRowId?: number,
       sourceText?: string,
       rebindRowIds?: readonly number[],
-      confirmDeepTruncate?: boolean
+      confirmDeepTruncate?: boolean,
+      submissionRef?: string
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -1058,7 +1059,8 @@ export function usePromptActions({
         truncateRowId,
         sourceText,
         rebindRowIds,
-        confirmDeepTruncate
+        confirmDeepTruncate,
+        submissionRef
       ),
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
@@ -1102,7 +1104,8 @@ export function usePromptActions({
           plan.truncateRowId,
           plan.sourceText,
           durableRowIdsForRebind(messages),
-          plan.confirmDeepTruncate
+          plan.confirmDeepTruncate,
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1177,7 +1180,9 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
+      updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, undefined, plan.submissionRef)
+      )
 
       try {
         const survivorRowIds = await submitRewindPrompt(
@@ -1189,7 +1194,8 @@ export function usePromptActions({
           plan.truncateRowId,
           plan.sourceText,
           durableRowIdsForRebind(messages),
-          true
+          true,
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1297,6 +1303,10 @@ export function usePromptActions({
 
         surfacedConfirmed = retryKeepsDeepConfirm(plan, messages, retryPlan, refreshed)
 
+        updateSessionState(sessionId, state =>
+          applyRewindOptimistic(state, retryPlan.sourceIndex, retryPlan.editedMessage, retryPlan.submissionRef)
+        )
+
         const survivorRowIds = await submitRewindPrompt(
           sessionId,
           retryPlan.text,
@@ -1306,7 +1316,8 @@ export function usePromptActions({
           retryPlan.truncateRowId,
           retryPlan.sourceText,
           durableRowIdsForRebind(refreshed),
-          surfacedConfirmed
+          surfacedConfirmed,
+          retryPlan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1320,7 +1331,7 @@ export function usePromptActions({
         }
       }
     },
-    [applySurvivorRowIds, resumeStoredSession, selectedStoredSessionIdRef, submitRewindPrompt]
+    [applySurvivorRowIds, resumeStoredSession, selectedStoredSessionIdRef, submitRewindPrompt, updateSessionState]
   )
 
   // Roll an optimistic edit/truncation back to the original history so the UI stays in sync with
@@ -1395,7 +1406,9 @@ export function usePromptActions({
       setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
-      updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
+      updateSessionState(sessionId, state =>
+        applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage, plan.submissionRef)
+      )
 
       try {
         const survivorRowIds = await submitRewindPrompt(
@@ -1407,7 +1420,8 @@ export function usePromptActions({
           plan.truncateRowId,
           plan.sourceText,
           durableRowIdsForRebind(messages),
-          plan.confirmDeepTruncate
+          plan.confirmDeepTruncate,
+          plan.submissionRef
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)

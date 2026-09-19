@@ -3225,6 +3225,7 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
+        submission_ref: expect.any(String),
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
         confirm_empty_truncate: true,
@@ -3232,7 +3233,7 @@ describe('usePromptActions restoreToMessage', () => {
       },
       1_800_000
     )
-    expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
+    expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual([expect.stringMatching(/^user-/)])
     expect(lastState.busy).toBe(true)
   })
 
@@ -3295,6 +3296,7 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
+        submission_ref: expect.any(String),
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
         confirm_empty_truncate: true,
@@ -3343,6 +3345,7 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
+        submission_ref: expect.any(String),
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
         confirm_empty_truncate: true,
@@ -3350,7 +3353,7 @@ describe('usePromptActions restoreToMessage', () => {
       },
       1_800_000
     )
-    expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
+    expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual([expect.stringMatching(/^user-/)])
   })
 
   it('resumes and retries once when restore hits a stale durable target', async () => {

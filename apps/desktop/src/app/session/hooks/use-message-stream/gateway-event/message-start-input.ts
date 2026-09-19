@@ -6,7 +6,9 @@ import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
 import type { GatewayEventContext } from './types'
 
 /** A replayed start must not reset a live stream, even when its input was hidden. */
-export function shouldIgnoreMessageStart(ctx: GatewayEventContext): boolean {
+export function shouldIgnoreMessageStart(
+  ctx: Pick<GatewayEventContext, 'deps' | 'event' | 'sessionId' | 'explicitSid'>
+): boolean {
   const execution = ctx.event.turn?.id
   const state = ctx.sessionId ? ctx.deps.sessionStateByRuntimeIdRef.current.get(ctx.sessionId) : undefined
 
@@ -39,6 +41,8 @@ export function observeMessageStartInput(state: ClientSessionState, ctx: Gateway
 
   const next = {
     ...state,
+    messages: finalizeInterruptedMessages(state.messages, state.streamId, ctx.occurredAt),
+    streamId: null,
     observedStartExecutionIds: [...(state.observedStartExecutionIds ?? []), execution].slice(-256),
     observedInputIds: ids
   }
@@ -69,38 +73,37 @@ export function observeMessageStartInput(state: ClientSessionState, ctx: Gateway
 
   // One start projects the whole merged input. Binding only one optimistic constituent
   // would hide the other clients' words; replace all matched constituents with that projection.
-  const own = state.messages.filter(
+  const own = next.messages.filter(
     row => row.role === 'user' && !row.inputIds?.length && inputs.some(item => item.ref === row.id)
   )
 
   if (own.length) {
     const first = own[0]!
     const matched = new Set(own)
-    const localAttachments = own.flatMap(row => row.attachmentRefs ?? [])
+    // Acceptance replaces optimistic image thumbnails with the complete canonical
+    // projection. Thumbnail data URLs and server paths are not comparable identities.
 
-    const attachmentRefs = [
-      ...localAttachments,
-      ...(message.attachmentRefs ?? []).filter(ref => !localAttachments.includes(ref))
-    ]
+    const projected = { ...first, ...message, id: first.id, inputIds: ids, attachmentRefs: message.attachmentRefs }
+
+    // A queued optimistic input can precede the old execution's final output.
+    // Move it past that stream, while leaving hidden regenerate branches in place.
+    const boundary = Math.max(
+      next.messages.indexOf(first),
+      next.messages.findIndex(row => row.id === state.streamId && !row.hidden)
+    )
 
     return {
       ...next,
-      messages: state.messages.flatMap(row =>
-        row === first
-          ? [{ ...first, ...message, id: first.id, inputIds: ids, attachmentRefs }]
-          : matched.has(row)
-            ? []
-            : [row]
-      )
+      messages: next.messages.flatMap((row, index) => {
+        const retained = matched.has(row) ? [] : [row]
+
+        return index === boundary ? [...retained, projected] : retained
+      })
     }
   }
 
   return {
     ...next,
-    messages: [
-      ...finalizeInterruptedMessages(state.messages, state.streamId),
-      { ...message, id: `input-${execution}-${ids[0] ?? 'projection'}`, inputIds: ids }
-    ],
-    streamId: null
+    messages: [...next.messages, { ...message, id: `input-${execution}-${ids[0] ?? 'projection'}`, inputIds: ids }]
   }
 }

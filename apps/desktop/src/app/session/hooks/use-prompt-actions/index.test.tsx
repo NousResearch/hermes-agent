@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getSession } from '@/hermes'
+import { en } from '@/i18n/en'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
@@ -1377,6 +1378,50 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect(renderedText).toContain('⊙ Goal set. Starting now.')
     expect(renderedText).not.toContain('/goal: no output')
+  })
+
+  it('refuses a slash command sent alongside an attachment instead of silently degrading to a chat message (#goal-attachment-precedence)', async () => {
+    // The attachment's refText gets prepended ahead of the typed text by
+    // submitPromptText's buildContextText, so a message that no longer starts
+    // with "/" once merged. Before this fix, submitText's attachment-count
+    // gate (`!attachments.length && SLASH_COMMAND_RE.test(...)`) silently fell
+    // through to a normal prompt.submit — /goal (and every other slash
+    // command) with an attachment just vanished into a regular chat message,
+    // with no error and no goal/criteria ever set.
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('slash.exec must never be called when an attachment is present')
+      }
+
+      if (method === 'prompt.submit') {
+        throw new Error('prompt.submit must never be called for a slash command')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('/goal align with the handoff doc', {
+      attachments: [
+        {
+          id: 'file:handoff.md',
+          kind: 'file',
+          label: 'handoff.md',
+          path: '/Users/alice/handoff.md',
+          refText: '@file:`/Users/alice/handoff.md`'
+        }
+      ]
+    })
+
+    expect(ok).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect($notifications.get()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'error', message: en.desktop.slashCommandWithAttachments })])
+    )
   })
 
   it('clears the goal card when /goal clear returns a typed exec dispatch (#80348)', async () => {

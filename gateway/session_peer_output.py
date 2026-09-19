@@ -71,8 +71,11 @@ def peer_output_permissions(adapter, *, profile, catalog, connection):
     """Read-only real Output provider for the route owner's constrained seam."""
     try:
         authority, _, policy = target_policy(adapter, profile, connection=connection)
+        admission = getattr(adapter, '_room_output_admission', None)
         if (not catalog.get('text') or catalog.get('execution_policy') != policy
-                or not _registered_routes(adapter)):
+                or not _registered_routes(adapter)
+                or getattr(admission, '__self__', None) is not adapter
+                or getattr(admission, '__func__', None) is not authorize_output_consent):
             return ()
         if connection is None:
             with authority.db._read_ctx() as conn:
@@ -95,6 +98,7 @@ def initialize_peer_output(adapter):
         raise RuntimeStoreError('room_output_unavailable')
     adapter._peer_output_outbox = RoomArtifactOutbox(authority.db.db_path)
     adapter._peer_output_owner = _owner_identity(authority)
+    adapter._room_output_admission = MethodType(authorize_output_consent, adapter)
     adapter._room_output_invitation_permissions = MethodType(peer_output_permissions, adapter)
 
 
@@ -141,6 +145,7 @@ def consent_record(evidence, adapter, authority, dispatch, owner_scope):
 
 
 def authorize_output_consent(adapter, authority, shared, conn, token, dispatch, policy, evidence):
+    """Route's NEW-write consumer; reuse its held shared/owner grant fence."""
     current = capture_output_consent(adapter, token, dispatch, policy, connection=conn)
     if current != evidence:
         raise RuntimeStoreError('room_output_consent_changed')
@@ -148,6 +153,7 @@ def authorize_output_consent(adapter, authority, shared, conn, token, dispatch, 
         claims = json.loads(current.record_json)['claims']
         require_current_grant(shared, claims)
         require_current_grant(conn, claims)
+    return current is not None
 
 
 def admitted_peer_scope(adapter, authority, row, conn):

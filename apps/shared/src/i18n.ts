@@ -46,6 +46,7 @@ export function mergeTranslations<T>(base: T, overrides: TranslationOverride<T> 
 export const LOCALE_ENDONYMS = {
   af: 'Afrikaans',
   ar: 'العربية',
+  cs: 'Čeština',
   de: 'Deutsch',
   en: 'English',
   es: 'Español',

@@ -25735,7 +25735,7 @@
       },
       "SessionControlParams": {
         "additionalProperties": false,
-        "description": "``action`` is validated by the handler (unknown / gate actions answer ``4004``), so it stays a\nstring on the wire; ``SessionControlAction`` lists the accepted set.",
+        "description": "``action`` is validated by the handler (unknown / gate actions answer ``4004``), so it stays a\nstring on the wire; ``SessionControlAction`` lists the accepted set.\n\nTargeting: ``session_id`` addresses the live runtime (all actions). When it does not resolve \u2014\nor is omitted \u2014 ``session_key`` addresses the stored session directly, which is enough for the\npersisted pause/resume subset the Action Center runs on a session that is not running.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -25750,8 +25750,28 @@
             "title": "Profile"
           },
           "session_id": {
-            "title": "Session Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "session_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Key"
           },
           "action": {
             "title": "Action",
@@ -25770,7 +25790,6 @@
           }
         },
         "required": [
-          "session_id",
           "action"
         ],
         "title": "SessionControlParams",

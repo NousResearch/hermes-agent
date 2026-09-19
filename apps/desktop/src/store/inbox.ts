@@ -663,13 +663,17 @@ export async function runInboxAutomationAction(params: {
   liveSessionId: string
   profile?: string
   request?: InboxRequest
+  sessionKey: string
 }): Promise<void> {
-  const { action, liveSessionId, profile, request: rpc = defaultInboxRequest } = params
+  const { action, liveSessionId, profile, request: rpc = defaultInboxRequest, sessionKey } = params
 
   await rpc('session.control', {
     action,
     args: {},
-    session_id: liveSessionId,
+    // Live runtime when we have one; the stored key always travels so the gateway can
+    // still pause/resume persisted automation for a session that is not running.
+    ...(liveSessionId ? { session_id: liveSessionId } : {}),
+    session_key: sessionKey,
     ...(profile ? { profile } : {})
   })
 }

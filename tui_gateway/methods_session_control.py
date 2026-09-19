@@ -44,6 +44,19 @@ _MANAGER_ACTIONS = frozenset({
 
 _VALID_ACTIONS = frozenset(_ACTION_COMMAND_MAP) | _MANAGER_ACTIONS
 
+# Pause/resume are pure persisted-state writes: the Action Center may run them for a stored
+# session with no live runtime (the slash-command path needs the session's CLI thread; the
+# managers do not). Everything else — creates, updates, destructive actions — still requires
+# the live session, where the command handlers can arbitrate against the running turn.
+_DIRECT_STATE_ACTIONS = frozenset({
+    "goal.pause",
+    "goal.resume",
+    "loop.pause",
+    "loop.resume",
+    "heartbeat.pause",
+    "heartbeat.resume",
+})
+
 
 def _safe_goal_snapshot(state) -> dict | None:
     """Return only stable, frontend-safe GoalState fields."""
@@ -272,6 +285,11 @@ def _(rid, params: dict) -> dict:
 
     session, err = _sess_nowait(params, rid)
     if err:
+        # No live runtime: the Action Center can still pause/resume stored automation directly
+        # (persisted state; no CLI thread needed). Everything else keeps its live-session error.
+        direct_key = str(params.get("session_key") or "").strip()
+        if direct_key and action in _DIRECT_STATE_ACTIONS:
+            return _direct_state_control(rid, params, direct_key, action)
         return err
     session_key = str(session.get("session_key") or "")
     if not session_key:
@@ -376,6 +394,99 @@ def _execute_heartbeat_action(session_key: str, action: str) -> dict:
     return {"result": {"type": "exec", "output": output}}
 
 
+def _execute_direct_state_action(session_key: str, action: str) -> dict:
+    """Run a persisted pause/resume through the public manager APIs (no live session).
+
+    Mirrors the slash-command semantics so a control applied from the Action Center lands in
+    the same state the typed command leaves (pause reasons, turn budget, cadence untouched).
+    """
+    kind, verb = action.split(".", 1)
+
+    if kind == "goal":
+        from hermes_cli.goals import GoalManager, load_goal
+
+        state = load_goal(session_key)
+        if state is None or state.status == "cleared":
+            return _err(None, 4004, "No goal set for this session.")
+        if verb == "pause" and state.status not in ("active", "paused"):
+            return _err(None, 4004, f"Goal is {state.status}; only an active goal can be paused.")
+        if verb == "resume" and state.status != "paused":
+            return _err(None, 4004, f"Goal is {state.status}, not paused.")
+        manager = GoalManager(session_id=session_key)
+        updated = manager.pause() if verb == "pause" else manager.resume()
+        if updated is None:
+            return _err(None, 4004, "Goal update failed.")
+        output = (
+            f"⏸ Goal paused: {updated.goal}"
+            if verb == "pause"
+            else f"▶ Goal resumed: {updated.goal}"
+        )
+    elif kind == "loop":
+        from hermes_cli.loops import LoopManager, load_loop
+
+        state = load_loop(session_key)
+        if state is None or state.status == "cleared":
+            return _err(None, 4004, "No loop set for this session.")
+        if verb == "pause" and state.status not in ("active", "paused"):
+            return _err(None, 4004, f"Loop is {state.status}; only a running loop can be paused.")
+        if verb == "resume" and state.status != "paused":
+            return _err(None, 4004, f"Loop is {state.status}, not paused.")
+        manager = LoopManager(session_id=session_key)
+        updated = manager.pause() if verb == "pause" else manager.resume()
+        if updated is None:
+            return _err(None, 4004, f"Loop cannot be {'paused' if verb == 'pause' else 'resumed'}.")
+        output = (
+            f"⏸ Loop paused: {updated.prompt}"
+            if verb == "pause"
+            else f"▶ Loop resumed ({updated.cadence_label()}): {updated.prompt}"
+        )
+    elif kind == "heartbeat":
+        return _execute_heartbeat_action(session_key, action)
+    else:
+        return _err(None, 4004, f"action requires a live session: {action}")
+    return {"result": {"type": "exec", "output": output}}
+
+
+def _direct_state_control(rid, params: dict, session_key: str, action: str) -> dict:
+    """Pause/resume persisted automation for a stored session with no live runtime.
+
+    Gate: the session row must exist in the addressed profile and be operator-facing (the same
+    deny-list the inbox list applies), so the direct path cannot reach sessions the Action
+    Center would never show. Success returns the same payload shape as the live path.
+    """
+    from .methods_inbox import _inbox_denied_source
+
+    with _profile_db(params) as db:
+        row = db.get_session(session_key) if db is not None else None
+    if row is None or _inbox_denied_source(row):
+        return _err(rid, 4001, "session not found")
+
+    try:
+        action_result = _execute_direct_state_action(session_key, action)
+    except (RuntimeError, ValueError, IndexError) as exc:
+        return _err(rid, 4004, _manager_error_message(action, exc))
+    if "error" in action_result:
+        return {**action_result, "id": rid}
+
+    try:
+        control = _snapshot_control(session_key)
+    except Exception as exc:
+        logger.debug("session.control snapshot after direct %s failed: %s", action, exc, exc_info=True)
+        return _err(rid, 5031, f"session.control snapshot failed: {exc}")
+
+    # A runtime for this key may exist after all (the client's session_id was stale): refresh it
+    # so any open chat surface follows the change the same way the live path keeps it in sync.
+    try:
+        from .methods_inbox_requests import _inbox_live_session_for_key
+
+        live_sid = _inbox_live_session_for_key(_profile_home(params.get("profile")), session_key)
+        if live_sid:
+            event_control = {key: value for key, value in control.items() if key != "loop_min_interval_seconds"}
+            _emit("session.control.update", live_sid, {"control": event_control})
+    except Exception as exc:
+        logger.debug("session.control.update emit after direct %s failed (best-effort): %s", action, exc, exc_info=True)
+
+    return _ok(rid, {"control": control, "dispatch": _dispatch_envelope(action_result)})
 def _manager_error_message(action: str, exc: Exception) -> str:
     prefixes = {
         "subgoal.add": "/subgoal",

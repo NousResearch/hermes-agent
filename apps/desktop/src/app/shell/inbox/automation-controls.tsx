@@ -9,6 +9,9 @@ interface AutomationControlsProps {
   kind: 'goal' | 'heartbeat' | 'loop'
   liveSessionId: string
   onChanged?: () => void
+  sessionKey: string
+  /** ``null`` until request details resolve, then whether the session has a live runtime. */
+  sessionLive: boolean | null
   status: string
 }
 
@@ -16,8 +19,11 @@ interface AutomationControlsProps {
  * Pause / Resume for the session's goal, loop or heartbeat — the same two actions the
  * composer's status cards offer, reachable from the panel. Edit and destructive actions
  * (clear / stop) stay in the chat where their confirm flows live.
+ *
+ * Works for a stored session too: pause/resume are persisted-state writes, so the gateway
+ * runs them against the session key when the session is not running (no live runtime needed).
  */
-export function AutomationControls({ kind, liveSessionId, onChanged, status }: AutomationControlsProps) {
+export function AutomationControls({ kind, liveSessionId, onChanged, sessionKey, sessionLive, status }: AutomationControlsProps) {
   const [busy, setBusy] = useState<InboxAutomationAction | null>(null)
   const [error, setError] = useState<string | null>(null)
   const pinnedGateway = useRef($gateway.get())
@@ -49,7 +55,7 @@ export function AutomationControls({ kind, liveSessionId, onChanged, status }: A
     try {
       const boundRequest: InboxRequest = (method, params) => currentGateway.request(method, params ?? {})
 
-      await runInboxAutomationAction({ action, liveSessionId, profile: currentProfile, request: boundRequest })
+      await runInboxAutomationAction({ action, liveSessionId, profile: currentProfile, request: boundRequest, sessionKey })
       onChanged?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -61,10 +67,12 @@ export function AutomationControls({ kind, liveSessionId, onChanged, status }: A
   return (
     <div className="mt-1 flex flex-col gap-1">
       <div className="flex items-center gap-1.5">
-        <Button disabled={!liveSessionId || busy !== null} onClick={() => void run()} size="xs" variant="secondary">
+        <Button disabled={busy !== null} onClick={() => void run()} size="xs" variant="secondary">
           {busy ? 'Working…' : canPause ? `Pause ${kind}` : `Resume ${kind}`}
         </Button>
-        {!liveSessionId && <span className="text-[0.6rem] text-muted-foreground/60">session is not running</span>}
+        {sessionLive === false && (
+          <span className="text-[0.6rem] text-muted-foreground/60">session isn't running — applies to stored state</span>
+        )}
       </div>
       {error && (
         <p className="text-[0.62rem] text-destructive" role="alert">

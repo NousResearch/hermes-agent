@@ -183,11 +183,15 @@ function statusTone(status: string): PanelPillTone {
 function GoalSection({
   goal,
   liveSessionId,
-  onRetry
+  onRetry,
+  sessionKey,
+  sessionLive
 }: {
   goal: Record<string, unknown>
   liveSessionId: string
   onRetry: () => void
+  sessionKey: string
+  sessionLive: boolean | null
 }) {
   const contract = asRecord(goal.contract)
   const contractRows = (
@@ -269,7 +273,14 @@ function GoalSection({
           </ul>
         </div>
       )}
-      <AutomationControls kind="goal" liveSessionId={liveSessionId} onChanged={onRetry} status={status} />
+      <AutomationControls
+        kind="goal"
+        liveSessionId={liveSessionId}
+        onChanged={onRetry}
+        sessionKey={sessionKey}
+        sessionLive={sessionLive}
+        status={status}
+      />
     </div>
   )
 }
@@ -277,11 +288,15 @@ function GoalSection({
 function LoopSection({
   liveSessionId,
   loop,
-  onRetry
+  onRetry,
+  sessionKey,
+  sessionLive
 }: {
   liveSessionId: string
   loop: Record<string, unknown>
   onRetry: () => void
+  sessionKey: string
+  sessionLive: boolean | null
 }) {
   const status = asText(loop.status) ?? ''
   const prompt = asText(loop.prompt)
@@ -335,7 +350,14 @@ function LoopSection({
           ...(stopReason ? [{ label: 'Stopped', value: stopReason }] : [])
         ]}
       />
-      <AutomationControls kind="loop" liveSessionId={liveSessionId} onChanged={onRetry} status={status} />
+      <AutomationControls
+        kind="loop"
+        liveSessionId={liveSessionId}
+        onChanged={onRetry}
+        sessionKey={sessionKey}
+        sessionLive={sessionLive}
+        status={status}
+      />
     </div>
   )
 }
@@ -343,11 +365,15 @@ function LoopSection({
 function HeartbeatSection({
   heartbeat,
   liveSessionId,
-  onRetry
+  onRetry,
+  sessionKey,
+  sessionLive
 }: {
   heartbeat: Record<string, unknown>
   liveSessionId: string
   onRetry: () => void
+  sessionKey: string
+  sessionLive: boolean | null
 }) {
   const status = asText(heartbeat.status) ?? ''
   const prompt = asText(heartbeat.prompt)
@@ -373,7 +399,14 @@ function HeartbeatSection({
           ...(lastFired ? [{ label: 'Last fire', value: lastFired }] : [])
         ]}
       />
-      <AutomationControls kind="heartbeat" liveSessionId={liveSessionId} onChanged={onRetry} status={status} />
+      <AutomationControls
+        kind="heartbeat"
+        liveSessionId={liveSessionId}
+        onChanged={onRetry}
+        sessionKey={sessionKey}
+        sessionLive={sessionLive}
+        status={status}
+      />
     </div>
   )
 }
@@ -391,6 +424,9 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
   const detailApprovals = expandedDetails?.sessions.flatMap(s => s.approvals) ?? []
   const detailClarifications = expandedDetails?.sessions.flatMap(s => s.clarifications) ?? []
   const detailLiveSessionId = expandedDetails?.sessions[0]?.live_session_ids[0] ?? ''
+  // ``null`` while details are still loading or failed: the controls stay usable (stored-state
+  // path) and no live-status claim is rendered until we actually know.
+  const sessionLive: boolean | null = expandedDetails ? detailLiveSessionId !== '' : null
 
   const detailContext: InboxRequestContext = expandedDetails?.sessions[0]?.context ?? {
     available: false,
@@ -420,10 +456,32 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
         ]}
       />
 
-      {item.goal && <GoalSection goal={item.goal} liveSessionId={detailLiveSessionId} onRetry={onRetry} />}
-      {item.loop && <LoopSection liveSessionId={detailLiveSessionId} loop={item.loop} onRetry={onRetry} />}
+      {item.goal && (
+        <GoalSection
+          goal={item.goal}
+          liveSessionId={detailLiveSessionId}
+          onRetry={onRetry}
+          sessionKey={item.session_key}
+          sessionLive={sessionLive}
+        />
+      )}
+      {item.loop && (
+        <LoopSection
+          liveSessionId={detailLiveSessionId}
+          loop={item.loop}
+          onRetry={onRetry}
+          sessionKey={item.session_key}
+          sessionLive={sessionLive}
+        />
+      )}
       {item.heartbeat && (
-        <HeartbeatSection heartbeat={item.heartbeat} liveSessionId={detailLiveSessionId} onRetry={onRetry} />
+        <HeartbeatSection
+          heartbeat={item.heartbeat}
+          liveSessionId={detailLiveSessionId}
+          onRetry={onRetry}
+          sessionKey={item.session_key}
+          sessionLive={sessionLive}
+        />
       )}
 
       {detailsLoading && <p role="status">Loading request details…</p>}

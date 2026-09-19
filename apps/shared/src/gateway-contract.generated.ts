@@ -883,10 +883,11 @@ export interface HeartbeatSnapshot {
   last_fired_at: number
   fire_count: number
 }
-/** ``action`` is validated by the handler (unknown / gate actions answer ``4004``), so it stays a string on the wire; ``SessionControlAction`` lists the accepted set. */
+/** ``action`` is validated by the handler (unknown / gate actions answer ``4004``), so it stays a string on the wire; ``SessionControlAction`` lists the accepted set. Targeting: ``session_id`` addresses the live runtime (all actions). When it does not resolve — or is omitted — ``session_key`` addresses the stored session directly, which is enough for the persisted pause/resume subset the Action Center runs on a session that is not running. */
 export interface SessionControlParams {
   profile?: string | null
-  session_id: string
+  session_id?: string | null
+  session_key?: string | null
   action: string
   args?: SessionControlArgs | null
 }

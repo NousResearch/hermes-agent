@@ -21,12 +21,21 @@ async function getGatewayMock() {
 }
 
 describe('AutomationControls', () => {
-  it('offers Pause for an active goal and sends the allowlisted action', async () => {
+  it('offers Pause for an active goal and sends the allowlisted action with the stored key', async () => {
     const gw = { request: vi.fn().mockResolvedValue({ status: 'ok' }) }
     ;(await getGatewayMock()).mockReturnValue(gw as never)
     const onChanged = vi.fn()
 
-    render(<AutomationControls kind="goal" liveSessionId="live-1" onChanged={onChanged} status="active" />)
+    render(
+      <AutomationControls
+        kind="goal"
+        liveSessionId="live-1"
+        onChanged={onChanged}
+        sessionKey="sess-1"
+        sessionLive
+        status="active"
+      />
+    )
 
     fireEvent.click(screen.getByText('Pause goal'))
 
@@ -35,6 +44,7 @@ describe('AutomationControls', () => {
         action: 'goal.pause',
         args: {},
         session_id: 'live-1',
+        session_key: 'sess-1',
         profile: 'test-profile'
       })
     })
@@ -45,7 +55,9 @@ describe('AutomationControls', () => {
     const gw = { request: vi.fn().mockResolvedValue({ status: 'ok' }) }
     ;(await getGatewayMock()).mockReturnValue(gw as never)
 
-    render(<AutomationControls kind="loop" liveSessionId="live-1" status="paused" />)
+    render(
+      <AutomationControls kind="loop" liveSessionId="live-1" sessionKey="sess-1" sessionLive status="paused" />
+    )
 
     fireEvent.click(screen.getByText('Resume loop'))
 
@@ -54,6 +66,7 @@ describe('AutomationControls', () => {
         action: 'loop.resume',
         args: {},
         session_id: 'live-1',
+        session_key: 'sess-1',
         profile: 'test-profile'
       })
     })
@@ -62,18 +75,56 @@ describe('AutomationControls', () => {
   it('renders nothing for a finished automation', async () => {
     ;(await getGatewayMock()).mockReturnValue({ request: vi.fn() } as never)
 
-    const { container } = render(<AutomationControls kind="heartbeat" liveSessionId="live-1" status="done" />)
+    const { container } = render(
+      <AutomationControls kind="heartbeat" liveSessionId="live-1" sessionKey="sess-1" sessionLive status="done" />
+    )
 
     expect(container.innerHTML).toBe('')
   })
 
-  it('disables the control and says so when the session is not running', async () => {
+  it('stays usable when the session is not running: stored-state pause via the key, no live id sent', async () => {
+    const gw = { request: vi.fn().mockResolvedValue({ status: 'ok' }) }
+    ;(await getGatewayMock()).mockReturnValue(gw as never)
+    const onChanged = vi.fn()
+
+    render(
+      <AutomationControls
+        kind="goal"
+        liveSessionId=""
+        onChanged={onChanged}
+        sessionKey="stored-9"
+        sessionLive={false}
+        status="active"
+      />
+    )
+
+    expect(screen.getByText("session isn't running — applies to stored state")).toBeTruthy()
+    expect(screen.getByText('Pause goal').closest('button')!.disabled).toBe(false)
+
+    fireEvent.click(screen.getByText('Pause goal'))
+
+    await waitFor(() => {
+      expect(gw.request).toHaveBeenCalledWith('session.control', {
+        action: 'goal.pause',
+        args: {},
+        session_key: 'stored-9',
+        profile: 'test-profile'
+      })
+    })
+    const [, payload] = gw.request.mock.calls[0]
+    expect('session_id' in payload).toBe(false)
+    expect(onChanged).toHaveBeenCalled()
+  })
+
+  it('makes no live-status claim while details are still loading', async () => {
     ;(await getGatewayMock()).mockReturnValue({ request: vi.fn() } as never)
 
-    render(<AutomationControls kind="goal" liveSessionId="" status="active" />)
+    render(
+      <AutomationControls kind="goal" liveSessionId="" sessionKey="stored-9" sessionLive={null} status="active" />
+    )
 
-    expect(screen.getByText('Pause goal').closest('button')!.disabled).toBe(true)
-    expect(screen.getByText('session is not running')).toBeTruthy()
+    expect(screen.queryByText(/session isn't running/)).toBeNull()
+    expect(screen.getByText('Pause goal').closest('button')!.disabled).toBe(false)
   })
 
   it('surfaces a failed action instead of pretending it paused', async () => {
@@ -81,7 +132,16 @@ describe('AutomationControls', () => {
     ;(await getGatewayMock()).mockReturnValue(gw as never)
     const onChanged = vi.fn()
 
-    render(<AutomationControls kind="heartbeat" liveSessionId="live-1" onChanged={onChanged} status="active" />)
+    render(
+      <AutomationControls
+        kind="heartbeat"
+        liveSessionId="live-1"
+        onChanged={onChanged}
+        sessionKey="sess-1"
+        sessionLive
+        status="active"
+      />
+    )
 
     fireEvent.click(screen.getByText('Pause heartbeat'))
 

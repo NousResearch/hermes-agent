@@ -482,9 +482,14 @@ class SessionControlArgs(Params):
 
 class SessionControlParams(ProfileParams):
     """``action`` is validated by the handler (unknown / gate actions answer ``4004``), so it stays a
-    string on the wire; ``SessionControlAction`` lists the accepted set."""
+    string on the wire; ``SessionControlAction`` lists the accepted set.
 
-    session_id: str
+    Targeting: ``session_id`` addresses the live runtime (all actions). When it does not resolve —
+    or is omitted — ``session_key`` addresses the stored session directly, which is enough for the
+    persisted pause/resume subset the Action Center runs on a session that is not running."""
+
+    session_id: str | None = None
+    session_key: str | None = None
     action: str
     args: SessionControlArgs | None = None
 

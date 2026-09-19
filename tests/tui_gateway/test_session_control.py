@@ -156,6 +156,12 @@ def _save_heartbeat(key, **overrides):
     return state
 
 
+def _create_row(server, key, *, source="desktop"):
+    """Stored session row (no live runtime entry in ``server._sessions``)."""
+    server._get_db().create_session(key, source=source)
+    return key
+
+
 class TestStructuredRead:
     def test_methods_are_registered_and_empty_snapshot_is_stable(self, server, session):
         sid, _, _ = session
@@ -263,6 +269,66 @@ class TestDispatcherBackedMutations:
 
         stopped = _call(server, "session.control", session_id=sid, action="loop.stop")
         assert stopped["result"]["control"]["loop"] is None
+
+
+class TestStoredSessionMutations:
+    """Action Center parity: pause/resume persisted automation for a session with no live runtime."""
+
+    def test_stored_goal_pause_resume_lands_in_persisted_state_without_dispatch(self, server, monkeypatch):
+        from hermes_cli.goals import load_goal
+
+        key = _create_row(server, f"stored-{uuid.uuid4().hex[:12]}")
+        _save_goal(key, status="active", turns_used=4)
+        _forbid_dispatch(server, monkeypatch)
+
+        paused = _call(server, "session.control", session_key=key, action="goal.pause")
+        assert paused["result"]["control"]["goal"]["status"] == "paused"
+        assert paused["result"]["dispatch"]["output"] == "⏸ Goal paused: Finish the desktop control card"
+        assert load_goal(key).status == "paused"
+
+        resumed = _call(server, "session.control", session_key=key, action="goal.resume")
+        assert resumed["result"]["control"]["goal"]["status"] == "active"
+        assert resumed["result"]["dispatch"]["output"].startswith("▶ Goal resumed:")
+        assert load_goal(key).status == "active"
+
+    def test_stored_loop_and_heartbeat_pause_resume_take_the_same_route(self, server, monkeypatch):
+        key = _create_row(server, f"stored-{uuid.uuid4().hex[:12]}")
+        _save_loop(key)
+        _save_heartbeat(key)
+        _forbid_dispatch(server, monkeypatch)
+
+        paused = _call(server, "session.control", session_key=key, action="loop.pause")
+        assert paused["result"]["control"]["loop"]["status"] == "paused"
+        assert paused["result"]["dispatch"]["output"] == "⏸ Loop paused: Check the deployment"
+
+        resumed = _call(server, "session.control", session_key=key, action="loop.resume")
+        assert resumed["result"]["control"]["loop"]["status"] == "active"
+
+        heartbeat = _call(server, "session.control", session_key=key, action="heartbeat.pause")
+        assert heartbeat["result"]["control"]["heartbeat"]["status"] == "paused"
+        assert heartbeat["result"]["dispatch"]["output"] == "⏸ Heartbeat paused: Check the deployment"
+
+    def test_stored_path_refuses_status_mismatches_with_a_clear_message(self, server):
+        key = _create_row(server, f"stored-{uuid.uuid4().hex[:12]}")
+        _save_goal(key, status="done")
+
+        refused = _error(_call(server, "session.control", session_key=key, action="goal.pause"))
+        assert refused["code"] == 4004
+        assert "done" in refused["message"]
+
+    def test_actions_outside_pause_resume_still_require_a_live_session(self, server):
+        key = _create_row(server, f"stored-{uuid.uuid4().hex[:12]}")
+        _save_goal(key)
+
+        refused = _error(_call(server, "session.control", session_key=key, action="goal.clear"))
+        assert refused["code"] == 4001
+
+    def test_stored_path_matches_the_inbox_deny_list_and_unknown_keys(self, server):
+        hidden = _create_row(server, f"stored-{uuid.uuid4().hex[:12]}", source="kanban")
+        _save_goal(hidden)
+        assert _error(_call(server, "session.control", session_key=hidden, action="goal.pause"))["code"] == 4001
+
+        assert _error(_call(server, "session.control", session_key="never-existed", action="goal.pause"))["code"] == 4001
 
 
 class TestManagerOnlyMutations:

@@ -677,6 +677,37 @@ class TestAtomicWriteNewFilePermissions:
         assert dest.stat().st_mode & 0o777 == 0o755
 
 
+class TestAtomicWriteTempVisibility:
+    """Regression for filesystems where a mktemp-created file cannot be reopened immediately."""
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mktemp shim regression")
+    def test_write_uses_temp_directory_not_reopened_temp_file(self, tmp_path, monkeypatch):
+        real_mktemp = subprocess.check_output(["which", "mktemp"], text=True).strip()
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "mktemp"
+        shim.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"-d\" ]; then\n"
+            f"  exec \"{real_mktemp}\" \"$@\"\n"
+            "fi\n"
+            f"p=\"$(\"{real_mktemp}\" \"$@\")\" || exit $?\n"
+            "printf '%s\\n' \"$p\"\n"
+            "rm -f \"$p\"\n",
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ["PATH"])
+
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path), include_stderr=True))
+        dest = tmp_path / "visible.txt"
+        result = ops.write_file(str(dest), "survives delayed temp visibility\n")
+
+        assert result.error is None, result.error
+        assert dest.read_text() == "survives delayed temp visibility\n"
+        assert not list(tmp_path.glob(".hermes-tmp*"))
+
+
 class TestAtomicWriteThroughSymlink:
     """_atomic_write must edit a symlink's target, not replace the link.
 

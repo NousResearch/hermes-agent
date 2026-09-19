@@ -381,58 +381,42 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
-        """Write ``content`` atomically: stdin → temp file in the SAME directory →
-        ``mv -f`` (same-FS rename; cross-device ``mv`` is copy+unlink, NOT atomic).
-        ``mkdir -p`` folded in. Exit 0 = swap happened; non-zero = original intact.
+        """Write ``content`` atomically via a same-filesystem temp directory.
 
-        Symlink targets are resolved first (replacing the link would orphan the
-        target) and the temp dir recomputed from the RESOLVED target. Existing
-        target: mode copied via ``stat`` (GNU ``-c%a`` / BSD ``-f%Lp``) + ``chmod``
-        (``chmod --reference`` is GNU-only). New target: ``chmod "=rw"`` AFTER cat
-        gives umask-default perms instead of mktemp's 0600 — not ``$(umask)``
-        arithmetic (zsh parses leading-zero constants as decimal), quoted so zsh
-        doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
+        The temporary *directory* is allocated with ``mktemp -d`` and the payload
+        file is created and written in one open operation before ``mv -f`` swaps it
+        over the target.  This avoids reopening a path that ``mktemp`` just created,
+        which is not reliably visible on some bind-mounted filesystems (notably
+        exFAT exposed through Docker virtiofs), while preserving same-FS atomic rename.
+
+        Symlink targets are resolved first so the link itself survives. Existing
+        target modes are copied to the payload; new targets naturally receive the
+        shell's umask-default permissions. Cleanup removes the private temp directory
+        on every failure path without touching the original target.
         """
         q_path = self._escape_shell_arg(path)
         q_parent = self._escape_shell_arg(os.path.dirname(path) or ".")
         tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
         script = (
             "set -e; "
-            # One shell script, fully quoted. Notes: - `mkdir -p "$d"` is folded in here so the parent
-            # directory is created in the same subprocess that writes the temp file — saves one entire
-            # subprocess spawn vs. a separate mkdir call. - `mktemp` lands the temp in the target's own dir
-            # (-p) so `mv` is same-FS atomic; we fall back to a PID-stamped name if the backend lacks mktemp
-            # (rare; busybox/macOS/Linux all ship it). - `chmod --reference` is GNU-only, so we read the
-            # octal mode with `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly; silent
-            # best-effort — a perms-copy failure must not abort the write (the file then lands at mktemp's
-            # 0600, same as pre-fix). - brand-new targets get `chmod "=rw"` — the POSIX who-less symbolic
-            # form, which sets rw minus the process umask (e.g. 0644 under umask 022) instead of mktemp's
-            # hardcoded 0600 (#70856). Deliberately NOT shell arithmetic on `$(umask)`: zsh (reachable via
-            # _find_bash's $SHELL fallback) parses leading-zero constants as decimal and silently computes a
-            # garbage mode, while `chmod "=rw"` is spec-identical in bash/dash/ash/zsh and degrades to 0600
-            # (pre-fix behavior) if an exotic chmod rejects it. - `trap ... EXIT` guarantees the temp is
-            # removed on every error path (cat failure, mv failure, signal) but NOT after a successful mv
-            # (the temp no longer exists by then). - we `cat >` the temp, then `mv -f` it over the target.
             f"d={q_parent}; t={q_path}; "
             'if [ -L "$t" ]; then '
             'rt="$(readlink -f "$t" 2>/dev/null || realpath "$t" 2>/dev/null || true)"; '
             '[ -n "$rt" ] && { t="$rt"; d="$(dirname "$t")"; }; '
             "fi; "
             'mkdir -p "$d"; '
-            'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
-            '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
-            '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
-            '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
-            "trap 'rm -f \\\"$tmp\\\"' EXIT; "
+            'tmpdir="$(mktemp -d -p "$d" ' + tmpl + ' 2>/dev/null '
+            '|| mktemp -d "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null)"; '
+            '[ -n "$tmpdir" ] || { echo "atomic write: could not create temp directory" >&2; exit 1; }; '
+            'tmp="$tmpdir/payload"; '
+            "trap 'rm -f \"$tmp\"; rmdir \"$tmpdir\" 2>/dev/null || true' EXIT; "
+            'cat > "$tmp"; '
             'if [ -e "$t" ]; then '
             'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
             '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
             "fi; "
-            'cat > "$tmp"; '
-            # new file: umask-default perms instead of mktemp's 0600 (#70856). Runs AFTER cat so a
-            # write-masking umask can't EACCES the stream; quoted "=rw" so zsh doesn't =word-expand it.
-            'if [ ! -e "$t" ]; then chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
             'mv -f "$tmp" "$t"; '
+            'rmdir "$tmpdir" 2>/dev/null || true; '
             "trap - EXIT")
         return self._exec(script, stdin_data=content)
 

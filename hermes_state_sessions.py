@@ -819,9 +819,23 @@ class SessionSessionsMixin:
             (stamp,),
         ) or 0)
 
-    def _set_lineage_column(self, column: str, session_id: str, value: Any) -> bool:
+    def _set_lineage_column(
+        self, column: str, session_id: str, value: Any, *, spare_live_tip: bool = False,
+    ) -> bool:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
-        forward to their tip, so updating only the tip would let the root resurrect it on refresh."""
+        forward to their tip, so updating only the tip would let the root resurrect it on refresh.
+
+        ``spare_live_tip`` (archiving only) leaves still-open lineage members
+        (``ended_at IS NULL``) untouched, except the named session itself: an
+        automatic sweep that matches one old member must not hide the open
+        live tip as collateral (#115489). Un-archiving always clears the whole
+        lineage so a hidden ancestor cannot resurrect the chat on refresh.
+        """
+        predicate = ""
+        params: tuple = (session_id, session_id, value)
+        if spare_live_tip and column == "archived" and int(value or 0):
+            predicate = " AND (id = ? OR ended_at IS NOT NULL)"
+            params = (session_id, session_id, value, session_id)
         return self._write_rowcount(
             f"""
             WITH RECURSIVE
@@ -850,14 +864,24 @@ class SessionSessionsMixin:
               )
             UPDATE sessions
             SET {column} = ?
-            WHERE id IN (SELECT id FROM lineage)
+            WHERE id IN (SELECT id FROM lineage){predicate}
             """,
-            (session_id, session_id, value),
+            params,
         ) > 0
 
-    def set_session_archived(self, session_id: str, archived: bool) -> bool:
-        """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
-        return self._set_lineage_column("archived", session_id, int(archived))
+    def set_session_archived(
+        self, session_id: str, archived: bool, *, spare_live_tip: bool = False,
+    ) -> bool:
+        """Soft-hide (or unhide) a session and its compression lineage; messages are kept.
+
+        Automatic sweeps pass ``spare_live_tip=True`` so a lineage-wide archive
+        never hides the open live tip (#115489). Deliberate single-session
+        archives keep the full fan-out: an archived ancestor would otherwise
+        resurrect the chat on refresh.
+        """
+        return self._set_lineage_column(
+            "archived", session_id, int(archived), spare_live_tip=spare_live_tip,
+        )
 
     # Accidental end reasons recovery treats as resumable (also interpolated into
     # the recovery/promotion SQL so literals cannot drift).
@@ -1623,7 +1647,9 @@ class SessionSessionsMixin:
         filters.setdefault("archived", False)
         rows = self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
         for row in rows:
-            self.set_session_archived(row["id"], True)
+            # A bulk match on one old member must not hide the open live tip
+            # at the end of its lineage (#115489).
+            self.set_session_archived(row["id"], True, spare_live_tip=True)
         return len(rows)
 
     def maybe_auto_archive(

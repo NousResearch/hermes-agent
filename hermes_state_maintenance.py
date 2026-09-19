@@ -257,7 +257,9 @@ class SessionMaintenanceMixin:
             ORDER BY s.started_at ASC
             """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
         for row in rows:
-            self.set_session_archived(row[0], True)
+            # Spare the open live tip: the lineage fan-out must not hide a
+            # live conversation as collateral of an automatic sweep (#115489).
+            self.set_session_archived(row[0], True, spare_live_tip=True)
         return len(rows)
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str = None,

@@ -4,7 +4,9 @@ An unlock is a session token minted by the manager's CLI from the master
 password (``op signin --raw`` / ``bw unlock --raw``). The token lives in
 process memory only, keyed by backend, and expires after an idle TTL or an
 explicit lock. The master password itself is consumed by the CLI call and
-dropped; nothing is written to disk or env.
+dropped; nothing is written to disk or env. KeePassXC mints no token, so for
+that backend the stored session credential is the database key itself — same
+in-process, profile-scoped lifetime, never on disk and never in the env.
 
 The surface owns the prompt: ``set_unlock_prompt_callback`` is installed by
 the CLI panel / TUI gateway bridge for the current thread, exactly like the

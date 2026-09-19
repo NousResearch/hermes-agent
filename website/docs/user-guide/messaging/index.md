@@ -331,12 +331,18 @@ platforms:
         system_prompt: "You are the #dev channel code-review specialist."
       "987654321098765432":
         model: openai/gpt-5-mini
+  telegram:
+    channel_overrides:
+      "-1001234567890":            # a forum group
+        system_prompt: "Default persona for the whole group."
+      "-1001234567890:12":         # topic 12 in that group only
+        system_prompt: "You are the sales-desk assistant."
 ```
 
 Details:
 
 - All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
-- Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
+- Lookup order is most specific first: `"<chat_id>:<thread_id>"` (a topic within one chat), then the bare thread/topic id, then the channel/chat id, then the **parent** channel/forum id. Discord threads inherit their parent channel's override automatically, and a Telegram forum topic's override wins over its group's. Topic ids repeat across Telegram forums (every General topic is `1`), so key topics as `"<chat_id>:<thread_id>"`; a bare topic id matches that topic in every chat.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 

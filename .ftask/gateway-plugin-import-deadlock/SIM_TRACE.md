@@ -25,7 +25,7 @@ scenarios:
     observed: |
       
     verdict: pass
-code_diff_hash: 9a712dbca394630abe61dfcb22bbd97574481f36ac4ce158f88fb2f751e7a6e7
+code_diff_hash: eb0490783c9b48fb8b6f1d7912195917c9f7db3e39a083d1c4426b199b0a61d4
 ---
 
 # Simulation trace — gateway-plugin-import-deadlock
@@ -46,23 +46,23 @@ Verdict legend:
 ## Captured runs (ftask --capture audit trail; do NOT hand-edit — re-run --capture to refresh)
 
 - scenario_id: 1
-  at: 2026-09-19T04:52:21.854Z
+  at: 2026-09-19T04:54:15.935Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_is_not_backgrounded_for_gateway"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 463
+  duration_ms: 530
   stdout_tail: |
     .                                                                        [100%]
-    1 passed in 0.16s
+    1 passed in 0.21s
   stderr_tail: |
     (empty)
 
 - scenario_id: 2
-  at: 2026-09-19T04:52:24.745Z
+  at: 2026-09-19T04:54:17.906Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_runs_for_plain_chat"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 341
+  duration_ms: 334
   stdout_tail: |
     .                                                                        [100%]
     1 passed in 0.17s
@@ -70,11 +70,11 @@ Verdict legend:
     (empty)
 
 - scenario_id: 3
-  at: 2026-09-19T04:52:26.692Z
+  at: 2026-09-19T04:54:19.845Z
   command: "uv run --with pytest --no-sync pytest -q tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py::test_plugin_discovery_skipped_for_tui_launch"
   cwd: /Users/kesun/.hermes/hermes-agent.tasks/gateway-plugin-import-deadlock
   exit_code: 0
-  duration_ms: 328
+  duration_ms: 323
   stdout_tail: |
     .                                                                        [100%]
     1 passed in 0.16s

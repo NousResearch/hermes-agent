@@ -70,3 +70,21 @@ assumptions: |
 notes: |
   [rebase-refresh] Terminal refresh: existing canonical workflow renamed tests.yml to ftask-full-suite.yml at 99% similarity; one caller; caller/internal job/aggregator consistently full-suite; provisioning, pins, permissions, concurrency, runner and command unchanged; no executable stale references.
 ---
+---
+recorded_at: 2026-09-19T04:54:45.765Z
+by: claude
+verdict: pass
+mode: delta
+finding_ids: none
+simulation_verdict: pass
+spec_hash: 9145c40a89a0
+code_patch_id: d49c08f4509263e3b3e0b72c5313c196063f85c01ab4035c443912b035dde778
+code_diff_hash: eb0490783c9b48fb8b6f1d7912195917c9f7db3e39a083d1c4426b199b0a61d4
+head_sha: 64c542b4f6c6bee9f0b78717149628aa34c20ac5
+confusion: |
+  None.
+assumptions: |
+  GitHub reusable workflow preserves caller event_name and absent direct-trigger input is falsey.
+notes: |
+  [rebase-refresh] Terminal p0 audit: PR direct trigger skips full-suite; orchestrated workflow_call with typed via_ci=true runs the single canonical suite; permissions, pins, provisioning and command unchanged; paths/needs consistent.
+---

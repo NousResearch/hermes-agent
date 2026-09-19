@@ -730,6 +730,55 @@ class TestConvertMessages:
         assert system[0]["cache_control"] == {"type": "ephemeral"}
 
 
+    def test_second_system_message_merges_instead_of_overwriting(self):
+        # llm_request middleware may append a {"role": "system"} note; the real
+        # system prompt must survive the fold into the separate system param (#105370)
+        messages = [
+            {"role": "system", "content": "REAL SYSTEM PROMPT"},
+            {"role": "user", "content": "run the query"},
+            {"role": "system", "content": "PLUGIN NOTE"},
+        ]
+        system, result = convert_messages_to_anthropic(messages)
+        assert "REAL SYSTEM PROMPT" in system
+        assert "PLUGIN NOTE" in system
+        assert all(m["role"] != "system" for m in result)
+
+
+    def test_merged_system_promotes_to_block_list_when_any_segment_is_cached(self):
+        messages = [
+            {"role": "system", "content": [
+                {"type": "text", "text": "System prompt", "cache_control": {"type": "ephemeral"}},
+            ]},
+            {"role": "user", "content": "Hi"},
+            {"role": "system", "content": "PLUGIN NOTE"},
+        ]
+        system, _ = convert_messages_to_anthropic(messages)
+        assert isinstance(system, list)
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+        assert system[-1] == {"type": "text", "text": "PLUGIN NOTE"}
+
+
+    def test_merged_system_keeps_breakpoint_when_cached_segment_comes_last(self):
+        messages = [
+            {"role": "system", "content": "REAL SYSTEM PROMPT"},
+            {"role": "system", "content": [
+                {"type": "text", "text": "PLUGIN NOTE", "cache_control": {"type": "ephemeral"}},
+            ]},
+        ]
+        system, _ = convert_messages_to_anthropic(messages)
+        assert system[0] == {"type": "text", "text": "REAL SYSTEM PROMPT"}
+        assert system[1]["cache_control"] == {"type": "ephemeral"}
+
+
+    def test_trailing_empty_system_message_does_not_blank_the_prompt(self):
+        messages = [
+            {"role": "system", "content": "REAL SYSTEM PROMPT"},
+            {"role": "system", "content": ""},
+        ]
+        system, _ = convert_messages_to_anthropic(messages)
+        assert system == "REAL SYSTEM PROMPT"
+
+
     def test_assistant_cache_control_blocks_are_preserved(self):
         messages = apply_anthropic_cache_control([
             {"role": "system", "content": "System prompt"},

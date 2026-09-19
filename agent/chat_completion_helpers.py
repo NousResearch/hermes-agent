@@ -24,7 +24,9 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
-from hermes_cli.routing_policy import check_route, current_routing_policy, current_routing_policy_for_session_db
+from hermes_cli.routing_policy import (
+    check_route, current_routing_policy, current_routing_policy_for_session_db, profile_home_for_session_db,
+)
 
 
 def _agent_routing_policy(agent: Any):
@@ -686,7 +688,17 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     return next((f for f in map(get_reasoning_stale_timeout_floor, candidates) if f is not None), None)
 
 
-def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=None):
+def _guard_bedrock_wire_route(agent: Any | None, api_kwargs: dict) -> None:
+    """Admit a physical Bedrock Converse payload using its actual ``modelId``."""
+    check_route(
+        _agent_routing_policy(agent) if agent is not None else current_routing_policy(),
+        provider=str(getattr(agent, "provider", "") or "bedrock"),
+        model=str(api_kwargs.get("modelId") or ""),
+        base_url=str(getattr(agent, "base_url", "") or ""),
+    )
+
+
+def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=None, agent: Any | None = None):
     """Pop the Hermes routing keys and call ``converse`` / ``converse_stream`` (boto3
     directly) with the shared recovery: a cachePoint rejection (Nova: toolConfig.tools,
     #97281) drops the marker and resends once inside the same attempt; a streaming IAM
@@ -701,13 +713,20 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     client = _get_bedrock_runtime_client(region)
     method = client.converse_stream if stream else client.converse
     finish = (lambda raw: raw.get("stream", [])) if stream else normalize_converse_response
+
+    def send(final_kwargs: dict):
+        _guard_bedrock_wire_route(agent, final_kwargs)
+        return method(**final_kwargs)
+
     try:
-        raw_response = method(**api_kwargs)
+        raw_response = send(api_kwargs)
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, api_kwargs)
         if retry_kwargs is not None:
-            return finish(method(**retry_kwargs))
+            return finish(send(retry_kwargs))
         if on_stream_denied is not None and is_streaming_access_denied_error(exc):
+            # The fallback issues another physical request; admit this exact payload too.
+            _guard_bedrock_wire_route(agent, api_kwargs)
             return on_stream_denied(client, api_kwargs, exc)
         if is_stale_connection_error(exc):
             invalidate_runtime_client(region)
@@ -738,7 +757,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         request_client = make_client("anthropic_messages_request", kind="anthropic_messages")
         return agent._anthropic_messages_create(api_kwargs, client=request_client)
     if agent.api_mode == "bedrock_converse":
-        return _bedrock_converse_call(api_kwargs, stream=False)
+        return _bedrock_converse_call(api_kwargs, stream=False, agent=agent)
     if agent.provider == "moa":
         # MoA is a virtual provider backed by the in-process MoAClient facade — never
         # rebuild a request-local client from the virtual metadata. After a client
@@ -1861,6 +1880,7 @@ def _update_fallback_context_compressor(agent) -> None:
         provider=agent.provider,
         config_context_length=getattr(agent, "_config_context_length", None),
         custom_providers=getattr(agent, "_custom_providers", None),
+        profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)),
     )
     compressor.update_model(  # callable api_key preserved → call_llm
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
@@ -2172,8 +2192,19 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
             model=str(summary_kwargs.get("model") or ""),
             base_url=str(getattr(summary_client, "base_url", "") or ""),
         )
+        def _send_final_summary_request(request):
+            # Relay owns this payload and may have changed its model after the admission above.
+            # Guard the exact final wire request with the durable session owner's policy.
+            check_route(
+                _agent_routing_policy(agent),
+                provider=str(getattr(agent, "provider", "") or ""),
+                model=str(request.get("model") or ""),
+                base_url=str(getattr(summary_client, "base_url", "") or ""),
+            )
+            return summary_client.chat.completions.create(**request)
+
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
+            agent, api_request_id, summary_kwargs, _send_final_summary_request, retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
 
@@ -2414,7 +2445,9 @@ class _BedrockStream:
         return _on
 
     def _open_stream(self, next_api_kwargs: dict[str, Any]):
-        return _bedrock_converse_call(dict(next_api_kwargs), stream=True, on_stream_denied=self._fall_back_to_converse)
+        return _bedrock_converse_call(
+            dict(next_api_kwargs), stream=True, on_stream_denied=self._fall_back_to_converse, agent=self.agent,
+        )
 
     def _fall_back_to_converse(self, client, final_kwargs: dict, exc: Exception):
         # InvokeModel-only IAM policies cannot stream; fall back inside the same Relay
@@ -2426,6 +2459,7 @@ class _BedrockStream:
             "   Grant that action to restore streaming output.\n", diagnostic=True)
         logger.info("bedrock: converse_stream denied by IAM (%s) — "
             "using non-streaming converse() for this session.", type(exc).__name__)
+        _guard_bedrock_wire_route(self.agent, final_kwargs)
         return normalize_converse_response(client.converse(**final_kwargs))
 
     def _worker(self):

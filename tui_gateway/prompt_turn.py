@@ -533,12 +533,14 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     if isinstance(prompt, str) and "@" in prompt:
         from agent.context_references import preprocess_context_references
         from agent.model_metadata import get_model_context_length
+        from hermes_cli.routing_policy import profile_home_for_session_db
         ctx_len = get_model_context_length(
             getattr(agent, "model", "") or _resolve_model(),
             base_url=getattr(agent, "base_url", "") or "",
             api_key=getattr(agent, "api_key", "") or "",
             provider=getattr(agent, "provider", "") or "",
-            config_context_length=getattr(agent, "_config_context_length", None))
+            config_context_length=getattr(agent, "_config_context_length", None),
+            profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)))
         ctx = preprocess_context_references(
             prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len)
         if ctx.blocked:

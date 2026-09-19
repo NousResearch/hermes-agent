@@ -149,6 +149,42 @@ class TestProviderModelsSWR:
 
 
 class TestCatalogSWR:
+    def test_refresh_keeps_restricted_profile_context_after_a_to_b_to_a(self, tmp_path):
+        import hermes_cli.model_catalog as mc
+        from hermes_cli.routing_policy import RoutingPolicyError
+        from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        token_a = set_hermes_home_override(a)
+        token_b = set_hermes_home_override(b)
+        seen = []
+
+        def deny_b(**_kwargs):
+            seen.append(get_hermes_home())
+            if get_hermes_home() == b:
+                raise RoutingPolicyError("denied")
+
+        class AwareThread:
+            def __init__(self, target=None, args=(), daemon=None, name=None):
+                self._target = target
+                self._args = args
+
+            def start(self):
+                reset_hermes_home_override(token_b)  # parent has returned to permissive A before work runs
+                self._target(*self._args)
+
+        try:
+            with patch.object(mc.threading, "Thread", AwareThread), \
+                 patch("hermes_cli.routing_policy.check_outbound_route", side_effect=deny_b), \
+                 patch("hermes_cli.model_catalog.urllib.request.urlopen") as send:
+                mc._spawn_catalog_swr_refresh("https://example.test/catalog.json")
+            assert seen == [b]
+            send.assert_not_called()
+        finally:
+            reset_hermes_home_override(token_a)
+
     def test_stale_disk_catalog_served_with_background_refresh(self, tmp_path, monkeypatch):
         import hermes_cli.model_catalog as mc
 

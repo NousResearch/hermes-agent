@@ -251,13 +251,18 @@ def check_config_routes(config: Mapping[str, Any], *, profile_home: str | Path |
     # Validate the candidate policy even if no route is currently set.
     _effective_policy(policy)
 
-    def admit(route: Mapping[str, Any]) -> None:
-        provider = str(route.get("provider") or route.get("requested_provider") or "")
-        model = str(route.get("model") or route.get("default") or "")
-        base_url = str(route.get("base_url") or route.get("api_base") or "")
+    def admit(route: Mapping[str, Any], *, provider_hint: str = "", base_url_hint: str = "") -> tuple[str, str]:
+        # v12 provider definitions use ``api``/``default_model``; legacy
+        # definitions use ``base_url``/``model``.  A nested model fragment
+        # inherits only its parent endpoint/identity, while an explicit child
+        # value wins exactly as it will at runtime.
+        provider = str(route.get("provider") or route.get("requested_provider") or route.get("name") or provider_hint or "")
+        model = str(route.get("model") or route.get("default_model") or route.get("default") or "")
+        base_url = str(route.get("base_url") or route.get("api_base") or route.get("api") or base_url_hint or "")
         if any((provider, model, base_url)):
             check_requested_route(policy, requested_provider=provider, model=model)
             check_route(policy, provider=provider, model=model, base_url=base_url)
+        return provider, base_url
 
     model = config.get("model")
     if isinstance(model, Mapping):
@@ -266,7 +271,7 @@ def check_config_routes(config: Mapping[str, Any], *, profile_home: str | Path |
         admit({"model": model})
     for key in ("fallback_providers", "fallback_model"):
         entries = config.get(key, [])
-        for entry in entries if isinstance(entries, list) else [entries]:
+        for entry in entries if isinstance(entries, (list, tuple)) else [entries]:
             if isinstance(entry, Mapping):
                 admit(entry)
     auxiliary = config.get("auxiliary", {})
@@ -274,5 +279,26 @@ def check_config_routes(config: Mapping[str, Any], *, profile_home: str | Path |
         stack = [auxiliary]
         while stack:
             entry = stack.pop()
-            admit(entry)
-            stack.extend(value for value in entry.values() if isinstance(value, Mapping))
+            if isinstance(entry, Mapping):
+                admit(entry)
+                stack.extend(entry.values())
+            elif isinstance(entry, (list, tuple)):
+                stack.extend(entry)
+    # Provider definitions are durable dispatch routes too.  ``providers`` is
+    # the modern mapping; older configs retain ``custom_providers`` as a list
+    # (and importers may preserve tuples).  Walk nested route fragments rather
+    # than assuming one schema, because provider-specific options commonly
+    # contain fallback/endpoint mappings.
+    for key in ("providers", "custom_providers"):
+        definitions = config.get(key)
+        stack = [(definitions, "", "")]
+        while stack:
+            entry, provider_hint, base_url_hint = stack.pop()
+            if isinstance(entry, Mapping):
+                provider, base_url = admit(entry, provider_hint=provider_hint, base_url_hint=base_url_hint)
+                for child_key, child in entry.items():
+                    # A modern providers mapping names the provider by its key.
+                    child_provider = str(child_key) if key == "providers" and not provider else provider
+                    stack.append((child, child_provider, base_url))
+            elif isinstance(entry, (list, tuple)):
+                stack.extend((child, provider_hint, base_url_hint) for child in entry)

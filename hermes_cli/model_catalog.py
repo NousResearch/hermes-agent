@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import contextvars
 from pathlib import Path
 from typing import Any
 
@@ -84,9 +85,11 @@ def _cache_path() -> Path:
     return get_hermes_home() / "cache" / "model_catalog.json"
 
 
-def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
+def _fetch_manifest(url: str, timeout: float, *, profile_home: str | Path | None = None) -> dict[str, Any] | None:
     """HTTP GET the manifest URL and return a validated dict, or None on failure."""
     try:
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(provider="model-catalog", model="", base_url=url, profile_home=profile_home)
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
@@ -94,6 +97,9 @@ def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
         logger.info("model catalog fetch failed (%s): %s", url, exc)
         return None
     except Exception as exc:  # pragma: no cover — defensive
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.info("model catalog fetch errored (%s): %s", url, exc)
         return None
     if not _validate_manifest(data):
@@ -186,7 +192,10 @@ def _spawn_catalog_swr_refresh(url: str) -> None:
             with _catalog_swr_lock:
                 _catalog_swr_inflight = False
 
-    threading.Thread(target=_refresh, daemon=True, name="model-catalog-swr").start()
+    # Thread-local contextvars do not cross a raw thread boundary. Capture the profile-bound
+    # routing context before dispatch so the refresh cannot inherit a later/ambient profile.
+    context = contextvars.copy_context()
+    threading.Thread(target=context.run, args=(_refresh,), daemon=True, name="model-catalog-swr").start()
 
 
 def _remember(data: dict[str, Any], mtime: float) -> dict[str, Any]:

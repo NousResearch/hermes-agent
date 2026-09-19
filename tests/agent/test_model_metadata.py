@@ -34,6 +34,114 @@ from agent.model_metadata import (
 )
 
 
+@pytest.mark.parametrize(
+    ("provider", "model", "base_url", "denied"),
+    [
+        ("anthropic", "blocked-anthropic-metadata", "https://api.anthropic.com", "models"),
+        ("openrouter", "allowed-openrouter-metadata", "https://openrouter.ai/api/v1", "providers"),
+    ],
+)
+def test_denied_owner_route_stops_non_bedrock_metadata_before_http_send(
+    tmp_path, monkeypatch, provider, model, base_url, denied,
+):
+    """A session owner policy rejects metadata probes before their HTTP seam opens."""
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", f"routing_policy:\n  enabled: true\n  deny:\n    {denied}: [blocked-*]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    if denied == "providers":
+        (restricted / "config.yaml").write_text(
+            "routing_policy:\n  enabled: true\n  deny:\n    providers: [openrouter]\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import agent.model_metadata as metadata
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    metadata._model_metadata_cache = None
+    metadata._model_metadata_cache_time = 0
+    with patch("agent.model_metadata.requests.get") as get:
+        with pytest.raises(RoutingPolicyError):
+            metadata.get_model_context_length(
+                model, base_url=base_url, api_key="test-key", provider=provider,
+                profile_home=restricted,
+            )
+    assert get.call_args_list == []
+
+
+def test_blank_provider_openrouter_metadata_fetch_is_admitted_by_owner_before_http_send(
+    tmp_path, monkeypatch,
+):
+    """The fallback metadata route is OpenRouter even when the requested provider is blank."""
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    providers: [openrouter]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import agent.model_metadata as metadata
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    metadata._model_metadata_cache = None
+    metadata._model_metadata_cache_time = 0
+    monkeypatch.setattr(metadata, "_model_metadata_disk_cache_age_seconds", lambda: None)
+    with patch("agent.model_metadata.requests.get") as get:
+        with pytest.raises(RoutingPolicyError, match="provider 'openrouter'"):
+            metadata.get_model_context_length(
+                "unlisted-model", provider="", profile_home=restricted,
+            )
+    assert get.call_count == 0
+
+
+def test_nous_openrouter_fallback_uses_explicit_profile_owner(monkeypatch, tmp_path):
+    """Nous fallback metadata must not re-resolve policy from the ambient profile."""
+    import agent.model_metadata as metadata
+
+    owner = tmp_path / "profiles" / "restricted"
+    seen = []
+    monkeypatch.setattr(
+        metadata, "fetch_model_metadata",
+        lambda *, profile_home=None: seen.append(profile_home) or {"nous/model": {"context_length": 123456}},
+    )
+
+    assert metadata._resolve_nous_context_length("nous/model", profile_home=owner) == (123456, "openrouter")
+    assert seen == [owner]
+
+
+def test_denied_owner_custom_endpoint_metadata_never_opens_any_probe(tmp_path, monkeypatch):
+    """A custom metadata /models or local follow-up must use its durable owner, not ambient A."""
+    home = tmp_path / "hermes"
+    owner = home / "profiles" / "restricted"
+    for path, content in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (owner / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    base_url_hosts: [blocked.example]\n"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import agent.model_metadata as metadata
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    metadata._endpoint_model_metadata_cache.clear()
+    metadata._endpoint_model_metadata_cache_time.clear()
+    with patch("agent.model_metadata.requests.get") as get:
+        with pytest.raises(RoutingPolicyError, match="base-url"):
+            metadata.fetch_endpoint_model_metadata(
+                "https://blocked.example/v1", profile_home=owner, force_refresh=True,
+            )
+    assert get.call_count == 0
+
+
 # =========================================================================
 # Token estimation
 # =========================================================================
@@ -1289,6 +1397,54 @@ class TestBedrockContextResolution:
         )
         assert ctx == 50000
         assert mock_fetch.called
+
+
+@pytest.mark.parametrize(
+    ("restricted_policy", "error_match"),
+    [
+        ("deny:\n    models: [blocked-*]", "selected model"),
+        ("deny:\n    providers: [bedrock]", "provider 'bedrock'"),
+    ],
+)
+def test_bedrock_context_probe_uses_requested_session_owner_before_client_construction(
+    tmp_path, monkeypatch, restricted_policy, error_match,
+):
+    """Restricted session B denies the probe even after permissive ambient A resumes."""
+    from agent import bedrock_adapter
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    ambient = tmp_path / "hermes"
+    restricted = ambient / "profiles" / "restricted"
+    for config, policy in (
+        (ambient / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", f"routing_policy:\n  enabled: true\n  {restricted_policy}\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(ambient))  # A is active when B requests metadata.
+
+    constructed, sends = [], []
+
+    def construct(region):
+        constructed.append(region)
+        return type("Client", (), {"converse": lambda _self, **kwargs: sends.append(kwargs)})()
+
+    monkeypatch.setattr(bedrock_adapter, "_get_bedrock_runtime_client", construct)
+
+    session_db = SessionDB(db_path=restricted / "state.db")
+    try:
+        with pytest.raises(RoutingPolicyError, match=error_match):
+            get_model_context_length(
+                "blocked-model", provider="bedrock",
+                base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+                profile_home=profile_home_for_session_db(session_db),
+            )
+    finally:
+        session_db.close()
+
+    assert constructed == []
+    assert sends == []
 
 
 # =========================================================================

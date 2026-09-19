@@ -916,6 +916,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
+        # Relay mutates the callback request after the entry check; admit the sanitized
+        # final payload against the durable session owner before every physical send.
+        from hermes_cli.routing_policy import profile_home_for_session_db
+        check_outbound_route(
+            provider=str(getattr(agent, "provider", "") or ""),
+            model=str(stream_kwargs.get("model") or getattr(agent, "model", "") or ""),
+            base_url=str(getattr(active_client, "base_url", "") or getattr(agent, "base_url", "") or ""),
+            profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)),
+        )
         return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:

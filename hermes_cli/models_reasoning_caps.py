@@ -20,6 +20,7 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,15 +144,23 @@ def _seed_reasoning_caps(url: str, items: Any) -> Optional[Caps]:
     return caps_by_id
 
 
-def _fetch_reasoning_caps_catalog(url: str, timeout: float) -> Optional[Caps]:
+def _fetch_reasoning_caps_catalog(url: str, timeout: float, *, profile_home: Optional[str | Path] = None) -> Optional[Caps]:
     """Fetch one OpenRouter-shaped ``/v1/models`` catalog → per-model caps; None when unreachable or
     empty so callers remember the failure. Sends a User-Agent: the Portal 403s anonymous reads."""
     m = _origin()
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": m._HERMES_USER_AGENT})
+        if urllib.parse.urlparse(url).hostname == "openrouter.ai":
+            # Capabilities are metadata, but this is still an OpenRouter send.
+            # Leave the check beside the opener so cache/warm paths cannot bypass it.
+            from hermes_cli.routing_policy import check_outbound_route
+            check_outbound_route(provider="openrouter", model="", base_url=url, profile_home=profile_home)
         with m._urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
-    except Exception:
+    except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         return None
     return _seed_reasoning_caps(url, payload.get("data"))
 

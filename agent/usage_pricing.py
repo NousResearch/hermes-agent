@@ -403,9 +403,9 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
     return _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
 
 
-def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+def _openrouter_pricing_entry(route: BillingRoute, *, profile_home: Any = None) -> Optional[PricingEntry]:
     return _pricing_entry_from_metadata(
-        fetch_model_metadata(), route.model,
+        fetch_model_metadata(profile_home=profile_home), route.model,
         source_url="https://openrouter.ai/docs/api/api-reference/models/get-models",
         pricing_version="openrouter-models-api",
     )
@@ -441,20 +441,20 @@ def _pricing_entry_from_metadata(
 
 def get_pricing_entry(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    api_key: Optional[str] = None, *, profile_home: Any = None,
 ) -> Optional[PricingEntry]:
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return _INCLUDED_ENTRY
     if route.provider == "openrouter":
-        return _openrouter_pricing_entry(route)
+        return _openrouter_pricing_entry(route, profile_home=profile_home)
 
     bundled_entry = _lookup_official_docs_pricing(route)
     if bundled_entry:
         return bundled_entry
     if route.base_url:
         entry = _pricing_entry_from_metadata(
-            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""), route.model,
+            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or "", profile_home=profile_home), route.model,
             source_url=f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",
         )
@@ -551,7 +551,7 @@ def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
 
 def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
-    base_url: Optional[str] = None, api_key: Optional[str] = None,
+    base_url: Optional[str] = None, api_key: Optional[str] = None, profile_home: Any = None,
 ) -> CostResult:
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
@@ -560,7 +560,9 @@ def estimate_usage_cost(
             pricing_version="included-route", notes=(_INCLUDED_NOTE,),
         )
 
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
+    entry = get_pricing_entry(
+        model_name, provider=provider, base_url=base_url, api_key=api_key, profile_home=profile_home,
+    )
     if not entry:
         return _unknown_cost("none")
 
@@ -605,10 +607,12 @@ def estimate_usage_cost(
 
 def has_known_pricing(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    api_key: Optional[str] = None, *, profile_home: Any = None,
 ) -> bool:
     """True if pricing data exists for this model+route (direct lookup, no dummy usage)."""
-    return get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key) is not None
+    return get_pricing_entry(
+        model_name, provider=provider, base_url=base_url, api_key=api_key, profile_home=profile_home,
+    ) is not None
 
 
 def format_duration_compact(seconds: float) -> str:

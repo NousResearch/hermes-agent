@@ -147,7 +147,7 @@ def _ranked_slugs(entries: object) -> List[str]:
     return _dedupe(slug for _, slug in sortable)
 
 
-def _fetch_models_from_api(access_token: str) -> List[str]:
+def _fetch_models_from_api(access_token: str, *, profile_home: object = None) -> List[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
         import httpx
@@ -156,12 +156,19 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         if acct_id:
             headers["ChatGPT-Account-Id"] = acct_id
         from agent.model_metadata import CODEX_MODELS_CATALOG_URL
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(
+            provider="openai-codex", model="", base_url=CODEX_MODELS_CATALOG_URL, profile_home=profile_home,
+        )
         resp = httpx.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=10)
         if resp.status_code != 200:
             return []
         data = resp.json()
         entries = data.get("models", []) if isinstance(data, dict) else []
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
 
@@ -194,11 +201,14 @@ def _read_cache_models(codex_home: Path) -> List[str]:
     return _ranked_slugs(entries if isinstance(entries, list) else [])
 
 
-def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
+def get_codex_model_ids(access_token: Optional[str] = None, *, profile_home: object = None) -> List[str]:
     """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults."""
     codex_home = Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
     if access_token:
-        api_models = _fetch_models_from_api(access_token)
+        api_models = (
+            _fetch_models_from_api(access_token, profile_home=profile_home)
+            if profile_home is not None else _fetch_models_from_api(access_token)
+        )
         if api_models:
             return _finalize_codex_models(api_models)
     default_model = _read_default_model(codex_home)

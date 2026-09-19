@@ -1519,7 +1519,15 @@ class _CodexCompletionsAdapter:
         # Low-level ``responses.create(stream=True)`` and assemble the final response ourselves
         # from ``response.output_item.done``: the high-level ``responses.stream()`` rebuilds from
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
+        profile_home = kwargs.get("_hermes_routing_policy_home")
+        policy_provider = kwargs.get("_hermes_routing_policy_provider")
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
+        # The adapter rewrites picker aliases (for example ``-900k``) to the actual
+        # Responses wire model. Recheck that final body with the session owner before
+        # any SDK work, rather than trusting the pre-transform chat request guard.
+        _guard_auxiliary_wire_route(
+            self._client, resp_kwargs, policy_provider, profile_home=profile_home,
+        )
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout)
@@ -1529,6 +1537,11 @@ class _CodexCompletionsAdapter:
             from agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
             stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            # Keep this at the literal SDK boundary too: request shaping above may
+            # change the final outbound model/body in future.
+            _guard_auxiliary_wire_route(
+                self._client, stream_kwargs, policy_provider, profile_home=profile_home,
+            )
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -1672,6 +1685,8 @@ class _AnthropicCompletionsAdapter:
     def create(self, **kwargs) -> Any:
         from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
         from agent.transports import get_transport
+        profile_home = kwargs.get("_hermes_routing_policy_home")
+        policy_provider = kwargs.get("_hermes_routing_policy_provider")
         model = kwargs.get("model", self._model)
         # ZAI's Anthropic endpoint rejects max_tokens on vision models (code 1210);
         # callers signal this via _skip_zai_max_tokens.
@@ -1747,6 +1762,13 @@ class _AnthropicCompletionsAdapter:
             # substantive payloads so keepalives can't hold a stalled summary open. None keeps
             # the fast get_final_message path.
             on_stream_event=(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
+            before_wire=(
+                lambda final_kwargs: _guard_auxiliary_wire_route(
+                    SimpleNamespace(base_url=self._base_url), final_kwargs, policy_provider,
+                    profile_home=profile_home,
+                )
+                if profile_home else None
+            ),
         )
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
         usage = None
@@ -1795,6 +1817,7 @@ class _BedrockCompletionsAdapter:
     def create(self, **kwargs) -> Any:
         from agent.bedrock_adapter import call_converse
         model = kwargs.get("model", self._model)
+        profile_home = kwargs.get("_hermes_routing_policy_home")
         max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
         # OpenAI accepts ``stop`` as str or list; Converse requires a list.
         stop = kwargs.get("stop")
@@ -1819,6 +1842,7 @@ class _BedrockCompletionsAdapter:
             # Truthiness mirrors the Anthropic shim: explicit 0 means omit.
             max_tokens=int(max_tokens) if max_tokens else None, temperature=kwargs.get("temperature"),
             top_p=kwargs.get("top_p"), stop_sequences=stop,
+            profile_home=profile_home,
         )
         # Converse is complete-response here: mark provider progress only after
         # return so TTFP reflects real Bedrock latency, not dispatch/setup.
@@ -2574,7 +2598,15 @@ def _relay_sync_completion(
     callback = create or (lambda request: _create_with_progress(client, request))
     def guarded_callback(request):
         _guard_auxiliary_wire_route(client, request, provider)
-        return callback({key: value for key, value in request.items() if key != "_hermes_routing_policy_home"})
+        from agent.gemini_native_adapter import GeminiNativeClient
+        if isinstance(client, (AnthropicAuxiliaryClient, BedrockAuxiliaryClient, CodexAuxiliaryClient, GeminiNativeClient)):
+            # Native adapters consume the verified owner at their own final-wire
+            # guards, so it must survive this generic OpenAI-wire stripping seam.
+            return callback({**request, "_hermes_routing_policy_provider": provider})
+        return callback(
+            request if "_hermes_routing_policy_home" not in request
+            else {key: value for key, value in request.items() if key != "_hermes_routing_policy_home"}
+        )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -2600,7 +2632,14 @@ async def _relay_async_completion(
     callback = create or (lambda request: _acreate_with_progress(client, request))
     async def guarded_callback(request):
         _guard_auxiliary_wire_route(client, request, provider)
-        return await callback({key: value for key, value in request.items() if key != "_hermes_routing_policy_home"})
+        from agent.gemini_native_adapter import AsyncGeminiNativeClient
+        if isinstance(client, (AsyncAnthropicAuxiliaryClient, AsyncBedrockAuxiliaryClient, CodexAuxiliaryClient, AsyncCodexAuxiliaryClient, AsyncGeminiNativeClient)):
+            # Thread-backed native wrappers delegate to final-wire adapters.
+            return await callback({**request, "_hermes_routing_policy_provider": provider})
+        return await callback(
+            request if "_hermes_routing_policy_home" not in request
+            else {key: value for key, value in request.items() if key != "_hermes_routing_policy_home"}
+        )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await guarded_callback(kwargs)
@@ -2618,16 +2657,44 @@ def _relay_sync_stream(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
-    _guard_auxiliary_wire_route(client, kwargs, provider)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+
+    def guarded_callback(request):
+        # Relay mutates its callback payload after the entry check. Keep the owner-home
+        # marker through admission, then strip it before handing the request to the SDK.
+        _guard_auxiliary_wire_route(client, request, provider)
+        if isinstance(client, AnthropicAuxiliaryClient):
+            # The native adapter needs the verified owner to guard its sanitized
+            # Messages payload; its allow-list keeps these private keys off the SDK wire.
+            return client.chat.completions.create(**{
+                **request, "_hermes_routing_policy_provider": provider,
+            })
+        from agent.gemini_native_adapter import GeminiNativeClient
+        if isinstance(client, GeminiNativeClient):
+            # Native Gemini canonicalizes its wire model after this generic guard.
+            return client.chat.completions.create(**{
+                **request, "_hermes_routing_policy_provider": provider,
+            })
+        if isinstance(client, BedrockAuxiliaryClient):
+            # The Converse adapter needs the verified owner at its own final-wire
+            # guard; it consumes this private key rather than forwarding it to boto3.
+            return client.chat.completions.create(**request)
+        if isinstance(client, CodexAuxiliaryClient):
+            # The Responses shim rewrites picker aliases; retain the verified owner
+            # for its post-transform final-wire checks.
+            return client.chat.completions.create(**{
+                **request, "_hermes_routing_policy_provider": provider,
+            })
+        return client.chat.completions.create(**{
+            key: value for key, value in request.items() if key != "_hermes_routing_policy_home"
+        })
+
     if route is None:
-        return client.chat.completions.create(**{key: value for key, value in kwargs.items() if key != "_hermes_routing_policy_home"})
+        return guarded_callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, lambda request: client.chat.completions.create(**{
-            key: value for key, value in request.items() if key != "_hermes_routing_policy_home"
-        }), name=provider_name,
+        kwargs, guarded_callback, name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
@@ -4262,12 +4329,16 @@ def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
     return MINIMUM_CONTEXT_LENGTH if task == "compression" else None
 
 
-def _candidate_context_window(provider: str, model: str, base_url: str = "", api_key: str = "") -> Optional[int]:
+def _candidate_context_window(
+    provider: str, model: str, base_url: str = "", api_key: str = "", *, profile_home: Optional[str] = None,
+) -> Optional[int]:
     """Best-effort context window for a fallback candidate; ``None`` = unknown (never raises; callers pass it through)."""
     if not model:
         return None
     try:
-        ctx = get_model_context_length(model, base_url=base_url, api_key=api_key, provider=provider)
+        ctx = get_model_context_length(
+            model, base_url=base_url, api_key=api_key, provider=provider, profile_home=profile_home,
+        )
     except Exception as exc:
         logger.debug("Auxiliary fallback: could not resolve context window for %s/%s: %s", provider, model, exc)
         return None
@@ -4276,13 +4347,14 @@ def _candidate_context_window(provider: str, model: str, base_url: str = "", api
 
 def _context_too_small(
     entry: Dict[str, Any], provider: str, model: str, min_ctx: Optional[int], *,
-    task: Optional[str], label: str, name_model: bool = False,
+    task: Optional[str], label: str, name_model: bool = False, profile_home: Optional[str] = None,
 ) -> Optional[str]:
     """Screen one fallback candidate by context window; returns the ``tried`` note when it is too small."""
     if min_ctx is None:
         return None
     fb_ctx = _candidate_context_window(
-        provider, model, base_url=str(entry.get("base_url") or ""), api_key=_fallback_entry_api_key(entry) or "")
+        provider, model, base_url=str(entry.get("base_url") or ""), api_key=_fallback_entry_api_key(entry) or "",
+        profile_home=profile_home)
     if fb_ctx is None or fb_ctx >= min_ctx:
         return None
     if name_model:
@@ -4296,7 +4368,7 @@ def _context_too_small(
 
 def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
-    failed_base_url: str = "", failure_scope: Any = None,
+    failed_base_url: str = "", failure_scope: Any = None, profile_home: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
@@ -4333,6 +4405,7 @@ def _try_configured_fallback_chain(
         if fb_client is not None:
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model, min_ctx, task=task, label=label, name_model=True,
+                profile_home=profile_home,
             ) if resolved_model else None
             if too_small:
                 tried.append(too_small)
@@ -4383,6 +4456,7 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
 def _try_main_fallback_chain(
     task: Optional[str], failed_provider: str = "", reason: str = "error", *,
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+    profile_home: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
@@ -4428,6 +4502,7 @@ def _try_main_fallback_chain(
         if fb_client is not None:
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model or fb_model, min_ctx, task=task, label=label,
+                profile_home=profile_home,
             )
             if too_small:
                 tried.append(too_small)
@@ -4584,6 +4659,7 @@ def _resolve_auto_route(
     global auxiliary_is_nous
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     runtime = _normalize_main_runtime(main_runtime)
+    profile_home = _routing_profile_home(runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
     routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
@@ -4591,11 +4667,11 @@ def _resolve_auto_route(
         return routed
     if task:
         fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-            task, main_provider or "auto", reason="main provider unavailable")
+            task, main_provider or "auto", reason="main provider unavailable", profile_home=profile_home)
         if fb_client is not None:
             return fb_client, fb_model, _fallback_provider_from_label(fb_label)
     fb_client, fb_model, fb_label = _try_main_fallback_chain(
-        task, main_provider or "auto", reason="main provider unavailable")
+        task, main_provider or "auto", reason="main provider unavailable", profile_home=profile_home)
     if fb_client is not None:
         return fb_client, fb_model, fb_label
     if not _discovery_chain_allowed(main_provider, task):
@@ -7850,7 +7926,9 @@ def _call_llm_impl(
             # Responses-shim clients consume the stream internally and return a completed
             # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
             _guard_auxiliary_wire_route(client, kwargs, request_provider, profile_home=profile_home)
-            return client.chat.completions.create(**{key: value for key, value in kwargs.items() if key != "_hermes_routing_policy_home"})
+            return client.chat.completions.create(**{
+                **kwargs, "_hermes_routing_policy_provider": request_provider,
+            })
         return _relay_sync_stream(
             client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 

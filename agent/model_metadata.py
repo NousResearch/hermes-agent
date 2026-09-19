@@ -711,7 +711,15 @@ def _localhost_to_ipv4(url: str) -> str:
     return re.sub(r"^(https?://)localhost(?=[:/]|$)", r"\g<1>127.0.0.1", url, count=1)
 
 
-def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
+def _admit_metadata_probe(base_url: str, model: str = "", provider: str = "custom", profile_home: Any = None) -> None:
+    """Authorize a physical metadata/probe send without putting owner data on the wire."""
+    from hermes_cli.routing_policy import check_outbound_route
+    check_outbound_route(provider=provider, model=model, base_url=base_url, profile_home=profile_home)
+
+
+def detect_local_server_type(
+    base_url: str, api_key: str = "", *, admit: Callable[[], None] | None = None, profile_home: Any = None,
+) -> Optional[str]:
     """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached)."""
     import httpx
     # IPv4-resolve BEFORE deriving server/LM Studio URLs and the cache lookup, so localhost and 127.0.0.1 share a cache entry.
@@ -738,11 +746,13 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
         ("vllm", (f"{server_url}/version",), lambda r: "version" in r.json()),
     )
     result: Optional[str] = None
+    admit = admit or (lambda: _admit_metadata_probe(normalized, profile_home=profile_home))
     try:
         with httpx.Client(timeout=2.0, headers=_auth_headers(api_key)) as client:
             for name, urls, check in waterfall:
                 try:
                     for url in urls:
+                        admit()
                         r = client.get(url)
                         if r.status_code == 200:
                             break
@@ -754,8 +764,10 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                     if _is_connect_timeout(exc):
                         _note_endpoint_blackholed(server_url)
                         raise
-    except Exception:
-        pass
+    except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
     # Negative verdict in memory only (never on disk — failures are often transient).
     _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
     if result is not None:
@@ -881,7 +893,7 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
         cache.setdefault(model_id.split("/", 1)[1], entry)
 
 
-def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
+def fetch_model_metadata(force_refresh: bool = False, *, profile_home: Any = None) -> Dict[str, Dict[str, Any]]:
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
     if not force_refresh:
@@ -894,6 +906,14 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 _model_metadata_cache = disk_cache
                 _model_metadata_cache_time = time.time() - disk_age
                 return _model_metadata_cache
+    # This is a physical OpenRouter request even when the original context-length
+    # lookup had no provider. Keep its admission immediately adjacent to the send:
+    # requested-route checks cannot identify this fallback route when provider is blank.
+    from hermes_cli.routing_policy import check_outbound_route
+    check_outbound_route(
+        provider="openrouter", model="", base_url=OPENROUTER_MODELS_URL,
+        profile_home=profile_home,
+    )
     try:
         _ensure_requests()
         # (connect, read) tuple: a flat timeout lets urllib3 block per retry stage through proxies that 403 CONNECT.
@@ -946,8 +966,12 @@ def _lmstudio_loaded_context(model: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-def _lmstudio_native_models(normalized: str, headers: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+def _lmstudio_native_models(
+    normalized: str, headers: Dict[str, str], *, admit: Callable[[], None] | None = None,
+) -> Dict[str, Dict[str, Any]]:
     """LM Studio ``/api/v1/models`` → cache; context comes from the first loaded instance."""
+    if admit is not None:
+        admit()
     response = requests.get(_lmstudio_server_root(normalized).rstrip("/") + "/api/v1/models", headers=headers, timeout=(5, 10), verify=_resolve_requests_verify(normalized))
     response.raise_for_status()
     cache: Dict[str, Dict[str, Any]] = {}
@@ -963,14 +987,21 @@ def _lmstudio_native_models(normalized: str, headers: Dict[str, str]) -> Dict[st
     return cache
 
 
-def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: str, headers: Dict[str, str], verify) -> None:
+def _apply_llamacpp_props(
+    cache: Dict[str, Dict[str, Any]], request_candidate: str, headers: Dict[str, str], verify,
+    *, admit: Callable[[], None] | None = None,
+) -> None:
     """Overwrite ``context_length`` with llama.cpp's allocated ``n_ctx`` from /props (``/v1/props``, then
     ``/props`` for older builds). In router mode the bare endpoint 400s, so each LOADED child is read
     via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
     base = request_candidate.rstrip("/").replace("/v1", "")
     def _props(params=None):
+        if admit is not None:
+            admit()
         resp = requests.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
         if not resp.ok:
+            if admit is not None:
+                admit()
             resp = requests.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
         return resp
     def _n_ctx(props: Dict[str, Any]) -> Any:
@@ -982,6 +1013,8 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
         if n_ctx and model_alias and model_alias in cache:
             cache[model_alias]["context_length"] = n_ctx
         return
+    if admit is not None:
+        admit()
     native = requests.get(base + "/models", headers=headers, timeout=5, verify=verify)
     if not native.ok:
         return
@@ -1016,7 +1049,9 @@ def _parse_models_payload(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return cache
 
 
-def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
+def fetch_endpoint_model_metadata(
+    base_url: str, api_key: str = "", force_refresh: bool = False, *, profile_home: Any = None,
+) -> Dict[str, Dict[str, Any]]:
     """Model metadata from an OpenAI-compatible ``/models`` endpoint (cached per base URL)."""
     normalized = _normalize_base_url(base_url)
     if not normalized or base_url_host_matches(normalized, "openrouter.ai"):
@@ -1038,12 +1073,20 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     candidates = [normalized] + ([alternate] if alternate != normalized else [])
     headers = _auth_headers(api_key)
     verify = _resolve_requests_verify(normalized)
+    def admit() -> None:
+        # This is intentionally invoked beside every probe, including local-server
+        # detection and llama.cpp follow-ups, rather than only before this function.
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(provider="custom", model="", base_url=normalized, profile_home=profile_home)
     last_error: Optional[Exception] = None
     if local:
         try:
-            if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
+            if detect_local_server_type(normalized, api_key=api_key, admit=admit) == "lm-studio":
+                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers, admit=admit))
         except Exception as exc:
+            from hermes_cli.routing_policy import RoutingPolicyError
+            if isinstance(exc, RoutingPolicyError):
+                raise
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
     for candidate in candidates:
@@ -1054,6 +1097,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         request_candidate = _localhost_to_ipv4(candidate)
         url = request_candidate.rstrip("/") + "/models"
         response = None
+        admit()
         try:
             response = requests.get(url, headers=headers, timeout=(5, 10), verify=verify, stream=True)
             if response.status_code in (401, 403):
@@ -1063,8 +1107,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
             payload = response.json()
             cache = _parse_models_payload(payload)
             if any(m.get("owned_by") == "llamacpp" for m in payload.get("data", []) if isinstance(m, dict)):
-                with contextlib.suppress(Exception):
-                    _apply_llamacpp_props(cache, request_candidate, headers, verify)
+                _apply_llamacpp_props(cache, request_candidate, headers, verify, admit=admit)
             if cache and not local:
                 _endpoint_disk_cache_put(normalized, cache)
             return _remember_endpoint_models(memo_key, cache)
@@ -1079,9 +1122,11 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     return _remember_endpoint_models(memo_key, {})
 
 
-def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+def _resolve_endpoint_context_length(
+    model: str, base_url: str, api_key: str = "", *, profile_home: Any = None,
+) -> Optional[int]:
     """Resolve context length from an endpoint's live ``/models`` metadata."""
-    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key, profile_home=profile_home)
     matched = endpoint_metadata.get(model)
     if not matched and len(endpoint_metadata) == 1:
         matched = next(iter(endpoint_metadata.values()))
@@ -1369,25 +1414,35 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return candidate_id == lookup_model or ("/" in candidate_id and candidate_id.rsplit("/", 1)[1] == lookup_model)
 
 
-def _ollama_show(server_url: str, api_key: str, bare_model: str, timeout: float = 3.0, *, note_blackhole: bool = False) -> Optional[Dict[str, Any]]:
+def _ollama_show(
+    server_url: str, api_key: str, bare_model: str, timeout: float = 3.0, *, note_blackhole: bool = False,
+    profile_home: Any = None, provider: str = "custom",
+) -> Optional[Dict[str, Any]]:
     """Ollama ``/api/show`` JSON for ``bare_model``, or None on any failure (``note_blackhole``: connect timeouts condemn the host)."""
     import httpx
     try:
         with httpx.Client(timeout=timeout, headers=_auth_headers(api_key)) as client:
+            _admit_metadata_probe(server_url, bare_model, provider=provider, profile_home=profile_home)
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
             return resp.json() if resp.status_code == 200 else None
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         if note_blackhole:
             _note_if_connect_timeout(exc, server_url)
         return None
 
 
-def _is_ollama_server(base_url: str, api_key: str) -> bool:
+def _is_ollama_server(base_url: str, api_key: str, *, profile_home: Any = None) -> bool:
     try:
         # Forward the API key: a remote API-keyed endpoint answers the probe waterfall with 401s without it,
         # and an unauthorized probe can never produce a positive verdict (#89863).
-        return detect_local_server_type(base_url, api_key=api_key) == "ollama"
-    except Exception:
+        return detect_local_server_type(base_url, api_key=api_key, profile_home=profile_home) == "ollama"
+    except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         return False
 
 
@@ -1407,13 +1462,15 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     return ctx
 
 
-def query_ollama_supports_vision(model: str, base_url: str, api_key: str = "") -> Optional[bool]:
+def query_ollama_supports_vision(
+    model: str, base_url: str, api_key: str = "", *, profile_home: Any = None, provider: str = "ollama",
+) -> Optional[bool]:
     """True/False when Ollama ``/api/show`` reports vision support (``capabilities`` on 0.6.0+, else
     ``model_info.*.vision.block_count``); None when unreachable, not Ollama, or model unknown."""
     bare_model = _strip_provider_prefix(model)
-    if not bare_model or not base_url or not _is_ollama_server(base_url, api_key):
+    if not bare_model or not base_url or not _is_ollama_server(base_url, api_key, profile_home=profile_home):
         return None
-    data = _ollama_show(_server_root(base_url), api_key, bare_model)
+    data = _ollama_show(_server_root(base_url), api_key, bare_model, profile_home=profile_home, provider=provider)
     if data is None:
         return None
     caps = data.get("capabilities")
@@ -1506,19 +1563,19 @@ def _model_name_suggests_stale_32k_underreport(model: str) -> bool:
     return _model_name_suggests_kimi(model) or _model_name_suggests_minimax(model)
 
 
-def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+def _query_local_context_length(model: str, base_url: str, api_key: str = "", *, profile_home: Any = None) -> Optional[int]:
     """Local-server context probe, short-TTL cached (see _LOCAL_CTX_PROBE_CACHE)."""
-    return _memo_local_probe((_strip_provider_prefix(model), base_url.rstrip("/")), lambda: _query_local_context_length_uncached(model, base_url, api_key=api_key))
+    return _memo_local_probe((_strip_provider_prefix(model), base_url.rstrip("/")), lambda: _query_local_context_length_uncached(model, base_url, api_key=api_key, profile_home=profile_home))
 
 
 def _positive_int(value: Any) -> Optional[int]:
     return int(value) if isinstance(value, (int, float)) and value else None
 
 
-def _lmstudio_context(client, lmstudio_url: str, model: str) -> Optional[int]:
+def _lmstudio_context(client, lmstudio_url: str, model: str, *, admit: Callable[[], None]) -> Optional[int]:
     """LM Studio native /api/v1/models (the OpenAI-compat list omits context);
     loaded-instance config is the runtime value."""
-    resp = client.get(f"{lmstudio_url}/api/v1/models")
+    admit(); resp = client.get(f"{lmstudio_url}/api/v1/models")
     if resp.status_code != 200:
         return None
     for m in resp.json().get("models", []):
@@ -1527,13 +1584,13 @@ def _lmstudio_context(client, lmstudio_url: str, model: str) -> Optional[int]:
     return None
 
 
-def _llamacpp_context(client, server_url: str, model: str) -> Optional[int]:
+def _llamacpp_context(client, server_url: str, model: str, *, admit: Callable[[], None]) -> Optional[int]:
     """llama.cpp /props: the RUNTIME n_ctx, answered by the router even for a not-yet-loaded model
     (while /v1/models has meta=null), so a lazily-loaded model doesn't fall to a family catch-all."""
     import httpx
     for props_path in (f"/props?model={model}", "/props"):
         try:
-            resp = client.get(f"{server_url}{props_path}")
+            admit(); resp = client.get(f"{server_url}{props_path}")
         except httpx.HTTPError:
             return None
         if resp.status_code != 200:
@@ -1544,9 +1601,9 @@ def _llamacpp_context(client, server_url: str, model: str) -> Optional[int]:
     return None
 
 
-def _openai_models_list_context(client, server_url: str, model: str) -> Optional[int]:
+def _openai_models_list_context(client, server_url: str, model: str, *, admit: Callable[[], None]) -> Optional[int]:
     """/v1/models list: match by id, else the sole model on single-model servers (llama.cpp reports a GGUF path as id)."""
-    resp = client.get(f"{server_url}/v1/models")
+    admit(); resp = client.get(f"{server_url}/v1/models")
     if resp.status_code != 200:
         return None
     models_list = resp.json().get("data", [])
@@ -1565,7 +1622,7 @@ def _openai_models_list_context(client, server_url: str, model: str) -> Optional
     return None
 
 
-def _query_local_context_length_uncached(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+def _query_local_context_length_uncached(model: str, base_url: str, api_key: str = "", *, profile_home: Any = None) -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
     model = _strip_provider_prefix(model)
@@ -1574,28 +1631,35 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     if _endpoint_blackholed(server_url):
         return None
     try:
-        server_type = detect_local_server_type(base_url, api_key=api_key)
-    except Exception:
+        server_type = detect_local_server_type(base_url, api_key=api_key, profile_home=profile_home)
+    except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         server_type = None
     def _ollama_ctx(client) -> Optional[int]:
         # Ollama: num_ctx (runtime window) before the GGUF training max, or conversations
         # grow past what Ollama allocated and silently truncate. Matches query_ollama_num_ctx().
-        resp = client.post(f"{server_url}/api/show", json={"name": model})
+        admit(); resp = client.post(f"{server_url}/api/show", json={"name": model})
         return _ollama_show_context(resp.json(), gguf_first=False) if resp.status_code == 200 else None
     def _model_detail_ctx(client) -> Optional[int]:
         # LM Studio / vLLM / llama.cpp / Anthropic-compat proxies: /v1/models/{model}
-        resp = client.get(f"{server_url}/v1/models/{model}")
+        admit(); resp = client.get(f"{server_url}/v1/models/{model}")
         return _context_length_from_model_payload(resp.json()) if resp.status_code == 200 else None
     typed = {
         "ollama": _ollama_ctx,
-        "lm-studio": lambda client: _lmstudio_context(client, lmstudio_url, model),
-        "llamacpp": lambda client: _llamacpp_context(client, server_url, model),
+        "lm-studio": lambda client: _lmstudio_context(client, lmstudio_url, model, admit=admit),
+        "llamacpp": lambda client: _llamacpp_context(client, server_url, model, admit=admit),
     }.get(server_type)
-    probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
+    admit = lambda: _admit_metadata_probe(base_url, model, profile_home=profile_home)
+    probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model, admit=admit)]
     try:
         with httpx.Client(timeout=3.0, headers=_auth_headers(api_key)) as client:
             return next((ctx for ctx in (probe(client) for probe in probes) if ctx is not None), None)
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         _note_if_connect_timeout(exc, server_url)
     return None
 
@@ -1605,7 +1669,7 @@ def _normalize_model_version(model: str) -> str:
     return model.replace(".", "-")
 
 
-def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> Optional[int]:
+def _query_anthropic_context_length(model: str, base_url: str, api_key: str, *, profile_home: Any = None) -> Optional[int]:
     """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped."""
     if not api_key or api_key.startswith("sk-ant-oat"):
         return None
@@ -1613,6 +1677,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
         base = base_url.rstrip("/").removesuffix("/v1")
         headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
         _ensure_requests()
+        _admit_metadata_probe(base_url, model, provider="anthropic", profile_home=profile_home)
         resp = requests.get(f"{base}/v1/models?limit=1000", headers=headers, timeout=(5, 10), verify=_resolve_requests_verify(base_url))
         if resp.status_code != 200:
             return None
@@ -1621,6 +1686,9 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
             if isinstance(ctx, int) and ctx > 0:
                 return ctx
     except Exception as e:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(e, RoutingPolicyError):
+            raise
         logger.debug("Anthropic /v1/models query failed: %s", e)
     return None
 
@@ -1737,7 +1805,7 @@ def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
         return None
 
 
-def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[Dict[str, int], bool]:
+def _fetch_codex_oauth_context_lengths_with_source(access_token: str, *, profile_home: Any = None) -> Tuple[Dict[str, int], bool]:
     """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
     fingerprint (windows vary by entitlement). An in-process hit reports False: not a fresh
     provider confirmation, must not drive persistent writes."""
@@ -1752,12 +1820,16 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
         headers["ChatGPT-Account-Id"] = acct_id
     try:
         _ensure_requests()
+        _admit_metadata_probe(CODEX_MODELS_CATALOG_URL, provider="openai-codex", profile_home=profile_home)
         resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", resp.status_code)
             return {}, False
         data = resp.json()
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.debug("Codex /models probe failed: %s", exc)
         return {}, False
     result: Dict[str, int] = {}
@@ -1770,7 +1842,7 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
     return result, True
 
 
-def _resolve_codex_oauth_context_length_with_source(model: str, access_token: str = "") -> Tuple[Optional[int], str]:
+def _resolve_codex_oauth_context_length_with_source(model: str, access_token: str = "", *, profile_home: Any = None) -> Tuple[Optional[int], str]:
     """``(context_length, source)`` for a Codex OAuth slug. source: "live" (fresh authenticated probe —
     the only one eligible for persistent writes), "memory" (same-token in-process hit), "fallback"
     (static table), or "" when unresolved."""
@@ -1791,7 +1863,7 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     # (#92797 review).
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
     if access_token:
-        live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
+        live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token, profile_home=profile_home)
         # Exact slug, then case-insensitive in case casing drifts.
         hit = live.get(lookup_bare)
         if hit is None:
@@ -1802,15 +1874,17 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     return _apply_verified_bump(hit[1], "fallback") if hit else (None, "")
 
 
-def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = "") -> Tuple[Optional[int], str]:
+def _resolve_nous_context_length(
+    model: str, base_url: str = "", api_key: str = "", *, profile_home: Any = None,
+) -> Tuple[Optional[int], str]:
     """``(context_length, source)`` for a Nous Portal model: portal /v1/models is authoritative
     ("portal"). Fallback matches OR's prefixed ids against the bare Nous id with dot/dash
     normalisation ("openrouter" — callers must NOT persist it, or a portal blip freezes the wrong value)."""
     if base_url:
-        portal_ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        portal_ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key, profile_home=profile_home)
         if portal_ctx is not None:
             return portal_ctx, "portal"
-    metadata = fetch_model_metadata()
+    metadata = fetch_model_metadata(profile_home=profile_home)
     def _safe_ctx(or_id: str, entry: dict) -> Optional[int]:
         """Context length minus the known stale 32K underreports (same guard as step 6)."""
         ctx = entry.get("context_length")
@@ -1886,7 +1960,7 @@ def _is_bedrock_context(base_url: str, provider: str = "") -> bool:
     )
 
 
-def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
+def _resolve_bedrock_context_length(model: str, base_url: str, profile_home: Any = None) -> Optional[int]:
     """Step 1b: Bedrock static table + one cached live probe (Bedrock exposes no context window via
     metadata APIs); None when boto3 is absent. Only provider-confirmed windows from a probe
     or runtime error are reused. The table answers a call, never the cache. Keys use base_url,
@@ -1911,7 +1985,12 @@ def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     from hermes_constants import hermes_home_key
     memo_key = (hermes_home_key(), cache_key_url.rstrip('/'), model, region)
     if region and not _bedrock_probe_failed_recently(memo_key):
-        probed = probe_bedrock_context_length(model, region)
+        # Preserve the two-argument probe seam for ownerless metadata callers;
+        # only session/config-owned work needs explicit provenance propagation.
+        probed = (
+            probe_bedrock_context_length(model, region, profile_home)
+            if profile_home is not None else probe_bedrock_context_length(model, region)
+        )
         if probed:
             # The probe is the only authoritative source, so it is the only thing worth persisting:
             # a table fallback written here would be served forever (this branch runs before it),
@@ -1923,9 +2002,11 @@ def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     return get_bedrock_context_length(model, probe=False)  # static table / default: answers this call only
 
 
-def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
+def _resolve_custom_endpoint_context_length(
+    model: str, base_url: str, api_key: str, provider: str, *, profile_home: Any = None,
+) -> int:
     """Steps 2-3 for a truly custom endpoint: /models, local probes, Ollama /api/show, catalog, default."""
-    context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+    context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key, profile_home=profile_home)
     if context_length is not None:
         return context_length
     # Local endpoints: the num_ctx-aware probe first — _query_ollama_api_show is GGUF-first, which
@@ -1955,7 +2036,7 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     return DEFAULT_FALLBACK_CONTEXT
 
 
-def _resolve_moa_context_length(model: str, custom_providers: list | None) -> Optional[int]:
+def _resolve_moa_context_length(model: str, custom_providers: list | None, profile_home: Any = None) -> Optional[int]:
     """Step 0a: MoA virtual provider — ``model`` is a preset name, so every probe would miss. Resolve
     the aggregator's real provider+model (references are advisory). None on any failure."""
     try:
@@ -1973,6 +2054,7 @@ def _resolve_moa_context_length(model: str, custom_providers: list | None) -> Op
             return get_model_context_length(
                 agg_model, base_url=rt.get("base_url", "") or "", api_key=rt.get("api_key", "") or "",
                 provider=rt.get("provider") or agg_provider, custom_providers=custom_providers,
+                profile_home=profile_home,
             )
     except Exception:
         logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
@@ -2003,7 +2085,10 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
     return None
 
 
-def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: str, provider: str, effective_provider: str) -> Optional[int]:
+def _resolve_provider_aware_context_length(
+    model: str, base_url: str, api_key: str, provider: str, effective_provider: str,
+    profile_home: Any = None,
+) -> Optional[int]:
     """Step 5: provider-specific sources, tried in order; None when all miss."""
     # 5a. Copilot live /models — account-specific models (claude-opus-4.6-1m) absent from
     # models.dev, and the provider-enforced limit for the rest.
@@ -2017,8 +2102,10 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     # own /models is authoritative). Persist ONLY the authoritative source ("portal" / "live"): an
     # OR-fallback or static-table value cached on a blip would be frozen in by step 1 forever.
     sourced = {
-        "nous": lambda: _resolve_nous_context_length(model, base_url=base_url or "", api_key=api_key or "") + ("portal",),
-        "openai-codex": lambda: _resolve_codex_oauth_context_length_with_source(model, access_token=api_key or "") + ("live",),
+        "nous": lambda: _resolve_nous_context_length(
+            model, base_url=base_url or "", api_key=api_key or "", profile_home=profile_home,
+        ) + ("portal",),
+        "openai-codex": lambda: _resolve_codex_oauth_context_length_with_source(model, access_token=api_key or "", profile_home=profile_home) + ("live",),
     }.get(effective_provider)
     if sourced is not None:
         ctx, source, persist_on = sourced()
@@ -2029,7 +2116,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     if effective_provider in {"gmi", "commandcode", "commandcode-anthropic"} and base_url:
         # GMI and CommandCode expose authoritative context_length via /models (e.g. muse-spark 1M) but are
         # not in models.dev, and as known providers they skip step 2's probe — else they fell to 256K.
-        ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key, profile_home=profile_home)
         if ctx is not None:
             return ctx
     # 5e. Ollama native /api/show for any base_url that is not a known non-Ollama provider (there
@@ -2043,7 +2130,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     # 5f. OpenRouter live /models — authoritative for OR-routed models, so it must win over models.dev
     # and the family catch-all (a brand-new slug would otherwise fall to the generic "claude": 200K).
     if effective_provider == "openrouter":
-        or_ctx = (fetch_model_metadata().get(model) or {}).get("context_length")
+        or_ctx = (fetch_model_metadata(profile_home=profile_home).get(model) or {}).get("context_length")
         # Guard against the known OpenRouter Kimi-family 32k underreport.
         if isinstance(or_ctx, int) and or_ctx > 0 and not (or_ctx == 32768 and _model_name_suggests_kimi(model)):
             return or_ctx
@@ -2062,7 +2149,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
 
 def get_model_context_length(
     model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
-    provider: str = "", custom_providers: list | None = None,
+    provider: str = "", custom_providers: list | None = None, profile_home: Any = None,
 ) -> int:
     """Context length for a model. Resolution order: 0 config override / MoA aggregator /
     model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
@@ -2070,11 +2157,23 @@ def get_model_context_length(
     probe, Ollama); 4 Anthropic /v1/models (API keys only); 5 provider-aware (Copilot,
     Nous, Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
     unknown providers; 7 local server; 8 hardcoded defaults; 9 256K fallback."""
+    # A missing model is not a route. Preserve the preflight's existing fallback behavior
+    # rather than treating a partial display/setup form as an outbound admission attempt.
+    if not str(model or "").strip():
+        logger.info("No model id provided for context length resolution — defaulting to %s tokens.", f"{DEFAULT_FALLBACK_CONTEXT:,}")
+        return DEFAULT_FALLBACK_CONTEXT
+    # Metadata and context probes are outbound requests too. Admit the selected route before
+    # any source below can touch a provider; an explicit durable owner beats ambient scope.
+    from hermes_cli.routing_policy import check_outbound_route
+    check_outbound_route(
+        provider=str(provider or ""), model=str(model or ""), base_url=str(base_url or ""),
+        profile_home=profile_home,
+    )
     # 0. Explicit config override — user knows best
     if isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
     if (provider or "").strip().lower() == "moa":
-        ctx = _resolve_moa_context_length(model, custom_providers)
+        ctx = _resolve_moa_context_length(model, custom_providers, profile_home)
         if ctx is not None:
             return ctx
     ctx = _config_override_context_length(model, base_url, provider, custom_providers)
@@ -2087,11 +2186,7 @@ def get_model_context_length(
             _ = urlparse(_normalize_base_url(base_url)).port
         except ValueError:
             base_url = ""
-    # A blank model id would fuzzy-match an arbitrary catalog entry (`"" in key` is vacuously
-    # true) and persist it under a junk "@<base_url>" cache key.
-    if not str(model or "").strip():
-        logger.info("No model id provided for context length resolution — defaulting to %s tokens.", f"{DEFAULT_FALLBACK_CONTEXT:,}")
-        return DEFAULT_FALLBACK_CONTEXT
+
     model = _strip_provider_prefix(model)  # "local:x" -> "x"; Ollama "model:tag" colons preserved
     # OpenRouter routing variants (":nitro", ":floor", ...) are request-time
     # modifiers, not catalog entries — resolve the window from the BASE id.
@@ -2114,11 +2209,13 @@ def get_model_context_length(
         return validated
     # 1b. AWS Bedrock. Must run BEFORE the custom-endpoint step: bedrock-runtime.* is not in
     # _URL_TO_PROVIDER and would fail the /models probe into the default.
-    ctx = _resolve_bedrock_context_length(model, base_url) if is_bedrock_context else None
+    ctx = _resolve_bedrock_context_length(model, base_url, profile_home) if is_bedrock_context else None
     if ctx is not None:
         return ctx
     if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
-        ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)
+        ctx = _resolve_endpoint_context_length(
+            model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key, profile_home=profile_home,
+        )
         if ctx is not None:
             if base_url:
                 save_context_length(model, base_url, ctx)
@@ -2126,10 +2223,10 @@ def get_model_context_length(
     # 2. Live /models for truly custom endpoints. Known providers skip this: their /models may
     # report a provider-imposed limit (Copilot: 128k) rather than the window.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
-        return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
+        return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider, profile_home=profile_home)
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (base_url and base_url_hostname(base_url) == "api.anthropic.com"):
-        ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
+        ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key, profile_home=profile_home)
         if ctx:
             return ctx
     # 5. Provider-aware lookups — before the generic OR cache, since the same model has
@@ -2137,13 +2234,15 @@ def get_model_context_length(
     effective_provider = provider
     if base_url and (not effective_provider or effective_provider in {"openrouter", "custom"}):
         effective_provider = _infer_provider_from_url(base_url) or effective_provider
-    ctx = _resolve_provider_aware_context_length(model, base_url, api_key, provider, effective_provider)
+    ctx = _resolve_provider_aware_context_length(
+        model, base_url, api_key, provider, effective_provider, profile_home,
+    )
     if ctx is not None:
         return ctx
     # 6. OpenRouter metadata, provider-unaware fallback — only when the provider is unknown (OR
     # data is community-maintained); 32K underreport guard.
     if not effective_provider:
-        metadata = fetch_model_metadata()
+        metadata = fetch_model_metadata(profile_home=profile_home)
         if model in metadata:
             or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
             if or_ctx == 32768 and _model_name_suggests_stale_32k_underreport(model):

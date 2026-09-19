@@ -59,6 +59,490 @@ def test_codex_responses_denial_sends_nothing(monkeypatch):
     assert create.calls == []
 
 
+def test_codex_responses_rechecks_relay_mutated_wire_with_session_owner_policy(tmp_path, monkeypatch):
+    """Relay cannot turn A's permitted Responses request into B's denied wire send."""
+    from agent import relay_llm
+    from agent.codex_runtime import run_codex_stream
+    from hermes_cli.routing_policy import RoutingPolicyError
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [blocked-*]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))  # A is ambient while B owns the session.
+
+    create = _RecordingCreate()
+    client = SimpleNamespace(responses=create, base_url="https://openrouter.ai/api/v1")
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    agent = SimpleNamespace(
+        provider="openrouter", base_url="https://openrouter.ai/api/v1", model="allowed-model",
+        _session_db=restricted_db, _interrupt_requested=False,
+    )
+    monkeypatch.setattr(relay_llm, "stream", lambda request, callback, **_kwargs: callback({
+        **request, "model": "blocked-wire-model",
+    }))
+    try:
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            run_codex_stream(agent, {"model": "allowed-model"}, client=client)
+    finally:
+        restricted_db.close()
+
+    assert create.calls == []
+
+
+def test_bedrock_stream_rechecks_relay_mutated_wire_with_session_owner_policy(tmp_path, monkeypatch):
+    """Relay cannot send a B-denied Bedrock model after the pre-Relay admission."""
+    from agent import chat_completion_helpers as helpers
+    from agent import relay_llm
+    from agent import bedrock_adapter
+    from hermes_cli.routing_policy import RoutingPolicyError
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [blocked-*]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    calls = []
+    client = SimpleNamespace(
+        converse_stream=lambda **kwargs: calls.append(("stream", kwargs)) or {"stream": []},
+        converse=lambda **kwargs: calls.append(("nonstream", kwargs)) or {},
+    )
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    agent = SimpleNamespace(
+        provider="bedrock", model="allowed-model", base_url="", _session_db=restricted_db,
+        _disable_streaming=False,
+    )
+    monkeypatch.setattr(bedrock_adapter, "_get_bedrock_runtime_client", lambda _region: client)
+    monkeypatch.setattr(helpers, "_relay_stream_identity", lambda *_args: {})
+    monkeypatch.setattr(helpers, "_relay_stream_metadata", lambda *_args: {})
+    monkeypatch.setattr(relay_llm, "stream", lambda request, opener, **_kwargs: opener({
+        **request, "modelId": "blocked-wire-model",
+    }))
+    try:
+        stream = helpers._BedrockStream(agent, {
+            "__bedrock_region__": "us-east-1", "modelId": "allowed-model", "messages": [],
+        }, None)
+        stream._worker()
+    finally:
+        restricted_db.close()
+
+    assert isinstance(stream.result["error"], RoutingPolicyError)
+    assert calls == []
+
+
+def test_bedrock_auxiliary_adapter_uses_durable_owner_policy_before_converse(tmp_path, monkeypatch):
+    """Ambient A cannot send B's denied auxiliary Bedrock model through Converse."""
+    from agent import auxiliary_client as auxiliary
+    from agent import bedrock_adapter
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [blocked-*]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))  # A is ambient while B owns the session.
+
+    calls = []
+    client = SimpleNamespace(converse=lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(bedrock_adapter, "_get_bedrock_runtime_client", lambda _region: client)
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    try:
+        adapter = auxiliary.BedrockAuxiliaryClient("us-east-1", "allowed-model")
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            adapter.chat.completions.create(
+                model="blocked-wire-model", messages=[],
+                _hermes_routing_policy_home=profile_home_for_session_db(restricted_db),
+            )
+    finally:
+        restricted_db.close()
+
+    assert calls == []
+
+
+def test_bedrock_auxiliary_completion_preserves_owner_for_adapter_final_wire(tmp_path, monkeypatch):
+    """The generic auxiliary completion seam does not strip Bedrock's owner marker."""
+    from agent import auxiliary_client as auxiliary
+    from agent import bedrock_adapter
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [blocked-*]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    calls = []
+    client = SimpleNamespace(converse=lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(bedrock_adapter, "_get_bedrock_runtime_client", lambda _region: client)
+    monkeypatch.setattr(auxiliary, "_guard_auxiliary_wire_route", lambda *_args, **_kwargs: None)
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    try:
+        adapter = auxiliary.BedrockAuxiliaryClient("us-east-1", "allowed-model")
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            auxiliary._relay_sync_completion(
+                adapter,
+                {
+                    "model": "blocked-wire-model", "messages": [],
+                    "_hermes_routing_policy_home": profile_home_for_session_db(restricted_db),
+                },
+                provider="bedrock",
+                create=lambda request: adapter.chat.completions.create(**request),
+            )
+    finally:
+        restricted_db.close()
+
+    assert calls == []
+
+
+def test_async_bedrock_auxiliary_post_guard_mutation_uses_session_owner_at_final_wire(tmp_path, monkeypatch):
+    """A callback cannot turn B's admitted async Bedrock request into a denied Converse wire send."""
+    import asyncio
+
+    from agent import auxiliary_client as auxiliary
+    from agent import bedrock_adapter
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [blocked-*]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))  # A is ambient when the final Converse guard runs.
+
+    calls = []
+    sdk_client = SimpleNamespace(converse=lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(bedrock_adapter, "_get_bedrock_runtime_client", lambda _region: sdk_client)
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    try:
+        sync_client = auxiliary.BedrockAuxiliaryClient("us-east-1", "allowed-model")
+        client = auxiliary.AsyncBedrockAuxiliaryClient(sync_client)
+
+        async def mutate_after_guard(request):
+            return await client.chat.completions.create(**{
+                **request, "model": "blocked-wire-model",
+            })
+
+        async def invoke():
+            return await auxiliary._relay_async_completion(
+                client,
+                {
+                    "model": "allowed-model", "messages": [],
+                    "_hermes_routing_policy_home": profile_home_for_session_db(restricted_db),
+                },
+                provider="bedrock",
+                create=mutate_after_guard,
+            )
+
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            asyncio.run(invoke())
+    finally:
+        restricted_db.close()
+
+    assert calls == []
+
+
+def test_bedrock_final_wire_owner_policy_blocks_stream_fallback_before_any_sdk_call(tmp_path, monkeypatch):
+    """A B-denied Converse stream cannot reach either stream or fallback SDK wire."""
+    from agent import bedrock_adapter
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [blocked-*]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    calls = []
+    client = SimpleNamespace(
+        converse_stream=lambda **kwargs: calls.append(("stream", kwargs)),
+        converse=lambda **kwargs: calls.append(("fallback", kwargs)),
+    )
+    monkeypatch.setattr(bedrock_adapter, "_get_bedrock_runtime_client", lambda _region: client)
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    try:
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            bedrock_adapter.call_converse_stream(
+                "us-east-1", "blocked-wire-model", [],
+                profile_home=profile_home_for_session_db(restricted_db),
+            )
+    finally:
+        restricted_db.close()
+
+    assert calls == []
+
+
+def test_auxiliary_stream_rechecks_relay_mutated_wire_with_session_owner_policy(tmp_path, monkeypatch):
+    """The stream callback retains B's owner policy after Relay mutates its model."""
+    from agent import auxiliary_client as auxiliary
+    from agent import relay_llm
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [blocked-*]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    create = _RecordingCreate()
+    client = SimpleNamespace(
+        base_url="https://allowed.example/v1", chat=SimpleNamespace(completions=create),
+    )
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    monkeypatch.setattr(relay_llm, "stream_current", lambda request, callback, **_kwargs: callback({
+        **request, "model": "blocked-wire-model",
+    }))
+    relay_token = auxiliary._RELAY_AUX_CALL_CONTEXT.set({
+        "task": "moa_aggregator", "request_id": "test-request", "attempt_count": 0,
+        "provider": "openrouter", "model": "allowed-model", "api_mode": "chat_completions",
+    })
+    try:
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            auxiliary._relay_sync_stream(client, {
+                "model": "allowed-model", "messages": [],
+                "_hermes_routing_policy_home": profile_home_for_session_db(restricted_db),
+            }, provider="openrouter")
+    finally:
+        auxiliary._RELAY_AUX_CALL_CONTEXT.reset(relay_token)
+        restricted_db.close()
+
+    assert create.calls == []
+
+
+def test_codex_auxiliary_final_wire_rechecks_transformed_model_with_owner_policy(tmp_path, monkeypatch):
+    """A permitted picker suffix cannot become a B-denied Codex Responses model."""
+    from agent import auxiliary_client as auxiliary
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [gpt-5.6-sol]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    create = _RecordingCreate()
+    real_client = SimpleNamespace(
+        api_key="test-key", base_url="https://chatgpt.com/backend-api/codex", responses=create,
+    )
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    try:
+        client = auxiliary.CodexAuxiliaryClient(real_client, "gpt-5.6-sol-900k")
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            auxiliary._relay_sync_completion(
+                client,
+                {
+                    "model": "gpt-5.6-sol-900k", "messages": [],
+                    "_hermes_routing_policy_home": profile_home_for_session_db(restricted_db),
+                },
+                provider="openai-codex",
+                create=lambda request: client.chat.completions.create(**request),
+            )
+    finally:
+        restricted_db.close()
+
+    assert create.calls == []
+
+
+def test_async_codex_auxiliary_final_wire_rechecks_transformed_model_with_owner_policy(tmp_path, monkeypatch):
+    """The async shim retains the owner through its thread-backed Responses adapter."""
+    import asyncio
+
+    from agent import auxiliary_client as auxiliary
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [gpt-5.6-sol]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    create = _RecordingCreate()
+    real_client = SimpleNamespace(
+        api_key="test-key", base_url="https://chatgpt.com/backend-api/codex", responses=create,
+    )
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    try:
+        sync_client = auxiliary.CodexAuxiliaryClient(real_client, "gpt-5.6-sol-900k")
+        client = auxiliary.AsyncCodexAuxiliaryClient(sync_client)
+
+        async def invoke():
+            return await auxiliary._relay_async_completion(
+                client,
+                {
+                    "model": "gpt-5.6-sol-900k", "messages": [],
+                    "_hermes_routing_policy_home": profile_home_for_session_db(restricted_db),
+                },
+                provider="openai-codex",
+                create=lambda request: client.chat.completions.create(**request),
+            )
+
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            asyncio.run(invoke())
+    finally:
+        restricted_db.close()
+
+    assert create.calls == []
+
+
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+def test_native_anthropic_auxiliary_preserves_owner_through_canonical_wire_model(tmp_path, monkeypatch, async_mode):
+    """A's prefixed model cannot send B's denied canonical Anthropic wire model."""
+    import asyncio
+
+    from agent import auxiliary_client as auxiliary
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [claude-opus-4-6]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    class Messages:
+        def __init__(self):
+            self.stream_calls = []
+            self.create_calls = []
+
+        def stream(self, **kwargs):
+            self.stream_calls.append(kwargs)
+            raise AssertionError("native Anthropic stream must not open")
+
+        def create(self, **kwargs):
+            self.create_calls.append(kwargs)
+            raise AssertionError("native Anthropic create must not open")
+
+    messages = Messages()
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    try:
+        sync_client = auxiliary.AnthropicAuxiliaryClient(
+            SimpleNamespace(messages=messages), "anthropic/claude-opus-4.6", "test-key", "https://api.anthropic.com/v1",
+        )
+        client = auxiliary.AsyncAnthropicAuxiliaryClient(sync_client) if async_mode else sync_client
+        kwargs = {
+            "model": "anthropic/claude-opus-4.6", "messages": [{"role": "user", "content": "x"}],
+            "_hermes_routing_policy_home": profile_home_for_session_db(restricted_db),
+        }
+        if async_mode:
+            async def invoke():
+                return await auxiliary._relay_async_completion(client, kwargs, provider="anthropic")
+            with pytest.raises(RoutingPolicyError, match="selected model"):
+                asyncio.run(invoke())
+        else:
+            with pytest.raises(RoutingPolicyError, match="selected model"):
+                auxiliary._relay_sync_completion(client, kwargs, provider="anthropic")
+    finally:
+        restricted_db.close()
+
+    assert messages.stream_calls == []
+    assert messages.create_calls == []
+
+
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+def test_native_gemini_auxiliary_preserves_owner_through_bare_wire_model(tmp_path, monkeypatch, async_mode):
+    """A's prefixed Gemini request cannot POST B's denied bare native model id."""
+    import asyncio
+
+    from agent import auxiliary_client as auxiliary
+    from agent.gemini_native_adapter import AsyncGeminiNativeClient, GeminiNativeClient
+    from hermes_cli.routing_policy import RoutingPolicyError, profile_home_for_session_db
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [gemini-3-pro]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    class HTTP:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, *args, **kwargs):
+            self.posts.append((args, kwargs))
+            raise AssertionError("native Gemini POST must not open")
+
+        def close(self):
+            pass
+
+    http = HTTP()
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    try:
+        sync_client = GeminiNativeClient(api_key="test-key", http_client=http)
+        client = AsyncGeminiNativeClient(sync_client) if async_mode else sync_client
+        kwargs = {
+            "model": "gemini/gemini-3-pro", "messages": [{"role": "user", "content": "x"}],
+            "_hermes_routing_policy_home": profile_home_for_session_db(restricted_db),
+        }
+        # Bypass the pre-transform generic guard: this asserts metadata survives that
+        # seam so Gemini's canonical final-wire guard is the rejecting boundary.
+        monkeypatch.setattr(auxiliary, "_guard_auxiliary_wire_route", lambda *_args, **_kwargs: None)
+        if async_mode:
+            async def invoke():
+                return await auxiliary._relay_async_completion(client, kwargs, provider="gemini")
+            with pytest.raises(RoutingPolicyError, match="selected model"):
+                asyncio.run(invoke())
+        else:
+            with pytest.raises(RoutingPolicyError, match="selected model"):
+                auxiliary._relay_sync_completion(client, kwargs, provider="gemini")
+    finally:
+        restricted_db.close()
+
+    assert http.posts == []
+
+
 def test_policy_error_is_terminal_to_auxiliary_recovery_ladder():
     """A denial is not a recoverable provider failure and cannot advance a fallback."""
     from agent.auxiliary_client import _drive_ladder, _rung
@@ -633,6 +1117,49 @@ def test_iteration_summary_denial_blocks_direct_create(monkeypatch):
     attempt = helpers._chat_summary_attempt(agent, [], "summary-request")
     with pytest.raises(RoutingPolicyError):
         attempt(0)
+
+    assert create.calls == []
+
+
+def test_iteration_summary_rechecks_relay_mutated_wire_with_session_owner_policy(tmp_path, monkeypatch):
+    """Relay cannot mutate A's permitted summary request into B's denied wire send."""
+    from agent import chat_completion_helpers as helpers
+    from agent import relay_llm
+    from hermes_cli.routing_policy import RoutingPolicyError
+    from hermes_state import SessionDB
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    for config, policy in (
+        (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+        (restricted / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    models: [blocked-*]\n"),
+    ):
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(policy, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))  # A is ambient while B owns the session.
+
+    create = _RecordingCreate()
+    client = SimpleNamespace(
+        base_url="https://allowed.example/v1", chat=SimpleNamespace(completions=create),
+    )
+    restricted_db = SessionDB(db_path=restricted / "state.db")
+    agent = SimpleNamespace(
+        provider="openrouter", model="allowed-model", base_url="https://allowed.example/v1",
+        _session_db=restricted_db,
+        _build_api_kwargs=lambda _messages: {"model": "allowed-model", "messages": []},
+        _ensure_primary_openai_client=lambda **_kwargs: client,
+    )
+    monkeypatch.setattr(helpers, "sanitize_outbound_kwargs", lambda *_args: None)
+    monkeypatch.setattr(helpers, "_summary_text", lambda *_args, **_kwargs: "summary")
+    monkeypatch.setattr(relay_llm, "execute_current", lambda request, callback, **_kwargs: callback({
+        **request, "model": "blocked-wire-model",
+    }))
+    try:
+        attempt = helpers._chat_summary_attempt(agent, [], "summary-request")
+        with pytest.raises(RoutingPolicyError, match="selected model"):
+            attempt(0)
+    finally:
+        restricted_db.close()
 
     assert create.calls == []
 

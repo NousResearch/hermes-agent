@@ -195,3 +195,63 @@ def test_model_policy_flag_is_inherited_top_level_runtime_option():
     args = parser.parse_args(["--model-policy", "operator-floor.yaml"])
 
     assert args.model_policy == "operator-floor.yaml"
+
+
+def test_save_config_rejects_denied_nested_auxiliary_fallback_chain_before_write(tmp_path, monkeypatch):
+    """List entries below auxiliary config are routes and cannot be durably staged."""
+    from hermes_cli.config import save_config
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    config_path = home / "config.yaml"
+    original = "sentinel: keep-this-file-unchanged\n"
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    candidate = {
+        "routing_policy": {"enabled": True, "deny": {"models": ["z-ai/*"]}},
+        "auxiliary": {
+            "compression": {
+                "fallback_chain": [{"provider": "openrouter", "model": "z-ai/glm-5.3"}],
+            },
+        },
+    }
+
+    with pytest.raises(RoutingPolicyError, match="selected model"):
+        save_config(candidate, strip_defaults=False)
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("provider_definitions", [
+    {"blocked": {"provider": "blocked", "model": "safe"}},
+    [{"provider": "blocked", "model": "safe"}],
+    ({"nested": {"provider": "safe", "base_url": "https://blocked.example/v1"}},),
+])
+def test_save_config_rejects_denied_provider_definitions_without_mutating_file(
+    tmp_path, monkeypatch, provider_definitions,
+):
+    """Both modern and legacy custom provider shapes are durable routes, recursively."""
+    from hermes_cli.config import save_config
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    config_path = home / "config.yaml"
+    original = "sentinel: unchanged\n"
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    key = "providers" if isinstance(provider_definitions, dict) else "custom_providers"
+    candidate = {
+        "routing_policy": {
+            "enabled": True,
+            "deny": {"providers": ["blocked"], "base_url_hosts": ["blocked.example"]},
+        },
+        key: provider_definitions,
+    }
+
+    with pytest.raises(RoutingPolicyError):
+        save_config(candidate, strip_defaults=False)
+
+    assert config_path.read_text(encoding="utf-8") == original

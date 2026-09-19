@@ -940,20 +940,32 @@ def build_converse_kwargs(
     return kwargs
 
 
+def _guard_bedrock_wire_route(model_id: str, region: str, profile_home: Any = None) -> None:
+    """Apply the owning profile's policy immediately before a Converse SDK send."""
+    from hermes_cli.routing_policy import check_outbound_route
+    check_outbound_route(
+        provider="bedrock", model=str(model_id or ""),
+        base_url=f"https://bedrock-runtime.{region}.amazonaws.com", profile_home=profile_home,
+    )
+
+
 def call_converse(
     region: str, model: str, messages: List[Dict], tools: Optional[List[Dict]] = None,
     max_tokens: Optional[int] = 4096, temperature: Optional[float] = None, top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None, guardrail_config: Optional[Dict] = None,
+    profile_home: Any = None,
 ) -> SimpleNamespace:
     """Non-streaming Converse call → OpenAI-compatible response. Retries once without a rejected cachePoint
     placement; evicts the cached client on stale-connection errors."""
     client = _get_bedrock_runtime_client(region)
     kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config)
     try:
+        _guard_bedrock_wire_route(kwargs["modelId"], region, profile_home)
         response = client.converse(**kwargs)
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
+            _guard_bedrock_wire_route(retry_kwargs["modelId"], region, profile_home)
             return normalize_converse_response(client.converse(**retry_kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
@@ -1021,9 +1033,18 @@ def _list_inference_profiles(client, filter_set: set, models: List[Dict[str, Any
         seen_ids.add(profile_id.lower())
 
 
-def discover_bedrock_models(region: str, provider_filter: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def discover_bedrock_models(
+    region: str, provider_filter: Optional[List[str]] = None, *, profile_home: Any = None,
+) -> List[Dict[str, Any]]:
     """Foundation models + inference profiles (cached 1h per region/filter), ``global.`` profiles first then
     by name; [] when the client cannot be built."""
+    # Control-plane discovery signs and sends AWS requests; authorize it before
+    # building a client, using durable owner provenance when supplied.
+    from hermes_cli.routing_policy import check_outbound_route
+    check_outbound_route(
+        provider="bedrock", model="", base_url=f"https://bedrock.{region}.amazonaws.com",
+        profile_home=profile_home,
+    )
     # The list is account-scoped (whichever credentials the control client signs with), so a routed
     # profile gets its own entry; unscoped keeps the region:filter key byte-for-byte.
     from hermes_constants import get_hermes_home_override, hermes_home_key
@@ -1095,10 +1116,13 @@ _BEDROCK_PROBE_TIERS = (1_300_000, 2_200_000)
 _WORDS_PER_TOKEN = 0.9  # conservative: ensures the padded prompt clears the tier
 
 
-def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
+def probe_bedrock_context_length(model_id: str, region: str, profile_home: Any = None) -> Optional[int]:
     """Discover a model's real context window by provoking a length error — the only authoritative source
     ("prompt is too long: 1300032 tokens > 1000000 maximum"); length validation runs before inference so the
     probe costs nothing. An accepted tier is a safe lower bound; None (no creds/network/unparseable) → static table."""
+    # This is a physical Converse send, not merely metadata: reject before constructing
+    # the SDK client so a denied probe has no credential resolution or network side effects.
+    _guard_bedrock_wire_route(model_id, region, profile_home)
     from agent.model_metadata import parse_context_limit_from_error
     try:
         client = _get_bedrock_runtime_client(region)
@@ -1125,14 +1149,16 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     return None
 
 
-def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
+def get_bedrock_context_length(
+    model_id: str, region: str = "", probe: bool = True, profile_home: Any = None,
+) -> int:
     """Context window: live probe (if ``probe`` and ``region``) → static table → default. The table is fallback
     only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4").
     An application-inference-profile ARN is first resolved to the model it wraps (#114476)."""
     profile_arn = model_id if _APPLICATION_PROFILE_ARN_RE.search(model_id) else ""
     if profile_arn:
-        model_id = _resolve_inference_profile_model_id(profile_arn, region)
-    if probe and region and (probed := probe_bedrock_context_length(model_id, region)):
+        model_id = _resolve_inference_profile_model_id(profile_arn, region, profile_home=profile_home)
+    if probe and region and (probed := probe_bedrock_context_length(model_id, region, profile_home)):
         return probed
     matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in model_id.lower()]
     if matches:
@@ -1159,7 +1185,7 @@ _ARN_REGION_RE = re.compile(r"^arn:[^:]+:bedrock:([a-z0-9-]+):", re.IGNORECASE)
 _inference_profile_model_cache: Dict[str, str] = {}
 
 
-def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> str:
+def _resolve_inference_profile_model_id(profile_arn: str, region: str = "", *, profile_home: Any = None) -> str:
     """Application-profile ARN → the wrapped model's ARN (its ``foundation-model/<id>`` tail satisfies the
     static-table substring match); the profile ARN itself when ``bedrock:GetInferenceProfile`` is not
     granted or unavailable, so callers keep the default-window behaviour. Both outcomes are cached per
@@ -1170,10 +1196,21 @@ def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> s
     region = (arn_region.group(1) if arn_region else "") or region or resolve_bedrock_region()
     resolved = profile_arn
     try:
+        # GetInferenceProfile is an outbound control-plane request too. Admit it
+        # before constructing the SDK client so a denied route has zero sends.
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(
+            provider="bedrock", model=profile_arn,
+            base_url=f"https://bedrock.{region}.amazonaws.com" if region else "",
+            profile_home=profile_home,
+        )
         client = _get_bedrock_control_client(region)
         models = client.get_inference_profile(inferenceProfileIdentifier=profile_arn).get("models") or []
         resolved = next((m["modelArn"] for m in models if m.get("modelArn")), profile_arn)
     except Exception as exc:  # no boto3 / credentials / GetInferenceProfile not granted
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.debug("Inference profile resolution skipped for %s: %s", profile_arn, exc)
     _inference_profile_model_cache[profile_arn] = resolved
     return resolved
@@ -1212,6 +1249,7 @@ def call_converse_stream(
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    profile_home: Any = None,
 ) -> SimpleNamespace:
     """Call Bedrock ConverseStream API and return an OpenAI-compatible response.
 
@@ -1231,10 +1269,12 @@ def call_converse_stream(
     )
 
     try:
+        _guard_bedrock_wire_route(kwargs["modelId"], region, profile_home)
         response = client.converse_stream(**kwargs)
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
+            _guard_bedrock_wire_route(retry_kwargs["modelId"], region, profile_home)
             return normalize_converse_stream_events(
                 client.converse_stream(**retry_kwargs)
             )
@@ -1247,6 +1287,7 @@ def call_converse_stream(
                 "falling back to non-streaming converse().",
                 region, model,
             )
+            _guard_bedrock_wire_route(kwargs["modelId"], region, profile_home)
             return normalize_converse_response(client.converse(**kwargs))
         if is_stale_connection_error(exc):
             logger.warning(

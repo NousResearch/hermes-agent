@@ -997,11 +997,25 @@ class ClientLifecycleMixin:
             self._try_refresh_anthropic_client_credentials()
         # Strips Responses-only kwargs that leak in under an api_mode-flip race.
         from agent.anthropic_adapter import create_anthropic_message
+        request_client = client or self._anthropic_client
+
+        def _check_final_wire_route(final_kwargs: dict) -> None:
+            # Relay can mutate the callback request after the summary dispatcher has checked it.
+            # Check the sanitized payload at each native SDK send with the durable session owner.
+            from hermes_cli.routing_policy import check_outbound_route, profile_home_for_session_db
+            check_outbound_route(
+                provider=str(getattr(self, "provider", "") or ""),
+                model=str(final_kwargs.get("model") or getattr(self, "model", "") or ""),
+                base_url=str(getattr(request_client, "base_url", None) or getattr(self, "base_url", "") or ""),
+                profile_home=profile_home_for_session_db(getattr(self, "_session_db", None)),
+            )
+
         # on_response: rate-limit + credits state live in response headers, which the parsed Message drops.
         return create_anthropic_message(
-            client or self._anthropic_client, api_kwargs, log_prefix=getattr(self, "log_prefix", ""),
+            request_client, api_kwargs, log_prefix=getattr(self, "log_prefix", ""),
             prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
             on_response=self._capture_anthropic_response_headers,
+            before_wire=_check_final_wire_route,
         )
 
     def _rebuild_anthropic_client(self) -> None:

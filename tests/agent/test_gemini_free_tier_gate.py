@@ -48,6 +48,24 @@ class TestProbeGeminiTier:
         resp = _mock_response(200, {}, '{"candidates":[]}')
         assert _run_probe(resp) == "paid"
 
+    def test_denied_owner_does_not_construct_tier_probe_client(self, tmp_path, monkeypatch):
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        home = tmp_path / "hermes"
+        owner = home / "profiles" / "restricted"
+        for path, content in (
+            (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+            (owner / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    providers: [gemini]\n"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        with patch("agent.gemini_native_adapter.httpx.Client") as client:
+            with __import__("pytest").raises(RoutingPolicyError):
+                probe_gemini_tier("fake-key", profile_home=owner)
+        assert client.call_count == 0
+
 
 
 

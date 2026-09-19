@@ -2085,6 +2085,7 @@ def _resolve_switch_context_length(agent, snapshot):
 def _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot) -> None:
     """Point the context compressor at the new model (rolls back the switch on failure)."""
     from agent.model_metadata import get_model_context_length
+    from hermes_cli.routing_policy import profile_home_for_session_db
     if custom_providers is None:
         try:
             from hermes_cli.config import get_compatible_custom_providers, load_config
@@ -2098,6 +2099,7 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
         new_context_length = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
             config_context_length=effective_context_length, custom_providers=custom_providers,
+            profile_home=profile_home_for_session_db(getattr(agent, "_session_db", None)),
         )
         agent.context_compressor.update_model(
             model=agent.model,

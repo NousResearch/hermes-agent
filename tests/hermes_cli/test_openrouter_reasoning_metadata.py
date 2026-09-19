@@ -9,6 +9,7 @@ Covers:
 """
 
 import pytest
+from unittest.mock import MagicMock
 
 from hermes_cli.models import clamp_reasoning_effort_to_supported
 from hermes_cli.models_reasoning_caps import parse_openrouter_reasoning_capabilities
@@ -117,6 +118,24 @@ class TestOpenRouterModelReasoningCapabilities:
         import hermes_cli.models as models_mod
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", caps_by_id)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
+
+    def test_denied_catalog_capability_fetch_never_opens_transport(self, monkeypatch):
+        """An allow_fetch cache miss still must admit the OpenRouter HTTP request."""
+        import hermes_cli.models as models_mod
+        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
+
+        self._prime_cache(monkeypatch, None)
+        monkeypatch.setattr(
+            "hermes_cli.routing_policy.current_routing_policy",
+            lambda *_args: {"enabled": True, "deny": {"providers": ["openrouter"]}},
+        )
+        opener = MagicMock()
+        monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", opener)
+
+        from hermes_cli.routing_policy import RoutingPolicyError
+        with pytest.raises(RoutingPolicyError, match="denies provider"):
+            openrouter_model_reasoning_capabilities("vendor/model", allow_fetch=True)
+        assert opener.call_count == 0
 
     def test_known_model(self, monkeypatch):
         from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities

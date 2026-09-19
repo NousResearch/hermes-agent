@@ -12,6 +12,21 @@ from agent.usage_pricing import (
 from decimal import Decimal
 
 
+def test_openrouter_pricing_metadata_uses_explicit_profile_owner(monkeypatch, tmp_path):
+    """Usage pricing retains the session owner's authority for its catalog request."""
+    import agent.usage_pricing as pricing
+
+    owner = tmp_path / "profiles" / "restricted"
+    seen = []
+    monkeypatch.setattr(
+        pricing, "fetch_model_metadata",
+        lambda *, profile_home=None: seen.append(profile_home) or {"vendor/model": {"pricing": {"prompt": "0.000001"}}},
+    )
+
+    assert get_pricing_entry("vendor/model", provider="openrouter", profile_home=owner) is not None
+    assert seen == [owner]
+
+
 def test_astra_whole_request_price_tier_includes_cache_writes():
     below = estimate_usage_cost(
         "gpt-6-astra",

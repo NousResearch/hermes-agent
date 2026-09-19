@@ -393,19 +393,27 @@ def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
 # ── model config ───────────────────────────────────────────────────────────────────────────
 
 
-def _auto_detect_local_model(base_url: str) -> str:
+def _auto_detect_local_model(
+    base_url: str, *, provider: str = "lmstudio", profile_home: Any = None,
+) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
         return ""
     try:
         import requests
         url = base_url.rstrip("/")
-        resp = requests.get((url if url.endswith("/v1") else url + "/v1") + "/models", timeout=(2, 3))
+        models_url = (url if url.endswith("/v1") else url + "/v1") + "/models"
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(provider=provider, model="", base_url=models_url, profile_home=profile_home)
+        resp = requests.get(models_url, timeout=(2, 3))
         if resp.ok:
             models = resp.json().get("data", [])
             if len(models) == 1 and models[0].get("id", ""):
                 return models[0]["id"]
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.debug("Auto-detect model from %s failed: %s", base_url, exc)
     return ""
 
@@ -432,7 +440,7 @@ def _get_model_config() -> Dict[str, Any]:
         _default = cfg_model
     base_url = (cfg.get("base_url") or "").strip()
     if not str(_default or "").strip() and base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1"):
-        detected = _auto_detect_local_model(base_url)
+        detected = _auto_detect_local_model(base_url, provider=str(cfg.get("provider") or "lmstudio"))
         if detected:
             cfg["default"] = detected
     return cfg

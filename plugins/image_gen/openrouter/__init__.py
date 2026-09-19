@@ -66,7 +66,7 @@ _IMAGE_API_CONNECT_TIMEOUT = 20.0
 # are cached too, so the key must include the credential or one profile's 401 would pin a sibling
 # profile (same base URL, different key) to chat-completions for the whole TTL.
 _CATALOG_TTL_SECONDS = 900.0
-_CATALOG_CACHE: Dict[Tuple[str, Optional[str]], Tuple[float, frozenset]] = {}
+_CATALOG_CACHE: Dict[Tuple[Any, ...], Tuple[float, frozenset]] = {}
 
 _GEMINI_RATIOS = (
     "1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9",
@@ -233,10 +233,22 @@ def _access_error_hint(display: str, model_id: str, env_var: str, status: int, e
         f"image access in your {display} account, or set {env_var}={_FALLBACK_MODEL}.")
 
 
-def _get_catalog(base_url: str, path: str, api_key: str, timeout: Any) -> List[Tuple[str, Dict[str, Any]]]:
+def _admit_openrouter_send(
+    base_url: str, model: str = "", *, provider: str = "openrouter", profile_home: Optional[str | Path] = None,
+) -> None:
+    """Check the resolved image route immediately before every physical catalog or generation send."""
+    from hermes_cli.routing_policy import check_outbound_route
+    check_outbound_route(provider=provider, model=model, base_url=base_url, profile_home=profile_home)
+
+
+def _get_catalog(
+    base_url: str, path: str, api_key: str, timeout: Any, *, provider: str = "openrouter",
+    profile_home: Optional[str | Path] = None,
+) -> List[Tuple[str, Dict[str, Any]]]:
     """``(model_id, entry)`` pairs from ``GET {base_url}{path}``'s ``data[]``; raises on HTTP failure."""
     import requests
 
+    _admit_openrouter_send(f"{base_url}{path}", provider=provider, profile_home=profile_home)
     response = requests.get(
         f"{base_url}{path}", headers={"Authorization": f"Bearer {api_key}"} if api_key else {}, timeout=timeout,
     )
@@ -251,12 +263,12 @@ def _get_catalog(base_url: str, path: str, api_key: str, timeout: Any) -> List[T
 
 def _fetch_catalog(
     base_url: str, api_key: str, *, path: str, meta: Dict[str, Dict[str, Any]], generic: str,
-    image_output_only: bool,
+    image_output_only: bool, provider: str = "openrouter", profile_home: Optional[str | Path] = None,
 ) -> List[Dict[str, Any]]:
     """Picker rows from ``GET {base_url}{path}``; raises on failure. ``image_output_only`` keeps
     image-output models minus router pseudo-models; curated ``meta`` wins for known ids."""
     out: List[Dict[str, Any]] = []
-    for model_id, entry in _get_catalog(base_url, path, api_key, _LIVE_TIMEOUT):
+    for model_id, entry in _get_catalog(base_url, path, api_key, _LIVE_TIMEOUT, provider=provider, profile_home=profile_home):
         arch = _dict_at(entry, "architecture")
         if image_output_only and (
             model_id.startswith(_EXCLUDED_MODEL_PREFIXES) or "image" not in (arch.get("output_modalities") or [])
@@ -272,20 +284,28 @@ def _fetch_catalog(
     return out
 
 
-def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
+def _fetch_image_api_catalog(
+    base_url: str, api_key: str, *, provider: str = "openrouter", profile_home: Optional[str | Path] = None,
+) -> frozenset:
     """Model ids from ``GET {base_url}/images/models``, cached per (base URL, key). Any failure caches
     an empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
     from agent.credential_persistence import fingerprint_secret_value
 
-    cache_key = (base_url, fingerprint_secret_value(api_key))
+    cache_key = (base_url, fingerprint_secret_value(api_key), provider, str(profile_home) if profile_home is not None else "")
     cached = _CATALOG_CACHE.get(cache_key)
     if cached and (time.monotonic() - cached[0]) < _CATALOG_TTL_SECONDS:
         return cached[1]
     ids: set = set()
     try:
-        catalog = _get_catalog(base_url, "/images/models", api_key, (_IMAGE_API_CONNECT_TIMEOUT, 30.0))
+        catalog = _get_catalog(
+            base_url, "/images/models", api_key, (_IMAGE_API_CONNECT_TIMEOUT, 30.0),
+            provider=provider, profile_home=profile_home,
+        )
         ids = {model_id for model_id, _entry in catalog}
     except Exception as exc:  # noqa: BLE001 - probe must never break generation
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.debug("image API catalog probe failed for %s: %s", base_url, exc)
     resolved = frozenset(ids)
     _CATALOG_CACHE[cache_key] = (time.monotonic(), resolved)
@@ -297,7 +317,10 @@ def _image_api_model_meta(model_id: str) -> Dict[str, Any]:
     return _IMAGE_API_MODELS.get(model_id, _UNKNOWN_IMAGE_API_MODEL)
 
 
-def _select_surface(model_id: str, base_url: str, api_key: str, config_key: str) -> str:
+def _select_surface(
+    model_id: str, base_url: str, api_key: str, config_key: str, *, provider: str = "openrouter",
+    profile_home: Optional[str | Path] = None,
+) -> str:
     """``"images"`` or ``"chat"``: config/env ``surface`` forces it; curated ids are offline and
     deterministic; unknown ids consult the cached live catalog (a positive probe must route there
     or a model the live picker offered would 404; offline they stay on chat)."""
@@ -308,7 +331,9 @@ def _select_surface(model_id: str, base_url: str, api_key: str, config_key: str)
         return forced.strip().lower()
     if model_id in _CHAT_ONLY_MODELS:
         return "chat"
-    if model_id in _IMAGE_API_MODELS or model_id in _fetch_image_api_catalog(base_url, api_key):
+    if model_id in _IMAGE_API_MODELS or model_id in _fetch_image_api_catalog(
+        base_url, api_key, provider=provider, profile_home=profile_home,
+    ):
         return "images"
     return "chat"
 
@@ -525,13 +550,13 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
     def display_name(self) -> str:
         return self._display
 
-    def _credentials(self) -> Tuple[str, str]:
-        """``(api_key, base_url)`` — either may be ``""``; raises on resolution failure."""
+    def _credentials(self) -> Tuple[str, str, Dict[str, Any]]:
+        """``(api_key, base_url, runtime)`` from the active profile; raises on resolution failure."""
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested=self._runtime_name)
         return (
-            str(runtime.get("api_key") or "").strip(), str(runtime.get("base_url") or "").strip().rstrip("/"),
+            str(runtime.get("api_key") or "").strip(), str(runtime.get("base_url") or "").strip().rstrip("/"), runtime,
         )
 
     def is_available(self) -> bool:
@@ -574,10 +599,15 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             return cached[0]
         models: List[Dict[str, Any]] = []
         try:
-            api_key, base_url = self._credentials()
+            api_key, base_url, runtime = self._credentials()
             if base_url:
-                models = _fetch_catalog(base_url, api_key, **fetch)
+                models = _fetch_catalog(
+                    base_url, api_key, provider=str(runtime.get("provider") or self._runtime_name),
+                    profile_home=runtime.get("_hermes_routing_policy_home"), **fetch)
         except Exception as exc:  # noqa: BLE001 - offline/unauth → fallback path
+            from hermes_cli.routing_policy import RoutingPolicyError
+            if isinstance(exc, RoutingPolicyError):
+                raise
             logger.debug("%s live %s unavailable: %s", self._name, label, exc)
             models = []
         setattr(self, attr, (models, time.monotonic()))
@@ -617,7 +647,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def _generate_via_image_api(
         self, *, model_id: str, prompt: str, semantic_aspect: str, references: List[str],
-        base_url: str, headers: Dict[str, str], kwargs: Dict[str, Any],
+        base_url: str, headers: Dict[str, str], kwargs: Dict[str, Any], route_provider: Optional[str] = None,
+        profile_home: Optional[str | Path] = None,
     ) -> Dict[str, Any]:
         """One ``POST {base_url}/images/generations`` attempt; a chain-retryable failure carries a
         private ``_retryable`` flag that :meth:`generate` strips."""
@@ -659,6 +690,10 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             logger.debug("%s: ignoring non-numeric image API timeout %r", self._name, configured)
 
         # (connect, read): an unreachable endpoint fails in seconds, not the whole read budget.
+        _admit_openrouter_send(
+            f"{base_url}/images/generations", model_id,
+            provider=route_provider or self._runtime_name, profile_home=profile_home,
+        )
         body, failure = post_json(
             f"{base_url}/images/generations", headers=headers, payload=payload,
             timeout=(min(_IMAGE_API_CONNECT_TIMEOUT, timeout), timeout), label=self._display,
@@ -699,7 +734,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def _generate_via_chat(
         self, *, model_id: str, prompt: str, aspect: str, content: List[Dict[str, Any]],
-        base_url: str, headers: Dict[str, str],
+        base_url: str, headers: Dict[str, str], route_provider: Optional[str] = None,
+        profile_home: Optional[str | Path] = None,
     ) -> Tuple[Dict[str, Any], Optional[str]]:
         """One ``/chat/completions`` attempt: ``(result, retry_reason)``; reason set when the
         chain may continue with the fallback model."""
@@ -710,6 +746,10 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             "messages": [{"role": "user", "content": content}],
             "image_config": {"aspect_ratio": _ASPECT_RATIOS.get(aspect, "1:1")},
         }
+        _admit_openrouter_send(
+            f"{base_url}/chat/completions", model_id,
+            provider=route_provider or self._runtime_name, profile_home=profile_home,
+        )
         result, failure = post_json(
             f"{base_url}/chat/completions", headers=headers, payload=payload, timeout=_REQUEST_TIMEOUT,
             label=self._display)
@@ -751,7 +791,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
     ) -> Dict[str, Any]:
         fail = error_factory(self._name, aspect_ratio)
         try:
-            api_key, base_url = self._credentials()
+            api_key, base_url, runtime = self._credentials()
         except Exception as exc:  # noqa: BLE001
             return fail(f"Could not resolve {self._display} credentials: {exc}", "missing_api_key")
         if not api_key or not base_url:
@@ -779,16 +819,23 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             # Image API and chat models are not interchangeable: this is routing, not preference.
             surface = "chat"
             if self._supports_image_api:
-                surface = _select_surface(model_id, base_url, api_key, self._config_key)
+                surface = _select_surface(
+                    model_id, base_url, api_key, self._config_key,
+                    provider=str(runtime.get("provider") or self._runtime_name),
+                    profile_home=runtime.get("_hermes_routing_policy_home"),
+                )
             if surface == "images":
                 outcome = self._generate_via_image_api(
                     model_id=model_id, prompt=prompt, semantic_aspect=aspect,
-                    references=references, base_url=base_url, headers=headers, kwargs=kwargs)
+                    references=references, base_url=base_url, headers=headers, kwargs=kwargs,
+                    route_provider=str(runtime.get("provider") or self._runtime_name),
+                    profile_home=runtime.get("_hermes_routing_policy_home"))
                 reason = "failed on the image API" if outcome.pop("_retryable", False) else None
             else:
                 outcome, reason = self._generate_via_chat(
                     model_id=model_id, prompt=prompt, aspect=aspect, content=content,
-                    base_url=base_url, headers=headers)
+                    base_url=base_url, headers=headers, route_provider=str(runtime.get("provider") or self._runtime_name),
+                    profile_home=runtime.get("_hermes_routing_policy_home"))
             if outcome.get("success") or reason is None or i == len(model_chain) - 1:
                 return outcome
             logger.info(

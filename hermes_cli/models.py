@@ -528,6 +528,13 @@ def clamp_reasoning_effort_to_supported(
 def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tuple[list, dict[str, dict[str, Any]]]]:
     """GET an OpenAI-style ``/models`` listing → ``(raw data array, {id: item})``, or None when the
     endpoint is unreachable or the payload has no ``data`` list."""
+    if urllib.parse.urlparse(url).hostname == "openrouter.ai":
+        # This catalog is a physical OpenRouter request, independently of the
+        # picker route that prompted it.  Keep admission outside the broad
+        # availability fallback so a policy denial cannot be disguised as a
+        # transient catalog failure.
+        from hermes_cli.routing_policy import check_outbound_route
+        check_outbound_route(provider="openrouter", model="", base_url=url)
     try:
         payload = _get_json(url, timeout=timeout, headers={"Accept": "application/json"}, opener=opener)
     except Exception:

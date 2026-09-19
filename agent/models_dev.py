@@ -302,7 +302,7 @@ class _NotModified(Exception):
     """Server returned 304 Not Modified — existing cache is still valid."""
 
 
-def _fetch_models_dev_from_network(*, conditional: bool = False) -> Tuple[Dict[str, Any], str]:
+def _fetch_models_dev_from_network(*, conditional: bool = False, profile_home: Optional[str | Path] = None) -> Tuple[Dict[str, Any], str]:
     """Fetch the live registry; returns ``(registry, etag)`` (etag "" if none). Raises on network
     errors and on an empty/invalid payload. ``conditional`` sends ``If-None-Match`` with the sidecar's
     ETag and raises ``_NotModified`` on 304 — pass True ONLY while holding ``_models_dev_fetch_lock``
@@ -310,8 +310,11 @@ def _fetch_models_dev_from_network(*, conditional: bool = False) -> Tuple[Dict[s
     headers: Dict[str, str] = {}
     if conditional and (etag := _load_etag()):
         headers["If-None-Match"] = etag
+    url = _get_models_dev_url()
+    from hermes_cli.routing_policy import check_outbound_route
+    check_outbound_route(provider="models.dev", model="", base_url=url, profile_home=profile_home)
     # (connect, read): 5 s connect fails fast on blackholed hosts; 10 s read tolerates a slow registry.
-    response = requests.get(_get_models_dev_url(), headers=headers, timeout=(5, 10))
+    response = requests.get(url, headers=headers, timeout=(5, 10))
     if response.status_code == 304:
         raise _NotModified()
     response.raise_for_status()
@@ -385,6 +388,9 @@ def _refresh_locked(where: str) -> Optional[Dict[str, Any]]:
         _confirm_cache_not_modified(where=where)
         return _models_dev_cache
     except Exception as e:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(e, RoutingPolicyError):
+            raise
         _note_refresh_failure(e, where=where)
         return None
 

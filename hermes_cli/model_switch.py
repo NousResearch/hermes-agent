@@ -1182,7 +1182,7 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
                 f"Provider '{pdef.name}' has no base URL configured. "
                 f"Specify a model: /model <model-name> --provider {st.explicit_provider}")
         from hermes_cli.runtime_provider import _auto_detect_local_model
-        st.new_model = _auto_detect_local_model(pdef.base_url)
+        st.new_model = _auto_detect_local_model(pdef.base_url, provider=pdef.id)
         if not st.new_model:
             return st.fail_on_target(
                 f"No model detected on {pdef.name} ({pdef.base_url}). "

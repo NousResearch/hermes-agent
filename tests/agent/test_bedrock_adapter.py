@@ -909,6 +909,26 @@ class TestDiscoverBedrockModels:
 
         assert models == []
 
+    def test_denied_owner_does_not_construct_control_plane_client(self, tmp_path, monkeypatch):
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        reset_discovery_cache()
+        home = tmp_path / "hermes"
+        owner = home / "profiles" / "restricted"
+        for path, content in (
+            (home / "config.yaml", "routing_policy:\n  enabled: true\n"),
+            (owner / "config.yaml", "routing_policy:\n  enabled: true\n  deny:\n    providers: [bedrock]\n"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client") as client:
+            with __import__("pytest").raises(RoutingPolicyError):
+                discover_bedrock_models("us-east-1", profile_home=owner)
+        assert client.call_count == 0
+
 
 class TestExtractProviderFromArn:
     def test_extracts_anthropic(self):
@@ -1104,6 +1124,21 @@ class TestInferenceProfileContextLength:
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert len(warnings) == 1 and self.ARN in warnings[0].getMessage()
         assert "GetInferenceProfile" in warnings[0].getMessage()
+
+    def test_restricted_profile_blocks_control_plane_lookup_before_client_construction(self, tmp_path):
+        """A denied Bedrock profile ARN must not open the GetInferenceProfile control-plane client."""
+        from agent.bedrock_adapter import get_bedrock_context_length
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        profile_home = tmp_path / "restricted"
+        profile_home.mkdir()
+        (profile_home / "config.yaml").write_text(
+            "routing_policy:\n  enabled: true\n  deny:\n    providers: [bedrock]\n", encoding="utf-8",
+        )
+        with patch("agent.bedrock_adapter._get_bedrock_control_client") as factory:
+            with pytest.raises(RoutingPolicyError, match="provider"):
+                get_bedrock_context_length(self.ARN, probe=False, profile_home=profile_home)
+        factory.assert_not_called()
 
     def test_profile_wrapping_claude_keeps_prompt_cache_markers(self):
         # build_converse_kwargs gates cachePoint on the model id; the opaque profile ARN must be

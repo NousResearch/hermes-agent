@@ -156,6 +156,7 @@ export const en: Translations = {
     revealExplorer: 'Reveal in File Explorer',
     revealFileManager: 'Open containing folder',
     revealInSidebar: 'Reveal in filetree',
+    openDefaultApp: 'Open in default app',
     copyPath: 'Copy path',
     copyRelativePath: 'Copy relative path',
     download: 'Download',

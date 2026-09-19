@@ -1099,7 +1099,7 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     """Discover a model's real context window by provoking a length error — the only authoritative source
     ("prompt is too long: 1300032 tokens > 1000000 maximum"); length validation runs before inference so the
     probe costs nothing. An accepted tier is a safe lower bound; None (no creds/network/unparseable) → static table."""
-    from agent.model_metadata import parse_context_limit_from_error
+    from agent.model_metadata_error_parsing import parse_context_limit_from_error
     try:
         client = _get_bedrock_runtime_client(region)
     except Exception as exc:  # boto3 missing / credential resolution failure

@@ -618,7 +618,7 @@
    "facade": "agent.conversation_loop",
    "name": "get_context_length_from_provider_error",
    "kind": "moved-lazy",
-   "target": "agent.model_metadata"
+   "target": "agent.model_metadata_error_parsing"
   },
   {
    "facade": "agent.conversation_loop",
@@ -630,7 +630,7 @@
    "facade": "agent.conversation_loop",
    "name": "is_output_cap_error",
    "kind": "moved-lazy",
-   "target": "agent.model_metadata"
+   "target": "agent.model_metadata_error_parsing"
   },
   {
    "facade": "agent.conversation_loop",
@@ -666,7 +666,7 @@
    "facade": "agent.conversation_loop",
    "name": "parse_available_output_tokens_from_error",
    "kind": "moved-lazy",
-   "target": "agent.model_metadata"
+   "target": "agent.model_metadata_error_parsing"
   },
   {
    "facade": "agent.conversation_loop",
@@ -835,6 +835,30 @@
    "name": "ERROR_REQUEST_CANCELLED",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
+  },
+  {
+   "facade": "agent.model_metadata",
+   "name": "get_context_length_from_provider_error",
+   "kind": "moved-lazy",
+   "target": "agent.model_metadata_error_parsing"
+  },
+  {
+   "facade": "agent.model_metadata",
+   "name": "is_output_cap_error",
+   "kind": "moved-lazy",
+   "target": "agent.model_metadata_error_parsing"
+  },
+  {
+   "facade": "agent.model_metadata",
+   "name": "parse_available_output_tokens_from_error",
+   "kind": "moved-lazy",
+   "target": "agent.model_metadata_error_parsing"
+  },
+  {
+   "facade": "agent.model_metadata",
+   "name": "parse_context_limit_from_error",
+   "kind": "moved-lazy",
+   "target": "agent.model_metadata_error_parsing"
   },
   {
    "facade": "agent.monitoring.cron_health",

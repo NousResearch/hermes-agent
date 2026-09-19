@@ -37,7 +37,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | kind | count | meaning |
 |---|---|---|
 | moved | 0 | name now defined in `new location`; re-exported from the old module |
-| moved-lazy | 1148 | same, resolved lazily via `__getattr__` to avoid an import cycle |
+| moved-lazy | 1152 | same, resolved lazily via `__getattr__` to avoid an import cycle |
 | import | 592 | a third-party/stdlib name the old module used to expose; original import restored |
 | restored-def | 290 | public name that was deleted as unused; its pre-decomposition definition is restored verbatim |
 | restored-helper | 41 | private helper restored only because a restored-def above depends on it |
@@ -260,15 +260,15 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `estimate_messages_tokens_rough` | moved-lazy | `agent.model_metadata` |
 | `estimate_request_tokens_rough` | moved-lazy | `agent.model_metadata` |
 | `estimate_usage_cost` | moved-lazy | `agent.usage_pricing` |
-| `get_context_length_from_provider_error` | moved-lazy | `agent.model_metadata` |
+| `get_context_length_from_provider_error` | moved-lazy | `agent.model_metadata_error_parsing` |
 | `has_incomplete_scratchpad` | moved-lazy | `agent.trajectory` |
-| `is_output_cap_error` | moved-lazy | `agent.model_metadata` |
+| `is_output_cap_error` | moved-lazy | `agent.model_metadata_error_parsing` |
 | `is_repetition_dominated` | moved-lazy | `agent.repetition_guard` |
 | `is_zai_coding_overload_error` | moved-lazy | `agent.retry_utils` |
 | `jittered_backoff` | moved-lazy | `agent.retry_utils` |
 | `normalize_usage` | moved-lazy | `agent.usage_pricing` |
 | `os` | import | `os` |
-| `parse_available_output_tokens_from_error` | moved-lazy | `agent.model_metadata` |
+| `parse_available_output_tokens_from_error` | moved-lazy | `agent.model_metadata_error_parsing` |
 | `random` | import | `random` |
 | `reanchor_current_turn_user_idx` | moved-lazy | `agent.turn_context` |
 | `save_context_length` | moved-lazy | `agent.model_metadata` |
@@ -347,6 +347,15 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `ERROR_REQUEST_CANCELLED` | restored-def | `(deleted; BASE body restored)` |
+
+### `agent.model_metadata`
+
+| name | kind | new location |
+|---|---|---|
+| `get_context_length_from_provider_error` | moved-lazy | `agent.model_metadata_error_parsing` |
+| `is_output_cap_error` | moved-lazy | `agent.model_metadata_error_parsing` |
+| `parse_available_output_tokens_from_error` | moved-lazy | `agent.model_metadata_error_parsing` |
+| `parse_context_limit_from_error` | moved-lazy | `agent.model_metadata_error_parsing` |
 
 ### `agent.monitoring.cron_health`
 

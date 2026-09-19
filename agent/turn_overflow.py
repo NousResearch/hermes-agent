@@ -22,7 +22,7 @@ from agent.conversation_compression import (
 )
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
-from agent.model_metadata import (
+from agent.model_metadata_error_parsing import (
     get_context_length_from_provider_error, is_output_cap_error,
     parse_available_output_tokens_from_error,
 )

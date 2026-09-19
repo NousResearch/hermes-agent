@@ -26,12 +26,12 @@ from agent.model_metadata import (
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
-    parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
     estimate_request_tokens_rough,
 )
+from agent.model_metadata_error_parsing import parse_context_limit_from_error
 
 
 # =========================================================================
@@ -1588,7 +1588,7 @@ class TestParseContextLimitFromError:
         assert parse_context_limit_from_error(msg) == expected
 
     def test_google_supports_up_to_recalibrates_window(self):
-        from agent.model_metadata import get_context_length_from_provider_error
+        from agent.model_metadata_error_parsing import get_context_length_from_provider_error
 
         msg = ("Unable to submit request because the input token count is "
                "32825 but model only supports up to 32768.")
@@ -1597,7 +1597,7 @@ class TestParseContextLimitFromError:
         assert get_context_length_from_provider_error(msg, 32768) is None
 
     def test_get_context_length_from_vllm_max_model_len_error(self):
-        from agent.model_metadata import get_context_length_from_provider_error
+        from agent.model_metadata_error_parsing import get_context_length_from_provider_error
 
         msg = (
             "The engine prompt length 90000 exceeds the max_model_len 32768. "
@@ -1609,7 +1609,7 @@ class TestParseContextLimitFromError:
         """An output-cap error must never be cached as the context window (salvage #106769):
         the generic "limit ... of N" pattern matched Switchyard's message and clamped a
         >117K-context model to 16K on every later request."""
-        from agent.model_metadata import (
+        from agent.model_metadata_error_parsing import (
             is_output_cap_error,
             parse_available_output_tokens_from_error,
         )

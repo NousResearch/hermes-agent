@@ -36,7 +36,7 @@ class TestParseAvailableOutputTokens:
     """Pure-function tests; no I/O required."""
 
     def _parse(self, msg):
-        from agent.model_metadata import parse_available_output_tokens_from_error
+        from agent.model_metadata_error_parsing import parse_available_output_tokens_from_error
         return parse_available_output_tokens_from_error(msg)
 
     # ── Should detect and extract ────────────────────────────────────────
@@ -91,9 +91,9 @@ class TestContextOverflowLimitSelection:
     """
 
     def test_generic_overflow_without_provider_limit_keeps_context_length(self):
-        from agent.model_metadata import get_context_length_from_provider_error
+        from agent.model_metadata_error_parsing import get_context_length_from_provider_error
         from agent.model_metadata import get_next_probe_tier
-        from agent.model_metadata import parse_context_limit_from_error
+        from agent.model_metadata_error_parsing import parse_context_limit_from_error
 
         old_ctx = 1_000_000
         error_msg = (
@@ -106,14 +106,14 @@ class TestContextOverflowLimitSelection:
         assert get_context_length_from_provider_error(error_msg, old_ctx) is None
 
     def test_explicit_provider_limit_still_selects_that_limit(self):
-        from agent.model_metadata import get_context_length_from_provider_error
+        from agent.model_metadata_error_parsing import get_context_length_from_provider_error
 
         error_msg = "prompt is too long: 300000 tokens > 272000 maximum"
 
         assert get_context_length_from_provider_error(error_msg, 1_000_000) == 272_000
 
     def test_reported_limit_not_lower_than_current_is_ignored(self):
-        from agent.model_metadata import get_context_length_from_provider_error
+        from agent.model_metadata_error_parsing import get_context_length_from_provider_error
 
         error_msg = "maximum context length is 1000000 tokens"
 
@@ -250,7 +250,7 @@ class TestContextNotHalvedOnOutputCapError:
     def test_output_cap_error_sets_ephemeral_not_context_length(self):
         """On 'max_tokens too large' error, _ephemeral_max_output_tokens is set
         and compressor.context_length is left unchanged."""
-        from agent.model_metadata import parse_available_output_tokens_from_error
+        from agent.model_metadata_error_parsing import parse_available_output_tokens_from_error
 
         error_msg = (
             "max_tokens: 128000 > context_window: 200000 "
@@ -274,7 +274,7 @@ class TestContextNotHalvedOnOutputCapError:
 
     def test_output_cap_error_safety_margin(self):
         """The ephemeral value includes a 64-token safety margin below available_out."""
-        from agent.model_metadata import parse_available_output_tokens_from_error
+        from agent.model_metadata_error_parsing import parse_available_output_tokens_from_error
 
         error_msg = (
             "max_tokens: 32768 > context_window: 200000 "

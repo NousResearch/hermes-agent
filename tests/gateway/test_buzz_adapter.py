@@ -1878,6 +1878,30 @@ class TestNip10ThreadReplyMentionGate:
         assert adapter._dispatched[0]["reply_to_is_own_message"] is True
 
     @pytest.mark.asyncio
+    async def test_missing_parent_lookup_requires_authorized_sender(self, adapter):
+        adapter.set_authorization_check(lambda *_args, **_kwargs: False)
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "get",
+            [
+                _tagged_event(
+                    "denied-orphan",
+                    CHANNEL,
+                    content="@Chip fetch this parent",
+                    root="missing-parent",
+                    reply_to="missing-parent",
+                    created_at=53,
+                ),
+            ],
+        )
+        adapter._run_cli = cli
+
+        await adapter._poll_channel(CHANNEL)
+
+        assert all(call[0][:2] != ["messages", "thread"] for call in cli.calls)
+
+    @pytest.mark.asyncio
     async def test_send_recorded_id_matches_thread_reply(self, adapter):
         """send()'s returned event_id is cached even without a WS/poll echo."""
         cli = _ScriptedCli()
@@ -3783,6 +3807,57 @@ class TestChannelCursorPersistence:
         # The first poll after the restart delivers the missed mention.
         await restarted._poll_channel(CHANNEL)
         assert [d["message_id"] for d in restarted._dispatched] == ["e2"]
+
+    @pytest.mark.asyncio
+    async def test_restart_fetches_reply_parent_without_reseeding(self, adapter, tmp_path):
+        parent = _tagged_event(
+            "pre-restart-agent",
+            CHANNEL,
+            content="Head Goblin decided BUY THRY",
+            pubkey=SELF_PUBKEY,
+            created_at=100,
+        )
+        await self._seed(adapter, parent)
+
+        restarted = _make_adapter()
+        restarted._dispatched = []
+
+        async def capture(**kwargs):
+            restarted._dispatched.append(kwargs)
+
+        restarted._dispatch_message = capture
+        restarted._message_handler = AsyncMock()
+        reply = _tagged_event(
+            "post-restart-question",
+            CHANNEL,
+            content="did you act on this?",
+            root="pre-restart-agent",
+            reply_to="pre-restart-agent",
+            created_at=101,
+        )
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [parent, reply])
+        cli.script("messages", "thread", [parent, reply])
+        restarted._run_cli = cli
+        restarted._load_cursors()
+
+        # Restoring keeps the downtime-safe cursor semantics and leaves the
+        # process-local metadata cache empty until a reply needs its parent.
+        await restarted._seed_channel(CHANNEL, chat_type="group")
+        assert cli.calls == []
+        assert restarted._channel_state[CHANNEL]["event_meta"] == {}
+
+        await restarted._poll_channel(CHANNEL)
+
+        assert [d["message_id"] for d in restarted._dispatched] == ["post-restart-question"]
+        dispatched = restarted._dispatched[0]
+        assert dispatched["reply_to_message_id"] == "pre-restart-agent"
+        assert dispatched["reply_to_text"] == "Head Goblin decided BUY THRY"
+        assert dispatched["reply_to_is_own_message"] is True
+        assert [call[0][:2] for call in cli.calls if call[0][0] == "messages"] == [
+            ["messages", "get"],
+            ["messages", "thread"],
+        ]
 
     @pytest.mark.asyncio
     async def test_cursor_survives_only_for_the_same_identity_and_relay(self, adapter, tmp_path, monkeypatch):

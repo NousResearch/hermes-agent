@@ -1510,6 +1510,17 @@ class BuzzAdapter(BasePlatformAdapter):
         is_dm = state["chat_type"] == "dm"
         reply_parent_id = _event_reply_parent_id(event)
         reply_meta = self._lookup_event_meta(state, reply_parent_id) if reply_parent_id else None
+        # The bounded event_meta cache is process-local. A durable cursor restore deliberately skips
+        # startup seeding so messages received during downtime are not swallowed (#90464), which means a
+        # reply to a pre-restart event can have a valid NIP-10 parent id but no quoted text. Resolve that
+        # exact parent from Buzz on demand; failure only removes quote context, never the inbound turn.
+        chat_type = "dm" if is_dm else "group"
+        if (
+            reply_parent_id
+            and reply_meta is None
+            and self._is_sender_authorized(pubkey, chat_type, channel_id) is True
+        ):
+            reply_meta = await self._fetch_reply_meta(channel_id, state, reply_parent_id)
         reply_to_is_own = bool(reply_meta is not None and reply_meta[0] == self._self_pubkey)
         # Channels dispatch only when addressed (@mention or p-tag) or replying to us (Signal/WhatsApp parity),
         # unless require_mention is off. DMs always dispatch.
@@ -1528,7 +1539,6 @@ class BuzzAdapter(BasePlatformAdapter):
         self._record_thread_root(event_id, event)
         # Attachment fetch spends credentials: only the gateway's explicit ``True`` permits it (else fail closed).
         # The message still dispatches so GatewayRunner can apply denial/pairing.
-        chat_type = "dm" if is_dm else "group"
         fetch_allowed = bool(attachment_metadata) and self._is_sender_authorized(pubkey, chat_type, channel_id) is True
         attachments = await self._cache_inbound_attachments(attachment_metadata) if fetch_allowed else []
         if rejected_attachments:
@@ -1691,6 +1701,24 @@ class BuzzAdapter(BasePlatformAdapter):
         state = self._channel_state.get(channel_id)
         if state is not None:
             self._remember_event(state, {"id": event_id, "pubkey": pubkey, "content": content or ""})
+
+    async def _fetch_reply_meta(
+        self, channel_id: str, state: dict, event_id: str
+    ) -> Optional[Tuple[str, str]]:
+        """Fetch and cache one missing reply parent from its containing Buzz thread."""
+        code, out, err = await self._run_cli([
+            "messages", "thread", "--channel", channel_id, "--event", event_id,
+            "--limit", str(_FETCH_LIMIT),
+        ])
+        if code != 0:
+            logger.debug(
+                "Buzz: could not resolve reply parent %s — %s",
+                event_id[:12], _cli_error_message(err, code),
+            )
+            return None
+        for event in _parse_json_list(out):
+            self._remember_event(state, event)
+        return self._lookup_event_meta(state, event_id)
 
     @staticmethod
     def _store_event_meta(state: dict, event_id: str, pubkey: str, snippet: str) -> None:

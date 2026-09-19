@@ -547,6 +547,9 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
     **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
     **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
+    # Providers surface their own outage as an error code (Anthropic
+    # ``upstream_error``); nothing wrong with the key, so fall back.
+    "upstream_error": _v(_R.server_error, should_fallback=True),
 }
 
 # Generic ``invalid_request_error`` is deliberately NOT a 400 validation

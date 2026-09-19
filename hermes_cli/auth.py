@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 
 from hermes_cli.config import (
     get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
-from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
+from hermes_constants import OPENROUTER_BASE_URL, _get_platform_default_hermes_home, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, atomic_yaml_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
@@ -468,9 +468,12 @@ def _nonempty_str(value: Any) -> bool:
 def _auth_file_path() -> Path:
     path = get_hermes_home() / "auth.json"
     # Seat belt: under pytest, refuse to touch the real user's auth store (tests that forgot to
-    # monkeypatch HERMES_HOME or escaped the hermetic conftest). In production: one dict lookup.
+    # monkeypatch HERMES_HOME or escaped the hermetic conftest). In production: dict lookups.
+    # The prod default is platform-dependent (LOCALAPPDATA/hermes on Windows, ~/.hermes
+    # elsewhere), so compare against the platform default — ~/.hermes alone never matches
+    # on Windows and the live credential store would stay unguarded.
     if (os.environ.get("PYTEST_CURRENT_TEST")
-            and _same_path(path, Path.home() / ".hermes" / "auth.json")):
+            and _same_path(path, _get_platform_default_hermes_home() / "auth.json")):
         raise RuntimeError(
             f"Refusing to touch real user auth store during test run: {path}. "
             "Set HERMES_HOME to a tmp_path in your test fixture, or run "

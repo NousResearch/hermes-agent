@@ -154,6 +154,16 @@ model:
   #       CF-Access-Client-Id: "xxxx.access"
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
   #       X-Client-Name: "hermes-agent"
+  #
+  # session_affinity_header: NAME of a header that carries Hermes' conversation
+  # id on every request to that provider (all api_modes + auxiliary calls). Off
+  # unless set. For session-aware proxies that otherwise treat each agent-loop
+  # request as a new conversation and replay the whole history upstream.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "http://127.0.0.1:4000/v1"
+  #     session_affinity_header: x-litellm-session-id
 # providers:
 #   meta:
 #     base_url: https://api.meta.ai/v1

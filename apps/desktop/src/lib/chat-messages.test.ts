@@ -7,6 +7,7 @@ import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
+  assistantLooksSuccessfullySettled,
   chatMessageText,
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
@@ -724,6 +725,124 @@ describe('preserveLocalAssistantErrors', () => {
 
     expect(assistant?.error).toBe('OpenRouter 403')
     expect(assistant?.pending).toBe(false)
+  })
+
+  it('does not re-graft a billing error onto a successfully recovered reply (#87248)', () => {
+    const nextMessages: ChatMessage[] = [
+      {
+        id: 'user-1',
+        parts: [{ text: 'hello', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'assistant-stream-1',
+        parts: [{ text: 'hi from fallback provider', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      {
+        id: 'user-1',
+        parts: [{ text: 'hello', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'HTTP 402: You have depleted your monthly included credits',
+        id: 'assistant-stream-1',
+        parts: [{ text: 'hi from fallback provider', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+    const assistant = merged.find(message => message.id === 'assistant-stream-1')
+
+    expect(assistant?.error).toBeUndefined()
+    expect(chatMessageText(assistant!)).toBe('hi from fallback provider')
+  })
+
+  it('re-grafts a billing error onto a failed-tool-only hydration (#87248)', () => {
+    const failedTool = {
+      args: {} as never,
+      argsText: '{}',
+      status: 'failed',
+      toolCallId: 'call-1',
+      toolName: 'terminal',
+      type: 'tool-call' as const
+    } as ChatMessagePart
+
+    const nextMessages: ChatMessage[] = [
+      {
+        id: 'user-1',
+        parts: [{ text: 'run it', type: 'text' }],
+        role: 'user'
+      },
+      {
+        id: 'assistant-stream-1',
+        parts: [failedTool],
+        role: 'assistant'
+      }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      {
+        id: 'user-1',
+        parts: [{ text: 'run it', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'HTTP 402: You have depleted your monthly included credits',
+        id: 'assistant-stream-1',
+        parts: [failedTool],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+    const assistant = merged.find(message => message.id === 'assistant-stream-1')
+
+    expect(assistantLooksSuccessfullySettled(nextMessages[1]!)).toBe(false)
+    expect(
+      assistantLooksSuccessfullySettled({
+        ...nextMessages[1]!,
+        parts: [{ ...failedTool, status: 'error' } as ChatMessagePart]
+      })
+    ).toBe(false)
+    expect(assistant?.error).toBe('HTTP 402: You have depleted your monthly included credits')
+  })
+
+  it('does not treat a completed tool-only row as a failed settle (#87248)', () => {
+    const completedTool = {
+      args: {} as never,
+      argsText: '{}',
+      status: 'complete',
+      toolCallId: 'call-1',
+      toolName: 'terminal',
+      type: 'tool-call' as const
+    } as ChatMessagePart
+
+    const nextMessages: ChatMessage[] = [
+      {
+        id: 'assistant-stream-1',
+        parts: [completedTool],
+        role: 'assistant'
+      }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      {
+        error: 'HTTP 402: You have depleted your monthly included credits',
+        id: 'assistant-stream-1',
+        parts: [completedTool],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(assistantLooksSuccessfullySettled(nextMessages[0]!)).toBe(true)
+    expect(merged[0]?.error).toBeUndefined()
   })
 })
 

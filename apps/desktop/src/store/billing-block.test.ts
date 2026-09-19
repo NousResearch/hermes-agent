@@ -2,8 +2,10 @@ import type { BillingBlock } from '@hermes/shared'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 vi.mock('@/lib/external-link', () => ({ openExternalLink: vi.fn() }))
+vi.mock('@/store/notifications', () => ({ dismissNotification: vi.fn() }))
 
 import { openExternalLink } from '@/lib/external-link'
+import { dismissNotification } from '@/store/notifications'
 
 import {
   $billingBlock,
@@ -52,6 +54,21 @@ test('clearBillingBlock with no arg clears any active block', () => {
   setBillingBlock('s1', makeBlock())
   clearBillingBlock()
   expect($billingBlock.get()).toBeNull()
+  expect(dismissNotification).toHaveBeenCalledWith('billing-block:openai')
+})
+
+test('clearBillingBlock dismisses the sticky provider toast with the banner', () => {
+  setBillingBlock('s1', makeBlock({ provider: 'xai-oauth' }))
+  clearBillingBlock('s1')
+  expect($billingBlock.get()).toBeNull()
+  expect(dismissNotification).toHaveBeenCalledWith('billing-block:xai-oauth')
+})
+
+test('clearBillingBlock for a different session does not dismiss the toast', () => {
+  setBillingBlock('s1', makeBlock({ provider: 'xai-oauth' }))
+  clearBillingBlock('s2')
+  expect($billingBlock.get()).not.toBeNull()
+  expect(dismissNotification).not.toHaveBeenCalled()
 })
 
 test('runBillingRecovery routes Nous to in-app Settings, never an external link', () => {

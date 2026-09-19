@@ -146,3 +146,46 @@ def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_sudo_inside_a_heredoc_body_is_not_a_local_invocation(monkeypatch):
+    """A heredoc body is data for whatever consumes it, never a command this shell runs.
+
+    ``ssh host bash -s <<'EOS' … sudo … EOS`` ships the body to the remote host: counting that
+    ``sudo`` locally asks the operator for a password no local command needs, and — when a
+    password is configured — injects ``-S -p ''`` into the script the remote host executes.
+    """
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    commands = (
+        "ssh ayaneo bash -s <<'EOS'\nset -e\nsudo -n cat /opt/docker/x.conf\nEOS\n",
+        "cat > /tmp/probe.sh <<EOS\nsudo -n find / -xdev\nEOS\nbash /tmp/probe.sh\n",
+        "ssh host 'bash -s' <<-\"EOS\"\n\tsudo -n ls /root\n\tEOS\n",
+        "cat <<-EOF\n\tsudo -n true\n\tEOF\n",
+    )
+    for command in commands:
+        assert terminal_tool_sudo._transform_sudo_command(command) == (command, None)
+        assert terminal_tool_sudo._count_real_sudo_invocations(command) == 0
+
+
+def test_heredoc_body_does_not_swallow_a_real_sudo_beside_it(monkeypatch):
+    """Only the body is opaque: the command line that opens it is still scanned."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+
+    rewritten, stdin = terminal_tool_sudo._transform_sudo_command(
+        "sudo -n tee /etc/x.conf <<'EOS'\nsudo -n ls /root\nEOS\n")
+    assert rewritten == "sudo -S -p '' -n tee /etc/x.conf <<'EOS'\nsudo -n ls /root\nEOS\n"
+    assert stdin == "testpass\n"
+
+    # A body containing a background operator must not be rewritten as a compound background.
+    body = "cat > /tmp/x.sh <<'EOS'\necho a && echo b &\nEOS\n"
+    assert terminal_tool_sudo._rewrite_compound_background(body) == body
+
+    # The body ends at its terminator: a real local sudo on the next line is still a command.
+    after = "cat > /tmp/x.sh <<'EOS'\nsudo -n ls /root\nEOS\nsudo -n reboot\n"
+    assert terminal_tool_sudo._count_real_sudo_invocations(after) == 1
+
+    # Fail closed: an unresolvable or unterminated heredoc masks NOTHING, so a body that could
+    # not be proven inert is still scanned (a false prompt beats a silently skipped command).
+    assert terminal_tool_sudo._count_real_sudo_invocations("bash <<'EOS'\nsudo -n whoami\n") == 1
+    assert terminal_tool_sudo._count_real_sudo_invocations("cat <<\ntext\nsudo -n whoami\n") == 1
+

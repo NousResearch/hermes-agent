@@ -1,0 +1,21 @@
+name: intelligent-tool-break
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: 6b6dc980b67fd4943a64f00712e442dc23465343
+subdir: plugins/intelligent-tool-break
+description: "Abort a stalled in-flight tool call with /break, send a note with /break {message}, or retry it with /again without cancelling the rest of the task."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/plugins/intelligent-tool-break
+version: "1.3.3"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: 
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

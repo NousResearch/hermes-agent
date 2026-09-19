@@ -42,17 +42,19 @@ Sidebar selection follows the focused chat pane. Opening or focusing a session t
 
 The center of the app. You get:
 
-- **Streaming responses** with live tool activity and structured tool-call summaries as the agent works.
+- **Streaming responses** with live tool activity and structured tool-call summaries as the agent works. When a tool works on an image (for example `vision_analyze` on a file under the backend's filesystem), expand its activity row to see the image and click it to open it full-size; on a remote connection the image is fetched from the gateway, not from the machine running the app.
 - **Markdown line breaks** follow Markdown semantics: two trailing spaces create a hard line break; an ordinary newline stays a soft break. Media and preview extraction preserve text outside removed attachment spans, including first-line code indentation and unfinished fenced-code spacing. Code display and Copy preserve leading blank lines, trailing spaces, and terminal blank lines from the Markdown parser.
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **Independent background drafts** — hidden chat tabs can update their drafts without moving the caret or selection in the visible composer.
+- **Unsent drafts survive a lost session** — a draft you typed into a chat whose session no longer exists (deleted elsewhere, or a stale tab after a profile rename or wiped backend) is carried into the fresh chat the app falls back to, with an inline **Restored your unsent message** strip above the input. **Undo** puts the text back where it was; nothing is sent, navigated, or focused on your behalf, and the strip appears once per lost draft.
 - **Directive chip actions** — hover an actionable reference (such as a URL) to reveal its action pill. A short grace period lets you move from the chip to the pill before it dismisses. The pill stays available while you move within it; after leaving, unrelated pointer movement does not delay dismissal. Clicking its action preserves the draft selection.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
+- **Hide vs. Close for stateful panes** — a zone holding a Browser (or HTML preview) or the Terminal pane offers **Hide** instead of Minimize. Hiding collapses the zone to its restore rail but keeps the pane's body mounted: a live page keeps its unsaved form input, timers, scroll position, and the agent's `drive_preview` automation target; a terminal keeps its running shell and scrollback; and **Restore** shows the same content without a reload. The hidden body is inert — it never takes keyboard shortcuts or steals composer focus. **Close** (the tab's ×) is what actually releases the page or shell.
 - **Comment mode in the in-app browser** — click **Annotate** in the preview browser bar, then click any element (or drag a box) on the live page and type a note; each saved comment stays as a numbered pin on the page. Saving a pin never sends a turn — when you're done, **Add N comments** attaches a cropped screenshot per pin and a short prompt naming each comment to the composer, and you still hit send yourself. Each element comment carries its CSS selector, its markup, and the computed styles that matter for layout, so the agent can find the element in your source instead of guessing from the picture. Password and hidden field values, and any attribute that looks like a key or token, are redacted on the page before the markup leaves it. Larger batches arrive grouped by which part of the page each comment sits in, so twenty-odd comments become a handful of pieces of work rather than one task each — and because the groups are separate DOM subtrees they usually touch separate files, which is what makes handing them to parallel workers safe. Pin numbers hold steady if you delete one, and switching chats clears the stack.
 - **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent. Pressing Stop (or Esc) while turns are queued pauses the queue and expands it above the composer; resume it from there, or send, edit, and delete individual entries.
 - **Task progress above the composer** — expand the Tasks header to inspect each phase. Long lists stay bounded above the input; scroll inside the expanded list to reach the final tasks without moving the conversation.
-- **A conversation timeline rail** — long chats get a slim rail of markers along the edge of the transcript, one per prompt. Hover it to pop open the list of prompts, click one to jump straight to that point in the conversation. (It appears once the chat has a handful of turns.)
+- **A conversation timeline rail** — long chats get a slim rail of markers along the edge of the transcript, one per prompt. Hover it to pop open the list of prompts, click one to jump straight to that point in the conversation. After a jump, **Show earlier** at the top of the transcript keeps paging backwards from that prompt all the way to the start of the session. (It appears once the chat has a handful of turns.)
 - **Reading-position memory** — returning to a session restores its saved distance from the bottom instead of always jumping to the latest message. Sessions left at the bottom continue following new output. Use **Scroll to bottom** to return to the live edge. Positions are kept in this Desktop installation's local storage; they are not synchronized through the backend.
 - **Find in page** — press **Cmd/Ctrl+F** to open a find bar that searches the rendered chat transcript. Enter / Shift+Enter (or Cmd/Ctrl+G / Cmd/Ctrl+Shift+G while the bar is open) step through matches; Esc closes it.
 
@@ -134,7 +136,7 @@ A real terminal lives in the right sidebar, next to the file browser:
 
 ### Live subagents
 
-While delegated workers are live, a **Subagents** frame appears above the composer with their count, task names, elapsed time, and latest activity. It previews up to three workers; expand the header for the roster, then select a worker for details and **Steer** / **Stop** controls. Each frame belongs to its chat, including in split panes. Steering acknowledges that guidance is queued for a checkpoint, not that the child has already read it. See [Monitoring subagents](/user-guide/features/delegation#monitoring-running-subagents-agents).
+While delegated workers are live, a **Subagents** frame appears above the composer with their count, task names, elapsed time, and latest activity. It previews up to three workers; expand the header for the roster, then select a worker for details and **Steer** / **Stop** controls. Each frame belongs to its chat, including in split panes. Steering acknowledges that guidance is queued for a checkpoint, not that the child has already read it. See [Monitoring subagents](./features/delegation.md#monitoring-running-subagents-agents).
 
 ### Git review & worktrees
 
@@ -190,11 +192,12 @@ When `hermes gui` runs inside WSL2 with `/dev/dxg` present and Mesa's `d3d12_dri
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
 
-- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider. Accounts and API keys share the Settings **Applies to** selection: credential reads and edits, OAuth account removal, and sign-in launched here target the selected profile, not the active chat profile. The sign-in flow keeps that target through credential saving and model selection. Changing **Applies to** discards unsaved credential drafts. Closing sign-in cancels polling and ignores late results; a credential write already sent may still finish in its original profile. Externally managed CLI credentials use their own CLI and are not covered by this profile selector. Its **Local Models** view installs and manages an on-device llama.cpp runtime — see [Local Models](/user-guide/local-models).
+- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider. Accounts and API keys share the Settings **Applies to** selection: credential reads and edits, OAuth account removal, and sign-in launched here target the selected profile, not the active chat profile. The sign-in flow keeps that target through credential saving and model selection. Changing **Applies to** discards unsaved credential drafts. Closing sign-in cancels polling and ignores late results; a credential write already sent may still finish in its original profile. Externally managed CLI credentials use their own CLI and are not covered by this profile selector. Its **Local Models** view installs and manages an on-device llama.cpp runtime — see [Local Models](./local-models.md).
 - **Every provider and model in the menus** — the GUI surfaces the full provider list and every model that `hermes model` knows about, so you pick from the same catalog the CLI sees rather than a curated subset.
 - **xAI Grok OAuth** — Grok is a first-class OAuth provider in the launcher; sign in through the browser flow like the other OAuth providers.
-- **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal.
+- **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal. In the terminal backend picker, selecting a backend marked **Needs setup** asks for confirmation first; declining leaves the current backend selected.
 - **Terminal font picker** — choose an installed font in **Settings → Appearance**. Nerd Fonts such as `MesloLGS NF` render Powerlevel10k separators and icons in both interactive and agent terminals; the setting is saved per profile.
+- **Reasoning Blocks** — **Settings → Chat → Reasoning Blocks** (`display.show_reasoning` in `config.yaml`) shows or hides the model's thinking in the transcript (off shows answers only). Open chats update as soon as the setting saves. Typing `/reasoning hide` or `/reasoning show` in the composer flips the same setting and the open transcript follows immediately.
 - **Reopen Last Chat on Launch** — by default the app picks up where you left off on cold start. Turn it off in **Settings → Appearance** (or set `display.resume_last_session: false` in `config.yaml`) to always begin with a fresh chat. Deep links and explicit destinations are never overridden either way.
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **Per-task reasoning effort** — each row under **Settings → Model → Auxiliary models** has a reasoning selector next to its provider/model pick: a level, **Off**, or **inherit · main model effort** (the default, which removes the task's override). It is saved as `auxiliary.<task>.reasoning_effort` in `config.yaml`, the same key `hermes model` writes, and shows in the row's summary when set. Use it to run frequent helpers such as compression or titling at low or no reasoning while the main agent stays at high.
@@ -218,42 +221,12 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — open **Capabilities → Skills** to manage [skills](./features/skills.md). **Installed** shows the selected profile's actual skills and enable/disable state. **Browse** searches the same full published catalog as the public Skills Hub, with cards by default and an optional list/detail view.
-- **Plugins** — **Capabilities → Plugins** uses the same **Installed / Browse** layout. Installed combines actual app-level desktop plugins with agent plugins from the selected profile; Browse shows the public [Plugin Catalog](./features/plugin-catalog.md). Search stays at the top, and the tab switch and actions share one row on both pages.
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron).
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
 - **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
-
-Use the list and card icons at the right of the Browse filters to change layouts.
-The choice is remembered across Skills and Plugins. Search and filters stay in
-place; click a card to open its details or use its Install button directly.
-
-#### Where Browse gets its data
-
-These are native Desktop views, **not embedded website pages**. Desktop and
-the public website consume the same generated CDN snapshots:
-
-| Catalog | Public docs alias | Desktop fetch URL |
-|---|---|---|
-| Skills | [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json) | `https://nousresearch.github.io/hermes-agent/docs/api/skills.json` |
-| Plugins | [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json) | `https://nousresearch.github.io/hermes-agent/docs/api/plugins.json` |
-
-The skills snapshot combines `skills/`, `optional-skills/`, and the centralized
-skills index. The plugin snapshot comes from `plugin-catalog/*.yaml` and cached star
-counts; the same publish supplies the installer's removed-entry list. Browsing does not make live
-GitHub API calls or fetch plugin/skill source repositories. **Installed** is
-separate: its state comes from the selected profile's backend and the app's
-desktop-plugin registry, not those public snapshots.
-
-The public hubs' **Install in Hermes** buttons open `hermes://skill/install`
-or `hermes://plugin/install` links and require confirmation in Desktop. Use
-an updated Desktop build for the skill route and plugin catalog parameters;
-the cards retain copyable CLI commands if the app is missing or too old. See
-[skill links](./features/skills.md#install-from-the-website) and
-[plugin links](./features/plugins.md#one-click-install-links-desktop) for the
-parameters and review flow.
 
 ### Bot Mode (built in)
 
@@ -505,8 +478,8 @@ hot-reloads every save. Manage installed plugins live in **Capabilities → Plug
 See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
 reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
 
-**Capabilities → Plugins → Installed** shows the actual installed state:
-**one list entry per plugin**, with Desktop and Agent controls in its detail pane.
+**Capabilities → Plugins** is the one place for everything that extends
+Hermes: **one row per plugin**, with two switch columns.
 
 - A plugin can extend **this app**, **the agent**, or **both** — the badge on
   each row says which, inferred from what the package contains (`plugin.yaml`
@@ -533,14 +506,13 @@ reference. (This is separate from the [web dashboard plugin system](./features/e
   [Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
   install from their own repos via **Install from Git**.
 
-Switch to **Browse** for the native [Plugin Catalog](./features/plugin-catalog.md).
-Both Browse and **Install from Git** open the review-then-install dialog. For
-an agent-plugin catalog install, the backend resolves the catalog name to its
-reviewed pin; a link's `sha` is display metadata, not an override. This does
-not guarantee a pinned standalone desktop-plugin install. **Install from Git**
-also offers **Pin to commit** for agent-plugin installs (a full 40-character
-SHA, including private repositories); pinned agent plugins show a
-`pinned @ <sha8>` badge. Old `Settings → Plugins` links redirect here.
+Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
+picker installs reviewed entries at their pinned commit into the selected
+profile, and **Install from Git** takes any other repository through the same
+review-then-install dialog; its optional **Pin to commit** field installs one
+exact 40-character commit SHA (private repos included), and pinned plugins
+carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
+redirect here.
 
 ## Troubleshooting
 

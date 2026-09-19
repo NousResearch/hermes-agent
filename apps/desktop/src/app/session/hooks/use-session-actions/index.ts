@@ -27,7 +27,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests } from '@/store/clarify'
-import { migrateSessionDraft } from '@/store/composer'
+import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests } from '@/store/connection-request'
 import {
@@ -714,6 +714,9 @@ export function useSessionActions({
           // The row carries the create route's exact owner (backend profile +
           // connection), never the ambient profile — see upsertOptimisticSession.
           upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
+          // Anything still parked under the pre-session draft bucket belongs
+          // to this chat now (#114122); the composer moves it on scope swap.
+          announceNewSessionDraftKey(stored)
           navigate(sessionRoute(stored), { replace: true })
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.
@@ -2168,6 +2171,11 @@ export function useSessionActions({
             return
           }
 
+          // The id is verifiably dead, but the text the user typed into it is
+          // still stashed under that key (#111868). Announce it so the
+          // composer's swap onto the fresh draft carries it over with an
+          // inline, undoable notice instead of leaving it stranded.
+          announceGoneSessionDraft(storedSessionId)
           startFreshSessionDraft(true)
 
           return

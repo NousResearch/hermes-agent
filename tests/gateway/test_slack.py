@@ -1779,6 +1779,32 @@ class TestIncomingDocumentHandling:
         assert len(msg_event.media_urls) == 1
         assert "[Content of" not in (msg_event.text or "")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = content
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "text/plain",
+                        "name": "notes.txt",
+                        "url_private_download": "https://files.slack.com/notes.txt",
+                        "size": len(content),
+                    }
+                ],
+                text="",
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert ("[Content of" in (msg_event.text or "")) is inlined
+        assert msg_event.media_text_inlined == [inlined]
+
 
     @pytest.mark.asyncio
     async def test_unauthorized_message_does_not_fetch_file_info(
@@ -3044,7 +3070,10 @@ class TestThreadReplyHandling:
         from gateway.session import SessionEntry
 
         # Deserialize a legacy routing entry so lifecycle flags have real defaults.
+        # The thread key with a per-user suffix comes from the adapter's isolation flags (the runner
+        # seeds them into PlatformConfig.extra); this store has no bearing on the key any more.
         session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
+        adapter_with_session_store.config.extra["thread_sessions_per_user"] = True
         mock_session_store._entries = {session_key: SessionEntry.from_dict({
             "session_key": session_key,
             "session_id": "slack-thread-session",

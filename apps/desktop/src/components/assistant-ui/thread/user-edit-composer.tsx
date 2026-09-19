@@ -921,7 +921,6 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               // the edit silently never sends. The restore button guards the
               // same way.
               onPointerDown={event => event.preventDefault()}
-              title={copy.sendEdited}
               type="button"
             >
               {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}

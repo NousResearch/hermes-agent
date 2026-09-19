@@ -174,6 +174,8 @@ hermes profile show <name>
 
 Displays details about a profile including its home directory, configured model, gateway status, skills count, and configuration file status.
 
+The skills count here (and in `hermes profile list`) is counted on the spot. The Desktop and dashboard profile lists are polled every few seconds, so they show the last known count instead and refresh it in the background — a freshly started backend may briefly show `0` skills for a profile until the first background count lands, and a skill you just installed appears in those lists within about a minute.
+
 This shows the profile's Hermes home directory, not the terminal working directory. Terminal commands start from `terminal.cwd` (or the launch directory on the local backend when `cwd: "."`).
 
 | Argument | Description |

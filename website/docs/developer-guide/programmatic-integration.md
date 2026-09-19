@@ -72,6 +72,8 @@ A rewind / edit / regenerate is a `prompt.submit` that drops part of the stored 
 
 A truncation parameter without `confirm_truncate` is refused with code `4004` or `4029` and nothing is written. Hosts that implement rewind must set the flag at the moment the user asks for it, and must never keep truncation parameters in state across ordinary submits. Prefer `truncate_before_row_id` (from resume `row_id` / `_row_id`) over ordinals; keep the ordinal as a back-compat / optimistic-row path only when no durable id is available yet.
 
+A truncating submit is never absorbed by the busy-input policy. While a turn is still running, an ordinary `prompt.submit` is steered, redirected, or queued (`display.busy_input_mode`), but a rewind / edit / regenerate refuses with code `4009` (`session busy`) instead — queueing it would drop the history cut and run the edit as a plain follow-up after the un-edited turn. Hosts call `session.interrupt` and retry the same submit until it lands; the Desktop app does this automatically, so editing a message while Hermes is still thinking stops the live turn and reruns from the edited prompt.
+
 On a successful truncating submit against a durable session, the `prompt.submit` result additionally carries `survivor_user_row_ids` — the fresh post-rewrite row IDs of the surviving user turns, in visible-user-ordinal order. The rewrite re-inserts the kept prefix as new rows, so every row ID the host cached before the rewind is stale afterward; rebind cached IDs from this list (a `null` entry means that turn has no durable ID — drop the cached one) or the next rewind targeting an older surviving turn will be refused with `4018`.
 
 ### Events streamed back
@@ -186,6 +188,7 @@ The terminal status of a run is derived from how the agent's turn actually ended
 | Final answer produced | `completed` | `run.completed` | `completed: true` |
 | Interrupted (`/stop`, or an interrupt inside the agent) | `cancelled` | `run.cancelled` | `completed: false`, `interrupted: true`, `turn_exit_reason` naming the issuer — `interrupted_by_user` for a human stop, `interrupted_by_system(<issuer>)` / `interrupted_during_api_call(<issuer>)` when a watchdog (e.g. `cron_inactivity_watchdog`, `turn_liveness_watchdog`, `gateway_inactivity_watchdog`, `session_turn_lease_lost`) ended the turn |
 | Provider/agent failure | `failed` | `run.failed` | `completed: false`, `error` |
+| Gateway shut down while the run was active (`/v1/runs` only) | `interrupted` | `run.interrupted` | `error: "Gateway shutdown interrupted the run."` — recorded before the agent is interrupted and never overwritten by the turn's late result; a client `/stop` still settles as `cancelled` |
 | Ended without finishing (iteration budget, truncated or partial reply) | `failed` | `run.failed` | `completed: false`, `partial` when applicable, `turn_exit_reason` (e.g. `max_iterations_reached(60/60)`), `output` with any fallback text |
 
 A run is never reported as `completed` with `completed: false` or `partial: true` in the same payload. The same rule applies to `/api/sessions/{id}/chat/stream`, whose `assistant.completed` payload carries the real `completed` / `partial` / `interrupted` flags and whose terminal event is `run.completed`, `run.failed`, or `run.cancelled`.

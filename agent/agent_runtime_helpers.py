@@ -35,11 +35,13 @@ logger = logging.getLogger(__name__)
 # Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
 _MAX_AUTH_REFRESH_ATTEMPTS = 2
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
+# Optional XML namespace prefix: some models serialize native tool calls as <ns:function_calls>.
+_NS_PREFIX = r"(?:[\w.-]+:)?"
 _REASONING_BLOCK_PATTERNS = tuple(
     re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE) for name in THINK_TAG_NAMES
 )
 _TOOL_CALL_BLOCK_PATTERNS = tuple(
-    re.compile(rf"<{name}\b[^>]*>.*?</{name}>", re.DOTALL | re.IGNORECASE)
+    re.compile(rf"<{_NS_PREFIX}{name}\b[^>]*>.*?</{_NS_PREFIX}{name}>", re.DOTALL | re.IGNORECASE)
     for name in _TOOL_CALL_TAG_NAMES
 )
 
@@ -56,7 +58,7 @@ _ORPHAN_REASONING_TAG_PATTERN = re.compile(
     rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE
 )
 _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
-    rf'</(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function)>\s*', re.IGNORECASE
+    rf'</(?:{_NS_PREFIX}(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function))>\s*', re.IGNORECASE
 )
 
 # A tool-call opener with no closer, or GLM-style argument markup
@@ -65,7 +67,7 @@ _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
 # can't be recovered; strip from the block-boundary opener (or the line
 # holding the first stray argument tag) to the end of the text.
 _UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
-    rf'(?:^|\n)[ \t]*<(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
+    rf'(?:^|\n)[ \t]*<{_NS_PREFIX}(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
     r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
     re.DOTALL | re.IGNORECASE,
 )
@@ -853,7 +855,24 @@ def recover_with_credential_pool(
             "Credential %s (%s) — rotated to pool entry %s",
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
-        return agent._swap_credential(next_entry) is not False
+        swapped = agent._swap_credential(next_entry) is not False
+        benched = next((e for e in pool.entries() if e.id == credential_id), None) if credential_id else None
+        if (
+            swapped
+            and benched is not None
+            and benched.priority < getattr(next_entry, "priority", benched.priority)
+            and not getattr(agent, "_credential_pool_revert_id", None)
+            and effective_reason in (FailoverReason.rate_limit, FailoverReason.billing)
+        ):
+            # A quota bench (429/402) lifts when the window reopens, and a fresh session's
+            # select() would go straight back to this entry; arm the per-turn hook so the live
+            # session does too (#114501). Only when the benched entry OUTRANKS the one we rotated
+            # to: a session that was already on the fallback (preferred benched elsewhere) and
+            # rotates UP once the preferred window reopened must not be pulled back down when
+            # the fallback's cooldown lifts. Keep the FIRST benched entry across chained
+            # rotations — it is the preferred one. Auth benches are not windows; they stay.
+            agent._credential_pool_revert_id = credential_id
+        return swapped
     if effective_reason == FailoverReason.upstream_rate_limit:
         # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
         # healthy. Do not rotate/exhaust; let fallback switch models.
@@ -1108,6 +1127,33 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
         )
 
 
+def _revert_credential_rotation(agent) -> None:
+    """Move a live session back onto the credential a quota bench rotated it off, once the bench
+    lifts. New sessions already do this through ``select()``; without it a long-lived (gateway)
+    session keeps billing the fallback for its whole life (#114501). Credential-only: the
+    model/base_url/compressor restore stays gated on ``_fallback_activated``."""
+    revert_id = getattr(agent, "_credential_pool_revert_id", None)
+    if not revert_id:
+        return
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or getattr(agent, "_credential_pool_entry_id", None) == revert_id:
+        agent._credential_pool_revert_id = None
+        return
+    try:
+        entry = pool.reclaim(revert_id, model=getattr(agent, "model", None))
+    except Exception as exc:
+        logger.warning("Credential revert check failed: %s", exc)
+        return
+    if entry is None:
+        return  # still cooling down; check again next turn
+    if agent._swap_credential(entry) is not False:
+        logger.info(
+            "Credential %s (%s) available again — reverted pool rotation",
+            getattr(entry, "id", "?"), getattr(entry, "label", "?"),
+        )
+    agent._credential_pool_revert_id = None
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
@@ -1115,6 +1161,7 @@ def restore_primary_runtime(agent) -> bool:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks.
         agent._fallback_index = 0
+        _revert_credential_rotation(agent)
         return False
     # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
     # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
@@ -1173,6 +1220,10 @@ def restore_primary_runtime(agent) -> bool:
             base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
             provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
         )
+        # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
+        if getattr(agent, "_compression_feasibility_checked", False) is True:
+            from agent.conversation_compression import revalidate_compression_feasibility
+            revalidate_compression_feasibility(agent)
         _rebind_primary_credential_pool(
             agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
         )
@@ -1777,14 +1828,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # keeps SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
     _ensure_copilot_headers(client_kwargs)
-    # OpenCode Free is served anonymously: any unrecognized bearer is a 401, so an empty
-    # Authorization default_header overrides the SDK's "Bearer <api_key>". Key on the keyless
-    # placeholder as well as the provider: a free slug picked under the paid ``opencode`` profile
-    # resolves to the placeholder too, and shipping it as a bearer 401s every request with an
-    # empty pool to rotate (#110831).
-    from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-    if agent.provider == "opencode-free" or client_kwargs.get("api_key") == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-        client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
     from agent.codex_headers import apply_required_codex_headers
@@ -2069,6 +2112,10 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise
+    # Outside the rollback guard: a probe hiccup must not undo a good switch. Eager, so the aux
+    # clamp lands before the first compaction on the new window, not after it (#114707).
+    from agent.conversation_compression import revalidate_compression_feasibility
+    revalidate_compression_feasibility(agent)
 
 
 def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
@@ -2114,6 +2161,7 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0
+    agent._credential_pool_revert_id = None
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;
     # otherwise a failed turn silently re-activates the provider the user just rejected.
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
@@ -2911,6 +2959,58 @@ def looks_like_codex_intermediate_ack(
         or "/" in user_text
         or any(marker in assistant_text for marker in _ACK_WORKSPACE_MARKERS)
     )
+
+
+# Degenerate-final detector (#103483): after real tool work a text stop whose ENTIRE answer is a
+# fragment — a stray wrong-script word ("пар" in an English conversation), a token starting
+# mid-punctuation ("?warming up") — is a provider-side collapse, not an answer, yet the loop
+# accepted it and the turn reported completed. Shape alone cannot PROVE a collapse, so this is
+# deliberately narrower than "short": a terse legitimate answer ("42", "SQLite", "report.csv",
+# "€12.50", "你好。", "Done.", ":8080", "да" to a Russian prompt) never matches, English-script
+# fragments ("the", "ing") are knowingly not covered, and the re-prompt it triggers asks for the
+# same answer again if it was complete. ``turn_finalizer._SENTENCE_END`` encodes a sibling
+# "≤ 24 chars, no terminal" heuristic for the finish explainer.
+_DEGENERATE_FINAL_MAX_CHARS = 24
+_SENTENCE_TERMINALS = (".", "!", "?", "\u3002", "\uff01", "\uff1f")
+# Punctuation no answer begins with when a letter follows ("?warming"); "$5", "#123", "-1",
+# "/tmp", ".env", "(a)", ":8080", ":)", ";;" all stay answers.
+_DEGENERATE_LEADING_PUNCT = "?!,;:)]}"
+
+
+def looks_like_degenerate_final(text: str, user_message: Any = None) -> bool:
+    """Whether a text stop reads as a collapsed fragment rather than a (terse) answer.
+
+    "Wrong script" is judged against the conversation: when the user's own message carries
+    non-ASCII letters, a terse non-Latin reply ("是", "Готово") is an answer, not a collapse.
+    """
+    t = (text or "").strip()
+    if not t or len(t) > _DEGENERATE_FINAL_MAX_CHARS or t.endswith(_SENTENCE_TERMINALS):
+        return False
+    if t[0] in _DEGENERATE_LEADING_PUNCT and len(t) > 1 and t[1].isalpha():
+        return True
+    if not any(ch.isalpha() for ch in t) or any(ch.isascii() and ch.isalnum() for ch in t):
+        return False
+    from agent.codex_responses_adapter import _summarize_user_message_for_log
+    user_text = _summarize_user_message_for_log(user_message) if user_message else ""
+    return not any(ch.isalpha() and not ch.isascii() for ch in user_text)
+
+
+def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
+    """Tool-result rows after the most recent user row — whether the turn did real tool work.
+
+    ANY user row ends the window, the continuation nudges included: that is what bounds the
+    degenerate-final guard to one re-prompt per collapse. Skipping synthetic user rows here
+    would turn it into a two-nudge loop.
+    """
+    count = 0
+    for msg in reversed(messages or ()):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "user":
+            break
+        if msg.get("role") == "tool":
+            count += 1
+    return count
 
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the

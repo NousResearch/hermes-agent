@@ -1570,6 +1570,11 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** THE overdue test for a cron job's `next_run_at`: non-null once the stored slot
+ *  sits past the scheduler grace and the job is expected to fire. Every surface
+ *  that prints a next run switches its label on this (`t.cron.next` →
+ *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
+export { nextRunOverdueMs } from '@/app/cron/job-state'
 /** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
  *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
  *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
@@ -1596,7 +1601,13 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
-export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
+export {
+  type RouteContribution,
+  ROUTES_AREA,
+  SIDEBAR_NAV_AREA,
+  type SidebarNavContribution,
+  WORKSPACE_PAGE_HEADER_AREA
+} from '@/app/routes'
 
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
@@ -1810,6 +1821,10 @@ export { reasoningEffortLabel } from '@/lib/reasoning-effort'
 
 export const PANES_AREA = 'panes'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
+/** Titlebar slots are PERMANENT mount points: a component registered here
+ *  stays mounted across chat ↔ page navigation, so `useEffect` setup/cleanup
+ *  runs once per registration, not once per route. Page-owned controls that
+ *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
 /** The app's own gateway-readiness evaluation (setup.status +

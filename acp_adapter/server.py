@@ -28,8 +28,8 @@ from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, 
 from acp_adapter.commands import HERMES_VERSION, SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
 from acp_adapter.events import (
-    AssistantMessageIdAllocator, _build_plan_update_from_todo_result, make_message_cb, make_step_cb,
-    make_thinking_cb, make_tool_progress_cb,
+    AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update, flush_open_tool_calls,
+    make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
 )
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
@@ -222,6 +222,8 @@ class _TurnCallbacks:
     approval_cb: Any = None
     edit_approval_requester: Any = None
     streamed: bool = False
+    tool_call_ids: Any = None
+    tool_call_meta: Any = None
 
 
 class HermesACPAgent(SlashCommandsMixin, acp.Agent):
@@ -339,9 +341,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             endpoint = {
                 "base_url": getattr(state.agent, "base_url", None), "api_mode": getattr(state.agent, "api_mode", None)
             }
+        # ACP-provided MCP servers live only on the running agent's toolsets (``_register_session_mcp_servers``);
+        # a rebuild that re-derived them from config would silently drop every session MCP tool (#42719).
         state.agent = self.session_manager._make_agent(
             session_id=state.session_id, cwd=state.cwd, model=new_model,
             requested_provider=target_provider, **endpoint,
+            enabled_toolsets=getattr(state.agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
         )
         self.session_manager.save_session(state.session_id)
         return current_provider, target_provider, new_model
@@ -414,9 +420,18 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if not mcp_servers:
             return
         try:
+            from agent.runtime_cwd import set_session_cwd
             from tools.mcp_tool_discovery import register_mcp_servers
 
-            await asyncio.to_thread(register_mcp_servers, {s.name: _mcp_server_config(s) for s in mcp_servers})
+            configs = {s.name: _mcp_server_config(s) for s in mcp_servers}
+
+            def _register_pinned() -> None:
+                # new_session/load_session run outside the per-turn cwd pin; the session's logical cwd is
+                # the default stdio child cwd (tools/mcp_tool_transport.py::_run_stdio), so pin it here.
+                set_session_cwd(state.cwd)
+                register_mcp_servers(configs)
+
+            await asyncio.to_thread(_register_pinned)  # to_thread already runs in a copied context
         except Exception:
             logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
             return
@@ -623,6 +638,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             try:
                 if state.agent:
                     request_hard_interrupt(state.agent)
+                    # Background delegations are detached from the turn's fan-out; they end with the cancel.
+                    from tools.async_delegation import interrupt_for_session
+                    interrupt_for_session(parent_session_id=str(getattr(state.agent, "session_id", "") or ""),
+                                          reason="acp_cancel")
             except Exception:
                 logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
         logger.info("Cancelled session %s", session_id)
@@ -817,10 +836,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         cbs = self._wire_turn_callbacks(state, session_id, conn, loop)
 
         def _run_agent() -> dict:
-            return self._run_agent_turn(
-                state=state, session_id=session_id, user_text=user_text, user_content=user_content, conn=conn,
-                loop=loop, approval_cb=cbs.approval_cb, edit_approval_requester=cbs.edit_approval_requester,
-            )
+            try:
+                return self._run_agent_turn(
+                    state=state, session_id=session_id, user_text=user_text, user_content=user_content, conn=conn,
+                    loop=loop, approval_cb=cbs.approval_cb, edit_approval_requester=cbs.edit_approval_requester,
+                )
+            finally:
+                # Still on the executor thread: ``_send_update`` blocks on the loop, so flushing
+                # here (not after ``run_in_executor``) lands the update before the response.
+                self._flush_turn_tool_calls(cbs, session_id, conn, loop)
 
         try:
             # ACP `session_id` is the stable handle; agent.session_id is the internal head that
@@ -838,6 +862,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
 
+    def _flush_turn_tool_calls(
+        self, cbs: _TurnCallbacks, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop
+    ) -> None:
+        """Close any tool call the turn left open, so no bubble spins after the turn ends."""
+        if not conn or cbs.tool_call_ids is None:
+            return
+        try:
+            flush_open_tool_calls(conn, session_id, loop, cbs.tool_call_ids, cbs.tool_call_meta or {})
+        except Exception:
+            logger.debug("Could not flush open ACP tool calls for %s", session_id, exc_info=True)
+
     def _wire_turn_callbacks(
         self, state: SessionState, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop
     ) -> _TurnCallbacks:
@@ -846,9 +881,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if conn:
             tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
             tool_call_meta: dict[str, dict[str, Any]] = {}
+            cbs.tool_call_ids, cbs.tool_call_meta = tool_call_ids, tool_call_meta
+            # Shared with the step callback so a runtime that projects
+            # ``tool.completed`` closes each call once, not twice.
+            turn_state: dict[str, Any] = {}
             policy_getter = lambda: self._edit_approval_policy_for_state(state)  # noqa: E731
             cbs.tool_progress_cb = make_tool_progress_cb(
-                conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter
+                conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter,
+                turn_state=turn_state,
             )
             # Per-session allocator: a new turn must never reuse a previous turn's
             # assistant messageId (ACP clients replace the bubble with that id).
@@ -856,7 +896,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.message_ids = AssistantMessageIdAllocator()
             state.message_ids.close()  # new turn -> next chunk opens a fresh id
             cbs.reasoning_cb = make_thinking_cb(conn, session_id, loop, state.message_ids)
-            cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta, turn_state)
             message_cb = make_message_cb(conn, session_id, loop, state.message_ids)
 
             def stream_delta_cb(text: str) -> None:
@@ -864,12 +904,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 message_cb(text)
 
             cbs.stream_delta_cb = stream_delta_cb
-            cbs.approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
+            # Closes the synthetic permission-request bubble once the user has answered.
+            send_update = lambda update: _send_update(conn, session_id, loop, update)  # noqa: E731
+            cbs.approval_cb = make_approval_callback(conn.request_permission, loop, session_id, send_update=send_update)
             try:
                 from acp_adapter.edit_approval import make_acp_edit_approval_requester
 
                 cbs.edit_approval_requester = make_acp_edit_approval_requester(
-                    conn.request_permission, loop, session_id, auto_approve_getter=policy_getter
+                    conn.request_permission, loop, session_id, auto_approve_getter=policy_getter,
+                    send_update=send_update,
                 )
             except Exception:
                 logger.debug("Could not create ACP edit approval requester", exc_info=True)
@@ -904,7 +947,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             except Exception:
                 logger.debug("Could not emit ACP provenance update after rotation for %s", session_id, exc_info=True)
 
-        final_response = result.get("final_response", "")
+        final_response = result.get("final_response") or ""  # None on an interrupted turn
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
         from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX

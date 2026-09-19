@@ -106,20 +106,60 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     return found
 
 
-def _hermes_home_for_pid(pid: int) -> str | None:
-    """Best-effort ``HERMES_HOME`` from *pid*'s environment (psutil, then /proc)."""
+def _pid_environ(pid: int) -> dict[str, str] | None:
+    """Exec-time environment of *pid* (psutil, then /proc); ``None`` when unreadable."""
     with contextlib.suppress(Exception):
         import psutil
-        if home := psutil.Process(pid).environ().get("HERMES_HOME"):
-            return home
+        return dict(psutil.Process(pid).environ())
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes()
     except OSError:
         return None
+    env: dict[str, str] = {}
     for part in raw.split(b"\x00"):
-        if part.startswith(b"HERMES_HOME="):
-            return part.split(b"=", 1)[1].decode("utf-8", errors="replace") or None
-    return None
+        key, sep, value = part.partition(b"=")
+        if sep:
+            env[key.decode("utf-8", errors="replace")] = value.decode("utf-8", errors="replace")
+    return env
+
+
+def _hermes_home_for_pid(pid: int) -> str | None:
+    """The Hermes home *pid* runs on, tri-state: ``None`` ONLY when its environment is unreadable
+    (another user, hardened ``/proc``) — callers spare those, never guess.
+
+    A readable environment always resolves, replaying ``_apply_profile_override`` on the target's
+    exec-time env + argv (``hermes -p X serve`` rewrites ``HERMES_HOME`` in ``os.environ`` AFTER
+    startup, which ``/proc/<pid>/environ`` never reflects): a profile-shaped ``HERMES_HOME``
+    without a flag is the home; otherwise the root is ``HERMES_HOME`` (its grandparent when
+    profile-shaped) or the platform default of the process's own ``HOME`` / ``LOCALAPPDATA``, and
+    the profile is the ``--profile``/``-p`` flag, else the root's sticky ``active_profile`` unless
+    the process has a fixed identity (supervised child, post-swap updater, Desktop SSH backend).
+    """
+    env = _pid_environ(pid)
+    if env is None:
+        return None
+    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
+    from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
+    argv = _dashboard_cmdline_for_pid(pid) or []
+    env_home = env.get("HERMES_HOME", "").strip()
+    profile = _profile_flag_value(argv)
+    if profile is None and env_home and (
+        Path(env_home).parent.name == "profiles" or env.get("HERMES_UPDATE_POST_SWAP") == "1"
+    ):
+        return env_home
+    if sys.platform == "win32":
+        local_appdata = env.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path(env.get("USERPROFILE") or Path.home()) / "AppData" / "Local"
+        default_home = base / "hermes"
+    else:
+        default_home = Path(env.get("HOME") or Path.home()) / ".hermes"
+    root = profile_root_for_env_home(env_home, default_home)
+    fixed_identity = any(env.get(k) for k in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
+                                               "HERMES_GATEWAY_EXTERNAL_SUPERVISOR")) or "--ssh-session-token-file" in argv
+    if profile is None and not fixed_identity:
+        profile = get_active_profile(root)
+    canon = normalize_profile_name(profile) if profile else "default"
+    return str(root) if canon == "default" else str(root / "profiles" / canon)
 
 
 def _dashboard_subcommand_index(argv: list[str]) -> int | None:
@@ -181,6 +221,23 @@ def _normalized_home_for_compare(home: str) -> str:
     See #94030.
     """
     return os.path.normcase(str(_resolved_home(home)))
+
+
+def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
+    """Return only *pids* whose resolved Hermes home (``_hermes_home_for_pid``) is ``home``.
+
+    Dashboard argv is discovery-only: it is not an ownership proof because
+    several Hermes installs and profiles can run the same command on one
+    machine.  An unreadable process environment is deliberately not treated
+    as a match, so a stop request fails closed rather than taking down an
+    unrelated backend.
+    """
+    target = _normalized_home_for_compare(home)
+    return [
+        pid for pid in pids
+        if (pid_home := _hermes_home_for_pid(pid))
+        and _normalized_home_for_compare(pid_home) == target
+    ]
 
 
 def _profile_key_for_respawn(argv: list[str], hermes_home: str | None = None) -> str:
@@ -250,6 +307,79 @@ def _exclude_pids_from_env() -> set[int]:
         with contextlib.suppress(ValueError):
             out.add(int(part))
     return out
+
+
+#: Executables that only *carry* a hermes command line. A process headed by one of these
+#: never serves traffic itself; when its argv matches the dashboard patterns it is a
+#: wrapper around the command (``bash -c 'hermes dashboard --stop'``), not a backend.
+_WRAPPER_HEAD_COMMANDS = frozenset({
+    "ash", "bash", "csh", "dash", "fish", "ksh", "sh", "tcsh", "zsh",
+    "env", "nohup", "nice", "stdbuf", "timeout", "watch", "xargs",
+    "screen", "tmux", "sudo",
+})
+
+
+def _caller_ancestor_pids() -> set[int]:
+    """PIDs of THIS process's ancestors (self excluded), best-effort; empty on any failure.
+
+    ``--stop`` and the update sweep must never kill the process tree they were invoked
+    from. psutil is primary; the ``/proc`` walk keeps the answer when psutil is unusable.
+    """
+    try:
+        import psutil
+
+        return {p.pid for p in psutil.Process().parents()}
+    except Exception:
+        pass
+    ancestors: set[int] = set()
+    cur = os.getpid()
+    for _ in range(2048):  # cycle / corrupt-PPid guard
+        try:
+            status_text = Path(f"/proc/{cur}/status").read_text(
+                encoding="utf-8", errors="replace")
+            for line in status_text.splitlines():
+                if line.startswith("PPid:"):
+                    cur = int(line.split()[1])
+                    break
+            else:
+                return ancestors
+        except (OSError, ValueError, IndexError):
+            return ancestors
+        if cur <= 1:
+            return ancestors
+        ancestors.add(cur)
+    return ancestors
+
+
+def _argv_head_command(pid: int) -> str | None:
+    """Basename of *pid*'s first argv token, best-effort; ``None`` when unreadable."""
+    try:
+        import psutil
+
+        argv = psutil.Process(pid).cmdline()
+        if argv:
+            return os.path.basename(str(argv[0]))
+    except Exception:
+        pass
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+    head = raw.split(b"\x00", 1)[0].decode("utf-8", "replace")
+    return head.rsplit("/", 1)[-1] or None
+
+
+def _is_caller_wrapper_shell(pid: int, ancestors: set[int]) -> bool:
+    """True when *pid* is a caller ancestor headed by a wrapper executable.
+
+    Root selection is a substring match, so the shell a ``--stop`` was typed into (or a
+    ``bash -c 'hermes dashboard --stop'`` wrapper) matches on its own argv. Ancestor alone
+    is not a spare: the backend hosting a shell-escaped TUI is also the caller's ancestor
+    and must stay stoppable — only a wrapper-headed ancestor is spared.
+    """
+    if pid not in ancestors:
+        return False
+    return (_argv_head_command(pid) or "") in _WRAPPER_HEAD_COMMANDS
 
 
 def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
@@ -418,6 +548,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
+    scope_home: str | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
 
@@ -425,6 +556,10 @@ def _kill_stale_dashboard_processes(
     kill (systemd treats our SIGTERM as a clean stop, so ``Restart=on-failure`` never fires) and
     manual PIDs are respawned from captured argv. PIDs owned by *already_restarted_units* (no
     ``.service`` suffix) are left untouched, not killed twice.
+
+    When *scope_home* is supplied, only processes with that exact live
+    ``HERMES_HOME`` are candidates; unknown ownership fails closed. This is
+    used by ``dashboard --stop`` and the per-profile update cleanup.
 
     Manually-started dashboards are not auto-restarted because we don't know the original launch args
     (--host, --port, --insecure, --tui, --no-open). See #68934.
@@ -446,7 +581,7 @@ def _kill_stale_dashboard_processes(
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
-    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None)
+    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).

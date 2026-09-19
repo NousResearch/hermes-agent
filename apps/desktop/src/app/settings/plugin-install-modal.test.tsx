@@ -27,7 +27,7 @@ import {
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
-import { PluginActions, PluginsTab } from '../skills/plugins-tab'
+import { PluginsTab } from '../skills/plugins-tab'
 
 import { PluginInstallModal } from './plugin-install-modal'
 
@@ -38,7 +38,6 @@ const renderFlow = () =>
   render(
     <MemoryRouter initialEntries={['/skills?tab=plugins']}>
       <QueryClientProvider client={queryClient}>
-        <PluginActions profile={null} />
         <PluginsTab profile={null} />
         <PluginInstallModal />
       </QueryClientProvider>

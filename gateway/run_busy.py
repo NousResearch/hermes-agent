@@ -19,8 +19,9 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, _session_key_namespace
-from typing import Any, Dict, Optional, Union
+from gateway.session import SessionSource
+from gateway.whatsapp_identity import canonical_whatsapp_identifier
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -28,6 +29,47 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _strip_slot(text: str, slot: str) -> Optional[str]:
+    """Remainder after ``slot`` when ``text`` starts with it as a WHOLE slot, else None.
+
+    The ``:``-delimited slot layout is ``build_session_key``'s: an id that merely starts with another
+    must never match, so a whole-slot comparison is what every caller here uses. A text that IS the
+    slot yields ``""``."""
+    if text == slot:
+        return ""
+    if text.startswith(slot + ":"):
+        return text[len(slot) + 1:]
+    return None
+
+
+def _tail_has_slot(tail: str, slot: str) -> bool:
+    """True when ``tail``'s FIRST slot is ``slot`` (``tail`` is ``""`` when the key ends at the
+    chat id)."""
+    return _strip_slot(tail, slot) is not None
+
+
+def _same_chat_key_slots(
+    key: str, *, prefix: str, chat_id: str, scope_id: Optional[str],
+) -> Optional[Tuple[str, str]]:
+    """``(chat_type, tail)`` when ``key`` names the SAME chat as ``prefix`` + ``chat_id``, else None.
+
+    ``prefix`` is the key's fixed-shape head, ``agent:<profile>:<platform>:``. Everything after it is
+    matched as TEXT, because ids may themselves contain ``:`` (Matrix ``!room:example.org``).
+    ``scope_id`` is Slack's workspace slot — ``build_session_key`` emits it there alone — and a key
+    without it still names the same chat; a key carrying a DIFFERENT known scope is another
+    workspace's chat. ``tail`` is ``""`` when the key ends at the chat id.
+    """
+    if not key.startswith(prefix):
+        return None
+    chat_type, _, rem = key[len(prefix):].partition(":")
+    candidates = (f"{scope_id}:{chat_id}", chat_id) if scope_id else (chat_id,)
+    for candidate in candidates:
+        tail = _strip_slot(rem, candidate)
+        if tail is not None:
+            return chat_type, tail
+    return None
 
 
 class GatewayBusySessionMixin:
@@ -335,13 +377,20 @@ class GatewayBusySessionMixin:
                 for key in self._SECURITY_METADATA_KEYS
             )
         )
-        if same_security_context and (
-            getattr(existing, "message_type", None) == MessageType.PHOTO
-            or event.message_type == MessageType.PHOTO
-            or bool(getattr(existing, "media_urls", None))
-            or bool(getattr(event, "media_urls", None))
+        # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
+        # head slot. Every other media follow-up — voice, audio, video, document — is an
+        # independent message and takes its own FIFO turn like text does; merging on *any*
+        # ``media_urls`` collapsed three voice notes into one turn (#114363). Telegram albums
+        # (``media_group_id``, photos and videos) are already coalesced by the adapter upstream.
+        merge_types = {
+            getattr(existing, "message_type", None),
+            getattr(event, "message_type", None),
+        }
+        if (
+            same_security_context
+            and MessageType.PHOTO in merge_types
+            and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
         ):
-            # Preserve photo-burst / media-merge semantics for the head slot.
             merge_pending_message_event(
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
@@ -1031,33 +1080,70 @@ class GatewayBusySessionMixin:
             )
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
-    def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
-        """Running-agent keys of OTHER participants in the same thread (per-user thread mode keys
-        are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the caller's own
-        ``/stop``). Excludes the pending sentinel and ``own_key``; callers still gate on authz."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        thread_id = getattr(source, "thread_id", None)
-        chat_id = getattr(source, "chat_id", None)
-        if not thread_id or not chat_id:
+    def _same_chat_runs(self, source: SessionSource, own_key: str) -> List[Tuple[str, str, str]]:
+        """``(key, chat_type, tail)`` for every OTHER running turn in the caller's chat (``tail`` is
+        the key text after the chat id, ``""`` when the key ends there).
+
+        The namespace comes from ``own_key`` — the session store's own answer, so a named-profile
+        stop matches that profile's runs and never a literal. ``_snapshot_running_agents`` already
+        drops the pending sentinel (a session still being set up has no agent). Callers gate on
+        authorization; ``own_key`` is excluded. Both tiers share one call.
+        """
+        chat_id = str(getattr(source, "chat_id", None) or "")
+        if not chat_id:
             return []
-        platform = source.platform.value
+        if source.chat_type == "dm" and source.platform == Platform.WHATSAPP:
+            # Match the same text build_session_key keyed: WhatsApp DM chat ids are canonicalised
+            # there, so a raw JID/LID alias would never line up with the stored key.
+            chat_id = canonical_whatsapp_identifier(chat_id) or chat_id
+        namespace = ":".join(own_key.split(":", 2)[:2])
+        prefix = f"{namespace}:{source.platform.value}:"
+        scope_id = str(getattr(source, "scope_id", None) or "") or None
+        runs = []
+        for key in self._snapshot_running_agents():
+            if key == own_key:
+                continue
+            parsed = _same_chat_key_slots(key, prefix=prefix, chat_id=chat_id, scope_id=scope_id)
+            if parsed is not None:
+                runs.append((key, parsed[0], parsed[1]))
+        return runs
+
+    def _sibling_thread_run_keys(
+        self, source: SessionSource, runs: List[Tuple[str, str, str]],
+    ) -> List[str]:
+        """Keys from ``runs`` belonging to OTHER participants in the caller's own thread (per-user
+        thread mode keys are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the
+        caller's own ``/stop``). Callers still gate on authz."""
+        thread_id = str(getattr(source, "thread_id", None) or "")
         chat_type = getattr(source, "chat_type", None) or ""
-        # Match the exact key or prefix + ":" so a thread id that merely starts with this one
-        # is not matched. The namespace follows the source's profile so a named-profile run
-        # under multiplexing still matches its own keys.
-        prefix = ":".join([
-            _session_key_namespace(getattr(source, "profile", None)),
-            platform,
-            chat_type,
-            str(chat_id),
-            str(thread_id),
-        ])
+        if not thread_id or not chat_type:
+            return []
         return [
             key
-            for key, agent in self._running_agent_items()
-            if key != own_key
-            and agent is not _AGENT_PENDING_SENTINEL and agent
-            and (key == prefix or key.startswith(prefix + ":"))
+            for key, key_chat_type, tail in runs
+            if key_chat_type == chat_type and _tail_has_slot(tail, thread_id)
+        ]
+
+    def _chat_scoped_run_keys(
+        self, source: SessionSource, runs: List[Tuple[str, str, str]],
+    ) -> List[str]:
+        """Keys from ``runs`` for ANY session of the same chat, whatever the chat_type/thread/
+        participant slots. Two supported shapes make a /stop key miss a run in the same chat (found
+        via Slack's native stop button, gateway-gateway#286): a top-level channel turn keys
+        ``channel`` while an in-thread /stop normalizes to ``thread``, and rolling-DM configs key
+        without the thread slot the stop carries. "/stop" means "stop what's running in THIS chat",
+        which is also what lets a human stop a peer's per-sender group run (see ``_same_chat_runs``).
+
+        A stop sent from INSIDE a thread only reaches runs whose own thread slot is that thread (or
+        that carry no thread slot at all — the rolling-DM shape). Anything else in the channel is a
+        different conversation: another reply thread, or a peer's top-level run. Callers gate on
+        authz.
+        """
+        thread_id = str(getattr(source, "thread_id", None) or "")
+        return [
+            key
+            for key, _key_chat_type, tail in runs
+            if not thread_id or not tail or _tail_has_slot(tail, thread_id)
         ]
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:

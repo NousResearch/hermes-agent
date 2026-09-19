@@ -695,7 +695,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
     }
 
-    rpc<CommandsCatalogResponse>('commands.catalog', {})
+    // Bound to the live session when one exists (reconnect): project-local
+    // skills follow the session's repo. Before the first session the gateway
+    // uses the same workspace it seeds a new session with.
+    const catalogSid = getUiState().sid
+
+    rpc<CommandsCatalogResponse>('commands.catalog', catalogSid ? { session_id: catalogSid } : {})
       .then(r => {
         if (!r?.pairs) {
           return

@@ -265,9 +265,11 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
 
     def _save_completed_video(self, job_id: str) -> str:
         # The content endpoint is derived from our configured origin, never from ``unsigned_urls``: the
-        # bearer key must only ever be sent to the host the operator selected.
+        # bearer key must only ever be sent to the host the operator selected. That origin is operator
+        # chosen (a LAN relay is legitimate), so the first hop is trusted for the private-address check.
         return str(save_url_video(f"{self._base_url()}/videos/{job_id}/content", prefix="openrouter",
-                                  headers=self._headers(), require_video_content_type=True))
+                                  headers=self._headers(), require_video_content_type=True,
+                                  trusted_origin=True))
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None,

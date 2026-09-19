@@ -32,6 +32,7 @@ CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
+LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
 _MAX_LIVE_BYTES = 2 * 1024 * 1024
 
@@ -235,10 +236,31 @@ def find_removed(name_or_repo: str, catalog_dir: Optional[Path] = None) -> Optio
     """
     if not name_or_repo:
         return None
-    candidate = name_or_repo.strip()
-    candidate_repo = _normalize_repo(candidate)
-    for entry in load_removed_list(catalog_dir) + (live_removed_list() if catalog_dir is None else []):
-        if candidate == entry.name or (entry.repo and candidate_repo == _normalize_repo(entry.repo)):
+    entries = load_removed_list(catalog_dir)
+    if catalog_dir is None:
+        entries = entries + live_removed_list()
+    return match_removed(name_or_repo, entries)
+
+
+def resolved_removed_entries() -> List[RemovedEntry]:
+    """The full kill list (in-tree UNION live) in one resolution. Callers that match many candidates
+    — e.g. a plugins-hub rebuild annotating every installed plugin — resolve the list once instead
+    of paying a live-catalog fetch per candidate."""
+    return load_removed_list() + live_removed_list()
+
+
+def match_removed(
+    candidate: str, entries: List[RemovedEntry]
+) -> Optional[RemovedEntry]:
+    """One candidate against a pre-resolved kill list: exact name or normalized repo URL match."""
+    if not candidate:
+        return None
+    text = candidate.strip()
+    text_repo = _normalize_repo(text)
+    for entry in entries:
+        if text == entry.name or (
+            entry.repo and text_repo == _normalize_repo(entry.repo)
+        ):
             return entry
     return None
 
@@ -250,16 +272,35 @@ def _live_cache_path() -> Path:
     return get_hermes_home() / "cache" / "plugin-catalog.json"
 
 
+# Wall-clock deadline of the last failed live fetch. Without it a dead catalog host costs one
+# full request timeout PER CALL (the plugins hub and ``plugins list`` used to ask once per
+# installed plugin), so the dashboard event loop stalled for minutes.
+_live_fetch_failed_until = 0.0
+
+
+def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
+    """A previously fetched copy still beats the in-tree one when the network is down."""
+    try:
+        return json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
+    except Exception:
+        return None
+
+
 def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     """The published ``plugin-catalog.json`` (``{"entries": [...], "removed": [...]}``), cached under
     ``HERMES_HOME/cache`` for :data:`LIVE_CATALOG_TTL_SECONDS`. ``None`` on ANY failure — callers fall
-    back to the in-tree catalog."""
+    back to the in-tree catalog. A failed network attempt is remembered for
+    :data:`LIVE_CATALOG_FAILURE_TTL_SECONDS` so a dead host costs one timeout per TTL window, not one
+    per call (``force`` bypasses both caches)."""
+    global _live_fetch_failed_until
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
             return json.loads(cache.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
+    if not force and time.time() < _live_fetch_failed_until:
+        return _stale_live_cache(cache)
     try:
         import httpx
         from hermes_constants import mkdir_under_hermes_home
@@ -276,10 +317,8 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         return data
     except Exception as exc:
         logger.debug("Plugin catalog: live fetch failed: %s", exc)
-        try:  # stale cache still beats the in-tree copy when the network is down
-            return json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
-        except Exception:
-            return None
+        _live_fetch_failed_until = time.time() + LIVE_CATALOG_FAILURE_TTL_SECONDS
+        return _stale_live_cache(cache)
 
 
 def load_catalog_live() -> List[PluginCatalogEntry]:

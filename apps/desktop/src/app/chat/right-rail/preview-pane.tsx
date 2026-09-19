@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
@@ -800,7 +801,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     return registerPreviewInput(tabId, {
-      focus: () => webviewRef.current?.focus?.(),
+      focus: () => {
+        const webview = webviewRef.current
+
+        // Trusted input still reaches the guest while hidden. Focusing the
+        // webview element would steal the host's composer focus even when inert.
+        if (webview && !isElementInHiddenPane(webview)) {
+          webview.focus?.()
+        }
+      },
       send: event => {
         const webview = webviewRef.current
 

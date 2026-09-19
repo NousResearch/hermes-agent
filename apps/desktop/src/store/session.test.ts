@@ -935,6 +935,35 @@ describe('workspaceCwdForNewSession', () => {
     expect(workspaceCwdForNewSession()).toBe('')
   })
 
+  it('reseeding a remote gateway with no remembered workspace clears a folder left by another backend (#114306)', async () => {
+    // The door the switch wipe does not cover: `$currentCwd` is initialised from
+    // whatever key is current at module load (the LOCAL memory when the app
+    // boots straight into a remote gateway), and boot reseeds through
+    // ensureDefaultWorkspaceCwd alone — no beginGatewaySwitch runs. An empty
+    // remembered value for the incoming gateway must therefore publish as a
+    // clear, not skip via the truthy-only seed, so seedDefaultCwd can apply
+    // that gateway's own default.
+    const sanitizeWorkspaceCwd = vi.fn(async (cwd: string) => ({ cwd }))
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd,
+      settings: { getDefaultProjectDir: vi.fn(async () => ({ defaultLabel: '', dir: '', resolvedCwd: '' })) }
+    }
+
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/opt/data/profiles/project-a')
+    expect(getRememberedWorkspaceCwd()).toBe('/opt/data/profiles/project-a')
+
+    // Simulate the gateway switch: connection flips to B before the reseed
+    // runs, exactly as beginGatewaySwitch/softSwitch do today.
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+
+    await ensureDefaultWorkspaceCwd(() => true)
+
+    expect($currentCwd.get()).toBe('')
+  })
+
   it('remembers only the workspace the user picked, not the one they looked at', () => {
     // The reported bug (#77496 / #80213): every session resume used to write
     // the remembered-workspace key — so opening a project chat silently moved

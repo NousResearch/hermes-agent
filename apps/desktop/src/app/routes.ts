@@ -242,6 +242,12 @@ export function isWorkspacePageRoute(to: string): boolean {
  *  (settings/…) don't count — the chat stays beneath them. */
 export const $workspaceIsPage = atom(false)
 
+/** Page-owned controls (kanban's board switcher) projected into the workspace
+ *  panel's tab-header space while `$workspaceIsPage` holds — the page's title
+ *  row, not the native band. Distinct from `titleBar.*`, whose slots stay
+ *  mounted on every route so plugin components never remount on navigation. */
+export const WORKSPACE_PAGE_HEADER_AREA = 'workspace.pageHeader'
+
 function revealWorkspacePane(): void {
   noteActiveTreeGroup(null)
   revealTreePane('workspace')

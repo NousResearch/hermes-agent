@@ -81,30 +81,6 @@ class TestOpenCodeZenOxReasoning:
             )
             assert top_level == {"reasoning_effort": expected}, requested
 
-    def test_opencode_free_profile_shares_the_translation(self):
-        """Ox Alpha is reachable via the keyless opencode-free provider too;
-        its profile must emit the identical clamped reasoning_effort."""
-        import model_tools  # noqa: F401
-        import providers
-        from providers.base import ProviderProfile
-
-        profile = providers.get_provider_profile("opencode-free")
-        assert profile is not None
-        assert (
-            type(profile).build_api_kwargs_extras
-            is not ProviderProfile.build_api_kwargs_extras
-        ), "opencode-free must override build_api_kwargs_extras (aux gate)"
-        _, top_level = profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "medium"},
-            model="x-preview-f-free",
-        )
-        assert top_level == {"reasoning_effort": "low"}
-        _, other = profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "max"},
-            model="big-pickle",
-        )
-        assert other == {}
-
 
 class TestOpenCodeGoKimiReasoning:
     """Kimi K2 models use Moonshot's thinking + reasoning_effort shape on OpenCode Go."""

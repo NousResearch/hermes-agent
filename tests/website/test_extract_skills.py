@@ -34,21 +34,6 @@ def mod():
     return module
 
 
-@pytest.mark.parametrize("directory,source,prefix", [
-    ("skills", "built-in", "NousResearch/hermes-agent/skills"),
-    ("optional-skills", "optional", "official"),
-])
-def test_local_skills_publish_exact_install_target(mod, tmp_path, monkeypatch, directory, source, prefix):
-    skill = tmp_path / directory / "creative" / "nested" / "example"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: Different Display Name\n---\nExample.")
-    monkeypatch.setattr(mod, "REPO_ROOT", str(tmp_path))
-    [entry] = mod.extract_local_skills()
-    expected = f"{prefix}/creative/nested/example"
-    assert entry["installIdentifier"] == expected
-    assert entry["installCmd"] == f"hermes skills install {expected}"
-
-
 # --------------------------------------------------------------------------
 # _source_url
 # --------------------------------------------------------------------------

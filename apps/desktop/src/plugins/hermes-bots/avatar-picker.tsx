@@ -192,7 +192,6 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
                   <Button
                     onClick={() => onShape(blobShapeString(locked ? '' : pickerName, kind))}
                     size="sm"
-                    title={locked ? b.avatar.unlockFollowsName : 'Keep this exact face even if the name changes'}
                     type="button"
                     variant="ghost"
                   >

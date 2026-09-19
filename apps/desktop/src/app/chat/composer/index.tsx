@@ -71,6 +71,7 @@ import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { QueuePanel } from './queue-panel'
+import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
   composerPlainText,
@@ -254,7 +255,14 @@ export function ChatBar({
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
-  const slash = useSlashCompletions({ activeSkin: themeName, gateway: gateway ?? null, skinThemes: availableThemes })
+
+  const slash = useSlashCompletions({
+    activeSkin: themeName,
+    gateway: gateway ?? null,
+    sessionId: sessionId ?? null,
+    skinThemes: availableThemes
+  })
+
   const emoji = useEmojiCompletions()
 
   const { t } = useI18n()
@@ -1432,6 +1440,11 @@ export function ChatBar({
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
                   <ContribSlot area={COMPOSER_AREAS.top} />
+                  <RestoredDraftNotice
+                    freshDraft={activeQueueSessionKey === null}
+                    onUndone={clearDraft}
+                    readLiveText={syncDraftFromEditor}
+                  />
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && (

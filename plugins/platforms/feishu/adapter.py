@@ -497,6 +497,18 @@ def parse_feishu_post_payload(
         )
         if row_text:
             parts.append(row_text)
+    for entry in resolved.get("files", []) or []:
+        if (
+            not isinstance(entry, dict)
+            or _to_boolean(entry.get("is_folder"))
+            or not str(entry.get("file_key", "")).strip()
+        ):
+            continue
+        placeholder = _render_post_element(
+            {**entry, "tag": "file"}, image_keys, media_refs, mentions_map,
+        )
+        if placeholder:
+            parts.append(placeholder)
     return FeishuPostParseResult(
         text_content="\n".join(parts).strip() or FALLBACK_POST_TEXT, image_keys=image_keys, media_refs=media_refs,
     )
@@ -531,7 +543,12 @@ def _to_post_payload(candidate: Any) -> Dict[str, Any]:
     content = candidate.get("content")
     if not isinstance(content, list):
         return {}
-    return {"title": str(candidate.get("title", "") or ""), "content": content}
+    files = candidate.get("files")
+    return {
+        "title": str(candidate.get("title", "") or ""),
+        "content": content,
+        "files": files if isinstance(files, list) else [],
+    }
 
 
 _STATIC_POST_TAGS = {"br": "\n", "hr": "\n\n---\n\n", "divider": "\n\n---\n\n"}
@@ -583,11 +600,15 @@ def _render_post_element(
         file_key = str(element.get("file_key", "")).strip()
         names = (str(element.get(k, "")).strip() for k in ("file_name", "title", "text"))
         file_name = next((n for n in names if n), "")
-        if file_key:
+        placeholder = f"[Attachment: {file_name}]" if file_name else "[Attachment]"
+        if not file_key:
+            return placeholder
+        if not any(ref.file_key == file_key for ref in media_refs):
             media_refs.append(FeishuPostMediaRef(
                 file_key=file_key, file_name=file_name, resource_type=tag if tag in {"audio", "video"} else "file",
             ))
-        return f"[Attachment: {file_name}]" if file_name else "[Attachment]"
+            return placeholder
+        return ""
     if tag in {"emotion", "emoji"}:
         label = str(element.get("text", "")).strip() or str(element.get("emoji_type", "")).strip()
         return f":{_escape_markdown_text(label)}:" if label else "[Emoji]"
@@ -1044,6 +1065,40 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
         _dispatch_connect.__wrapped__ = real_connect
         _dispatch_connect.__name__ = getattr(real_connect, "__name__", "connect")
         ws_client_module.websockets.connect = _dispatch_connect
+
+        original_receive_loop = ws_client_module.Client._receive_message_loop
+
+        async def _receive_message_loop_exit_notify(self: Any) -> None:
+            # The SDK schedules this coroutine right after the websocket handshake succeeded, so its
+            # entry is the only in-thread proof that a (re)built link is actually up.
+            on_link_up = getattr(_ws_isolation_state, "on_link_up", None)
+            if on_link_up is not None:
+                on_link_up()
+            try:
+                await original_receive_loop(self)
+            except Exception:
+                # ``Client.start()`` parks in ``run_until_complete(_select())``, which only returns
+                # when this worker loop stops, and the receive loop runs as a bare ``create_task``
+                # whose exception nobody retrieves — so every unrecoverable exit (reconnect ladder
+                # disabled, or its ``ClientException``/``ServerUnreachableException`` re-raise)
+                # left a deaf-but-ESTABLISHED socket whose executor future never completed and the
+                # supervisor never rebuilt (#113662). Log the root cause here and stop the loop so
+                # ``start()`` raises, the future completes and ``_supervise_websocket_thread`` fires.
+                # A *normal* return means the SDK's own ladder already reconnected (it scheduled a
+                # fresh receive loop) and must NOT stop the loop. Deliberate disconnects nil
+                # ``_ws_client`` first, so the supervisor exits without restarting.
+                adapter = getattr(_ws_isolation_state, "adapter", None)
+                if adapter is None or getattr(adapter, "_running", True):
+                    logger.exception(
+                        "[Feishu] lark WS receive loop died; stopping the worker "
+                        "loop so the supervisor can rebuild"
+                    )
+                else:
+                    # ``disconnect()`` sent the CLOSE frame itself: the loop ending here is expected.
+                    logger.debug("[Feishu] lark WS receive loop ended during disconnect", exc_info=True)
+                asyncio.get_running_loop().stop()
+
+        ws_client_module.Client._receive_message_loop = _receive_message_loop_exit_notify
         _WS_ISOLATION_INSTALLED = True
 
 
@@ -1062,6 +1117,10 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             setattr(ws_client, "_reconnect_interval", adapter._ws_reconnect_interval)
             if adapter._ws_ping_interval is not None:
                 setattr(ws_client, "_ping_interval", adapter._ws_ping_interval)
+            # SDK observer (lark-oapi ``Client.on_reconnecting``, fired first thing in ``_reconnect()``):
+            # on the live link ``_auto_reconnect`` is on, so the ladder runs *inside* the receive loop
+            # and the thread never dies — without this the supervisor's ``retrying`` is never published.
+            setattr(ws_client, "on_reconnecting", _on_reconnecting)
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
@@ -1070,9 +1129,24 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         for key, value in (("ping_interval", adapter._ws_ping_interval), ("ping_timeout", adapter._ws_ping_timeout))
         if value is not None
     }
+    adapter_loop = adapter._loop
+
+    def _on_reconnecting() -> None:
+        if adapter_loop is not None and not adapter_loop.is_closed():
+            adapter_loop.call_soon_threadsafe(adapter._ws_link_retrying, ws_client)
+
+    def _on_link_up() -> None:
+        # Fired on the WS thread when the SDK scheduled a receive loop (handshake done); hop to the
+        # adapter loop so the ``connected`` re-stamp after a supervisor rebuild runs where the adapter's
+        # state lives.
+        if adapter_loop is not None and not adapter_loop.is_closed():
+            adapter_loop.call_soon_threadsafe(adapter._ws_link_up, ws_client)
+
     _install_lark_ws_isolation(ws_client_module)
     _ws_isolation_state.loop = loop
     _ws_isolation_state.connect_kwargs = connect_overrides
+    _ws_isolation_state.on_link_up = _on_link_up
+    _ws_isolation_state.adapter = adapter
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
@@ -1091,6 +1165,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     finally:
         _ws_isolation_state.loop = None
         _ws_isolation_state.connect_kwargs = None
+        _ws_isolation_state.on_link_up = None
+        _ws_isolation_state.adapter = None
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
@@ -2498,7 +2574,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _process_inbound_message(
         self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
-        text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
+        text, inbound_type, media_urls, media_types, media_text_inlined, mentions = await self._extract_message_content(message)
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
@@ -2512,7 +2588,10 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Only a native ``thread_id`` marks a topic. ``root_id`` is present on every quoted reply
+        # too, so using it as a fallback (#19711) turned ordinary quote replies into topic
+        # sessions and pushed the bot's answer into a fresh thread (#20548).
+        thread_id = getattr(message, "thread_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None) or getattr(message, "upper_message_id", None)
             or getattr(message, "root_id", None) or None
@@ -2545,6 +2624,7 @@ class FeishuAdapter(BasePlatformAdapter):
         normalized = MessageEvent(
             text=text, message_type=inbound_type, source=source, raw_message=data,
             message_id=message_id, media_urls=media_urls, media_types=media_types,
+            media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_message_id, reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
@@ -2587,6 +2667,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
+        existing.media_text_inlined.extend(event.media_text_inlined)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
         existing.timestamp = event.timestamp
@@ -2847,6 +2928,9 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         existing.text = next_text
+        existing.media_urls.extend(event.media_urls)
+        existing.media_types.extend(event.media_types)
+        existing.media_text_inlined.extend(event.media_text_inlined)
         existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
         existing.timestamp = event.timestamp
         if event.message_id:
@@ -2881,7 +2965,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _extract_message_content(
         self, message: Any
-    ) -> tuple[str, MessageType, List[str], List[str], List[FeishuMentionRef]]:
+    ) -> tuple[str, MessageType, List[str], List[str], List[bool], List[FeishuMentionRef]]:
         raw_content = getattr(message, "content", "") or ""
         raw_type = getattr(message, "message_type", "") or ""
         message_id = str(getattr(message, "message_id", "") or "")
@@ -2892,13 +2976,17 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
-        if (
-            inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
-            and len(media_urls) == 1
-            and normalized.preferred_message_type in {"document", "audio"}
-        ):
-            text = await self._maybe_extract_text_document(media_urls[0], media_types[0]) or text
-        return text, inbound_type, media_urls, media_types, list(normalized.mentions)
+        media_text_inlined: List[bool] = []
+        inlined_parts: List[str] = []
+        for media_url, media_type in zip(media_urls, media_types):
+            extracted = await self._maybe_extract_text_document(media_url, media_type)
+            media_text_inlined.append(bool(extracted))
+            if extracted:
+                inlined_parts.append(extracted)
+        if inlined_parts:
+            extracted_text = "\n\n".join(inlined_parts)
+            text = f"{text}\n\n{extracted_text}" if text else extracted_text
+        return text, inbound_type, media_urls, media_types, media_text_inlined, list(normalized.mentions)
 
     async def _download_feishu_message_resources(
         self, *, message_id: str, normalized: FeishuNormalizedMessage,
@@ -3713,6 +3801,11 @@ class FeishuAdapter(BasePlatformAdapter):
             if ws_future is not last_dead:
                 logger.error("[Feishu] WebSocket client thread exited unexpectedly; restarting in %.0fs", backoff)
                 last_dead = ws_future
+                # Still running, link unproven: ``connected`` stays wrong until ``_ws_link_up`` re-stamps it.
+                self._write_runtime_status_safe(
+                    "ws_link_lost", platform_state="retrying", error_code=None,
+                    error_message="Feishu websocket link lost; rebuilding",
+                )
             await asyncio.sleep(backoff)
             if not self._running:
                 return
@@ -3722,6 +3815,19 @@ class FeishuAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("[Feishu] WebSocket restart failed (retrying): %s", exc)
                 backoff = min(backoff * 2, 60.0)
+
+    def _ws_link_up(self, ws_client: Any) -> None:
+        """WS thread reports its link is up (SDK receive loop scheduled); re-stamp ``connected`` after a rebuild."""
+        if self._running and self._ws_client is ws_client:
+            self._mark_connected()
+
+    def _ws_link_retrying(self, ws_client: Any) -> None:
+        """WS thread reports the SDK's own reconnect ladder started; ``_ws_link_up`` re-stamps ``connected``."""
+        if self._running and self._ws_client is ws_client:
+            self._write_runtime_status_safe(
+                "ws_link_lost", platform_state="retrying", error_code=None,
+                error_message="Feishu websocket link lost; reconnecting",
+            )
 
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:

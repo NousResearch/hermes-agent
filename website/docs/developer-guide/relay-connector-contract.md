@@ -386,6 +386,15 @@ primitives assume:
    drain machinery (`gateway_state` running→draining) rather than introduce a
    parallel relay-only idle path — the same integration constraint §3.2 places
    on `going_idle`.
+7. **Suspend only while every messaging connection is relay-fronted — and
+   re-check that at suspend time, not just at boot.** A directly connected
+   platform (Photon iMessage's gRPC stream, BlueBubbles, a bot token dialled from
+   the gateway itself) holds a socket the connector cannot buffer or poke for, so
+   a suspend with one live loses its inbound and never wakes. The gate counts the
+   enabled launch-profile platforms AND the live adapters of every served
+   profile (`gateway.multiplex_profiles` secondaries included), and the idle
+   watcher asks it again before each dormant sequence so a direct adapter that
+   came up after startup (profile reconcile) keeps the instance awake.
 
 These are guarantees the behaviour layer OWES the primitives; the primitives owe
 the behaviour layer only what §3.2/§3.3 already specify (a flip-on-going_idle,
@@ -767,7 +776,7 @@ Typing/status frames always carry the triggering-ts anchor when one is known
 (liveliness is unconditional, both modes): Slack's status line is
 thread-scoped, and in flat mode the send-side anchor strip guarantees the
 status anchor can never leak into reply placement. Semantics of the native
-key: see [Slack](/user-guide/messaging/slack).
+key: see [Slack](../user-guide/messaging/slack.md).
 
 Thread-anchor resolution applies to EVERY send lane — text (`send`) and media
 (`send_media`) alike — through one choke point

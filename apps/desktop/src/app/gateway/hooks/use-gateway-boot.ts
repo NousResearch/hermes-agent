@@ -14,7 +14,11 @@ import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
-import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
+import {
+  decideLivenessForceClose,
+  LIVENESS_PROBE_TIMEOUT_MS,
+  LIVENESS_REPROBE_DELAY_MS
+} from '@/lib/gateway-liveness-policy'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -119,7 +123,11 @@ const RECONNECT_ESCALATE_AFTER_MS = 300_000
 // TIMEOUT alone no longer tears the socket down mid-turn (#95327): while a
 // turn is in flight the first timeout defers behind one bounded re-probe, so
 // only a STREAK of unanswered pings rebuilds the transport.
-const GATEWAY_LIVENESS_PROBE_TIMEOUT_MS = 5_000
+
+// Renderer twin of the main process's POWER_RESUME_REVALIDATION_HOLDOFF_MS:
+// forced wake reconnects (online / power resume) are coalesced into one per
+// window instead of tearing down every secondary socket on each signal (#94769).
+const WAKE_RECONNECT_HOLDOFF_MS = 15_000
 
 // Bounded self-heal for a failed REMOTE boot (#82679): main classifies every
 // fault it can see (via getBootProgress().retryable); the renderer adds the one
@@ -358,7 +366,7 @@ export function useGatewayBoot({
     }
 
     const attemptReconnect = async (manual?: { profile: string; activationEpoch: number }) => {
-      if (cancelled || reconnecting || gatewayOpen() || $gatewaySwitching.get()) {
+      if (cancelled || primaryReauthError || reconnecting || gatewayOpen() || $gatewaySwitching.get()) {
         return
       }
 
@@ -460,28 +468,29 @@ export function useGatewayBoot({
         if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
           primaryReauthError = err instanceof Error ? err.message : String(err)
           syncPrimaryReauthError()
-
-          if (isActivePrimary()) {
-            reauthNotified = true
-            // Plain "signed out" copy; the raw ticket/HTTP text stays under
-            // Details. The boot overlay carries the sign-in flow itself, so
-            // the button hands off to it (desktop-14).
-            notify({
-              kind: 'error',
-              title: translateNow('boot.errors.gatewaySignInRequired'),
-              message: translateNow('boot.errors.gatewaySignInRequiredDetail'),
-              detail: primaryReauthError,
-              action: {
-                label: translateNow('boot.errors.signInAgain'),
-                onClick: () => failDesktopBoot(primaryReauthError ?? '')
-              }
-            })
-          }
+          reauthNotified = true
+          // Plain "signed out" copy; the raw ticket/HTTP text stays under
+          // Details. In the foreground the boot overlay carries the sign-in
+          // flow, so the button hands off to it (desktop-14). A parked
+          // background primary no longer retries by itself, so it must still
+          // offer a way to Settings instead of failing silently.
+          notify({
+            kind: 'error',
+            title: translateNow('boot.errors.gatewaySignInRequired'),
+            message: translateNow('boot.errors.gatewaySignInRequiredDetail'),
+            detail: primaryReauthError,
+            action: isActivePrimary()
+              ? {
+                  label: translateNow('boot.errors.signInAgain'),
+                  onClick: () => failDesktopBoot(primaryReauthError ?? '')
+                }
+              : RECOVERY_ACTIONS.openGateways()
+          })
         }
       } finally {
         reconnecting = false
 
-        if (!cancelled && !gatewayOpen() && !$gatewaySwitching.get()) {
+        if (!cancelled && !primaryReauthError && !gatewayOpen() && !$gatewaySwitching.get()) {
           if (reconnectFailingSince === null) {
             reconnectFailingSince = Date.now()
           }
@@ -509,7 +518,7 @@ export function useGatewayBoot({
     }
 
     function scheduleReconnect(manual?: { profile: string; activationEpoch: number }) {
-      if (cancelled || reconnecting || reconnectTimer !== null || gatewayOpen() || $gatewaySwitching.get()) {
+      if (cancelled || primaryReauthError || reconnecting || reconnectTimer !== null || gatewayOpen() || $gatewaySwitching.get()) {
         return
       }
 
@@ -565,7 +574,7 @@ export function useGatewayBoot({
       // one inconclusive probe DEFERS the teardown behind a bounded re-probe;
       // only an exhausted streak (or no in-flight work) closes.
       try {
-        await gateway.request('ping', {}, GATEWAY_LIVENESS_PROBE_TIMEOUT_MS)
+        await gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS)
         livenessProbeFailures = 0
       } catch (probeErr) {
         // A version-skewed backend that predates the ping method answers
@@ -899,6 +908,8 @@ export function useGatewayBoot({
       // primary thread or a just-created session's owner hold is bound to
       // (#93892).
       foregroundScopes: foregroundSessionScopes,
+      // Defined further down the effect body; read at call time, never during boot.
+      liveScopes: () => liveWorkScopes(),
       onLocalProfileRetired: forgetProfileOnlyRuntimeOwners,
       onActiveConnectionChanged: publish,
       // Keep $activeGatewayProfile in lockstep with the registry's OWN record
@@ -1000,7 +1011,42 @@ export function useGatewayBoot({
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
-    const forceReconnectNow = () => reconnectNow({ forceOpenSocket: true })
+    //
+    // Forced reconnects (power resume / 'online') close and redial every open
+    // secondary socket. Windows fires 'online' on any interface change — VPN
+    // connects, Wi-Fi blips, virtual adapter enumeration — so an unthrottled
+    // handler reaped healthy sockets in bursts and the UI remounted on every
+    // redial: the #94769 flicker loop. Coalesce forced wakes like the main
+    // process already does for power-resume revalidation
+    // (POWER_RESUME_REVALIDATION_HOLDOFF_MS): one forced reconnect per
+    // holdoff window; a socket dropped in between is still picked up by the
+    // ordinary close/reconnect backoff and by the non-forced focus/visibility
+    // nudges below.
+    let lastForcedWakeReconnectAt = 0
+
+    const forceReconnectNow = () => {
+      // reconnectNow no-ops while boot is incomplete or a gateway switch is in
+      // flight; stamping the holdoff then would burn the window and drop the
+      // next 'online' (often the one with the network actually back), leaving
+      // recovery to the backoff loops. Stamp only when it will proceed.
+      if (cancelled || !bootCompleted || $gatewaySwitching.get()) {
+        return
+      }
+
+      // Only the destructive half is coalesced: a second wake inside the
+      // holdoff (macOS fires resume then 'online' seconds apart) still runs
+      // the cheap, idempotent nudge — primary ping probe, redial of already
+      // closed secondaries — without touching open sockets.
+      const now = Date.now()
+      const forced = now - lastForcedWakeReconnectAt >= WAKE_RECONNECT_HOLDOFF_MS
+
+      if (forced) {
+        lastForcedWakeReconnectAt = now
+      }
+
+      void reconnectNow({ forceOpenSocket: forced })
+    }
+
     const offPowerResume = desktop.onPowerResume?.(() => void forceReconnectNow())
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
 
@@ -1014,13 +1060,16 @@ export function useGatewayBoot({
       if (!isActivePrimary()) {
         activeGateway()?.close()
 
-        if (!(await ensureActiveGatewayOpen())) {
+        if (!(await ensureActiveGatewayOpen({ explicit: true }))) {
           throw new Error('Hermes gateway is not connected')
         }
 
         return
       }
 
+      // Only explicit recovery may retry a credential that requires sign-in.
+      primaryReauthError = null
+      reauthNotified = false
       gateway.close()
       clearReconnectTimer()
       reconnectAttempt = 0
@@ -1096,6 +1145,10 @@ export function useGatewayBoot({
     const keepaliveTimer = setInterval(() => {
       touchActiveGatewayBackend()
       touchSecondaryGateways()
+      // The pruner is otherwise event-driven: a socket spared by the
+      // min-lifetime grace with no store change afterwards would hold its
+      // pool slot forever.
+      recomputeKeptGateways()
     }, 60_000)
 
     // Bound concurrency cost to consumers: keep a background socket while its
@@ -1105,19 +1158,27 @@ export function useGatewayBoot({
     // and its backend is free to idle-reap. The active profile is always spared.
     // Do not key this off `entry.retained` — that flag only skips dispose-after-
     // RPC; idle prune is what reclaims hover-warmed sockets after you leave.
-    const recomputeKeptGateways = () => {
+    // Scopes with a running or needs-input session: registry-scoped
+    // (connectionId, profile) keys plus the bare profile of every live local
+    // session. Two sources can expose the same profile name (every source has
+    // a 'default'), so bare profile names can't represent a non-local
+    // source's liveness without keeping the wrong gateway alive. Feeds the
+    // pruner's keep-set and the wake probe's in-flight-work signal.
+    const liveWorkScopes = (): Set<string> => {
       const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
-      // Registry-scoped (connectionId, profile) scopes with live work. Two
-      // sources can expose the same profile name (every source has a
-      // 'default'), so bare profile names can't represent a non-local
-      // source's liveness without keeping the wrong gateway alive.
-      const keep = new Set([...liveSessionScopes(), ...foregroundSessionScopes()])
+      const scopes = liveSessionScopes()
 
       for (const session of $sessions.get()) {
         if (live.has(session.id)) {
-          keep.add(normalizeProfileKey(session.profile))
+          scopes.add(normalizeProfileKey(session.profile))
         }
       }
+
+      return scopes
+    }
+
+    const recomputeKeptGateways = () => {
+      const keep = new Set([...liveWorkScopes(), ...foregroundSessionScopes()])
 
       for (const scope of openTileGatewayScopes()) {
         keep.add(scope)

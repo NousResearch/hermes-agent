@@ -133,6 +133,65 @@ def test_switch_model_without_config_context_length():
         assert call_kwargs.get("config_context_length") is None
 
 
+def test_switch_model_reapplies_checked_auxiliary_compression_limit():
+    """A model switch re-probes the auxiliary summariser eagerly: the trigger is clamped to its window
+    before the first compaction on the new model, and un-clamped again when a later switch fits (#114707)."""
+    agent = _make_agent_with_compressor(config_context_length=200_000)
+    agent.compression_enabled = True
+    agent._compression_feasibility_checked = False
+    agent._aux_compression_context_length_config = None
+    agent._custom_providers = []
+    agent._compression_warning = None
+    agent._print_fn = None
+    agent.log_prefix = ""
+    agent.suppress_status_output = False
+    agent._stream_consumers = []
+    agent._executing_tools = False
+    agent._mute_post_response = False
+    agent.status_callback = None
+    agent.tool_progress_callback = None
+    agent.tools = []
+    agent._emit_status = lambda _message: None
+    agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
+
+    aux_client = MagicMock(base_url="https://aux.example/v1", api_key="aux-key")
+    with (
+        patch(
+            "agent.model_metadata.get_model_context_length",
+            side_effect=[400_000, 80_000],
+        ),
+        patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(aux_client, "auxiliary-model"),
+        ),
+    ):
+        agent.switch_model(
+            "larger-main-model",
+            "openrouter",
+            api_key="sk-new",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    assert agent.context_compressor.context_length == 400_000
+    assert agent.context_compressor.threshold_tokens == 80_000
+    assert agent._compression_feasibility_checked is True
+    # A same-runtime window correction (overflow-reported limit) keeps the aux ceiling.
+    agent.context_compressor.update_model(
+        model="larger-main-model", context_length=1_000_000, base_url="https://openrouter.ai/api/v1",
+        api_key="sk-new", provider="openrouter", api_mode="chat_completions",
+    )
+    assert agent.context_compressor.threshold_tokens == 80_000
+    # Switching to a runtime whose aux fits restores the main-model trigger (no one-way ratchet).
+    with (
+        patch("agent.model_metadata.get_model_context_length", side_effect=[400_000, 400_000]),
+        patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(aux_client, "auxiliary-model")),
+    ):
+        agent.switch_model(
+            "other-main-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1",
+        )
+    assert agent.context_compressor.threshold_tokens == 300_000
+
+
 def test_switch_model_omitted_base_url_preserves_direct_openai_capability():
     """A same-provider switch resolves capabilities from the retained URL."""
     agent = _make_agent_with_compressor(config_context_length=None)

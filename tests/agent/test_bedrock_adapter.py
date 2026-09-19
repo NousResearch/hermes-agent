@@ -1537,3 +1537,145 @@ class TestBearerTokenRoutesToConverse:
         runtime = self._resolve(monkeypatch, bearer=False)
         assert runtime["api_mode"] == "anthropic_messages"
         assert runtime.get("bedrock_anthropic") is True
+
+
+# ---------------------------------------------------------------------------
+# Reasoning-text replay + redacted-reasoning resend-once (#115865)
+# ---------------------------------------------------------------------------
+
+REDACTED_REJECTION = (
+    "An error occurred (ValidationException) when calling the Converse "
+    "operation: The provided redacted thinking block contains encrypted "
+    "content that is not valid for this model, please reformat your input "
+    "and try again."
+)
+
+
+class TestReasoningTextReplay:
+    """Converse ReasoningContentBlock members are reasoningText/redactedContent
+    only — replaying captured thinking as {"text": ...} dies client-side with
+    ParamValidationError (#115865)."""
+
+    def test_ordered_replay_emits_reasoningText(self):
+        from agent.bedrock_adapter import _replay_ordered_blocks
+        blocks = _replay_ordered_blocks([{
+            "reasoningContent": {
+                "text": "let me think",
+                "redactedContentBase64": "cjE=",
+            },
+        }])
+        assert blocks == [
+            {"reasoningContent": {"reasoningText": {"text": "let me think"}}},
+            {"reasoningContent": {"redactedContent": b"r1"}},
+        ]
+
+    def test_replayed_blocks_pass_botocore_converse_validation(self):
+        import botocore.session
+        from botocore.validate import validate_parameters
+        from agent.bedrock_adapter import _replay_ordered_blocks
+        blocks = _replay_ordered_blocks([{
+            "reasoningContent": {
+                "text": "let me think",
+                "redactedContentBase64": "cjE=",
+            },
+        }])
+        model = botocore.session.get_session().get_service_model("bedrock-runtime")
+        shape = model.operation_model("Converse").input_shape
+        validate_parameters(
+            {"modelId": "test-model",
+             "messages": [{"role": "assistant", "content": blocks}]},
+            shape,
+        )  # raises ParamValidationError while replay emits {"text": ...}
+
+
+def _redacted_history():
+    return [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+            "reasoning_details": [{
+                "type": "redacted_thinking", "data": "cjE=",
+            }],
+            "bedrock_content_blocks": [
+                {"reasoningContent": {
+                    "text": "let me think", "redactedContentBase64": "cjE=",
+                }},
+                {"toolUse": {
+                    "toolUseId": "call_1", "name": "read_file", "input": {},
+                }},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
+
+
+def _ok_response():
+    return {
+        "output": {"message": {"role": "assistant",
+                               "content": [{"text": "done"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 1, "outputTokens": 1},
+    }
+
+
+def _assert_second_attempt_stripped(call_args_list):
+    assert len(call_args_list) == 2
+    resent = call_args_list[1].kwargs["messages"]
+    assistant = next(m for m in resent if m["role"] == "assistant")
+    for block in assistant["content"]:
+        assert "redactedContent" not in block.get("reasoningContent", {})
+
+
+class TestRedactedReasoningResendOnce:
+    """Redacted thinking blobs are sealed to the issuing model/flow — replaying
+    them elsewhere fails with an encrypted-content ValidationException. Drop
+    the redacted blocks and resend once (#115865)."""
+
+    def test_call_converse_strips_redacted_blocks_and_resends_once(self):
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.side_effect = [Exception(REDACTED_REJECTION), _ok_response()]
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=client):
+            response = call_converse(
+                region="us-east-1", model="test-model", messages=_redacted_history(),
+            )
+        assert response.choices[0].message.content == "done"
+        _assert_second_attempt_stripped(client.converse.call_args_list)
+
+    def test_call_converse_reraises_when_nothing_redacted_to_strip(self):
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.side_effect = Exception(REDACTED_REJECTION)
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=client):
+            with pytest.raises(Exception, match="ValidationException"):
+                call_converse(
+                    region="us-east-1", model="test-model",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+        assert client.converse.call_count == 1
+
+    def test_call_converse_stream_strips_redacted_blocks_and_resends_once(self):
+        from agent.bedrock_adapter import call_converse_stream
+        client = MagicMock()
+        client.converse_stream.side_effect = [Exception(REDACTED_REJECTION), {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "done"}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1}}},
+        ]}]
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=client):
+            response = call_converse_stream(
+                region="us-east-1", model="test-model", messages=_redacted_history(),
+            )
+        assert response.choices[0].message.content == "done"
+        _assert_second_attempt_stripped(client.converse_stream.call_args_list)

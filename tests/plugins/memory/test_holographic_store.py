@@ -45,6 +45,43 @@ def db_path(tmp_path):
     return tmp_path / "memory_store.db"
 
 
+class TestEntityExtraction:
+    """Entity candidates must cover Cyrillic names and reject obvious
+    non-entities (CLI flags, key=value tokens, bare numbers).
+
+    Upstream the capitalized-phrase pattern is ASCII-only, so every fact
+    written in a Cyrillic language links zero entities and compositional
+    retrieval silently degrades; conversely, quoted command-line noise
+    ('--tls-max-v1.2', 'X=5') pollutes the entity table."""
+
+    def test_capitalized_cyrillic_and_latin_phrases(self, db_path):
+        with MemoryStore(db_path) as store:
+            assert store._extract_entities("Иван Петров met John Doe") == ["Иван Петров", "John Doe"]
+
+    def test_cyrillic_fact_links_entities(self, db_path):
+        with MemoryStore(db_path) as store:
+            fact_id = store.add_fact("Мария Кюри discovered radium", category="science")
+            rows = store._conn.execute(
+                "SELECT e.name FROM entities e JOIN fact_entities fe"
+                " ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?",
+                (fact_id,),
+            ).fetchall()
+            assert [row["name"] for row in rows] == ["Мария Кюри"]
+
+    def test_quoted_cli_flags_rejected(self, db_path):
+        with MemoryStore(db_path) as store:
+            assert store._extract_entities("run redis-cli with '--tls-max-v1.2' enabled") == []
+
+    def test_quoted_key_value_and_numbers_rejected(self, db_path):
+        with MemoryStore(db_path) as store:
+            assert store._extract_entities("config 'X=5' and '192.168.1.1' set") == []
+
+    def test_quoted_lowercase_entities_still_extracted(self, db_path):
+        # The junk filter must not drop legitimate quoted terms.
+        with MemoryStore(db_path) as store:
+            assert store._extract_entities("call it 'hermes agent' internally") == ["hermes agent"]
+
+
 class TestSharedConnection:
     def test_same_path_shares_one_connection(self, db_path):
         a = MemoryStore(db_path)
@@ -224,4 +261,3 @@ class TestProviderShutdown:
 
         assert provider._store is None
         assert MemoryStore._shared == {}
-

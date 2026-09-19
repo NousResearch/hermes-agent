@@ -73,8 +73,8 @@ CREATE TABLE IF NOT EXISTS memory_banks (
 _HELPFUL_DELTA, _UNHELPFUL_DELTA = 0.05, -0.10
 
 # Entity extraction patterns, applied in order: capitalized multi-word phrases ("John Doe"), double-quoted terms,
-# single-quoted terms, then "X aka Y" (both sides).
-_RE_SINGLE_ENTITY = (re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'), re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
+# single-quoted terms, then "X aka Y" (both sides). The capitalized-phrase class covers Latin and Cyrillic letters.
+_RE_SINGLE_ENTITY = (re.compile(r'\b([A-ZА-ЯЁ][a-zа-яё]+(?:\s+[A-ZА-ЯЁ][a-zа-яё]+)+)\b'), re.compile(r'"([^"]+)"'), re.compile(r"'([^']+)'"))
 _RE_AKA = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
 _ENTITY_NAMES_SQL = "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?"
 # Entity lookup order: exact name, then aliases (comma-separated; wrapped in commas for whole-alias matching).
@@ -220,6 +220,14 @@ class MemoryStore:
             raw += [m.group(1), m.group(2)]
         uniq: dict[str, str] = {}  # lower-cased key -> first-seen spelling, insertion-ordered
         for name in filter(None, (n.strip() for n in raw)):
+            # Junk filter: drop quoted command-line noise — CLI flags, option-like
+            # tokens, and fragments that are too short or mostly non-alpha
+            # (e.g. '--tls-max-v1.2', 'X=5', '192.168.1.1').
+            if name.startswith("-") or "=" in name:
+                continue
+            letters = sum(ch.isalpha() for ch in name)
+            if len(name) < 2 or letters < len(name) / 2:
+                continue
             uniq.setdefault(name.lower(), name)
         return list(uniq.values())
 

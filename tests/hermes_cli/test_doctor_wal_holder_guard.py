@@ -66,6 +66,7 @@ def test_doctor_names_retired_wal_holders_instead_of_healthy_state_db(tmp_path, 
                         lambda path: [(4242, f"{path}-wal"), (4242, f"{path}-shm")])
     probed = []
     monkeypatch.setattr(doctor_state, "_state_db_health", lambda *a, **k: probed.append(a))
+    monkeypatch.setattr(doctor_state, "_state_db_stats", lambda *a, **k: probed.append(a))
     monkeypatch.setattr(doctor_state, "_state_db_wal", lambda *a, **k: probed.append(a))
 
     finding = doctor_state._check_state_db(True)

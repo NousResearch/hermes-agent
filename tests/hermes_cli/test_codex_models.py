@@ -42,14 +42,48 @@ def test_picker_synthesizes_900k_variants_for_verified_slugs():
     in the list as the cheaper 272K default."""
     model_ids = get_codex_model_ids()  # offline curated path
 
-    for base in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"):
+    for base in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
         assert base in model_ids
         assert f"{base}-900k" in model_ids
         assert model_ids.index(f"{base}-900k") == model_ids.index(base) + 1
 
     assert "gpt-5.5-900k" not in model_ids
-    assert "gpt-5.4-mini-900k" not in model_ids
     assert "gpt-5.3-codex-900k" not in model_ids
+
+
+def test_retired_chatgpt_codex_slugs_never_synthesized_from_live_catalog():
+    """OpenAI retired gpt-5.4 / gpt-5.4-mini for ChatGPT-account Codex on 2026-08-31 and the
+    backend rejects them. Forward-compat synthesis runs on LIVE catalogs too, so a template row
+    for either slug re-created a dead picker entry from gpt-5.3-codex. Live-advertised slugs
+    stay authoritative: a catalog that still lists gpt-5.4 keeps it."""
+    from hermes_cli.codex_models import RETIRED_CODEX_MODELS, _finalize_codex_models
+
+    out = _finalize_codex_models(["gpt-5.3-codex", "gpt-5.5", "gpt-5.6-terra"])
+    assert RETIRED_CODEX_MODELS.isdisjoint(out)
+    assert "gpt-5.4-900k" not in out
+    assert "gpt-5.6-luna" in out  # replacement still synthesized from gpt-5.5
+
+    assert "gpt-5.4" in _finalize_codex_models(["gpt-5.4"])
+
+
+def test_retired_slugs_dropped_from_stale_codex_cli_cache_and_default(monkeypatch, tmp_path):
+    """A ``~/.codex`` written before the cutoff still lists the retired slugs (and may pin one as
+    ``model`` in config.toml); the offline fallback must not resurrect them, while Spark and the
+    remaining cached slugs survive."""
+    from hermes_cli.codex_models import RETIRED_CODEX_MODELS
+
+    (tmp_path / "config.toml").write_text('model = "gpt-5.4"\n', encoding="utf-8")
+    (tmp_path / "models_cache.json").write_text(json.dumps({"models": [
+        {"slug": "gpt-5.4-mini", "priority": 1},
+        {"slug": "gpt-5.3-codex-spark", "priority": 2},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    model_ids = get_codex_model_ids()
+
+    assert RETIRED_CODEX_MODELS.isdisjoint(model_ids)
+    assert model_ids[0] == "gpt-5.3-codex-spark"
+    assert "gpt-5.6-terra" in model_ids
 
 
 def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():

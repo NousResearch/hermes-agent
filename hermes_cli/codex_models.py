@@ -21,14 +21,20 @@ DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.5",
-    "gpt-5.4-mini",
-    "gpt-5.4",
     "gpt-5.3-codex",
     # Research preview exposed ONLY via the Codex OAuth backend for ChatGPT Pro subscribers —
     # not in the public API, so it stays out of the "openai" catalog in hermes_cli/models.py.
     # The backend reports ``supported_in_api: false`` for it; that flag describes API
     # availability, not Codex availability, so fetch/cache paths must not filter on it.
     "gpt-5.3-codex-spark"]
+
+# Retired for ChatGPT-account Codex on 2026-08-31 (replacements: gpt-5.6-terra / gpt-5.6-luna);
+# the backend now answers invalid_request_error "not supported when using Codex with a ChatGPT
+# account". Only the NON-live sources are filtered (curated fallback, ~/.codex/models_cache.json,
+# config.toml default): a stale Codex CLI cache written before the cutoff still lists both, while a
+# successful account catalog stays authoritative and may re-advertise them.
+# https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan
+RETIRED_CODEX_MODELS: frozenset[str] = frozenset({"gpt-5.4", "gpt-5.4-mini"})
 
 # gpt-5.3-codex-spark is in research preview and is exposed *only* via the Codex CLI / OAuth backend
 # (chatgpt.com/backend-api/codex/models) for ChatGPT Pro subscribers. It is NOT available in the public
@@ -43,8 +49,8 @@ _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
-    ("gpt-5.4-mini", ("gpt-5.3-codex",)),
-    ("gpt-5.4", ("gpt-5.3-codex",)),
+    # No template row may synthesize a RETIRED_CODEX_MODELS slug: synthesis also runs on live
+    # catalogs, so a row for gpt-5.4 re-created the retired picker entry from gpt-5.3-codex.
     # Spark surfaces whenever a compatible template is present; the backend (not Hermes)
     # gates real availability by ChatGPT Pro entitlement.
     ("gpt-5.3-codex-spark", ("gpt-5.3-codex",))]
@@ -99,6 +105,11 @@ def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
     from agent.reasoning_effort import is_astra_model
 
     return [model for model in model_ids if not is_astra_model(model)]
+
+
+def _drop_retired(model_ids: List[str]) -> List[str]:
+    """Non-live sources may not resurrect slugs the ChatGPT Codex backend rejects."""
+    return [model for model in model_ids if model not in RETIRED_CODEX_MODELS]
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
@@ -202,6 +213,6 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
         if api_models:
             return _finalize_codex_models(api_models)
     default_model = _read_default_model(codex_home)
-    return _finalize_codex_models(_drop_undiscovered_astra(_dedupe([
+    return _finalize_codex_models(_drop_retired(_drop_undiscovered_astra(_dedupe([
         *([default_model] if default_model else []), *_read_cache_models(codex_home),
-        *DEFAULT_CODEX_MODELS])))
+        *DEFAULT_CODEX_MODELS]))))

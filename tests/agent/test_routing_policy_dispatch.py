@@ -199,6 +199,46 @@ def test_multiplex_owner_policy_denies_session_writes_and_dispatch_after_a_to_b_
         default_db.close()
 
 
+def test_nested_profile_session_db_uses_named_owner_policy_for_persistence_and_dispatch(tmp_path, monkeypatch):
+    """A nested store remains owned by its resolved named profile, never its scratch directory."""
+    from agent import chat_completion_helpers as helpers
+    from hermes_state import SessionDB
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    home = tmp_path / "hermes"
+    restricted = home / "profiles" / "restricted"
+    scratch = restricted / "scratch"
+    scratch.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+    (restricted / "config.yaml").write_text(
+        "routing_policy:\n  enabled: true\n  deny:\n    models: ['z-ai/*']\n", encoding="utf-8",
+    )
+    (scratch / "config.yaml").write_text("routing_policy:\n  enabled: true\n", encoding="utf-8")
+
+    db = SessionDB(db_path=scratch / "state.db")
+    create = _RecordingCreate()
+    try:
+        with pytest.raises(RoutingPolicyError):
+            db.create_session(
+                "nested", "cli", model="z-ai/glm-5.2", model_config={"provider": "openrouter"},
+            )
+        assert db.get_session("nested") is None
+
+        agent = SimpleNamespace(
+            api_mode="chat_completions", provider="openrouter", model="z-ai/glm-5.2",
+            base_url="https://openrouter.ai/api/v1", _session_db=db,
+        )
+        with pytest.raises(RoutingPolicyError):
+            helpers._dispatch_nonstreaming_api_request(
+                agent, {"model": "z-ai/glm-5.2"},
+                make_client=lambda *_args, **_kwargs: SimpleNamespace(chat=SimpleNamespace(completions=create)),
+            )
+        assert create.calls == []
+    finally:
+        db.close()
+
+
 def test_ad_hoc_profile_shaped_session_db_uses_active_policy(tmp_path, monkeypatch):
     """A copied store cannot select a permissive policy merely by its path shape."""
     from hermes_cli.routing_policy import (
@@ -271,7 +311,9 @@ def test_session_meta_rejects_denied_route_before_write(tmp_path, monkeypatch):
     try:
         db.create_session("s1", "cli")
         with pytest.raises(RoutingPolicyError):
-            db.update_session_meta("s1", json.dumps({"provider": "openrouter", "model": "z-ai/glm-5.2"}))
+            db.update_session_meta("s1", json.dumps({
+                "browser_model_lock": {"provider": "openrouter", "model": "z-ai/glm-5.2", "confirmed": True},
+            }))
         assert db.get_session("s1")["model_config"] is None
     finally:
         db.close()

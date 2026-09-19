@@ -36,8 +36,8 @@ const DOCS_ORIGIN = 'https://hermes-agent.nousresearch.com'
 // The public domain redirects here without CORS headers on the redirect.
 // Use the docs' actual static host, not GitHub's API or repository endpoints.
 const CATALOG_BASE = 'https://nousresearch.github.io/hermes-agent/docs/api'
-const text = (value: unknown): string => typeof value === 'string' ? value : ''
-const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter(v => typeof v === 'string') : []
+const text = (value: unknown): string => (typeof value === 'string' ? value : '')
+const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter(v => typeof v === 'string') : [])
 
 const IMAGE_HOSTS = new Set(['raw.githubusercontent.com', 'github.com'])
 
@@ -47,7 +47,9 @@ export function catalogImageUrl(value: unknown): string | null {
     const url = new URL(text(value))
     const host = url.hostname.toLowerCase()
 
-    return url.protocol === 'https:' && (IMAGE_HOSTS.has(host) || host.endsWith('.githubusercontent.com')) ? url.href : null
+    return url.protocol === 'https:' && (IMAGE_HOSTS.has(host) || host.endsWith('.githubusercontent.com'))
+      ? url.href
+      : null
   } catch {
     return null
   }
@@ -97,9 +99,15 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
       source,
       author,
       identifier,
-      installIdentifier: kind === 'skills' ? skillCatalogInstallIdentifier({
-        name, source, identifier: text(row.identifier), installIdentifier: text(row.installIdentifier)
-      }) : null,
+      installIdentifier:
+        kind === 'skills'
+          ? skillCatalogInstallIdentifier({
+              name,
+              source,
+              identifier: text(row.identifier),
+              installIdentifier: text(row.installIdentifier)
+            })
+          : null,
       repo: text(row.repo),
       sha: text(row.sha),
       subdir: text(row.subdir),
@@ -111,13 +119,15 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
       platforms: strings(row.platforms),
       requirements: strings(kind === 'plugins' ? caps.requiresEnv : row.envVars),
       sourceUrl: webUrl(row.repo || row.sourceUrl),
-      docsUrl: webUrl(row.docsUrl) || (text(row.docsPath)
-        ? `${DOCS_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}`
-        : null),
+      docsUrl:
+        webUrl(row.docsUrl) ||
+        (text(row.docsPath) ? `${DOCS_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
       imageUrl: kind === 'plugins' ? catalogImageUrl(row.image) : null,
       stars: typeof row.stars === 'number' && Number.isFinite(row.stars) ? row.stars : null,
       search: [name, description, author, category, row.categoryLabel, source, ...tags, ...tools, ...hooks]
-        .filter(Boolean).join(' ').toLowerCase()
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
     })
   }
 

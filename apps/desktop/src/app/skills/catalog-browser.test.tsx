@@ -22,18 +22,21 @@ afterEach(() => {
 })
 
 function setup(kind: CatalogKind) {
-  const entries = parseCatalog(kind, ['alpha', 'beta'].map(name => ({
-    name,
-    identifier: `official/${name}`,
-    installIdentifier: `official/${name}`,
-    source: 'official',
-    tier: 'official',
-    category: 'research',
-    description: `${name} research workflow`,
-    repo: `https://github.com/example/${name}`,
-    sourceUrl: `https://github.com/example/${name}`,
-    docsUrl: `https://example.com/${name}`
-  })))
+  const entries = parseCatalog(
+    kind,
+    ['alpha', 'beta'].map(name => ({
+      name,
+      identifier: `official/${name}`,
+      installIdentifier: `official/${name}`,
+      source: 'official',
+      tier: 'official',
+      category: 'research',
+      description: `${name} research workflow`,
+      repo: `https://github.com/example/${name}`,
+      sourceUrl: `https://github.com/example/${name}`,
+      docsUrl: `https://example.com/${name}`
+    }))
+  )
 
   queryClient.setQueryData(['public-catalog', kind], entries)
   const onInstall = vi.fn()

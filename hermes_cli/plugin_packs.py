@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional
 
+from hermes_cli.plugin_installation import installation_transaction
+
 logger = logging.getLogger(__name__)
 
 _EXACT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -275,6 +277,7 @@ class PackInstallResult:
     error: Optional[str] = None
 
 
+@installation_transaction
 def _seed_plugin_config(plugin_id: str, seed: dict[str, Any], console) -> None:
     """Seed plugins.entries.<plugin_id> keys that are not already set (user values always win)."""
     from hermes_cli.config import load_config, save_config
@@ -298,6 +301,7 @@ def _seed_plugin_config(plugin_id: str, seed: dict[str, Any], console) -> None:
         console.print(f"[dim]  Seeded plugins.entries.{plugin_id} from pack.[/dim]")
 
 
+@installation_transaction
 def install_pack_plugins(
     pack: PluginPack,
     resolved: List[ResolvedPackPlugin],

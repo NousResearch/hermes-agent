@@ -398,20 +398,14 @@ class TestCmdInstall:
 class TestCmdUpdate:
     """Test the update command."""
 
-    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd.subprocess.run")
-    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
+    def test_update_git_pull_success(self, mock_run, tmp_path, monkeypatch):
         from hermes_cli.plugins_cmd import cmd_update
 
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_target = MagicMock()
-        mock_target.exists.return_value = True
-        mock_target.__truediv__ = lambda self, x: MagicMock(
-            exists=MagicMock(return_value=True)
-        )
-        mock_sanitize.return_value = mock_target
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "plugins" / "test-plugin"
+        (target / ".git").mkdir(parents=True)
+        (target / "plugin.yaml").write_text("name: test-plugin\n")
 
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="", stderr=""),        # status: clean

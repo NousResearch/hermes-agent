@@ -280,7 +280,8 @@ class PluginContext:
         partial = _nested_plugin_mapping(full_path[:4], _nested_plugin_mapping(segments, value))
         # The lock covers merge-read plus atomic save so sibling plugin writes (threads or
         # processes) cannot race between the two steps.
-        with _locked_plugin_state(config_mod.get_config_path()), config_mod._CONFIG_LOCK:
+        from hermes_cli.plugin_installation import plugin_installation_lock
+        with plugin_installation_lock(), _locked_plugin_state(config_mod.get_config_path()), config_mod._CONFIG_LOCK:
             # Fail closed on malformed YAML: save_config degrades parse failures to {} — safe
             # for reads, destructive for read-modify-write.
             config_mod.read_user_config_raw()

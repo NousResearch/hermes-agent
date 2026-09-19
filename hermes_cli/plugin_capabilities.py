@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from hermes_cli.plugin_installation import installation_transaction
+
 logger = logging.getLogger(__name__)
 
 
@@ -158,6 +160,7 @@ def _child_dict(parent: dict, key: str) -> dict:
     return child
 
 
+@installation_transaction
 def record_consent(plugin_id: str, granted: Iterable[str], declared: Iterable[str]) -> None:
     """Persist a consent decision: ``granted_capabilities`` (union with prior grants), the consent
     record (hash of the declared set the user saw + UTC timestamp), and the legacy ``allow_*`` key

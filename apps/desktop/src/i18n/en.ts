@@ -786,6 +786,24 @@ export const en: Translations = {
       backdropDesc: 'The faint statue image behind the conversation.',
       userBubbleTitle: 'Message Bubble',
       userBubbleDesc: 'How see-through your own messages are. Solid at 0; only the outline remains at 100.',
+      chatBubblesTitle: 'Chat Layout',
+      chatBubblesDesc:
+        'Bubbles give your prompts the right and Hermes the left, so a turn reads as a conversation instead of one column. Document keeps the single full-width layout.',
+      chatBubblesLayoutDocument: 'Document',
+      chatBubblesLayoutBubbles: 'Bubbles',
+      chatBubblesCornersTitle: 'Corners',
+      chatBubblesCorners: {
+        soft: 'Soft',
+        round: 'Round',
+        pill: 'Pill'
+      },
+      chatBubblesColorTitle: 'Color',
+      chatBubblesColor: {
+        theme: 'Theme',
+        accent: 'Accent',
+        neutral: 'Neutral'
+      },
+      chatBubblesFillTitle: 'Fill',
       introSplashTitle: 'Intro Splash',
       introSplashDesc: 'The wordmark and prompt shown on an empty chat.',
       reactionsTitle: 'Message Reactions',

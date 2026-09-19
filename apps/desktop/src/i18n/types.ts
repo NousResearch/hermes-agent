@@ -670,6 +670,23 @@ export interface Translations {
       backdropDesc: string
       userBubbleTitle: string
       userBubbleDesc: string
+      chatBubblesTitle: string
+      chatBubblesDesc: string
+      chatBubblesLayoutDocument: string
+      chatBubblesLayoutBubbles: string
+      chatBubblesCornersTitle: string
+      chatBubblesCorners: {
+        soft: string
+        round: string
+        pill: string
+      }
+      chatBubblesColorTitle: string
+      chatBubblesColor: {
+        theme: string
+        accent: string
+        neutral: string
+      }
+      chatBubblesFillTitle: string
       introSplashTitle: string
       introSplashDesc: string
       reactionsTitle: string

@@ -10,9 +10,17 @@ import type { DesktopConfigSection, SettingsView } from './types'
 
 export type CredentialSettingsView = 'settings' | 'tools'
 
+/**
+ * DOM id of an Appearance row. Lives here (not in the page) because the id is
+ * shared with deep links and settings search: a row contributed by its own
+ * component has to be able to name itself the same way the page does.
+ */
+export const appearanceSettingElementId = (id: string) => `setting-field-${id}`
+
 export const APPEARANCE_SETTING_IDS = {
   appActions: 'appearance.app-actions',
   backdrop: 'appearance.backdrop',
+  chatBubbles: 'appearance.chat-bubbles',
   embeds: 'appearance.embeds',
   introSplash: 'appearance.intro-splash',
   language: 'appearance.language',

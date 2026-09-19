@@ -734,6 +734,23 @@ export const zh = defineLocale({
       backdropDesc: '对话后方那张淡淡的雕像图片。',
       userBubbleTitle: '消息气泡',
       userBubbleDesc: '你自己的消息有多透明。0 为不透明，100 时只保留边框。',
+      chatBubblesTitle: '聊天布局',
+      chatBubblesDesc: '气泡布局让你的提示靠右、Hermes 的回复靠左，一轮对话读起来更像聊天。文档布局保留原来的整列宽度。',
+      chatBubblesLayoutDocument: '文档',
+      chatBubblesLayoutBubbles: '气泡',
+      chatBubblesCornersTitle: '圆角',
+      chatBubblesCorners: {
+        soft: '柔和',
+        round: '圆润',
+        pill: '胶囊'
+      },
+      chatBubblesColorTitle: '颜色',
+      chatBubblesColor: {
+        theme: '主题',
+        accent: '强调色',
+        neutral: '中性'
+      },
+      chatBubblesFillTitle: '填充',
       introSplashTitle: '开场标识',
       introSplashDesc: '空白对话中显示的字标和提示语。',
       reactionsTitle: '消息回应',

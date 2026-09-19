@@ -403,7 +403,7 @@ stt:
   mistral:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
   xai:
-    model: "grok-stt"         # xAI Grok STT
+    model: "grok-voice-transcribe-2.0"  # 或 grok-voice-transcribe-1.0
 ```
 
 ### 提供商详情

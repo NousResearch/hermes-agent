@@ -168,7 +168,13 @@ describe('transcribeAudioClientDirect', () => {
   it('speaks the xai wire shape', async () => {
     mockDesktopApi({
       ok: true,
-      stt: { ...directStt, wire: 'xai-stt', provider: 'xai', base_url: 'https://api.x.ai/v1', model: null },
+      stt: {
+        ...directStt,
+        wire: 'xai-stt',
+        provider: 'xai',
+        base_url: 'https://api.x.ai/v1',
+        model: 'grok-voice-transcribe-2.0'
+      },
       tts: relay
     })
 
@@ -180,6 +186,7 @@ describe('transcribeAudioClientDirect', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://api.x.ai/v1/stt')
     expect((init.body as FormData).get('format')).toBe('true')
+    expect((init.body as FormData).get('model')).toBe('grok-voice-transcribe-2.0')
   })
 
   it('speaks the elevenlabs wire shape with xi-api-key auth', async () => {

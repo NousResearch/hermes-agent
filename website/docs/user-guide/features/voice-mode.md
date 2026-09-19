@@ -537,7 +537,7 @@ DISCORD_ALLOWED_USERS=...
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
 | **OpenAI** | `gpt-transcribe` | Fast | Best | Paid ($0.0045/min) | Yes |
 | **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
-| **xAI** | `grok-stt` | Fast | Good | Paid | Yes |
+| **xAI** | `grok-voice-transcribe-2.0` | Fast | Best | Paid ($0.10/hr batch) | Yes |
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
 

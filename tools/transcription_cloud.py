@@ -19,9 +19,10 @@ from urllib.parse import urljoin
 from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
-    DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
-    OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result, _get_stt_section,
-    _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
+    DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL,
+    GROQ_BASE_URL, GROQ_MODELS, OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result,
+    _get_stt_section, _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result,
+    normalize_xai_stt_model)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
@@ -256,7 +257,11 @@ def _transcribe_xai(
 
     def _post() -> Any:
         from tools.xai_http import hermes_xai_user_agent
-        data: Dict[str, str] = {"language": language} if language else {}
+        # Always send the model so xAI's current 1.0 server default cannot leak into Hermes.
+        resolved_model = normalize_xai_stt_model(model_name)
+        data: Dict[str, str] = {"model": resolved_model}
+        if language:
+            data["language"] = language
         data.update({flag: "true" for flag, default in (("format", True), ("diarize", False))
                      if is_truthy_value(xai_config.get(flag, default))})
 

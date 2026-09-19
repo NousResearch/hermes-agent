@@ -4,7 +4,9 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_info, check_ok, check_warn, doctor_check, ensure_dir,
     warn_on_error,
@@ -163,17 +165,35 @@ def _session_count(state_db_path: Path):
 _WRITE_PROBE_SNAPSHOT_MAX_BYTES = 1 << 30
 
 
-def _write_health_reason(state_db_path: Path, *, should_fix: bool):
+@dataclass(frozen=True)
+class _WriteHealthResult:
+    """Outcome of the existing probe, not a certificate of database health.
+
+    ``no_error_reported`` means the underlying probe returned None; this also
+    includes tolerated missing schema/tokenizer cases, not just complete checks.
+    ``failed`` carries the probe's error reason, which still needs classification.
+    ``skipped`` means this wrapper's size policy prevented calling the probe.
+    Only ``no_error_reported`` has no reason. Probe exceptions still propagate.
+    """
+
+    status: Literal["no_error_reported", "failed", "skipped"]
+    reason: str | None = None
+
+
+def _write_health_result(state_db_path: Path, *, should_fix: bool) -> _WriteHealthResult:
     """FTS/write-health probe (a rolled-back BEGIN IMMEDIATE). Against a store a live writer holds,
     that probe is the second-writer class (#103339), so probe a read-only snapshot instead; a quiet
-    store is probed in place. Returns the failure reason, or None when healthy or skipped."""
+    store is probed in place. A policy skip is distinct from a probe returning no error;
+    neither result guarantees complete check coverage."""
     from hermes_state_repair import _db_opens_cleanly, _live_writer_holds_db
     if not _live_writer_holds_db(state_db_path):
-        return _db_opens_cleanly(state_db_path)
+        reason = _db_opens_cleanly(state_db_path)
+        return _WriteHealthResult("no_error_reported" if reason is None else "failed", reason)
     if not should_fix and state_db_path.stat().st_size > _WRITE_PROBE_SNAPSHOT_MAX_BYTES:
-        check_info("state.db write-health probe skipped: store is held by a live writer and larger than 1 GB "
-                   "(run 'hermes doctor --fix' to probe it)")
-        return None
+        return _WriteHealthResult(
+            "skipped", "store is held by a live writer and larger than 1 GB "
+            "(run 'hermes doctor --fix' to probe it)",
+        )
     import sqlite3
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
@@ -187,7 +207,8 @@ def _write_health_reason(state_db_path: Path, *, should_fix: bool):
                 dest.close()
         finally:
             src.close()
-        return _db_opens_cleanly(snapshot)
+        reason = _db_opens_cleanly(snapshot)
+        return _WriteHealthResult("no_error_reported" if reason is None else "failed", reason)
 
 
 # Corruption class -> (ok label, not-fixed label, failed issue, fix hint). ``{count}`` = recovered sessions.
@@ -265,13 +286,15 @@ def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: st
     try:
         check_ok(f"{_DHH}/state.db exists ({_session_count(state_db_path)} sessions)")
         # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers.
-        _write_reason = _write_health_reason(state_db_path, should_fix=should_fix)
+        result = _write_health_result(state_db_path, should_fix=should_fix)
     except Exception as e:
         return _classify_unreadable_state_db(f, should_fix, state_db_path, _DHH, e)
-    if _write_reason is not None:
-        if _report_structural_damage(f, should_fix, state_db_path, _DHH, _write_reason):
+    if result.status == "skipped":
+        return check_info(f"state.db write-health probe skipped: {result.reason}")
+    if result.status == "failed":
+        if _report_structural_damage(f, should_fix, state_db_path, _DHH, result.reason):
             return
-        check_warn(f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)", f"({_write_reason})")
+        check_warn(f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)", f"({result.reason})")
         _repair_state_db(f, should_fix, state_db_path, "fts")
 
 

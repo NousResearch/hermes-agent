@@ -83,10 +83,17 @@ def should_route_capture_to_aux_vision(provider: str, model: str, cfg: Optional[
     # native vision (maintainer decision, 2026-08-28, reversing #29135's fallback-only posture: config that
     # only takes effect when the main model gets worse is a trap, not a setting). Native vision remains the
     # default for unconfigured installs, and the fallback when the aux backend is unset.
+    #
+    # Exception (parity with agent.image_routing): a per-model ``supports_vision: true`` DECLARED in config
+    # is a direct user statement that this model takes images, and it beats the aux-de-facto rule — same
+    # precedence the declaration already has on the no-aux path below (``test_user_declared_vision_support_
+    # keeps_custom_provider_native``), so the declaration means one thing regardless of aux config.
+    user_declared = _lookup_user_declared_supports_vision(provider, model, cfg)
+    if user_declared is True:
+        return False
     if _explicit_aux_vision_override(cfg):
         return True
-    user_declared = _lookup_user_declared_supports_vision(provider, model, cfg)
-    if isinstance(user_declared, bool):  # True → multimodal, False → aux
+    if isinstance(user_declared, bool):  # False → aux (declaration says text-only)
         return not user_declared
     if not _provider_accepts_multimodal_tool_result(provider, model):
         return True

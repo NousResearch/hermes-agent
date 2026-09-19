@@ -107,3 +107,23 @@ test('lockfile resolves the pinned electron', () => {
     )
   }
 })
+
+// electron#50827: when UpdatePrinterSettings() fails while prefilling the
+// native macOS print dialog, Electron passed nil to
+// -[NSPrintPanel runModalWithPrintInfo:] and the app crashed in PrintCore
+// (PJCSessionHasApplicationSetPrinter) the moment the dialog was built —
+// every print click in the preview pane crashed Hermes desktop on macOS 26
+// (Hermes#101880). Fixed by electron#50843 (commit 3edba12), backported to
+// 41-x-y (#51728) and 42-x-y (#50853). There is no 40-x-y backport, so any
+// 40.x pin re-ships the crash.
+test('pinned electron carries the print-dialog crash fix (electron#50843)', () => {
+  const spec = electronSpec(desktopPkg())
+  const major = Number.parseInt(spec.split('.')[0] ?? '', 10)
+
+  assert.ok(
+    major >= 41,
+    `electron pin "${spec}" predates the print-dialog crash fix ` +
+      '(electron#50843, backported to 41-x-y in #51728; no 40-x-y backport — ' +
+      'crashes every macOS print via Hermes#101880). Do not downgrade to 40.x.'
+  )
+})

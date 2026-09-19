@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createPtyCompositionForwarder } from "./pty-composition";
+import {
+  createPtyCompositionForwarder,
+  shouldForwardPtyBeforeInputCommit,
+} from "./pty-composition";
 
 describe("createPtyCompositionForwarder", () => {
   afterEach(() => vi.useRealTimers());
@@ -131,5 +134,107 @@ describe("createPtyCompositionForwarder", () => {
     vi.runAllTimers();
 
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("forwards iOS dictation beforeinput text when xterm emits no onData", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onBeforeInput("insertText", "hello from dictation", true);
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledExactlyOnceWith("hello from dictation");
+  });
+
+  it("deduplicates native beforeinput text when xterm emits the same commit", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onBeforeInput("insertText", "hello from dictation", true);
+    forwarder.noteTerminalData("hello from ");
+    forwarder.noteTerminalData("dictation");
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates native beforeinput text when xterm data arrived first", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.noteTerminalData("hello from ");
+    forwarder.noteTerminalData("dictation");
+    forwarder.onBeforeInput("insertText", "hello from dictation", true);
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("keeps the fallback when earlier xterm data is stale", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.noteTerminalData("hello from dictation");
+    vi.advanceTimersByTime(32);
+    forwarder.onBeforeInput("insertText", "hello from dictation", true);
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledExactlyOnceWith("hello from dictation");
+  });
+
+  it("ignores interim and replacement beforeinput events as fallback commits", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onBeforeInput("insertCompositionText", "partial", true);
+    forwarder.onBeforeInput("insertReplacementText", "replacement", true);
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("shouldForwardPtyBeforeInputCommit", () => {
+  it("recognizes final composition and mobile dictation-like insertions", () => {
+    expect(
+      shouldForwardPtyBeforeInputCommit(
+        "insertFromComposition",
+        "こんにちは",
+        false,
+      ),
+    ).toBe(true);
+    expect(shouldForwardPtyBeforeInputCommit("insertText", "hello", true)).toBe(
+      true,
+    );
+  });
+
+  it("rejects empty, interim, replacement, and desktop plain insertions", () => {
+    expect(
+      shouldForwardPtyBeforeInputCommit("insertFromComposition", "", true),
+    ).toBe(false);
+    expect(
+      shouldForwardPtyBeforeInputCommit(
+        "insertCompositionText",
+        "hello",
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      shouldForwardPtyBeforeInputCommit("insertReplacementText", "hello", true),
+    ).toBe(false);
+    expect(shouldForwardPtyBeforeInputCommit("insertText", "h", true)).toBe(
+      false,
+    );
+    expect(shouldForwardPtyBeforeInputCommit("insertText", "hello", false)).toBe(
+      false,
+    );
+    expect(shouldForwardPtyBeforeInputCommit("insertFromPaste", "hello", true)).toBe(
+      false,
+    );
   });
 });

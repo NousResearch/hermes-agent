@@ -869,6 +869,33 @@ class SessionDB(
             yield None if self._read_conns_closed else self._conn
 
     @contextmanager
+    def live_write_connection(self) -> Iterator[sqlite3.Connection]:
+        """Hold the existing writer as a fence, without reopen, repair or retry.
+
+        Callers must retain this context through their dependent store's COMMIT.
+        Only bounded SQL belongs here; never recursively call _execute_write.
+        """
+        with self._lock:
+            if self._read_conns_closed or self._conn is None or self.read_only:
+                raise sqlite3.ProgrammingError("SessionDB live writer is unavailable")
+            self._raise_if_db_corrupt()
+            self._raise_if_db_replaced()
+            conn = self._conn
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                # BEGIN can wait on another writer while a pathname/WAL changes.
+                self._raise_if_db_corrupt()
+                self._raise_if_db_replaced()
+                yield conn
+                conn.commit()
+            except BaseException as exc:
+                if conn.in_transaction:
+                    conn.rollback()
+                if self._is_structural_corruption_error(exc):
+                    self._halt_db_corrupt(exc)
+                raise
+
+    @contextmanager
     def _read_ctx(self) -> Iterator[sqlite3.Connection]:
         """Yield a connection for read-only statements: a pooled read-only
         connection with NO lock under WAL; otherwise (non-WAL, open failure,

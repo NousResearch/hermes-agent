@@ -613,10 +613,8 @@ export function useVoiceConversation({
   }, [consumePendingResponse, handle])
 
   const stopTurn = useCallback(() => {
-    if (statusRef.current === 'listening') {
-      void handleTurn(true)
-    }
-  }, [handleTurn])
+    void end()
+  }, [end])
 
   const toggleMute = useCallback(() => {
     setMuted(value => {

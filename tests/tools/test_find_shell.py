@@ -20,7 +20,10 @@ from tools.environments.local import _find_bash, _find_shell
 def _pid_alive(pid: int) -> bool:
     try:
         import psutil
-        return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        try:
+            return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
     except ImportError:
         try:
             os.kill(pid, 0)  # windows-footgun: ok — psutil fallback only on POSIX hosts without it
@@ -186,7 +189,9 @@ class TestGitBashExternalProgramProbe:
         stamp = tmp_path / "grandchild.pid"
         monkeypatch.setattr(gitbash_probe, "_BASH_PROBE_TIMEOUT", 1.0)
         monkeypatch.setattr(gitbash_probe, "_BASH_EXTERNAL_PROGRAM_PROBE",
-                            f"sleep 30 & echo $! > '{stamp}'; wait")
+                            # `$!` is an MSYS pid on Windows; /proc/<pid>/winpid is the Windows pid
+                            # psutil can see. Both lines land in the stamp; POSIX has no winpid.
+                            f"sleep 30 & echo $! > '{stamp}'; cat /proc/$!/winpid >> '{stamp}' 2>/dev/null; wait")
 
         t0 = time.monotonic()
         ok = gitbash_probe._bash_starts(bash)
@@ -195,7 +200,7 @@ class TestGitBashExternalProgramProbe:
         assert ok is False
         assert elapsed < 8.0, f"probe cleanup took {elapsed:.1f}s — pipe drain not bounded"
         assert "timed out" in gitbash_probe._bash_probe_details_cache[bash]
-        grandchild = int(stamp.read_text(encoding="utf-8").strip())
+        grandchild = int(stamp.read_text(encoding="utf-8").split()[-1])
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and _pid_alive(grandchild):
             time.sleep(0.05)

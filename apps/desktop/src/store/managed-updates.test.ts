@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopManagedConnectionUpdateResult } from '@/global'
 
+const gatewayMocks = vi.hoisted(() => ({ reconnectSecondaryGateways: vi.fn() }))
+
+vi.mock('./gateway', () => gatewayMocks)
+
 const {
   $managedUpdates,
   _resetManagedUpdatesForTests,
@@ -34,6 +38,7 @@ function managedResult(over: Partial<DesktopManagedConnectionUpdateResult> = {})
 
 beforeEach(() => {
   _resetManagedUpdatesForTests()
+  gatewayMocks.reconnectSecondaryGateways.mockClear()
   updateManaged.mockReset().mockResolvedValue(managedResult())
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
     connections: { updateManaged }
@@ -67,6 +72,13 @@ describe('runManagedUpdate', () => {
       postVersion: '1.1.0'
     })
     expect($managedUpdates.get()['linux-ssh']).toMatchObject({ status: 'updated' })
+  })
+
+  it('force-redials secondary sockets after a fully restored managed update', async () => {
+    await runManagedUpdate('linux-ssh')
+
+    expect(gatewayMocks.reconnectSecondaryGateways).toHaveBeenCalledOnce()
+    expect(gatewayMocks.reconnectSecondaryGateways).toHaveBeenCalledWith({ forceOpenSockets: true })
   })
 
   it('joins a repeat click to the in-flight promise instead of double-dispatching', async () => {
@@ -108,6 +120,22 @@ describe('runManagedUpdate', () => {
       status: 'partial'
     })
     expect(state.scopes).toHaveLength(2)
+    expect(gatewayMocks.reconnectSecondaryGateways).not.toHaveBeenCalled()
+  })
+
+  it('does not reconnect sockets when the managed update fails', async () => {
+    updateManaged.mockResolvedValue(
+      managedResult({
+        error: 'launcher exited 1',
+        ok: false,
+        outcome: 'update-failed',
+        updateOk: false
+      })
+    )
+
+    await runManagedUpdate('linux-ssh')
+
+    expect(gatewayMocks.reconnectSecondaryGateways).not.toHaveBeenCalled()
   })
 
   it('surfaces the managed-update-in-progress refusal as busy, not a scary failure', async () => {

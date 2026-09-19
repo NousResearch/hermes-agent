@@ -2,6 +2,8 @@ import { atom } from 'nanostores'
 
 import type { DesktopManagedConnectionUpdateResult, DesktopManagedUpdateReceipt } from '@/global'
 
+import { reconnectSecondaryGateways } from './gateway'
+
 /** Renderer-side lifecycle of one managed SSH update (#93042 renderer unit,
  * slimmed to what #95942's engine actually exposes today: a single
  * `connections.updateManaged(id)` promise that resolves with a correlated
@@ -120,6 +122,14 @@ export function runManagedUpdate(connectionId: string): Promise<ManagedUpdateSta
       const result = await updateManaged(connectionId)
       const state = terminalState(connectionId, result)
       publish(state)
+
+      // A successful restore can have replaced the remote Linux backend while
+      // its renderer-owned secondary sockets still point at the old process.
+      // Force even apparently-open sockets through the established reconnect
+      // path only after the whole managed transaction has restored cleanly.
+      if (result.ok && result.restoreOk) {
+        reconnectSecondaryGateways({ forceOpenSockets: true })
+      }
 
       return state
     } catch (error) {

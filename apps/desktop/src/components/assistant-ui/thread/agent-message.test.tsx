@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { AGENT_MESSAGE_RE } from './user-message'
+import { AGENT_MESSAGE_RE, AgentMessageNote } from './user-message'
+
+afterEach(() => {
+  cleanup()
+})
 
 // Agent-to-agent deliveries render as a compact attributed timeline notice,
 // not a user bubble. This pins the detection contract: the Bot Mode prefix
@@ -46,5 +51,34 @@ describe('agent message detection', () => {
   it('does not match prose that merely contains the phrase', () => {
     expect(AGENT_MESSAGE_RE.test('I got a Message from 🤖 Hermes: earlier')).toBe(false)
     expect(AGENT_MESSAGE_RE.test('can you explain what Message from means?')).toBe(false)
+  })
+})
+
+// The card must read on its own in a busy multi-agent transcript: the body
+// visible without a click, and the sender identity exposed through stable
+// attributes rather than only inside prose a screen reader may not surface.
+describe('AgentMessageNote rendering', () => {
+  it('renders the delivered body without needing to expand anything', () => {
+    render(<AgentMessageNote text="Message from 🤖 Hermes: hello there" />)
+
+    expect(screen.getByText('hello there')).toBeTruthy()
+    expect(screen.queryByText('show message')).toBeNull()
+  })
+
+  it('exposes sender and handle as data attributes and an aria-label', () => {
+    render(<AgentMessageNote text="Message from 🤖 Eats Tests (@mr-tester): run them all" />)
+
+    const card = screen.getByLabelText('Message from Eats Tests (@mr-tester)')
+
+    expect(card.getAttribute('data-sender')).toBe('Eats Tests')
+    expect(card.getAttribute('data-handle')).toBe('mr-tester')
+    expect(screen.getByText('run them all')).toBeTruthy()
+  })
+
+  it('still shows the body when the sender has no avatar (robot fallback)', () => {
+    render(<AgentMessageNote text="Message from Turquoise: ready to work" />)
+
+    expect(screen.getByText('🤖')).toBeTruthy()
+    expect(screen.getByText('ready to work')).toBeTruthy()
   })
 })

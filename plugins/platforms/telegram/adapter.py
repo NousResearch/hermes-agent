@@ -5467,6 +5467,10 @@ class TelegramAdapter(BasePlatformAdapter):
             "bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION", "false"
         )
 
+    def _telegram_ignore_mentions_of_users(self) -> set[str]:
+        """Handles/ids whose @mention silences the bot in a group (unless the bot itself is addressed)."""
+        return self._extra_str_set("ignore_mentions_of_users", "TELEGRAM_IGNORE_MENTIONS_OF_USERS")
+
     def _telegram_free_response_chats(self) -> set[str]:
         return self._extra_str_set("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS")
 
@@ -5754,6 +5758,31 @@ class TelegramAdapter(BasePlatformAdapter):
                         return True
         if bot_username:
             return bot_username in self._extract_bot_mention_usernames(message, bot_username)
+        return False
+
+    def _message_mentions_ignored_user(self, message: Message) -> bool:
+        """True when the message @mentions a person configured in ``ignore_mentions_of_users``.
+
+        ``mention`` entities carry the @handle, ``text_mention`` entities carry the numeric user
+        id. Both the text and the caption are inspected, and the server-side entity offsets are
+        authoritative — a raw substring that merely looks like a handle is not a mention.
+        """
+        ignored = self._telegram_ignore_mentions_of_users()
+        if not ignored:
+            return False
+        ignored_ids = {entry for entry in ignored if entry.lstrip("-").isdigit()}
+        ignored_handles = {entry.lstrip("@").lower() for entry in ignored if not entry.lstrip("-").isdigit()}
+        for source_text, entities in self._entity_sources(message):
+            for entity in entities:
+                entity_type = self._entity_type(entity)
+                if entity_type == "mention" and ignored_handles:
+                    span = self._entity_span(source_text, entity)
+                    if span is not None and span.strip().lstrip("@").lower() in ignored_handles:
+                        return True
+                elif entity_type == "text_mention" and ignored_ids:
+                    user = getattr(entity, "user", None)
+                    if user is not None and str(getattr(user, "id", None)) in ignored_ids:
+                        return True
         return False
 
     def _schedule_bot_identity_recheck(self) -> None:
@@ -6063,6 +6092,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         chat_id_str = self._chat_id_str(message)
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return False
+        # Human-mention silence: drop a group message that addresses a configured person, so the bot
+        # does not answer a conversation between humans. A direct summons of the bot — @mention,
+        # ``/cmd@botname``, or a reply to one of its messages — always wins.
+        if self._message_mentions_ignored_user(message) and not (
+            self._is_reply_to_bot(message) or self._message_mentions_bot(message)
+        ):
             return False
         # Resolve once; _message_mentions_bot is not re-called below in guest mode.
         guest_mention = self._is_guest_mention(message)
@@ -6942,6 +6978,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     # bridges them with their original type and this merge would clobber it.
     for key, env, seed in (
         ("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS", True), ("free_response_topics", "TELEGRAM_FREE_RESPONSE_TOPICS", False),
+        ("ignore_mentions_of_users", "TELEGRAM_IGNORE_MENTIONS_OF_USERS", True),
         ("allowed_chats", "TELEGRAM_ALLOWED_CHATS", False), ("allowed_topics", "TELEGRAM_ALLOWED_TOPICS", False),
         ("ignored_threads", "TELEGRAM_IGNORED_THREADS", True)):
         _bridge_gate(key, env, telegram_cfg.get(key), seed_extra=seed)

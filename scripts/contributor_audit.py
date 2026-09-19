@@ -28,7 +28,9 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(SCRIPT_DIR.parent))
 
+from hermes_cli.github_cli import gh_argv  # noqa: E402
 from release import resolve_author  # noqa: E402
 
 REPO_ROOT = SCRIPT_DIR.parent
@@ -120,14 +122,17 @@ def gh_pr_list():
     Returns an empty list if gh is not available or the call fails.
     """
     try:
+        command = gh_argv(
+            "pr", "list",
+            "--repo", "NousResearch/hermes-agent",
+            "--state", "merged",
+            "--json", "number,title,body,author,mergedAt",
+            "--limit", "300",
+        )
+        if command is None:
+            return []
         result = subprocess.run(
-            [
-                "gh", "pr", "list",
-                "--repo", "NousResearch/hermes-agent",
-                "--state", "merged",
-                "--json", "number,title,body,author,mergedAt",
-                "--limit", "300",
-            ],
+            command,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=60,

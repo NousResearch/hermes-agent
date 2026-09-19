@@ -64,7 +64,10 @@ required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped 
 neutral **required** evidence cannot complete the card. Neither can zero-run
 acceptance, unreadable policy or GitHub API failures. A repository without required
 checks needs a local-only contract. `gh` must be authenticated with read access to
-the repository's checks and rules; no remote writes are performed by this gate.
+the repository's checks and rules; no remote writes are performed by this gate. Set
+`HERMES_GH_BIN` to an explicit executable path when Hermes must use a wrapper;
+when unset Hermes resolves `gh` with `shutil.which("gh")`. The value is one
+literal argv element, so spaces and shell metacharacters are never interpreted.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
@@ -81,6 +84,43 @@ transaction or a continuous post-completion monitor. This is a single-user lifec
 guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
 is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
+
+### Task-bound release approval
+
+Hermes can consume the exact authenticated reply `freigegeben` without exposing
+SHA, GitHub, workflow or environment parameters to the approver. Enable the
+handler and configure a fixed argv adapter in `config.yaml`:
+
+```yaml
+kanban:
+  release_approval:
+    enabled: true
+    promotion_argv:
+      - /opt/cuto/bin/promote-release
+      - --config
+      - /etc/cuto/promotion.yaml
+```
+
+The release publisher first calls
+`hermes_cli.kanban_release_approval.present_release(...)` with the task,
+immutable release/manifest/test-case digests, authenticated actor/route and the
+ID of the message that visibly presented the release. Approval must be a reply
+to that exact message. A replacement presentation supersedes the old gate.
+Release publishers call `update_release_state(...)` whenever the workflow,
+active Dev release, or manifest changes so approval-time checks use current
+state rather than the presentation snapshot.
+
+Hermes rechecks `Auf Dev zur Prüfung`, active Dev release, task, actor, route,
+message and manifest under `BEGIN IMMEDIATE`, then persists a stable operation
+key before invoking the adapter. The adapter receives literal arguments
+`promote --task-id ... --release-id ... --manifest-sha256 ... --operation-key ...`
+and returns JSON containing release ID; Dev/Test/Production result and actual
+active release; predecessor; and rollback availability. It must treat the
+operation key idempotently. SQLite claim/finalize transactions plus that adapter
+contract form a persisted fail-closed saga, not a global ACID transaction.
+Stale, replayed, ambiguous and concurrent approvals do not start a second
+promotion. Status text reports the read-back state and never includes adapter
+stderr, secrets or PII.
 
 ## Kanban vs. `delegate_task`
 

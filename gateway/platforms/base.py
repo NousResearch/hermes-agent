@@ -3913,6 +3913,17 @@ class BasePlatformAdapter(ABC):
             except Exception as e:
                 logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
             return
+        # Exact release approval is a control token even though it is not a slash command.
+        # It must cross this first (adapter) busy guard inline; the runner then authenticates
+        # the event and consumes an enabled approval before its own busy/steer guard.
+        if not cmd and event.allow_gateway_control and (event.text or "") == "freigegeben":
+            try:
+                logger.debug("[%s] Release approval bypassing active-session guard for %s",
+                             self.name, session_key)
+                await self._dispatch_inline_reply(event)
+            except Exception as e:
+                logger.error("[%s] Release approval dispatch failed: %s", self.name, e, exc_info=True)
+            return
         # Clarify bypass: while blocked on clarify_tool the next message must reach the
         # text-intercept so numeric/exact/"Other" answers resolve it and unblock the agent.
         # Otherwise it lands in _pending_messages as a follow-up turn and the answer is

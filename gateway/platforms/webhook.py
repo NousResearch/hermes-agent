@@ -808,13 +808,17 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] invalid repo format: %r", repo)
             return SendResult(success=False, error="Invalid repo format")
         try:
+            from hermes_cli.github_cli import gh_argv
+            command = gh_argv("pr", "comment", str(pr_int), "--repo", repo, "--body", content)
+            if command is None:
+                raise FileNotFoundError("GitHub CLI is not configured or on PATH")
             # Off-loop: `gh` does network I/O up to its 30s timeout; inline it froze every adapter and
             # timer on the gateway event loop.
             # Running it inline froze every adapter and timer on the gateway event loop for the duration
             # (Pattern A, #91912 class). asyncio.to_thread keeps the loop serving while the subprocess runs;
             # the worker thread is bounded by the subprocess timeout below.
             result = await asyncio.to_thread(
-                subprocess.run, ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
+                subprocess.run, command,
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                 env=self._github_env(delivery.get("profile")))
             if result.returncode == 0:

@@ -10,6 +10,8 @@ import re
 import subprocess
 from urllib.parse import quote
 
+from hermes_cli.github_cli import gh_argv
+
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
 
@@ -23,7 +25,9 @@ def validate_contract(value: str | None) -> str:
 
 
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
-    command = ["gh", "api", endpoint, "--hostname", "github.com"]
+    command = gh_argv("api", endpoint, "--hostname", "github.com")
+    if command is None:
+        raise FileNotFoundError("GitHub CLI is not configured or on PATH")
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:

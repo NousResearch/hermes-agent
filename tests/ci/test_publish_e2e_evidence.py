@@ -68,6 +68,7 @@ def test_load_evidence_rejects_path_escape_and_non_png(tmp_path):
 
 
 def test_upload_evidence_accepts_only_attachment_urls(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_GH_BIN", "gh")
     shot = tmp_path / "shot.png"
     shot.write_bytes(_png())
     calls = []
@@ -97,6 +98,7 @@ def test_upload_evidence_accepts_only_attachment_urls(tmp_path, monkeypatch):
 
 
 def test_upload_evidence_reports_gh_image_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_GH_BIN", "gh")
     shot = tmp_path / "shot.png"
     shot.write_bytes(_png())
 

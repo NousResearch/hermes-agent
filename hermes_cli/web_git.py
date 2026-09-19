@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from hermes_cli.github_cli import gh_argv
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -384,12 +385,13 @@ def review_commit_context(cwd: str) -> dict:
 
 
 def _gh(cwd: str, args: list[str]) -> tuple[bool, str]:
-    if not shutil.which("gh"):
+    command = gh_argv(*args)
+    if command is None:
         return False, ""
     # GH_PROMPT_DISABLED: gh's documented kill-switch for interactive prompts.
     env = noninteractive_git_env()
     env["GH_PROMPT_DISABLED"] = "1"
-    proc = _run(["gh", *args], cwd, _GH_TIMEOUT, env)
+    proc = _run(command, cwd, _GH_TIMEOUT, env)
     if proc is None:
         return False, ""
     return proc.returncode == 0, proc.stdout or ""

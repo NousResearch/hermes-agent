@@ -1063,6 +1063,53 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Immutable presentation binding for the exact message Armin approves. Identity
+-- columns never change; only ``gate_status`` advances through the release saga.
+CREATE TABLE IF NOT EXISTS kanban_release_gates (
+    id                       TEXT PRIMARY KEY,
+    task_id                  TEXT NOT NULL,
+    release_id               TEXT NOT NULL,
+    manifest_sha256          TEXT NOT NULL,
+    manual_test_cases_digest TEXT NOT NULL,
+    workflow_status          TEXT NOT NULL,
+    active_dev_release_id    TEXT NOT NULL,
+    platform                 TEXT NOT NULL,
+    chat_id                  TEXT NOT NULL,
+    thread_id                TEXT NOT NULL DEFAULT '',
+    actor_id                 TEXT NOT NULL,
+    presented_message_id     TEXT NOT NULL,
+    presented_at             INTEGER NOT NULL,
+    previous_release_id      TEXT,
+    rollback_available       INTEGER NOT NULL DEFAULT 0,
+    gate_status              TEXT NOT NULL DEFAULT 'active'
+);
+
+-- Mutable release truth used for the approval-time recheck. Release publishers
+-- update this row whenever Dev or workflow state changes; the gate above remains
+-- the immutable visible presentation snapshot.
+CREATE TABLE IF NOT EXISTS kanban_release_state (
+    task_id                  TEXT PRIMARY KEY,
+    workflow_status          TEXT NOT NULL,
+    active_dev_release_id    TEXT NOT NULL,
+    manifest_sha256          TEXT NOT NULL,
+    updated_at               INTEGER NOT NULL
+);
+
+-- Persisted idempotent saga. The adapter receives operation_key and must treat
+-- retries with that key as the same promotion. A live promoting claim is never
+-- stolen; an expired claim is resumed through the adapter with the same key.
+CREATE TABLE IF NOT EXISTS kanban_release_sagas (
+    operation_key   TEXT PRIMARY KEY,
+    gate_id         TEXT NOT NULL UNIQUE,
+    state           TEXT NOT NULL,
+    owner_token     TEXT,
+    lease_expires   INTEGER,
+    adapter_receipt TEXT,
+    error_class     TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);

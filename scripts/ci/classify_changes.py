@@ -65,6 +65,13 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from hermes_cli.github_cli import gh_argv
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 # Shipped page outside those packages, exercised by the desktop Electron suite.
@@ -307,16 +314,18 @@ def pull_request_changed_files() -> list[str]:
     pr = _pull_request_number()
     if not repo or not pr:
         return []
+    command = gh_argv(
+        "api",
+        "--paginate",
+        f"repos/{repo}/pulls/{pr}/files",
+        "--jq",
+        ".[].filename",
+    )
+    if command is None:
+        return []
     try:
         completed = subprocess.run(
-            [
-                "gh",
-                "api",
-                "--paginate",
-                f"repos/{repo}/pulls/{pr}/files",
-                "--jq",
-                ".[].filename",
-            ],
+            command,
             check=False,
             capture_output=True,
             text=True,

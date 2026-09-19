@@ -1123,14 +1123,14 @@ class TestGitHubTokenCheck:
         # Mock gh to return success
         import shutil
         real_which = shutil.which
-        def mock_which(cmd):
-            return "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd)
+        def mock_which(cmd, *, path=None):
+            return "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd, path=path)
         monkeypatch.setattr(shutil, "which", mock_which)
 
         call_log = []
         def mock_run(cmd, **kwargs):
             call_log.append(cmd)
-            if cmd[:2] == ["gh", "auth"]:
+            if cmd[0].endswith("/gh") and cmd[1:2] == ["auth"]:
                 result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
             else:
                 result = types.SimpleNamespace(returncode=1, stdout="", stderr="")
@@ -1147,7 +1147,7 @@ class TestGitHubTokenCheck:
             run_doctor(Namespace(fix=False))
         out = buf.getvalue()
 
-        assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
+        assert any(c[0].endswith("/gh") and c[1:2] == ["auth"] for c in call_log), f"gh not called: {call_log}"
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
 
@@ -1156,6 +1156,7 @@ class TestGitHubTokenCheck:
         so that invocation exits 1 even for a logged-in user. A logged-in user on
         such a gh must still be reported as authenticated."""
         from hermes_cli import doctor_state
+        monkeypatch.setenv("HERMES_GH_BIN", "gh")
 
         def gh_2_98(cmd, **kwargs):
             assert cmd[:3] == ["gh", "auth", "status"], cmd

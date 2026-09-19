@@ -23,7 +23,6 @@ Usage:
 import argparse
 import json
 import re
-import shutil
 import subprocess
 import sys
 from collections import defaultdict
@@ -31,6 +30,8 @@ from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
@@ -2659,14 +2660,14 @@ def main():
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog, encoding="utf-8")
 
-        gh_cmd = [
-            "gh", "release", "create", tag_name,
+        from hermes_cli.github_cli import gh_argv
+        gh_cmd = gh_argv(
+            "release", "create", tag_name,
             "--title", f"Hermes Agent v{new_version} ({calver_date})",
             "--notes-file", str(changelog_file),
-        ]
+        )
 
-        gh_bin = shutil.which("gh")
-        if gh_bin:
+        if gh_cmd:
             result = subprocess.run(
                 gh_cmd,
                 capture_output=True, text=True, encoding="utf-8", errors="replace",

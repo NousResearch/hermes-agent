@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException
 
 from hermes_cli import web_git as _web_git
 from hermes_cli._subprocess_compat import bounded_probe_run
+from hermes_cli.github_cli import resolve_gh_binary
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import _fs_path
 from hermes_cli.web_models import (
@@ -61,7 +62,7 @@ _gh_auth_probe_started = 0.0  # monotonic start of _gh_auth_probe_task
 
 
 def _probe_gh_auth() -> dict:
-    gh = shutil.which("gh")
+    gh = resolve_gh_binary()
     if not gh:
         return {"available": False, "authenticated": False}
     try:

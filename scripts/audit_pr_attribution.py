@@ -32,6 +32,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from hermes_cli.github_cli import gh_argv
 
 SKIP_SUBSTRINGS = (
     "teknium",
@@ -79,7 +83,10 @@ def is_mapped(email: str) -> bool:
 
 def gh_json(*args: str):
     try:
-        out = run("gh", "api", *args, check=False)
+        command = gh_argv("api", *args)
+        if command is None:
+            return None
+        out = run(*command, check=False)
         return json.loads(out) if out else None
     except (RuntimeError, json.JSONDecodeError, FileNotFoundError):
         return None

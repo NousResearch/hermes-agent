@@ -364,24 +364,74 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 
 def _usage_windows(
-    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False
+    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str
 ) -> list[AccountUsageWindow]:
-    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent."""
+    """Build windows from ``source[key][used_key]``. Every provider reports a whole percent."""
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
         used = window.get(used_key)
         if used is None:
             continue
-        used = float(used)
-        if fraction and used <= 1:
-            used *= 100
-        windows.append(AccountUsageWindow(label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key))))
+        windows.append(AccountUsageWindow(label=label, used_percent=float(used),
+                                          reset_at=_parse_dt(window.get(reset_key))))
     return windows
 
 
 def _plural(count: int) -> str:
     return "s" if count != 1 else ""
+
+
+# limits[] kind -> window label, for the account-wide (unscoped) entries. Ordered as rendered.
+_ANTHROPIC_ACCOUNT_KINDS: tuple[tuple[str, str], ...] = (("session", "Current session"), ("weekly_all", "Current week"))
+
+# Legacy top-level fallback for the same two windows, plus the per-model weeks that predate limits[].
+_ANTHROPIC_LEGACY_KEYS: tuple[tuple[str, str], ...] = (
+    ("five_hour", "Current session"), ("seven_day", "Current week"),
+    ("seven_day_opus", "Opus week"), ("seven_day_sonnet", "Sonnet week"),
+)
+
+
+def _anthropic_account_windows(payload: dict) -> list[AccountUsageWindow]:
+    """Account-wide session/week windows, preferring the unscoped ``limits[]`` entries.
+
+    ``limits[]`` carries an explicit ``kind`` and a whole-number ``percent``; the top-level
+    ``five_hour`` / ``seven_day`` blocks carry ``utilization``, which is the same percent but was
+    once read as a 0-1 fraction — so ``utilization: 1.0`` (1% used) rendered as 100%, a false
+    "limit reached" once per window. Percent is the contract; the legacy keys only fill windows
+    ``limits[]`` did not report (an older account shape, or the per-model weeks that predate it).
+    """
+    windows: list[AccountUsageWindow] = []
+    seen: set[str] = set()
+    by_kind = {entry.get("kind"): entry for entry in payload.get("limits") or () if isinstance(entry, dict)}
+    for kind, label in _ANTHROPIC_ACCOUNT_KINDS:
+        entry = by_kind.get(kind) or {}
+        percent = entry.get("percent")
+        if entry.get("scope") is None and _is_num(percent):
+            windows.append(AccountUsageWindow(label=label, used_percent=float(percent),
+                                              reset_at=_parse_dt(entry.get("resets_at"))))
+            seen.add(label)
+    legacy = [(key, label) for key, label in _ANTHROPIC_LEGACY_KEYS if label not in seen]
+    windows.extend(_usage_windows(payload, tuple(legacy), "utilization", "resets_at"))
+    return windows
+
+
+def _anthropic_scoped_weekly_windows(payload: dict) -> list[AccountUsageWindow]:
+    """Per-model weekly caps from ``payload["limits"]`` (``kind: weekly_scoped``, e.g. a Fable-only
+    week). They are separate from the account-wide ``weekly_all`` window: a model can be out for the
+    week while the session window and the shared week are free. Unscoped entries are the account-wide
+    windows, built by ``_anthropic_account_windows``, and are skipped here."""
+    windows: list[AccountUsageWindow] = []
+    for entry in payload.get("limits") or ():
+        if not isinstance(entry, dict) or entry.get("kind") != "weekly_scoped":
+            continue
+        model_name = (((entry.get("scope") or {}).get("model") or {}).get("display_name") or "").strip()
+        percent = entry.get("percent")
+        if not model_name or not _is_num(percent):
+            continue
+        windows.append(AccountUsageWindow(label=f"{model_name} week", used_percent=float(percent),
+                                          reset_at=_parse_dt(entry.get("resets_at"))))
+    return windows
 
 
 def _fetch_codex_account_usage(
@@ -552,10 +602,8 @@ def _fetch_anthropic_account_usage(
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
                "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
     payload = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
-    windows = _usage_windows(
-        payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
-                  ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
-    )
+    windows = _anthropic_account_windows(payload)
+    windows.extend(_anthropic_scoped_weekly_windows(payload))
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")

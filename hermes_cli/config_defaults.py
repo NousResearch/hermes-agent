@@ -919,9 +919,10 @@ DEFAULT_CONFIG = {
         # config controls visibility not ordering); empty = default set. Available: model,
         # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
         # bg_processes, bg_subagents, goal, git_branch (⎇ current branch, opt-in only), duration,
-        # prompt_elapsed, idle_since, focus, yolo,
-        # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
-        # context_detail/prompt_elapsed/idle_since.
+        # prompt_elapsed, idle_since, focus, yolo, stash, battery, title, plus two more opt-in only
+        # fields: limits (Codex + Claude Code subscription usage: shortest window per account plus
+        # per-model weekly caps, polled every 60s) and total_tokens (session Σ). Narrow terminals
+        # still drop context_detail/prompt_elapsed/idle_since.
         "status_bar": {
             "fields": [],
         },

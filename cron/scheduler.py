@@ -316,7 +316,8 @@ def _repeat_alert_withheld(incident: dict) -> bool:
 
 
 def _upsert_incident_for_failure(
-    job: dict, error: str, *, output_file: Optional[Any] = None
+    job: dict, error: str, *, output_file: Optional[Any] = None,
+    failure_type: Optional[str] = None,
 ) -> tuple[bool, Optional[str]]:
     """Record a durable failure incident (grouped by job + error signature). Returns
     ``(withheld, incident_id)``; withheld=True when the signature's incident is already ``closed``
@@ -327,7 +328,8 @@ def _upsert_incident_for_failure(
         from cron.incidents import get_incident, upsert_incident
 
         incident_id, _is_new = upsert_incident(
-            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
+            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file,
+            failure_type=failure_type)
         incident = get_incident(incident_id)
         state = incident.get("state") if incident else None
         withheld = state == "closed" or (state == "alerted" and _repeat_alert_withheld(incident))
@@ -339,15 +341,39 @@ def _upsert_incident_for_failure(
         return False, None
 
 
-def _resolve_incidents_for_recovered_job(job: dict) -> None:
+def _resolve_incidents_for_recovered_job(job: dict, *, exclude_failure_type: Optional[str] = None) -> None:
     """Best-effort: a successful run marks the job's open incidents ``resolved`` (never touches an
-    operator ``closed`` ack). Store errors log at debug; delivery is unaffected."""
+    operator ``closed`` ack; ``exclude_failure_type`` keeps a still-failing class open, #112712).
+    Store errors log at debug; delivery is unaffected."""
     try:
         from cron.incidents import close_incidents_for_recovered_job
 
-        close_incidents_for_recovered_job(job["id"])
+        close_incidents_for_recovered_job(job["id"], exclude_failure_type=exclude_failure_type)
     except Exception as exc:
         logger.debug("Incident store unavailable for job %s (delivery unaffected): %s", job["id"], exc)
+
+
+def _record_delivery_incident(job: dict, lane: Optional[str], delivery_error: Optional[str]) -> None:
+    """#112712 lever 1: incident parity for a failed delivery, whatever the run outcome was.
+
+    The failure is already recorded (``last_status``/``last_delivery_error``) and displayed, but
+    nothing proactive ever reaches the operator, and the broken lane cannot carry its own failure
+    notice. This routes it through the same incident store the fire errors use, as a DURABLE,
+    ackable, pull-side record (``hermes cron incidents``); an out-of-band alert surface is the
+    issue's lever 2 and deliberately not bundled here. The signature is the LANE, not the raw
+    error text: adapter errors vary run to run (retry-after counts, embedded receipt keys), and a
+    text-keyed signature would mint a new incident per variant and defeat dedup and acks. The
+    raw error stays in ``last_delivery_error`` and the logs. A clean delivery resolves the job's
+    open incidents, delivery-signature rows included."""
+    from cron.incidents import DELIVERY_FAILURE_TYPE
+
+    if delivery_error:
+        _upsert_incident_for_failure(
+            job, f"delivery to {lane or 'default'} lane failed",
+            failure_type=DELIVERY_FAILURE_TYPE,
+        )
+    else:
+        _resolve_incidents_for_recovered_job(job)
 
 
 def _mark_incident_alerted(incident_id: Optional[str]) -> None:
@@ -2629,7 +2655,11 @@ def _compose_run_delivery(
         deliver_content = blocked_config_notice(job.get("name") or job["id"], _pf_text)
     elif success:
         deliver_content = final_response
-        _resolve_incidents_for_recovered_job(job)
+        # Delivery-signature incidents stay open here: this resolve runs before the outcome of
+        # THIS run's delivery is known (a crash in between would leave a broken lane marked
+        # resolved, #112712); they are closed after a clean delivery instead.
+        from cron.incidents import DELIVERY_FAILURE_TYPE
+        _resolve_incidents_for_recovered_job(job, exclude_failure_type=DELIVERY_FAILURE_TYPE)
     else:
         # Record the job+error signature once; withhold the per-run ping while the operator
         # already acked it (closed) or was already told (alerted, inside the reminder cooldown).
@@ -2874,6 +2904,14 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
+    # After the outcome is known (#112712 lever 1): a failed delivery opens (or refreshes) a
+    # lane-keyed delivery incident, whether the run itself succeeded or only its failure notice
+    # failed to leave; a clean delivery resolves the job's open incidents, delivery rows included.
+    if d.delivery_error:
+        _record_delivery_incident(
+            job, _delivery_lane_value(job, for_failure=not d.success), d.delivery_error)
+    elif d.success:
+        _record_delivery_incident(job, None, None)
     finish_execution(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
     return True
@@ -2902,6 +2940,10 @@ def _deliver_crash_failure(
     except Exception as delivery_exc:
         delivery_error = str(delivery_exc)
         logger.error("Delivery failed for job %s: %s", job["id"], delivery_exc)
+    if delivery_error:
+        # Same parity as the completed-run path: a failure notice that could not leave the
+        # process is a delivery failure of the failure lane (#112712 lever 1).
+        _record_delivery_incident(job, normalized_deliver, delivery_error)
     unresolved_origin = bool(
         not delivery_error
         and normalized_deliver == "origin"

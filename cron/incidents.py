@@ -234,7 +234,13 @@ def ack_incident(incident_id: str) -> bool:
     return set_incident_state(incident_id, "closed")
 
 
-def close_incidents_for_recovered_job(job_id: str) -> int:
+DELIVERY_FAILURE_TYPE = "delivery"
+"""failure_type for incidents recording a failed DELIVERY (the run itself may have succeeded).
+Keeps delivery-signature rows apart from fire-signature ones for dedup, display and the
+recovery close (``exclude_failure_type``)."""
+
+
+def close_incidents_for_recovered_job(job_id: str, *, exclude_failure_type: Optional[str] = None) -> int:
     """Mark every open incident for ``job_id`` ``resolved`` after a successful run; returns how many.
     Without this the ledger only ever grows: a one-off failure (a config drift skip, a provider
     outage) stayed ``detected``/``alerted`` forever after the job recovered, so ``hermes cron
@@ -244,10 +250,16 @@ def close_incidents_for_recovered_job(job_id: str) -> int:
     ``closed`` keeps that signature silent."""
     now = _hermes_now().isoformat()
     with _transaction() as conn:
+        clause, params = "", [now, str(job_id or "")]
+        if exclude_failure_type is not None:
+            # Recovery close that must NOT touch a class still failing: a successful run resolves
+            # its fire incidents even when its own delivery then failed (#112712).
+            clause = " AND (failure_type IS NULL OR failure_type != ?)"
+            params.append(exclude_failure_type)
         cursor = conn.execute(
-            """UPDATE cron_incidents SET state='resolved', closed_at=?
-               WHERE job_id=? AND state IN ('detected', 'alerted')""",
-            (now, str(job_id or "")),
+            "UPDATE cron_incidents SET state='resolved', closed_at=?"
+            " WHERE job_id=? AND state IN ('detected', 'alerted')" + clause,
+            params,
         )
         return int(cursor.rowcount or 0)
 

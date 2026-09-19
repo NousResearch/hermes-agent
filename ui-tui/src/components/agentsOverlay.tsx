@@ -582,7 +582,7 @@ function DiffView({
 
 // ── Main overlay ─────────────────────────────────────────────────────
 
-export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: AgentsOverlayProps) {
+export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t, viewport }: AgentsOverlayProps) {
   const liveSubagents = useAgentRoster()
   const delegation = useStore($delegationState)
   const history = useStore($spawnHistory)
@@ -627,13 +627,14 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const selected = rows[cursor] ?? null
 
-  const cols = stdout?.columns ?? 80
+  const cols = viewport?.cols ?? stdout?.columns ?? 80
+  const viewportRows = viewport?.rows ?? stdout?.rows ?? 24
 
   const {
     rows: rowsH,
     start: listWindowStart,
     timelineRows
-  } = rosterViewport((stdout?.rows ?? 24) - (flash ? 1 : 0), rows.length, cursor)
+  } = rosterViewport(viewportRows - (flash ? 1 : 0), rows.length, cursor)
 
   // ── Effects ────────────────────────────────────────────────────────
 
@@ -1016,6 +1017,7 @@ interface AgentsOverlayProps {
   initialHistoryIndex?: number
   onClose: () => void
   t: Theme
+  viewport?: { cols: number; rows: number }
 }
 
 export const closeAgentsOverlay = () => patchOverlayState({ agents: false })

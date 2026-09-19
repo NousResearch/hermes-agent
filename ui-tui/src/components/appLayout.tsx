@@ -1,7 +1,7 @@
 // Importing the apps barrel registers the reference widget apps at startup.
 import '../sdk/apps/index.js'
 
-import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
+import { AlternateScreen, Box, NoSelect, ScrollBox, Text, useStdout } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, type MutableRefObject, useEffect, useMemo, useRef } from 'react'
 
@@ -48,6 +48,26 @@ const KITTY_PLACEHOLDER = '\u{10eeee}'
 // Below this many columns of remaining text width, the right gutter is too
 // cramped, so the transcript collapses to reserving bottom rows instead.
 const MIN_GUTTER_BODY_COLS = 72
+
+/**
+ * Keep the roster deliberately smaller than the terminal so Ctrl+T is a
+ * transient inspection surface rather than a second full-screen view.
+ */
+export function agentsOverlayBounds(columns: number, rows: number) {
+  const viewportCols = Math.max(1, Math.floor(columns) || 80)
+  const viewportRows = Math.max(1, Math.floor(rows) || 24)
+  const maxWidth = Math.max(1, viewportCols - 2)
+  const maxHeight = Math.max(1, viewportRows - 2)
+  const width = Math.min(maxWidth, Math.max(28, Math.floor(viewportCols * 0.82)))
+  const height = Math.min(maxHeight, Math.max(8, Math.floor(viewportRows * 0.5)))
+
+  return {
+    height,
+    left: Math.max(0, Math.floor((viewportCols - width) / 2)),
+    top: Math.max(1, Math.floor((viewportRows - height) / 2)),
+    width
+  }
+}
 
 // Petdex mascot — a small floating overlay riding the bottom-right corner just
 // above the status bar, with a little top/left breathing room. It reserves no
@@ -463,14 +483,29 @@ const AgentsOverlayPane = memo(function AgentsOverlayPane() {
   const { gw } = useGateway()
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
+  const { stdout } = useStdout()
+  const bounds = agentsOverlayBounds(stdout?.columns ?? 80, stdout?.rows ?? 24)
 
   return (
-    <AgentsOverlay
-      gw={gw}
-      initialHistoryIndex={overlay.agentsInitialHistoryIndex}
-      onClose={() => patchOverlayState({ agents: false, agentsInitialHistoryIndex: 0 })}
-      t={ui.theme}
-    />
+    <Box
+      borderColor={ui.theme.color.border}
+      borderStyle="round"
+      flexDirection="column"
+      height={bounds.height}
+      left={bounds.left}
+      overflow="hidden"
+      position="absolute"
+      top={bounds.top}
+      width={bounds.width}
+    >
+      <AgentsOverlay
+        gw={gw}
+        initialHistoryIndex={overlay.agentsInitialHistoryIndex}
+        onClose={() => patchOverlayState({ agents: false, agentsInitialHistoryIndex: 0 })}
+        t={ui.theme}
+        viewport={{ cols: Math.max(1, bounds.width - 2), rows: Math.max(1, bounds.height - 2) }}
+      />
+    </Box>
   )
 })
 
@@ -550,12 +585,8 @@ export const AppLayout = memo(function AppLayout({
     <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1} position="relative">
         <Box flexDirection="row" flexGrow={1}>
-          {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
-          {overlay.agents ? (
-            <PerfPane id="agents">
-              <AgentsOverlayPane />
-            </PerfPane>
-          ) : overlay.journey ? (
+          {!overlay.journey && <AmbientRail side="left" />}
+          {overlay.journey ? (
             <PerfPane id="journey">
               <JourneyPane />
             </PerfPane>
@@ -564,10 +595,10 @@ export const AppLayout = memo(function AppLayout({
               <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
             </PerfPane>
           )}
-          {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
+          {!overlay.journey && <AmbientRail side="right" />}
         </Box>
 
-        {!overlay.agents && !overlay.journey && (
+        {!overlay.journey && (
           <>
             <PerfPane id="prompt">
               <PromptZone
@@ -599,6 +630,12 @@ export const AppLayout = memo(function AppLayout({
         )}
 
         {!overlay.agents && <PetPane />}
+
+        {overlay.agents && (
+          <PerfPane id="agents">
+            <AgentsOverlayPane />
+          </PerfPane>
+        )}
       </Box>
 
       <ActiveWidgetSlot />

@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
@@ -607,8 +607,9 @@ _FS_LIST_ERRNO = (
 
 
 @router.get("/api/fs/list")
-async def fs_list(path: str):
+async def fs_list(path: str, request: Request):
     target = _fs_path(path)
+    _hosted_fs_read_guard(target, request)
     try:
         entries = []
         with os.scandir(target) as scan:
@@ -630,8 +631,10 @@ async def fs_list(path: str):
 
 
 @router.get("/api/fs/read-text")
-async def fs_read_text(path: str):
-    target, st = _fs_regular_file(_fs_path(path))
+async def fs_read_text(path: str, request: Request):
+    target = _fs_path(path)
+    _hosted_fs_read_guard(target, request)
+    target, st = _fs_regular_file(target)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     data = _fs_read_bytes(target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES))
@@ -708,10 +711,12 @@ async def _fs_download_path(path: str, profile: Optional[str], session_id: Optio
 
 @router.get("/api/fs/read-data-url")
 async def fs_read_data_url(
-    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+    path: str, request: Request, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
-    target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
+    target = await _fs_download_path(path, profile, session_id)
+    _hosted_fs_read_guard(target, request)
+    target, st = _fs_regular_file(target)
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
@@ -720,9 +725,11 @@ async def fs_read_data_url(
 
 @router.get("/api/fs/download")
 async def fs_download(
-    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+    path: str, request: Request, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
-    target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
+    target = await _fs_download_path(path, profile, session_id)
+    _hosted_fs_read_guard(target, request)
+    target, _st = _fs_regular_file(target)
     return FileResponse(
         path=str(target),
         media_type=_fs_mime_type(target),

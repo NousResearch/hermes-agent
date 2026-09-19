@@ -142,9 +142,10 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
         f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}")
     # Preferred: setsid creates a new session, fully detached; fallback start_new_session=True
-    # calls os.setsid() in the child.
+    # calls os.setsid() in the child.  ``--`` separates setsid's own options from the child
+    # command: util-linux setsid (Termux) otherwise parses ``-c`` as its own flag.
     setsid_bin = shutil.which("setsid")
-    argv = [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
+    argv = [setsid_bin, "--", "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
     subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 

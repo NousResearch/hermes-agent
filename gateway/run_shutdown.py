@@ -1421,8 +1421,10 @@ class GatewayShutdownMixin:
             f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
             f"{cmd} gateway restart"
         )
+        # ``--`` separates setsid's own options from the child command: util-linux
+        # setsid (Termux) otherwise parses ``-lc`` as its own flags.
         setsid_bin = shutil.which("setsid")
-        argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
+        argv = [setsid_bin, "--", "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
         subprocess.Popen(
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,

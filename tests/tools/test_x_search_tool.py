@@ -432,3 +432,48 @@ def test_x_search_bearer_requests_prefer_api_key_from_shared_resolver(monkeypatc
     assert captured.get("prefer_api_key") is True
     assert source == "xai"
 
+
+def test_explicit_key_honors_suppressed_env_source(monkeypatch):
+    """``hermes auth remove xai`` suppresses the ``env:XAI_API_KEY`` source.
+
+    A stale value can survive in a long-running gateway's process environment
+    (inherited across update restarts). Once suppressed, the explicit-key
+    resolver must drop it so the working OAuth credential is used instead
+    of a creditless API key (issue #116155).
+    """
+    from tools.xai_http import _resolve_explicit_xai_api_key
+
+    monkeypatch.setenv("XAI_API_KEY", _xcred("stale"))
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_source_suppressed", lambda provider, source: True
+    )
+    assert _resolve_explicit_xai_api_key() == ""
+
+
+def test_explicit_key_kept_when_env_source_not_suppressed(monkeypatch):
+    """Without suppression, a resolvable env key is returned unchanged."""
+    from tools.xai_http import _resolve_explicit_xai_api_key
+
+    live_key = _xcred("live")
+    monkeypatch.setenv("XAI_API_KEY", live_key)
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_source_suppressed", lambda provider, source: False
+    )
+    assert _resolve_explicit_xai_api_key() == live_key
+
+
+def test_explicit_key_honors_suppression_only_for_env_source(monkeypatch):
+    """A pool/config key under a different source name is not suppressed."""
+    from tools.xai_http import _resolve_explicit_xai_api_key
+
+    def _fake_resolve(env_var, provider_id, config_value="", env_getter=None):
+        return _xcred("pool")
+
+    monkeypatch.setattr(
+        "tools.tool_backend_helpers.resolve_provider_secret", _fake_resolve
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_source_suppressed", lambda provider, source: True
+    )
+    assert _resolve_explicit_xai_api_key() != ""
+

@@ -32,6 +32,14 @@ describe('settings helpers', () => {
     expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
   })
 
+  it('surfaces the link-open preference in Chat with user-facing copy', () => {
+    const chat = SECTIONS.find(section => section.id === 'chat')
+
+    expect(chat?.keys).toContain('desktop.open_links_in_preview')
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'desktop.open_links_in_preview')).toBeTruthy()
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.open_links_in_preview')).toBeTruthy()
+  })
+
   it('does not shadow the backend schema options for memory.provider', () => {
     // memory.provider options are discovery-driven and served by the backend
     // config schema (merged per-request); enumOptionsFor must return undefined

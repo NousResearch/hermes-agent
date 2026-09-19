@@ -125,6 +125,13 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     ),
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", "scribe_v2", "scribe_v1"),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
+    "desktop.open_links_in_preview": {
+        "type": "boolean",
+        "description": (
+            "Open web links in the in-app preview pane (Cmd/Ctrl-click opens in system browser). "
+            "When off, the gestures are inverted."
+        ),
+    },
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"
     ),

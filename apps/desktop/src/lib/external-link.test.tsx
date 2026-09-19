@@ -1,7 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { HERMES_CONFIG_KEY } from '@/app/hooks/use-config-record'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { queryClient } from '@/lib/query-client'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import {
@@ -38,9 +40,16 @@ function installTitleBridge(title: string) {
   return bridge
 }
 
+/** Publish a `desktop.open_links_in_preview` value the way the app does — the
+ *  config record landing in the shared query cache. */
+function setOpenLinksInPreview(value: unknown) {
+  queryClient.setQueryData(HERMES_CONFIG_KEY, { desktop: { open_links_in_preview: value } })
+}
+
 afterEach(() => {
   __resetLinkTitleCache()
   closeRightRail()
+  queryClient.removeQueries({ queryKey: HERMES_CONFIG_KEY })
   vi.restoreAllMocks()
   cleanup()
 
@@ -133,6 +142,78 @@ describe('external link helpers', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Example link' }), IS_MAC ? { metaKey: true } : { ctrlKey: true })
 
     expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  // `desktop.open_links_in_preview: false` — the user's bare click wants the
+  // real browser, so the in-app pane becomes the modifier's destination.
+  it('sends a bare click to the OS browser when open_links_in_preview is off', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setOpenLinksInPreview(false)
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('sends the open-elsewhere gesture to the pane when open_links_in_preview is off', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setOpenLinksInPreview(false)
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }), IS_MAC ? { metaKey: true } : { ctrlKey: true })
+
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
+  })
+
+  // Middle-click rides the same inverted gesture (see `onAuxClick`).
+  it('follows the setting on middle-click too', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setOpenLinksInPreview(false)
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    fireEvent(screen.getByRole('link', { name: 'Example link' }), new MouseEvent('auxclick', { bubbles: true, button: 1 }))
+
+    await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  // The HUD, connector-authorization links and non-web schemes stay OS-bound
+  // whatever the setting says — the pane cannot serve them.
+  it('keeps the always-native cases on the OS browser when open_links_in_preview is off', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setOpenLinksInPreview(false)
+
+    render(<ExternalLink href="mailto:hi@example.com">Mail</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Mail' }))
+
+    expect(openExternal).toHaveBeenCalledWith('mailto:hi@example.com')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  // `native` is authored intent, not a gesture: the pane has no signed-in
+  // session for a console, so inverting the setting must not strand these.
+  it('keeps an authored-native link on the OS browser when open_links_in_preview is off', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setOpenLinksInPreview(false)
+
+    render(<MarkdownLinkText text="Enable the [Docs API](https://console.cloud.google.com/apis/library) first." />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Docs API' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://console.cloud.google.com/apis/library')
     expect($previewTabs.get()).toHaveLength(0)
   })
 

@@ -31,7 +31,7 @@ export function isTerminalLinkActivation(
 // selection back from a plain click.
 const activate = (event: MouseEvent, uri: string) => {
   if (isTerminalLinkActivation(event)) {
-    openLink(uri, { native: event.shiftKey })
+    openLink(uri, { gesture: event.shiftKey })
   }
 }
 

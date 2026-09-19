@@ -153,10 +153,7 @@ def _cmd_sources(args) -> None:
             return
         cfg = load_config()
         section = cfg.setdefault("vault", {}).setdefault(name, {})
-        if args.enable:
-            section.pop("enabled", None)  # detected managers are on by default; drop the opt-out
-        else:
-            section["enabled"] = False
+        section["enabled"] = bool(args.enable)
         save_config(cfg)
         c.print(f"[green]{classes[name].display_name} {'on' if args.enable else 'off'}[/] for browser logins.")
         return

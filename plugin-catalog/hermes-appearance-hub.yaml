@@ -1,0 +1,15 @@
+name: hermes-appearance-hub
+repo: https://github.com/Heybinshao/hermes-appearance-hub
+sha: a3413e3f342dc9bca1f0ffce18ec03d838eb7c8f
+description: "One status-bar panel for Hermes Desktop appearance: 12 themes (incl. a warm-paper one), paper texture, LXGW WenKai font, window translucency, splash branding, chat-bubble tweaks and the chat-behaviour switches — hover any row for its description, appearance changes apply live. UI in EN / 简中 / 繁體."
+maintainer: Heybinshao
+tier: community
+category: desktop
+docs_url: https://github.com/Heybinshao/hermes-appearance-hub#readme
+version: "3.3.0"
+image: https://raw.githubusercontent.com/Heybinshao/hermes-appearance-hub/a3413e3f342dc9bca1f0ffce18ec03d838eb7c8f/assets/banner.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

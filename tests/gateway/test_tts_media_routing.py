@@ -84,6 +84,7 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
         audio_path=str(media_file),
         metadata={"notify": True},
         is_voice=True,
+        reply_to="msg-1",
     )
     adapter.send_document.assert_not_awaited()
 
@@ -243,6 +244,7 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
         chat_id="chat-1",
         images=[(f"file://{media_file.as_posix()}", "")],
         metadata={"thread_id": "topic-1"},
+        reply_to="msg-1",
     )
 
 
@@ -293,6 +295,7 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
         chat_id="chat-1",
         images=[(f"file://{media_file.as_posix()}", "")],
         metadata=routing_metadata,
+        reply_to="msg-1",
     )
 
 

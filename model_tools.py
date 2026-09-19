@@ -541,16 +541,18 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     return filtered_tools
 
 
-def _active_model_config() -> Tuple[str, Dict[str, Any]]:
-    """(model_id, model section) from config.yaml; model_id is "" when unset."""
-    from hermes_cli.config import load_config
+def _active_model_config() -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
+    """Active model id, config section, and compatible custom providers."""
+    from hermes_cli.config import get_compatible_custom_providers, load_config
     cfg = load_config() or {}
-    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    model_cfg = cfg.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
     raw_model_id = model_cfg.get("model") or model_cfg.get("default") or ""
     if isinstance(raw_model_id, dict):
         from hermes_cli.config import split_model_config_default
         raw_model_id, _ = split_model_config_default(raw_model_id)
-    return str(raw_model_id).strip(), model_cfg
+    return str(raw_model_id).strip(), model_cfg, get_compatible_custom_providers(cfg)
 
 
 def _resolve_active_context_length() -> int:
@@ -562,7 +564,7 @@ def _resolve_active_context_length() -> int:
     /models probe per CLI startup); then the full live resolver.
     """
     try:
-        model_id, model_cfg = _active_model_config()
+        model_id, model_cfg, custom_providers = _active_model_config()
         if not model_id:
             return 0
         from agent.model_metadata import get_cached_context_length, get_model_context_length
@@ -587,13 +589,22 @@ def _resolve_active_context_length() -> int:
                              "context gate (provider=%s): %s — using config values only", provider, rt_exc)
         if config_ctx is None and base_url:
             try:
+                from hermes_cli.config import get_custom_provider_context_length
+                config_ctx = get_custom_provider_context_length(
+                    model=model_id, base_url=base_url, custom_providers=custom_providers,
+                )
+            except Exception:
+                pass
+        if config_ctx is None and base_url:
+            try:
                 cached_ctx = get_cached_context_length(model_id, base_url)
                 if isinstance(cached_ctx, int) and cached_ctx > 0:
                     return cached_ctx
             except Exception:
                 pass
         return int(get_model_context_length(model_id, base_url=base_url, api_key=api_key,
-                                            config_context_length=config_ctx, provider=provider) or 0)
+                                            config_context_length=config_ctx, provider=provider,
+                                            custom_providers=custom_providers) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0

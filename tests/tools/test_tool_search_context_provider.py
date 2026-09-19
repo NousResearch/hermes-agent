@@ -30,7 +30,7 @@ class TestResolveActiveContextLengthProviderAware:
 
         captured = {}
 
-        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
             captured.update(
                 model=model_id, base_url=base_url, api_key=api_key,
                 config_ctx=config_context_length, provider=provider,
@@ -60,7 +60,7 @@ class TestResolveActiveContextLengthProviderAware:
 
         captured = {}
 
-        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
             captured.update(base_url=base_url, api_key=api_key, provider=provider)
             return 272_000
 
@@ -83,7 +83,7 @@ class TestResolveActiveContextLengthProviderAware:
 
         captured = {}
 
-        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
             captured.update(base_url=base_url, provider=provider)
             return 200_000
 
@@ -103,7 +103,7 @@ class TestResolveActiveContextLengthProviderAware:
 
         captured = {}
 
-        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
             captured["config_ctx"] = config_context_length
             return config_context_length or 0
 
@@ -117,3 +117,37 @@ class TestResolveActiveContextLengthProviderAware:
 
         assert ctx == 150_000
         assert captured["config_ctx"] == 150_000
+
+    def test_passes_named_provider_model_context_override(self):
+        """Named provider model pins must bypass metadata probes during boot."""
+        import model_tools
+
+        captured = {}
+
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider="", custom_providers=None):
+            captured.update(
+                config_ctx=config_context_length,
+                custom_providers=custom_providers,
+                provider=provider,
+                base_url=base_url,
+            )
+            return config_context_length or 0
+
+        cfg: dict = _model_cfg(provider="codex", base_url="https://proxy.example/codex")
+        cfg["providers"] = {
+            "codex": {
+                "base_url": "https://proxy.example/codex",
+                "api_key": "tok",
+                "models": {"gpt-5.6-sol": {"context_length": 1_050_000}},
+            },
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value={"base_url": "https://proxy.example/codex", "api_key": "tok"}), \
+             patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
+            ctx = model_tools._resolve_active_context_length()
+
+        assert ctx == 1_050_000
+        assert captured["config_ctx"] == 1_050_000
+        assert captured["provider"] == "codex"
+        assert captured["base_url"] == "https://proxy.example/codex"

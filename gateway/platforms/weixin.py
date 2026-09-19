@@ -982,7 +982,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             attempt = 0  # counts real failures only — the tokenless re-send must not eat the retry budget
             while True:
                 if self._rate_limit_cooldown_remaining() > 0:
-                    raise RuntimeError(f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
+                    # Fail closed as ``flood_control:<seconds>`` so the delivery ledger recognises
+                    # the flood and arms timed redelivery after the cooldown. The raw wording
+                    # ("iLink sendmessage rate limited; cooldown active for Ns") was not matched by
+                    # ``is_flood_error``, so rate-limited replies were stranded in ``failed`` and
+                    # silently dropped instead of being redelivered.
+                    raise RuntimeError(f"flood_control:{self._rate_limit_cooldown_remaining():.1f}")
                 try:
                     resp = await _send_message(
                         self._send_session, base_url=self._base_url, token=self._token, to=chat_id, text=chunk,
@@ -1002,11 +1007,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
                             raise RuntimeError(f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}")
                         # Keep a descriptive error for when the loop exhausts while still limited.
-                        last_error = RuntimeError(f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg or 'rate limited'}")
+                        # Use the ``flood_control:<seconds>`` shape so the delivery ledger recognises
+                        # the flood and redelivers after the cooldown (the raw wording was not matched
+                        # by ``is_flood_error``).
+                        last_error = RuntimeError(f"flood_control:{self._rate_limit_circuit_open_seconds:.1f}")
                         if self._record_rate_limit_event():
                             last_error = RuntimeError(
-                                f"iLink sendmessage rate limited (ret={ret} errcode={errcode} errmsg={errmsg or 'rate limited'}); "
-                                f"cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
+                                f"flood_control:{self._rate_limit_cooldown_remaining():.1f}")
                             break
                         if attempt >= self._send_chunk_retries:
                             break

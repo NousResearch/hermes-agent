@@ -22,6 +22,11 @@ class ReadStore(ConversationStore):
     def _record(self, name, **kwargs):
         self.calls.append((name, kwargs))
 
+    def ensure_conversation(self, conversation):
+        from conversation_store import ConversationRevision
+        self._record("ensure_conversation", conversation=conversation)
+        return ConversationRevision(1)
+
     def get_conversation(self, conversation_id):
         self._record("get_conversation", conversation_id=conversation_id)
         return {"id": conversation_id, "title": "External", "title_source": "user"}

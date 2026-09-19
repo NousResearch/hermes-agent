@@ -34,11 +34,20 @@ class ConversationRevision:
 
 @dataclass(frozen=True)
 class ConversationMutationResult:
-    """Successful canonical mutation and the revision it produced."""
+    """Successful canonical mutation and the revision it produced.
+
+    For ``append_messages``, ``message_ids`` contains one stable Hermes integer
+    id per submitted message (including repaired/adopted rows),
+    ``canonical_messages`` may return the provider-authoritative content for
+    those inputs, and the two count fields update Hermes' local operational
+    shadow only after the canonical commit succeeds.
+    """
 
     revision: ConversationRevision
     affected_count: int = 0
     message_ids: tuple[int, ...] = ()
+    canonical_messages: tuple[dict[str, Any], ...] = ()
+    tool_call_count_delta: int = 0
 
 
 @dataclass(frozen=True)
@@ -149,7 +158,15 @@ class ConversationStore(ABC):
     def snapshot(self, conversation_id: str, *, include_messages: bool = False) -> ConversationSnapshot:
         raise NotImplementedError
 
-    def append_messages(self, conversation_id: str, messages, *, expected_revision: ConversationRevision):
+    def ensure_conversation(self, conversation) -> ConversationRevision:
+        """Create if absent, otherwise return the existing canonical revision unchanged."""
+        raise NotImplementedError
+
+    def append_messages(
+        self, conversation_id: str, messages, *, expected_revision: ConversationRevision,
+        idempotency_key: str | None = None,
+    ):
+        """Append atomically and return canonical row identities/content for the input batch."""
         raise NotImplementedError
 
     def update_conversation(self, conversation_id: str, changes, *, expected_revision: ConversationRevision):

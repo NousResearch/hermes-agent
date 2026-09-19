@@ -393,14 +393,30 @@ class SessionSessionsMixin:
         # Transcript-critical: a failed row creation aborts the turn.
         self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
+    def _ensure_external_conversation(self, session_id: str) -> None:
+        """Ensure the canonical provider has this local operational session identity."""
+        if self._conversation_store is None:
+            return
+        row = self._read_one(
+            """SELECT id, source, user_id, session_key, chat_id, chat_type, thread_id,
+                      parent_session_id, cwd, profile_name, git_repo_root, origin_json,
+                      display_name, started_at, title, title_source, archived, hidden, pinned
+               FROM sessions WHERE id = ?""",
+            (session_id,),
+        )
+        if row is not None:
+            self._conversation_store.ensure_conversation(dict(row))
+
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create (upsert) a session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
+        self._ensure_external_conversation(session_id)
         return session_id
 
     def ensure_session(self, session_id: str, source: str = "unknown", model: str = None, **kwargs) -> str:
         """Ensure a session row exists (upsert). Accepts optional kwargs."""
         self._insert_session_row(session_id, source, model=model, **kwargs)
+        self._ensure_external_conversation(session_id)
         return session_id
 
     def set_expiry_finalized(self, session_id: str, finalized: bool = True) -> None:

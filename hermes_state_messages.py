@@ -290,6 +290,61 @@ class SessionMessagesMixin:
             conn.execute(
                 f"UPDATE sessions SET message_count = message_count + {inc} WHERE id = ?", (*params, session_id))
 
+    def _append_external_messages(
+        self, session_id: str, messages: List[Dict[str, Any]], *,
+        compression_lock_holder: Optional[str] = None, turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0, idempotency_key: Optional[str] = None,
+        reject_active_turn_lease: bool = False,
+    ):
+        """Commit one canonical provider batch; local SQLite keeps only operational state."""
+        from conversation_store import ConversationMutationResult, ConversationStoreError
+
+        def _admit(conn):
+            self._check_transcript_write_guards(
+                conn, session_id, compression_lock_holder, turn_lease_holder=turn_lease_holder,
+                turn_lease_ttl_seconds=turn_lease_ttl_seconds,
+                reject_active_turn_lease=reject_active_turn_lease)
+        self._execute_write(_admit, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+        revision = self.conversation_revision(session_id)
+        provider_rows = [dict(message) for message in messages]
+        result = self._conversation_store.append_messages(
+            session_id, provider_rows, expected_revision=revision,
+            idempotency_key=idempotency_key)
+        if not isinstance(result, ConversationMutationResult):
+            raise ConversationStoreError(
+                "conversation store append_messages() must return ConversationMutationResult")
+
+        canonical = result.canonical_messages
+        if canonical and len(canonical) != len(messages):
+            raise ConversationStoreError(
+                "conversation store returned a mismatched canonical message batch")
+        if not canonical and len(result.message_ids) != len(messages):
+            raise ConversationStoreError(
+                "conversation store append result must identify every submitted message")
+        for index, message in enumerate(messages):
+            row = canonical[index] if canonical else {}
+            row_id = row.get("_row_id") if row else None
+            if not isinstance(row_id, int) and index < len(result.message_ids):
+                row_id = result.message_ids[index]
+            if not isinstance(row_id, int):
+                raise ConversationStoreError("conversation store message ids must be integers")
+            message["_row_id"] = row_id
+            if row and "content" in row and row.get("content") != message.get("content"):
+                message["_canonical_content"] = row["content"]
+
+        try:
+            def _shadow(conn):
+                self._bump_session_counters(
+                    conn, session_id, int(result.affected_count),
+                    int(result.tool_call_count_delta), unit=False)
+            self._execute_write(_shadow, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
+        except Exception:
+            logger.warning(
+                "Canonical conversation append committed but local session counters failed for %s",
+                session_id, exc_info=True)
+        return result
+
     def append_message(
         self, session_id: str, role: str, content: str = None, tool_name: str = None, tool_calls: Any = None,
         tool_call_id: str = None, token_count: int = None, finish_reason: str = None, reasoning: str = None,
@@ -302,6 +357,23 @@ class SessionMessagesMixin:
         """Append one message; returns the row id and bumps the session counters. ``platform_message_id``:
         the platform's own id. ``api_content``: byte-fidelity sidecar, the exact string sent to the API when
         it differed from ``content``, stored as sent except lone surrogates."""
+        if self._conversation_store is not None:
+            msg = {
+                "role": role, "content": content, "tool_name": tool_name, "tool_calls": tool_calls,
+                "tool_call_id": tool_call_id, "token_count": token_count, "finish_reason": finish_reason,
+                "reasoning": reasoning, "reasoning_content": reasoning_content,
+                "reasoning_details": reasoning_details, "codex_reasoning_items": codex_reasoning_items,
+                "codex_message_items": codex_message_items, "platform_message_id": platform_message_id,
+                "observed": observed, "effect_disposition": effect_disposition,
+                "_compressed_summary": _compressed_summary, "timestamp": timestamp,
+                "api_content": api_content, "display_kind": display_kind,
+                "display_metadata": display_metadata,
+            }
+            self._append_external_messages(
+                session_id, [msg], compression_lock_holder=compression_lock_holder,
+                turn_lease_holder=turn_lease_holder,
+                turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+            return msg["_row_id"]
         msg = dict(locals())  # every keyword above is a message-dict field of the same name
         # Encode outside the write txn (display metadata first: log-order parity).
         msg["display_metadata"] = self._encode_display_metadata(display_metadata)
@@ -331,6 +403,13 @@ class SessionMessagesMixin:
         msg = {"content": content,
                "display_kind": "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete",
                "display_metadata": metadata}
+        if self._conversation_store is not None:
+            provider_msg = {"role": "user", **msg}
+            self._append_external_messages(
+                session_id, [provider_msg], reject_active_turn_lease=True,
+                idempotency_key=(
+                    f"delegation:{delegation_id}:{metadata.get('delivery_notice', '')}"))
+            return provider_msg["_row_id"]
         params = self._message_row_params(session_id, "user", msg, None, time.time(), keep_reasoning=True)
 
         def _do(conn):
@@ -366,6 +445,12 @@ class SessionMessagesMixin:
                     compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
                     turn_lease_ttl_seconds=turn_lease_ttl_seconds)
                 for start in range(0, len(messages), chunk_rows))
+        if self._conversation_store is not None:
+            result = self._append_external_messages(
+                session_id, messages, compression_lock_holder=compression_lock_holder,
+                turn_lease_holder=turn_lease_holder,
+                turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+            return int(result.affected_count)
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)

@@ -1337,6 +1337,7 @@ class AIAgent(
             background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
+            tool_call_id=getattr(self, "_delegate_parent_tool_call_id", None),
         )
 
     _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")

@@ -1562,7 +1562,18 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     if function_name == "delegate_task":
         spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
         agent._delegate_spinner = spinner
-        return _SequentialDispatch(agent._dispatch_delegate_task, spinner=spinner, is_delegate=True)
+        def _dispatch_delegate(next_args):
+            marker = object()
+            previous = getattr(agent, "_delegate_parent_tool_call_id", marker)
+            agent._delegate_parent_tool_call_id = tool_call_id
+            try:
+                return agent._dispatch_delegate_task(next_args)
+            finally:
+                if previous is marker:
+                    delattr(agent, "_delegate_parent_tool_call_id")
+                else:
+                    agent._delegate_parent_tool_call_id = previous
+        return _SequentialDispatch(_dispatch_delegate, spinner=spinner, is_delegate=True)
     if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
         return _SequentialDispatch(
             execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),

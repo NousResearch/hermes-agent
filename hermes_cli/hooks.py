@@ -152,7 +152,8 @@ _DEFAULT_PAYLOADS = {
         "moa_references": None,
     },
     "subagent_stop": {
-        "parent_session_id": "parent-sess", "child_role": None,
+        "parent_session_id": "parent-sess", "parent_tool_call_id": "call-delegate-1",
+        "task_index": 0, "child_subagent_id": "sa-0-demo", "child_role": None,
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",
         "tool_call_history": [{
             "tool_name": "write_file",

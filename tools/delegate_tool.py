@@ -162,6 +162,8 @@ def _build_child_agent(
     max_iterations: int,
     task_count: int,
     parent_agent,
+    parent_tool_call_id: Optional[str] = None,
+    delegation_purpose: Optional[str] = None,
     # Credential overrides from delegation config
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -246,6 +248,9 @@ def _build_child_agent(
                 tool_progress_callback=child_progress_cb,
                 iteration_budget=None,  # fresh budget per subagent
             )
+            # Purpose is Plugin-owned admission metadata, but it must exist
+            # before the child's first tool resolution.
+            child._delegate_purpose = delegation_purpose
         except BaseException:
             # No child close() will ever run: release the dedicated handle here.
             if child_session_db is not None:
@@ -263,6 +268,8 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    child._delegate_task_index = task_index
+    child._delegate_parent_tool_call_id = parent_tool_call_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
@@ -290,6 +297,9 @@ def _build_child_agent(
             parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "", parent_subagent_id=parent_subagent_id,
             child_session_id=getattr(child, "session_id", None), child_subagent_id=subagent_id,
             child_role=effective_role, child_goal=goal,
+            parent_tool_call_id=parent_tool_call_id,
+            task_index=task_index,
+            delegation_purpose=delegation_purpose,
         )
     return child
 
@@ -363,6 +373,7 @@ def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    parent_tool_call_id: Optional[str] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -385,7 +396,9 @@ def _build_children(
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
+                toolsets=None,  # inherit the parent's toolsets; profile overrides are a separate feature
+                parent_tool_call_id=parent_tool_call_id,
+                delegation_purpose=t.get("purpose"),
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
@@ -419,7 +432,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[Dict[str, Any]] = None,
+    credentials_cfg: Optional[Dict[str, Any]] = None, tool_call_id: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -427,7 +440,6 @@ def delegate_task(
     dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
-
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
@@ -496,6 +508,7 @@ def delegate_task(
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        parent_tool_call_id=tool_call_id,
     )
     if err:
         return tool_error(err)
@@ -717,7 +730,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
+        parent_agent=kw.get("parent_agent"), tool_call_id=kw.get("tool_call_id"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

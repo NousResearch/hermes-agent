@@ -663,3 +663,12 @@ Subagents compact where their parent does — the lower of `compression.threshol
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.
 :::
+## Lifecycle correlation for Plugins
+
+`subagent_start` and `subagent_stop` include additive `parent_tool_call_id` and
+`task_index` fields. Together they identify one child in a specific
+`delegate_task` call even when parallel tasks use identical goals. Both hooks
+also include `child_session_id` and `child_subagent_id`; policy Plugins should
+use the parent-call/task tuple for admission correlation and the child IDs for
+runtime ownership. Older callbacks remain compatible because Plugin payloads
+are filtered to the parameters they declare.

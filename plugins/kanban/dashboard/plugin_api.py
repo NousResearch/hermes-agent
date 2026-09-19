@@ -306,7 +306,18 @@ def get_board(
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
             columns[t.status if t.status in columns else "todo"].append(d)
 
-        # Per-column ordering (priority DESC, created_at ASC) comes from list_tasks.
+        # Queue lanes preserve dispatcher FIFO order (priority DESC, created_at ASC).
+        # Done column orders by newest completion first (completed_at DESC NULLS LAST, id DESC).
+        if "done" in columns:
+            columns["done"].sort(
+                key=lambda d: (
+                    1 if d.get("completed_at") is not None else 0,
+                    d.get("completed_at") if d.get("completed_at") is not None else -1,
+                    str(d.get("id") or ""),
+                ),
+                reverse=True,
+            )
+
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
         assignees = [r["assignee"] for r in conn.execute(
             "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND status != 'archived' ORDER BY assignee")]

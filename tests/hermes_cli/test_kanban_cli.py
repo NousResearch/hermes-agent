@@ -202,6 +202,35 @@ def test_run_slash_reclaim_running_task(kanban_home):
     assert "ready" in out2.lower()
 
 
+def test_kanban_list_status_done_defaults_to_completed_desc(kanban_home):
+    """#116036: `hermes kanban list --status done` defaults to completed-desc."""
+    with kbc.connect() as conn:
+        t1 = kb.create_task(conn, title="first created, earlier completed")
+        t2 = kb.create_task(conn, title="second created, later completed")
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 100 WHERE id = ?", (t1,))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 200 WHERE id = ?", (t2,))
+        conn.commit()
+
+    raw = kc.run_slash("list --status done --json")
+    payload = json.loads(raw)
+    assert [row["id"] for row in payload] == [t2, t1]
+
+
+def test_kanban_list_explicit_sort_completed_desc(kanban_home):
+    """#116036: --sort completed-desc works from CLI."""
+    with kbc.connect() as conn:
+        t1 = kb.create_task(conn, title="first")
+        t2 = kb.create_task(conn, title="second")
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 100 WHERE id = ?", (t1,))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 200 WHERE id = ?", (t2,))
+        conn.commit()
+
+    raw = kc.run_slash("list --sort completed-desc --json")
+    payload = json.loads(raw)
+    assert [row["id"] for row in payload] == [t2, t1]
+
+
+
 
 
 # ---------------------------------------------------------------------------

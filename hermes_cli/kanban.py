@@ -416,12 +416,15 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
+    sort_order = getattr(args, "sort", None)
+    if not sort_order and getattr(args, "status", None) == "done":
+        sort_order = "completed-desc"
     with kbc.connect_closing() as conn:
         # Cheap mini-dispatch so list reflects dependencies cleared since the last tick.
         kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
-            include_archived=args.archived, order_by=getattr(args, "sort", None),
+            include_archived=args.archived, order_by=sort_order,
             workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
         )
     if _json_out(args, [_task_to_dict(t) for t in tasks]):

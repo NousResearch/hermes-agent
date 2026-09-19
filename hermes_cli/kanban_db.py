@@ -1507,6 +1507,8 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "assignee": "assignee ASC, created_at ASC",
     "title": "title ASC, id ASC",
     "updated": "started_at DESC NULLS LAST, created_at DESC",
+    "completed": "completed_at ASC NULLS LAST, id ASC",
+    "completed-desc": "completed_at DESC NULLS LAST, id DESC",
 }
 
 

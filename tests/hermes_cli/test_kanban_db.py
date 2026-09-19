@@ -2067,3 +2067,37 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+def test_list_tasks_order_by_completed(kanban_home):
+    """#116036: VALID_SORT_ORDERS supports completed and completed-desc."""
+    with kbc.connect() as conn:
+        t1 = kb.create_task(conn, title="t1")
+        t2 = kb.create_task(conn, title="t2")
+        t3 = kb.create_task(conn, title="t3")
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 100 WHERE id = ?", (t1,))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 300 WHERE id = ?", (t2,))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 200 WHERE id = ?", (t3,))
+        conn.commit()
+
+        desc_tasks = kb.list_tasks(conn, status="done", order_by="completed-desc")
+        assert [t.id for t in desc_tasks] == [t2, t3, t1]
+
+        asc_tasks = kb.list_tasks(conn, status="done", order_by="completed")
+        assert [t.id for t in asc_tasks] == [t1, t3, t2]
+
+
+def test_list_tasks_order_by_completed_nulls_last(kanban_home):
+    with kbc.connect() as conn:
+        t1 = kb.create_task(conn, title="t1")
+        t2 = kb.create_task(conn, title="t2")
+        t3 = kb.create_task(conn, title="t3")
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 100 WHERE id = ?", (t1,))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = NULL WHERE id = ?", (t2,))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = NULL WHERE id = ?", (t3,))
+        conn.commit()
+
+        desc_tasks = kb.list_tasks(conn, status="done", order_by="completed-desc")
+        null_ids_sorted = sorted([t2, t3], reverse=True)
+        assert [t.id for t in desc_tasks] == [t1] + null_ids_sorted
+

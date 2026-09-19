@@ -1278,3 +1278,57 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_board_done_column_ordered_by_completion_time(client):
+    """#116036: Done column orders newest-completed first while queue lanes keep FIFO order."""
+    # Create 3 tasks with same priority, created in order 1, 2, 3
+    r1 = client.post("/api/plugins/kanban/tasks", json={"title": "task 1", "priority": 1}).json()["task"]
+    r2 = client.post("/api/plugins/kanban/tasks", json={"title": "task 2", "priority": 1}).json()["task"]
+    r3 = client.post("/api/plugins/kanban/tasks", json={"title": "task 3", "priority": 1}).json()["task"]
+
+    # Also create queue tasks in ready to verify queue order remains priority DESC, created_at ASC
+    q1 = client.post("/api/plugins/kanban/tasks", json={"title": "queue 1", "priority": 1}).json()["task"]
+    q2 = client.post("/api/plugins/kanban/tasks", json={"title": "queue 2", "priority": 2}).json()["task"]
+
+    # Complete tasks out of creation order:
+    # Task 2 completed at t=100
+    # Task 1 completed at t=300 (latest completion)
+    # Task 3 completed at t=200
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 100 WHERE id = ?", (r2["id"],))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 300 WHERE id = ?", (r1["id"],))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 200 WHERE id = ?", (r3["id"],))
+
+    board_resp = client.get("/api/plugins/kanban/board")
+    assert board_resp.status_code == 200
+    data = board_resp.json()
+
+    done_col = next(c for c in data["columns"] if c["name"] == "done")
+    done_ids = [t["id"] for t in done_col["tasks"]]
+    # Newest completed first: task 1 (t=300), task 3 (t=200), task 2 (t=100)
+    assert done_ids == [r1["id"], r3["id"], r2["id"]]
+
+    # Queue lanes preserve FIFO / priority order (queue 2 priority=2 comes before queue 1 priority=1)
+    ready_col = next(c for c in data["columns"] if c["name"] == "ready")
+    ready_ids = [t["id"] for t in ready_col["tasks"]]
+    assert ready_ids == [q2["id"], q1["id"]]
+
+
+def test_board_done_column_nulls_last(client):
+    """Tasks in Done with null completed_at sort last, tie-breaking on id DESC."""
+    r1 = client.post("/api/plugins/kanban/tasks", json={"title": "done with ts", "priority": 1}).json()["task"]
+    r2 = client.post("/api/plugins/kanban/tasks", json={"title": "done no ts 1", "priority": 1}).json()["task"]
+    r3 = client.post("/api/plugins/kanban/tasks", json={"title": "done no ts 2", "priority": 1}).json()["task"]
+
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = 500 WHERE id = ?", (r1["id"],))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = NULL WHERE id = ?", (r2["id"],))
+        conn.execute("UPDATE tasks SET status = 'done', completed_at = NULL WHERE id = ?", (r3["id"],))
+
+    data = client.get("/api/plugins/kanban/board").json()
+    done_col = next(c for c in data["columns"] if c["name"] == "done")
+    done_ids = [t["id"] for t in done_col["tasks"]]
+    null_ids_sorted = sorted([r2["id"], r3["id"]], reverse=True)
+    assert done_ids == [r1["id"]] + null_ids_sorted
+
+
+

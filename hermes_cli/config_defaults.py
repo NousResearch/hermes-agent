@@ -1620,6 +1620,10 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only).
     "quick_commands": {},
+    # User-defined workflow triggers for /trigger. Each is {"phrase": ..., "description": ...}.
+    # These EXTEND the built-in triggers (deduped by phrase, so a redefined phrase overrides its
+    # built-in description); they never replace the default set.
+    "triggers": [],
     # Per-platform system-prompt hint overrides, keyed by platform name (whatsapp, slack, telegram,
     # ...). Value: {"append": text} keeps the built-in hint and appends; {"replace": text}
     # substitutes it; a bare string is shorthand for append. `replace` wins over `append` if both

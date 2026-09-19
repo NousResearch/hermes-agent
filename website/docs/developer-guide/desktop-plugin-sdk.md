@@ -835,6 +835,13 @@ host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinne
 host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
 host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
+host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
+host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
+host.toolsets.list(profile?)               // toolsets + enabled state
+host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
+host.profiles.list(scope?)                 // the profile list the profile rail reads
+host.pluginDecisions.all() / .get(id)      // this window's plugin enable/disable decisions
+host.pluginDecisions.set(id, enabled)      // flip one through the live toggle (persists + applies)
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,

@@ -15,6 +15,7 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
+from agent.turn_usage import _ROUTED_MODEL_REGISTRY
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
@@ -443,6 +444,15 @@ def _apply_output_hooks(
     return final_response, transformed, pre_transform
 
 
+def _routed_model_from_registry(session_id) -> str | None:
+    """Routed model id stamped by turn_usage on THIS session (agent instances can be
+    re-created between mid-turn API calls and finalize, losing instance attributes)."""
+    try:
+        return _ROUTED_MODEL_REGISTRY.get(str(session_id or ""))
+    except Exception:
+        return None
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -572,6 +582,13 @@ def finalize_turn(
         "pre_transform_response": _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
+        "routed_model": (
+            getattr(agent, "_last_routed_model", None)
+            # Agent instances can be re-created between the mid-turn API calls and finalize;
+            # the module-level registry in turn_usage survives that (audit 2026-09-06).
+            or _routed_model_from_registry(getattr(agent, "session_id", ""))
+            or agent.model,
+        ),
         "provider": agent.provider,
         "base_url": agent.base_url,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_TOKEN_KEYS},

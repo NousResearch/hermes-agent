@@ -13,7 +13,18 @@
  * `session_id`); joiners receive whatever the winning call returns.
  */
 
+import { withTimeout } from '@/lib/with-timeout'
+
 const _inFlightResumeByStoredSessionId = new Map<string, Promise<unknown>>()
+
+// Every session.resume entry point converges on this module-level flight. The
+// deadline therefore belongs here too: a caller that joins an older wedged
+// flight must inherit the same bounded settlement and identity-safe eviction,
+// rather than depending on whichever surface happened to create the flight.
+// Keep this beyond HermesGateway's ordinary 30s request budget. The transport
+// should get the first chance to settle or reject a valid resume; this outer
+// deadline only breaks flights from non-standard callers that never settle.
+const SESSION_RESUME_SETTLEMENT_TIMEOUT_MS = 35_000
 
 export function singleFlightSessionResume<T>(storedSessionId: string, run: () => Promise<T>): Promise<T> {
   const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)
@@ -25,8 +36,11 @@ export function singleFlightSessionResume<T>(storedSessionId: string, run: () =>
   // Promise.resolve().then(run) tolerates run() being synchronous, returning a
   // bare value, or throwing synchronously (test doubles and legacy callers do
   // all three) — a raw run().finally() would crash on a non-promise return.
-  const flight = Promise.resolve()
-    .then(run)
+  const flight = withTimeout(
+    Promise.resolve().then(run),
+    SESSION_RESUME_SETTLEMENT_TIMEOUT_MS,
+    `Timed out resuming session ${storedSessionId}`
+  )
     .finally(() => {
       if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
         _inFlightResumeByStoredSessionId.delete(storedSessionId)

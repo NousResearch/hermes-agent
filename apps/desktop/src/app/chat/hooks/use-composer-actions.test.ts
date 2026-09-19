@@ -679,7 +679,7 @@ describe('attachImagePath thumbnail separation', () => {
     expect(attachment?.thumbnailUrl).toBeDefined()
     expect(attachment?.thumbnailUrl).not.toBe(FULL_RES)
     expect(JSON.stringify(attachment)).not.toContain(FULL_RES)
-    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 512, 384)
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 1536, 1152)
     expect(close).toHaveBeenCalled()
   })
 

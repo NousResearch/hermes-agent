@@ -2975,6 +2975,15 @@ class _StreamingCall(StreamingWaitMonitor):
                     self._emit_text(delta_content)
 
             delta_tool_calls = getattr(delta, "tool_calls", None)
+            if not delta_tool_calls:
+                # A transport may stream tool calls on a shape the assembler does not
+                # read (the legacy OpenAI ``delta.function_call`` pair). The transport
+                # owns that translation; core only asks for it, so no provider-specific
+                # shape is known here.
+                _transport = self.agent._get_transport()
+                if _transport is not None:
+                    delta = _transport.normalize_stream_delta(delta)
+                    delta_tool_calls = getattr(delta, "tool_calls", None)
             if delta_tool_calls:
                 _flush_pending_stream_text()
                 for tc_delta in delta_tool_calls:

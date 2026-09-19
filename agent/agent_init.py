@@ -370,13 +370,30 @@ _EXPLICIT_API_MODES = {
 }
 
 
+def _has_registered_transport(api_mode: str) -> bool:
+    """True when ``api_mode`` names a transport someone registered.
+
+    Transports are registered by name — in-tree modules plus any provider plugin
+    that ships its own dialect (``register_transport`` is the public seam). The
+    accepted-mode sets are closed literals, so a plugin's mode was silently
+    rewritten to ``chat_completions`` and the dialect translation dropped with no
+    error. Asking the registry keeps those sets closed for validation while
+    letting a registered transport opt itself in. The import is local because
+    ``agent.transports`` pulls the transport modules, which import this module.
+    """
+    if not api_mode:
+        return False
+    from agent.transports import registered_api_modes
+    return api_mode in registered_api_modes()
+
+
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
     from hermes_cli.providers import is_actual_route
     host, url = agent._base_url_hostname, agent._base_url_lower
     if is_actual_route(agent.provider, base_url):
         agent.api_mode = "chat_completions"
-    elif api_mode in _EXPLICIT_API_MODES:
+    elif api_mode in _EXPLICIT_API_MODES or _has_registered_transport(api_mode):
         agent.api_mode = api_mode
     elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"

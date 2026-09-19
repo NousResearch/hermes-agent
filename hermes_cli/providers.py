@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -216,13 +217,49 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
         _prof = _profile(canonical)
         if _prof is not None and (_prof.base_url or "").strip():
             _api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
+            _mode = (_prof.api_mode or "").strip()
+            # Prefer the profile's own mode as the transport id. The reverse table only
+            # names the modes in-tree overlays declare, so a provider plugin shipping its
+            # own dialect missed the lookup and was recorded as openai_chat —
+            # ``determine_api_mode`` then reported chat_completions and the plugin's
+            # transport was never selected, silently.
+            _transport = _api_mode_to_transport.get(_mode) or (
+                _mode if _mode and _mode not in TRANSPORT_TO_API_MODE else "openai_chat")
             return ProviderDef(id=canonical, name=_prof.display_name or _prof.name or canonical,
-                               transport=_api_mode_to_transport.get(_prof.api_mode, "openai_chat"),
+                               transport=_transport,
                                api_key_env_vars=tuple(_prof.env_vars or ()), base_url=_prof.base_url or "",
                                auth_type=_prof.auth_type or "api_key", source="plugin-profile")
     except Exception:
         pass
     return None
+
+
+def _registry_knows(api_mode: str) -> bool:
+    """True when ``api_mode`` names a transport someone registered.
+
+    Reads the registry through ``agent.transports`` — but ONLY if that module is
+    already imported, and never by importing it here. This function is reached
+    from ``determine_api_mode``, which provider discovery itself calls while the
+    registry is being populated; pulling ``agent.transports`` at that moment
+    re-enters discovery and the nested call sees a half-built provider list
+    (observed live: a plugin profile absent from ``PROVIDER_REGISTRY``, so it
+    reported unauthenticated and disappeared from the model picker). When the
+    module is not loaded yet the caller is mid-discovery and the in-tree names
+    are the only ones that can be known anyway.
+    """
+    if not api_mode:
+        return False
+    if api_mode in TRANSPORT_TO_API_MODE:
+        return True
+    module = sys.modules.get("agent.transports")
+    if module is None:
+        return False
+    return api_mode in module.registered_api_modes()
+
+
+def is_registered_api_mode(api_mode: str) -> bool:
+    """Public form of :func:`_registry_knows`, for callers outside this module."""
+    return _registry_knows(api_mode)
 
 
 def get_label(provider_id: str) -> str:
@@ -359,7 +396,13 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
         return nous_api_mode(model)
     pdef = get_provider(provider)
     if pdef is not None:
-        return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
+        # A plugin profile's transport IS its api_mode (e.g. "something_functions"),
+        # table has no entry for — it only names the in-tree overlays' transports. Reading
+        # the table alone degraded every plugin-supplied dialect to chat_completions here,
+        # so the plugin's transport was never selected. A transport that is already a
+        # registered api_mode passes through unchanged.
+        return TRANSPORT_TO_API_MODE.get(pdef.transport) or (
+            pdef.transport if _registry_knows(pdef.transport) else "chat_completions")
     if provider == "bedrock":
         return "bedrock_converse"
     return "chat_completions"

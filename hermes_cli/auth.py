@@ -275,13 +275,38 @@ def _register_plugin_provider(pp: Any) -> None:
         PROVIDER_REGISTRY.setdefault(alias, pconfig)
 
 
-try:
-    from providers import list_providers as _list_providers_for_registry
-    for _pp in _list_providers_for_registry():
-        if _pp.name not in PROVIDER_REGISTRY:
-            _register_plugin_provider(_pp)
-except Exception:
-    pass
+def _register_plugin_providers_once() -> None:
+    """Register every provider profile not declared above, in one pass.
+
+    Runs at import AND again on demand (``ensure_plugin_providers_registered``),
+    because ONE pass at import is not enough: ``hermes_cli.config`` triggers
+    provider discovery while ``config`` itself is still importing, and the list it
+    sees depends on how far the plugin imports got. A profile that is registered
+    LAST in the discovery order (measured live: a user plugin sorted after the
+    built-ins) is absent from that early snapshot, never lands in
+    ``PROVIDER_REGISTRY``, and every consumer then reports it unauthenticated —
+    which removes it from the model picker with no error anywhere.
+    """
+    try:
+        from providers import list_providers as _list_providers_for_registry
+        for _pp in _list_providers_for_registry():
+            if _pp.name not in PROVIDER_REGISTRY:
+                _register_plugin_provider(_pp)
+    except Exception:
+        pass
+
+
+def ensure_plugin_providers_registered() -> None:
+    """Idempotent: make sure every provider profile is in ``PROVIDER_REGISTRY``.
+
+    Callers that read the registry on behalf of a user (auth status, the model
+    picker, credential lookup) call this first, so a profile that missed the
+    import-time pass is picked up later instead of staying invisible.
+    """
+    _register_plugin_providers_once()
+
+
+_register_plugin_providers_once()
 
 
 def get_anthropic_key() -> str:
@@ -1348,6 +1373,12 @@ def resolve_provider(
     normalized = (requested or "auto").strip().lower()
     normalized = _plugin_aliases().get(normalized, normalized)
 
+    # A profile that missed the import-time registration pass (see
+    # ``ensure_plugin_providers_registered``) would otherwise be rejected here as
+    # "Unknown provider" even though it is installed and configured.
+    if normalized not in ("openrouter", "custom") and normalized not in PROVIDER_REGISTRY:
+        ensure_plugin_providers_registered()
+
     if normalized in ("openrouter", "custom") or normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
@@ -1871,6 +1902,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     target = (provider_id or get_active_provider() or "").strip().lower()
     if not target:
         return {"logged_in": False}
+    ensure_plugin_providers_registered()
     status_fn_name = _BESPOKE_STATUS_FUNCTIONS.get(target)
     if status_fn_name:
         return globals()[status_fn_name]()

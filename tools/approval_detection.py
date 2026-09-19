@@ -1456,6 +1456,127 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Scratch-workspace exemption for the project env/config write rules (t_4537bd82)
+# ---------------------------------------------------------------------------
+# _PROJECT_CONFIG_PATH matches any path ending in `config.yaml` — including
+# sandbox/repro copies inside a Kanban scratch workspace. In single-query mode
+# (kanban workers) the gate denies fail-closed with no human to approve, so a
+# plain `cp <profile>/config.yaml ./repro/config.yaml` was unapprovable.
+# A scratch workspace is disposable by contract (fresh per run, kernel-cleaned),
+# so destinations that RESOLVE under HERMES_KANBAN_WORKSPACE or
+# HERMES_KANBAN_WORKSPACES_ROOT are exempt from the project rules ONLY.
+# User-level sensitive rules (Hermes config, ~/.ssh, /etc, ...) never get this
+# exemption, and the scan continues past a skipped rule so a scratch `cp` that
+# ALSO targets a sensitive path stays flagged.
+# Rooted on the kanban env vars the dispatcher already exports; unset vars keep
+# historical behavior byte-for-byte.
+
+_PROJECT_WRITE_DESCRIPTIONS = (
+    "overwrite project env/config via tee",
+    "overwrite project env/config via redirection",
+    "overwrite project env/config file",
+)
+
+
+def _kanban_scratch_roots() -> tuple:
+    """Realpath'd roots a destination may resolve under to count as a scratch
+    copy: the pinned task workspace and the board's workspaces root. Empty when
+    neither kanban var is set (non-kanban sessions keep historical behavior)."""
+    roots = []
+    for var in ("HERMES_KANBAN_WORKSPACE", "HERMES_KANBAN_WORKSPACES_ROOT"):
+        value = (os.environ.get(var) or "").strip()
+        if value:
+            roots.append(os.path.realpath(os.path.abspath(os.path.expanduser(value))))
+    return tuple(roots)
+
+
+def _destination_resolves_under_scratch(destination: str, roots: tuple, cwd: str) -> bool:
+    """True when *destination* (one shell token, quotes intact) resolves inside
+    one of *roots*. Absolute, ~, $HOME, and ${HOME} spellings resolve directly;
+    a bare relative token resolves against *cwd* (the session cwd, which
+    TERMINAL_CWD pins to the workspace for kanban workers). realpaths on both
+    sides close the symlink-escape door: a link inside the workspace pointing
+    out does NOT exempt the destination."""
+    target = destination.strip().strip('"\'')
+    if not target or any(ch in target for ch in "$&|;<>*?"):
+        # Expansions/globs/metachars stay unexempted (conservative). $HOME /
+        # ${HOME} are stripped below precisely so they can be resolved safely.
+        if target.startswith("$"):
+            head = re.match(r"\$\{?home\}?(?=/|$)", target, re.IGNORECASE)
+            if head:
+                target = os.path.expanduser("~") + target[head.end():]
+            else:
+                return False
+        else:
+            return False
+    if target.startswith("~"):
+        target = os.path.expanduser(target)
+    if not os.path.isabs(target):
+        target = os.path.join(cwd, target)
+    resolved = os.path.realpath(os.path.abspath(target))
+    return any(resolved == root or resolved.startswith(root + os.sep) for root in roots)
+
+
+def _effective_cwd_for_segments(command: str, roots: tuple) -> str:
+    """Session cwd adjusted for a `cd` in the compound command: when a segment
+    BEFORE the last one is `cd <target>` and <target> itself resolves under a
+    scratch root, relative destinations in the final segment resolve against
+    that target. Any other cd leaves the session cwd in charge."""
+    segments = re.split(r"\n|&&|\|\||;", command)
+    cwd = os.getcwd()
+    for seg in reversed(segments[:-1]):
+        stripped = seg.strip()
+        if re.match(r"^cd\s+", stripped, re.IGNORECASE) or stripped.lower() == "cd":
+            try:
+                cd_argv = shlex.split(stripped, posix=True)
+            except ValueError:
+                cd_target = ""
+            else:
+                cd_target = cd_argv[1] if len(cd_argv) > 1 else ""
+            if cd_target and _destination_resolves_under_scratch(cd_target, roots, cwd):
+                target = cd_target.strip().strip('"\'')
+                if target.startswith("~"):
+                    target = os.path.expanduser(target)
+                if not os.path.isabs(target):
+                    target = os.path.join(cwd, target)
+                cwd = os.path.realpath(os.path.abspath(target))
+            break
+    return cwd
+
+
+def _scratch_scrub_project_config_match(command: str, pattern_description: str) -> bool:
+    """True keeps the historical flag; False skips the project-rule match.
+
+    Returns False only when the matched rule is one of the project env/config
+    write rules, kanban scratch roots are configured, and the LAST command
+    segment's destination operand resolves under a root. Anything ambiguous
+    (parse failure, expansion metachars, multi-segment command) stays flagged.
+    """
+    if pattern_description not in _PROJECT_WRITE_DESCRIPTIONS:
+        return True
+    roots = _kanban_scratch_roots()
+    if not roots:
+        return True
+    lowered = command.lower()
+    if not any(tok in lowered for tok in ("cp", "mv", "install", "tee", ">")):
+        return True
+    # Only the LAST segment is considered: a compound command keeps its other
+    # segments flagged even when the final destination is a scratch copy.
+    last_segment = re.split(r"\n|&&|\|\||;", command)[-1].strip()
+    try:
+        argv = shlex.split(last_segment, posix=True)
+    except ValueError:
+        return True
+    if len(argv) < 2:
+        return True
+    destination = argv[-1]
+    cwd = _effective_cwd_for_segments(command, roots)
+    if _destination_resolves_under_scratch(destination, roots, cwd):
+        return False
+    return True
+
+
 def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     """Catch gateway-lifecycle verbs spelled with quote splicing.
     Backslash splicing (``kick\\start``) is undone by normalization, but quote splicing is not:
@@ -1483,15 +1604,17 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
     for command_variant in _command_detection_variants(command):
-        command_lower = command_variant.lower()
+        variant = command_variant or ""
+        command_lower = variant.lower()
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
-                    masked_lower = _mask_quoted_prose(command_variant).lower()
-                if pattern_re.search(masked_lower):
-                    return (True, description, description)
-            elif pattern_re.search(command_lower):
+                    masked_lower = _mask_quoted_prose(variant).lower()
+                matches = pattern_re.search(masked_lower)
+            else:
+                matches = pattern_re.search(command_lower)
+            if matches and _scratch_scrub_project_config_match(variant, description):
                 return (True, description, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):

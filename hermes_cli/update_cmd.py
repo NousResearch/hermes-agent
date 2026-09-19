@@ -783,7 +783,29 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: a true upstream force-push/rebase; local changes are stashed, so reset.
+    # Same-branch divergence is ambiguous: it can be a remote force-push, but it is also
+    # the normal shape when an operator commits a local fleet fix on main before upstream
+    # advances. Never let that latter case fall through to reset --hard.
+    local_ahead = _git_run(git_cmd, ["rev-list", f"origin/{branch}..HEAD", "--count"])
+    try:
+        local_commit_count = int(local_ahead.stdout.strip())
+    except (TypeError, ValueError):
+        print(
+            f"✗ Refusing to reset {branch}: could not verify whether local commits are outside "
+            f"origin/{branch}.")
+        print("  Inspect `git status` and `git log origin/{branch}..HEAD` before retrying.")
+        sys.exit(1)
+    if local_commit_count > 0:
+        print(
+            f"✗ Refusing to reset {branch}: {local_commit_count} local commit(s) are not on "
+            f"origin/{branch}.")
+        print("  Your commits are still on the current branch; no files or refs were changed.")
+        print(
+            f"  Rebase/merge them onto origin/{branch}, or move them to an integration branch, "
+            "then retry.")
+        sys.exit(1)
+
+    # No local commits lie outside origin/<branch>, so this is a true upstream force-push/rebase.
     # Orphan divergence (no common ancestor: corrupted HEAD, re-init) would lose the whole
     # local graph, so park pre_pull_sha behind a rescue ref first.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])

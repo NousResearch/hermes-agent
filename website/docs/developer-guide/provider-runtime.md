@@ -27,6 +27,16 @@ Primary implementation:
 
 If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) and the [Model Provider Plugin guide](./model-provider-plugin.md) alongside this page.
 
+## Chat-completions reasoning shapes
+
+OpenAI-compatible relays can return `reasoning` or `reasoning_content` as strings,
+text-part dictionaries, or lists of text parts and string fragments. Hermes flattens
+these fields before string operations in the main stream, Relay recording, synchronous
+and asynchronous auxiliary streams, and completed-response reasoning extraction.
+Fragments retain their explicit whitespace; normalization adds no intra-field separator.
+Main-stream and Relay recording retain the existing paragraph breaks between complete
+bold reasoning headings. Reasoning stays separate from the visible answer.
+
 ## Resolution precedence
 
 At a high level, provider resolution uses:
@@ -201,7 +211,7 @@ Cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or le
 
 Fallback behavior is exercised across several suites:
 
-- `tests/run_agent/test_fallback_credential_isolation.py` — credential isolation between primary and fallback
+- `tests/agent/test_fallback_credential_isolation.py` — credential isolation between primary and fallback
 - `tests/hermes_cli/test_fallback_cmd.py` — the `/fallback` CLI command
 - `tests/gateway/test_fallback_eviction.py` — gateway eviction of failed providers
 

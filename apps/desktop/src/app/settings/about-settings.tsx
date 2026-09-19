@@ -72,7 +72,7 @@ export function AboutSettings() {
 
   const handleCheck = async () => {
     setJustChecked(false)
-    const next = await checkUpdates()
+    const next = await checkUpdates({ force: true })
     setJustChecked(Boolean(next))
   }
 
@@ -83,7 +83,9 @@ export function AboutSettings() {
     statusLine = status?.message ?? a.cantUpdate
     statusTone = 'error'
   } else if (status?.error) {
-    statusLine = a.cantReach
+    // A git that never ran is a local problem; leading with "couldn't reach
+    // the update server" would misdiagnose it as a network failure.
+    statusLine = [status.error === 'git-unusable' ? '' : a.cantReach, status.message].filter(Boolean).join(' ')
     statusTone = 'error'
   } else if (applying) {
     statusLine = a.installing

@@ -122,7 +122,7 @@ def _set_model(rid, params, key, value, session):
             if failed_ready is None:
                 return _err(rid, 5032, session.get("agent_error") or "agent initialization failed")
             if not failed_ready.wait(timeout=30.0):
-                return _err(rid, 5032, "agent initialization timed out")
+                return _err(rid, 5032, AGENT_STILL_STARTING)
         failed_agent_init = (
             failed_agent_init and session.get("agent") is None and session.get("agent_error") is not None
             and session.get("agent_ready") is failed_ready and failed_ready.is_set())
@@ -140,7 +140,18 @@ def _set_model(rid, params, key, value, session):
             with _session_profile_runtime_scope(session):
                 _persist_live_session_runtime(session)
     else:
-        result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        # --once keeps its specific 5001; other sessionless model sets 4001 so
+        # --global cannot persist profile defaults before session.create (#106397:
+        # an older Desktop client sent a fresh-draft pick this way).
+        from hermes_cli.model_switch import parse_model_switch_args
+        if parse_model_switch_args(str(value)).is_once:
+            result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        else:
+            # One string for every client: the Ink TUI (dashboard /chat, `hermes --tui`) has no
+            # Settings; the dashboard has a Models page; only the Desktop has Settings -> Models.
+            return _err(rid, 4001, "config.set model requires a live session; to change the "
+                        "profile default run /setup, or use the Models page (dashboard) / "
+                        "Settings -> Models (Desktop)")
     return _kv(rid, key, result["value"], warning=result["warning"],
                confirm_required=result.get("confirm_required", False),
                confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"))
@@ -160,7 +171,7 @@ def _set_fast(rid, params, key, value, session):
     else:
         current_tier = _load_service_tier()
     if raw == "status":
-        return _kv(rid, key, {"priority": "fast", None: "normal"}.get(current_tier, current_tier))
+        return _kv(rid, key, {"priority": "fast", None: "normal", "": "normal"}.get(current_tier, current_tier))
     nv = _FAST_WORDS.get(raw, ("normal" if current_tier == "priority" else "fast") if raw in {"", "toggle"} else None)
     if nv is None:
         return _err(rid, 4002, f"unknown fast mode: {value}")
@@ -336,7 +347,10 @@ def _word_setters() -> dict:
                   lambda w: _write_config_key("display.tui_theme", w)),
         # _raw_word: 0/False/[] keep their text so the error names what was sent.
         "indicator": (_raw_word, INDICATOR_STYLES, "unknown indicator: {raw!r}; pick one of " + "|".join(INDICATOR_STYLES),
-                      lambda w: _write_config_key("display.tui_status_indicator", w))}
+                      lambda w: _write_config_key("display.tui_status_indicator", w)),
+        # Which engine the desktop voice button mounts; applies to the NEXT conversation.
+        "voice.voice_chat_mode": (_word, {"chained", "gpt-live"}, "unknown voice chat mode: {value}; pick chained|gpt-live",
+                                  lambda w: _write_config_key("voice.voice_chat_mode", w))}
 
 
 def _set_word(rid, params, key, value, session):
@@ -400,7 +414,10 @@ def _set_cwd(rid, params, key, value, session):
     if not os.path.isdir(cwd):
         return _err(rid, 4002, f"working directory does not exist: {raw}")
     _write_config_key("terminal.cwd", cwd)
-    os.environ["TERMINAL_CWD"] = cwd
+    # ``TERMINAL_CWD`` is the LAUNCH process's; a profile-bound session persists its cwd through its
+    # own config.yaml (written above under the session scope) and must not leak it into other profiles.
+    if not (isinstance(session, dict) and session.get("profile_home")):
+        os.environ["TERMINAL_CWD"] = cwd
     return _kv(rid, "terminal.cwd", cwd, cwd=cwd, branch=git_probe.branch(cwd))
 
 
@@ -450,7 +467,7 @@ _CONFIG_SETTERS = {
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
-    "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word,
+    "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 

@@ -21,7 +21,7 @@ Build integrated IS/BS/CF financial workbooks in Excel.
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `finance`, `three-statement`, `income-statement`, `balance-sheet`, `cash-flow`, `excel`, `openpyxl`, `modeling` |
-| Related skills | [`excel-author`](/docs/user-guide/skills/optional/finance/finance-excel-author), [`pptx-author`](/docs/user-guide/skills/optional/finance/finance-pptx-author), [`dcf-model`](/docs/user-guide/skills/optional/finance/finance-dcf-model), [`lbo-model`](/docs/user-guide/skills/optional/finance/finance-lbo-model) |
+| Related skills | [`excel-author`](./finance-excel-author.md), [`pptx-author`](./finance-pptx-author.md), [`dcf-model`](./finance-dcf-model.md), [`lbo-model`](./finance-lbo-model.md) |
 
 ## Reference: full SKILL.md
 

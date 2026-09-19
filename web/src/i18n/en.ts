@@ -10,6 +10,8 @@ export const en: Translations = {
     delete: "Delete",
     refresh: "Refresh",
     retry: "Retry",
+    loadFailed: "Could not load {what}. Check that the dashboard server is running and click Retry.",
+    loadFailedDetails: "Details: {detail}",
     search: "Search...",
     loading: "Loading...",
     create: "Create",
@@ -63,7 +65,9 @@ export const en: Translations = {
     activeSessionsLabel: "Active Sessions:",
     gatewayStatusLabel: "Gateway Status:",
     gatewayStrip: {
+      degraded: "Degraded",
       failed: "Start failed",
+      heartbeatStale: "Heartbeat stale",
       off: "Off",
       running: "Running",
       starting: "Starting",
@@ -249,6 +253,11 @@ export const en: Translations = {
   },
 
   cron: {
+    loadWhat: "cron jobs",
+    // Script-only mode on, Script field empty. `no_agent` is the config key, not a term the
+    // user has seen; name the field they must fill instead.
+    scriptRequired:
+      "Script-only jobs need a script path. Fill in the Script field or switch the job back to prompt mode.",
     confirmDeleteMessage:
       "This removes the job from the schedule. This cannot be undone.",
     confirmDeleteTitle: "Delete scheduled job?",
@@ -299,6 +308,10 @@ export const en: Translations = {
     noJobs: "No cron jobs configured. Create one above.",
     last: "Last",
     next: "Next",
+    /** Replaces `next` when the stored next_run_at is already past the scheduler grace. */
+    overdueSince: "Overdue since",
+    /** Banner when the ticker heartbeat is stale; {when} is a relative time such as "7h ago". */
+    schedulerLastTicked: "Scheduler last ticked {when} — jobs that came due since then have not fired",
     pause: "Pause",
     resume: "Resume",
     triggerNow: "Trigger now",
@@ -372,7 +385,7 @@ export const en: Translations = {
     modelOptional: "Model (optional)",
     modelInherit: "Inherit from clone / default",
     modelLoading: "Loading models…",
-    modelNone: "No authenticated providers — set a key first",
+    modelNone: "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
     editModel: "Change model",
     modelSaved: "Model updated",
     modelSelect: "Select a model",
@@ -418,16 +431,34 @@ export const en: Translations = {
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",
+    catalogHeading: "Plugin catalog",
+    catalogHint:
+      "Curated, Nous-reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.",
+    catalogSearchPlaceholder: "Search catalog...",
+    catalogEmpty: "No catalog entries match.",
+    catalogEmptyDocsLink: "Learn about Hermes plugins",
+    catalogInstallBtn: "Install",
+    catalogInstalledBadge: "Installed ✓",
+    catalogUpdateBtn: "Update available",
+    catalogRemovedBadge: "Removed",
+    catalogConfirmTitle: "Install this plugin?",
+    catalogConfirmInstallNote:
+      "Plugins install disabled; enable it after install to activate.",
+    catalogRequiresEnv: "Requires env",
+    removedFromCatalog: "Removed from catalog",
   },
 
   skills: {
     title: "Skills",
     searchPlaceholder: "Search skills and toolsets...",
+    loadWhat: "skills",
+    browseHub: "Browse skills hub",
+    createSkill: "Create skill",
     enabledOf: "{enabled}/{total} enabled",
     all: "All",
     categories: "Categories",
     filters: "Filters",
-    noSkills: "No skills found. Skills are loaded from ~/.hermes/skills/",
+    noSkills: "No skills installed yet. Browse the skills hub or create one here; from a terminal you can also run `hermes skills search <topic>`.",
     noSkillsMatch: "No skills match your search or filter.",
     skillCount: "{count} skill{s}",
     resultCount: "{count} result{s}",

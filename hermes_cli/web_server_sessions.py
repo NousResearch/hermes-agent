@@ -110,12 +110,13 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     import sqlite3
 
     from hermes_state import SessionDB, is_malformed_schema_error
+    from hermes_state_registry import acquire, release_or_close
 
     # Read-only file/sidecar preflight (port of kilocode#12508): repair-or-refuse BEFORE the first
     # connection so users get an actionable message instead of an opaque "attempt to write a readonly
     # database" from deep inside _init_schema.
     if not read_only:
-        return SessionDB(db_path=db_path, read_only=False)
+        return acquire(db_path)
 
     def _needs_bootstrap() -> bool:
         try:
@@ -128,7 +129,8 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     if _needs_bootstrap():
         with _session_db_bootstrap_lock:
             if _needs_bootstrap():
-                SessionDB(db_path=db_path, read_only=False).close()
+                db = acquire(db_path)
+                release_or_close(db)
 
     def _open_probed():
         db = SessionDB(db_path=db_path, read_only=True)
@@ -156,7 +158,8 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             or is_malformed_schema_error(exc)
             or isinstance(exc, UnicodeDecodeError)):
             raise
-        SessionDB(db_path=db_path, read_only=False).close()
+        db = acquire(db_path)
+        release_or_close(db)
         try:
             return _open_probed()
         except (sqlite3.DatabaseError, UnicodeDecodeError) as still_stale:
@@ -177,20 +180,23 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             return _open_probed()
 
 
-def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
-    """Open a SessionDB for ``profile`` (None/empty = this process's own state.db).
-
-    Access-mode semantics: see :func:`_open_session_db_at_path`.
-    """
+def _session_db_path_for_profile(profile: Optional[str]) -> Path:
+    """state.db path for ``profile`` (None/empty = this process's own)."""
     from hermes_cli.web_server_cron import _cron_profile_home
     from hermes_state import _default_db_path
 
     if profile:
         _name, home = _cron_profile_home(profile)
-        db_path = Path(home) / "state.db"
-    else:
-        db_path = Path(_default_db_path())
-    return _open_session_db_at_path(db_path, read_only=read_only)
+        return Path(home) / "state.db"
+    return Path(_default_db_path())
+
+
+def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
+    """Open a SessionDB for ``profile`` (None/empty = this process's own state.db).
+
+    Access-mode semantics: see :func:`_open_session_db_at_path`.
+    """
+    return _open_session_db_at_path(_session_db_path_for_profile(profile), read_only=read_only)
 
 
 # In-process throttle for the opportunistic auto-archive trigger, keyed by
@@ -227,14 +233,61 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _log.debug("opportunistic auto-archive skipped: %s", exc)
 
 
+def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
+    """Measure chat inactivity, not socket inactivity (Desktop stays connected)."""
+    import tui_gateway.server as gateway
+
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home().resolve()
+    with gateway._sessions_lock:
+        sessions = [session for session in gateway._sessions.values()
+                    if Path(session.get("profile_home") or home).resolve() == home]
+        if any(session.get("running") for session in sessions):
+            return None
+        last_active = max(
+            [started_at, gateway._closed_session_activity.get(str(home), 0)]
+            + [float(session.get("last_active") or started_at) for session in sessions])
+    return max(0.0, time.time() - last_active)
+
+
+def _maybe_run_skill_maintenance(started_at: float) -> None:
+    from hermes_constants import get_hermes_home
+    from hermes_cli.profiles import _check_gateway_running
+
+    # A live messaging gateway already owns these chores for this profile.
+    if _check_gateway_running(get_hermes_home()):
+        return
+
+    from agent.curator import maybe_run_curator
+    from tools.skills_sync_client import maybe_pull_skills
+    from tools.skills_sync_client_org import maybe_pull_org_skills
+
+    try:
+        idle_for = _skill_maintenance_idle_for(started_at)
+        if idle_for is not None:
+            maybe_run_curator(idle_for_seconds=idle_for)
+    except Exception as exc:
+        _log.debug("serve curator tick skipped: %s", exc)
+    for pull in (maybe_pull_skills, maybe_pull_org_skills):
+        try:
+            pull()
+        except Exception as exc:
+            _log.debug("serve skill sync tick skipped: %s", exc)
+
+
 async def _auto_archive_ticker_loop(
     interval_s: float = 3600.0, initial_delay_s: float = 90.0) -> None:
-    """Poll-rate timer for the auto-archive sweep (primary profile), so a
-    long-idle Desktop keeps sweeping without any ``/api/sessions`` request.
-    The real cadence is still owned by state_meta inside ``maybe_auto_archive``."""
+    """Poll maintenance for this serve profile, including Desktop-only installs.
+
+    Individual chores own their config/interval gates. Curator additionally uses
+    real chat inactivity; merely keeping a Desktop WebSocket open is not activity.
+    """
+    started_at = time.time()
 
     def _sweep() -> None:
         _maybe_auto_archive_for_profile(None)
+        _maybe_run_skill_maintenance(started_at)
 
     await asyncio.sleep(initial_delay_s)
     while True:

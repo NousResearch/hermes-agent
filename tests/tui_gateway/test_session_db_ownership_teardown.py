@@ -274,7 +274,7 @@ def build_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     for name, value in [
-        ("_set_session_context", lambda _key: []),
+        ("_set_session_context", lambda _key, cwd=None: []),
         ("_clear_session_context", lambda _tokens: None),
         ("_wire_callbacks", lambda _sid: None),
         ("_config_model_target", lambda: None),

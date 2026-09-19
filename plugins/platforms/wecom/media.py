@@ -94,7 +94,8 @@ class WeComMediaMixin:
         url = str(media.get("url") or "").strip()
         if not url:
             return None
-        aes_key = str(media.get("aeskey") or "").strip()
+        # The key arrives URL-encoded in some payloads (%2F, %3D); base64-decode the real value.
+        aes_key = unquote(str(media.get("aeskey") or "").strip())
         try:
             step = "download"
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
@@ -105,7 +106,10 @@ class WeComMediaMixin:
             return None
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
-        return await self._store_media(kind, raw, ext, content_type, self._guess_filename(url, headers.get("content-disposition"), content_type), content_type, f" from {url}")
+        # Images: never forward the CDN's generic octet-stream label — downstream classifiers
+        # reject non-image MIMEs; derive it from the resolved extension instead.
+        image_mime = content_type if content_type.startswith("image/") else ""
+        return await self._store_media(kind, raw, ext, image_mime, self._guess_filename(url, headers.get("content-disposition"), content_type), content_type, f" from {url}")
 
     async def _store_media(self, kind, raw, ext, image_mime, filename, doc_mime, origin) -> Optional[Tuple[str, str]]:
         """Cache bytes as an image (``kind == "image"``) or a document; returns (path, mime)."""
@@ -132,7 +136,11 @@ class WeComMediaMixin:
 
     @staticmethod
     def _guess_extension(url: str, content_type: str, fallback: str) -> str:
+        # WeCom's CDN labels images application/octet-stream; mimetypes maps that to ".bin",
+        # which is truthy and used to win over the magic-byte fallback (#10085).
         ext = mimetypes.guess_extension(content_type) if content_type else None
+        if ext == ".bin":
+            ext = None
         return ext or Path(urlparse(url).path).suffix or fallback
 
     @staticmethod
@@ -292,7 +300,9 @@ class WeComMediaMixin:
                 logger.error("[%s] Failed to prepare outbound media %s: %s", self.name, media_source, exc)
             return SendResult(success=False, error=str(exc))
         if prepared["rejected"]:
-            await self._send_followup_markdown(chat_id, f"⚠️ {prepared['reject_reason']}", reply_to=reply_to)
+            text = self.warning_text(f"⚠️ {prepared['reject_reason']}", caption or "")
+            if text:
+                await self._send_followup_markdown(chat_id, text, reply_to=reply_to)
             return SendResult(success=False, error=prepared["reject_reason"])
         reply_req_id = self._cached_reply_req_id(chat_id, reply_to)
         # Active/expired stream owns the req_id (passive replyMedia is never acked): go proactive.
@@ -314,7 +324,8 @@ class WeComMediaMixin:
             logger.error("[%s] Failed to send media %s: %s", self.name, media_source, exc)
             return SendResult(success=False, error=str(exc))
         raw: Dict[str, Any] = {"upload": upload_result, "media": media_response}
-        for key, text in (("caption", caption), ("downgrade", f"ℹ️ {prepared['downgrade_note']}" if prepared["downgraded"] and prepared["downgrade_note"] else None)):
+        downgrade = self.warning_text(f"ℹ️ {prepared['downgrade_note']}") if prepared["downgraded"] and prepared["downgrade_note"] else None
+        for key, text in (("caption", caption), ("downgrade", downgrade or None)):
             followup = await self._send_followup_markdown(chat_id, text, reply_to=reply_to) if text else None
             raw[key] = followup.raw_response if followup else None
             raw[f"{key}_error"] = followup.error if followup and not followup.success else None

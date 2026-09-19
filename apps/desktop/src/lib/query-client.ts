@@ -28,6 +28,7 @@ export const writeCache =
 // previous profile's data (a bug).
 const PROFILE_INDEPENDENT_QUERY_ROOTS = new Set<string>([
   'billing',
+  'public-catalog',
   'marketplace-themes',
   'marketplace-themes-settings',
   'onboarding-model-options',

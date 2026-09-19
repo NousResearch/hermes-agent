@@ -69,6 +69,7 @@ import {
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
+import { openIdeWindow } from '@/store/ide'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
@@ -935,6 +936,14 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['browser', 'web', 'url', 'address', 'open', 'navigate', 'internet', 'site'],
             label: cc.openBrowser,
             run: () => openBrowserTab()
+          },
+          {
+            action: 'view.openIde',
+            icon: codiconIcon('code'),
+            id: 'cc-open-ide',
+            keywords: ['ide', 'editor', 'code', 'explorer', 'files', 'workspace', 'develop'],
+            label: cc.openIde,
+            run: () => void openIdeWindow()
           }
         ]
       },

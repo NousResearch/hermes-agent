@@ -145,6 +145,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // user is working in. Ships bound because the whole point is leaving the app
   // without reaching for it — but the titlebar button is the discoverable door.
   { id: 'view.toggleHud', category: 'view', defaults: ['mod+shift+h'] },
+  // ⌘⇧E — "e" for editor: opens (or focuses) the dedicated Hermes IDE window.
+  // Ships bound like the HUD's chord — the IDE is a place you go, and the
+  // titlebar button is the discoverable door.
+  { id: 'view.openIde', category: 'view', defaults: ['mod+shift+e'] },
   // Control+` everywhere (literal `ctrl`, NOT `mod`): ⌘` is macOS-reserved for
   // cycling app windows, so VS Code/Cursor/Zed bind the terminal to Ctrl+` on
   // every platform. Off macOS `ctrl` folds to `mod` (= Ctrl), so it's unchanged.

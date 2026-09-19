@@ -30,6 +30,7 @@ import {
   openFindBar
 } from '@/store/find-in-page'
 import { toggleHud } from '@/store/hud'
+import { openIdeWindow } from '@/store/ide'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   cycleSidebarGrouping,
@@ -258,6 +259,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.showFiles': showFiles,
     'view.showBrowser': openBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
+    'view.openIde': () => void openIdeWindow(),
     'view.showTerminal': () => togglePaneVisible('terminal'),
     // Create first so the pane's open-effect ensure sees a non-empty set and
     // doesn't also spawn one — net effect is exactly one fresh terminal.

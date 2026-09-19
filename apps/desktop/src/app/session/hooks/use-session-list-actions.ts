@@ -49,7 +49,17 @@ import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions
 // sidebar section (refreshMessagingSessions). Excluding them here keeps
 // "Load more" paging through interactive local chats instead of
 // interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'oneshot', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+// Exported for the scoping contract test: the Hermes IDE's sessions must never
+// surface in the primary window's recents (they are listed only by the IDE).
+export const SIDEBAR_EXCLUDED_SOURCES = [
+  'cron',
+  'ide',
+  'kanban',
+  'oneshot',
+  'subagent',
+  'tool',
+  ...MESSAGING_SESSION_SOURCE_IDS
+]
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]

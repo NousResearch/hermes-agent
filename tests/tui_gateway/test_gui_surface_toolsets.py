@@ -72,6 +72,16 @@ class TestSurfaceResolution:
     def test_tui_session_does_not(self, no_desktop_env):
         assert "desktop_ui" not in server._gui_surface_toolsets("tui")
 
+    def test_ide_session_gets_them_like_desktop(self, no_desktop_env):
+        """The Hermes IDE window is a desktop-class GUI surface.
+
+        Its sessions keep the client toolsets (the shared in-app browser rides
+        on desktop_ui), and availability comes from the SESSION's source — the
+        same rule as every other surface, never an env var.
+        """
+        assert "desktop_ui" in server._gui_surface_toolsets("ide")
+        assert "project" in server._gui_surface_toolsets("ide")
+
     def test_desktop_env_alone_does_not_grant_them(self, no_desktop_env):
         """A desktop-spawned backend serving a TUI session stays clean.
 

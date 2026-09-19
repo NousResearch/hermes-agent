@@ -301,6 +301,16 @@ export function refChipLabel(type: string, id: string): string {
     return id || 'terminal'
   }
 
+  // An inspected element: the value is `<selector> :: <collapsed html>`, so the
+  // chip shows only the selector — the code stays in the reference payload
+  // (hover title) instead of flooding the transcript.
+  if (type === 'element') {
+    const [selector] = id.split(' :: ')
+    const label = (selector || '').trim() || 'element'
+
+    return label.length > 60 ? `${label.slice(0, 57)}…` : label
+  }
+
   if (type === 'session') {
     return sessionRefFallbackLabel(id)
   }

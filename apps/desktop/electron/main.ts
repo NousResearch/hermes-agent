@@ -254,6 +254,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
+import { buildIdeWindowUrl, IDE_WINDOW_TITLE } from './ide-window'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
@@ -9939,9 +9940,11 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
 })
+
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
@@ -12227,6 +12230,7 @@ function startPoolIdleReaper() {
         const retiring = entry.process
           ? poolRetirer.retireIdle(profile, poolIdleMs())
           : stopPoolBackend(profile)
+
         void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
       }
     }
@@ -12514,6 +12518,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   const startFailed = new Promise((_resolve, reject) => {
     rejectStart = reject
   })
+
   // Exit/error can now arrive while the ownership claim is still pending.
   startFailed.catch(() => {})
 
@@ -12549,6 +12554,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     describeOutputTail: () => outputTail.describe(),
     readyFile
   })
+
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
@@ -12631,10 +12637,12 @@ const poolStopper = createPoolStopper({
 
 function stopPoolBackend(profile: string): Promise<void> {
   const entry = backendPool.get(profile)
+
   const stopping = releaseLocalBackendSlotAfterExit(
     () => releaseLocalBackendSlot(entry),
     () => poolStopper.stop(profile)
   )
+
   // Fire-and-forget callers still need diagnostics; awaiters receive the
   // rejection, while physical ownership and the exit finalizer remain live.
   void stopping.catch(error => {
@@ -12665,6 +12673,7 @@ const poolRetirer = createPoolRetirer({
   onRetiring: broadcastPoolBackendRetiring,
   log: rememberLog
 })
+
 localBackendLifecycle.signal.addEventListener('abort', poolRetirer.dispose, { once: true })
 
 async function teardownPoolBackendAndWait(profile) {
@@ -12797,6 +12806,7 @@ function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error =
     if (primaryExitRecovery.isCrashLooping()) {
       const message =
         'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+
       rememberLog(`[supervisor] ${message}`)
       sendBackendExit({ code, signal, error: message })
 
@@ -13644,6 +13654,7 @@ function createInstanceWindow(
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
     { connectionId: null, profile: primaryProfileKey() }
   )
+
   validateDesktopProfileRoute(route)
   const icon = getAppIconPath()
 
@@ -13707,6 +13718,125 @@ function createInstanceWindow(
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
     }),
     'Instance window'
+  )
+
+  return win
+}
+
+// Hermes IDE: ONE dedicated full-size window hosting the IDE surface (explorer,
+// editor, IDE-scoped chat, and the shared in-app browser) against the shared
+// backend. Construction mirrors createInstanceWindow — same webPreferences,
+// translucent backing, stream throttling, and crash recovery — and differs only
+// by the `?win=ide` discriminator, which tells the renderer to mount the IDE
+// shell instead of the pane tree. Focus-or-create: the entry point is an open
+// action, never a duplicate window.
+let ideWindow: BrowserWindow | null = null
+
+function openIdeWindow(
+  options?: (DesktopProfileRoute & { cwd?: null | string }) | undefined,
+  source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
+) {
+  if (ideWindow && !ideWindow.isDestroyed()) {
+    if (ideWindow.isMinimized()) {
+      ideWindow.restore()
+    }
+
+    if (!ideWindow.isVisible()) {
+      ideWindow.show()
+    }
+
+    ideWindow.focus()
+
+    return ideWindow
+  }
+
+  ideWindow = spawnIdeWindow(options, source)
+
+  return ideWindow
+}
+
+function spawnIdeWindow(
+  options?: (DesktopProfileRoute & { cwd?: null | string }) | undefined,
+  source: BrowserWindow | null = null
+) {
+  // An explicit route only exists when the caller named a profile; a bare
+  // `{cwd}` payload must not be validated as a route. Everything else inherits
+  // the calling window's recorded route (the same "New Window inherits its
+  // opener" contract).
+  const explicitRoute = options && typeof options.profile === 'string' ? options : undefined
+
+  const route = resolveDesktopWindowLaunch(
+    explicitRoute,
+    source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
+    { connectionId: null, profile: primaryProfileKey() }
+  )
+
+  validateDesktopProfileRoute(route)
+  const icon = getAppIconPath()
+  const seedCwd = typeof options?.cwd === 'string' ? options.cwd : ''
+
+  const win = new BrowserWindow({
+    ...nextInstanceBounds(source),
+    minWidth: WINDOW_MIN_WIDTH,
+    minHeight: WINDOW_MIN_HEIGHT,
+    title: IDE_WINDOW_TITLE,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: getTitleBarOverlayOptions(),
+    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    ...chatWindowSurfaceOptions(),
+    icon,
+    show: false,
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+  })
+
+  recordWindowConnectionRoute(win.webContents, { ...route, registryScoped: route.connectionId !== null })
+
+  // Chat-surface registration: see applyWindowTranslucency.
+  translucencyBackedWindows.add(win)
+
+  if (IS_MAC) {
+    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+  }
+
+  wireWindowReveal(win)
+
+  bindWindowChromeEvents(win, sendWindowStateChanged)
+
+  streamThrottle.register(win)
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+
+  // Renderer lifecycle diagnostics + recovery (#81290), same policy as the
+  // primary, session, and instance windows: a crashed IDE renderer logs with
+  // its window kind and reloads under the shared crash-loop budget.
+  installWindowRendererLifecycle(win, {
+    kind: 'ide',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        win.webContents.reload()
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
+
+  win.on('closed', () => {
+    if (ideWindow === win) {
+      ideWindow = null
+    }
+  })
+
+  attachRendererConsoleCapture(win, 'ide', rememberLog)
+  loadWindowUrl(
+    win,
+    buildIdeWindowUrl({
+      ...route,
+      cwd: seedCwd,
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    }),
+    'Hermes IDE'
   )
 
   return win
@@ -15110,6 +15240,15 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 })
 ipcMain.handle('hermes:window:openInstance', async (event, options) => {
   createInstanceWindow(options, BrowserWindow.fromWebContents(event.sender))
+
+  return { ok: true }
+})
+// Hermes IDE: focus-or-create the dedicated IDE window (see spawnIdeWindow).
+// `options.profile`/`options.connectionId` are optional route overrides — a
+// bare `{cwd}` payload inherits the calling window's route — and `options.cwd`
+// seeds the IDE workspace root.
+ipcMain.handle('hermes:ide:open', async (event, options) => {
+  openIdeWindow(options, BrowserWindow.fromWebContents(event.sender))
 
   return { ok: true }
 })
@@ -16653,6 +16792,7 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
+
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>

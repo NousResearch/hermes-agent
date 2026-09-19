@@ -89,6 +89,18 @@ declare global {
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
+      // Hermes IDE: a dedicated full-size window hosting the IDE surface
+      // (explorer / editor / IDE-scoped chat / shared browser). Opening focuses
+      // the live window instead of duplicating it. `profile` / `connectionId`
+      // are optional route overrides — absence inherits the calling window's
+      // route. `cwd` seeds the IDE workspace root.
+      ide?: {
+        open: (request?: {
+          connectionId?: null | string
+          cwd?: null | string
+          profile?: null | string
+        }) => Promise<{ ok: boolean; error?: string }>
+      }
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.

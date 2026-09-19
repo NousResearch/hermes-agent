@@ -5,7 +5,7 @@ import { readKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
-import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
+import { canOpenBrowserWindow, isIdeWindow, openBrowserInNewWindow } from './windows'
 
 /**
  * PREVIEW RAIL — one list of tabs, one way in.
@@ -62,7 +62,10 @@ export interface PreviewTab {
   target: PreviewTarget
 }
 
-const TABS_STORAGE_KEY = 'hermes.desktop.previewTabs.v2'
+// Window-scoped: the Hermes IDE window keeps its own browser tabs (it hosts the
+// same preview machinery in its browser pane), so it persists under its own key
+// instead of sharing the primary window's rail.
+const TABS_STORAGE_KEY = isIdeWindow() ? 'hermes.desktop.previewTabs.ide.v1' : 'hermes.desktop.previewTabs.v2'
 /** Superseded by the tab list above; cleared so it can't leak forever. */
 const LEGACY_SESSION_REGISTRY_KEY = 'hermes.desktop.sessionPreviews.v1'
 

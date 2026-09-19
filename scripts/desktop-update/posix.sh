@@ -62,6 +62,12 @@ while [ $# -gt 0 ]; do
 done
 [ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
 
+# The Desktop may itself have been launched by an immutable dashboard/gateway
+# whose environment pins HERMES_SOURCE_ROOT and PYTHONPATH to a detached release.
+# The hand-off explicitly owns INSTALL_ROOT, so inherited source/interpreter
+# selectors must not redirect `hermes update` away from that canonical checkout.
+unset HERMES_SOURCE_ROOT PYTHONPATH PYTHONHOME PYTHONSTARTUP __PYVENV_LAUNCHER__
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERMES_HOME="${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}"
 HERMES_HOME="${HERMES_HOME:-${TMPDIR:-/tmp}}"

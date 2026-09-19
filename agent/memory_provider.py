@@ -123,11 +123,19 @@ class MemoryProvider(ABC):
 
     def sync_turn(
         self, user_content: str, assistant_content: str, *,
-        session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,
+        session_id: str = "", messages: Optional[Any] = None,
         turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far.
-        ``turn_author`` (``{"id", "name", "is_bot"}``) is who wrote the user side; the manager sends it only to signatures that accept it."""
+        """Persist a completed turn (non-blocking).
+
+        ``messages`` is the OpenAI-style history by default. Providers that set
+        ``sync_turn_snapshot_version = 1`` instead receive a bounded
+        ``agent.memory_sync_snapshot.CompletedTurnSnapshot`` built before the
+        background handoff (None for unsupported context); decode it with
+        ``messages()``. The snapshot keeps only the current completed text
+        turn with valid event timestamps, full nested tool calls, and
+        persistence markers. Ordinary capture continues when it is None.
+        """
 
     @abstractmethod
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -141,6 +149,11 @@ class MemoryProvider(ABC):
         """Clean shutdown — flush queues, close connections."""
 
     # -- Optional hooks (override to opt in) ---------------------------------
+
+    # Version of the completed-turn handoff this provider wants in ``sync_turn``.
+    # 0 = legacy full-history list; 1 = bounded ``CompletedTurnSnapshot`` (or
+    # None when the context is unsupported). Providers decode it via ``messages()``.
+    sync_turn_snapshot_version = 0
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count, author_id, author_name,

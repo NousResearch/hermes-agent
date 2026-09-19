@@ -490,13 +490,29 @@ class MemoryManager:
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
             return
+        # Build the detached snapshot synchronously: the background worker may
+        # run after the live list is mutated, so opt-in providers get the
+        # enqueue-time turn instead of a moving reference.
+        snapshot = None
+        if any(getattr(provider, "sync_turn_snapshot_version", 0) == 1 for provider in providers):
+            from agent.memory_sync_snapshot import snapshot_completed_turn
+
+            snapshot = snapshot_completed_turn(
+                messages,
+                session_id=session_id,
+                user_content=user_content,
+                assistant_content=assistant_content,
+            )
         optional_kwargs = {"messages": messages, "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
             kwargs: Dict[str, Any] = {"session_id": session_id}
             for keyword, value in optional_kwargs.items():
                 if value is not None and self._provider_sync_accepts(provider, keyword):
-                    kwargs[keyword] = value
+                    if keyword == "messages" and getattr(provider, "sync_turn_snapshot_version", 0) == 1:
+                        kwargs[keyword] = snapshot
+                    else:
+                        kwargs[keyword] = value
             provider.sync_turn(clean_user_content, assistant_content, **kwargs)
 
         self._submit_background(

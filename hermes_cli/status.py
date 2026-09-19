@@ -108,7 +108,7 @@ def _estop_status_line():
 # Simple env-driven terminal backends: (label, env var, default, empty-counts-as-unset).
 _TERMINAL_ENV_ROWS = {
     "ssh": (("SSH Host:", "TERMINAL_SSH_HOST", "(not set)", True), ("SSH User:", "TERMINAL_SSH_USER", "(not set)", True)),
-    "docker": (("Docker Image:", "TERMINAL_DOCKER_IMAGE", "python:3.11-slim", False),),
+    "docker": (("Docker Image:", "TERMINAL_DOCKER_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20", False),),
     "daytona": (("Daytona Image:", "TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20", False),),
 }
 

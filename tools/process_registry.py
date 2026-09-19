@@ -263,14 +263,17 @@ def _is_supervised_gateway_process() -> bool:
     """Whether this process is the live, supervised Hermes gateway itself.
     Supervisor markers and ``_HERMES_GATEWAY`` are inherited by every descendant (and
     importing ``gateway.run`` sets the latter), so also require ownership of the live
-    gateway PID file — scopes are for the gateway, not terminal children or CLIs."""
+    gateway PID file — scopes are for the gateway, not terminal children or CLIs.
+    Reads the launch marker (``HERMES_SUPERVISED_CHILD`` included), not the restart-route
+    probe: a Windows Scheduled-Task gateway sets only that marker, and the self-kill guards
+    gated here must protect it too (#113667)."""
     if os.environ.get("_HERMES_GATEWAY") != "1":
         return False
     try:
-        from gateway.restart import is_gateway_supervisor_process
+        from gateway.restart import is_supervised_gateway_launch
         from gateway.status import get_running_pid
 
-        return is_gateway_supervisor_process() and get_running_pid(cleanup_stale=False) == os.getpid()
+        return is_supervised_gateway_launch() and get_running_pid(cleanup_stale=False) == os.getpid()
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False

@@ -124,7 +124,7 @@ express-mode** keys start with `AQ.…` and only authenticate against
 `GEMINI_BASE_URL` to `https://aiplatform.googleapis.com` (with or without `/v1beta1`)
 Hermes completes it to the `publishers/google` form; a base URL on any other host (a
 proxy) is never rewritten. Express keys are separate from the OAuth-based
-[Vertex AI provider](/guides/google-vertex), which needs no API key.
+[Vertex AI provider](./google-vertex.md), which needs no API key.
 
 ## Available Models
 
@@ -278,7 +278,7 @@ Upgrade Hermes and rerun `hermes model`. The native Gemini adapter sanitizes too
 
 ## Related
 
-- [AI Providers](/integrations/providers)
-- [Configuration](/user-guide/configuration)
-- [Fallback Providers](/user-guide/features/fallback-providers)
-- [AWS Bedrock](/guides/aws-bedrock) — native cloud-provider integration using AWS credentials
+- [AI Providers](../integrations/providers.md)
+- [Configuration](../user-guide/configuration.md)
+- [Fallback Providers](../user-guide/features/fallback-providers.md)
+- [AWS Bedrock](./aws-bedrock.md) — native cloud-provider integration using AWS credentials

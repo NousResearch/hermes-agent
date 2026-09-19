@@ -4,6 +4,7 @@ import contextlib
 import json
 import re
 import sys
+from datetime import timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -94,6 +95,37 @@ def _format_lateness(seconds: float) -> str:
 
 def _dispatch_kind_label(kind) -> Optional[str]:
     return {"catch_up": "catch-up after missed fire", "late": "late"}.get(kind)
+
+
+def _next_run_overdue_seconds(next_run_at: Any) -> Optional[float]:
+    """Seconds the stored ``next_run_at`` is already in the past (negative while still
+    upcoming); None when it is not a parseable ISO timestamp.
+
+    Parses through the scheduler's own ``_parse_aware`` so the CLI and the ticker agree on
+    the instant (mixed UTC offsets, DST folds, legacy naive stamps read as system-local).
+    """
+    from cron.jobs import _parse_aware
+    from hermes_time import now
+    dt = _parse_aware(next_run_at)
+    if dt is None:
+        return None
+    # Same-tzinfo subtraction is wall-clock arithmetic in Python; compare instants.
+    return (now().astimezone(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+
+
+def _next_run_row(job: Dict[str, Any]) -> tuple[str, str]:
+    """``("Next run" | "Overdue", value)`` for one job.
+
+    A stamp parked past `cron doctor`'s grace on a job that is supposed to fire is the only
+    user-visible trace of a dead scheduler; never present it as an upcoming run (#114309).
+    """
+    stamp = job.get("next_run_at", "?")
+    overdue_s = _next_run_overdue_seconds(stamp)
+    if (overdue_s is None or overdue_s <= _OVERDUE_GRACE_SECONDS
+            or not job.get("enabled", True) or job.get("state") in {"paused", "completed"}):
+        return ("Next run", stamp)
+    return ("Overdue", color(f"{stamp}  ({_format_lateness(overdue_s)} ago — the job has not fired; "
+                                   "is the scheduler running?)", Colors.YELLOW))
 
 
 def _dispatch_display(dispatch: dict) -> Optional[str]:
@@ -207,7 +239,7 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Name", job.get("name", "(unnamed)")),
         ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
-        ("Next run", job.get("next_run_at", "?")),
+        _next_run_row(job),
         ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
     ] + [(label, value) for label, value in optional if value]
 
@@ -442,6 +474,15 @@ def cron_status():
         else:
             print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
             active = get_active_profile_name()
+            # When scheduling last worked before the host went away: without this, a
+            # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
+            with contextlib.suppress(Exception):
+                from cron.jobs import TICKER_INTERVAL_SECONDS, get_ticker_heartbeat_age
+                hb_age = get_ticker_heartbeat_age()
+                if hb_age is not None and hb_age > TICKER_INTERVAL_SECONDS * 3 + 20:
+                    print(color("  Scheduler last ticked "
+                                f"{_format_lateness(hb_age)} ago — jobs that came due "
+                                "since then have not fired.", Colors.YELLOW))
             print("\n  To enable automatic execution for this profile:\n"
                   "    hermes gateway install    # Install as a user service\n"
                   "    sudo hermes gateway install --system  # Linux servers: boot-time system service\n"
@@ -466,10 +507,28 @@ def _print_active_jobs_summary(jobs) -> None:
     if not jobs:
         print("  No active jobs")
         return
-    next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
+    from cron.jobs import _parse_aware
+
+    # Stored stamps carry mixed UTC offsets (an interval job keeps last_run_at's offset, a cron
+    # job its configured zone), so order by instant, never by ISO text; display the stored stamp.
+    # `_parse_aware` hands back one shared ZoneInfo, and Python compares same-tzinfo datetimes
+    # by wall clock (wrong across a DST fold) — normalise to UTC before ordering.
+    next_runs = [(parsed.astimezone(timezone.utc), j["next_run_at"]) for j in jobs
+                 if (parsed := _parse_aware(j.get("next_run_at"))) is not None]
     print(f"  {len(jobs)} active job(s)")
     if next_runs:
-        print(f"  Next run: {min(next_runs)}")
+        earliest = min(next_runs, key=lambda run: run[0])[1]
+        overdue_by = _next_run_overdue_seconds(earliest)
+        if overdue_by is not None and overdue_by > _OVERDUE_GRACE_SECONDS:
+            # #114309: a dead scheduler leaves next_run_at stranded in the past; presenting it
+            # as an upcoming "Next run" hides the outage. Same 15m grace as `cron doctor`
+            # (_OVERDUE_GRACE_SECONDS) so a job a few minutes behind the ticker's own
+            # cadence doesn't flash OVERDUE here while doctor still calls it healthy.
+            print(color(f"  ⚠ Next run {earliest} is OVERDUE — passed "
+                        f"{_format_lateness(overdue_by)} ago but the job has not fired "
+                        "(is the scheduler running?)", Colors.YELLOW))
+        else:
+            print(f"  Next run: {earliest}")
     # Post-downtime late fires show at status level, not just per-job in `cron list`.
     late = [j for j in jobs if isinstance(j.get("last_dispatch"), dict)
             and j["last_dispatch"].get("kind") in ("late", "catch_up")]
@@ -508,19 +567,16 @@ def _script_health_issue(script: str) -> Optional[str]:
 
 # A busy tick can push dispatch a few minutes late; only a next_run_at parked well in the past
 # means the job is silently not firing (ticker dead, gateway down, wedged fire-claim).
+# `cron status`'s OVERDUE line shares this grace so status, list, and doctor tell one
+# consistent story about when a job counts as overdue.
 _OVERDUE_GRACE_SECONDS = 15 * 60
 
 
 def _next_run_overdue_issue(next_run: str) -> Optional[str]:
     """Issue string when ``next_run_at`` is parked in the past."""
-    from datetime import datetime, timezone
-    try:
-        dt = datetime.fromisoformat(next_run.replace("Z", "+00:00"))
-    except ValueError:
+    overdue_s = _next_run_overdue_seconds(next_run)
+    if overdue_s is None:
         return f"next_run_at is not a valid timestamp: {next_run!r}"
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    overdue_s = (datetime.now(timezone.utc) - dt).total_seconds()
     if overdue_s <= _OVERDUE_GRACE_SECONDS:
         return None
     amount = f"{overdue_s / 3600:.1f}h" if overdue_s >= 3600 else f"{overdue_s / 60:.0f}m"

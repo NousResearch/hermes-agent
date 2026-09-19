@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { setActiveSessionId, setSessions } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
+import type { SessionInfo } from '@/types/hermes'
 
 import { handleServerRequest, previewSessionRoute } from './server-requests'
 import type { ServerRequestContext } from './server-requests'
@@ -39,6 +41,36 @@ describe('connection request routing', () => {
 
     expect(handled).toBe(false)
     expect(respond).not.toHaveBeenCalled()
+  })
+})
+
+describe('approval request routing', () => {
+  const notify = vi.fn().mockResolvedValue(true)
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+
+  beforeEach(() => {
+    notify.mockClear()
+    desktopWindow.hermesDesktop = { notify } as unknown as Window['hermesDesktop']
+    setSessions([{ id: 'session-a', title: 'Fix the flaky test' } as SessionInfo])
+    setActiveSessionId('session-b')
+  })
+
+  afterEach(() => {
+    delete desktopWindow.hermesDesktop
+    setSessions([])
+    setActiveSessionId(null)
+  })
+
+  it('titles the parked approval toast with the session it belongs to', () => {
+    deliver(
+      'approval',
+      { command: 'rm -rf /', description: 'dangerous', request_id: 'r1', session_id: 'session-a' },
+      'session-b'
+    )
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'approval', title: 'Approval needed — Fix the flaky test' })
+    )
   })
 })
 

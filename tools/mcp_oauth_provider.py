@@ -19,6 +19,52 @@ logger = logging.getLogger(__name__)
 # omit ``iss`` from the redirect (#111135). Exact issuer match, nothing else is relaxed.
 _ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com"})
 
+# Authorization-server metadata documents the SDK tries in its 401 branch (RFC 8414 / OIDC discovery).
+_ASM_DISCOVERY_PATHS = ("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")
+_DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
+
+
+def _default_auth_request_user_agent() -> str:
+    """``Hermes-Agent/<version>`` for SDK-built OAuth requests that would otherwise carry no User-Agent at
+    all; versioned so an operator debugging a WAF block can tell which client they are looking at."""
+    from hermes_cli import __version__
+    return f"Hermes-Agent/{__version__}"
+
+
+DEFAULT_AUTH_REQUEST_USER_AGENT = _default_auth_request_user_agent()
+
+
+def stamp_default_user_agent(request):
+    """Give an SDK-built OAuth request (discovery, registration, token) a User-Agent if it has none.
+
+    The SDK builds those as bare ``httpx.Request`` objects and sends them through ``client.send()``,
+    which never merges the client's default headers, so they leave with NO ``User-Agent`` at all.
+    WAF-fronted authorization servers (www.tradingview.com, coda.io) answer 403 to header-less
+    requests while curl and a plain ``client.get()`` get 200 — the metadata document is then "not
+    found", the SDK falls back to guessing ``/register`` and ``/authorize`` on the MCP host, and the
+    user sees ``Registration failed: 404`` (#113771). Only an absent header is filled, so a
+    configured ``oauth.user_agent`` (token requests) still wins."""
+    if "user-agent" not in request.headers:
+        request.headers["User-Agent"] = DEFAULT_AUTH_REQUEST_USER_AGENT
+    return request
+
+
+def _asm_discovery_failure(response) -> str | None:
+    """``"<status> from <url>"`` when *response* is a failed authorization-server metadata fetch."""
+    req = getattr(response, "request", None)
+    status = getattr(response, "status_code", None)
+    if req is None or status is None or 200 <= status < 300:
+        return None
+    url = str(req.url)
+    return f"{status} from {url}" if any(p in url for p in _ASM_DISCOVERY_PATHS) else None
+
+
+def _with_discovery_context(exc: Exception, failures: list[str]):
+    """Re-shape a registration error raised after every metadata fetch failed: lead with the discovery
+    failure, since the 404 on the guessed ``/register`` URL is only its consequence (#113771)."""
+    return type(exc)(f"{_DISCOVERY_CONTEXT_LEAD} ({'; '.join(failures)}); dynamic client registration "
+                     f"then fell back to a guessed endpoint on the MCP host and failed: {exc}")
+
 
 
 class _RefreshCompletedByPeer(Exception):
@@ -122,6 +168,7 @@ class HermesProviderMixin:
         """
         while True:
             inner = super().async_auth_flow(request)
+            discovery_failures: list[str] = []
             try:
                 sent, thrown = None, None
                 while True:
@@ -135,6 +182,14 @@ class HermesProviderMixin:
                         return
                     except _RefreshCompletedByPeer:
                         break
+                    except Exception as exc:
+                        from mcp.client.auth.oauth2 import OAuthRegistrationError
+                        if (isinstance(exc, OAuthRegistrationError) and discovery_failures
+                                and self.context.oauth_metadata is None):
+                            raise _with_discovery_context(exc, discovery_failures) from exc
+                        raise
+                    if out is not request:
+                        stamp_default_user_agent(out)
                     # Full bidirectional delegation: the SDK drives this flow with
                     # asend(response), so `async for` would swallow the response and
                     # feed the inner generator None. Async generators have no
@@ -146,6 +201,10 @@ class HermesProviderMixin:
                         raise
                     except BaseException as exc:
                         sent, thrown = None, exc
+                    else:
+                        failure = _asm_discovery_failure(sent)
+                        if failure:
+                            discovery_failures.append(failure)
             finally:
                 await self._hermes_release_refresh_fence()
 

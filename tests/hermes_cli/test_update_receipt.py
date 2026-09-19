@@ -340,6 +340,23 @@ class TestFleetClassification:
         assert fleet[0]["state"] == "current"
         assert fleet[0]["pid"] == 4242
 
+    def test_current_multiplexer_reports_its_served_profiles(self, monkeypatch, tmp_path):
+        """One verified multiplexer is evidence for every profile it serves."""
+        sha = "a" * 40
+        fleet = self._fleet_with(
+            monkeypatch,
+            tmp_path,
+            {
+                "pid": 4242,
+                "code_sha": sha,
+                "code_version": "1.0",
+                "served_profiles": ["default", "coder"],
+            },
+            expected_sha=sha,
+        )
+
+        assert fleet[0]["served_profiles"] == ["default", "coder"]
+
     def test_stale_gateway(self, monkeypatch, tmp_path):
         fleet = self._fleet_with(
             monkeypatch, tmp_path,

@@ -9,7 +9,7 @@ description: "Step-by-step guide to running Hermes Agent entirely on your own ma
 :::tip Desktop users: there's a one-click path
 On the Hermes desktop app, **Settings → Providers → Local Models** installs
 and manages a local llama.cpp server for you — model downloads, memory
-fitting, and context sizing included. See [Local Models](/user-guide/local-models).
+fitting, and context sizing included. See [Local Models](../user-guide/local-models.md).
 This guide is for manual setup: Ollama specifically, CLI-first workflows,
 or servers you want to run yourself.
 :::
@@ -313,7 +313,7 @@ Models without tool-call support produce plain text instead of structured functi
 - **Hermes has auto-repair** — it detects malformed tool calls and attempts to fix them automatically.
 - **Set up a fallback** — if the local model fails 3 times, Hermes falls back to a cloud provider.
 
-If the model prints raw JSON like `{"name": "web_search", ...}` in its reply instead of actually running the tool, that's usually the *server*, not the model — tool calling isn't enabled or the tool-call format isn't parsed. See the per-server fix table in [Tool calls appear as text instead of executing](/integrations/providers#tool-calls-appear-as-text-instead-of-executing) (llama.cpp needs `--jinja`, vLLM needs `--enable-auto-tool-choice --tool-call-parser hermes`, and so on).
+If the model prints raw JSON like `{"name": "web_search", ...}` in its reply instead of actually running the tool, that's usually the *server*, not the model — tool calling isn't enabled or the tool-call format isn't parsed. See the per-server fix table in [Tool calls appear as text instead of executing](../integrations/providers.md#tool-calls-appear-as-text-instead-of-executing) (llama.cpp needs `--jinja`, vLLM needs `--enable-auto-tool-choice --tool-call-parser hermes`, and so on).
 
 ### Context window errors
 

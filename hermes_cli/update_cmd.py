@@ -650,6 +650,9 @@ def _repair_venv_on_current_checkout(
     _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
     _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
+    # Same order as the pull and ZIP paths: the ``[all]`` reinstall above may have stripped the
+    # active memory provider's bridge packages (hindsight-embed, torch, ...).
+    _m()._refresh_active_memory_provider_dependencies()
     _m()._reapply_plugin_python_dependencies()
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —
     # that phase uses its own marker so a later lazy failure cannot be "healed" by clearing the core marker
@@ -741,6 +744,8 @@ def _repair_current_checkout(
                       "to finish import-based venv repair.")
             _m()._restore_active_tool_dependencies(
                 active_tool_dependencies, repair_prefix, env=repair_env)
+            # Same order as the pull path: the swapped-in venv was built from uv.lock alone.
+            _m()._refresh_active_memory_provider_dependencies()
             _m()._reapply_plugin_python_dependencies()
         current_checkout_complete = _repair_node_deps_on_current_checkout(
             _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,

@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _split_repo_id
@@ -137,11 +138,20 @@ class SkillsShSource(SkillSource):
         if not skill_sitemap_urls:
             return self._featured_skills(limit)
 
-        # Step 2: collect canonical "owner/repo/skill" IDs from each sitemap.
-        seen, results = set(), []
+        # Step 2: collect canonical "owner/repo/skill" IDs from each sitemap. A shard
+        # ``_xml`` returns None for is a hole, not an empty shard: retry it, and
+        # if it stays dark return the partial slice without publishing it to the cache.
+        seen, results, partial = set(), [], False
         for sitemap_url in skill_sitemap_urls:
-            xml = _xml(sitemap_url, 30)
-            for loc_match in self._SITEMAP_LOC_RE.finditer(xml or ""):
+            for attempt in range(1, self.CATALOG_PAGE_RETRIES + 1):
+                xml = _xml(sitemap_url, 30)
+                if xml is not None or attempt == self.CATALOG_PAGE_RETRIES:
+                    break
+                time.sleep(min(2 ** attempt, 8))
+            if xml is None:
+                partial = True
+                continue
+            for loc_match in self._SITEMAP_LOC_RE.finditer(xml):
                 m = self._SITEMAP_SKILL_RE.match(loc_match.group(1).strip())
                 if not m:
                     continue
@@ -153,7 +163,8 @@ class SkillsShSource(SkillSource):
                                               path=skill, extra=self._urls_for(canonical, repo)))
         if not results:
             return self._featured_skills(limit)
-        _cache_metas(cache_key, results)
+        if not partial:
+            _cache_metas(cache_key, results)
         return results[:limit] if limit > 0 else results
 
     def _featured_skills(self, limit: int) -> List[SkillMeta]:

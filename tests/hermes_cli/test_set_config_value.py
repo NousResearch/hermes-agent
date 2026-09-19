@@ -1100,3 +1100,50 @@ class TestContainerTypeRefusal:
         import yaml as _yaml
         saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["agent"]["disabled_toolsets"] == ["web"]
+
+
+class TestProviderSwitchClearsBaseUrl:
+    """``config set model.provider X`` must not carry the previous provider's route (#113719,
+    #40862): a ``base_url``/``api_mode`` that is not X's own endpoint goes, with a notice, so X's
+    key is never posted to the old endpoint. A route that IS X's stays."""
+
+    ROUTE = {"base_url": "https://chatgpt.com/backend-api/codex", "api_mode": "codex_responses"}
+
+    def _seed(self, tmp_path, model):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "model": model,
+            "custom_providers": [{"name": "mylab", "base_url": "http://10.0.0.5:8000/v1", "api_key": "k"}]}))
+
+    @pytest.mark.parametrize("target, seed_route", [
+        ("anthropic", ROUTE),                    # the reporter's switch: both route keys are stale
+        ("mylab", ROUTE),                        # named custom entry has its own endpoint
+        ("anthropic", {"api_mode": "codex_responses"}),  # wire mode alone is old-route state
+    ])
+    def test_switching_provider_clears_foreign_route(self, _isolated_hermes_home, capsys, target, seed_route):
+        self._seed(_isolated_hermes_home, {"provider": "opencode-go", "default": "gpt-5.3-codex", **seed_route})
+        set_config_value("model.provider", target)
+        model = yaml.safe_load(_read_config(_isolated_hermes_home))["model"]
+        assert model == {"provider": target, "default": "gpt-5.3-codex"}
+        out = capsys.readouterr().out
+        assert "Cleared" in out and "opencode-go" in out
+        for key, value in seed_route.items():
+            assert f"model.{key} ({value})" in out
+
+    @pytest.mark.parametrize("key, target, seed", [
+        ("model.default", "gpt-5", {"provider": "opencode-go", **ROUTE}),          # not a provider switch
+        ("model.provider", "opencode-go", {"provider": "opencode-go", **ROUTE}),   # same provider: no-op
+        ("model.provider", "openai-codex", {"provider": "opencode-go", **ROUTE}),  # route IS the target's
+        ("model.provider", "mylab", {"provider": "openai", "base_url": "http://10.0.0.5:8000/v1"}),
+        ("model.provider", "custom", {"provider": "openai", "base_url": "https://api.openai.com/v1"}),
+        ("model.provider", "anthropic", {"provider": "opencode-go", "base_url": "http://proxy.internal:8080/v1"}),
+    ])
+    def test_route_that_belongs_to_target_is_kept(self, _isolated_hermes_home, capsys, key, target, seed):
+        self._seed(_isolated_hermes_home, {**seed, "default": "m"})
+        set_config_value(key, target)
+        model = yaml.safe_load(_read_config(_isolated_hermes_home))["model"]
+        expected = {**seed, "default": "m", key.split(".", 1)[1]: target}
+        assert model == expected
+        out = capsys.readouterr().out
+        assert "Cleared" not in out
+        # Unknown host: kept, but the user is told the old route still applies (from #113725).
+        assert ("still applies" in out) == ("proxy.internal" in seed["base_url"])

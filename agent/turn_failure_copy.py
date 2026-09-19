@@ -154,6 +154,10 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "{label} rejected this request as malformed, so the model didn't answer. Start a clean "
         "session with /new or switch models with /model; if it keeps happening, run `hermes doctor`."
     ),
+    FailoverReason.role_alternation.value: (
+        "{label} requires user and assistant turns to strictly alternate and rejected this "
+        "conversation's shape. Start a clean session with /new or switch models with /model."
+    ),
     FailoverReason.ssl_cert_verification.value: (
         "Hermes couldn't verify {label}'s security certificate, so the connection was refused. "
         "This is usually a corporate proxy or an outdated certificate store on this computer — "
@@ -252,6 +256,17 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "This conversation is too long for {model} and automatic shrinking is turned off in "
         "your settings (compression.enabled). Run /compress to shrink it now, /new to start "
         "fresh, or pick a model with a bigger context window."
+    ),
+    # Wording deliberately avoids the overflow phrases gateway/run_turn.py matches on
+    # (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
+    # message must stay in the transcript and the session must not be auto-reset.
+    "server_context_rejection": (
+        "The model server rejected this request as too large, but this conversation is only "
+        "about {tokens:,} tokens — well under the {window:,}-token window Hermes knows for "
+        "{model} — so shrinking it would not help. Another request on the same server (for "
+        "example a background memory review from an earlier session) was probably holding its "
+        "capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a "
+        "moment and send /retry; if it keeps happening, check the server's context setting."
     ),
     "stream_dropped_tool_call": (
         "The connection to {label} kept dropping while the model was writing a large action, "

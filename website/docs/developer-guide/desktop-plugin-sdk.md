@@ -6,7 +6,7 @@ description: "Extend the native Hermes Desktop app — panes, pages, sidebar nav
 
 # Desktop Plugin SDK
 
-The native [Hermes Desktop](/user-guide/desktop) app is contribution-driven: every
+The native [Hermes Desktop](../user-guide/desktop.md) app is contribution-driven: every
 surface in the window — panes, routes, sidebar nav, status-bar items, palette
 entries, keybinds, themes — registers into one central registry. Core registers
 its surfaces exactly the way a plugin does, so the plugin story is the real one,
@@ -26,8 +26,8 @@ desktop app** (`hermes desktop`) SDK — the `@hermes/plugin-sdk` module and
 `$HERMES_HOME/desktop-plugins/`. The **web dashboard** (`hermes dashboard`) has
 its own, unrelated plugin system on `window.__HERMES_PLUGIN_SDK__` with a
 `manifest.json` — documented at
-[Extending the Dashboard](/user-guide/features/extending-the-dashboard). Python
-CLI/gateway plugins are documented at [Build a Hermes Plugin](/developer-guide/plugins).
+[Extending the Dashboard](../user-guide/features/extending-the-dashboard.md). Python
+CLI/gateway plugins are documented at [Build a Hermes Plugin](./plugins/index.md).
 The three do not share code, APIs, or delivery. Only the backend `plugin_api.py`
 namespace (`/api/plugins/<id>`) is shared between the desktop and dashboard SDKs.
 :::
@@ -781,7 +781,7 @@ The user gets a confirmation dialog (repo id, source links, a probe of what
 the repo ships) and picks components before anything is installed — deep links
 never auto-install. `force=1` replaces an existing install; dev builds use
 `hermes-dev://`. Full link reference:
-[One-click install links](/user-guide/features/plugins#one-click-install-links-desktop).
+[One-click install links](../user-guide/features/plugins.md#one-click-install-links-desktop).
 
 ### The Python side
 
@@ -814,7 +814,7 @@ async def action(body: dict):
 Routes mount under `/api/plugins/<id>/` (`GET /api/plugins/<id>/board`, …).
 Backend code runs inside the gateway process, so it can import from the
 hermes-agent codebase directly (`hermes_state`, `hermes_cli.config`, …). See
-[Extending the Dashboard → Backend API routes](/user-guide/features/extending-the-dashboard#backend-api-routes)
+[Extending the Dashboard → Backend API routes](../user-guide/features/extending-the-dashboard.md#backend-api-routes)
 for the full backend reference — the mount is identical.
 
 :::caution The Python backend is gated separately

@@ -522,6 +522,12 @@ def _run_one_file_once(
         # (venv without pytest, -k that matches nothing) can't report green.
         rc = 0
     summary = _parse_pytest_summary(output)
+    crash = _describe_interpreter_crash(rc, output) if rc != 0 else None
+    if crash:
+        # Same convention as the timeout path: the diagnosis leads the
+        # captured output, so the failure dump reads correctly on its own.
+        summary["crashed"] = 1
+        output = f"(interpreter crashed: {crash})\n{output}"
     subproc_wall = time.monotonic() - subproc_start
     return file, rc, output, summary, subproc_wall
 
@@ -557,6 +563,35 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
         if line.startswith("FAILED") or line.startswith("SHORT TEST SUMMARY"):
             break
     return result
+
+
+def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
+    """Return a one-line description when the pytest subprocess died instead of exiting.
+
+    A native fault (sqlite stepping a connection another thread closed,
+    #113186) kills the interpreter mid-file: faulthandler prints ``Fatal
+    Python error: Segmentation fault`` and the process dies by signal, so
+    there is no summary line and every count parses to 0. Without this the
+    file is reported as "no tests ran (collection/import error)" under a
+    summary that says ``0 failed`` — the wrong diagnosis in both places.
+    """
+    fatal = next(
+        (line.strip() for line in output.splitlines() if "Fatal Python error:" in line),
+        None,
+    )
+    if fatal:
+        # The faulthandler banner is appended to the progress dots of the
+        # last test; keep only the banner.
+        fatal = fatal[fatal.index("Fatal Python error:"):]
+    if rc < 0:
+        import signal as _signal
+
+        try:
+            name = _signal.Signals(-rc).name
+        except ValueError:
+            name = f"signal {-rc}"
+        return f"{fatal} ({name})" if fatal else f"killed by {name}"
+    return fatal
 
 
 def _format_file(file: Path, repo_root: Path) -> str:
@@ -621,6 +656,8 @@ def _print_progress(
             parts.append(f"{xf}xf")
         if xp:
             parts.append(f"{xp}xp")
+        if file_summary.get("crashed"):
+            parts.append("CRASHED")
         test_str = " ".join(parts) + ", " if parts else ""
     else:
         n_tests = test_counts.get(file, 0)
@@ -1165,11 +1202,12 @@ def main() -> int:
     # nothing-ran guard, whereas a file that died before collection reports
     # nothing at all and must.
     tests_collected = 0
+    files_crashed = 0
     lock = threading.Lock()
 
     def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, Dict[str, int], float]]") -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed, tests_skipped
-        nonlocal tests_collected
+        nonlocal tests_collected, files_crashed
         n_tests = test_counts.get(file, 0)
         try:
             fpath, rc, output, summary, subproc_wall = fut.result()
@@ -1194,6 +1232,7 @@ def main() -> int:
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
             tests_skipped += summary.get("skipped", 0)
+            files_crashed += summary.get("crashed", 0)
             tests_collected += sum(
                 summary.get(k, 0)
                 for k in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed")
@@ -1242,7 +1281,13 @@ def main() -> int:
     print()
     pct = min(100, (tests_done / approx_total_tests * 100)) if approx_total_tests else 0
     skipped_note = f", {tests_skipped} skipped" if tests_skipped else ""
-    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
+    # A crashed interpreter has no failed-test count; say so on the one line
+    # everyone reads, or "0 failed" + exit 1 looks like a runner bug.
+    crashed_note = (
+        f", {files_crashed} file{'s' if files_crashed != 1 else ''} CRASHED"
+        if files_crashed else ""
+    )
+    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{crashed_note}{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
     # Host-OS gating note: tests marked for another OS were skipped by the
     # conftest hook, not run. Say so explicitly — a green local run on Linux
@@ -1265,7 +1310,7 @@ def main() -> int:
     # The summary line above reads green at a glance ("0 failed ... 100%
     # complete"), which has been misread as a successful verification, so say
     # it plainly AND fail the exit code.
-    no_tests_ran_at_all = bool(files) and tests_collected == 0
+    no_tests_ran_at_all = bool(files) and tests_collected == 0 and not files_crashed
     if no_tests_ran_at_all:
         print()
         print(
@@ -1333,11 +1378,17 @@ def main() -> int:
             print(output.rstrip())
         print()
         # Split: files with actual test failures vs non-zero exit for other reasons
-        test_fail_files = [(f, s) for f, _o, s in failures if s.get("failed", 0) > 0]
-        all_passed_but_nonzero = [(f, s) for f, _o, s in failures
+        crashed_files = [(f, o, s) for f, o, s in failures if s.get("crashed")]
+        rest = [(f, s) for f, _o, s in failures if not s.get("crashed")]
+        test_fail_files = [(f, s) for f, s in rest if s.get("failed", 0) > 0]
+        all_passed_but_nonzero = [(f, s) for f, s in rest
                                   if s.get("failed", 0) == 0 and s.get("passed", 0) > 0]
-        no_tests_ran = [(f, s) for f, _o, s in failures
+        no_tests_ran = [(f, s) for f, s in rest
                         if s.get("failed", 0) == 0 and s.get("passed", 0) == 0]
+        if crashed_files:
+            print(f"=== {len(crashed_files)} file{'s' if len(crashed_files) != 1 else ''} where the interpreter CRASHED mid-run (native fault — a real bug, not a collection error; the tests that did run are not counted) ===")
+            for file, output, _s in crashed_files:
+                print(f"  {_format_file(file, repo_root)}  {output.splitlines()[0]}")
         if test_fail_files:
             total_tf = sum(s.get("failed", 0) for _, s in test_fail_files)
             print(f"=== {len(test_fail_files)} file{'s' if len(test_fail_files) != 1 else ''} with test failures ({total_tf} test{'s' if total_tf != 1 else ''} failed) ===")

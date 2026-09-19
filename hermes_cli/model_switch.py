@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
 
@@ -357,7 +358,7 @@ def resolve_startup_model_route(
     raw_model: str, *, explicit_provider: str = "", current_provider: str = "",
     user_providers: Optional[dict] = None,
     custom_providers: Optional[list] = None) -> Optional[StartupModelRoute]:
-    """Resolve aliases and configured ``provider/model`` input at startup.
+    """Resolve aliases, ``provider:model`` and configured ``provider/model`` input at startup.
 
     ``HermesCLI`` is constructed before the interactive ``/model`` pipeline runs; resolving here
     keeps startup from attaching the configured default provider to an explicitly requested
@@ -385,7 +386,22 @@ def resolve_startup_model_route(
         return StartupModelRoute(
             model=direct.model, provider=alias_provider, base_url=direct.base_url, api_key=alias_key or "")
 
-    if explicit_provider or "/" not in raw:
+    if explicit_provider:
+        return None
+    # ``custom:<name>:<model>`` / ``<provider>:<model>`` — the same qualified form ``/model``
+    # accepts. Left undecoded, the configured default provider receives the unsplit string as
+    # the model name and the whole prompt goes to its endpoint before it 404s (#73943). The
+    # configured ids come from the caller's config, the same source the ``/`` branch below uses.
+    from hermes_cli.models import parse_model_input
+    from hermes_cli.providers import custom_provider_slug
+    custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
+                  for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
+    custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
+                      for entry in (custom_providers or []) if isinstance(entry, dict) and _clean(entry.get("name")))
+    qualified_provider, qualified_model = parse_model_input(raw, "", custom_ids=custom_ids)
+    if qualified_provider:
+        return StartupModelRoute(model=qualified_model, provider=qualified_provider)
+    if "/" not in raw:
         return None
     prefix, model = (part.strip() for part in raw.split("/", 1))
     if not prefix or not model:
@@ -1363,7 +1379,18 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         except Exception:
             st.api_key, st.base_url, st.api_mode = ukey, user_pdef.base_url, ""
     elif st.target_provider == "custom" and st.current_base_url:
-        st.api_key, st.base_url = st.current_api_key, st.current_base_url
+        # A bare-custom session switching models stays on its endpoint (#45597). Arriving from
+        # ANOTHER provider (the per-turn config sync adopting ``provider: custom``) the configured
+        # endpoint wins, or the new model is paired with the old provider's host and key (#73680).
+        # With nothing configured the resolver either raises (st.* keep the session values) or
+        # lands on OpenRouter's default (#74143) — the session endpoint is kept in both cases.
+        key, url = st.current_api_key, st.current_base_url
+        if st.current_provider != "custom":
+            with suppress(Exception):
+                st.resolve_runtime(requested="custom")
+            if st.base_url and not _fell_back_to_openrouter_default(st):
+                key, url = st.api_key, st.base_url
+        st.api_key, st.base_url = key, url
         st.api_mode = determine_api_mode(st.target_provider, st.base_url)
     else:
         # A URL-bearing LOCAL direct alias (ollama, vllm — labels that resolve to `custom`)
@@ -1418,15 +1445,22 @@ def _creds_for_current_provider(st: _Switch) -> None:
             pass
         # Bare ``custom``/``local`` sessions whose base_url is session-only (not a trusted config
         # ``model.base_url``) re-resolve to the OpenRouter DEFAULT — a host the user never picked
-        # (#74143). Keep the session endpoint + key then; a config-backed custom URL still wins so
-        # key/endpoint rotation is not pinned to a stale session.
+        # (#74143). Keep the session endpoint + key then (also when the resolver came back empty,
+        # whatever host the session is on); a config-backed custom URL still wins so key/endpoint
+        # rotation is not pinned to a stale session.
         if (
             st.current_provider in {"custom", "local"} and st.current_base_url
-            and (not st.base_url or base_url_host_matches(st.base_url, "openrouter.ai"))
-            and not base_url_host_matches(st.current_base_url, "openrouter.ai")
+            and (not st.base_url or _fell_back_to_openrouter_default(st))
         ):
             st.base_url, st.api_key = st.current_base_url, st.current_api_key
             st.api_mode = determine_api_mode(st.current_provider, st.base_url)
+
+
+def _fell_back_to_openrouter_default(st: _Switch) -> bool:
+    """The bare-``custom`` resolver ended on OpenRouter's default host while the session was
+    elsewhere: no trusted ``model.base_url`` existed, so the URL is one the user never picked."""
+    return (base_url_host_matches(st.base_url, "openrouter.ai")
+            and not base_url_host_matches(st.current_base_url, "openrouter.ai"))
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:

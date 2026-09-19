@@ -1,7 +1,7 @@
 import { flushSync } from 'react-dom'
 
 import { $activeTreeGroup, $hoveredTreeGroup, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
-import { isEditableTarget } from '@/lib/keybinds/combo'
+import { isEditableTarget, OVERLAY_SURFACE } from '@/lib/keybinds/combo'
 import { $composerPopout } from '@/store/composer-popout'
 
 import { $floatingComposerOwner, type FloatingComposerOwner } from './floating-state'
@@ -31,6 +31,13 @@ const inInlineEdit = (el: Element | null) => Boolean(el?.closest(EDIT_COMPOSER_R
  * hover-switching between panes keeps behaving as before (#114245). */
 const keepsOwnFocus = (el: Element | null) =>
   inInlineEdit(el) || (isEditableTarget(el) && !el?.closest('[data-slot="composer-rich-input"]'))
+
+/** Focus inside an open floating layer — a popover, menu, listbox or dialog
+ * portaled over the transcript — is the user's own as well. Radix moves focus
+ * into such a layer when it opens and dismisses it the moment focus leaves, so
+ * pulling the caret back to the pane composer on the very next pointermove
+ * closed the message reaction picker before the pointer could reach it. */
+const inFloatingLayer = (el: Element | null) => Boolean(el?.closest(OVERLAY_SURFACE))
 
 function rememberCaret(editor: EventTarget | null) {
   const selection = window.getSelection()
@@ -66,11 +73,12 @@ function selectionOutsideComposer(): boolean {
 }
 
 /** Every focus-follow branch (pointermove and focusin) funnels here, so the
- * selection guard lives at this chokepoint rather than at one call site. */
+ * selection and floating-layer guards live at this chokepoint rather than at
+ * one call site. */
 function focusSelectedComposer() {
   const owner = $floatingComposerOwner.get()
 
-  if (!owner || selectionOutsideComposer()) {
+  if (!owner || selectionOutsideComposer() || inFloatingLayer(document.activeElement)) {
     return
   }
 

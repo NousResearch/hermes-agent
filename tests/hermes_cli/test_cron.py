@@ -1,7 +1,9 @@
 """Tests for hermes_cli.cron command handling."""
 
 import argparse
+import time
 from argparse import Namespace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -588,6 +590,90 @@ class TestSlashCronListLastStatus:
 
         out = self._run_list(tmp_cron_dir, capsys)
         assert "(ok)" in out
+
+
+class TestStatusSurfacesDeadScheduler:
+    """#114309 — with the ticker dead and a job's next_run_at stranded in the past, `cron
+    status` / `cron list` must not present the stale timestamp as an upcoming "Next run":
+    flag it as overdue and say when the scheduler last ticked."""
+
+    def _dead_gateway(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None
+        )
+        monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda: False)
+
+    def _park_next_run(self, job_id, when):
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(job_id)]["next_run_at"] = when.isoformat()
+        save_jobs(jobs)
+
+    def test_overdue_next_run_and_stale_heartbeat_are_loud(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        job = create_job(prompt="Hourly", schedule="every 60m")
+        self._dead_gateway(monkeypatch)
+        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(hours=7))
+        (tmp_cron_dir / "cron" / "ticker_heartbeat").write_text(str(time.time() - 25 * 3600))
+
+        cron_command(Namespace(cron_command="status"))
+        status_out = capsys.readouterr().out
+        cron_command(Namespace(cron_command="list", all=False, json=False))
+        list_out = capsys.readouterr().out
+
+        assert "Gateway is not running" in status_out
+        assert "Scheduler last ticked" in status_out
+        assert "OVERDUE" in status_out and "7h ago" in status_out
+        # The stale timestamp must no longer read as an upcoming run on either surface.
+        assert "Next run:" not in status_out
+        assert "Overdue:" in list_out and "Next run:" not in list_out
+
+    def test_overdue_within_doctor_grace_stays_plain(self, tmp_cron_dir, capsys, monkeypatch):
+        # status shares `cron doctor`'s 15-minute grace (_OVERDUE_GRACE_SECONDS): a job only
+        # a few minutes behind the ticker's own cadence is not an outage yet, and status must
+        # not flash OVERDUE while doctor calls the same job healthy.
+        job = create_job(prompt="Hourly", schedule="every 60m")
+        self._dead_gateway(monkeypatch)
+        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(minutes=5))
+
+        cron_command(Namespace(cron_command="status"))
+        status_out = capsys.readouterr().out
+        cron_command(Namespace(cron_command="list", all=False, json=False))
+        list_out = capsys.readouterr().out
+
+        assert "Next run:" in status_out and "OVERDUE" not in status_out
+        assert "Scheduler last ticked" not in status_out  # no heartbeat file → nothing to date
+        assert "Next run:" in list_out and "Overdue:" not in list_out
+
+    def test_slash_cron_and_list_flag_overdue_but_not_paused(self, tmp_cron_dir, capsys):
+        # The in-chat `/cron` overview and `/cron list` (classic CLI + Ink TUI forward to the
+        # same handler) read the same rows; a 7h-past stamp must not read as an upcoming run,
+        # while a paused job keeps its plain label — pausing is why it did not fire.
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        stale = create_job(prompt="Hourly", schedule="every 60m")
+        paused = create_job(prompt="Parked", schedule="every 60m")
+        when = datetime.now(timezone.utc) - timedelta(hours=7)
+        self._park_next_run(stale["id"], when)
+        self._park_next_run(paused["id"], when)
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(paused["id"])]["enabled"] = False
+        save_jobs(jobs)
+
+        _Host()._handle_cron_command("/cron")
+        overview_out = capsys.readouterr().out
+        _Host()._handle_cron_command("/cron list --all")
+        list_out = capsys.readouterr().out
+
+        for out in (overview_out, list_out):
+            assert out.count("Overdue:") == 1 and "7h ago" in out
+        assert "Next" not in overview_out  # the overview lists enabled jobs only
+        assert list_out.count("Next run:") == 1  # only the paused job's stamp stays plain
+        assert list_out.index("Overdue:") < list_out.index("Next run:")
 
 
 class TestSlashCronRunSkipped:

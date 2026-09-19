@@ -33,10 +33,11 @@ def _acp_agent():
     return HermesACPAgent(session_manager=_SM()), made
 
 
-def _state():
+def _state(**agent_attrs):
     return types.SimpleNamespace(
         session_id="s1", cwd=".", model="claude-sonnet-5",
-        agent=types.SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com", api_key="k"))
+        agent=types.SimpleNamespace(
+            provider="anthropic", base_url="https://api.anthropic.com", api_key="k", **agent_attrs))
 
 
 def test_acp_and_dashboard_reject_what_switch_model_rejects(monkeypatch):
@@ -96,3 +97,19 @@ def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch)
     resp, loop_thread = asyncio.run(_run())
     assert resp is not None and state.model == "claude-sonnet-5"
     assert seen["thread"] is not loop_thread
+
+
+def test_acp_switch_model_carries_the_live_agent_toolsets_into_the_rebuild(monkeypatch):
+    """Regression for #42719: ACP-provided MCP servers live only on the running agent's toolsets
+    (``_register_session_mcp_servers``); a rebuild that re-derived them from config.yaml dropped
+    every session MCP tool after ``session/set_model`` or ``/model``."""
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **_kw: ModelSwitchResult(success=True, target_provider="anthropic", new_model="claude-sonnet-5"))
+
+    agent, made = _acp_agent()
+    agent._switch_model(_state(enabled_toolsets=["hermes-acp", "mcp-demo-search"], disabled_toolsets=["browser"]),
+                        "claude-sonnet-5")
+
+    assert made["enabled_toolsets"] == ["hermes-acp", "mcp-demo-search"]
+    assert made["disabled_toolsets"] == ["browser"]

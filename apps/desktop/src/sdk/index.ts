@@ -1570,6 +1570,11 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** THE overdue test for a cron job's `next_run_at`: non-null once the stored slot
+ *  sits past the scheduler grace and the job is expected to fire. Every surface
+ *  that prints a next run switches its label on this (`t.cron.next` →
+ *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
+export { nextRunOverdueMs } from '@/app/cron/job-state'
 /** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
  *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
  *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.

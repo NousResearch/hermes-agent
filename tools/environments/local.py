@@ -23,7 +23,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_terminal_first_party_env,
-    _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys)
+    _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
 from tools.environments.local_gitbash_probe import (
     _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
     _looks_like_msys_spawn_failure, _mandatory_aslr_enabled)
@@ -426,7 +426,10 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
         if not _is_global_env(key) or key.startswith("TERMINAL_"):
             env.pop(key, None)
-    return env
+    # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
+    # or an operator export never appears in the launch ``.env``, the secret scrub ignores
+    # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).
+    return strip_profile_gate_env(env)
 
 
 # --- Shell discovery ---

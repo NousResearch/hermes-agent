@@ -170,7 +170,7 @@ Cursor-style context variables are also substituted (case-sensitive):
 `${userHome}` (home directory), `${workspaceFolder}` (session workspace
 root), `${workspaceFolderBasename}`, and `${pathSeparator}` / `${/}`
 (the OS path separator). See the
-[MCP config reference](/docs/reference/mcp-config-reference) for details.
+[MCP config reference](../../reference/mcp-config-reference.md) for details.
 
 Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
@@ -800,6 +800,22 @@ npx --version
 
 Then verify your config and restart Hermes.
 
+### Remote (HTTP) server rejects the connection
+
+`hermes mcp test <name>` reports what the server actually answered. When the MCP SDK can only say
+`Server returned an error response` (a 4xx/5xx whose body is not a JSON-RPC error), Hermes appends
+the HTTP status, the URL it requested and the start of the response body:
+
+```
+Streamable HTTP: Server returned an error response (HTTP 400 from POST http://host:27200/mcp:
+{"jsonrpc":"2.0","error":{"code":-32020,"message":"Unsupported MCP-Protocol-Version"}})
+```
+
+Read the status and body first: a `400`/`405` on the `initialize` POST usually means the endpoint
+speaks SSE only (set `transport: sse`) or a proxy in front of it rejects the request; a `401`/`403`
+means the token or OAuth grant is wrong; an HTML body means the URL points at a web page, not an MCP
+endpoint. `hermes logs --level debug` additionally shows the exact endpoint each connect attempt used.
+
 ### Tools not appearing
 
 Possible causes:
@@ -987,7 +1003,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 
 ## Related docs
 
-- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
-- [CLI Commands](/reference/cli-commands)
-- [Slash Commands](/reference/slash-commands)
-- [FAQ](/reference/faq)
+- [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md)
+- [CLI Commands](../../reference/cli-commands.md)
+- [Slash Commands](../../reference/slash-commands.md)
+- [FAQ](../../reference/faq.md)

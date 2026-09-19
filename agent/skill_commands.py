@@ -336,7 +336,22 @@ def _scaffold_header(
 _SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive', '.locks'}
 
 
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]], resolve_command) -> None:
+def skill_command_collision_note(name: str) -> Optional[str]:
+    """User-facing note when *name*'s slash slug is a core command (name or alias), else None.
+
+    The single source of the collision predicate: ``scan_skill_commands`` uses it to skip
+    auto-registration (the shadowing guard from 370ebf2d3 — the skill map is consulted before
+    built-in handlers), and the ``/skills`` listing plus the command palette render the note so
+    the skipped skill is explained where the user looks, not only in the log.
+    """
+    from hermes_cli.commands import resolve_command
+    cmd_name = slugify_skill_name(name)
+    if not cmd_name or resolve_command(cmd_name) is None:
+        return None
+    return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
+
+
+def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
     from tools.skills_tool import _parse_frontmatter, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
@@ -356,9 +371,9 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
     cmd_name = slugify_skill_name(name)
     if not cmd_name:
         return
-    # A collision with a core command (name or alias, via resolve_command) skips
-    # auto-registration; the skill stays loadable via /skill <name>.
-    if resolve_command(cmd_name) is not None:
+    # A collision with a core command (name or alias) skips auto-registration; the skill stays
+    # loadable via /skill <name>. The same predicate feeds the /skills + palette notes.
+    if skill_command_collision_note(name) is not None:
         logger.warning("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
                        "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
         return
@@ -393,7 +408,6 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         from agent.skill_utils import (
             get_external_skills_dirs, get_project_skills_dirs, iter_project_skill_files, iter_skill_index_files,
         )
-        from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
         # Precedence: project (through the quarantine chokepoint) > local > external.
@@ -407,7 +421,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         for _iter in iters:
             for skill_md in _iter:
                 try:
-                    _scan_skill_md(skill_md, disabled, seen_names, commands, resolve_command)
+                    _scan_skill_md(skill_md, disabled, seen_names, commands)
                 except Exception:
                     continue
     except Exception:

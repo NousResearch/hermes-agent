@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import stat
+import sys
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -34,7 +35,9 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # while every real command position (text start, whitespace, `;`/`&`/`|`, `$(`, backtick,
     # U+FFFD) still matches.
     # See #77173.
-    r"(?:(?<![/\w.\-])hermes\s+gateway\s+(?:restart|stop|uninstall)\b)"
+    # Windows spells the CLI with a launcher suffix (`hermes.exe`, npm-style `hermes.cmd`/`.ps1`);
+    # same command, so the suffix is optional here.
+    r"(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?\s+gateway\s+(?:restart|stop|uninstall)\b)"
     # Branch B: launchctl ops anchored on a hermes-gateway label so unrelated hermes services stay
     # unblocked. `submit`/`bootstrap` register a NEW keepalive job wrapping an arbitrary helper (a
     # laundered restart); neutral-label submissions are caught by
@@ -56,9 +59,165 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill/kill of the gateway process, both token orders. Leading \b keeps "skill" from
     # matching as "kill".
-    r"|(?:\bp?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    # `taskkill` / `Stop-Process` are the Windows spellings of the same operation; `\bp?kill\b`
+    # cannot reach inside `taskkill`, so they are named outright. Service-control forms (`net stop`,
+    # `sc stop`) presuppose a service install this guard has no evidence of and stay uncovered.
+    r"|(?:\b(?:p?kill|taskkill|stop-process)\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    r"|(?:\b(?:p?kill|taskkill|stop-process)\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
+
+# Branch E: process killers whose TARGET is the interpreter image hosting the gateway. A supervised
+# gateway is literally `python.exe` / `python3.12` (`python -m hermes_cli.main gateway run`), so
+# `taskkill /F /IM python.exe`, `pkill -9 python3` or `killall python` carry no hermes/gateway token
+# yet terminate it (#113667). Token-aware rather than a line regex: option VALUES are never read as
+# targets (`pkill -u <user> chrome`), `-f` cmdline patterns are judged as patterns, and other image
+# names (`taskkill /F /IM agent-browser.exe`) stay available. Numeric-PID kills are out of scope:
+# the explicit PID / `proc_*` id IS the ownership-scoped route the rejection points to.
+_INTERPRETER_IMAGE_RE = re.compile(r"^pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?$")
+_HOST_INTERPRETER_NAME = Path(sys.executable).name.lower() if sys.executable else ""
+_KILLER_VALUE_OPTIONS = {
+    # procps pkill/pgrep options that consume the next token, so the value is never the pattern.
+    "pkill": frozenset({
+        "-g", "--pgroup", "-G", "--group", "-P", "--parent", "-s", "--session", "-t", "--terminal",
+        "-u", "--euid", "-U", "--uid", "-F", "--pidfile", "--ns", "--nslist", "-d", "--delimiter",
+        "--signal", "-O", "--older", "-r", "--runstates", "--cgroup", "-A", "--ignore-ancestors",
+    }),
+    "killall": frozenset({"-s", "--signal", "-u", "--user", "-o", "--older-than", "-y", "--younger-than",
+                          "-n", "--ns", "-Z", "--context"}),
+}
+_KILLER_VALUE_OPTIONS["pgrep"] = _KILLER_VALUE_OPTIONS["pkill"]
+_KILLER_VALUE_OPTIONS["pidof"] = frozenset({"-o", "--omit-pid", "-S", "--separator"})
+# Regex metacharacters a pkill/pgrep ERE may carry around the interpreter name (`^python3?$`, `python.*`).
+_ERE_TAIL = re.compile(r"[.*+?\\\[\](){}|].*$")
+_ERE_WILDCARD_ONLY = re.compile(r"^[.*+?$\s]*$")
+_NAME_KILLERS = frozenset({"pkill", "killall", "taskkill", "stop-process"})
+_NAME_ENUMERATORS = frozenset({"pgrep", "pidof", "get-process"})
+_KILL_VERB_RE = re.compile(r"(?i)\b(?:kill|taskkill|stop-process)\b")
+# A `-f` pattern that does not start with the interpreter reaches the gateway cmdline
+# (`python -m hermes_cli.main gateway run` / `hermes gateway run`) only through its own tokens;
+# an unrelated script that merely contains "hermes" (`hermes-polis/run.sh`, `my_hermes_bot.py`)
+# cannot match it. Same hermes+gateway pairing as Branch D, plus the module path.
+_GATEWAY_CMDLINE_TOKEN_RE = re.compile(r"(?i)hermes_cli|\bhermes\b[^\n]*\bgateway\b|\bgateway\b[^\n]*\bhermes\b")
+# Rejection text for Branch E, shared by every tool surface that runs the guard so the agent is
+# pointed at the ownership-scoped route (proc_* id / explicit PID) rather than the shell.
+HOST_INTERPRETER_KILL_REJECTION = (
+    "Blocked: this command kills every process whose image/name matches the Python "
+    "interpreter, which is the process hosting this gateway (and this command). "
+    "Stop only the process you own instead: process(action=\"kill\", session_id=\"proc_…\") "
+    "for a background job Hermes started, or kill/taskkill by its explicit PID."
+)
+
+
+def _is_interpreter_image(value: str, *, substring: bool = False) -> bool:
+    """True when *value* (a process/image name, `*`-wildcard allowed) denotes the Python interpreter
+    that hosts the gateway. *substring*: pkill/pgrep match an ERE anywhere in the name, so `py`
+    reaches `python3` too."""
+    name = value.strip().strip("\"'").lower().removesuffix(".exe")
+    if not name:
+        return False
+    if name.endswith("*"):
+        prefix = name.rstrip("*")
+        return "python".startswith(prefix) or _HOST_INTERPRETER_NAME.startswith(prefix)
+    if _INTERPRETER_IMAGE_RE.match(name) or name == _HOST_INTERPRETER_NAME.removesuffix(".exe"):
+        return True
+    return substring and len(name) >= 2 and "python".startswith(name)
+
+
+def _pattern_reaches_host_interpreter(pattern: str, *, full_cmdline: bool, exact: bool) -> bool:
+    """pkill/pgrep/killall operand semantics: an ERE against the process NAME (or, with `-f`, the full
+    command line). `python -m hermes_cli.main …` is the gateway's own cmdline, so a `-f` pattern
+    that names the interpreter and then only wildcards or a `hermes` token reaches it, while
+    `python mt_add.py` (a specific script) does not."""
+    core = pattern.strip().strip("\"'").lstrip("^")
+    if core.endswith("$"):
+        core = core[:-1]
+    head, _, rest = core.partition(" ") if full_cmdline else (core, "", "")
+    # A literal interpreter name first (`python3.12`: the dot is a version separator, not an ERE
+    # wildcard); only then read the head as an ERE with a metacharacter tail (`python3?`, `python.*`).
+    match = None if _is_interpreter_image(head, substring=not exact) else _ERE_TAIL.search(head)
+    if match:
+        rest = head[match.start():] + " " + rest
+        head = head[: match.start()]
+    if not _is_interpreter_image(head, substring=not exact):
+        return full_cmdline and bool(_GATEWAY_CMDLINE_TOKEN_RE.search(core))
+    return not rest.strip() or bool(_ERE_WILDCARD_ONLY.match(rest)) or "hermes" in rest.lower()
+
+
+def _killer_targets_host_interpreter(name: str, args: list[str]) -> bool:
+    """Whether killer/enumerator *name* with argv *args* would select the host interpreter."""
+    if name in ("pkill", "pgrep", "killall", "pidof"):
+        # pkill/pgrep: ERE anywhere in the name unless -x; killall: exact name unless -r; pidof: exact.
+        exact = name == "pidof" or (name == "killall") != any(t in ("-r", "--regexp", "-x", "--exact") for t in args)
+        full_cmdline = name in ("pkill", "pgrep") and any(t in ("-f", "--full") for t in args)
+        operands: list[str] = []
+        position = 0
+        while position < len(args):
+            token = args[position]
+            if token == "--":
+                operands += args[position + 1:]
+                break
+            if token in _KILLER_VALUE_OPTIONS[name]:
+                position += 2
+                continue
+            if not token.startswith("-"):
+                operands.append(token)
+            position += 1
+        return any(_pattern_reaches_host_interpreter(op, full_cmdline=full_cmdline, exact=exact) for op in operands)
+    if name == "taskkill":
+        for position, token in enumerate(args[:-1]):
+            option = token.lower().lstrip("/-")
+            value = args[position + 1]
+            if option == "im" and _is_interpreter_image(value):
+                return True
+            if option == "fi":
+                filter_match = re.match(r"(?i)\s*['\"]?imagename\s+eq\s+(\S+)", value)
+                if filter_match and _is_interpreter_image(filter_match.group(1)):
+                    return True
+        return False
+    # Stop-Process / Get-Process: `-Name`/`-ProcessName` (also `-Name:value`), comma lists, positional
+    # names for Get-Process.
+    values: list[str] = []
+    for position, token in enumerate(args):
+        option, _, inline_value = token.partition(":")
+        if option.lower() in ("-name", "-processname", "-n"):
+            values.append(inline_value if inline_value else (args[position + 1] if position + 1 < len(args) else ""))
+        elif name == "get-process" and not token.startswith("-") and (position == 0 or not args[position - 1].startswith("-")):
+            values.append(token)
+    return any(_is_interpreter_image(part) for value in values for part in value.split(","))
+
+
+def _segment_names_host_interpreter(tokens: list[str], killers: frozenset[str]) -> bool:
+    """Whether a tokenized segment runs one of *killers* against the host interpreter. The
+    executable is read at the wrapper-peeled position first, then at the first killer token anywhere
+    in the segment (`xargs kill`, Python argv lists)."""
+    index = _executed_command_index(tokens)
+    candidates = [index] if index is not None else []
+    candidates += [i for i, token in enumerate(tokens) if _executable_name(token).lower().removesuffix(".exe") in killers]
+    for position in candidates:
+        name = _executable_name(tokens[position]).lower().removesuffix(".exe")
+        if name in killers and _killer_targets_host_interpreter(name, tokens[position + 1:]):
+            return True
+    return False
+
+
+def contains_host_interpreter_kill(text: str) -> bool:
+    """Branch E entrypoint: a process killer aimed at the interpreter image hosting the gateway, or a
+    name-derived PID feed into one (`pgrep python | xargs kill`, `kill $(pidof python3)`,
+    `Get-Process python | Stop-Process`). Segment-tokenized, so quoted/spliced spellings and Python
+    argv lists resolve the same way the shell resolves them."""
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    kill_verb_present = bool(_KILL_VERB_RE.search(normalized))
+    for segment in _iter_command_segments(normalized):
+        joined = " ".join(segment)
+        stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
+        # Python argv lists (`subprocess.run(["taskkill", "/IM", "python.exe"])`) re-split only when
+        # list punctuation was present, so a quoted `-f 'python my_script.py'` stays one operand.
+        for tokens in ([segment, stripped.split()] if stripped != joined else [segment]):
+            if _segment_names_host_interpreter(tokens, _NAME_KILLERS):
+                return True
+            if kill_verb_present and _segment_names_host_interpreter(tokens, _NAME_ENUMERATORS):
+                return True
+    return False
 
 # Every branch uses `[^\n]*` between verb and label so matches cannot span unrelated lines. A POSIX
 # backslash-newline continuation is therefore collapsed to a space before matching (as the shell
@@ -299,7 +458,8 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # defined in an earlier `;`-separated segment (`label=${item%%:*}; launchctl bootout
     # "gui/$uid/$label"`), so neither the same-span regex nor same-segment tokenization sees verb and label
     # together. Check "verb anywhere AND label anywhere" instead.
-    return _contains_launchctl_gateway_lifecycle(normalized)
+    # Branch E (#113667): killers aimed at the interpreter image itself carry no hermes/gateway token.
+    return _contains_launchctl_gateway_lifecycle(normalized) or contains_host_interpreter_kill(normalized)
 
 
 # Whole-walk work limits. The per-file cap and depth bound above limit one read, not the walk: a

@@ -11,7 +11,6 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +31,8 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
 from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.providers import determine_api_mode, is_actual_route, is_official_openai_host, nous_api_mode
-from utils import base_url_host_matches, base_url_hostname, env_int
+from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
+from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
 
 
 # Late-bound delegates, deliberately NOT module-level from-imports: this module is often imported
@@ -118,7 +117,7 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     mandated = _HOST_MANDATED_API_MODES.get(hostname) or ("codex_responses" if is_official_openai_host(base_url) else None)
     if mandated:
         return mandated
-    path = urlparse(normalized).path.rstrip("/")
+    path = base_url_path(normalized)
     if path.endswith(("/anthropic", "/anthropic/v1")) or (hostname == "api.kimi.com" and "/coding" in normalized):
         # Direct native Anthropic host: realign with providers.determine_api_mode, which already maps this
         # host to anthropic_messages. The exact-hostname match rejects lookalike subdomains
@@ -140,10 +139,41 @@ def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
     """api_mode when no explicit/persisted mode applies: URL detection (host-mandated wire shapes)
     first, then the transport the provider overlay declares via ``providers.determine_api_mode``
     (``openai-api`` pointed at us.api.openai.com 400'd on every tool call without it), then
-    ``chat_completions``."""
+    ``chat_completions``. A declared ``anthropic_messages`` is kept only on the provider's own
+    endpoint (#76836)."""
     if is_actual_route(provider, base_url):
         return "chat_completions"
-    return _detect_api_mode_for_url(base_url) or determine_api_mode(provider, base_url, model) or "chat_completions"
+    detected = _detect_api_mode_for_url(base_url)
+    if detected:
+        return detected
+    declared = determine_api_mode(provider, base_url, model)
+    if declared == "anthropic_messages" and not _on_declared_anthropic_endpoint(provider, base_url):
+        # The declared Anthropic transport describes the provider's own endpoint. A base_url
+        # override at a foreign host (OpenAI-compatible relay, LiteLLM, egress proxy) or at the
+        # provider's OpenAI-compatible path (api.minimax.io/v1) speaks chat/completions; sending
+        # Messages-shaped requests with x-api-key there is a 401 on every turn (#76836).
+        return "chat_completions"
+    return declared
+
+
+def _on_declared_anthropic_endpoint(provider: str, base_url: str) -> bool:
+    """True when ``base_url`` is the provider's own Anthropic-protocol endpoint: the catalog
+    default's host (or a subdomain of it) and either the bare host — the provider's own host
+    with no path still means the native endpoint (#53054) — or the default's path
+    (``/anthropic`` for MiniMax, ``/plan/anthropic`` for Tencent) with or without a ``/v1``
+    tail. With nothing to compare — no URL, an overlay-only provider whose models.dev default
+    is not cached (offline), or a default with no path at all (``api.anthropic.com``: no sibling
+    OpenAI-compatible path exists to tell an override's protocol from) — keep the declared
+    transport: demoting the provider's own endpoint would be the worse failure."""
+    pdef = get_provider(provider, allow_network=False)
+    default = (pdef.base_url if pdef else "").strip()
+    default_path = base_url_path(default).removesuffix("/v1")
+    if not default_path or not (base_url or "").strip():
+        return True
+    if not base_url_host_matches(base_url, base_url_hostname(default)):
+        return False
+    path = base_url_path(base_url)
+    return path == "" or path == default_path or path.startswith(default_path + "/")
 
 
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:

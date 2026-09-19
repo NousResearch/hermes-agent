@@ -780,8 +780,8 @@ Hermes Agent supports Discord voice messages:
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
 
 For the full setup and operational guide, see:
-- [Voice Mode](/user-guide/features/voice-mode)
-- [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)
+- [Voice Mode](../features/voice-mode.md)
+- [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md)
 
 ### Voice Channel Audio Effects (ambient + verbal acks)
 

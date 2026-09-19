@@ -223,5 +223,5 @@ checks out exactly the new pin.
 - [Plugins](plugins.md) — the plugin system itself: manifest format, enabling,
   configuration
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
-- [Build a Hermes Plugin](/developer-guide/plugins) — write your own
+- [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
 - [Plugin Catalog page](/plugins) — the browsable catalog

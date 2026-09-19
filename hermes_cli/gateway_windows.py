@@ -21,6 +21,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 from hermes_cli._subprocess_compat import (
@@ -682,6 +683,22 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     return proc.pid
 
 
+def _stdin_is_interactive(*, isatty: bool, console_mode_ok: bool | None) -> bool:
+    """A human can answer a prompt only on a real console. The Windows CRT reports isatty()==True for
+    every character device — the NUL device included (`hermes gateway start < NUL`, stdin=DEVNULL) — so
+    isatty must be confirmed by GetConsoleMode accepting the handle (#113977). ``console_mode_ok`` is
+    None where that fact does not exist (not Windows) and isatty alone decides."""
+    return isatty and console_mode_ok is not False
+
+
+def _stdin_console_mode_ok() -> bool | None:
+    if sys.platform != "win32":
+        return None
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+    return bool(kernel32.GetConsoleMode(handle, ctypes.byref(ctypes.c_ulong())))
+
+
 def _install_choice_from_env(name: str) -> bool | None:
     raw = os.environ.get(name)
     if raw is None:
@@ -784,7 +801,7 @@ def install(
             _start_or_report_running()
         else:
             print("ℹ Gateway not started and no auto-start service installed.")
-            print("  Run later with: hermes gateway start")
+            print("  Run in the foreground later with: hermes gateway run")
         return
 
     task_name = get_task_name()
@@ -1203,6 +1220,101 @@ def is_startup_entry_installed() -> bool:
     return get_startup_entry_path().exists() or _legacy_startup_entry_path().exists()
 
 
+def _query_scheduled_task_xml(task_name: str) -> str | None:
+    """Return a registered task's XML, or ``None`` when it cannot be inspected (fail open: a
+    localized ``schtasks`` failure is not evidence about an otherwise working task)."""
+    code, out, err = _exec_schtasks(["/Query", "/TN", task_name, "/XML"])
+    if code != 0 or not out.strip():
+        logger.debug("Could not query Scheduled Task XML for %r: %s", task_name, (err or out).strip())
+        return None
+    return out
+
+
+def _task_xml_leaf_values(xml: str) -> dict[str, str] | None:
+    """Namespace-agnostic ``Task/Settings/...`` leaf-path → text map, or ``None`` for invalid XML.
+    The root ``version`` attribute is exposed as ``Task@version``."""
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError:
+        return None
+    values: dict[str, str] = {"Task@version": root.attrib.get("version", "")}
+
+    def visit(element: ElementTree.Element, path: tuple[str, ...]) -> None:
+        current_path = (*path, element.tag.rsplit("}", 1)[-1])
+        children = list(element)
+        if not children:
+            values["/".join(current_path)] = " ".join((element.text or "").split())
+        for child in children:
+            visit(child, current_path)
+
+    visit(root, ())
+    return values
+
+
+# Allowlist of template leaves whose absence/mismatch on the live task means it predates the current
+# template (#113670). Never a full-leaf compare: schtasks exports <UserId> as a SID while the template
+# writes DOMAIN\user, so equality would flag every healthy registration.
+_TASK_DRIFT_LEAVES = {
+    "Task/Settings/RestartOnFailure/Interval": "RestartOnFailure",
+    "Task/Triggers/LogonTrigger/Delay": "LogonTrigger Delay",
+    "Task/Actions/Exec/Arguments": "launcher arguments",
+}
+
+
+def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list[str]:
+    """Human-readable drift fragments between a registered task export and the current template,
+    over ``_TASK_DRIFT_LEAVES`` plus the Task ``version``. Empty when aligned or when either side
+    does not parse (fail open)."""
+    live = _task_xml_leaf_values(registered_xml)
+    want = _task_xml_leaf_values(template_xml)
+    if live is None or want is None:
+        return []
+    missing = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path not in live]
+    differs = [label for path, label in _TASK_DRIFT_LEAVES.items() if path in want and path in live and live[path] != want[path]]
+    drift = []
+    if missing:
+        drift.append(f"missing: {', '.join(missing)}")
+    drift.extend(f"{label} differs" for label in differs)
+    if live["Task@version"] != want["Task@version"]:
+        drift.append(f"version {live['Task@version']} vs {want['Task@version']}")
+    return drift
+
+
+def scheduled_task_drift(task_name: str) -> list[str]:
+    """Drift fragments between the registered task and ``_build_scheduled_task_xml``; empty when
+    aligned or when the task cannot be queried."""
+    registered = _query_scheduled_task_xml(task_name)
+    if registered is None:
+        return []
+    template = _build_scheduled_task_xml(task_name, get_task_script_path().with_suffix(".vbs"), _resolve_task_user())
+    return compare_scheduled_task_drift(registered, template)
+
+
+def _print_scheduled_task_drift(task_name: str) -> None:
+    """Warn when the registered task predates the current template (status is read-only; the
+    repair runs from ``start()`` / ``hermes update`` via ``reconcile_scheduled_task``)."""
+    drift = scheduled_task_drift(task_name)
+    if drift:
+        print(f"⚠ Scheduled Task registration predates the current template ({'; '.join(drift)})")
+        print("  Repair: hermes gateway start  (or: hermes gateway install)")
+
+
+def reconcile_scheduled_task(task_name: str) -> bool:
+    """Re-register the task from the current template when it drifts (#113670) — the Windows sibling
+    of ``gateway.py::refresh_systemd_unit_if_needed``. Template hardening (``RestartOnFailure``, logon
+    ``Delay``) otherwise only ever reaches fresh installs. False when aligned/unqueryable or when
+    ``schtasks`` refused (typically Access Denied — the elevating ``hermes gateway install`` is the fallback)."""
+    drift = scheduled_task_drift(task_name)
+    if not drift:
+        return False
+    print(f"↻ Repairing outdated Scheduled Task registration ({'; '.join(drift)})")
+    ok, detail = _install_scheduled_task(task_name, _write_task_script())
+    print(f"{'✓' if ok else '⚠'} {detail}")
+    if not ok:
+        print("  Repair manually: hermes gateway install")
+    return ok
+
+
 def is_installed() -> bool:
     """True when either the schtasks entry or the Startup fallback is present."""
     return is_task_registered() or is_startup_entry_installed()
@@ -1311,7 +1423,7 @@ def _probe_state_file(state_path: Path) -> None:
                 age_str = f" (updated {age_seconds}s ago)"
             except Exception:
                 pass
-        _probe(5, gateway_state == "running", f"gateway_state.json state={gateway_state!r}{age_str}")
+        _probe(5, gateway_state in ("running", "degraded"), f"gateway_state.json state={gateway_state!r}{age_str}")
     except Exception as exc:
         _probe(5, False, f"gateway_state.json present but unreadable: {exc}")
 
@@ -1367,6 +1479,7 @@ def status(deep: bool = False) -> None:
         for key in ("status", "last run time", "last run result"):
             if key in info:
                 print(f"  {key.title()}: {info[key]}")
+        _print_scheduled_task_drift(task_name)
     elif startup_installed:
         entry = get_startup_entry_path()
         print(f"✓ Windows login item installed: {entry if entry.exists() else _legacy_startup_entry_path()}")
@@ -1396,17 +1509,28 @@ def start() -> None:
         return
 
     if not is_task_registered() and not is_startup_entry_installed():
-        from hermes_cli.setup import prompt_yes_no
+        # Login persistence is a lasting system change: a bare ``start`` installs it only on an explicit
+        # answer — the HERMES_GATEWAY_INSTALL_START_ON_LOGIN override or a real TTY prompt — never on a
+        # non-TTY default (#113977). Declining still starts the gateway; the command is ``start``.
+        start_on_login = _install_choice_from_env("HERMES_GATEWAY_INSTALL_START_ON_LOGIN")
+        if start_on_login is None:
+            from hermes_cli.setup import is_interactive_stdin, is_noninteractive, prompt_yes_no
 
-        print("✗ Gateway service is not installed")
-        if not prompt_yes_no("  Install it now so the gateway starts on login?", True):
-            print("  Run: hermes gateway install")
+            print("✗ Gateway service is not installed")
+            if is_noninteractive() or not _stdin_is_interactive(
+                isatty=is_interactive_stdin(), console_mode_ok=_stdin_console_mode_ok()
+            ):
+                start_on_login = False
+            else:
+                start_on_login = prompt_yes_no("  Install it now so the gateway starts on login?", True)
+        if start_on_login:
+            # install() starts the gateway itself (start_now) and reports the outcome — including a UAC
+            # hand-off to an elevated child — so there is nothing left to spawn or to warn about here.
+            install(force=False, start_now=True, start_on_login=True)
             return
-        install(force=False)
-        if not is_task_registered() and not is_startup_entry_installed():
-            print("⚠ Gateway install did not complete in this process.")
-            print("  If a UAC prompt opened, approve it, then run: hermes gateway start")
-            return
+        print("ℹ Login auto-start not installed; add it later with: hermes gateway install")
+    elif is_task_registered():
+        reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
 
     # Manual starts use the same console-less direct spawn as restart() and install --start-now;
     # Scheduled Task / Startup entries are only login persistence.
@@ -1572,7 +1696,9 @@ def restart() -> None:
                 "start a duplicate. Investigate stray PIDs before retrying."
             )
 
-    time.sleep(1.0)   # let Windows release the listening port
+    from hermes_cli.gateway import _wait_for_api_server_port_free  # avoid circular init
+
+    _wait_for_api_server_port_free()
     start()
 
     if not _wait_for_gateway_ready(timeout_s=15.0):

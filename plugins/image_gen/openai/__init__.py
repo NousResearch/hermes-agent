@@ -14,7 +14,7 @@ from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio,
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
     StaticImageGenProvider, collect_source_images, error_factory, import_openai, materialize_image,
-    openai_importable, prompt_required_error, resolve_static_model, size_for)
+    openai_importable, prompt_required_error, record_token_usage, resolve_static_model, size_for)
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +143,9 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
             logger.debug("OpenAI image %s failed", verb, exc_info=True)
             return fail(f"OpenAI image {'editing' if is_edit else 'generation'} failed: {exc}", "api_error")
 
+        # gpt-image bills per text/image token; the tier id is a Hermes label, the API model prices.
+        # Recorded before extraction/save: the tokens are billed whether or not an image came back.
+        record_token_usage(getattr(response, "usage", None), model=meta["api_model"], provider="openai")
         data = getattr(response, "data", None) or []
         if not data:
             return fail("OpenAI returned no image data", "empty_response")

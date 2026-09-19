@@ -35,9 +35,14 @@ class SessionRecoveryMixin:
 
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Profile namespace for session keys: None when multiplexing is off (legacy
-        ``agent:main``), else ``source.profile`` or the active profile."""
+        ``agent:main``), else the pinned identity's runtime profile, ``source.profile`` or the
+        active profile."""
         if not getattr(self.config, "multiplex_profiles", False):
             return None
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.session_key_profile
         if source is not None and source.profile:
             return source.profile
         try:

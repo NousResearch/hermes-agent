@@ -133,6 +133,15 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 
 ## Profile scope (adapters, turns, and everything between turns)
 
+- **One identity per inbound event.** `gateway/session_identity.py::resolve_identity` answers
+  "which bot received it / who may admit it / where does it run" ONCE per event and pins a frozen
+  `RoutingIdentity` on the source (wire-invisible, like `_transport_adapter_ref`);
+  `_transport_owner`, `_authorization_home_for_source`, `_resolve_profile_home_for_source`,
+  `_session_key_profile` and `_resolve_profile_for_key` read it when present and fall back to
+  their old chain only for sources nothing resolved (restored rows, hand-built sources). Never
+  derive a second answer next to the identity; extend the object. `transport_profile` ≠
+  `runtime_profile` is normal (shared bot → routed satellite). A source copy goes through
+  `session_identity.replace_source` so the identity travels with it.
 - **Token locks.** An adapter that connects with a unique credential (bot token, API key) calls
   `acquire_scoped_lock()` from `gateway.status` in `connect()`/`start()` and `release_scoped_lock()`
   in `disconnect()`/`stop()`, so two profiles cannot share one credential. Canonical:

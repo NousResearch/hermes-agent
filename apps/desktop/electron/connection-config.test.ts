@@ -46,6 +46,7 @@ import {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  runtimeKindFromStatus,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
@@ -1382,5 +1383,28 @@ test('FIX #95701: transport and server failures at the ticket mint stay retryabl
     assert.equal(wrapped.message, 'transport copy')
     assert.equal(wrapped.needsOauthLogin, undefined)
     assert.equal(wrapped.isReauthRequired, undefined)
+  }
+})
+
+// --- runtimeKindFromStatus ---
+
+test('runtimeKindFromStatus accepts only the two declared literals, never guessing native', () => {
+  // An older backend omits the field; reading that as 'native' would badge every
+  // gateway that predates it wrongly, the one outcome the indicator must never produce.
+  const cases: [unknown, 'container' | 'native' | undefined][] = [
+    [{ runtime_kind: 'container' }, 'container'],
+    [{ runtime_kind: 'native' }, 'native'],
+    [{}, undefined],
+    [{ runtime_kind: 'docker' }, undefined],
+    [{ runtime_kind: 'Container' }, undefined],
+    [{ runtime_kind: true }, undefined],
+    [{ runtime_kind: null }, undefined],
+    [null, undefined],
+    [undefined, undefined],
+    ['container', undefined]
+  ]
+
+  for (const [body, expected] of cases) {
+    assert.equal(runtimeKindFromStatus(body), expected, JSON.stringify(body))
   }
 })

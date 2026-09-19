@@ -1006,6 +1006,9 @@ export interface DesktopRegistryConnection {
   // connections sharing it are one physical backend registered under two
   // addresses (display-only "Same backend as …" hint in Settings).
   installId?: string
+  // What the backend's /api/status reports once probed; absent on older backends, and
+  // absence is unknown, never 'native'.
+  runtimeKind?: 'container' | 'native'
 }
 
 export interface DesktopConnectionsRegistry {

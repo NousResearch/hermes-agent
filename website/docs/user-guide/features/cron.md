@@ -698,7 +698,8 @@ Only the job's **own conversation** is ever touched:
 
 - the **origin chat** the job was created in;
 - the **home-channel fallback** when `deliver: origin` captured no origin (jobs
-  created by scripts or the API rather than from a live gateway chat) — the
+  created by scripts, or from a session on the request/response `api_server`
+  platform, which cannot receive a delivery) — the
   user's primary conversation standing in for the origin;
 - a job's **single explicit `platform:chat` target**, but only when the job
   itself opts in with `attach_to_session: true` — the job author declares that

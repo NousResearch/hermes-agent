@@ -45,7 +45,11 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _standalone_post_json_with_rate_limit_retry,
+    _standalone_retry_after_from_rate_limit_body,
+)
 
 
 @pytest.mark.asyncio
@@ -539,3 +543,65 @@ async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeyp
     assert send.await_count == 1
     kwargs = send.await_args.kwargs
     assert not kwargs.get("files") and "big.png" in kwargs["content"]
+
+
+def test_standalone_rate_limit_delay_is_validated_and_bounded():
+    assert _standalone_retry_after_from_rate_limit_body('{"retry_after": 0.666}') == 1.0
+    assert _standalone_retry_after_from_rate_limit_body('{"retry_after": 99}') == 30.0
+    assert _standalone_retry_after_from_rate_limit_body('{"retry_after": -1}') is None
+    assert _standalone_retry_after_from_rate_limit_body('not json') is None
+
+
+@pytest.mark.asyncio
+async def test_standalone_text_send_retries_discord_429(monkeypatch):
+    import plugins.platforms.discord.adapter as discord_platform
+
+    class _Response:
+        def __init__(self, status, body):
+            self.status = status
+            self._body = body
+
+        async def text(self):
+            return self._body
+
+        async def json(self):
+            return json.loads(self._body)
+
+    class _Context:
+        def __init__(self, response):
+            self.response = response
+
+        async def __aenter__(self):
+            return self.response
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _Session:
+        def __init__(self):
+            self.responses = [
+                _Response(429, '{"retry_after": 0.1}'),
+                _Response(200, '{"id": "delivered"}'),
+            ]
+            self.calls = 0
+
+        def post(self, *_args, **_kwargs):
+            response = self.responses[self.calls]
+            self.calls += 1
+            return _Context(response)
+
+    sleeps = []
+
+    async def _sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", _sleep)
+    session = _Session()
+    data, error = await _standalone_post_json_with_rate_limit_retry(
+        session, "https://discord.test/messages", {}, {"content": "daily report"}, {},
+    )
+
+    assert error is None
+    assert data == {"id": "delivered"}
+    assert session.calls == 2
+    assert sleeps == [1.0]

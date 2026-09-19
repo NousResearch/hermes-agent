@@ -70,6 +70,10 @@ class ContextEngine(ABC):
     # False keeps successful automatic compaction passes silent (routine background
     # maintenance); warnings, errors and manual /compress still surface.
     emit_automatic_compaction_status: bool = True
+    # True for engines whose compaction stays retrievable (originals kept in the store, e.g. LCM):
+    # the repeated-compaction warning must then not claim accuracy loss — that names a cause the
+    # engine does not have (#53000).
+    lossless_compaction: bool = False
 
     @abstractmethod
     def update_from_response(self, usage: Dict[str, Any]) -> None:

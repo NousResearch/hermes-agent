@@ -3362,9 +3362,19 @@ def _finish_compaction_boundary(
     compressor = agent.context_compressor
     _cc = compressor.compression_count
     if _cc >= 2:
-        _cc_msg = (
-            f"{agent.log_prefix}⚠️  Session compressed {_cc} times — accuracy may degrade. Consider /new to start fresh."
-        )
+        # Engines that keep compacted turns retrievable (LCM-style) declare
+        # ``lossless_compaction`` on the class; "accuracy may degrade" is then a false cause and
+        # sends users to /new for nothing (#53000). ``type()`` keeps a mock compressor on the
+        # default (lossy) wording instead of a truthy auto-attribute.
+        if bool(getattr(type(compressor), "lossless_compaction", False)):
+            _cc_msg = (
+                f"{agent.log_prefix}ℹ️  Session compacted {_cc} times — this engine keeps compacted "
+                "turns retrievable, so nothing was lost. /new only if you want a clean slate."
+            )
+        else:
+            _cc_msg = (
+                f"{agent.log_prefix}⚠️  Session compressed {_cc} times — accuracy may degrade. Consider /new to start fresh."
+            )
         agent._compression_warning = _cc_msg
         agent._emit_diagnostic_status(_cc_msg)
 

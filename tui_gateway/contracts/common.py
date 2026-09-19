@@ -169,6 +169,7 @@ class PendingApproval(OpenModel):
     request_id: str | None = None
     command: str | None = None
     description: str | None = None
+    purpose: str | None = None
     pattern_key: str | None = None
     pattern_keys: list[str] | None = None
     allow_permanent: bool | None = None

@@ -31,7 +31,7 @@ beforeAll(() => {
 function setRequest(
   command = 'rm -rf /tmp/x',
   allowPermanent?: boolean,
-  extra: { choices?: string[]; requestId?: string; serverRequestId?: string; smartDenied?: boolean } = {}
+  extra: { choices?: string[]; purpose?: string; requestId?: string; serverRequestId?: string; smartDenied?: boolean } = {}
 ) {
   $activeSessionId.set('sess-1')
   setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
@@ -80,6 +80,14 @@ describe('PendingApprovalStack', () => {
 
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+  })
+
+  it('renders the agent purpose separately from the flagged-pattern description', () => {
+    setRequest('python -c "print(1)"', undefined, { purpose: 'Report the current loop status' })
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Purpose: Report the current loop status')).toBeTruthy()
+    expect(screen.getByText('Flagged: dangerous command')).toBeTruthy()
   })
 
   it('renders approval controls for protected instruction writes', () => {

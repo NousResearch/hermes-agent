@@ -558,7 +558,7 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 
 def _format_exec_approval_fallback(
-    command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
+    command: str, description: str, command_prefix: str, *, purpose: str = "", allow_permanent: bool = True,
     allow_session: bool = True, smart_denied: bool = False) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
@@ -576,7 +576,8 @@ def _format_exec_approval_fallback(
             choices.append(f"`{command_prefix}approve always` to allow it permanently")
     choices.append(f"`{command_prefix}deny` to cancel")
     return (
-        f"{heading}\n```\n{cmd_preview}\n```\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
+        f"{heading}\n" + (f"Purpose: {purpose}\n" if purpose else "")
+        + f"```\n{cmd_preview}\n```\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
         + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
         + format_approval_deadline_line(approval_timeout_seconds()))
 

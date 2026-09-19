@@ -772,7 +772,7 @@ class CLIModalMixin:
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
                            allow_session: bool = True,
-                           smart_denied: bool = False) -> str:
+                           smart_denied: bool = False, purpose: str = "") -> str:
         """Dangerous-command approval through the prompt_toolkit UI (agent thread).
 
         Choices: once / session / always / deny (see ``_approval_choices``), plus 'view' for long
@@ -787,6 +787,7 @@ class CLIModalMixin:
             self._approval_state = {
                 "command": command,
                 "description": description,
+                "purpose": purpose,
                 "choices": self._approval_choices(
                     command,
                     allow_permanent=allow_permanent,

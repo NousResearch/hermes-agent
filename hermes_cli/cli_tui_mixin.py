@@ -177,12 +177,14 @@ class CLITuiMixin:
         wrap = _wrap_panel_text_keep_ws
         command = state["command"]
         description = state["description"]
+        purpose = state.get("purpose", "")
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
         title = "⚠️  Dangerous Command"
 
-        preview_lines = wrap(description, 60)
+        preview_lines = wrap(f"Purpose: {purpose}", 60) if purpose else []
+        preview_lines.extend(wrap(description, 60))
         preview_lines.extend(wrap(command, 60))
         for i, choice in enumerate(choices):
             prefix = '❯ ' if i == selected else '  '
@@ -220,7 +222,8 @@ class CLITuiMixin:
         mandatory_no_desc = chrome_rows + len(cmd_wrapped) + len(choice_wrapped)
         available_for_desc = available - mandatory_no_desc - (0 if use_compact_chrome else 1)
         available_for_desc = max(0, min(available_for_desc, 10))
-        desc_wrapped = wrap(description, inner_text_width) if description else []
+        desc_text = (f"Purpose: {purpose}\n{description}" if purpose else description)
+        desc_wrapped = wrap(desc_text, inner_text_width) if desc_text else []
         if available_for_desc < 1 or not desc_wrapped:
             desc_wrapped = []
         elif len(desc_wrapped) > available_for_desc:

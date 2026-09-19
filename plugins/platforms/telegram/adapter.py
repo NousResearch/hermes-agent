@@ -3725,6 +3725,11 @@ class TelegramAdapter(BasePlatformAdapter):
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0
+                try:
+                    wait = float(wait)
+                    self._note_retry_after(chat_id, wait)
+                except (TypeError, ValueError):
+                    wait = 1.0
                 if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
                     # Log AFTER the cap check: "waiting 33.0s" followed by no wait misled an investigation.
                     logger.warning(

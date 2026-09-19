@@ -3639,6 +3639,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         raw_model = getattr(agent, "model", "")
         actual_provider = self._clean_runtime_id(raw_provider, max_len=80) if isinstance(raw_provider, str) else ""
         actual_model = self._clean_runtime_id(raw_model) if isinstance(raw_model, str) else ""
+        resolved_provider = self._clean_runtime_id(runtime.get("provider"), max_len=80)
         for key, actual in (("provider", actual_provider), ("model", actual_model)):
             if actual:
                 runtime[key] = actual
@@ -3653,7 +3654,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # provider catalog. Compare that identity with the agent's actual runtime so
             # aliases and named custom providers do not fail a literal-string check.
             expected_provider = self._clean_runtime_id(
-                runtime.get("provider") or requested_provider, max_len=80)
+                resolved_provider or requested_provider, max_len=80)
             expected_model = self._clean_runtime_id(route.get("model") or requested_runtime.get("model"))
             if (expected_provider and actual_provider != expected_provider) or (
                 expected_model and actual_model != expected_model):

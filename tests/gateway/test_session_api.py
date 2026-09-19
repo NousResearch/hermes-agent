@@ -794,6 +794,26 @@ async def test_confirmed_runtime_lock_rejects_actual_runtime_mismatch(adapter, m
         )
 
 
+def test_confirmed_runtime_lock_rejects_provider_only_mismatch(adapter):
+    class FakeAgent:
+        provider = "fallback-provider"
+        model = "some-model"
+        _hermes_api_runtime = {
+            "provider": "nous",
+            "model": "some-model",
+            "route_source": "session_model_lock",
+        }
+
+    with pytest.raises(RuntimeError, match="confirmed model lock runtime mismatch"):
+        adapter._turn_runtime_metadata(
+            FakeAgent(),
+            route={"provider": "nous", "model": "some-model"},
+            requested_runtime={"provider": "nous", "model": "some-model"},
+            route_source="session_model_lock",
+            confirmed_runtime_lock=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("resolved_provider", "actual_provider"),
     [("custom", "custom"), ("my-endpoint", "my-endpoint")],

@@ -1,5 +1,6 @@
 """Tests for hermes_cli configuration management."""
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -2001,3 +2002,30 @@ class TestSaveConfigExplicitPathAuthority:
 
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert set(chosen) <= set(saved), sorted(set(chosen) - set(saved))
+
+
+class TestCompatibleProvidersMalformedLegacyKey:
+    """A non-list ``custom_providers`` must not wipe the merged view (#114605)."""
+
+    def test_string_custom_providers_keeps_providers_view_and_warns(self, caplog):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {
+            "custom_providers": "- name: broken",
+            "providers": {"exl3": {"api": "http://127.0.0.1:8290/v1", "default_model": "m"}},
+        }
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["exl3"]
+        assert any("custom_providers is a str" in r.getMessage() for r in caplog.records)
+
+    def test_list_custom_providers_is_silent(self, caplog):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [{"name": "legacy", "base_url": "http://h/v1"}], "providers": {}}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["legacy"]
+        assert not [r for r in caplog.records if "custom_providers is a" in r.getMessage()]

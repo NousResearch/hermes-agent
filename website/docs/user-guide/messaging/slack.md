@@ -471,7 +471,7 @@ platforms:
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 | `platforms.slack.extra.unfurl_links` | Slack default | Set to `false` to suppress automatic previews for linked web pages while preserving clickable links. When either unfurl key is set, media captions are posted as a separate message *before* the file (Slack's upload API cannot carry unfurl controls), and native draft streaming falls back to edit-based delivery. |
 | `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |
-| `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
+| `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). Markdown `[label](url)` links and Slack `<url\|label>` autolinks both become clickable links inside lists, quotes and table cells; mentions (`<@U…>`, `<#C…>`, `<!here>`) are left as-is. A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
 | `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. Cards work with Slack's built-in default `tool_progress: off`; an explicitly configured `display.tool_progress: off` (global or `display.platforms.slack`; `/verbose` writes the same key) disables cards too. Cards need a thread: when the card lane is active and the chat has no thread to anchor on (a top-level DM with `reply_in_thread: false`), Hermes shows no tool progress instead of text bubbles, unless you explicitly set `tool_progress: new`/`all`, which falls back to editable text progress there. Recoverable native API failures fall back to one continuously edited text update. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
@@ -599,6 +599,9 @@ platforms:
   recoverable reason (API error, rate limit), Hermes falls back to a single continuously edited text message so
   progress stays live for the turn. A relay egress refusal of the destination
   is not recoverable and suppresses progress for the turn.
+- If Slack closes a stream during a long turn, Hermes opens a fresh card in
+  the same thread with the current task list and keeps updating there. The
+  previous card remains visible.
 - The card stream is stopped exactly once when the turn finalizes, including
   on interrupt/disconnect, so no dangling live indicator is left behind.
 

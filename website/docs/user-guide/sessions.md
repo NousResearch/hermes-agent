@@ -606,7 +606,7 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/reference/cli-commands#hermes-insights).
+For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](../reference/cli-commands.md#hermes-insights).
 
 ### Repair Stranded Gateway Sessions
 
@@ -796,7 +796,15 @@ By default, Hermes uses `group_sessions_per_user: true` in `config.yaml`. That m
 
 - Alice and Bob can both talk to Hermes in the same Discord channel without sharing transcript history
 - one user's long tool-heavy task does not pollute another user's context window
-- interrupt handling also stays per-user because the running-agent key matches the isolated session key
+- a running turn is keyed to the sender that started it, but `/stop` still reaches it — see below
+
+`/stop` means "stop what is running in this chat": it first tries the caller's own session key,
+then any live turn in this chat — other participants' runs in the caller's own thread included —
+authorization-gated, and never another room, workspace or profile. So an idle Alice's `/stop` can
+end a turn Bob (or a bot) started in the room she is in. A `/stop` sent from *inside* a thread is
+narrower: it reaches runs belonging to that thread and a room-wide run that carries no thread slot
+(the rolling-DM shape), but never another thread of the same channel and never a peer's per-sender
+top-level run.
 
 If you want one shared "room brain" instead, set:
 
@@ -942,7 +950,9 @@ workers, subagents, one-shot CLI runs — can die without ever marking their
 session ended, and pruning only deletes *ended* rows. To keep those from
 accumulating forever, each auto-prune pass also *closes* open sessions from
 those state-owned sources (`cli`, `cron`, `kanban`, `acp`, `api_server`,
-`subagent`, `tool`) whose last activity is older than `retention_days`
+`subagent`, `tool`, plus the `recovered` placeholders that
+`hermes sessions recover` synthesizes for orphaned messages) whose last
+activity is older than `retention_days`
 (`end_reason: startup_orphan_reap`). Closing is non-destructive — the
 session stays resumable — and the row is aged from its close, so it is only
 deleted by a *later* pass after a further full retention window. Messaging

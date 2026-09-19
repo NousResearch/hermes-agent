@@ -293,6 +293,20 @@
   padding: 0.05rem 0.3rem !important;
 }
 
+/* Board-level project binding readout in the board switcher; the × unbinds. */
+.hermes-kanban-board-project-unbind {
+  margin-left: 0.25rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+  border-radius: 0.2rem;
+  color: var(--color-muted-foreground, #888);
+  cursor: pointer;
+}
+.hermes-kanban-board-project-unbind:hover {
+  color: var(--color-destructive, #d44);
+  background: color-mix(in srgb, var(--color-destructive, #d44) 15%, transparent);
+}
+
 .hermes-kanban-needs-assignee {
   font-size: 0.6rem !important;
   padding: 0.05rem 0.3rem !important;

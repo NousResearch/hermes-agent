@@ -481,6 +481,69 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     assert get.call_count == 2
 
 
+def test_terminal_early_return_still_reaps_the_worker(monkeypatch):
+    """The ledger can turn terminal while the worker is still tearing down; the
+    waiter returns then, but the gateway stays the worker's parent, so the exit
+    must still be waited for somewhere — otherwise the worker lingers as a
+    zombie under the gateway until it is restarted (#114509)."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "completed"},
+        raising=False,
+    )
+
+    def wait(timeout=None):
+        if wait.calls == 0:
+            wait.calls += 1
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+        return 0
+
+    wait.calls = 0
+    process = Mock()
+    process.pid = 4321
+    process.wait.side_effect = wait
+
+    assert scheduler._wait_for_external_cron_worker_body(
+        process, execution_id="exec-1"
+    ) is True
+    # the background reaper owns the second and final wait(); no third caller appears
+    deadline = time.monotonic() + 5.0
+    while process.wait.call_count < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert process.wait.call_count == 2
+
+
+def test_terminal_early_return_reaps_a_real_worker_process(monkeypatch):
+    """End-to-end zombie guard: after the early return the real worker process
+    must be reaped without the test itself calling wait()/poll() — reading
+    ``Popen.returncode`` reaps nothing, so only the background thread can set
+    it (#114509)."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        lambda _execution_id: {"id": "exec-1", "status": "completed"},
+        raising=False,
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(1.3)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    assert scheduler._wait_for_external_cron_worker_body(
+        process, execution_id="exec-1"
+    ) is True
+    deadline = time.monotonic() + 8.0
+    while process.returncode is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert process.returncode == 0
+
+
 def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     monkeypatch,
 ):

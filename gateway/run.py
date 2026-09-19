@@ -247,7 +247,8 @@ async def run_codex_hygiene_compaction(
     count_before = getattr(compressor, "compression_count", 0)
     # copy_context carries profile secret scope / HERMES_HOME override (executors don't propagate ContextVars).
     worker_future = asyncio.get_running_loop().run_in_executor(
-        None, copy_context().run, lambda: agent._compress_context(history, "", approx_tokens=approx_tokens))
+        None, copy_context().run,
+        lambda: agent._compress_context(history, "", approx_tokens=approx_tokens, task_id=session_id or "default"))
     track_worker = getattr(gateway, "_track_deferred_agent_worker", None)
     if callable(track_worker):
         # ``wait_for`` only cancels the asyncio wrapper; keep the running executor thread visible to shutdown.
@@ -2188,6 +2189,8 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     # Stall-watchdog "already notified" latch; cleared on /new so a fresh conversation can warn again.
     # See #72016.
     "_session_stall_notified",
+    # Transcript-lag streak counter (#114266); a fresh conversation starts with no lag history.
+    "_transcript_lag_streaks",
     # Sidecar notes staged but never consumed (turn aborted before run_sync) must not leak into a
     # future conversation's first user message — session keys are source-derived and REUSED.
     "_pending_turn_sidecar_notes")
@@ -2340,8 +2343,8 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
     """Resolve runtime credentials for a specific provider (e.g. from channel override).
 
     ``target_model`` is the model the override will actually send: the ladder's model-keyed rungs
-    (OpenCode free tier, Zen/Go relay + api_mode) must see it rather than config's ``default``,
-    or a ``*-free`` default routes a Go-only override to the keyless Zen relay (#112600)."""
+    (Zen/Go relay + api_mode) must see it rather than config's ``default``, or a Go-only override
+    resolves an api_mode/base_url the sent model cannot use (#112600)."""
     from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
     try:
         runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None)
@@ -3507,6 +3510,9 @@ class GatewayRunner(
         # paths, busy-ack debounce timestamps and the monotonic run-generation counter (#28686, NEVER reset)
         # live on SessionState too. See gateway.session_stall.
         self._session_stall_notified: Dict[str, bool] = {}
+        # Consecutive "persisted transcript lagged live cached history" turns per session key; see
+        # run_turn_runner._load_turn_history (#114266). Cleared on /new.
+        self._transcript_lag_streaks: Dict[str, int] = {}
         # Startup restore gate: while restart-interrupted sessions auto-resume, real inbound messages
         # queue instead of competing with the synthetic resume turns; drained after all resume tasks end.
         self._startup_restore_in_progress = False
@@ -3667,6 +3673,7 @@ class GatewayRunner(
         # the clock; and a one-shot latch so the "platform owns the suspend" notice logs once.
         self._scale_to_zero_cooldown_until: float = 0.0
         self._scale_to_zero_no_suspend_logged: bool = False
+        self._scale_to_zero_direct_platform_logged: bool = False
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
@@ -4597,7 +4604,12 @@ def _start_gateway_housekeeping(
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
     from gateway.run_profile_reconcile import _mcp_config_reconciler
-    chores: list[tuple[int, str, Any]] = []
+    chores: list[tuple[int, str, Any]] = [
+        # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
+        # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
+        # PID alive — the thread (or a chore blocked on the loop) wedged (#113372). Runs first so a
+        # wedged chore stops the NEXT stamp instead of a slow one delaying this tick's.
+        (1, "Runtime heartbeat", _write_runtime_status_quiet)]
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.

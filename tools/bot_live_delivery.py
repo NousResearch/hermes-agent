@@ -103,10 +103,14 @@ def _locked(home: Path | str):
 
 
 def _read(path: Path) -> dict[str, Any] | None:
+    """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed)."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+    if not isinstance(record, dict):
+        raise ValueError(f"ticket {path.name} is not a JSON object ({type(record).__name__})")
+    return record
 
 
 # Tickets already reported unreadable by this process. The live poller rescans the

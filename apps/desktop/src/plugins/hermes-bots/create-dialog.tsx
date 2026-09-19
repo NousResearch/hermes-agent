@@ -1347,11 +1347,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
-          <Button
-            disabled={!canCreate}
-            onClick={create}
-            title={selected.length < 2 ? 'Pick at least 2 bots' : undefined}
-          >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
+          <Button disabled={!canCreate} onClick={create}>{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

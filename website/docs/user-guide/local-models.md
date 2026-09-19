@@ -104,8 +104,8 @@ and uses it instead of starting its own. Point a custom endpoint at any
 OpenAI-compatible server for full manual control — the managed runtime is
 a default, not a requirement. For manual setups (Ollama, MLX, custom
 builds, headless CLI machines), see
-[Run Hermes Locally with Ollama](/guides/local-ollama-setup) and
-[Run Local LLMs on Mac](/guides/local-llm-on-mac).
+[Run Hermes Locally with Ollama](../guides/local-ollama-setup.md) and
+[Run Local LLMs on Mac](../guides/local-llm-on-mac.md).
 
 ## Configuration
 

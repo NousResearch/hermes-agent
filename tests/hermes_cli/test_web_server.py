@@ -1506,6 +1506,38 @@ class TestWebServerEndpoints:
         assert data["model"] == "moonshotai/kimi-k2.6"
 
 
+    def test_model_set_flips_a_stale_setup_record(self, monkeypatch):
+        """POST /api/model/set landed a provider on disk; the serve process's boot record
+        (``provider_configured: false`` since a failed boot-time mint) must follow at once, with
+        the ``setup.ready`` broadcast, or the web chat stays gated on "need setup" until a restart
+        (setup.status answers from the record)."""
+        from hermes_cli import free_tier_bootstrap as fb
+
+        fb.reset_for_tests()
+        monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *_a, **_k: None)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+        broadcasts = []
+        monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
+        with fb._lock:
+            fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+                                        has_identity=False, other_providers=False)
+            fb._started = True
+            fb._done.set()
+        try:
+            resp = self.client.post(
+                "/api/model/set",
+                json={"scope": "main", "provider": "custom", "model": "local-model",
+                      "base_url": "http://127.0.0.1:8081/v1", "api_key": "sk-local"},
+            )
+            assert resp.status_code == 200 and resp.json()["ok"] is True
+            record = fb.current_record()
+            assert record.provider_configured is True and record.other_providers is True
+            assert record.inference_provider == "custom"
+            assert broadcasts == [record]
+        finally:
+            fb.reset_for_tests()
+
+
 
 
 
@@ -1876,6 +1908,79 @@ class TestWebServerEndpoints:
         assert 2070 not in providers
         assert "2070" not in providers
 
+    def test_punctuated_provider_key_round_trips_through_activate_edit_and_delete(self):
+        """A stored ``providers.<key>`` with dots/colons or mixed case is what the
+        list route returns as ``id``; the same spelling must reach the entry on
+        activate, save (edit) and delete instead of being slugified into a
+        non-existent twin (404 / duplicate row), and delete must still clear
+        the model mirror ``switch_model`` wrote for it.
+        """
+        from urllib.parse import quote
+
+        from hermes_cli.config import get_config_path, load_config
+
+        get_config_path().write_text(
+            "model:\n"
+            "  provider: openrouter\n"
+            "  default: some/model\n"
+            "providers:\n"
+            "  local-127.0.0.1:8283:\n"
+            "    name: Local (127.0.0.1:8283)\n"
+            "    base_url: http://127.0.0.1:8283/v1\n"
+            "    model: Qwen.gguf\n"
+            "  EXllamav3:\n"
+            "    name: EXllamav3\n"
+            "    base_url: http://127.0.0.1:8290/v1\n"
+            "    model: Qwen3-27B\n",
+            encoding="utf-8",
+        )
+        dotted = "local-127.0.0.1:8283"
+        listed = [e["id"] for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]]
+        assert dotted in listed and "EXllamav3" in listed
+
+        # Edit by the listed id updates the entry in place — no slugged twin.
+        saved = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={"id": dotted, "name": "Local (127.0.0.1:8283)",
+                  "base_url": "http://127.0.0.1:8283/v1", "model": "Qwen2.gguf"},
+        )
+        assert saved.status_code == 200, saved.text
+        providers = load_config()["providers"]
+        assert providers[dotted]["model"] == "Qwen2.gguf"
+        assert "local-127-0-0-1-8283" not in providers
+
+        for key in (dotted, "EXllamav3"):
+            path = f"/api/providers/custom-endpoints/{quote(key, safe='')}"
+            activate = self.client.post(f"{path}/activate", json={})
+            assert activate.status_code == 200, activate.text
+            assert load_config()["model"].get("base_url"), key
+            current = [e["id"] for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
+                       if e["is_current"]]
+            assert current == [key], f"{key}: list does not mark the endpoint just activated as current: {current}"
+            deleted = self.client.request("DELETE", path)
+            assert deleted.status_code == 200, deleted.text
+            cfg = load_config()
+            assert key not in (cfg.get("providers") or {})
+            assert not cfg["model"].get("base_url"), f"{key}: deleted endpoint's host still routed to"
+            assert not cfg["model"].get("provider"), key
+
+    def test_unslugged_display_name_still_resolves_to_its_slug_key(self):
+        """Compatibility fallback: a caller sending the display name reaches the
+        dashboard-minted slug key; an unknown id is still a 404."""
+        from hermes_cli.config import get_config_path, load_config
+
+        get_config_path().write_text(
+            "providers:\n"
+            "  local-8000:\n"
+            "    name: Local 8000\n"
+            "    base_url: http://127.0.0.1:8000/v1\n"
+            "    model: m\n",
+            encoding="utf-8",
+        )
+        assert self.client.request("DELETE", "/api/providers/custom-endpoints/nope.nope").status_code == 404
+        assert self.client.request("DELETE", "/api/providers/custom-endpoints/Local%208000").status_code == 200
+        assert "local-8000" not in (load_config().get("providers") or {})
+
 
     def test_custom_endpoint_save_scopes_to_the_requested_profile(self):
         """``?profile=<name>`` must write into that profile's config.yaml.
@@ -2073,6 +2178,53 @@ class TestWebServerEndpoints:
         self.client.post("/api/providers/custom-endpoints/legacy/activate", json={})
         model_cfg = load_config()["model"]
         assert model_cfg["api_key"] == "sk-legacy"
+
+    def test_legacy_custom_providers_entries_get_a_row_and_can_be_deleted(self):
+        """A post-migration ``custom_providers:`` list entry is still routed by the
+        runtime (``get_compatible_custom_providers``), so Custom Endpoints must show
+        it — and Delete must remove it from the legacy list, not 404 (#114471)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "modern": {"name": "Modern", "base_url": "https://llm.modern.com/v1", "model": "m"},
+        }
+        cfg["custom_providers"] = [
+            {"name": "Old Box", "base_url": "http://10.0.0.5:8080/v1", "model": "qwen"},
+        ]
+        save_config(cfg)
+
+        rows = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert set(rows) == {"modern", "old-box"}
+        assert rows["old-box"]["source"] == "custom_providers"
+        assert rows["old-box"]["base_url"] == "http://10.0.0.5:8080/v1"
+        assert rows["old-box"]["model"] == "qwen"
+
+        deleted = self.client.request("DELETE", "/api/providers/custom-endpoints/old-box")
+        assert deleted.status_code == 200, deleted.text
+        assert [e["id"] for e in deleted.json()["endpoints"]] == ["modern"]
+        cfg = load_config()
+        assert cfg.get("custom_providers") == []
+        assert "modern" in cfg["providers"]
+
+    def test_activating_a_legacy_custom_providers_entry_promotes_it(self):
+        """Use on a legacy row moves the entry under ``providers:`` (the v12+ shape the
+        main slot names by key) instead of 404ing on a row the list just rendered."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["custom_providers"] = [
+            {"name": "Old Box", "base_url": "http://10.0.0.5:8080/v1", "model": "qwen", "api_key": "sk-old"},
+        ]
+        save_config(cfg)
+
+        activated = self.client.post("/api/providers/custom-endpoints/old-box/activate", json={})
+        assert activated.status_code == 200, activated.text
+        cfg = load_config()
+        assert cfg.get("custom_providers") == []
+        assert cfg["providers"]["old-box"]["api"] == "http://10.0.0.5:8080/v1"
+        assert cfg["model"]["provider"] == "old-box"
+        assert cfg["model"]["default"] == "qwen"
 
     def test_get_sessions_rejects_negative_limit(self):
         """limit=-1 must be rejected (422), not passed through to SQLite as

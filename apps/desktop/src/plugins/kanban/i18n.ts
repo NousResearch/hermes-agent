@@ -163,6 +163,9 @@ type KanbanMessages = {
   // board switcher
   board: string
   newBoard: string
+  /** Tooltip on the page-header trigger — names the ACTION, since the visible
+   *  text is the board's own name and reads as a static label otherwise. */
+  switchBoard: string
   newBoardDots: string
   // board-header dispatcher toggles
   headerDispatch: string
@@ -385,6 +388,7 @@ export const en: KanbanMessages = {
   working: 'working',
   board: 'Board',
   newBoard: 'New board',
+  switchBoard: 'Switch board',
   newBoardDots: 'New board…',
   headerDispatch: 'Dispatch',
   headerDecompose: 'Decompose',
@@ -601,6 +605,7 @@ const ja: KanbanMessages = {
   working: '作業中',
   board: 'ボード',
   newBoard: '新しいボード',
+  switchBoard: 'ボードを切り替え',
   newBoardDots: '新しいボード…',
   headerDispatch: 'ディスパッチ',
   headerDecompose: '分解',
@@ -815,6 +820,7 @@ const zh: KanbanMessages = {
   working: '进行中',
   board: '面板',
   newBoard: '新建面板',
+  switchBoard: '切换面板',
   newBoardDots: '新建面板…',
   headerDispatch: '调度',
   headerDecompose: '分解',
@@ -1028,6 +1034,7 @@ const zhHant: KanbanMessages = {
   working: '進行中',
   board: '面板',
   newBoard: '新增面板',
+  switchBoard: '切換面板',
   newBoardDots: '新增面板…',
   headerDispatch: '調度',
   headerDecompose: '分解',

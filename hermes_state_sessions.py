@@ -16,7 +16,7 @@ from agent.session_activity import (
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
-    _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
+    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
     _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
@@ -435,12 +435,14 @@ class SessionSessionsMixin:
     # quiet and its unkeyed successor (incident was ~60s; 15 min without spanning conversations).
     _ORPHAN_ADOPTION_MAX_GAP_S = 900.0
 
-    # Children that are NOT compression continuations (branches, delegates, tool sessions). Markers
-    # are bound to the queried parent id: continuations inherit model_config verbatim, so
-    # presence-matching misclassified them as delegates.
+    # Children that are NOT compression continuations (branches, delegates, reset forks, tool
+    # sessions). Markers are bound to the queried parent id: continuations inherit model_config
+    # verbatim, so presence-matching misclassified them as delegates. Callers bind the parent id
+    # three times for this filter.
     _NON_CONTINUATION_CHILD_FILTER_SQL = (
         f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._branched_from')}, '') != ?\n"
         f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._delegate_from')}, '') != ?\n"
+        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._reset_from')}, '') != ?\n"
         "  AND COALESCE({alias}source, '') != 'tool'\n"
     )
 
@@ -1260,6 +1262,7 @@ class SessionSessionsMixin:
                     WHERE parent.end_reason = 'compression'
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                 ),
                 chain_max AS (

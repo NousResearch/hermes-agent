@@ -345,7 +345,51 @@ ${payload}
 })
 
 describe('loadArtifactsForSessions', () => {
-  it('loads transcripts serially and continues after a session fails', async () => {
+  it('indexes oldest-first pages incrementally and keeps the first duplicate', async () => {
+    const session = makeSession()
+    const duplicate = 'https://example.com/shared.pdf'
+    const requestedPages: Array<{ limit: number; offset: number }> = []
+
+    const pages: SessionMessage[][] = [
+      [
+        { content: duplicate, role: 'assistant', timestamp: 1000 },
+        { content: 'https://example.com/first.png', role: 'assistant', timestamp: 1500 }
+      ],
+      [
+        {
+          content: `${duplicate} https://example.com/last.pdf`,
+          role: 'assistant',
+          timestamp: 3000
+        }
+      ]
+    ]
+
+    const result = await loadArtifactsForSessions(
+      [session],
+      async (_session, page) => {
+        requestedPages.push(page)
+        const messages = pages[page.offset === 0 ? 0 : 1] || []
+
+        return {
+          messages,
+          pagination: { limit: 2, offset: page.offset, order: 'oldest', returned: messages.length }
+        }
+      },
+      { maxPageJsonChars: 200 }
+    )
+
+    expect(requestedPages.map(page => page.offset)).toEqual([0, 2])
+    expect(requestedPages.every(page => page.limit > 0)).toBe(true)
+    expect(result.artifacts.map(artifact => artifact.value)).toEqual([
+      duplicate,
+      'https://example.com/first.png',
+      'https://example.com/last.pdf'
+    ])
+    expect(result.artifacts.find(artifact => artifact.value === duplicate)?.timestamp).toBe(1_000_000)
+    expect(result.failures).toEqual([])
+  })
+
+  it('discards a failed session and continues after an oversized later page', async () => {
     const sessions = [
       makeSession({ id: 'session-1' }),
       makeSession({ id: 'session-2' }),
@@ -356,42 +400,60 @@ describe('loadArtifactsForSessions', () => {
     let activeLoads = 0
     let maxActiveLoads = 0
 
-    const result = await loadArtifactsForSessions(sessions, async session => {
-      activeLoads += 1
-      maxActiveLoads = Math.max(maxActiveLoads, activeLoads)
-      callOrder.push(`start:${session.id}`)
+    const result = await loadArtifactsForSessions(
+      sessions,
+      async (session, page) => {
+        activeLoads += 1
+        maxActiveLoads = Math.max(maxActiveLoads, activeLoads)
+        callOrder.push(`start:${session.id}:${page.offset}`)
 
-      try {
-        await Promise.resolve()
+        try {
+          await Promise.resolve()
 
-        if (session.id === 'session-2') {
-          throw new Error('Session transcript exceeds the Desktop safe-load limit')
-        }
-
-        return [
-          {
-            content: `https://example.com/${session.id}.png`,
-            role: 'assistant',
-            timestamp: 2000
+          if (session.id === 'session-2' && page.offset === 0) {
+            return {
+              messages: [
+                {
+                  content: 'https://example.com/session-2-partial.png',
+                  role: 'assistant',
+                  timestamp: 2000
+                }
+              ],
+              pagination: { limit: 1, offset: 0, order: 'oldest', returned: 1 }
+            }
           }
-        ]
-      } finally {
-        callOrder.push(`end:${session.id}`)
-        activeLoads -= 1
-      }
-    })
+
+          return {
+            messages: [
+              {
+                content: session.id === 'session-2' ? 'x'.repeat(500) : `https://example.com/${session.id}.png`,
+                role: 'assistant',
+                timestamp: 2000
+              }
+            ]
+          }
+        } finally {
+          callOrder.push(`end:${session.id}:${page.offset}`)
+          activeLoads -= 1
+        }
+      },
+      { maxPageJsonChars: 200 }
+    )
 
     expect(maxActiveLoads).toBe(1)
     expect(callOrder).toEqual([
-      'start:session-1',
-      'end:session-1',
-      'start:session-2',
-      'end:session-2',
-      'start:session-3',
-      'end:session-3'
+      'start:session-1:0',
+      'end:session-1:0',
+      'start:session-2:0',
+      'end:session-2:0',
+      'start:session-2:1',
+      'end:session-2:1',
+      'start:session-3:0',
+      'end:session-3:0'
     ])
     expect(result.artifacts.map(artifact => artifact.sessionId)).toEqual(['session-1', 'session-3'])
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0]?.session.id).toBe('session-2')
+    expect(String(result.failures[0]?.error)).toContain('transcript page exceeds the Desktop safe-load limit')
   })
 })

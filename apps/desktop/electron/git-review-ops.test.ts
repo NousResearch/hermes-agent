@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
+import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewDiff, reviewList } from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -116,4 +116,17 @@ test('reviewList caps the file payload returned to the renderer', async () => {
   const result = await reviewList(dir, 'uncommitted', null, 'git')
 
   assert.equal(result.files.length, REVIEW_FILE_CAP)
+})
+
+test('reviewDiff does not expose files outside the repository', async () => {
+  const repo = makeRepo()
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-git-review-outside-'))
+  const outsideFile = path.join(outsideDir, 'secret.txt')
+
+  tempDirs.push(outsideDir)
+  fs.writeFileSync(outsideFile, 'HERMES_OUTSIDE_REPO_SECRET\n')
+
+  const diff = await reviewDiff(repo, outsideFile, 'uncommitted', null, false, 'git')
+
+  assert.equal(diff, '')
 })

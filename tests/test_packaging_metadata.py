@@ -4,6 +4,9 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +75,8 @@ _UPDATE_DOWNGRADE_GUARD_FLOORS = {
     "starlette": (1, 3, 1),
     "python-multipart": (0, 0, 32),
 }
+_CRYPTOGRAPHY_INTEL_MACOS_PIN = Version("48.0.1")
+_CRYPTOGRAPHY_DEFAULT_PIN = Version("50.0.0")
 
 
 def _version_tuple(spec: str) -> tuple[int, ...]:
@@ -192,6 +197,60 @@ def _pins_from_specs(specs):
     return pins
 
 
+def _supported_marker_environments():
+    """Representative PEP 508 environments supported by Hermes.
+
+    Marker evaluation is pure input/output here: it checks declaration
+    compatibility without pretending the test process is running on another
+    host. Keep Python versions aligned with ``project.requires-python`` and
+    platform spellings aligned with the markers used in this pyproject.
+    """
+    base = default_environment()
+    platforms = (
+        ("linux", "Linux", "posix", "x86_64"),
+        ("linux", "Linux", "posix", "aarch64"),
+        ("darwin", "Darwin", "posix", "x86_64"),
+        ("darwin", "Darwin", "posix", "arm64"),
+        ("win32", "Windows", "nt", "AMD64"),
+        ("win32", "Windows", "nt", "ARM64"),
+    )
+    for python_version in ("3.11", "3.12", "3.13"):
+        for sys_platform, platform_system, os_name, platform_machine in platforms:
+            yield {
+                **base,
+                "python_version": python_version,
+                "python_full_version": f"{python_version}.0",
+                "sys_platform": sys_platform,
+                "platform_system": platform_system,
+                "os_name": os_name,
+                "platform_machine": platform_machine,
+                "platform_release": "0",
+                "platform_version": "0",
+            }
+
+
+def _pin_conflicts_by_environment(specs):
+    """Return exact-pin conflicts that can coexist in a supported environment."""
+    requirements = []
+    for spec in specs:
+        match = _PIN_RE.match(spec)
+        if match:
+            requirements.append(
+                (_canonical(match.group(1)), match.group(2), Requirement(spec).marker)
+            )
+
+    conflicts: dict[str, set[str]] = {}
+    for environment in _supported_marker_environments():
+        active: dict[str, set[str]] = {}
+        for name, version, marker in requirements:
+            if marker is None or marker.evaluate(environment):
+                active.setdefault(name, set()).add(version)
+        for name, versions in active.items():
+            if len(versions) > 1:
+                conflicts.setdefault(name, set()).update(versions)
+    return {name: sorted(versions) for name, versions in conflicts.items()}
+
+
 def _locked_versions(package: str) -> set[str]:
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     return {
@@ -235,17 +294,87 @@ def _lazy_deps_pinned_specs():
 
 
 def test_pyproject_pins_are_internally_consistent():
-    """No package may be exact-pinned to two different versions in pyproject.
+    """No environment may receive two exact versions of one package.
 
     A package legitimately appearing in several extras (e.g. aiohttp in
-    messaging/slack/homeassistant/sms) must use the SAME version everywhere.
+    messaging/slack/homeassistant/sms) must use the SAME version wherever its
+    markers overlap. Mutually exclusive platform pins may differ.
     """
-    pins = _pins_from_specs(_pyproject_pinned_specs())
-    conflicts = {name: sorted(v) for name, v in pins.items() if len(v) > 1}
+    conflicts = _pin_conflicts_by_environment(_pyproject_pinned_specs())
     assert not conflicts, (
         "pyproject.toml exact-pins the same package to different versions "
-        "across [project.dependencies] / extras: " + str(conflicts)
+        "in at least one supported environment across [project.dependencies] "
+        "/ extras: " + str(conflicts)
     )
+
+
+@pytest.mark.parametrize(
+    ("specs", "expected"),
+    [
+        (["demo==1.0", "demo==2.0"], {"demo": ["1.0", "2.0"]}),
+        (
+            [
+                "demo==1.0; sys_platform == 'darwin'",
+                "demo==2.0; sys_platform == 'linux'",
+            ],
+            {},
+        ),
+        (
+            [
+                "demo==1.0; sys_platform != 'win32'",
+                "demo==2.0; sys_platform == 'linux'",
+            ],
+            {"demo": ["1.0", "2.0"]},
+        ),
+        (
+            [
+                "demo==1.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+                "demo==2.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+            ],
+            {},
+        ),
+    ],
+)
+def test_pin_conflicts_respect_environment_markers(specs, expected):
+    assert _pin_conflicts_by_environment(specs) == expected
+
+
+def test_cryptography_platform_pins_are_complete_and_security_scoped():
+    """Every supported environment gets exactly its intended cryptography pin.
+
+    Intel macOS is a deliberate compatibility exception: 49+ has no x86_64
+    macOS wheel, while 48.0.1 is the last universal2 release. All other
+    environments must stay at the reviewed 50.0.0 security pin.
+    """
+    requirements = [
+        Requirement(spec)
+        for spec in _pyproject_pinned_specs()
+        if _canonical(_distribution_name(spec)) == "cryptography"
+        and _PIN_RE.match(spec)
+    ]
+
+    for environment in _supported_marker_environments():
+        active_versions = {
+            Version(_PIN_RE.match(str(requirement)).group(2))
+            for requirement in requirements
+            if requirement.marker is None or requirement.marker.evaluate(environment)
+        }
+        is_intel_macos = (
+            environment["sys_platform"] == "darwin"
+            and environment["platform_machine"] == "x86_64"
+        )
+        expected = (
+            {_CRYPTOGRAPHY_INTEL_MACOS_PIN}
+            if is_intel_macos
+            else {_CRYPTOGRAPHY_DEFAULT_PIN}
+        )
+        assert active_versions == expected, (
+            "cryptography pins do not provide exactly the intended version for "
+            f"{environment['sys_platform']}/{environment['platform_machine']}/"
+            f"Python {environment['python_version']}: "
+            f"got {sorted(map(str, active_versions))}, "
+            f"expected {sorted(map(str, expected))}"
+        )
 
 
 def test_build_system_requires_exempt_from_exclude_newer():

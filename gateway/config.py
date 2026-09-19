@@ -170,6 +170,22 @@ def _getenv_str(name: str, default: str = "") -> str:
 
 
 _Platform__bundled_plugin_names: Optional[set] = None  # cached outside the enum: never a member
+_Platform__bundled_plugin_aliases: Optional[dict] = None  # manifest ``name:`` (lower) -> directory name
+
+
+def _bundled_platform_manifest_name(plugin_dir: Path) -> Optional[str]:
+    """Lowercased ``name:`` from a bundled platform's plugin manifest (None when absent/unreadable)."""
+    try:
+        import yaml
+        manifest_file = next(
+            (plugin_dir / m for m in ("plugin.yaml", "plugin.yml") if (plugin_dir / m).exists()), None)
+        if manifest_file is None:
+            return None
+        data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        name = data.get("name") if isinstance(data, dict) else None
+        return str(name).strip().lower() or None
+    except Exception:
+        return None
 
 
 class Platform(Enum):
@@ -208,11 +224,18 @@ class Platform(Enum):
         value = value.strip().lower()
         if value in cls._value2member_map_:
             return cls._value2member_map_[value]
-        global _Platform__bundled_plugin_names
+        global _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases
         if _Platform__bundled_plugin_names is None:
-            _Platform__bundled_plugin_names = cls._scan_bundled_plugin_platforms()
+            _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases = cls._scan_bundled_plugin_platforms()
         registered = value in _Platform__bundled_plugin_names
         if not registered:
+            alias = _Platform__bundled_plugin_aliases.get(value)
+            if alias is not None:
+                # A bundled platform whose plugin.yaml ``name:`` differs from its directory (e.g. dir
+                # "a2a", name "a2a-platform") is configured under the manifest name — ``plugins
+                # enable`` writes that key — so resolve it to the directory-name member that the
+                # registry and every value-based consumer key on.
+                return cls._value2member_map_.get(alias) or cls._add_pseudo_member(alias)
             with contextlib.suppress(Exception):
                 from gateway.platform_registry import platform_registry
                 registered = platform_registry.is_registered(value)
@@ -228,18 +251,26 @@ class Platform(Enum):
         return pseudo
 
     @classmethod
-    def _scan_bundled_plugin_platforms(cls) -> set:
-        """Names of bundled platform plugins under ``plugins/platforms/``."""
+    def _scan_bundled_plugin_platforms(cls) -> "tuple[set, dict]":
+        """Directory names of bundled platform plugins under ``plugins/platforms/``, plus a map of
+        manifest ``name:`` keys that differ from their directory (alias -> directory name). Aliases
+        never shadow a directory name, so the directory stays the canonical platform value."""
         try:
             platforms_dir = Path(__file__).parent.parent / "plugins" / "platforms"
-            return {
-                child.name.lower()
-                for child in (platforms_dir.iterdir() if platforms_dir.is_dir() else ())
+            dirs = [
+                child for child in (platforms_dir.iterdir() if platforms_dir.is_dir() else ())
                 if child.is_dir() and (child / "__init__.py").exists()
                 and ((child / "plugin.yaml").exists() or (child / "plugin.yml").exists())
-            }
+            ]
+            names = {child.name.lower() for child in dirs}
+            aliases = {}
+            for child in dirs:
+                manifest_name = _bundled_platform_manifest_name(child)
+                if manifest_name and manifest_name not in names and manifest_name not in aliases:
+                    aliases[manifest_name] = child.name.lower()
+            return names, aliases
         except Exception:
-            return set()
+            return set(), {}
 
 
 # Built-in values snapshotted before any dynamic _missing_ lookup.

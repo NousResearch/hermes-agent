@@ -2923,6 +2923,7 @@ export const zh = defineLocale({
       menu: '操作',
       menuRename: '重命名…',
       menuAppearance: '外观',
+      menuAutoPull: '自动拉取',
       noColor: '无颜色',
       menuAddFolder: '添加文件夹',
       menuSetActive: '设为活动',

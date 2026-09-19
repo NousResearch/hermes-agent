@@ -356,6 +356,13 @@ def test_posix_path_identity_remains_case_sensitive():
     ]
 
 
+def test_explicit_project_auto_pull_flag_is_copied_onto_the_node():
+    project = _project("p_app", "App", ["/www/app"], auto_pull=True)
+    tree = pt.build_tree([project], [], [], resolve=lambda _cwd: None)
+    node = next(p for p in tree["projects"] if p["id"] == "p_app")
+    assert node["auto_pull"] is True
+
+
 def test_explicit_project_claims_sessions_and_beats_auto():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(
@@ -373,6 +380,7 @@ def test_explicit_project_claims_sessions_and_beats_auto():
 
     explicit = next(p for p in tree["projects"] if p["id"] == "p_app")
     assert explicit["isAuto"] is False
+    assert explicit["auto_pull"] is False
     assert explicit["sessionCount"] == 1
     # The unowned /www/other session becomes its own auto project.
     assert any(p["id"] == "/www/other" and p["isAuto"] for p in tree["projects"])

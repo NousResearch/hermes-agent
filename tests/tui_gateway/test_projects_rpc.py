@@ -271,6 +271,14 @@ def test_update_and_archive(tmp_path):
 
     updated = _call("projects.update", {"id": pid, "name": "Renamed"})
     assert updated["project"]["name"] == "Renamed"
+    assert updated["project"]["auto_pull"] is False
+
+    response = server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "projects.update",
+                                      "params": {"id": pid, "auto_pull": True}})
+    assert "error" not in response, response
+    pulled = response["result"]
+    assert pulled["project"]["auto_pull"] is True
+    assert pulled["project"]["name"] == "Renamed"
 
     payload = _call("projects.archive", {"id": pid})
     assert all(p["id"] != pid or p["archived"] for p in payload["projects"])

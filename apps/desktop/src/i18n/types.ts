@@ -2401,6 +2401,7 @@ export interface Translations {
       menu: string
       menuRename: string
       menuAppearance: string
+      menuAutoPull: string
       noColor: string
       menuAddFolder: string
       menuSetActive: string

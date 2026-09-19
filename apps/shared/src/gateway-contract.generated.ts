@@ -1807,6 +1807,7 @@ export interface ProjectInfo {
   color?: string | null
   board_slug?: string | null
   primary_path?: string | null
+  auto_pull?: boolean
   archived?: boolean
   created_at: number
   folders?: ProjectFolder[]
@@ -1851,6 +1852,7 @@ export interface ProjectsUpdateParams {
   icon?: string | null
   color?: string | null
   board_slug?: string | null
+  auto_pull?: boolean | null
 }
 export interface ProjectsAddFolderParams {
   profile?: string | null
@@ -1950,6 +1952,7 @@ export interface ProjectTreeNode {
   path?: string | null
   color?: string | null
   icon?: string | null
+  auto_pull?: boolean
   isAuto?: boolean
   isNoProject?: boolean
   sessionCount?: number

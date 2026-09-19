@@ -1273,6 +1273,7 @@ function turnStatsSegments(
     turnStatsCached: (n: string) => string
     turnStatsHit: (n: string) => string
     turnStatsCalls: (n: string) => string
+    turnStatsCost: (n: string) => string
   },
   turnStats: TurnStats | undefined,
   durationS: number | undefined
@@ -1305,7 +1306,7 @@ function turnStatsSegments(
   // A zero delta is dropped rather than rendered as `$0.0000`: free routes and
   // providers that report no price both land there, and neither is worth a segment.
   if (turnStats?.costUsd) {
-    segments.push(formatTurnCost(turnStats.costUsd))
+    segments.push(copy.turnStatsCost(formatTurnCost(turnStats.costUsd)))
   }
 
   return segments

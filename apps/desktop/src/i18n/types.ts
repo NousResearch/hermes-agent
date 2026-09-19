@@ -4273,6 +4273,7 @@ export interface Translations {
       turnStatsCached: (n: string) => string
       turnStatsHit: (n: string) => string
       turnStatsCalls: (n: string) => string
+      turnStatsCost: (n: string) => string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string

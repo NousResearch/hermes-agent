@@ -2486,6 +2486,78 @@ def fetch_api_models(
     return result.get("models")
 
 
+# OpenRouter per-model endpoint slugs (provider-pin suffixes). Process-lifetime
+# cache: a pin validation is a rare user action, the public endpoints response
+# changes at most a few times a day. Only successes are cached — a failed probe
+# must not pin a "no endpoints" answer for an hour. Concurrent first lookups of
+# the same model coalesce onto one HTTP fetch via a per-key in-flight Event.
+_OPENROUTER_ENDPOINT_SLUGS_TTL: float = 3600.0
+_openrouter_endpoint_slugs_cache: dict[str, tuple[float, list[str]]] = {}
+_openrouter_endpoint_slugs_lock = threading.Lock()
+_openrouter_endpoint_slugs_inflight: dict[str, threading.Event] = {}
+
+
+def _openrouter_endpoint_slugs_uncached(base: str, *, timeout: float) -> Optional[list[str]]:
+    """HTTP half of :func:`fetch_openrouter_endpoint_slugs`: fetch the public
+    ``/models/{id}/endpoints`` response and extract the provider ``tag`` slugs
+    (``wafer``, ``deepinfra/fp4``, ...). Returns the sorted list, or None on any
+    fetch/parse failure or when the model exposes no endpoints."""
+    from hermes_constants import OPENROUTER_BASE_URL
+
+    url = f"{OPENROUTER_BASE_URL}/models/{urllib.parse.quote(base, safe='')}/endpoints"
+    try:
+        data = _get_json(url, timeout=timeout, headers={"User-Agent": _HERMES_USER_AGENT})
+        endpoints = ((data or {}).get("data") or {}).get("endpoints") or []
+        slugs = sorted({str(e["tag"]).strip() for e in endpoints if isinstance(e, dict) and e.get("tag")})
+    except Exception:
+        return None
+    return slugs or None
+
+
+def fetch_openrouter_endpoint_slugs(
+    base_model_id: str, *, timeout: float = 4.0,
+) -> Optional[list[str]]:
+    """Provider endpoint slugs for ``base_model_id`` from OpenRouter's public
+    ``/models/{id}/endpoints`` — the ``tag`` fields. These are exactly the
+    suffixes OpenRouter accepts as provider pins (``vendor/model:wafer``);
+    pinned ids never appear in ``/models`` itself.
+
+    Returns the sorted slug list, or None when the API is unreachable or yields
+    no endpoints (callers fall through to their existing verdict path).
+    Successful results are cached for ``_OPENROUTER_ENDPOINT_SLUGS_TTL`` seconds;
+    failures are deliberately not cached. Concurrent lookups of the same model
+    share one in-flight HTTP fetch instead of stampeding the API."""
+    base = (base_model_id or "").strip().strip(":")
+    if not base or "/" not in base:
+        return None
+    key = base.lower()
+    while True:
+        with _openrouter_endpoint_slugs_lock:
+            cached = _openrouter_endpoint_slugs_cache.get(key)
+            if cached and (time.monotonic() - cached[0]) < _OPENROUTER_ENDPOINT_SLUGS_TTL:
+                return list(cached[1])
+            event = _openrouter_endpoint_slugs_inflight.get(key)
+            if event is None:
+                # Nobody else is fetching this key — we own the HTTP call.
+                _openrouter_endpoint_slugs_inflight[key] = threading.Event()
+                break
+        # Another thread is fetching this key: wait for it, then re-check the
+        # cache. If that fetch failed, the next iteration makes us the fetcher.
+        event.wait(timeout=timeout + 1.0)
+    try:
+        slugs = _openrouter_endpoint_slugs_uncached(base, timeout=timeout)
+        if slugs:
+            with _openrouter_endpoint_slugs_lock:
+                _openrouter_endpoint_slugs_cache[key] = (time.monotonic(), slugs)
+            return list(slugs)
+        return None
+    finally:
+        with _openrouter_endpoint_slugs_lock:
+            done = _openrouter_endpoint_slugs_inflight.pop(key, None)
+        if done:
+            done.set()
+
+
 def _custom_endpoint_fingerprint(
     api_key: Any, api_mode: Optional[str], headers: Optional[dict[str, str]]) -> str:
     """Custom endpoints have no ``PROVIDER_REGISTRY`` slug, so hash exactly what callers pass to

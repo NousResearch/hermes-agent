@@ -390,7 +390,12 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
-from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+from hermes_constants import (
+    _get_platform_default_hermes_home,
+    get_default_hermes_root,
+    get_hermes_dir,
+    get_hermes_home,
+)
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
@@ -781,11 +786,21 @@ def _profile_dirs() -> List[Path]:
 
 def _credential_home_roots() -> List[Path]:
     """Every Hermes home whose credential stores the denylist must cover: the ACTIVE home
-    (the per-turn HERMES_HOME override under ``gateway.multiplex_profiles``), the shared root
-    and every ``<root>/profiles/*``. Enumerated at check time like ``_profile_cache_roots`` on
-    the allow side — a denylist frozen at import covers only the launch profile, so a
-    ``MEDIA:<root>/profiles/<other>/.env`` emitted in any profile's turn would upload it."""
-    return list(dict.fromkeys((get_hermes_home(), _HERMES_ROOT, *_profile_dirs())))
+    (the per-turn HERMES_HOME override under ``gateway.multiplex_profiles``), the shared root,
+    every ``<root>/profiles/*`` and the platform-native ``~/.hermes``. Enumerated at check time
+    like ``_profile_cache_roots`` on the allow side — a denylist frozen at import covers only the
+    launch profile, so a ``MEDIA:<root>/profiles/<other>/.env`` emitted in any profile's turn
+    would upload it.
+
+    The native home is enumerated too because a custom ``HERMES_HOME`` moves this deployment's
+    root out from under ``$HOME``: on a host that ALSO has a native install, ``~/.hermes/auth.json``
+    then sits outside every other root here, while ``$HOME`` is exempt from the ``/root``-style
+    system prefix (``_path_under_denied_prefix``) — so ``MEDIA:/root/.hermes/auth.json`` resolved
+    to a real file and was delivered, exfiltrating root's live credentials. Non-credential files
+    under that tree stay deliverable.
+    """
+    return list(dict.fromkeys((
+        get_hermes_home(), _HERMES_ROOT, _get_platform_default_hermes_home(), *_profile_dirs())))
 
 
 def _kanban_root() -> Path:

@@ -313,6 +313,15 @@ class SessionManager:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
+                # The create branch above is not the live path: an agent that owns
+                # persistence to this same DB flushes the transcript incrementally,
+                # so the row already exists by the time we get here.
+                # update_session_meta touches only model_config/model, so without
+                # this promotion the column stays NULL for the whole session and
+                # Desktop files it as unassigned. Claiming a generation keeps the
+                # A -> B -> A ordering contract shared with update_cwd().
+                if state.cwd:
+                    self._schedule_git_metadata(state, self._claim_cwd_generation(state))
 
             # An agent that owns persistence to this same DB already flushed the transcript
             # incrementally (append_message) and keeps pre-compaction turns as archived

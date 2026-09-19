@@ -39,6 +39,36 @@ def test_created_session_records_cwd_in_its_own_column(tmp_path):
     db.close()
 
 
+def test_cwd_is_promoted_when_the_row_already_exists(tmp_path):
+    """The create branch is not the live path.
+
+    An agent that owns persistence to this same DB flushes the transcript
+    incrementally, so the sessions row is already there by the time the adapter
+    persists. ``_persist`` then takes its ``else`` branch, and
+    ``update_session_meta`` writes only ``model_config``/``model`` -- leaving the
+    column NULL for the entire life of a real editor session.
+    """
+    db = SessionDB(tmp_path / "state.db")
+    workspace = tmp_path / "app-1"
+    workspace.mkdir()
+    manager = _manager(db)
+
+    state = manager.create_session(cwd=str(workspace))
+    state.history.append({"role": "user", "content": "hello"})
+    # Stand in for the agent's own incremental flush: the row exists, and it
+    # knows nothing about the ACP workspace.
+    db.create_session(session_id=state.session_id, source="acp", model="fixture")
+    assert db.get_session(state.session_id)["cwd"] in (None, "")
+
+    manager.save_session(state.session_id)
+
+    row = db.get_session(state.session_id)
+    assert row["cwd"] == state.cwd, (
+        "an existing row must still have its cwd column promoted"
+    )
+    db.close()
+
+
 def test_reopening_in_another_workspace_moves_the_cwd_column(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     first, second = tmp_path / "old", tmp_path / "new"

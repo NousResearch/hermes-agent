@@ -94,8 +94,29 @@ def test_recover_inserts_via_append_message_and_deletes_file(tmp_path, monkeypat
         role="user",
         content="lost message",
         timestamp=ts,
+        not_after_conversation_clear=ts,
     )
     assert not flush_file.exists()
+
+
+def test_recovery_rejects_pre_clear_internal_event_timestamp(tmp_path, monkeypatch):
+    from hermes_state import SessionDB
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("same", source="gateway")
+    try:
+        db.clear_conversation("same")
+        payload = {
+            "session_key": "same", "reason": "shutdown", "ts": time.time() + 1,
+            "data": {"session_id": "same", "text": "old completion", "origin_timestamp": 0.0},
+        }
+        (flush_dir / "old-internal.json").write_text(json.dumps(payload), encoding="utf-8")
+        assert recover_pending_to_db(db) == 0
+        assert db.get_messages_as_conversation("same") == []
+    finally:
+        db.close()
 
 
 def test_recover_payload_without_session_id_uses_resolver_and_deletes_file(
@@ -123,7 +144,8 @@ def test_recover_payload_without_session_id_uses_resolver_and_deletes_file(
     assert count == 1
     resolver.assert_called_once_with("agent:main:whatsapp:dm:15551234567", not_after=ts)
     routed_db.append_message.assert_called_once_with(
-        session_id="sid-resolved", role="user", content="lost message", timestamp=ts
+        session_id="sid-resolved", role="user", content="lost message", timestamp=ts,
+        not_after_conversation_clear=ts,
     )
     # The resolver's db is authoritative: the owned default store never sees a resolved payload.
     mock_db.append_message.assert_not_called()

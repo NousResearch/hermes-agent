@@ -135,6 +135,17 @@ async def test_idle_ended_parent_classifies_deliver(end_reason):
 
 
 @pytest.mark.asyncio
+async def test_completion_dispatched_before_same_session_clear_is_terminal():
+    """A clear keeps its id, so the completion timestamp must fence old work."""
+    runner = _classify_runner(
+        {"ended_at": None, "conversation_cleared_at": 200.0}
+    )
+
+    assert await runner._classify_completion_target("sess-clear", dispatched_at=199.0) == "terminal"
+    assert await runner._classify_completion_target("sess-clear", dispatched_at=201.0) == "deliver"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("end_reason", ["session_reset", "user_exit", "session_switch"])
 async def test_user_boundary_still_terminal(end_reason):
     """Explicit user boundaries remain terminal — /new means the user

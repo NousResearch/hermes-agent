@@ -105,6 +105,27 @@ async def test_gate_on_pending_confirm_registered(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_clear_uses_the_destructive_confirmation_gate():
+    """Idle /clear must register confirmation rather than archive context directly."""
+    from tools import slash_confirm as slash_confirm
+
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda source: session_key
+    runner._handle_clear_command = AsyncMock(return_value="cleared")
+    slash_confirm.clear(session_key)
+
+    handled, result = await runner._hm_cmd_clear(_make_event("/clear"), _make_source(), session_key)
+
+    assert handled is True
+    assert result is not None
+    assert slash_confirm.get_pending(session_key)["command"] == "clear"
+    runner._handle_clear_command.assert_not_awaited()
+    slash_confirm.clear(session_key)
+
+
+@pytest.mark.asyncio
 async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
     """Resolving with 'always' must (a) flip the config gate to False,
     (b) run execute, and (c) include a one-time opt-out note in the reply."""

@@ -216,6 +216,7 @@ class TurnLeaseAdmission:
     lease: Optional[DurableTurnLease] = None
     early_result: Optional[Dict[str, Any]] = None
     conversation_history: Optional[List[Dict[str, Any]]] = None
+    conversation_epoch: Optional[int] = None
 
 
 def _durable_session_exists(db, session_id: str) -> bool:
@@ -238,6 +239,7 @@ def _durable_session_exists(db, session_id: str) -> bool:
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]],
+    expected_conversation_epoch: Optional[int] = None,
 ) -> TurnLeaseAdmission:
     """Acquire the session turn lease when the session is durable; build (not start) its threads.
 
@@ -274,10 +276,23 @@ def admit_durable_turn_lease(
             f"⏳ Still waiting for the other Hermes process on this session ({int(elapsed)}s)..."
         )
 
-    if not db.acquire_session_turn_lease(
-        session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
-        on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
-    ):
+    acquire_with_epoch = getattr(type(db), "acquire_session_turn_lease_with_epoch", None)
+    if callable(acquire_with_epoch):
+        captured_epoch = db.acquire_session_turn_lease_with_epoch(
+            session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
+            on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
+            expected_conversation_epoch=expected_conversation_epoch,
+        )
+        acquired = captured_epoch is not None
+    else:
+        # Compatibility for narrow test doubles / older custom SessionDB implementations.
+        # Production SessionDB has the atomic method above.
+        acquired = db.acquire_session_turn_lease(
+            session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
+            on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
+        )
+        captured_epoch = None
+    if not acquired:
         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)
         return admission
 
@@ -313,6 +328,7 @@ def admit_durable_turn_lease(
         lease.release()
         raise
     admission.lease = lease
+    admission.conversation_epoch = captured_epoch
     return admission
 
 

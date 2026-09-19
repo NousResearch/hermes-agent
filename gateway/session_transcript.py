@@ -27,11 +27,11 @@ class TranscriptReadError(RuntimeError):
 
 
 def _spool_dropped(session_id: str, message: Dict[str, Any]):
-    """Spool one evicted/undeliverable message to disk (same machinery as the shutdown flush, so it
-    is replayed after DB recovery); path or None."""
+    """Spool one evicted/undeliverable message with its captured conversation epoch."""
     try:
         from gateway.shutdown_flush import spool_dropped_transcript_message
-        return spool_dropped_transcript_message(session_id, message)
+        return spool_dropped_transcript_message(
+            session_id, message, conversation_epoch=message.get("_conversation_epoch"))
     except Exception:
         return None
 
@@ -129,7 +129,15 @@ class SessionTranscriptMixin:
     def _enqueue_transcript_message(self, session_id: str, message: Dict[str, Any]) -> list:
         """Queue *message* (retry lock held); evicts + spools the oldest past the cap."""
         pending = self._dirty_transcripts.setdefault(session_id, [])
-        pending.append(dict(message))
+        queued_message = dict(message)
+        db = self._db_for_session_id(session_id)
+        get_session = getattr(db, "get_session", None) if db is not None else None
+        if callable(get_session) and "_conversation_epoch" not in queued_message:
+            session = get_session(session_id)
+            epoch = session.get("conversation_epoch") if session is not None else None
+            if isinstance(epoch, int):
+                queued_message["_conversation_epoch"] = epoch
+        pending.append(queued_message)
         # Cap pending messages per session to avoid unbounded memory growth when the DB is persistently
         # broken. Spool the evicted oldest message to the on-disk pending spool (same machinery
         # flush_pending_to_file uses at shutdown) so a runtime cap rotation does not silently discard it
@@ -390,6 +398,7 @@ class SessionTranscriptMixin:
             # #82888). DB-only; stripped from provider-bound payloads.
             display_kind=message.get("display_kind"),
             display_metadata=message.get("display_metadata"),
+            expected_conversation_epoch=message.get("_conversation_epoch"),
         )
 
     @staticmethod
@@ -558,6 +567,16 @@ class SessionTranscriptMixin:
                 "Transcript read failed for session %s; refusing to treat the conversation as "
                 "empty: %s", session_id, e, exc_info=True)
             raise TranscriptReadError(session_id) from e
+
+    def clear_conversation(self, session_id: str) -> int:
+        """Start a fresh durable context without changing the gateway route."""
+        with self._get_transcript_drain_lock():
+            epoch = self._db.clear_conversation(session_id)
+            self._clear_dirty_transcript(session_id)
+            self._lazy("_spooled_drop_sessions", set).discard(session_id)
+            from gateway.shutdown_flush import discard_transcript_spool
+            discard_transcript_spool(session_id)
+            return epoch
 
     def rewind_session(
         self, session_id: str, n: int = 1, *, require_retryable_composite: bool = False,

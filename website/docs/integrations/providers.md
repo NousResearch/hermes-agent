@@ -1146,6 +1146,8 @@ The model outputs something like `{"name": "web_search", "arguments": {...}}` as
 
 **Fix:** Set context to at least **64,000 tokens** for agent use. See each server's section above for the specific flag.
 
+The startup refusal for a local endpoint (`127.0.0.1`, LAN, Docker service names) says which window the server is serving and names the fix for any OpenAI-compatible server, not just Ollama: raise the server's context (llama.cpp `-c 64000`, vLLM `--max-model-len`, Ollama `OLLAMA_CONTEXT_LENGTH`/Modelfile `num_ctx`) or set `model.ollama_num_ctx` in `config.yaml` to the window the server really serves (at least 64K). `model.ollama_num_ctx` is honoured on every local endpoint; only the automatic detection behind it uses Ollama's `/api/show`.
+
 #### "Context limit: 2048 tokens" at startup
 
 Hermes auto-detects context length from your server's `/v1/models` endpoint. If the server reports a low value (or doesn't report one at all), Hermes uses the model's declared limit which may be wrong.

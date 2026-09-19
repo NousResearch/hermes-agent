@@ -1924,14 +1924,28 @@ def _enforce_minimum_context(agent):
         and agent._config_context_length > 0
     )
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
+        floor_k = MINIMUM_CONTEXT_LENGTH // 1000
+        if agent.base_url and is_local_endpoint(agent.base_url):
+            # Any OpenAI-compatible local server (llama.cpp, vLLM, Ollama, ...) — the window is the
+            # server's runtime setting, not the model's; never assume Ollama here (#87075).
+            remedy = (
+                f"Your local server is serving a {_ctx:,}-token window.  Start it with at least "
+                f"{floor_k}K context (llama.cpp: -c {MINIMUM_CONTEXT_LENGTH}; vLLM: --max-model-len; "
+                f"Ollama: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} or a Modelfile num_ctx), "
+                f"or set model.ollama_num_ctx in config.yaml to the window it really serves "
+                f"(at least {floor_k}K)."
+            )
+        else:
+            remedy = (
+                f"Choose a model with at least {floor_k}K context.  If your server "
+                f"reports a window smaller than the model's true window, set "
+                f"model.context_length in config.yaml to the real value "
+                f"(this must be at least {floor_k}K)."
+            )
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
-            f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
-            f"reports a window smaller than the model's true window, set "
-            f"model.context_length in config.yaml to the real value "
-            f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
+            f"by Hermes Agent.  {remedy}"
         )
 
 
@@ -2024,7 +2038,7 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
             if _detected and _detected > 0:
                 agent._ollama_num_ctx = _detected
         except Exception as exc:
-            _ra().logger.debug("Ollama num_ctx detection failed: %s", exc)
+            _ra().logger.debug("Local server num_ctx detection failed: %s", exc)
     # Cap auto-detected num_ctx to the explicit context_length (GGUF metadata can advertise
     # 256K+ and Ollama would allocate that much VRAM); never override an explicit num_ctx.
     if (
@@ -2039,9 +2053,11 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
         )
         agent._ollama_num_ctx = _config_context_length
     if agent._ollama_num_ctx and not agent.quiet_mode:
+        # Name the real source: a config override is honoured on any local server, /api/show is Ollama-only.
         _ra().logger.info(
-            "Ollama num_ctx: will request %d tokens (model max from /api/show)",
+            "Local server num_ctx: will request %d tokens (%s)",
             agent._ollama_num_ctx,
+            "model.ollama_num_ctx" if _override is not None else "model max from Ollama /api/show",
         )
 
 

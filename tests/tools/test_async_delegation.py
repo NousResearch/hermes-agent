@@ -1191,3 +1191,57 @@ def test_prune_never_evicts_live_records():
 
     assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
     assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED
+
+
+def _insert_running_durable_row(delegation_id, now, pid=999999999):
+    """A durable row for a unit whose owner is gone (pid never exists)."""
+    with ad._DB_LOCK, ad._transaction() as conn:
+        conn.execute("""INSERT OR REPLACE INTO async_delegations
+               (delegation_id, origin_session, origin_ui_session_id,
+                parent_session_id, state, dispatched_at, updated_at,
+                delivery_state, delivery_attempts, owner_pid,
+                owner_started_at, task_json, origin_session_id)
+               VALUES (?, '', '', NULL, 'running', ?, ?, 'pending', 0, ?, NULL, '{}', '')""",
+            (delegation_id, now, now, pid))
+
+
+def test_finished_delegations_persist_terminal_durable_state(tmp_path, monkeypatch):
+    """Abandoned/error/stopped rows must reach a terminal durable state (#115556):
+    a row with ``completed_at`` set must never linger in a state a liveness
+    check reads as live. Outcome detail stays in the event/result payload."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    now = time.time()
+
+    _insert_running_durable_row("deleg_err", now)
+    ad._persist_completion(
+        {"delegation_id": "deleg_err", "status": "error", "completed_at": now,
+         "summary": None, "error": "boom"},
+        {"status": "error", "summary": None, "error": "boom"})
+    row = ad.get_durable_delegation("deleg_err")
+    assert row["state"] == "failed" and row["completed_at"] is not None
+    assert row["result"]["status"] == "error"
+
+    _insert_running_durable_row("deleg_stop", now)
+    ad._persist_completion(
+        {"delegation_id": "deleg_stop", "status": "interrupted", "completed_at": now},
+        {"status": "interrupted"})
+    assert ad.get_durable_delegation("deleg_stop")["state"] == "cancelled"
+
+    _insert_running_durable_row("deleg_ok", now)
+    ad._persist_completion(
+        {"delegation_id": "deleg_ok", "status": "completed", "completed_at": now, "summary": "done"},
+        {"status": "completed", "summary": "done"})
+    assert ad.get_durable_delegation("deleg_ok")["state"] == "completed"
+
+    _insert_running_durable_row("deleg_abandoned", now)
+    assert ad.recover_abandoned_delegations() == 1
+    row = ad.get_durable_delegation("deleg_abandoned")
+    assert row["state"] in ("completed", "failed", "cancelled") and row["completed_at"] is not None
+    assert row["result"]["status"] == "unknown"
+    conn = sqlite3.connect(tmp_path / "state.db")
+    try:
+        evt = json.loads(conn.execute(
+            "SELECT event_json FROM async_delegations WHERE delegation_id='deleg_abandoned'").fetchone()[0])
+    finally:
+        conn.close()
+    assert evt["status"] == "unknown" and evt["completed_at"] is not None

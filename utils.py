@@ -412,15 +412,18 @@ def _roundtrip_dump(path: Path, yaml_rt, config) -> None:
     _atomic_write(path, lambda f: yaml_rt.dump(config, f), prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
-def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
-    """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
+def atomic_roundtrip_yaml_mutate(
+    path: Union[str, Path], updates: dict[str, Any], *, removals: tuple[str, ...] = (),
+) -> None:
+    """Apply targeted YAML mutations without rewriting unrelated round-trip structure.
 
-    Narrower than :func:`atomic_yaml_write` on purpose: for user-edited config files where a
-    single setting mutation must not disturb the rest. Still writes via temp file + atomic replace.
-    ``value=None`` removes the key (a ``key: null`` leftover reads as absent everywhere but
-    litters the file and diverges from whole-document writers that drop the key).
+    ``None`` is an ordinary YAML value here, not a deletion marker: config-set uses it to
+    explicitly clear nullable settings.  Deletions are passed separately so a caller can make a
+    related set of changes in one read/atomic replace while retaining comments, anchors, aliases,
+    block scalars, key order, and formatting everywhere else.
     """
-    from ruamel.yaml.comments import CommentedMap
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
     # Honor escaped dots and prefer existing literal dotted keys (model IDs like ``glm-5.3``) over
     # blind splitting — same navigation as ``hermes config set``'s ``_set_nested``; otherwise
     # /model + TUI persistence wrote ``glm-5: {'3': ...}`` phantom siblings.
@@ -432,27 +435,94 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
 
     mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
-    current = config
-    keys = _split_key_path(key_path)
-    i = 0
-    while True:
-        remaining = keys[i:]
-        seg, consumed = _greedy_literal_match(dict(current), remaining) or (remaining[0], 1)
-        if i + consumed == len(keys):
-            if value is None:
-                current.pop(seg, None)
-            else:
-                current[seg] = value
-            break
-        next_value = current.get(seg)
-        if not isinstance(next_value, CommentedMap):
-            if value is None:
-                return  # nothing to remove under a missing/scalar parent
-            next_value = CommentedMap()
-            current[seg] = next_value
-        current = next_value
-        i += consumed
+    def _safe_value(value: Any) -> Any:
+        # The runtime's PyYAML readers still apply YAML 1.1 scalar rules. Quote strings such as
+        # ``off`` so writing a string does not silently become False on the next read.
+        if isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
+            return DoubleQuotedScalarString(value)
+        if isinstance(value, dict):
+            return CommentedMap({key: _safe_value(item) for key, item in value.items()})
+        if isinstance(value, list):
+            return CommentedSeq([_safe_value(item) for item in value])
+        return value
+
+    def _navigate(parts: list[str], *, create: bool):
+        current: Any = config
+        i = 0
+        while i < len(parts) - 1:
+            remaining = parts[i:]
+            if isinstance(current, (CommentedMap, dict)):
+                seg, consumed = _greedy_literal_match(dict(current), remaining) or (remaining[0], 1)
+                if i + consumed == len(parts):
+                    return current, seg
+                next_value = current.get(seg)
+                if not isinstance(next_value, (CommentedMap, CommentedSeq)):
+                    if not create:
+                        return None, None
+                    next_value = CommentedMap()
+                    current[seg] = next_value
+                current = next_value
+                i += consumed
+                continue
+            if isinstance(current, (CommentedSeq, list)):
+                try:
+                    index = int(remaining[0])
+                    current = current[index]
+                except (TypeError, ValueError, IndexError):
+                    return None, None
+                i += 1
+                continue
+            return None, None
+        return current, parts[i]
+
+    for key_path, value in updates.items():
+        parts = _split_key_path(key_path)
+        current, leaf = _navigate(parts, create=True)
+        if isinstance(current, (CommentedMap, dict)):
+            current[leaf] = _safe_value(value)
+        elif isinstance(current, (CommentedSeq, list)):
+            try:
+                current[int(leaf)] = _safe_value(value)
+            except (TypeError, ValueError, IndexError) as exc:
+                raise ValueError(f"Cannot update list segment {leaf!r} in {key_path!r}") from exc
+        else:
+            raise ValueError(f"Cannot update {key_path!r}: parent is not a mapping or list")
+
+    for key_path in removals:
+        parts = _split_key_path(key_path)
+        current, leaf = _navigate(parts, create=False)
+        if isinstance(current, (CommentedMap, dict)):
+            current.pop(leaf, None)
+            # ``config unset terminal.backend`` historically removes the now-empty terminal
+            # section too.  Preserve that semantic without serializing the unrelated document.
+            parents: list[tuple[Any, str]] = []
+            node: Any = config
+            i = 0
+            while i < len(parts) - 1 and isinstance(node, (CommentedMap, dict)):
+                seg, consumed = _greedy_literal_match(dict(node), parts[i:]) or (parts[i], 1)
+                child = node.get(seg)
+                if child is not current and not isinstance(child, (CommentedMap, dict)):
+                    break
+                parents.append((node, seg))
+                node = child
+                i += consumed
+            for parent, segment in reversed(parents):
+                child = parent.get(segment)
+                if isinstance(child, (CommentedMap, dict)) and not child:
+                    parent.pop(segment, None)
+                else:
+                    break
+        elif isinstance(current, (CommentedSeq, list)):
+            try:
+                del current[int(leaf)]
+            except (TypeError, ValueError, IndexError):
+                pass
     _roundtrip_dump(path, yaml_rt, config)
+
+
+def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
+    """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode."""
+    atomic_roundtrip_yaml_mutate(path, {key_path: value})
 
 
 # ruamel's round-trip dumper resolves plain scalars under YAML 1.2, where only true/false/null are
@@ -480,22 +550,39 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     require_readable_config_before_write(path)
     yaml_rt, existing = _roundtrip_load(path)
 
-    def _merge(dst: CommentedMap, src: dict) -> None:
-        for key, value in src.items():
-            if isinstance(value, dict):
+    def _merge(dst, src) -> None:
+        from ruamel.yaml.comments import CommentedSeq
+
+        if isinstance(src, dict):
+            for key, value in src.items():
                 current = dst.get(key)
-                if not isinstance(current, CommentedMap):
-                    current = CommentedMap()
-                    dst[key] = current
-                _merge(current, value)
-            elif isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
-                dst[key] = DoubleQuotedScalarString(value)
-            else:
-                dst[key] = value
-        # Keys missing from src are deleted: ``cfg.pop("custom_prompt")`` then save must remove
-        # the key from disk ("explicit absence" semantics of the old _save_cfg pattern).
-        for key in [k for k in dst if k not in src]:
-            del dst[key]
+                if isinstance(value, dict):
+                    if not isinstance(current, CommentedMap):
+                        current = CommentedMap()
+                        dst[key] = current
+                    _merge(current, value)
+                elif isinstance(value, list) and isinstance(current, (list, CommentedSeq)) and len(current) == len(value):
+                    _merge(current, value)
+                elif isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
+                    dst[key] = DoubleQuotedScalarString(value)
+                else:
+                    dst[key] = value
+            # Keys missing from src are deleted: ``cfg.pop("custom_prompt")`` then save must remove
+            # the key from disk ("explicit absence" semantics of the old _save_cfg pattern).
+            for key in [k for k in dst if k not in src]:
+                del dst[key]
+            return
+        if isinstance(src, list):
+            for index, value in enumerate(src):
+                current = dst[index]
+                if isinstance(value, dict) and isinstance(current, CommentedMap):
+                    _merge(current, value)
+                elif isinstance(value, list) and isinstance(current, (list, CommentedSeq)) and len(current) == len(value):
+                    _merge(current, value)
+                elif isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
+                    dst[index] = DoubleQuotedScalarString(value)
+                elif current != value:
+                    dst[index] = value
 
     _merge(existing, new_state)
     _roundtrip_dump(path, yaml_rt, existing)

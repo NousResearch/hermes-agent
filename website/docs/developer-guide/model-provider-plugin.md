@@ -144,6 +144,14 @@ class AcmeProfile(ProviderProfile):
         (Bedrock → None), or public/unauthenticated catalogs (OpenRouter)."""
         return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
 
+    def fetch_account_usage(self, *, api_key=None, base_url=None):
+        """Return AccountUsageSnapshot for /usage, or None when unavailable.
+
+        The hook runs only when the provider has no built-in usage fetcher.
+        It may raise: core catches failures and keeps /usage empty for that turn.
+        """
+        return None
+
     def create_client(self, **client_kwargs):
         """Supply your own client object instead of the shared openai.OpenAI.
         Default returns None (= use the standard client). Override when the
@@ -153,6 +161,30 @@ class AcmeProfile(ProviderProfile):
         and pick what you need. A raise is logged and falls back to the
         standard client."""
         return None
+```
+
+## Account usage
+
+Model-provider plugins can provide account or plan usage to `/usage` by
+overriding `ProviderProfile.fetch_account_usage`. Import and return the shared
+`agent.account_usage.AccountUsageSnapshot` (with any `AccountUsageWindow`
+entries); do not format output in the plugin. Returning `None`, or raising an
+exception, leaves `/usage` empty just as it does for providers without usage
+data. Built-in usage fetchers always take precedence, so this hook cannot
+replace the account-usage behavior for a built-in provider.
+
+```python
+from datetime import datetime, timezone
+
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+def fetch_account_usage(self, *, api_key=None, base_url=None):
+    return AccountUsageSnapshot(
+        provider=self.name,
+        source="my_provider_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(AccountUsageWindow(label="Monthly", used_percent=25),),
+    )
 ```
 
 ## External-process (ACP) providers

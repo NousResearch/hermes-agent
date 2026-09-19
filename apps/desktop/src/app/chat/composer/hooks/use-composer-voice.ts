@@ -19,7 +19,7 @@ import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import { pinFloatingComposerCapture } from '../floating-target'
 import type { ComposerTarget } from '../focus'
-import { onComposerVoiceToggleRequest } from '../focus'
+import { onComposerDictateRequest, onComposerVoiceToggleRequest } from '../focus'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -32,6 +32,7 @@ interface UseComposerVoiceArgs {
   busy: boolean
   clearDraft: () => void
   disabled: boolean
+  dictationEnabled: boolean
   focusInput: () => void
   insertText: (text: string) => void
   maxRecordingSeconds: number
@@ -56,6 +57,7 @@ export function useComposerVoice({
   busy,
   clearDraft,
   disabled,
+  dictationEnabled,
   focusInput,
   insertText,
   maxRecordingSeconds,
@@ -313,6 +315,13 @@ export function useComposerVoice({
   useEffect(
     () => onComposerVoiceToggleRequest(toggled => toggled === target && toggleVoiceConversation()),
     [target, toggleVoiceConversation]
+  )
+
+  // `composer.dictate` shares the focused-composer bus with voice chat, but
+  // invokes the recorder rather than the full-duplex conversation loop.
+  useEffect(
+    () => onComposerDictateRequest(requested => requested === target && !disabled && dictationEnabled && dictate()),
+    [dictate, dictationEnabled, disabled, target]
   )
 
   useEffect(() => {

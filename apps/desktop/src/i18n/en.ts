@@ -347,6 +347,7 @@ export const en: Translations = {
     search: 'Search',
     searchTitle: 'Search sessions, views, and actions',
     swapSidebarSides: 'Swap sidebar sides',
+    turnToBackworkspace: 'Turn to back workspace',
     hideRightSidebar: 'Hide right sidebar',
     showRightSidebar: 'Show right sidebar',
     unreadSessions: count => (count === 1 ? '1 unread session' : `${count} unread sessions`),
@@ -359,6 +360,13 @@ export const en: Translations = {
     resetHudLayout: 'Reset HUD size and position',
     layoutEditor: 'Layout editor',
     layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
+  },
+
+  backworkspace: {
+    label: 'Back workspace',
+    unsupported: "This Hermes backend can't store the back workspace yet. Update Hermes to use it.",
+    loadFailed: "Couldn't open the back workspace. Turn back and try again.",
+    saveFailed: "Couldn't save. Your text stays here and saves with your next edit."
   },
 
   keybinds: {
@@ -433,6 +441,7 @@ export const en: Translations = {
       'view.closeTab': 'Close tab',
       'view.reopenTab': 'Reopen closed tab',
       'view.flipPanes': 'Swap sidebar sides',
+      'view.toggleBackworkspace': 'Turn window to back workspace',
       'view.findInPage': 'Find in page',
       'view.findNext': 'Find next match',
       'view.findPrevious': 'Find previous match',

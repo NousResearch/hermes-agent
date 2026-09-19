@@ -275,6 +275,7 @@ export const zhHant = defineLocale({
     search: '搜尋',
     searchTitle: '搜尋工作階段、檢視和動作',
     swapSidebarSides: '交換側邊欄位置',
+    turnToBackworkspace: '翻到背面工作區',
     hideRightSidebar: '隱藏右側邊欄',
     showRightSidebar: '顯示右側邊欄',
     unreadSessions: count => (count === 1 ? '1 個未讀工作階段' : `${count} 個未讀工作階段`),
@@ -283,6 +284,13 @@ export const zhHant = defineLocale({
     openSettings: '開啟設定',
     openStarmap: '開啟記憶圖譜',
     resetHudLayout: '重設 HUD 大小和位置'
+  },
+
+  backworkspace: {
+    label: '背面工作區',
+    unsupported: '此 Hermes 後端尚無法儲存背面工作區。請更新 Hermes。',
+    loadFailed: '無法開啟背面工作區。請翻回正面後再試一次。',
+    saveFailed: '儲存失敗。文字仍保留在這裡，下次編輯時會一併儲存。'
   },
 
   language: {

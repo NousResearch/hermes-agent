@@ -22,8 +22,9 @@ export function setTitlebarAppActionsSide(side: TitlebarAppActionsSide) {
   $titlebarAppActionsSide.set(side)
 }
 
-/** Button counts for the two titlebar clusters. Sidebar is always left; flip and
- *  the right-sidebar toggle are always right; the three app actions follow `side`. */
+/** Button counts for the two titlebar clusters. Sidebar is always left; the
+ *  back-workspace turn, flip and the right-sidebar toggle are always right; the
+ *  three app actions follow `side`. */
 export function titlebarAppActionsClusterCounts(
   side: TitlebarAppActionsSide,
   leftExtras = 0,
@@ -31,7 +32,7 @@ export function titlebarAppActionsClusterCounts(
 ): { left: number; right: number } {
   const sidebar = 1
   const appActions = 3
-  const rightFixed = 2
+  const rightFixed = 3
 
   if (side === 'left') {
     return { left: sidebar + appActions + leftExtras, right: rightFixed + rightExtras }

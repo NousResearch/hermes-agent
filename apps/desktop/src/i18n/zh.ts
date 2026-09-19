@@ -309,6 +309,7 @@ export const zh = defineLocale({
     search: '搜索',
     searchTitle: '搜索会话、视图与操作',
     swapSidebarSides: '交换侧边栏位置',
+    turnToBackworkspace: '翻到背面工作区',
     hideRightSidebar: '隐藏右侧栏',
     showRightSidebar: '显示右侧栏',
     unreadSessions: count => (count === 1 ? '1 个未读会话' : `${count} 个未读会话`),
@@ -321,6 +322,13 @@ export const zh = defineLocale({
     resetHudLayout: '重置 HUD 大小和位置',
     layoutEditor: '布局编辑器',
     layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
+  },
+
+  backworkspace: {
+    label: '背面工作区',
+    unsupported: '此 Hermes 后端还不能保存背面工作区。请更新 Hermes。',
+    loadFailed: '无法打开背面工作区。请翻回正面后重试。',
+    saveFailed: '保存失败。文字仍保留在这里，下次编辑时会一并保存。'
   },
 
   keybinds: {
@@ -388,6 +396,7 @@ export const zh = defineLocale({
       'view.closeTab': '关闭标签',
       'view.reopenTab': '重新打开已关闭的标签',
       'view.flipPanes': '交换侧边栏位置',
+      'view.toggleBackworkspace': '将窗口翻到背面工作区',
       'view.findInPage': '页面内查找',
       'view.findNext': '查找下一个',
       'view.findPrevious': '查找上一个',

@@ -7,6 +7,21 @@
 export interface ProfileParams {
   profile?: string | null
 }
+export interface BackworkspaceOpenResult {
+  page?: BackworkspacePage | null
+}
+export interface BackworkspacePage {
+  id: string
+  content: string
+}
+export interface BackworkspaceSaveParams {
+  profile?: string | null
+  id?: string | null
+  content?: string | null
+}
+export interface BackworkspaceSaveResult {
+  id: string
+}
 /** ``_serialize_usage_model`` — also embedded as ``usage`` in the billing / subscription states, where the fail-open form is a bare ``{available: false}`` (no ``ok``). */
 export interface UsageModel {
   ok?: boolean | null
@@ -4200,6 +4215,10 @@ export interface RpcMethods {
   'approval.received': { params: ApprovalReceivedParams; result: ApprovalReceivedResult }
   /** Deliver the user's decision on a dangerous command (falls back to durable identity on a stale sid). */
   'approval.respond': { params: ApprovalRespondParams; result: ApprovalRespondResult }
+  /** The most recent back-workspace page, or null before the first save. */
+  'backworkspace.open': { params: ProfileParams; result: BackworkspaceOpenResult }
+  /** Write a back-workspace page (a new page when no id is given) and return its id. */
+  'backworkspace.save': { params: BackworkspaceSaveParams; result: BackworkspaceSaveResult }
   /** Enable/disable auto top-up with its threshold and reload amount (billing:manage). */
   'billing.auto_reload': { params: BillingAutoReloadParams; result: BillingMutationResult }
   /** Start a one-off top-up charge (billing:manage, idempotent). */
@@ -4635,6 +4654,8 @@ export const RPC_METHODS = [
   'approval.pending',
   'approval.received',
   'approval.respond',
+  'backworkspace.open',
+  'backworkspace.save',
   'billing.auto_reload',
   'billing.charge',
   'billing.charge_status',

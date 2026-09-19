@@ -79,6 +79,42 @@
       }
     },
     {
+      "name": "backworkspace.open",
+      "summary": "The most recent back-workspace page, or null before the first save.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BackworkspaceOpenResult"
+        }
+      }
+    },
+    {
+      "name": "backworkspace.save",
+      "summary": "Write a back-workspace page (a new page when no id is given) and return its id.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BackworkspaceSaveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BackworkspaceSaveResult"
+        }
+      }
+    },
+    {
       "name": "billing.auto_reload",
       "summary": "Enable/disable auto top-up with its threshold and reload amount (billing:manage).",
       "params": [
@@ -4745,6 +4781,100 @@
         ],
         "title": "AutoReloadCardKind",
         "type": "string"
+      },
+      "BackworkspaceOpenResult": {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BackworkspacePage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "BackworkspaceOpenResult",
+        "type": "object"
+      },
+      "BackworkspacePage": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "content"
+        ],
+        "title": "BackworkspacePage",
+        "type": "object"
+      },
+      "BackworkspaceSaveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Id"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content"
+          }
+        },
+        "title": "BackworkspaceSaveParams",
+        "type": "object"
+      },
+      "BackworkspaceSaveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "BackworkspaceSaveResult",
+        "type": "object"
       },
       "BatteryCategory": {
         "description": "``agent/battery.py::battery_category`` colour bucket.",

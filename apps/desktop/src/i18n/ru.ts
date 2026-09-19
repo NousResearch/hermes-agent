@@ -268,6 +268,7 @@ export const ru = defineLocale({
     search: 'Поиск',
     searchTitle: 'Поиск сеансов, видов и действий',
     swapSidebarSides: 'Поменять панели местами',
+    turnToBackworkspace: 'Перевернуть на обратную сторону',
     hideRightSidebar: 'Скрыть правую панель',
     showRightSidebar: 'Показать правую панель',
     unreadSessions: count =>
@@ -282,6 +283,13 @@ export const ru = defineLocale({
     exitHud: 'Выйти из режима HUD',
     layoutEditor: 'Редактор раскладки',
     layoutEditorTitle: mod => `Редактор раскладки — ${mod}-клик сбрасывает раскладку`
+  },
+
+  backworkspace: {
+    label: 'Обратная сторона',
+    unsupported: 'Этот бэкенд Hermes пока не умеет сохранять обратную сторону. Обновите Hermes.',
+    loadFailed: 'Не удалось открыть обратную сторону. Переверните окно обратно и попробуйте снова.',
+    saveFailed: 'Не удалось сохранить. Текст остаётся здесь и сохранится при следующей правке.'
   },
   keybinds: {
     title: 'Горячие клавиши',
@@ -354,6 +362,7 @@ export const ru = defineLocale({
       'view.closeTab': 'Закрыть вкладку',
       'view.reopenTab': 'Восстановить закрытую вкладку',
       'view.flipPanes': 'Поменять панели местами',
+      'view.toggleBackworkspace': 'Перевернуть окно на обратную сторону',
       'view.findInPage': 'Найти на странице',
       'view.findNext': 'Следующее вхождение',
       'view.findPrevious': 'Предыдущее вхождение',

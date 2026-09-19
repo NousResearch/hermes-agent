@@ -284,6 +284,7 @@ export const ja = defineLocale({
     search: '検索',
     searchTitle: 'セッション、ビュー、アクションを検索',
     swapSidebarSides: 'サイドバーの向きを切り替え',
+    turnToBackworkspace: '裏面ワークスペースに切り替え',
     hideRightSidebar: '右サイドバーを非表示',
     showRightSidebar: '右サイドバーを表示',
     unreadSessions: count => (count === 1 ? '未読セッション 1 件' : `未読セッション ${count} 件`),
@@ -292,6 +293,13 @@ export const ja = defineLocale({
     openSettings: '設定を開く',
     openStarmap: 'メモリグラフを開く',
     resetHudLayout: 'HUD のサイズと位置をリセット'
+  },
+
+  backworkspace: {
+    label: '裏面ワークスペース',
+    unsupported: 'この Hermes バックエンドはまだ裏面ワークスペースを保存できません。Hermes を更新してください。',
+    loadFailed: '裏面ワークスペースを開けませんでした。表に戻ってもう一度お試しください。',
+    saveFailed: '保存できませんでした。テキストはここに残り、次の編集で保存されます。'
   },
 
   language: {

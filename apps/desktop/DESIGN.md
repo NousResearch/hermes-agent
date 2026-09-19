@@ -275,8 +275,9 @@ Lower panels keep local headers. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.
 
-The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
-and the right-sidebar toggle sit on the right; haptics remain in settings.
+The left cluster shows sidebar, settings, layout editor, and HUD controls. The
+back-workspace turn, flip and the right-sidebar toggle sit on the right; haptics
+remain in settings.
 Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.
@@ -380,7 +381,8 @@ so glass and message-bubble transparency do not reveal scrolling text.
 - Respect `AppShell` overlay ownership. Persistent terminal/content layers,
   route overlays, dialogs, and boot surfaces must not compete through ad-hoc
   z-index literals. Pick a rung of the ladder in `styles.css` instead —
-  `--z-modal-backdrop` / `--z-modal` / `--z-modal-popover`, `--z-over-modal`
+  `--z-backworkspace` (the page on the back of the window, above every shell
+  layer), `--z-modal-backdrop` / `--z-modal` / `--z-modal-popover`, `--z-over-modal`
   (toasts, tooltips, command surfaces) and `--z-over-modal-content`,
   `--z-switcher-backdrop` / `--z-switcher`, then the boot chain
   `--z-connecting` → `--z-onboarding` → `--z-setup` → `--z-crash`. Plain

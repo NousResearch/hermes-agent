@@ -389,6 +389,7 @@ export interface Translations {
     search: string
     searchTitle: string
     swapSidebarSides: string
+    turnToBackworkspace: string
     hideRightSidebar: string
     showRightSidebar: string
     unreadSessions: (count: number) => string
@@ -401,6 +402,13 @@ export interface Translations {
     resetHudLayout: string
     layoutEditor: string
     layoutEditorTitle: (modifier: string) => string
+  }
+
+  backworkspace: {
+    label: string
+    unsupported: string
+    loadFailed: string
+    saveFailed: string
   }
 
   keybinds: {

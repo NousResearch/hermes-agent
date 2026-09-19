@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { toggleBackworkspace } from '@/app/backworkspace/store'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { resetLayoutTree } from '@/components/pane-shell/tree/store'
@@ -174,6 +175,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     }
   }
 
+  const backworkspaceTool: TitlebarTool = {
+    actionId: 'view.toggleBackworkspace',
+    icon: <TitlebarIcon name="note" />,
+    id: 'backworkspace',
+    label: t.titlebar.turnToBackworkspace,
+    onSelect: () => {
+      triggerHaptic('open')
+      void toggleBackworkspace()
+    }
+  }
+
   const flipTool: TitlebarTool = {
     actionId: 'view.flipPanes',
     icon: <TitlebarIcon name="arrow-swap" />,
@@ -333,6 +345,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {visibleSystemTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
+        <TitlebarToolButton navigate={navigate} tool={backworkspaceTool} />
         <TitlebarToolButton navigate={navigate} tool={flipTool} />
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
         <Slot area="titleBar.right" />

@@ -159,6 +159,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.closeTerminal', category: 'view', defaults: ['ctrl+shift+w'] },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
+  // ⌘⇧E — the back page has no chrome of its own, so the way back must be a
+  // bound chord (Esc inside the page works too). A mod chord, so it also fires
+  // from inside the page's textarea.
+  { id: 'view.toggleBackworkspace', category: 'view', defaults: ['mod+shift+e'] },
   // ⌘W closes the focused zone's active tab — its own tab strip (preview) or
   // the tree tab (session tiles, files, terminal). The uncloseable workspace
   // is a no-op. ⌘⇧T reopens the last closed tab where it was.

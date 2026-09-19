@@ -249,6 +249,7 @@ export const ar = defineLocale({
     search: 'بحث',
     searchTitle: 'البحث في الجلسات والعروض والإجراءات',
     swapSidebarSides: 'تبديل جانبي الأشرطة',
+    turnToBackworkspace: 'اقلب إلى مساحة العمل الخلفية',
     hideRightSidebar: 'إخفاء الشريط الأيمن',
     showRightSidebar: 'إظهار الشريط الأيمن',
     unreadSessions: count => (count === 1 ? 'جلسة واحدة غير مقروءة' : `${count} جلسات غير مقروءة`),
@@ -261,6 +262,13 @@ export const ar = defineLocale({
     resetHudLayout: 'إعادة تعيين حجم HUD وموضعه',
     layoutEditor: 'محرر التخطيط',
     layoutEditorTitle: modifier => `محرر التخطيط — انقر مع ${modifier} لإعادة ضبط التخطيط`
+  },
+
+  backworkspace: {
+    label: 'مساحة العمل الخلفية',
+    unsupported: 'لا تستطيع واجهة Hermes الخلفية هذه حفظ مساحة العمل الخلفية بعد. حدّث Hermes لاستخدامها.',
+    loadFailed: 'تعذّر فتح مساحة العمل الخلفية. اقلب النافذة إلى الأمام وحاول مرة أخرى.',
+    saveFailed: 'تعذّر الحفظ. يبقى نصك هنا ويُحفظ مع تعديلك التالي.'
   },
   keybinds: {
     title: 'اختصارات لوحة المفاتيح',
@@ -324,6 +332,7 @@ export const ar = defineLocale({
       'view.terminalPaste': 'لصق في الطرفية',
       'view.closePreviewTab': 'إغلاق علامة تبويب المعاينة',
       'view.flipPanes': 'تبديل جانبي الشريط الجانبي',
+      'view.toggleBackworkspace': 'اقلب النافذة إلى مساحة العمل الخلفية',
       'appearance.toggleMode': 'تبديل الفاتح / الداكن',
       'profile.default': 'الانتقال إلى الملف الشخصي الافتراضي',
       'profile.switch.1': 'الانتقال إلى الملف الشخصي 1',

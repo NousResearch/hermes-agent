@@ -256,6 +256,9 @@
     --z-over-modal-content: 210;
     --z-switcher-backdrop: 219;
     --z-switcher: 220;
+    /* The page on the back of the window (src/app/backworkspace): above every
+       shell layer, below anything that must still reach the user over it. */
+    --z-backworkspace: 100;
     /* Boot and blocking states, in the order they can stack. */
     --z-connecting: 1200;
     --z-onboarding: 1300;
@@ -3679,4 +3682,12 @@ html[data-hud-window] [data-slot='popover-content'] {
 
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
+}
+
+/* Back workspace (src/app/backworkspace): while the window is turned over the
+   shell stays mounted — terminals, previews and streams keep running — but
+   only the back page paints and takes input. Portals outside #root (toasts,
+   dialogs) are not part of the shell and stay visible over the page. */
+:root[data-backworkspace] #root {
+  visibility: hidden;
 }

@@ -94,6 +94,15 @@ def _cfg() -> Dict:
     return cfg if isinstance(cfg, dict) else {}
 
 
+def browser_vault_enabled() -> bool:
+    """Explicit, profile-local browser opt-in; saved items and manager detection are not consent.
+
+    Management callers intentionally use enabled_backends() independently so users can set up
+    the vault before opting in. Read through the canonical loader on each call, not at import.
+    """
+    return _cfg().get("enabled") is True
+
+
 def external_backend_classes():
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend

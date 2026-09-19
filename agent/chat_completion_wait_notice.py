@@ -6,12 +6,17 @@ silent past the notice threshold this module decides WHAT the status line says
 when) and WHETHER to rewrite it: once when the silence starts, again only when
 the wait phase changes or a watchdog deadline is near. Watchdog thresholds and
 retry policy live with the watchdogs; this is presentation only.
+
+"Silent" has two meanings and the phases keep them apart: no frames on the wire
+(transport silence) and frames that carry no model output (``METADATA_ONLY_PHASES``).
+A connected, chatty socket is not evidence that the model is producing anything.
 """
 
 import math
 from typing import Optional
 
 NEAR_DEADLINE_SECS = 15.0
+NOTICE_SECS = 60.0
 
 
 def _near_deadline(watchdog: Optional[tuple[str, float]]) -> bool:
@@ -23,10 +28,32 @@ _PHASE_TEXT = {
     "first_event": "{n}s waiting for the first provider event",
     "reconnect": "{n}s waiting for the first provider event after reconnect",
     "post_event": "provider stream active; {n}s without stream events",
+    # Codex Responses, frames still arriving but none of them model output. Says what
+    # was observed, never why: a connected, chatty socket is not evidence of thinking.
+    "no_output": "provider stream open; {n}s total API-call elapsed, no model output yet in this attempt",
+    "output_paused": "provider stream open; {n}s since the last model output",
     # Chat-completions streaming path
     "first_chunk": "{n}s waiting for the first stream chunk",
     "post_chunk": "stream open; {n}s without stream output",
 }
+
+# Phases reporting the ABSENCE of model output while frames keep arriving. A lifecycle
+# frame must not clear such a notice: it is the very thing being reported, and clearing
+# reads as recovery. (The named watchdog is still the one the current snapshot implies —
+# the one that fires if the frames stop now — as in every other phase.)
+METADATA_ONLY_PHASES = frozenset({"no_output", "output_paused"})
+
+
+def no_output_notice_secs(*, idle_enabled: bool, idle_timeout: float) -> float:
+    """How long a metadata-only wait may run before the status line names it.
+
+    Reuses the event-idle threshold — the officially chosen, context-scaled and
+    effort-floored "this long without traffic is abnormal" duration — so a healthy
+    slow request is not narrated; never below the generic notice threshold.
+    """
+    if idle_enabled and math.isfinite(idle_timeout) and idle_timeout > NOTICE_SECS:
+        return idle_timeout
+    return NOTICE_SECS
 
 
 def wait_notice_text(model: str, silence_secs: float, phase: str,

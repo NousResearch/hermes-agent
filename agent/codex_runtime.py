@@ -658,6 +658,23 @@ def _codex_event_has_content(event: Any) -> bool:
     return False
 
 
+def _mark_codex_watchdog_event(watchdog_state: Any, event: Any, now: float) -> None:
+    """Record one parsed SSE event on the request's watchdog state.
+
+    ``last_event_ts`` is transport liveness (every frame refreshes it);
+    ``last_progress_ts`` is substantive model output only. A reconnect's first
+    frame ends that attempt's no-event phase and starts a fresh progress phase.
+    """
+    has_progress = _codex_event_has_content(event)
+    with watchdog_state.lock:
+        if watchdog_state.retry_started_ts is not None:
+            watchdog_state.retry_started_ts = None
+            watchdog_state.last_progress_ts = None
+        watchdog_state.last_event_ts = now
+        if has_progress:
+            watchdog_state.last_progress_ts = now
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise ``_StreamErrorEvent`` from a ``type=error`` SSE frame. The spec puts code/message/param at the
     top level, but the SDK and several proxies nest them under ``error``; read top-level first, then the envelope."""
@@ -1002,15 +1019,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # wrapper around this callback already keeps a retired worker from overwriting a newer request.
         if getattr(agent, "_last_api_first_chunk_at", None) is None:
             agent._last_api_first_chunk_at = now
-        has_progress = _codex_event_has_content(event)
         if watchdog_state is not None:
-            with watchdog_state.lock:
-                if watchdog_state.retry_started_ts is not None:
-                    watchdog_state.retry_started_ts = None
-                    watchdog_state.last_progress_ts = None
-                watchdog_state.last_event_ts = now
-                if has_progress:
-                    watchdog_state.last_progress_ts = now
+            _mark_codex_watchdog_event(watchdog_state, event, now)
         agent._touch_activity("receiving stream response")
 
     def _interrupt_or_superseded() -> bool:

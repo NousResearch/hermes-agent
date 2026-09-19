@@ -1394,7 +1394,14 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       ) : null}
 
-      {state.mode === 'remote' && !state.envOverride ? (
+      {/* An env-pinned remote (HERMES_DESKTOP_REMOTE_URL) still renders this
+          block: the override pins the URL/mode, but the browser SESSION is not
+          env-owned — docs promise "you still sign in from the Gateway settings
+          panel" (user-guide/desktop.md). Hiding it left a lapsed session with
+          no sign-in anywhere in Settings, and the boot-recovery card routes
+          every remote failure here, so "Use local gateway" became the only way
+          back in (#114856). The URL input and Save/Test stay env-gated above. */}
+      {state.mode === 'remote' ? (
         <div className="mt-5 grid gap-1">
           <ListRow
             action={
@@ -1433,13 +1440,16 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
                     <Pill tone="primary">
                       <Check className="size-3" /> {g.signedIn}
                     </Pill>
-                    <Button disabled={signingIn || state.envOverride} onClick={() => void signOut()} variant="outline">
+                    {/* Sign-in/out are session actions, not connection edits: an
+                        env-pinned URL must still be able to refresh its lapsed
+                        session from here (#114856). */}
+                    <Button disabled={signingIn} onClick={() => void signOut()} variant="outline">
                       {signingIn ? <Loader2 className="animate-spin" /> : null}
                       {g.signOut}
                     </Button>
                   </div>
                 ) : (
-                  <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
+                  <Button disabled={signingIn || !trimmedUrl} onClick={() => void signIn()}>
                     {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
                     {isPasswordProvider ? g.signIn : g.signInWith(providerLabel)}
                   </Button>

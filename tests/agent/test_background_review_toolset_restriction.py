@@ -265,3 +265,259 @@ def test_background_review_whitelist_includes_configured_extra_tools(
     assert "propose_shared_memory" in captured["review_prompt"]
 
 
+def test_background_review_extra_tools_lead_with_allowance(tmp_path, monkeypatch):
+    """When extra_tools are configured, the fork's task message must LEAD with the
+    allowance, not trail it after the blanket deny.
+
+    Reason (issue found in production, 2026-09-14): the fork's user message ended
+    '...Other tools will be denied at runtime — do not attempt them. Exception —
+    these configured tools are also allowed: X, Y.' Small/fast models anchor on
+    the deny sentence and never exercise the exception — an insight-sidecar fork
+    with insight_save whitelisted, advertised in-schema, and named in the prompt
+    still made zero attempts. Allowance-first framing keeps the deny guarantee
+    (dispatch is still whitelisted) while putting the granted tools where the
+    model's attention actually is: before the deny, not after it.
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "auxiliary:\n"
+        "  background_review:\n"
+        "    extra_tools:\n"
+        "      - insight_save\n"
+        "      - insight_recall\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import run_agent
+    from hermes_cli import config as config_module
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    captured = {}
+
+    def _capture_run_conversation(self, *, user_message, **kwargs):
+        captured["review_prompt"] = user_message
+        return {"final_response": "Nothing to save."}
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent.AIAgent, "__init__", lambda self, *a, **k: None), \
+         patch.object(
+             run_agent.AIAgent,
+             "run_conversation",
+             _capture_run_conversation,
+         ), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", lambda self: None), \
+         patch.object(run_agent.AIAgent, "close", lambda self: None), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=False,
+            review_skills=True,
+        )
+
+    msg = captured["review_prompt"]
+    assert "insight_save" in msg and "insight_recall" in msg
+    # Allowance must LEAD: it appears BEFORE the deny sentence, not appended after it.
+    allow_pos = msg.find("You can call skill management tools plus:")
+    deny_pos = msg.find("denied at runtime")
+    assert allow_pos != -1, f"allowance sentence missing from: {msg!r}"
+    assert deny_pos != -1, f"deny sentence missing from: {msg!r}"
+    assert allow_pos < deny_pos, (
+        "allowance must precede the deny sentence so models anchor on the grant, not the deny"
+    )
+    # No legacy trailing-exception framing anywhere in the message.
+    assert "Exception — these configured tools are also allowed" not in msg
+
+
+def test_background_review_no_extra_tools_keeps_deny_sentence(tmp_path, monkeypatch):
+    """Without extra_tools the framing must stay exactly as before — allowance-first
+    wording is reserved for the configured-exception case."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text("logging:\n  level: INFO\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import run_agent
+    from hermes_cli import config as config_module
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    captured = {}
+
+    def _capture_run_conversation(self, *, user_message, **kwargs):
+        captured["review_prompt"] = user_message
+        return {"final_response": "Nothing to save."}
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent.AIAgent, "__init__", lambda self, *a, **k: None), \
+         patch.object(
+             run_agent.AIAgent,
+             "run_conversation",
+             _capture_run_conversation,
+         ), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", lambda self: None), \
+         patch.object(run_agent.AIAgent, "close", lambda self: None), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=False,
+            review_skills=True,
+        )
+
+    msg = captured["review_prompt"]
+    assert "You can only call skill management tools." in msg
+    assert "Other tools will be denied at runtime" in msg
+    assert "You can call skill management tools plus:" not in msg
+
+
+def test_skill_review_prompt_names_thesis_genre_only_via_whitelist(tmp_path, monkeypatch):
+    """The thesis-genre block must appear exactly when insight_save is dispatchable.
+
+    Gate on the computed review whitelist (union of toolsets + extra_tools), not on
+    the raw config: memory-scoped forks get insight_save via the memory toolset with
+    no extra_tools configured, and the block must never be shown to a fork whose
+    dispatch would refuse the tool it names.
+    """
+    # Case 1: skill-only review WITH insight_save in extra_tools -> block present.
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "auxiliary:\n  background_review:\n    extra_tools:\n      - insight_save\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import run_agent
+    from hermes_cli import config as config_module
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    captured = {}
+
+    def _capture_run_conversation(self, *, user_message, **kwargs):
+        captured["review_prompt"] = user_message
+        return {"final_response": "Nothing to save."}
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent.AIAgent, "__init__", lambda self, *a, **k: None), \
+         patch.object(run_agent.AIAgent, "run_conversation", _capture_run_conversation), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", lambda self: None), \
+         patch.object(run_agent.AIAgent, "close", lambda self: None), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[], review_memory=False, review_skills=True,
+        )
+
+    msg = captured["review_prompt"]
+    assert "THESIS" in msg
+    assert "insight_save(text, topic)" in msg
+    assert "teaches a future session the wrong genre" in msg
+    # The block sits INSIDE the allowed region — adjacent to the grant, before nothing else matters.
+    assert msg.find("insight_save(text, topic)") > msg.find("management tools plus:")
+
+    # Case 2: skill-only review, NO extra_tools -> block absent (tool would be denied).
+    hermes_home2 = tmp_path / ".hermes2"
+    hermes_home2.mkdir()
+    (hermes_home2 / "config.yaml").write_text("logging:\n  level: INFO\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home2))
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    captured2 = {}
+
+    def _capture_run_conversation2(self, *, user_message, **kwargs):
+        captured2["review_prompt"] = user_message
+        return {"final_response": "Nothing to save."}
+
+    agent2 = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent.AIAgent, "__init__", lambda self, *a, **k: None), \
+         patch.object(run_agent.AIAgent, "run_conversation", _capture_run_conversation2), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", lambda self: None), \
+         patch.object(run_agent.AIAgent, "close", lambda self: None), \
+         patch("threading.Thread", _SyncThread):
+        agent2._spawn_background_review(
+            messages_snapshot=[], review_memory=False, review_skills=True,
+        )
+
+    msg2 = captured2["review_prompt"]
+    assert "insight_save(text, topic)" not in msg2
+    assert "THESIS" not in msg2
+
+
+def test_skill_review_prompt_carries_refusal_recovery_and_no_dead_end():
+    """Prompts must teach single-refusal recovery, and must not instruct the fork to
+    report into its discarded reply (the 'overlap -> mention it' dead end)."""
+    import run_agent
+
+    for prompt_attr in ("_SKILL_REVIEW_PROMPT", "_COMBINED_REVIEW_PROMPT"):
+        prompt = getattr(run_agent.AIAgent, prompt_attr)
+        assert "fix that specific cause, retry once" in prompt, prompt_attr
+        assert "a second identical failure means stop" in prompt, prompt_attr
+        # Dead-end instruction: the fork's reply is discarded (result=skill is a
+        # category); nothing reads its prose. This must not tell it to communicate.
+        assert "background curator handles consolidation" not in prompt, prompt_attr
+        assert "mention it" not in prompt, prompt_attr
+
+
+def test_background_review_extra_tools_allowance_keeps_memory_phrase(tmp_path, monkeypatch):
+    """Combined review (memory+skills) with extra_tools: the allowance must still
+    mention memory — routing it through the same memory_phrase as the deny-only
+    branch is what prevents 'memory-less review is told memory exists' in either
+    direction (a memory review must not lose its mention either)."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "auxiliary:\n"
+        "  background_review:\n"
+        "    extra_tools:\n"
+        "      - insight_save\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import run_agent
+    from hermes_cli import config as config_module
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    captured = {}
+
+    def _capture_run_conversation(self, *, user_message, **kwargs):
+        captured["review_prompt"] = user_message
+        return {"final_response": "Nothing to save."}
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent.AIAgent, "__init__", lambda self, *a, **k: None), \
+         patch.object(
+             run_agent.AIAgent,
+             "run_conversation",
+             _capture_run_conversation,
+         ), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", lambda self: None), \
+         patch.object(run_agent.AIAgent, "close", lambda self: None), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=True,
+        )
+
+    msg = captured["review_prompt"]
+    allow_pos = msg.find("You can call ")
+    deny_pos = msg.find("denied at runtime")
+    assert allow_pos != -1 and deny_pos != -1 and allow_pos < deny_pos
+    # The allowance branch names memory when the review is memory-scoped.
+    assert "memory and skill " in msg[allow_pos:deny_pos]
+
+

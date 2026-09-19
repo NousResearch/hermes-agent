@@ -16,11 +16,34 @@ This is an additive local #99159 owner checkpoint against runtime `485d5f6848c25
 
 Output consumes their real canonical owner registry, shared-first grant fence, current transaction connection, private input reconstruction and byte-verifying Files store. It does not carry those implementations. Output readiness is backed by the initialized real outbox and installed handler identities, not catalog metadata or detached legacy fallback.
 
-## One explicit dependent insertion
+## Separately owned transactional admission
 
-`patches/hosted-output-route-admission.patch` preserves the reviewed Output-only writer callback inside Route's `admit_api_turn` grant fence. That lexical insertion point, its `shared` connection and the input-custody admission dictionary do not exist on the common runtime base. Importing the surrounding Route/Files implementations merely to make this branch runnable would violate owner separation.
+Route owns the NEW-write seam in `gateway/session_api_turn.py` and
+`gateway/session_peer_target.py` (local candidate
+`33227e36c4c2a1a9b580da25b30ccb2eef21dd0b` — see the exact handoff for the final
+owner identity). Compose that Route delta with the lower/Files owners and this
+Output owner using ordinary Git merges. Retain both sides of the shared
+registration/dispatch/append contexts. No dependent patch is applied.
 
-After the declared lower+Files composition and this owner's Python delta, apply that patch at the real Route insertion point. Resolve overlapping registration/dispatch/append contexts by retaining **both** lower behavior and Output calls; do not choose either whole side. This explicit patch is part of the delivered owner artifact and is applied in the tested proof. It is a delivery-representation hold: the Python diff alone must not be advertised as a normal merge-ready complete replacement. A future lower-owner hook or explicit publication treatment needs a separate decision.
+Before preparation, API pins the concrete adapter-bound
+`_room_output_admission` consumer. Inside the existing shared-first/owner SQL
+fence, `authorize_dispatch` verifies current dispatch, policy, catalog and both
+grant stores, then requires that same consumer for signed artifact rights.
+Missing, rebound, unavailable or incomplete Output consent refuses NEW instead
+of degrading to text. Default four/five-right input grants require no consumer;
+accepted replay bypasses the NEW check and creates no execution.
+
+Output installs `authorize_output_consent` on that seam during real root setup.
+Its readiness selection requires the exact installed consumer, initialized
+outbox, owner/DB/epoch/process and real routes. The consumer uses the supplied
+connections to recapture and compare exact adapter/owner/grant/policy/dispatch
+consent, returning literal `True` only for authorized Output. It must not commit,
+reacquire grant stores or do external work. The bearer remains transient.
+
+The former `patches/hosted-output-route-admission.patch` packaging was removed
+only after the ordinary owner composition passed the focused admission and real
+root/default peer Output product witnesses. This closes that representation
+hold only, not the receiver/lifecycle/publication holds below.
 
 The proof also restores the exact Files-owned native staging cleanup test including Output setup and byte/row noninterference assertions. Its one prompt fixture adaptation uses the already-accepted composed expectation for NEW prompts and leaves the old frozen admission payload proof unchanged.
 

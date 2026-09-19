@@ -193,6 +193,64 @@ def test_profile_manager_cannot_replace_launch_home_auth_provider():
     assert "basic" not in profile_manager._ownership_ledger
 
 
+def test_bundled_provider_reload_in_profile_scope_stays_quiet(caplog):
+    """A routine profile-scoped reload of a BUNDLED provider must not warn.
+
+    Every served profile's plugin manager re-loads the bundled dashboard-auth
+    providers (multiplex gateway, profile-scoped dashboard/desktop discovery),
+    so the launch-scope refusal is the expected path for them — logging a
+    WARNING per profile per manager lifetime flooded the logs of every install
+    with a provider configured. The refusal itself must be unchanged.
+    """
+    import logging
+
+    manager, ctx = _real_ctx()
+    launch_provider = _Basic("launch-home")
+    ctx.register_dashboard_auth_provider(launch_provider)
+
+    profile_scope = hermes_home_key(Path(manager.scope_key) / "profiles" / "bot")
+    profile_manager = PluginManager(scope_key=profile_scope)
+    profile_ctx = PluginContext(
+        PluginManifest(name="basic", version="0.0.1", kind="backend", source="bundled"),
+        manager=profile_manager,
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="hermes_cli.plugins"):
+        registration = profile_ctx.register_dashboard_auth_provider(_Basic("profile"))
+
+    assert registration is None
+    assert get_provider("basic") is launch_provider
+    assert not [
+        rec for rec in caplog.records
+        if rec.levelno >= logging.WARNING and "dashboard-auth provider" in rec.getMessage()
+    ], "a bundled provider reload in a profile scope must not warn"
+
+
+def test_external_provider_reload_in_profile_scope_still_warns(caplog):
+    """Third-party plugins keep the warning: a non-launch registration attempt is
+    a scoping mistake their authors should see."""
+    import logging
+
+    manager, ctx = _real_ctx()
+    ctx.register_dashboard_auth_provider(_Basic("launch-home"))
+
+    profile_scope = hermes_home_key(Path(manager.scope_key) / "profiles" / "bot")
+    profile_manager = PluginManager(scope_key=profile_scope)
+    profile_ctx = PluginContext(
+        PluginManifest(name="community-auth", version="0.0.1", kind="backend", source="user"),
+        manager=profile_manager,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+        registration = profile_ctx.register_dashboard_auth_provider(_Basic("community"))
+
+    assert registration is None
+    assert any(
+        rec.levelno >= logging.WARNING and "dashboard-auth provider" in rec.getMessage()
+        for rec in caplog.records
+    ), "an external provider's non-launch registration attempt must still warn"
+
+
 def test_profile_directory_can_be_the_process_launch_home(monkeypatch, tmp_path):
     """A process launched directly into a profile owns dashboard auth."""
     launch_home = tmp_path / "profiles" / "bot"

@@ -758,15 +758,31 @@ class PluginContext:
             return
         launch_scope = hermes_home_key(get_process_hermes_home())
         if self._manager.scope_key != launch_scope:
-            logger.warning(
-                "Plugin '%s' tried to register dashboard-auth provider %r "
-                "from profile scope %s; ignoring it because dashboard auth "
-                "is owned by launch scope %s.",
-                self.manifest.name,
-                provider.name,
-                self._manager.scope_key,
-                launch_scope,
-            )
+            # A per-home manager re-loads the plugin set once per served profile (multiplex
+            # gateway, profile-scoped dashboard/desktop discovery), so a BUNDLED provider's
+            # reload outside the launch home is the routine path for it, not a scoping
+            # mistake: keep the refusal, but do not warn per profile (one multiplex install
+            # logged hundreds of these in days). External plugins keep the warning — for
+            # them the refused attempt is what the guard exists to surface.
+            if self.manifest.source == "bundled":
+                logger.debug(
+                    "Plugin '%s' skipping dashboard-auth provider %r in profile scope %s "
+                    "(dashboard auth is owned by launch scope %s).",
+                    self.manifest.name,
+                    provider.name,
+                    self._manager.scope_key,
+                    launch_scope,
+                )
+            else:
+                logger.warning(
+                    "Plugin '%s' tried to register dashboard-auth provider %r "
+                    "from profile scope %s; ignoring it because dashboard auth "
+                    "is owned by launch scope %s.",
+                    self.manifest.name,
+                    provider.name,
+                    self._manager.scope_key,
+                    launch_scope,
+                )
             return
         registry_name = provider.name
         # The auth registry is process-global (lifetime = web server). Disposing it on a routine

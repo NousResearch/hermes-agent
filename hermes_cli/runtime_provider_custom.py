@@ -388,7 +388,7 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     rp = _rp()
     try:
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint()
+        endpoint = resolve_llamacpp_endpoint(rp.load_config())
     except Exception:  # noqa: BLE001 — resolution is best-effort
         endpoint = None
     if endpoint:
@@ -455,8 +455,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
                                   target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
     Aliases resolving to "custom" (ollama, vllm, llamacpp, …) are treated like bare ``custom``. A
-    llamacpp alias with no explicit base_url resolves to the managed server first; an explicit
-    base_url always wins."""
+    configured entry named ``llamacpp`` wins before the managed-server fallback; an explicit
+    base_url still wins for direct alias resolution."""
     rp = _rp()
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated from a `model_aliases:`
     # direct-alias resolution) — build a runtime directly so the alias's base_url actually takes effect.
@@ -464,13 +464,17 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # treated identically here, so a YAML `provider: ollama` with a LAN/WireGuard `base_url` doesn't
     # silently fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+    custom_provider = None
     if requested_norm in _LLAMACPP_ALIASES and not explicit_base_url:
-        return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
+        custom_provider = rp._get_named_custom_provider(requested_provider)
+        if not custom_provider:
+            return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
     if requested_norm and requested_norm != "custom" and rp._resolves_to_custom(requested_norm):
         requested_norm = "custom"
     if requested_norm == "custom" and explicit_base_url:
         return _resolve_direct_alias_runtime(requested_provider, explicit_api_key, explicit_base_url)
-    custom_provider = rp._get_named_custom_provider(requested_provider)
+    if custom_provider is None:
+        custom_provider = rp._get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")

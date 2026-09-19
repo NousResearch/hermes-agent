@@ -14,6 +14,7 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -784,6 +785,100 @@ def test_runtime_provider_seam_llamacpp_alias(tmp_path, monkeypatch, stub_server
     assert runtime["base_url"] == f"http://127.0.0.1:{port}/v1"
     assert runtime["api_key"] == "sk-managed"
     assert runtime["provider"] == "custom"
+
+
+def test_runtime_provider_seam_configured_llamacpp_provider_wins(tmp_path, monkeypatch):
+    """a configured llamacpp provider must beat the managed-runtime alias fallback."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "providers:\n"
+        "  llamacpp:\n"
+        "    base_url: http://127.0.0.1:8081/v1\n"
+        "    api_key: sk-configured\n"
+        "local_runtime:\n"
+        "  enabled: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        lambda *args, **kwargs: pytest.fail("managed runtime should not intercept a configured provider"),
+    )
+
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+
+    runtime = rp.resolve_runtime_provider(requested="llamacpp")
+    assert runtime["source"] == "custom_provider:llamacpp"
+    assert runtime["base_url"] == "http://127.0.0.1:8081/v1"
+    assert runtime["api_key"] == "sk-configured"
+
+
+def test_runtime_provider_seam_forwards_detect_ports_config(tmp_path, monkeypatch):
+    """the managed alias fallback must receive local runtime detection settings."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "local_runtime:\n"
+        "  enabled: true\n"
+        "  detect_ports: [8081]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    seen_configs = []
+
+    def resolve_endpoint(config, **_kwargs):
+        seen_configs.append(config)
+        return {"base_url": "http://127.0.0.1:8081/v1", "api_key": ""}
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        resolve_endpoint,
+    )
+
+    from hermes_cli import runtime_provider as rp
+
+    runtime = rp.resolve_runtime_provider(requested="llamacpp")
+
+    assert len(seen_configs) == 1
+    assert seen_configs[0]["local_runtime"]["detect_ports"] == [8081]
+    assert runtime["source"] == "local-runtime"
+    assert runtime["base_url"] == "http://127.0.0.1:8081/v1"
+
+
+def test_provider_catalog_forwards_detect_ports_config(tmp_path, monkeypatch):
+    """the provider catalog must pass local runtime detection settings too."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "local_runtime:\n"
+        "  enabled: true\n"
+        "  detect_ports: [8081]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr("hermes_cli.providers._models_dev_info", lambda *args, **kwargs: None)
+    seen_configs = []
+
+    def resolve_endpoint(config, **_kwargs):
+        seen_configs.append(config)
+        return {"base_url": "http://127.0.0.1:8081/v1", "api_key": ""}
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        resolve_endpoint,
+    )
+
+    from hermes_cli.providers import resolve_provider_full
+
+    provider = resolve_provider_full("llamacpp")
+
+    assert len(seen_configs) == 1
+    assert seen_configs[0]["local_runtime"]["detect_ports"] == [8081]
+    assert provider is not None
+    assert provider.base_url == "http://127.0.0.1:8081/v1"
 
 
 def test_runtime_provider_seam_explicit_base_url_wins(tmp_path, monkeypatch):

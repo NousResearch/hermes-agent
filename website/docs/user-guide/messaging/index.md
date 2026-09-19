@@ -329,14 +329,18 @@ platforms:
         model: anthropic/claude-sonnet-4.6
         provider: anthropic
         system_prompt: "You are the #dev channel code-review specialist."
-      "987654321098765432":
+      "daily":                     # channel name (resolved from the channel directory)
         model: openai/gpt-5-mini
+      "^work-.*_project-":         # regex pattern over channel names
+        model: anthropic/claude-sonnet-4.6
 ```
 
 Details:
 
 - All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
-- Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
+- Keys may be a channel/thread **id**, a channel **name**, or a **regex pattern**. Lookup order is exact id → exact name → pattern (first matching pattern in config order wins), then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
+- A key containing regex metacharacters (`^ $ + ? [ ] ( ) { } | \`) is treated as a pattern matched against the **start** of the channel name (implicit `^`); every other key stays a literal id/name.
+- Name/pattern keys resolve through the cached channel directory (`~/.hermes/channel_directory.json`, rebuilt every 5 minutes), and only after an exact-id miss — id-keyed overrides keep their zero-overhead lookup, and a channel the bot has not discovered yet simply cannot match by name.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 

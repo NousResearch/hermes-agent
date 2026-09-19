@@ -2858,10 +2858,56 @@ def _channel_override_lookup_keys(
     return list(dict.fromkeys(str(key) for key in (chat_id, thread_id, parent_id) if key))
 
 
+# A ``channel_overrides`` key holding any of these is a regex PATTERN over channel names (opt-in,
+# #109676); every other key stays a literal id/name, so existing configs are untouched.
+_CHANNEL_OVERRIDE_PATTERN_CHARS = frozenset("^$+?[](){}|\\")
+
+
+def _is_channel_name_pattern(key: str) -> bool:
+    """True when a ``channel_overrides`` key holds regex metacharacters (opt-in pattern matching)."""
+    return any(char in _CHANNEL_OVERRIDE_PATTERN_CHARS for char in key)
+
+
+def _channel_name_pattern(key: str):
+    """Compiled pattern anchored at the channel-name start; None when the key is not a valid regex.
+
+    An uncompilable pattern-shaped key simply never matches — a literal key of the same text was
+    already tried during the exact-name pass. ``re`` caches compiled patterns itself, so this
+    stays cheap per message.
+    """
+    try:
+        return re.compile(key)
+    except re.error as exc:
+        logger.debug("channel_overrides key %r looks like a pattern but does not compile: %s", key, exc)
+        return None
+
+
+def _channel_names_for_platform_ids(platform: Platform, keys: list[str]) -> list[str]:
+    """Channel NAME(s) for the lookup *keys*, resolved from the gateway's cached channel directory.
+
+    Best-effort: a DM, a channel the bot cannot see, or an empty directory resolves to no name,
+    which only means name/pattern keys cannot apply. The gateway rebuilds the directory every
+    5 minutes, so resolution does no platform I/O of its own and needs no cache here.
+    """
+    from gateway.channel_directory import lookup_channel_entries
+    platform_name = str(getattr(platform, "value", platform))
+    try:
+        entries = lookup_channel_entries(platform_name, keys)
+    except Exception:
+        logger.debug("channel_overrides: name resolution unavailable for %s", platform_name, exc_info=True)
+        return []
+    return [str(entry["name"]) for entry in entries.values() if entry.get("name")]
+
+
 def _get_channel_override(
     config: GatewayConfig, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
     parent_id: Optional[str] = None) -> Optional[ChannelOverride]:
-    """Per-channel override via chat_id, then thread_id, then parent_id; None if absent."""
+    """Per-channel override via chat_id, then thread_id, then parent_id; None if absent.
+
+    Lookup order (most specific first, #109676): exact id → exact channel NAME (resolved from the
+    channel directory, only after an id miss so id lookups add no latency) → regex pattern over the
+    resolved names (first matching pattern in config order).
+    """
     platforms = getattr(config, "platforms", None)
     if not platforms:
         return None
@@ -2869,9 +2915,21 @@ def _get_channel_override(
     if not platform_config or not platform_config.channel_overrides:
         return None
     overrides = platform_config.channel_overrides
-    for key in _channel_override_lookup_keys(chat_id, thread_id=thread_id, parent_id=parent_id):
+    keys = _channel_override_lookup_keys(chat_id, thread_id=thread_id, parent_id=parent_id)
+    for key in keys:
         ov = overrides.get(key)
         if ov is not None:
+            return ov
+    names = _channel_names_for_platform_ids(platform, keys)
+    for name in names:
+        ov = overrides.get(name)
+        if ov is not None:
+            return ov
+    for key, ov in overrides.items():
+        if not _is_channel_name_pattern(key):
+            continue
+        pattern = _channel_name_pattern(key)
+        if pattern is not None and any(pattern.match(name) for name in names):
             return ov
     return None
 

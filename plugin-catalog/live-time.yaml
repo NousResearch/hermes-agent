@@ -1,12 +1,13 @@
 name: live-time
 repo: https://github.com/chenfeijiang95-ui/hermes-live-time
-sha: 338f52dffc1b3221c17b342e54589d6833a5d2b6
+sha: 8e5c80012457592f5c4fb740aa424f8512324467
 description: Inject live current time into every LLM call via the pre_llm_call hook — fixes stale session-start timestamps in long/cross-day conversations.
 maintainer: chenfeijiang95-ui
 tier: community
 category: general
 docs_url: https://github.com/chenfeijiang95-ui/hermes-live-time#readme
 version: "1.0.0"
+image: https://raw.githubusercontent.com/chenfeijiang95-ui/hermes-live-time/8e5c80012457592f5c4fb740aa424f8512324467/assets/banner.png
 platforms: []
 capabilities:
   provides_tools: []

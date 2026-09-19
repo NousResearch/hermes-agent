@@ -280,6 +280,11 @@ def _has_portable_manifest(plugin_dir: Path) -> bool:
     return portable_file.exists() or portable_file.is_symlink()
 
 
+def _dashboard_manifest_file(plugin_dir: Path) -> Path:
+    """The dashboard-only manifest location for a frontend extension."""
+    return plugin_dir / "dashboard" / "manifest.json"
+
+
 def _load_yaml_manifest(manifest_file: Path):
     """``yaml.safe_load`` of *manifest_file* (``{}`` when empty); raises on any read/parse error."""
     import yaml
@@ -288,16 +293,20 @@ def _load_yaml_manifest(manifest_file: Path):
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
-    """Read a native or portable manifest, preferring native YAML."""
+    """Read a native, portable, or dashboard-only manifest, preferring agent manifests."""
     manifest_file = _native_manifest_file(plugin_dir)
     if manifest_file is None:
-        if not _has_portable_manifest(plugin_dir):
-            return {}
+        if _has_portable_manifest(plugin_dir):
+            try:
+                from hermes_cli.agent_plugins import read_agent_plugin_manifest
+                return read_agent_plugin_manifest(plugin_dir)[0]
+            except Exception as e:
+                logger.warning("Failed to read plugin.json in %s: %s", plugin_dir, e)
+                return {}
         try:
-            from hermes_cli.agent_plugins import read_agent_plugin_manifest
-            return read_agent_plugin_manifest(plugin_dir)[0]
-        except Exception as e:
-            logger.warning("Failed to read plugin.json in %s: %s", plugin_dir, e)
+            data = json.loads(_dashboard_manifest_file(plugin_dir).read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
             return {}
     try:
         return _load_yaml_manifest(manifest_file)
@@ -307,10 +316,11 @@ def _read_manifest(plugin_dir: Path) -> dict:
 
 
 def _looks_like_plugin_dir(target: Path) -> bool:
-    """True when *target* has a native/portable manifest or a package ``__init__.py``."""
+    """True when *target* has an agent or dashboard manifest, or ``__init__.py``."""
     return (
         _native_manifest_file(target) is not None
         or (target / "plugin.json").exists()
+        or _dashboard_manifest_file(target).exists()
         or (target / "__init__.py").exists())
 
 
@@ -1300,17 +1310,27 @@ def cmd_disable(name: str) -> None:
 
 
 def _read_manifest_info(d: Path, prefix: str):
-    """Read a native or portable manifest and return display metadata."""
+    """Read a native, portable, or dashboard-only manifest for plugin management."""
     manifest_file = _native_manifest_file(d)
     if manifest_file is None:
-        if not _has_portable_manifest(d):
-            return None
-        try:
-            from hermes_cli.agent_plugins import read_agent_plugin_manifest
-            manifest = read_agent_plugin_manifest(d)[0]
-            name = manifest["name"]
-        except Exception:
-            return None
+        if _has_portable_manifest(d):
+            try:
+                from hermes_cli.agent_plugins import read_agent_plugin_manifest
+                manifest = read_agent_plugin_manifest(d)[0]
+                name = manifest["name"]
+            except Exception:
+                return None
+        else:
+            dashboard_manifest = _dashboard_manifest_file(d)
+            try:
+                manifest = json.loads(dashboard_manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            if not isinstance(manifest, dict):
+                return None
+            name = manifest.get("name", d.name)
+            if not isinstance(name, str) or not name:
+                return None
     else:
         # Unreadable YAML (or no yaml module) degrades to the directory name, silently.
         try:

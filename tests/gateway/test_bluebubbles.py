@@ -76,9 +76,15 @@ class TestBlueBubblesHelpers:
         assert adapter.server_url == "http://localhost:1234"
 
 
+def _bluebubbles_webhook_token(password="secret"):
+    import hashlib
+
+    return hashlib.sha256(f"hermes-bluebubbles-webhook:{password}".encode("utf-8")).hexdigest()[:32]
+
+
 class _FakeBlueBubblesRequest:
-    def __init__(self, payload, password="secret"):
-        self.query = {"password": password}
+    def __init__(self, payload, *, token=_bluebubbles_webhook_token(), legacy_password=None):
+        self.query = {"token": token} if legacy_password is None else {"password": legacy_password}
         self.headers = {}
         self._body = json.dumps(payload).encode("utf-8")
 
@@ -324,14 +330,51 @@ class TestBlueBubblesAttachmentSend:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url property normalises local hosts to the literal 127.0.0.1."""
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 0.0.0.0 → normalized to the literal IPv4 loopback.
+        # BlueBubbles (Node) resolves localhost to ::1 first on macOS, which the
+        # IPv4-only listener refuses (ECONNREFUSED ::1).
+        assert "127.0.0.1" in adapter._webhook_url
+        assert "localhost" not in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
+
+
+    def test_register_url_carries_derived_token_not_password(self, monkeypatch):
+        """The registered URL must never contain the API password: BlueBubbles logs
+        the registered URL to main.log on every dispatch."""
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        assert "?token=" in url
+        assert "?password=" not in url
+        assert adapter.password not in url
+        assert url.startswith(adapter._webhook_url + "?token=")
+        # Log-safe form hides the token.
+        assert adapter._webhook_register_url_for_log.endswith("?token=***")
+
+    @pytest.mark.asyncio
+    async def test_legacy_password_query_is_rejected(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "new-message"}, legacy_password="secret")
+        )
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    async def test_derived_token_authenticates(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-1", "text": "hi",
+                "handle": {"address": "+15555550100"}, "isFromMe": False,
+                "chats": [{"guid": "iMessage;+;chat"}],
+            },
+        }))
+        assert response.status == 200
 
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
@@ -401,6 +444,22 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert len(result) == 1
         assert result[0]["id"] == 1
+
+
+    def test_find_stale_webhooks_matches_any_loopback_spelling(self, monkeypatch):
+        """An older adapter registered `localhost`/`?password=`; we now register
+        `127.0.0.1?token=`. Both point at our listener, so the old one is stale."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 1, "url": adapter._webhook_register_url},
+                {"id": 2, "url": f"http://localhost:{adapter.webhook_port}{adapter.webhook_path}?password=old"},
+                {"id": 3, "url": "http://other:9999/hook"},
+            ]}
+        )
+        stale = asyncio.get_event_loop().run_until_complete(adapter._find_stale_webhooks())
+        assert [wh["id"] for wh in stale] == [2]
 
 
     # -- _register_webhook --

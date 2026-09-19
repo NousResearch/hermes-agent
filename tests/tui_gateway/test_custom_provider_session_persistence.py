@@ -847,3 +847,55 @@ class TestRuntimeModelConfigDropsStaleKeys:
         assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
 
 
+
+
+class TestFallbackRuntimeResumeIdentity:
+    """#110279: after a cross-provider Gateway fallback, resume must restore
+    ONE consistent identity — not the fallback model mixed with the primary
+    provider."""
+
+    def test_fallback_model_pairs_with_fallback_provider(self):
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        # The exact persisted shape from the issue: sessions.model carries the
+        # fallback model, the fallback provider lives only in the nested
+        # gateway_runtime, and the top-level config still names the primary.
+        row = {
+            "model": "gpt-5.6-sol",
+            "model_config": json.dumps(
+                {
+                    "model": "glm-5.3",
+                    "provider": "zai",
+                    "gateway_runtime": {
+                        "provider": "openai-codex",
+                        "fallback_active": True,
+                    },
+                }
+            ),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+
+        assert overrides["model_override"]["model"] == "gpt-5.6-sol"
+        assert overrides["model_override"]["provider"] == "openai-codex"
+        assert overrides["provider_override"] == "openai-codex"
+
+    def test_no_fallback_keeps_top_level_provider(self):
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        # gateway_runtime without fallback_active (a normal turn wrote it):
+        # the top-level config remains authoritative.
+        row = {
+            "model": "glm-5.3",
+            "model_config": json.dumps(
+                {
+                    "model": "glm-5.3",
+                    "provider": "zai",
+                    "gateway_runtime": {"provider": "zai", "fallback_active": False},
+                }
+            ),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+
+        assert overrides["model_override"]["model"] == "glm-5.3"
+        assert overrides["model_override"]["provider"] == "zai"
+        assert overrides["provider_override"] == "zai"

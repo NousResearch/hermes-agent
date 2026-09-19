@@ -1517,13 +1517,21 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     overrides: dict = {}
     field = lambda k: str(model_config.get(k) or "").strip()
     model = str(row.get("model") or model_config.get("model") or "").strip()
+    # One consistent identity (#110279): the fallback provider lives in model_config.gateway_runtime, not the top-level config.
+    gateway_runtime = model_config.get("gateway_runtime")
+    fallback_source = (
+        gateway_runtime
+        if isinstance(gateway_runtime, dict) and gateway_runtime.get("fallback_active")
+        else {}
+    )
+    rt_field = lambda k: str(fallback_source.get(k) or model_config.get(k) or "").strip()
+    provider = rt_field("provider")
     # ``billing_provider`` is only the billing bucket — for a custom endpoint the bare class "custom", which
     # agent_init treats as non-routable. Only restore an explicit provider; else resume uses the configured default.
-    provider = field("provider")
     billing_provider = str(model_config.get("billing_provider") or row.get("billing_provider") or "").strip()
     if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
         provider = billing_provider
-    base_url, api_mode, service_tier = field("base_url"), field("api_mode"), field("service_tier")
+    base_url, api_mode, service_tier = rt_field("base_url"), rt_field("api_mode"), field("service_tier")
     reasoning_config = model_config.get("reasoning_config")
     # Heal a stale provider persisted by an older build (renamed/removed custom provider → "Unknown provider"):
     # recover ``custom:<name>`` from the stored base_url, then from the entry serving the model; else drop it.

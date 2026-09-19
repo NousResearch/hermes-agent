@@ -313,9 +313,9 @@ class TestWeixinChunkDelivery:
         second = asyncio.run(adapter.send("wxid_test123", "second"))
 
         assert first.success is False
-        assert "cooldown" in (first.error or "")
+        assert "flood_control:" in (first.error or "")
         assert second.success is False
-        assert "cooldown" in (second.error or "")
+        assert "flood_control:" in (second.error or "")
         # The first rate-limit response is retried once. The second response
         # crosses the sliding-window threshold, opens the breaker, and both the
         # rest of the current chunk and follow-up sends fail fast.

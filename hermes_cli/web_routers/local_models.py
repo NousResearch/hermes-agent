@@ -263,13 +263,25 @@ def _ensure_server(job: Dict[str, Any], config: dict, model_id: str, *, fail_det
     _step(job, "starting-server", "Starting the local server")
     sup = _start_local_server(config, fail_detail)
 
-    def rescan_if_unknown() -> None:
-        if model_id not in sup.models():
+    def rescan_if_unknown(known: Dict[str, Any]) -> None:
+        if model_id not in known:
             job["detail"] = "Refreshing the local server"
             bootstrap.refresh_local_runtime()
 
     if sup is not None:
-        _quiet(rescan_if_unknown, None, debug=skip_msg)
+        _quiet(lambda: rescan_if_unknown(sup.models()), None, debug=skip_msg)
+        return
+    # A server owned by another process: ensure_local_runtime returned None, so the supervisor
+    # path above never ran — but the same spawn-only listing gap applies. Probe the live
+    # listing through the persisted endpoint and bounce when it lacks the model.
+    endpoint = _state_endpoint()
+    if endpoint is not None:
+
+        def _known_models() -> Dict[str, Any]:
+            data = (_router_request(endpoint, "/models", timeout=10) or {}).get("data", [])
+            return {m.get("id"): m for m in data}
+
+        _quiet(lambda: rescan_if_unknown(_known_models()), None, debug=skip_msg)
 
 
 def _assign_default(job: Dict[str, Any], model_id: str) -> None:

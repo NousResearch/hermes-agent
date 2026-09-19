@@ -1211,6 +1211,17 @@ export interface ComputerUsePermissionSource {
   responsible_ppid?: number
 }
 
+/** Desktop-side target for Computer Use setup. A remote WSL gateway controls
+ * its Linux guest; the Windows host is served by Desktop's forced-local
+ * connection instead. */
+export type ComputerUseTarget = 'guest' | 'windows-host'
+
+export interface ComputerUseTargetMetadata {
+  id: ComputerUseTarget
+  label: string
+  description: string
+}
+
 export interface ComputerUseCheck {
   label: string
   status: string

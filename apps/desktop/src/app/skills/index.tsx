@@ -1130,6 +1130,7 @@ function ToolsetDetail({
 }) {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const [computerUseTarget, setComputerUseTarget] = useState<'guest' | 'windows-host'>('guest')
   const tools = toolNames(toolset)
   const label = toolsetDisplayLabel(toolset)
 
@@ -1173,16 +1174,23 @@ function ToolsetDetail({
           </div>
         </div>
       )}
-      {toolset.name === 'computer_use' && <ComputerUsePanel onConfiguredChange={onConfiguredChange} />}
+      {toolset.name === 'computer_use' && (
+        <ComputerUsePanel
+          onConfiguredChange={onConfiguredChange}
+          onTargetChange={setComputerUseTarget}
+          profile={profile}
+          target={computerUseTarget}
+        />
+      )}
       {/* Real-profile consent toggle ABOVE the backend/provider matrix — the
           config option users kept missing because its only GUI home was the
           generic Settings → Config editor. */}
       {toolset.name === 'browser' && <BrowserRealProfilePanel profile={profile} />}
       {toolset.name === 'terminal' && <TerminalBackendPanel onConfiguredChange={onConfiguredChange} />}
       <ToolsetConfigPanel
-        key={`${toolset.name}:${profileScopeKey(profile)}`}
+        key={`${toolset.name}:${profileScopeKey(profile)}:${toolset.name === 'computer_use' ? computerUseTarget : ''}`}
         onConfiguredChange={onConfiguredChange}
-        profile={profile}
+        profile={toolset.name === 'computer_use' && computerUseTarget === 'windows-host' ? { connectionId: 'local' } : profile}
         toolset={toolset.name}
       />
     </>

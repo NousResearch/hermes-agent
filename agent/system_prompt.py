@@ -91,6 +91,20 @@ def _plugin_session_info(agent: Any) -> Dict[str, str]:
         cwd = ""
     info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform")}
     info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd)
+    try:
+        from agent.project_affinity import ensure_agent_project_affinity
+
+        affinity = ensure_agent_project_affinity(agent)
+    except Exception:
+        logger.warning("Unable to resolve Session Project affinity for Plugin prompt sections", exc_info=True)
+        affinity = {"status": "unavailable"}
+    info.update(
+        project_affinity_status=str(affinity.get("status") or "unavailable"),
+        project_id=str(affinity.get("project_id") or ""),
+        project_root=str(affinity.get("project_root") or ""),
+        project_generation=str(affinity.get("project_generation") or 0),
+        project_context_hash=str(affinity.get("project_context_hash") or ""),
+    )
     return info
 
 

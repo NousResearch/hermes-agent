@@ -227,11 +227,26 @@ def _inherit_col_sql(col: str, extra: str = "") -> str:
     )
 
 
+def _inherit_project_affinity_col_sql(col: str) -> str:
+    """All-or-nothing project-affinity inheritance for one column."""
+    return (
+        f"{col} = CASE WHEN sessions.project_id IS NULL\n"
+        "                            AND sessions.project_root IS NULL\n"
+        "                            AND sessions.project_context_hash IS NULL\n"
+        f"                       THEN (SELECT p.{col} FROM sessions p\n"
+        "                              WHERE p.id = sessions.parent_session_id)\n"
+        f"                       ELSE sessions.{col} END"
+    )
+
+
 _INHERIT_SEP = ",\n" + " " * 27
 _INHERIT_PARENT_META_SQL = (
     "UPDATE sessions\n                       SET "
     + _INHERIT_SEP.join((
         *(_inherit_col_sql(c) for c in ("cwd", "git_repo_root", "git_branch")),
+        *(_inherit_project_affinity_col_sql(c) for c in (
+            "project_id", "project_root", "project_affinity_generation", "project_context_hash",
+        )),
         _inherit_col_sql("profile_name", "\n" + " " * 46 + f"AND ({_SAME_KEY_NAMESPACE_SQL})"),
     ))
     + "\n                     WHERE id = ? AND parent_session_id IS NOT NULL"
@@ -272,7 +287,7 @@ class SessionSessionsMixin:
 
     @staticmethod
     def _inherit_parent_session_metadata(conn, session_id: str) -> None:
-        """NULL-fill a child's cwd/git/profile from its parent (profile_name only within the same
+        """NULL-fill a child's cwd/git/project affinity/profile from its parent (profile_name only within the same
         ``agent:<ns>:`` namespace). Gateway routing columns are inherited ONLY by compression forks
         (a crash before the gateway re-records the peer would strand the child unroutable); delegate
         children must NOT inherit them (peer recovery could repoint traffic into a subagent's session)."""
@@ -295,7 +310,7 @@ class SessionSessionsMixin:
         store's own (NULL reads as unowned).
 
         When ``parent_session_id`` is set (compression fork, delegate/subagent spawn, branch continuation)
-        and this row's own ``cwd``/``git_repo_root``/ ``git_branch``/``profile_name`` are still NULL after
+        and this row's own ``cwd``/``git_repo_root``/``git_branch``/project affinity/``profile_name`` are still NULL after
         the insert, they are backfilled from the parent row. Callers of ``create_session`` for a child
         session historically didn't propagate these fields themselves (e.g. the compression-fork path), so a
         lineage could silently lose its working directory and drop out of the project sidebar every time it
@@ -560,6 +575,85 @@ class SessionSessionsMixin:
             "WHERE id = ? AND cwd = ? AND git_metadata_generation = ?",
             [val for _, val in fields] + [session_id, cwd, generation],
         ) == 1
+
+    def update_session_project_affinity(
+        self, session_id: str, *, project_id: Optional[str], project_root: Optional[str],
+        project_context_hash: Optional[str],
+    ) -> Optional[int]:
+        """Persist Runtime-owned project affinity without changing the session workspace.
+
+        The generation advances only when the owner or loaded context bytes change, so
+        repeated bind candidates are idempotent and consumers can detect real drift.
+        """
+        if not session_id:
+            return None
+        normalized = tuple((value or "").strip() or None for value in (
+            project_id, project_root, project_context_hash,
+        ))
+        if any(normalized) and not all(normalized):
+            raise ValueError("project affinity requires project_id, project_root, and project_context_hash together")
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT project_id, project_root, project_affinity_generation, project_context_hash "
+                "FROM sessions WHERE id = ?", (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if (row["project_id"], row["project_root"], row["project_context_hash"]) == normalized:
+                return int(row["project_affinity_generation"] or 0)
+            generation = int(row["project_affinity_generation"] or 0) + 1
+            conn.execute(
+                "UPDATE sessions SET project_id = ?, project_root = ?, "
+                "project_affinity_generation = ?, project_context_hash = ?, "
+                "system_prompt = NULL, system_prompt_hash = NULL WHERE id = ?",
+                (*normalized[:2], generation, normalized[2], session_id),
+            )
+            self._delete_unreferenced_system_prompts(conn)
+            return generation
+
+        return self._execute_write(_do)
+
+    def update_session_workspace_project_affinity(
+        self, session_id: str, *, cwd: str, project_id: str, project_root: str,
+        project_context_hash: str,
+    ) -> Optional[tuple[int, int]]:
+        """Atomically move a workspace and persist its Runtime-confirmed Project owner."""
+        normalized = tuple((value or "").strip() or None for value in (
+            project_id, project_root, project_context_hash,
+        ))
+        if not session_id or not cwd or not all(normalized):
+            return None
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT project_id, project_root, project_affinity_generation, project_context_hash, "
+                "git_metadata_generation FROM sessions WHERE id = ?", (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            git_generation = int(row["git_metadata_generation"] or 0) + 1
+            current_affinity = (row["project_id"], row["project_root"], row["project_context_hash"])
+            affinity_generation = int(row["project_affinity_generation"] or 0)
+            affinity_changed = current_affinity != normalized
+            if affinity_changed:
+                affinity_generation += 1
+            conn.execute(
+                "UPDATE sessions SET cwd = ?, git_branch = NULL, git_repo_root = NULL, "
+                "git_metadata_generation = ?, project_id = ?, project_root = ?, "
+                "project_affinity_generation = ?, project_context_hash = ?, "
+                "system_prompt = CASE WHEN ? THEN NULL ELSE system_prompt END, "
+                "system_prompt_hash = CASE WHEN ? THEN NULL ELSE system_prompt_hash END WHERE id = ?",
+                (
+                    cwd, git_generation, *normalized[:2], affinity_generation, normalized[2],
+                    affinity_changed, affinity_changed, session_id,
+                ),
+            )
+            if affinity_changed:
+                self._delete_unreferenced_system_prompts(conn)
+            return git_generation, affinity_generation
+
+        return self._execute_write(_do)
 
     def backfill_repo_roots(self, cwd_to_root: Dict[str, str]) -> None:
         """Backfill git repo roots for cwds without one; never clobbers a recorded root."""

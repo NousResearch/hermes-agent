@@ -228,6 +228,9 @@ class RecordingContext:
         # plugins do `int(ctx.get_config("timeout", 180))` in register().
         return default
 
+    def get_session_project_affinity(self, session_id: str):
+        return {"status": "unbound", "session_id": session_id}
+
     def __getattr__(self, name):
         # Any other REAL registration surface (platforms, providers, skills,
         # context engines, ...) is accepted as a no-op — the probe only audits

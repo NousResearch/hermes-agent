@@ -95,6 +95,41 @@ class TestProjectHandler(unittest.TestCase):
         r = json.loads(pt._handle_project({"action": "bogus"}))
         self.assertFalse(r["success"])
 
+    def test_switch_returns_runtime_confirmed_affinity_context(self):
+        import tools.project_tools as pt
+
+        project = type("Project", (), {
+            "id": "p_1", "slug": "one", "name": "One", "primary_path": "C:/project", "folders": [],
+        })()
+        runtime = {"project_id": "p_1", "generation": 2, "context": "PROJECT-CONTEXT"}
+        with patch("hermes_cli.projects_db.connect_closing") as connect, \
+             patch("hermes_cli.projects_db.set_active") as set_active, \
+             patch.object(pt, "_resolve", return_value=project), \
+             patch.object(pt, "_workspace_callback", return_value=runtime) as callback:
+            connect.return_value.__enter__.return_value = object()
+            result = json.loads(pt.project_switch("one", task_id="session-1"))
+
+        callback.assert_called_once_with("session-1", "p_1", "C:/project", "One")
+        set_active.assert_called_once()
+        self.assertEqual(result["runtime_affinity"], runtime)
+
+    def test_switch_fails_closed_when_runtime_cannot_persist_affinity(self):
+        import tools.project_tools as pt
+
+        project = type("Project", (), {
+            "id": "p_1", "slug": "one", "name": "One", "primary_path": "C:/project", "folders": [],
+        })()
+        with patch("hermes_cli.projects_db.connect_closing") as connect, \
+             patch("hermes_cli.projects_db.set_active") as set_active, \
+             patch.object(pt, "_resolve", return_value=project), \
+             patch.object(pt, "_workspace_callback", return_value=None):
+            connect.return_value.__enter__.return_value = object()
+            result = json.loads(pt.project_switch("one", task_id="session-1"))
+
+        self.assertFalse(result["success"])
+        self.assertIn("was not moved", result["error"])
+        set_active.assert_not_called()
+
 
 class TestDietBudget(unittest.TestCase):
     def test_desktop_surface_under_budget(self):

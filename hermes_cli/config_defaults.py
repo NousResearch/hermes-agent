@@ -1055,7 +1055,9 @@ DEFAULT_CONFIG = {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
         },
-        "minimax": {"model": "speech-02-hd", "voice_id": "English_expressive_narrator"},
+        # ``language_boost`` (e.g. "Polish") is forwarded to the t2a_v2 payload as a pronunciation
+        # hint; empty = the API default for the selected model.
+        "minimax": {"model": "speech-02-hd", "voice_id": "English_expressive_narrator", "language_boost": ""},
         "kittentts": {
             "model": "KittenML/kitten-tts-nano-0.8-int8",  # nano 25MB; micro 41MB; mini 80MB
             "voice": "Jasper",

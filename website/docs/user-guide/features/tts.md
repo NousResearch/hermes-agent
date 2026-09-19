@@ -62,6 +62,7 @@ tts:
     region: "global"           # "global" or "cn"; see selection rules below
     model: "speech-02-hd"     # speech-02-hd (default), speech-02-turbo
     voice_id: "English_expressive_narrator"  # See https://platform.minimax.io/faq/system-voice-id
+    language_boost: ""         # Pronunciation hint sent as language_boost (e.g. "Polish"); empty = model default
     speed: 1                    # 0.5 - 2.0
     vol: 1                      # 0 - 10
     pitch: 0                    # -12 - 12

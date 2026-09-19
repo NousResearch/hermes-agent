@@ -942,6 +942,52 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     proc.kill()  # SIGKILL on POSIX
                     logger.info("Escalated to SIGKILL for pid %d (ignored SIGTERM within %.1fs grace)", proc.pid, grace)
 
+    @staticmethod
+    def _live_descendants(pid: int) -> List[int]:
+        """PIDs of living non-zombie descendants of host PID ``pid`` (best-effort)."""
+        try:
+            import psutil
+            children = psutil.Process(pid).children(recursive=True)
+        except Exception:
+            return []
+        return [c.pid for c in children if ProcessRegistry._proc_alive(c)]
+
+    def _post_kill_survivors(self, session: "ProcessSession") -> List[int]:
+        """Host PIDs still alive after the kill signals were delivered (#115490).
+
+        Fail-closed: anything unverifiable counts as a survivor, so a kill
+        that leaves a live tree can never write a killed receipt. Sandbox
+        (env) sessions have no host-visible tree and are unverifiable by
+        design — they return no survivors, preserving existing behavior."""
+        survivors: List[int] = []
+        proc = getattr(session, "process", None)
+        if proc is not None:
+            try:
+                root_alive = proc.poll() is None
+            except Exception:
+                root_alive = True
+            if root_alive:
+                survivors.append(getattr(proc, "pid", None) or session.pid)
+        pty = getattr(session, "_pty", None)
+        if pty is not None:
+            try:
+                pty_alive = bool(pty.isalive())
+            except Exception:
+                pty_alive = self._is_host_pid_alive(session.pid)
+            if pty_alive:
+                survivors.append(session.pid)
+        if session.pid_scope == "host" and session.pid:
+            if self._host_pid_is_ours(session.pid, session.host_start_time):
+                if session.pid not in survivors:
+                    survivors.append(session.pid)
+                survivors.extend(
+                    pid for pid in self._live_descendants(session.pid)
+                    if pid not in survivors)
+            # A dead/recycled root has no PID-scope descendants left to find:
+            # reparented orphans are outside PID scope (systemd scope stop,
+            # issued before this check, covers the cgroup case).
+        return [pid for pid in survivors if pid]
+
     # ----- Spawn -----
 
     @staticmethod
@@ -1945,6 +1991,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # descendants reparented inside the cgroup.
             if session.systemd_unit:
                 _stop_systemd_unit(session.systemd_unit)
+            # Post-kill verification (#115490): the signals above can leave
+            # survivors (SIGTERM-ignoring daemons, scope escapees). A kill that
+            # leaves a live tree must not write a killed receipt or prune the
+            # session — the survivors would become unmanageable. Keep the
+            # session running so it stays listed and killable.
+            with session._lock:
+                signal_race_exited = session.exited
+            # A reader that finalised the session mid-signal already proved
+            # real exit; only a still-running session needs tree-death proof.
+            survivors = [] if signal_race_exited else self._post_kill_survivors(session)
+            if survivors:
+                alive = ", ".join(map(str, survivors))
+                logger.warning(
+                    "Kill incomplete for %s: %d process(es) still alive (%s) — session kept running",
+                    session.id, len(survivors), alive)
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Kill incomplete: {len(survivors)} process(es) still alive "
+                        f"({alive}); session running"),
+                    "session_id": session.id, "survivors": survivors,
+                    "process_running": True}
             # Capture output, mark consumed, THEN expose ``exited`` to watcher tasks —
             # closes the delayed-notification race without losing the transcript.
             with session._lock:

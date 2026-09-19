@@ -5588,6 +5588,7 @@ def resolve_provider_client(
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
     original_provider = (provider or "").strip().lower()
+    api_mode = _canonical_api_mode(str(api_mode or "")).lower() or None
     if original_provider not in _EXPLICIT_PROVIDER_BRANCHES and _is_custom_provider_reference(original_provider):
         # Resolve raw custom intent before lossy aliases (e.g. kimi →
         # kimi-coding). Disabled aliases remain explicit and fail closed.
@@ -5605,7 +5606,6 @@ def resolve_provider_client(
         )
         return _resolve_named_custom_branch(req) or (None, None)
     provider = _normalize_aux_provider(provider)
-    api_mode = _canonical_api_mode(str(api_mode or "")).lower() or None
     # MoA chokepoint: "moa" is not an HTTP provider; resolve to the aggregator so direct callers don't
     # dead-end in unknown-provider. Unresolvable preset → leave untouched for the normal diagnostic.
     if provider == "moa":

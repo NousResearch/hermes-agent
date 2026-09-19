@@ -773,7 +773,9 @@ def credential_pool_matches_provider(
             if pool_provider == canonical_pool:
                 return True
             canonical_is_custom = canonical_pool.startswith(CUSTOM_POOL_PREFIX)
-            candidates = custom_provider_pool_key_candidates(base_url or "")
+            # Sharing an endpoint does not make another configured identity's
+            # durable or legacy pool safe for this named route.
+            candidates = custom_provider_pool_key_candidates(base_url or "", provider_norm)
             safe_legacy = {
                 str(key).strip().lower() for key in candidates
                 if not canonical_is_custom or str(key).strip().lower().startswith(CUSTOM_POOL_PREFIX)

@@ -340,6 +340,13 @@ export const ja = defineLocale({
       blurb:
         '「GitHub にログインして」と言えば、エージェントが代わりにサインインします。初めてサインインページに出会ったときにその場でログイン情報を尋ね、以降は自動で処理します。パスワードはこのマシン上で暗号化され、ページに直接入力されます。モデルは一切見ません。',
       count: n => `${n} 件保存済み`,
+      matchCount: (shown, total) => `${total} 件中 ${shown} 件`,
+      searchPlaceholder: 'ラベル、ID、サイトで検索',
+      searchLabel: '保存済み項目を検索',
+      kindFilterAll: 'すべて',
+      noMatches: '一致する項目がありません',
+      noMatchesDesc: '別のキーワードで検索するか、フィルターをクリアしてください。',
+      clearFilters: 'フィルターをクリア',
       loadFailed: 'ボールト項目を読み込めませんでした',
       empty: 'まだ何も保存されていません',
       emptyDesc:

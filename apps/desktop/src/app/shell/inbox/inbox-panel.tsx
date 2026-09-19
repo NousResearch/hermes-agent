@@ -9,9 +9,12 @@ import {
   PanelHeader,
   PanelListRow,
   PanelMeta,
+  PanelPill,
+  type PanelPillTone,
   PanelSectionLabel
 } from '@/app/overlays/panel'
 import { sessionRoute } from '@/app/routes'
+import { relativeTime } from '@/lib/time'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { SearchField } from '@/components/ui/search-field'
@@ -117,6 +120,264 @@ function ExpiredRequestCard({
   )
 }
 
+const UNKNOWN = '—'
+
+function asText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function asStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : []
+}
+
+/** 300 → "5m", 5400 → "1.5h", 45 → "45s". */
+function formatEvery(seconds: number | null): string | null {
+  if (seconds === null || seconds <= 0) {
+    return null
+  }
+
+  if (seconds >= 3600) {
+    const hours = seconds / 3600
+
+    return Number.isInteger(hours) ? `${hours}h` : `${Math.round(hours * 10) / 10}h`
+  }
+
+  if (seconds >= 60) {
+    const minutes = seconds / 60
+
+    return Number.isInteger(minutes) ? `${minutes}m` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
+  }
+
+  return `${Math.round(seconds)}s`
+}
+
+/** Epoch seconds → "in 4 min" / "12 min ago". */
+function formatAt(value: number | null): string | null {
+  return value !== null && value > 0 ? relativeTime(value * 1000) : null
+}
+
+function statusTone(status: string): PanelPillTone {
+  if (status === 'active') {
+    return 'good'
+  }
+
+  if (status === 'paused') {
+    return 'warn'
+  }
+
+  return 'muted'
+}
+
+function GoalSection({
+  goal,
+  liveSessionId,
+  onRetry
+}: {
+  goal: Record<string, unknown>
+  liveSessionId: string
+  onRetry: () => void
+}) {
+  const contract = asRecord(goal.contract)
+  const contractRows = (
+    [
+      ['Outcome', asText(contract?.outcome)],
+      ['Verification', asText(contract?.verification)],
+      ['Constraints', asText(contract?.constraints)],
+      ['Boundaries', asText(contract?.boundaries)],
+      ['Stop when', asText(contract?.stop_when)]
+    ] as Array<[string, string | null]>
+  ).flatMap(([label, value]) => (value ? [{ label, value }] : []))
+
+  const criteria = asStringList(goal.subgoals)
+  const gates = Array.isArray(goal.gates)
+    ? goal.gates.map(asRecord).filter((gate): gate is Record<string, unknown> => gate !== null)
+    : []
+  const status = asText(goal.status) ?? ''
+  const turnsUsed = asNumber(goal.turns_used)
+  const maxTurns = asNumber(goal.max_turns)
+
+  // The operator's first question about a running goal is "how far along is it".
+  const turnText =
+    turnsUsed === null ? null : maxTurns !== null && maxTurns > 0 ? `${turnsUsed} of ${maxTurns}` : String(turnsUsed)
+
+  const waitBarrier = asText(goal.wait_barrier)
+  const pausedReason = asText(goal.paused_reason)
+  const lastVerdict = asText(goal.last_verdict)
+
+  return (
+    <div>
+      <PanelSectionLabel>Goal</PanelSectionLabel>
+      <p className="mt-0.5 break-words text-[0.74rem] font-medium text-foreground/90">{asText(goal.title) ?? UNKNOWN}</p>
+      <PanelMeta
+        rows={[
+          { label: 'Status', value: status ? <PanelPill tone={statusTone(status)}>{status}</PanelPill> : UNKNOWN },
+          ...(turnText ? [{ label: 'Turn', value: turnText }] : []),
+          ...(waitBarrier ? [{ label: 'Waiting on', value: waitBarrier }] : []),
+          ...(pausedReason ? [{ label: 'Paused', value: pausedReason }] : []),
+          ...contractRows,
+          ...(lastVerdict ? [{ label: 'Last verdict', value: lastVerdict }] : [])
+        ]}
+      />
+      {criteria.length > 0 && (
+        <div className="mt-1.5">
+          <div className="text-[0.62rem] text-muted-foreground/60">Criteria ({criteria.length})</div>
+          <ul className="mt-0.5 flex flex-col gap-0.5">
+            {criteria.map(criterion => (
+              <li className="flex gap-1.5 text-[0.68rem] text-foreground/85" key={criterion}>
+                <span aria-hidden="true" className="text-muted-foreground/50">•</span>
+                <span className="min-w-0 break-words">{criterion}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {gates.length > 0 && (
+        <div className="mt-1.5">
+          <div className="text-[0.62rem] text-muted-foreground/60">Verify gates ({gates.length})</div>
+          <ul className="mt-0.5 flex flex-col gap-0.5">
+            {gates.map((gate, index) => {
+              const command = asText(gate.command) ?? UNKNOWN
+              const attempts = asNumber(gate.attempts)
+              const exitCode = asNumber(gate.last_exit_code)
+              const detail = [
+                attempts !== null ? `${attempts} ${attempts === 1 ? 'attempt' : 'attempts'}` : null,
+                exitCode !== null ? `last exit ${exitCode}` : null
+              ].filter((part): part is string => part !== null)
+
+              return (
+                <li className="flex gap-1.5 text-[0.68rem] text-foreground/85" key={`${command}-${index}`}>
+                  <span aria-hidden="true" className="text-muted-foreground/50">•</span>
+                  <span className="min-w-0 break-words">
+                    <span className="font-mono text-[0.64rem]">{command}</span>
+                    {detail.length > 0 ? <span className="text-muted-foreground/70"> — {detail.join(', ')}</span> : null}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+      <AutomationControls kind="goal" liveSessionId={liveSessionId} onChanged={onRetry} status={status} />
+    </div>
+  )
+}
+
+function LoopSection({
+  liveSessionId,
+  loop,
+  onRetry
+}: {
+  liveSessionId: string
+  loop: Record<string, unknown>
+  onRetry: () => void
+}) {
+  const status = asText(loop.status) ?? ''
+  const prompt = asText(loop.prompt)
+  const mode = asText(loop.mode)
+  const every = formatEvery(asNumber(loop.interval_seconds))
+  const ticks = asNumber(loop.ticks_fired)
+  const times = asNumber(loop.times)
+  const maxTicks = asNumber(loop.max_ticks)
+  const until = asText(loop.until)
+  const nextDue = formatAt(asNumber(loop.next_due_at))
+  const lastFired = formatAt(asNumber(loop.last_fired_at))
+  const awaiting = loop.awaiting_response === true
+  const deferred = loop.deferred_by_goal === true
+  const pausedReason = asText(loop.paused_reason)
+  const stopReason = asText(loop.last_stop_reason)
+
+  const firedText = ticks === null ? null : times !== null && times > 0 ? `${ticks} of ${times}` : String(ticks)
+
+  // What will actually end this loop: the judged condition, the user cap, or the backstop.
+  const stopRow = until
+    ? { label: 'Stops when', value: until }
+    : times !== null && times > 0
+      ? { label: 'Stops', value: `after ${times} ${times === 1 ? 'run' : 'runs'}` }
+      : maxTicks !== null && maxTicks > 0
+        ? { label: 'Backstop', value: `pauses after ${maxTicks} ticks` }
+        : null
+
+  return (
+    <div>
+      <PanelSectionLabel>Loop</PanelSectionLabel>
+      {prompt && (
+        <p className="mt-0.5 line-clamp-3 break-words text-[0.74rem] font-medium text-foreground/90" title={prompt}>
+          {prompt}
+        </p>
+      )}
+      <PanelMeta
+        rows={[
+          { label: 'Status', value: status ? <PanelPill tone={statusTone(status)}>{status}</PanelPill> : UNKNOWN },
+          ...(every
+            ? [{ label: 'Every', value: every }]
+            : mode === 'self_paced'
+              ? [{ label: 'Every', value: 'self-paced' }]
+              : []),
+          ...(firedText ? [{ label: 'Fired', value: firedText }] : []),
+          ...(stopRow ? [stopRow] : []),
+          ...(nextDue && !awaiting ? [{ label: 'Next run', value: nextDue }] : []),
+          ...(lastFired ? [{ label: 'Last run', value: lastFired }] : []),
+          ...(awaiting ? [{ label: 'Activity', value: 'a run is in progress' }] : []),
+          ...(deferred ? [{ label: 'Deferred', value: 'while the goal runs' }] : []),
+          ...(pausedReason ? [{ label: 'Paused', value: pausedReason }] : []),
+          ...(stopReason ? [{ label: 'Stopped', value: stopReason }] : [])
+        ]}
+      />
+      <AutomationControls kind="loop" liveSessionId={liveSessionId} onChanged={onRetry} status={status} />
+    </div>
+  )
+}
+
+function HeartbeatSection({
+  heartbeat,
+  liveSessionId,
+  onRetry
+}: {
+  heartbeat: Record<string, unknown>
+  liveSessionId: string
+  onRetry: () => void
+}) {
+  const status = asText(heartbeat.status) ?? ''
+  const prompt = asText(heartbeat.prompt)
+  const every = formatEvery(asNumber(heartbeat.interval_seconds))
+  const fires = asNumber(heartbeat.fire_count)
+  const lastFired = formatAt(asNumber(heartbeat.last_fired_at))
+
+  return (
+    <div>
+      <PanelSectionLabel>Heartbeat</PanelSectionLabel>
+      {prompt && (
+        <p className="mt-0.5 line-clamp-3 break-words text-[0.74rem] font-medium text-foreground/90" title={prompt}>
+          {prompt}
+        </p>
+      )}
+      <PanelMeta
+        rows={[
+          { label: 'Status', value: status ? <PanelPill tone={statusTone(status)}>{status}</PanelPill> : UNKNOWN },
+          ...(every ? [{ label: 'Every', value: every }] : []),
+          ...(fires !== null && fires > 0
+            ? [{ label: 'Fired', value: `${fires} ${fires === 1 ? 'time' : 'times'}` }]
+            : []),
+          ...(lastFired ? [{ label: 'Last fire', value: lastFired }] : [])
+        ]}
+      />
+      <AutomationControls kind="heartbeat" liveSessionId={liveSessionId} onChanged={onRetry} status={status} />
+    </div>
+  )
+}
+
 interface InlineDetailProps {
   detailsLoading: boolean | undefined
   detailsError: string | null | undefined
@@ -159,50 +420,10 @@ function InlineDetail({ detailsLoading, detailsError, expandedDetails, item, onO
         ]}
       />
 
-      {item.goal && (
-        <div>
-          <PanelSectionLabel>Goal</PanelSectionLabel>
-          <PanelMeta
-            rows={[
-              { label: 'Title', value: String((item.goal as Record<string, unknown>).title ?? '—') },
-              { label: 'Status', value: String((item.goal as Record<string, unknown>).status ?? '—') }
-            ]}
-          />
-          <AutomationControls
-            kind="goal"
-            liveSessionId={detailLiveSessionId}
-            onChanged={onRetry}
-            status={String((item.goal as Record<string, unknown>).status ?? '')}
-          />
-        </div>
-      )}
-      {item.loop && (
-        <div>
-          <PanelSectionLabel>Loop</PanelSectionLabel>
-          <PanelMeta
-            rows={[{ label: 'Status', value: String((item.loop as Record<string, unknown>).status ?? '—') }]}
-          />
-          <AutomationControls
-            kind="loop"
-            liveSessionId={detailLiveSessionId}
-            onChanged={onRetry}
-            status={String((item.loop as Record<string, unknown>).status ?? '')}
-          />
-        </div>
-      )}
+      {item.goal && <GoalSection goal={item.goal} liveSessionId={detailLiveSessionId} onRetry={onRetry} />}
+      {item.loop && <LoopSection liveSessionId={detailLiveSessionId} loop={item.loop} onRetry={onRetry} />}
       {item.heartbeat && (
-        <div>
-          <PanelSectionLabel>Heartbeat</PanelSectionLabel>
-          <PanelMeta
-            rows={[{ label: 'Status', value: String((item.heartbeat as Record<string, unknown>).status ?? '—') }]}
-          />
-          <AutomationControls
-            kind="heartbeat"
-            liveSessionId={detailLiveSessionId}
-            onChanged={onRetry}
-            status={String((item.heartbeat as Record<string, unknown>).status ?? '')}
-          />
-        </div>
+        <HeartbeatSection heartbeat={item.heartbeat} liveSessionId={detailLiveSessionId} onRetry={onRetry} />
       )}
 
       {detailsLoading && <p role="status">Loading request details…</p>}

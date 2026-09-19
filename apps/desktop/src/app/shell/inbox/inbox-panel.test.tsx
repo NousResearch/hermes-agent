@@ -750,6 +750,130 @@ describe('InboxPanel', () => {
     expect(screen.getByText('Resume heartbeat')).toBeTruthy()
   })
 
+  it('goal section states the goal, its criteria and the turn', async () => {
+    const item = makeItem({
+      goal: {
+        contract: { outcome: 'Panel ships approved', verification: 'tests pass' },
+        max_turns: 20,
+        status: 'active',
+        subgoals: ['Criterion one', 'Criterion two'],
+        title: 'Ship inbox',
+        turns_used: 3
+      },
+      session_key: 'sess-goal-info',
+      title: 'Goal info'
+    })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 1, running: 1, waiting: 0, scheduled: 0, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    renderPanel(entry)
+    clickRow('Goal info')
+
+    await waitFor(() => expect(screen.getByText('Ship inbox')).toBeTruthy())
+    expect(screen.getByText('3 of 20')).toBeTruthy()
+    expect(screen.getByText('Criteria (2)')).toBeTruthy()
+    expect(screen.getByText('Criterion one')).toBeTruthy()
+    expect(screen.getByText('Panel ships approved')).toBeTruthy()
+    expect(screen.getByText('tests pass')).toBeTruthy()
+  })
+
+  it('loop section says what it runs and how it stops', async () => {
+    const soon = Math.floor(Date.now() / 1000) + 240
+    const item = makeItem({
+      loop: {
+        interval_seconds: 300,
+        next_due_at: soon,
+        prompt: 'Check deployment health',
+        status: 'active',
+        ticks_fired: 12,
+        times: 20,
+        until: 'error rate is zero'
+      },
+      session_key: 'sess-loop-info',
+      title: 'Loop info'
+    })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 0, running: 1, waiting: 0, scheduled: 1, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    renderPanel(entry)
+    clickRow('Loop info')
+
+    await waitFor(() => expect(screen.getByText('Check deployment health')).toBeTruthy())
+    expect(screen.getByText('5m')).toBeTruthy()
+    expect(screen.getByText('12 of 20')).toBeTruthy()
+    expect(screen.getByText('error rate is zero')).toBeTruthy()
+    expect(screen.getByText(/in \d+ min/)).toBeTruthy()
+  })
+
+  it('loop falls back to the backstop when nothing else stops it', async () => {
+    const item = makeItem({
+      loop: { max_ticks: 200, prompt: 'Watch the queue', status: 'active', ticks_fired: 0 },
+      session_key: 'sess-loop-backstop',
+      title: 'Loop backstop'
+    })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 0, running: 1, waiting: 0, scheduled: 1, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    renderPanel(entry)
+    clickRow('Loop backstop')
+
+    await waitFor(() => expect(screen.getByText('Watch the queue')).toBeTruthy())
+    expect(screen.getByText('pauses after 200 ticks')).toBeTruthy()
+  })
+
+  it('heartbeat section shows what it checks and its cadence', async () => {
+    const firedAgo = Math.floor(Date.now() / 1000) - 600
+    const item = makeItem({
+      heartbeat: {
+        fire_count: 34,
+        interval_seconds: 1800,
+        last_fired_at: firedAgo,
+        prompt: 'Run backup verification',
+        status: 'active'
+      },
+      session_key: 'sess-hb-info',
+      title: 'HB info'
+    })
+
+    const entry = makeEntry({
+      snapshot: {
+        badge: 'none',
+        counts: { needs_you: 0, running: 0, waiting: 0, scheduled: 1, total: 1 },
+        coverage: { approval_scope: '', clarify_scope: '', connection_scope: '', errors: [], partial: false, profile: 'default', scanned_sessions: 1 },
+        items: [item]
+      }
+    })
+
+    renderPanel(entry)
+    clickRow('HB info')
+
+    await waitFor(() => expect(screen.getByText('Run backup verification')).toBeTruthy())
+    expect(screen.getByText('30m')).toBeTruthy()
+    expect(screen.getByText('34 times')).toBeTruthy()
+    expect(screen.getByText(/min\.? ago/)).toBeTruthy()
+  })
+
   it('hides inline detail when filtered list is empty', () => {
     const item = makeItem({ title: 'My project', session_key: 'sess-1' })
 

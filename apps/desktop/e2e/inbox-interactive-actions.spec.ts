@@ -67,9 +67,39 @@ const ITEMS = ALL_CATEGORIES.map(cat => ({
   cwd: '/disposable/gallery',
   categories: [cat],
   lanes: cat === 'goals' ? ['needs_you', 'running'] : cat === 'loops' ? ['running'] : cat === 'heartbeats' ? ['waiting'] : cat === 'background_tasks' ? ['scheduled'] : cat === 'subagents' ? ['running'] : [],
-  goal: cat === 'goals' ? { title: 'Ship approved changes', status: 'active' } : null,
-  loop: cat === 'loops' ? { status: 'active', prompt: 'Check health' } : null,
-  heartbeat: cat === 'heartbeats' ? { status: 'active', prompt: 'Morning check', fire_count: 5 } : null,
+  goal:
+    cat === 'goals'
+      ? {
+          contract: { outcome: 'Change approved and shipped', verification: 'CI green + manual check' },
+          max_turns: 20,
+          status: 'active',
+          subgoals: ['Changelog updated', 'CI green'],
+          title: 'Ship approved changes',
+          turns_used: 3,
+        }
+      : null,
+  loop:
+    cat === 'loops'
+      ? {
+          interval_seconds: 300,
+          next_due_at: Math.floor(Date.now() / 1000) + 240,
+          prompt: 'Check deployment health on staging',
+          status: 'active',
+          ticks_fired: 4,
+          times: 10,
+          until: 'error rate is zero for 10 minutes',
+        }
+      : null,
+  heartbeat:
+    cat === 'heartbeats'
+      ? {
+          fire_count: 5,
+          interval_seconds: 1800,
+          last_fired_at: Math.floor(Date.now() / 1000) - 1200,
+          prompt: 'Morning check',
+          status: 'active',
+        }
+      : null,
   background_task_count: cat === 'background_tasks' ? 2 : 0,
   subagent_count: cat === 'subagents' ? 3 : 0,
   background_task_count_unavailable: false,
@@ -402,6 +432,47 @@ test.describe('inbox view-only gallery', () => {
     await expect(p.getByRole('button', { name: /approve once/i })).toBeVisible()
     await shot(p, 'detail-loaded.png', 'detail', 'Detail loaded: approval card')
     await row.click()
+  })
+
+  test('automation sections state what they run and how far along they are', async () => {
+    const p = fixture.page
+    await openInbox(p)
+    await waitForRows(p)
+
+    // Goal: the goal text, its criteria, and the turn counter.
+    await p.getByRole('button', { name: /Goals/i }).first().click()
+    await p.waitForTimeout(300)
+    await p.locator('[data-panel-row="gallery-goals"]').click()
+    await p.waitForTimeout(500)
+    await expect(p.getByText('Ship approved changes')).toBeVisible()
+    await expect(p.getByText('3 of 20')).toBeVisible()
+    await expect(p.getByText('Changelog updated')).toBeVisible()
+    await shot(p, 'automation-goal.png', 'automation', 'Goal: goal text + criteria + turn')
+    await p.locator('[data-panel-row="gallery-goals"]').click()
+    await p.waitForTimeout(200)
+
+    // Loop: what it runs, its cadence, progress and stop condition.
+    await p.getByRole('button', { name: /Loops/i }).first().click()
+    await p.waitForTimeout(300)
+    await p.locator('[data-panel-row="gallery-loops"]').click()
+    await p.waitForTimeout(500)
+    await expect(p.getByText('Check deployment health on staging')).toBeVisible()
+    await expect(p.getByText('4 of 10')).toBeVisible()
+    await expect(p.getByText('error rate is zero for 10 minutes')).toBeVisible()
+    await shot(p, 'automation-loop.png', 'automation', 'Loop: prompt + cadence + stop condition')
+    await p.locator('[data-panel-row="gallery-loops"]').click()
+    await p.waitForTimeout(200)
+
+    // Heartbeat: what it checks, cadence, and fires.
+    await p.getByRole('button', { name: /Heartbeats/i }).first().click()
+    await p.waitForTimeout(300)
+    await p.locator('[data-panel-row="gallery-heartbeats"]').click()
+    await p.waitForTimeout(500)
+    await expect(p.getByText('Morning check')).toBeVisible()
+    await expect(p.getByText('30m')).toBeVisible()
+    await expect(p.getByText('5 times')).toBeVisible()
+    await shot(p, 'automation-heartbeat.png', 'automation', 'Heartbeat: checks + cadence + fires')
+    await p.locator('[data-panel-row="gallery-heartbeats"]').click()
   })
 
   test('open full chat escalation button and panel close', async () => {

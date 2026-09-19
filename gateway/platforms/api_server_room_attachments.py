@@ -1137,6 +1137,15 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
                 elif permission == 'attachment.stage':
                     raise RoomGrantReauthorizationRequired('attachment batch unavailable')
             def check_current():
+                if permission == 'attachment.stage':
+                    from gateway.session_peer_route import require_room_route
+                    try:
+                        selected = require_room_route(adapter, bound, connection=profile_conn)
+                        if (selected._scope.request_identity is not request
+                                or selected._scope.purpose not in {'manifest', 'upload'}):
+                            raise RuntimeStoreError('permission_denied')
+                    except RuntimeStoreError as exc:
+                        raise RoomGrantReauthorizationRequired(exc.reason) from exc
                 return _require_receiver(adapter, claims, profile, connection=profile_conn,
                     dispatch=bound, cleanup=permission == 'status')
             authority, _ = check_current()

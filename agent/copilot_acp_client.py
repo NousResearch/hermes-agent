@@ -144,37 +144,6 @@ def parse_pi_result_footer(text):
     return payload if isinstance(payload, dict) else None
 
 
-def _read_env_var(name: str) -> str | None:
-    """Look up ``name`` from the process env first, then the .env files in
-    their documented load order. Tolerates ``export`` prefixes, surrounding
-    spaces, and single/double quoting. Returns ``None`` when unset."""
-    env_val = os.getenv(name, "").strip()
-    if env_val:
-        return env_val
-    for candidate in (
-        Path(os.path.expanduser("~/.hermes/.env")),
-        Path(os.path.expanduser("~/.hermes/hermes-agent/.env")),
-    ):
-        try:
-            if not candidate.is_file():
-                continue
-            for line in candidate.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("export "):
-                    line = line[len("export "):].strip()
-                if not line.startswith(f"{name} ") and not line.startswith(f"{name}="):
-                    continue
-                key, sep, value = line.partition("=")
-                if not sep or key.strip() != name:
-                    continue
-                value = value.strip().strip("'\"")
-                if value:
-                    return value
-        except OSError:
-            continue
-    return None
-
-
 def _resolve_command() -> str:
     return os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip() or os.getenv("COPILOT_CLI_PATH", "").strip() or "copilot"
 

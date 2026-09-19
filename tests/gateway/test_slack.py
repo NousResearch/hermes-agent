@@ -3092,6 +3092,67 @@ class TestAssistantThreadLifecycle:
 
 
     @pytest.mark.asyncio
+    async def test_assistant_thread_started_greets_once_and_sets_dynamic_prompts(
+        self, assistant_adapter
+    ):
+        assistant_adapter.config.extra["assistant_thread_greeting"] = (
+            "Hi, I’m Itô Desk. What are you working on?"
+        )
+        assistant_adapter.config.extra["suggested_prompts"] = {
+            "title": "Live desk",
+            "prompts": [
+                {"title": "Priorities", "message": "Show my current desk priorities"}
+            ],
+        }
+        assistant_adapter._app.client.chat_postMessage = AsyncMock()
+        assistant_adapter._app.client.assistant_threads_setSuggestedPrompts = AsyncMock()
+        event = {
+            "type": "assistant_thread_started",
+            "team_id": "T_TEAM",
+            "assistant_thread": {
+                "channel_id": "D123",
+                "thread_ts": "171.000",
+                "user_id": "U_USER",
+            },
+        }
+
+        await assistant_adapter._handle_assistant_thread_lifecycle_event(event)
+        await assistant_adapter._handle_assistant_thread_lifecycle_event(event)
+
+        assistant_adapter._app.client.chat_postMessage.assert_awaited_once_with(
+            channel="D123",
+            thread_ts="171.000",
+            text="Hi, I’m Itô Desk. What are you working on?",
+        )
+        assert (
+            assistant_adapter._app.client.assistant_threads_setSuggestedPrompts.await_count
+            == 2
+        )
+
+
+    @pytest.mark.asyncio
+    async def test_assistant_thread_context_changed_never_greets(
+        self, assistant_adapter
+    ):
+        assistant_adapter.config.extra["assistant_thread_greeting"] = "Hi"
+        assistant_adapter._app.client.chat_postMessage = AsyncMock()
+
+        await assistant_adapter._handle_assistant_thread_lifecycle_event(
+            {
+                "type": "assistant_thread_context_changed",
+                "team_id": "T_TEAM",
+                "assistant_thread": {
+                    "channel_id": "D123",
+                    "thread_ts": "171.000",
+                    "user_id": "U_USER",
+                },
+            }
+        )
+
+        assistant_adapter._app.client.chat_postMessage.assert_not_awaited()
+
+
+    @pytest.mark.asyncio
     async def test_assistant_thread_cache_is_scoped_per_workspace(
         self, assistant_adapter
     ):

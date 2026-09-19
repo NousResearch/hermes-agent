@@ -1056,6 +1056,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Best-effort guard so automatic Slack AI thread titles are set once
         # per visible DM thread instead of on every reply.
         self._titled_assistant_threads: set = set()
+        self._greeted_assistant_threads: set = set()
         self._TITLED_ASSISTANT_THREADS_MAX = 5000
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
@@ -5239,6 +5240,38 @@ class SlackAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
 
+    async def _greet_assistant_thread(self, metadata: Dict[str, str]) -> None:
+        """Send one configured welcome message for a newly created Assistant thread."""
+        if not self._app:
+            return
+        greeting = str(self.config.extra.get("assistant_thread_greeting") or "").strip()
+        channel_id = metadata.get("channel_id", "")
+        thread_ts = metadata.get("thread_ts", "")
+        team_id = metadata.get("team_id", "")
+        key = self._workspace_thread_key(team_id, channel_id, thread_ts)
+        if not greeting or not key or key in self._greeted_assistant_threads:
+            return
+
+        try:
+            await self._get_client(channel_id, team_id=team_id).chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=greeting[:3000],
+            )
+        except Exception as e:
+            logger.debug("[Slack] assistant thread greeting failed: %s", e)
+            return
+
+        self._greeted_assistant_threads.add(key)
+        if len(self._greeted_assistant_threads) > self._TITLED_ASSISTANT_THREADS_MAX:
+            excess = (
+                len(self._greeted_assistant_threads)
+                - self._TITLED_ASSISTANT_THREADS_MAX // 2
+            )
+            self._discard_oldest_by_thread_ts(
+                self._greeted_assistant_threads, excess, lambda entry: entry[2]
+            )
+
     async def _handle_assistant_thread_lifecycle_event(
         self, event: dict, body: Optional[dict] = None
     ) -> None:
@@ -5246,6 +5279,8 @@ class SlackAdapter(BasePlatformAdapter):
         metadata = self._extract_assistant_thread_metadata(event, body)
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
+        if event.get("type") == "assistant_thread_started":
+            await self._greet_assistant_thread(metadata)
         await self._set_assistant_suggested_prompts(
             metadata.get("channel_id", ""),
             team_id=metadata.get("team_id", ""),

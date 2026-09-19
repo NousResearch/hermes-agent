@@ -18,6 +18,7 @@ and fail-closed on nothing-to-send.
 
 import asyncio
 import logging
+import time
 from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
@@ -404,3 +405,65 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
 def test_scheduler_module_exposes_the_confirmation_helper():
     """Guard the import surface the delivery block depends on."""
     assert callable(sched_delivery._confirm_adapter_delivery)
+
+
+class TestStandaloneSendIsBounded:
+    """The standalone fallback lane must not wait on its send unbounded (#115469).
+
+    ``_send_to_platform``'s gateway-loop dispatch awaits with a deliberate
+    no-timeout shield whose comment assumes an outer ``_run_async`` bound — but
+    this lane's outer runner is a bare ``asyncio.run``, so a mid-reconnect
+    transport pinned the run (and the restart drain behind it) for hours while
+    the job's script had finished in seconds.
+    """
+
+    def _target(self):
+        return sched_delivery._TargetDelivery(
+            job=_job(), platform=None, platform_name="telegram", chat_id=CHAT_ID,
+            thread_id=None, transport=None, pconfig=None, runtime_adapter=None,
+            target_adapters=None, config=None, loop=None, notify_delivery=False,
+            origin={}, origin_target=False, origin_user_id=None, is_dm_target=False,
+            mirror_text="", mirror_this_target=False, in_channel_surface=False,
+            inchannel_continuable=False, opened_thread_id=None)
+
+    def test_hung_send_is_released_at_the_bound(self, monkeypatch, caplog):
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr("tools.send_message_tool._send_to_platform", _hang)
+        monkeypatch.setattr(sched_delivery, "_get_standalone_send_timeout", lambda: 0.2)
+
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            started = time.monotonic()
+            result, error = sched_delivery._standalone_send(self._target(), "Nightly report.", [])
+
+        assert result is None
+        assert error is not None
+        assert "timed out after 0.2s" in error
+        assert "in flight" in error  # an un-cancelled shielded send may still land
+        assert time.monotonic() - started < 30  # released at the bound, not the coroutine's hour
+        assert "timed out" in caplog.text
+
+    def test_a_timely_send_is_unaffected(self, monkeypatch):
+        async def _ok(*_args, **_kwargs):
+            return {"success": True, "message_id": 7}
+
+        monkeypatch.setattr("tools.send_message_tool._send_to_platform", _ok)
+        monkeypatch.setattr(sched_delivery, "_get_standalone_send_timeout", lambda: 30)
+
+        result, error = sched_delivery._standalone_send(self._target(), "Nightly report.", [])
+
+        assert error is None
+        assert result == {"success": True, "message_id": 7}
+
+    def test_timeout_default_and_config_override(self, monkeypatch):
+        monkeypatch.setattr(sched, "load_config", lambda: {})
+        assert sched_delivery._get_standalone_send_timeout() == 60
+
+        monkeypatch.setattr(sched, "load_config",
+                            lambda: {"cron": {"standalone_send_timeout_seconds": 5}})
+        assert sched_delivery._get_standalone_send_timeout() == 5
+
+        monkeypatch.setattr(sched, "load_config",
+                            lambda: {"cron": {"standalone_send_timeout_seconds": -1}})
+        assert sched_delivery._get_standalone_send_timeout() == 60

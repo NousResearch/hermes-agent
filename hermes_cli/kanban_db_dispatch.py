@@ -1088,6 +1088,17 @@ def _classify_dead_worker_exit(
         logged = _worker_log_exit_code(task_id, board=board)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
+    if task_id:
+        from hermes_cli.kanban_provider_errors import _provider_terminal_error_text
+        terminal = _provider_terminal_error_text(task_id)
+        if terminal is not None:
+            error, failure_class = terminal
+            return _DeadWorker(
+                kind, code, error, "needs_attention",
+                {"pid": pid, "claimer": claimer, "exit_code": code,
+                 "failure_class": failure_class, "terminal_provider": True},
+                terminal_provider=True,
+            )
     if kind == "clean_exit":
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
@@ -1172,7 +1183,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], row["id"])
+            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1389,18 +1400,8 @@ def _record_task_failure(
         ).fetchone()
         if row is None:
             return False
-        if expected_run_id is not None and row["current_run_id"] != int(expected_run_id):
-            return False
-        if expected_claim_lock is not None and row["claim_lock"] != expected_claim_lock:
-            return False
         fence_sql = ""
         fence_params: tuple[object, ...] = ()
-        if expected_run_id is not None:
-            fence_sql += " AND current_run_id = ?"
-            fence_params += (int(expected_run_id),)
-        if expected_claim_lock is not None:
-            fence_sql += " AND claim_lock = ?"
-            fence_params += (expected_claim_lock,)
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -2458,6 +2459,17 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+        for other_row in other_running_rows:
+            assignee = other_row.get("assignee")
+            if assignee:
+                per_profile_running[assignee] = per_profile_running.get(assignee, 0) + 1
+    from hermes_cli.kanban_worker_capacity import WorkerCapacity
+
+    capacity = WorkerCapacity(
+        conn, model_cap=max_in_progress_per_model,
+        model_caps=max_in_progress_by_model, profile_caps=max_in_progress_by_profile,
+        other_running_rows=other_running_rows,
+    )
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold

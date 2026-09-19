@@ -3476,6 +3476,7 @@ def block_task(
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            pending_dependency=(kind == "dependency"),
         )
         if rekind_reason:
             payload["requested_kind"] = requested_kind

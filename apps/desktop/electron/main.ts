@@ -65,8 +65,14 @@ import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHo
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
-import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
-import { waitForDashboardPortAnnouncement } from './backend-ready'
+import {
+  canImportHermesCli,
+  execProbeSync,
+  PROBE_TIMEOUT_MS,
+  shouldTrustHermesOverride,
+  verifyHermesCli
+} from './backend-probes'
+import { readDashboardReadyPayload, waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createBackendServeSupportResolver } from './backend-serve-support'
@@ -2932,12 +2938,13 @@ function venvRootForPython(python: string, root: string) {
 // This makes "no flashing windows" a property of the one backend launch rather
 // than a flag that has to be remembered at every descendant spawn site. Restoring
 // console python also restores stdout, so the backend announces its port on the
-// normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
-// needed.
+// normal HERMES_DASHBOARD_READY stdout line. The private ready file remains the
+// authoritative local handshake because it can carry the final token after the
+// backend has applied its own .env precedence rules.
 
 function makeDashboardReadyFile() {
   const dir = path.join(app.getPath('userData'), 'backend-ready')
-  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
 
   return path.join(dir, `dashboard-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.json`)
 }
@@ -12437,7 +12444,9 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
-  // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
+  // --port 0: the OS assigns an ephemeral port. New runtimes return the bound
+  // port plus their resolved session token in the private ready-file handshake;
+  // old runtimes remain on the stdout announcement compatibility path.
   const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
 
   const backend = await ensureRuntime(await resolveHermesBackend(backendArgs), () =>
@@ -12449,7 +12458,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   assertPoolEntryStillOwned(poolKey, entry)
   const hermesCwd = resolveHermesCwd()
   const webDist = resolveWebDist()
-  const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
+  const readyFile = makeDashboardReadyFile()
 
   // Guard BEFORE the "Starting" line: a profile that only exists on a remote
   // backend (remote-primary desktop asked for a forced-local child) rejects
@@ -12557,20 +12566,19 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   child.stderr.on('data', rememberLog)
 
   const port = await Promise.race([portAnnouncement, startFailed])
+  const readyPayload = readDashboardReadyPayload(readyFile)
+  fs.unlink(readyFile, () => {})
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
-
-  if (readyFile) {
-    fs.unlink(readyFile, () => {})
-  }
 
   entry.port = port
 
   const baseUrl = `http://127.0.0.1:${port}`
-  await Promise.race([waitForHermes(baseUrl, token), startFailed])
+  const handshakeToken = readyPayload?.sessionToken || token
+  await Promise.race([waitForHermes(baseUrl, handshakeToken), startFailed])
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
   ready = true
 
-  const authToken = await adoptServedDashboardToken(baseUrl, token, {
+  const authToken = readyPayload?.sessionToken || await adoptServedDashboardToken(baseUrl, token, {
     childAlive: () => child.exitCode === null && !child.killed,
     label: `Hermes backend for profile "${profile}"`,
     rememberLog
@@ -12992,7 +13000,7 @@ async function runHermesStart() {
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     const hermesCwd = resolveHermesCwd()
     const webDist = resolveWebDist()
-    const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
+    const readyFile = makeDashboardReadyFile()
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
@@ -13159,22 +13167,19 @@ async function runHermesStart() {
 
     // Discover the ephemeral port the child bound to
     const port = await Promise.race([portAnnouncement, backendStartFailed])
-    backendConnectionState.assertCurrentAttempt(connectionAttempt)
-
-    if (readyFile) {
-      fs.unlink(readyFile, () => {})
-    }
+    const readyPayload = readDashboardReadyPayload(readyFile)
+    fs.unlink(readyFile, () => {})
 
     const baseUrl = `http://127.0.0.1:${port}`
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
-    backendConnectionState.assertCurrentAttempt(connectionAttempt)
-    await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
+    const handshakeToken = readyPayload?.sessionToken || token
+    await Promise.race([waitForHermes(baseUrl, handshakeToken), backendStartFailed])
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     backendReady = true
     primaryExitRecovery.reset()
     backendStartFailure = null
 
-    const authToken = await adoptServedDashboardToken(baseUrl, token, {
+    const authToken = readyPayload?.sessionToken || await adoptServedDashboardToken(baseUrl, token, {
       childAlive: () => hermesProcess.exitCode === null && !hermesProcess.killed,
       rememberLog
     })

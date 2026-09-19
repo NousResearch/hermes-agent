@@ -26,6 +26,55 @@ from hermes_cli import doctor_config
 from tools import browser_tool_install as bt_install
 
 
+class TestDoctorProfileProviderCredentials:
+    """A named profile pinned to a provider with no credential must not report healthy.
+
+    Profiles are independent islands — the default profile's key proves nothing about a named
+    one, which resolves its own keys from its own .env / auth.json. Before this check, doctor
+    ticked every profile green regardless of whether its configured provider had any credential
+    at all, so a fleet parked on a dead provider read as fully healthy.
+    """
+
+    @staticmethod
+    def _profile(tmp_path, name: str, provider: str, env_text: str):
+        from hermes_cli.profiles import ProfileInfo
+        path = tmp_path / "profiles" / name
+        path.mkdir(parents=True)
+        (path / "config.yaml").write_text(f"model:\n  provider: {provider}\n  default: some/model\n")
+        (path / ".env").write_text(env_text)
+        return ProfileInfo(name=name, path=path, is_default=False, gateway_running=False,
+                           model="some/model", provider=provider, has_env=True)
+
+    @staticmethod
+    def _run(monkeypatch, tmp_path, profile):
+        from hermes_cli.doctor_report import Finding
+        monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda: [profile])
+        monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "wrappers")
+        # _check_profiles is wrapped by @doctor_check, whose signature is (should_fix) -> Finding.
+        # Call the undecorated body so this test owns the Finding it inspects (wraps() stores it
+        # on __wrapped__); getattr keeps static checkers happy about the attribute.
+        body = getattr(doctor_state._check_profiles, "__wrapped__")
+        finding = Finding()
+        body(False, finding)
+        return finding
+
+    def test_provider_without_credential_is_flagged(self, tmp_path, monkeypatch, capsys):
+        profile = self._profile(tmp_path, "devops", "ollama-cloud", "UNRELATED_KEY=1\n")
+        finding = self._run(monkeypatch, tmp_path, profile)
+        out = capsys.readouterr().out
+
+        assert "no credential is configured" in out
+        assert any("devops" in issue for issue in finding.issues)
+
+    def test_provider_with_its_own_credential_is_not_flagged(self, tmp_path, monkeypatch, capsys):
+        profile = self._profile(tmp_path, "devops", "ollama-cloud", "OLLAMA_API_KEY=present\n")
+        finding = self._run(monkeypatch, tmp_path, profile)
+        out = capsys.readouterr().out
+
+        assert "no credential is configured" not in out
+        assert not any("devops" in issue for issue in finding.issues)
+
+
 class TestDoctorPlatformHints:
     def test_termux_package_hint(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")

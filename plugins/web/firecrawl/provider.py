@@ -108,13 +108,62 @@ class _KeylessFirecrawlClient:
     def __init__(self, api_url: str = _FIRECRAWL_CLOUD_API_URL):
         self.api_url = api_url.rstrip("/")
 
-    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        response = httpx.post(f"{self.api_url}{path}", json=payload, headers={"Content-Type": "application/json"}, timeout=60.0)
+    def _post(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        headers = {"Content-Type": "application/json"}
+        if extra_headers:
+            headers.update(extra_headers)
+        response = httpx.post(
+            f"{self.api_url}{path}",
+            json=payload,
+            headers=headers,
+            timeout=60.0,
+        )
         response.raise_for_status()
         return response.json()
 
-    search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731
-    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats})  # noqa: E731
+    def search(self, *, query: str, limit: int = 5) -> Dict[str, Any]:
+        return self._post("/v2/search", {"query": query, "limit": limit})
+
+    def scrape(
+        self,
+        *,
+        url: str,
+        formats: List[str],
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"url": url, "formats": formats}
+        if headers:
+            # Forwarded to the target site by Firecrawl, NOT sent to the
+            # Firecrawl API itself.
+            payload["headers"] = headers
+        return self._post("/v2/scrape", payload)
+
+
+def _scrape_with_optional_headers(client: Any, scrape_kwargs: Dict[str, Any]) -> Any:
+    """Call ``client.scrape``, degrading gracefully when it rejects headers.
+
+    The Firecrawl SDK and the keyless REST client are duck-typed here, and
+    older SDK versions have no ``headers`` parameter. Rather than pin a
+    version, retry once without headers on TypeError so a stale SDK loses
+    the credential rather than the whole scrape.
+    """
+    if "headers" not in scrape_kwargs:
+        return client.scrape(**scrape_kwargs)
+    try:
+        return client.scrape(**scrape_kwargs)
+    except TypeError:
+        logger.warning(
+            "Firecrawl client rejected 'headers' — retrying without configured "
+            "request headers. Upgrade the firecrawl SDK for authenticated scrapes."
+        )
+        return client.scrape(
+            **{k: v for k, v in scrape_kwargs.items() if k != "headers"}
+        )
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -250,8 +299,29 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
         return _error_entry(url, blocked["message"], blocked=blocked)
     try:
         logger.info("Firecrawl scraping: %s", url)
+        # Local import: tools.web_tools imports this module at module level,
+        # so a top-level import here is circular.
+        from tools.web_tools import resolve_request_headers
+
+        scrape_kwargs: Dict[str, Any] = {"url": url, "formats": formats}
+        if extra_headers := resolve_request_headers(url):
+            # Rides in the request BODY for Firecrawl to forward to the target
+            # site; never sent as headers to the Firecrawl API itself.
+            scrape_kwargs["headers"] = extra_headers
+            logger.info(
+                "Firecrawl: attaching %d configured request header(s) for %s",
+                len(extra_headers),
+                url,
+            )
         try:
-            scrape_result = await asyncio.wait_for(asyncio.to_thread(_get_firecrawl_client().scrape, url=url, formats=formats), timeout=60)
+            scrape_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _scrape_with_optional_headers,
+                    _get_firecrawl_client(),
+                    scrape_kwargs,
+                ),
+                timeout=60,
+            )
         except asyncio.TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)

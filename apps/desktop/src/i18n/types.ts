@@ -3209,11 +3209,13 @@ export interface Translations {
       toggleRunningTimer: string
       toggleSessionTimer: string
       toggleTerminal: string
+      toggleTimeToFirstToken: string
       toggleTokensPerSecond: string
       toggleVersion: string
       toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
+      timeToFirstTokenTitle: string
       tokensPerSecondTitle: string
       agents: string
       closeAgents: string

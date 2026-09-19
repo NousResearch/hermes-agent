@@ -261,6 +261,30 @@ SKILLS_GUIDANCE = (
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
 )
 
+# Board-side guidance for kanban-enabled profiles without a dispatcher-owned
+# task. It deliberately omits the worker lifecycle and its no-argument
+# kanban_show() instruction.
+KANBAN_ORCHESTRATOR_GUIDANCE = (
+    "# Kanban board guidance\n"
+    "This profile can coordinate work in `~/.hermes/kanban.db` through the `kanban_*` tools. "
+    "This session is not a dispatched worker and owns no board task; ignore any inherited "
+    "`$HERMES_KANBAN_TASK` and pass an explicit `task_id` to `kanban_show(task_id=...)`.\n"
+    "- **Route, don't implement.** When orchestrating work on the board, delegate it with "
+    "`kanban_create(title=..., assignee=<right-profile>, parents=[...])`. This is board-routing "
+    "advice, not a restriction on handling unrelated requests directly.\n"
+    "- **Discover profiles first.** Confirm each assignee with `hermes profile list` or ask the "
+    "user before creating a card. A card with an unknown assignee remains undispatched in "
+    "`ready`; record ordering through `parents=[...]`.\n"
+    "- **Decision ownership.** Settle shared names, schemas, file formats, and API shapes before "
+    "creating child cards. Sibling workers cannot see one another's context, so copy every "
+    "shared decision into each affected card instead of asking workers to choose independently.\n"
+    "- **Created cards.** Use only task ids returned by successful `kanban_create` calls.\n"
+    "- **Attachments.** Upload deliverables through `kanban_attach` or `kanban_attach_url` "
+    "(25 MB maximum) instead of leaving download links in comments.\n"
+    "- Make board changes with the `kanban_*` tools rather than `hermes kanban <verb>` so the "
+    "same routing works across terminal backends."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from the shared board at `~/.hermes/kanban.db`. Your task id is in "

@@ -744,7 +744,7 @@ kanban_complete(
 )
 ```
 
-The orchestrator guidance ships in the worker's system prompt automatically — there is nothing to install or sync per profile.
+The guidance ships in the system prompt automatically: a dispatched worker gets the task-execution protocol (including its orchestrator mode for decomposition cards), and a kanban-enabled session that owns no task (and is not a delegated child) gets the board guidance instead — there is nothing to install or sync per profile.
 
 **Decide before you fan out.** Design decisions belong to the orchestrator, not to the workers. If two parallel cards would each have to pick the same thing — a naming scheme, a schema, a file format, an API shape — the orchestrator decides it once and stamps the decision into **both** card bodies. Workers cannot see sibling cards, so every child card body must carry every decision it depends on. Example: for the parallel cards "build the exporter" and "build the importer", don't let each worker invent its own file format — pick one up front (say, newline-delimited JSON with a `version` field) and write it into both bodies, or the two halves will never round-trip.
 

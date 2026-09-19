@@ -32,9 +32,10 @@ indirect_exposure    -> submitted | human_task_queued | not_found | found | bloc
 action_selected      -> submitted | human_task_queued | blocked
 submitted            -> verification_pending | awaiting_processing | human_task_queued | blocked
 verification_pending -> awaiting_processing | confirmed_removed | human_task_queued | blocked
-awaiting_processing  -> confirmed_removed | human_task_queued | blocked
+awaiting_processing  -> confirmed_removed | reappeared | human_task_queued | blocked
 confirmed_removed    -> reappeared | confirmed_removed   (recheck refreshes the date)
-reappeared           -> found | indirect_exposure
+reappeared           -> found | not_found | indirect_exposure | action_selected | submitted
+                        | human_task_queued | blocked
 human_task_queued    -> found | indirect_exposure | action_selected | submitted | verification_pending
                         | awaiting_processing | confirmed_removed | blocked
 blocked              -> searching | found | not_found | indirect_exposure | action_selected
@@ -50,6 +51,11 @@ A transition to the same state is always allowed (idempotent field updates).
   opt-out whose matcher says "no results" after you have already submitted is recorded
   `awaiting_processing`, not `not_found`.)
 - **`blocked -> submitted` is ILLEGAL directly** - go `blocked -> action_selected -> submitted`.
+- **`reappeared` re-files like a fresh `found`.** A reappearance re-scan already confirmed the listing
+  is back, so `reappeared` re-enters the opt-out flow directly (`-> submitted` / `-> action_selected`),
+  is routed to a human, or is reclassified by a closer re-scan; it does not have to walk back through
+  `found` first. A verify_removal that finds an `awaiting_processing` listing still up after the
+  processing window records `reappeared` (the removal did not take), the same "still listed" outcome.
 - **Recording an operator's manual verdict:** attach an `operator_manual_check` evidence note. A
   dead / 404 site, or an operator-confirmed "no results" search, is a valid `not_found`.
 - **`--evidence` shell gotcha:** an `--evidence` JSON string containing a literal `&` trips the shell's

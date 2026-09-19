@@ -940,6 +940,130 @@ export interface VerificationEvidenceRow {
   output_summary?: string | null
   [key: string]: unknown
 }
+export interface FilingStatusResult {
+  available: boolean
+  hook_installed: boolean
+  contract_path: string
+  rules: number
+  exclusions: number
+  audit_entries: number
+  [key: string]: unknown
+}
+export interface FilingRulesResult {
+  rules: unknown[]
+  exclusions: unknown[]
+  audit: unknown[]
+  [key: string]: unknown
+}
+export interface FilingSuggestResult {
+  suggestions: FilingSuggestionRow[]
+  [key: string]: unknown
+}
+export interface FilingSuggestionRow {
+  session_id: string
+  title: string
+  cwd?: string | null
+  project_id: string
+  project_name: string
+  reason: string
+  confidence: number
+  [key: string]: unknown
+}
+export interface FilingApplyParams {
+  path: string
+  project: string
+  source?: string | null
+}
+export interface FilingApplyResult {
+  applied: boolean
+  note: string
+  db?: unknown
+  [key: string]: unknown
+}
+export interface FilingRejectParams {
+  path: string
+  project?: string | null
+  source?: string | null
+}
+export interface FilingRejectResult {
+  recorded: boolean
+  note: string
+  db?: unknown
+  [key: string]: unknown
+}
+export interface OrganizationBatchParams {
+  session_ids: string[]
+  pinned?: boolean | null
+  archived?: boolean | null
+  profile?: string | null
+}
+export interface OrganizationBatchResult {
+  batch_id: string
+  applied: string[]
+  failed: OrganizationFailureRow[]
+  partial: boolean
+  [key: string]: unknown
+}
+export interface OrganizationFailureRow {
+  session_id: string
+  error: string
+  [key: string]: unknown
+}
+export interface OrganizationHistoryResult {
+  batches: OrganizationHistoryRow[]
+  [key: string]: unknown
+}
+export interface OrganizationHistoryRow {
+  id: string
+  ts: number
+  action: string
+  value: number
+  count: number
+  undone: boolean
+  [key: string]: unknown
+}
+export interface OrganizationUndoParams {
+  batch_id?: string | null
+  profile?: string | null
+}
+export interface OrganizationUndoResult {
+  batch_id?: string | null
+  restored: string[]
+  failed: OrganizationFailureRow[]
+  partial: boolean
+  [key: string]: unknown
+}
+export interface AssetsStatusResult {
+  available: boolean
+  attachments_dir: string
+  attachments_present: boolean
+  [key: string]: unknown
+}
+export interface AssetsListParams {
+  kind?: string | null
+  project_id?: string | null
+  session_id?: string | null
+  profile?: string | null
+}
+export interface AssetsListResult {
+  assets: AssetRow[]
+  total: number
+  [key: string]: unknown
+}
+export interface AssetRow {
+  id: string
+  kind: string
+  name: string
+  path: string
+  mime_type: string
+  size_bytes: number
+  modified_at: number
+  session_id: string
+  session_title: string
+  project_id?: string | null
+  project_name?: string | null
+  [key: string]: unknown
+}
 export interface GroupsCapabilitiesParams {
   profile?: string | null
 }
@@ -4197,6 +4321,10 @@ export interface RpcMethods {
   'approval.received': { params: ApprovalReceivedParams; result: ApprovalReceivedResult }
   /** Deliver the user's decision on a dangerous command (falls back to durable identity on a stale sid). */
   'approval.respond': { params: ApprovalRespondParams; result: ApprovalRespondResult }
+  /** Index of delivered/attached/generated files, newest first, filterable by kind, project, or session. */
+  'assets.list': { params: AssetsListParams; result: AssetsListResult }
+  /** Is the server-side asset index reachable. */
+  'assets.status': { params: ProfileParams; result: AssetsStatusResult }
   /** Enable/disable auto top-up with its threshold and reload amount (billing:manage). */
   'billing.auto_reload': { params: BillingAutoReloadParams; result: BillingMutationResult }
   /** Start a one-off top-up charge (billing:manage, idempotent). */
@@ -4267,6 +4395,16 @@ export interface RpcMethods {
   'diagnostics.share_nous': { params: DiagnosticsShareNousParams; result: DiagnosticsShareNousResult }
   /** Stage a non-image file into the session workspace and hand back its @file: ref. */
   'file.attach': { params: FileAttachParams; result: FileAttachResult }
+  /** Accept: record the rule and mirror it into projects.db. */
+  'filing.apply': { params: FilingApplyParams; result: FilingApplyResult }
+  /** Reject: record an exclusion with retroactive unfile. */
+  'filing.reject': { params: FilingRejectParams; result: FilingRejectResult }
+  /** Contract rules / exclusions with the recent audit trail. */
+  'filing.rules': { params: ProfileParams; result: FilingRulesResult }
+  /** Is the filing contract installed; hook presence and counts. */
+  'filing.status': { params: ProfileParams; result: FilingStatusResult }
+  /** Deterministic filing suggestions (contract rule / cwd match). */
+  'filing.suggest': { params: ProfileParams; result: FilingSuggestResult }
   /** Mark the one-time availability notice as shown on the free-tier identity. */
   'free_tier.ack_notice': { params: ProfileParams; result: FreeTierAckNoticeResult }
   /** Explicit retry of the free-tier identity mint when the boot bootstrap could not create it. */
@@ -4369,6 +4507,14 @@ export interface RpcMethods {
   'model.options': { params: ModelOptionsParams; result: ModelOptionsResult }
   /** Save an API key for a provider and return its refreshed inventory row. */
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
+  /** Batch archive/unarchive with per-session outcomes and a durable undo record. */
+  'organization.archive': { params: OrganizationBatchParams; result: OrganizationBatchResult }
+  /** List recorded batches, newest last. */
+  'organization.history': { params: ProfileParams; result: OrganizationHistoryResult }
+  /** Batch pin/unpin with per-session outcomes and a durable undo record. */
+  'organization.pin': { params: OrganizationBatchParams; result: OrganizationBatchResult }
+  /** Reverse one batch (by id, or the newest not-yet-undone). */
+  'organization.undo': { params: OrganizationUndoParams; result: OrganizationUndoResult }
   /** Spill a large paste to a file and hand back the inline placeholder. */
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
@@ -4632,6 +4778,8 @@ export const RPC_METHODS = [
   'approval.pending',
   'approval.received',
   'approval.respond',
+  'assets.list',
+  'assets.status',
   'billing.auto_reload',
   'billing.charge',
   'billing.charge_status',
@@ -4667,6 +4815,11 @@ export const RPC_METHODS = [
   'delegation.status',
   'diagnostics.share_nous',
   'file.attach',
+  'filing.apply',
+  'filing.reject',
+  'filing.rules',
+  'filing.status',
+  'filing.suggest',
   'free_tier.ack_notice',
   'free_tier.provision',
   'free_tier.status',
@@ -4718,6 +4871,10 @@ export const RPC_METHODS = [
   'model.disconnect',
   'model.options',
   'model.save_key',
+  'organization.archive',
+  'organization.history',
+  'organization.pin',
+  'organization.undo',
   'paste.collapse',
   'pdf.attach',
   'pet.cancel',

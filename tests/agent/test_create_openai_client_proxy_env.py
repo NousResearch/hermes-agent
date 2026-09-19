@@ -10,12 +10,26 @@ This test pins that the constructed ``httpx.Client`` mounts an
 ``HTTPProxy`` pool when a proxy env var is set, and that no
 custom socket-options transport is used (default httpx transport).
 """
+import socket
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from agent.process_bootstrap import _get_proxy_for_base_url, _get_proxy_from_env
 from run_agent import AIAgent
+
+
+@pytest.fixture
+def live_proxy_port():
+    """A real listening loopback port, so the transport liveness probe keeps the proxy honored
+    (a hardcoded 7897 only passes when Clash happens to be up — not on a CI runner)."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(16)
+    yield server
+    server.close()
 
 
 def _make_agent():
@@ -62,7 +76,7 @@ def test_get_proxy_from_env_normalizes_socks_alias(monkeypatch):
 
 
 @patch("agent.process_bootstrap.OpenAI")
-def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeypatch):
+def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeypatch, live_proxy_port):
     """With HTTPS_PROXY set, the custom httpx.Client must mount an HTTPProxy pool.
 
     This is the WSL2 + Clash / corporate-egress case. Before the fix, the custom
@@ -72,7 +86,7 @@ def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeyp
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{live_proxy_port.getsockname()[1]}")
 
     agent = _make_agent()
     kwargs = {

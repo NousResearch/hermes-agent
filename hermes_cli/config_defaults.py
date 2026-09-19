@@ -64,6 +64,12 @@ DEFAULT_CONFIG = {
         # on expiry the message is rejected with a resend notice. Keep short: Telegram dispatches
         # sequentially, so a waiter delays unrelated topics. Non-positive -> 5s.
         "gateway_turn_lease_timeout": 5,
+        # Fall back to a DIRECT connection when the configured proxy is a dead loopback endpoint
+        # (a local Clash/mihomo on 127.0.0.1 that has exited), instead of failing every LLM call
+        # with ECONNREFUSED until a full restart. True (default) probes loopback proxies with a
+        # short-lived cache; set False to restore the legacy always-route-through-proxy behaviour.
+        # Remote/corporate proxies are never probed, so this has no effect outside loopback.
+        "proxy_fallback_direct": True,
         # Per-session AIAgent cache in the gateway. Each entry keeps a warm prompt prefix AND the
         # full transcript: too small re-pays uncached prompts, too large fills the heap.
         "agent_cache": {

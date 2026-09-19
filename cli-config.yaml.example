@@ -1117,6 +1117,13 @@ agent:
   # Non-positive values fall back to the 5-second default.
   # gateway_turn_lease_timeout: 5
 
+  # When the configured proxy is a LOCAL one (Clash / mihomo / V2Ray on 127.0.0.1) that has
+  # exited, the stale `127.0.0.1:<port>` would otherwise route every LLM call to a refused
+  # port and the whole app freezes until a restart. With this ON (default), Hermes probes
+  # loopback proxies with a short-lived cache and falls back to a direct connection when the
+  # port stops accepting connections. Remote / corporate proxies are never probed.
+  # proxy_fallback_direct: true
+
   # Staged warning: send a warning before escalating to full timeout.
   # Fires once per run when inactivity reaches this threshold (seconds).
   # Set to 0 to disable the warning.

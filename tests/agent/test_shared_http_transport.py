@@ -105,7 +105,7 @@ def test_pool_survives_client_close(no_proxy_env, local_server):
     assert len(pool.connections) == before, "client close must not drain the shared pool"
 
 
-def test_different_verify_or_proxy_get_different_transports(no_proxy_env, monkeypatch):
+def test_different_verify_or_proxy_get_different_transports(no_proxy_env, monkeypatch, local_server):
     default = build_keepalive_http_client("https://api.example.com/v1")
     insecure = build_keepalive_http_client("https://api.example.com/v1", verify=False)
     ctx = ssl.create_default_context(cafile=certifi.where())
@@ -125,7 +125,7 @@ def test_different_verify_or_proxy_get_different_transports(no_proxy_env, monkey
     for c in (default, insecure, with_ctx, with_ctx2, codex):
         c.close()
 
-    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:3128")
+    monkeypatch.setenv("HTTPS_PROXY", local_server)
     proxied = build_keepalive_http_client("https://api.example.com/v1")
     # Proxy clients keep httpx's own per-client proxy transport (unshared).
     assert all(

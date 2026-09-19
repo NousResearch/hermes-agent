@@ -1,12 +1,14 @@
 """Module-level registry for DashboardAuthProvider instances. Plugins call ``register_provider``
-via the plugin context hook at startup; the auth gate iterates ``list_providers()`` and uses
-``get_provider`` to dispatch on the session's ``provider`` field."""
+via the plugin context hook; bundled providers are deferred (see ``register_deferred``) so their
+module only imports when the auth gate first reads this registry. The gate iterates
+``list_providers()`` and uses ``get_provider`` to dispatch on the session's ``provider`` field."""
 from __future__ import annotations
 
 import logging
 import threading
-from typing import List, Optional
+from typing import Callable, List, Optional
 
+from agent.provider_registry import DeferredLoaders
 from hermes_constants import hermes_home_key
 from hermes_cli.dashboard_auth.base import DashboardAuthProvider, assert_protocol_compliance
 
@@ -14,6 +16,13 @@ _log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _providers: dict[str, DashboardAuthProvider] = {}
 _scoped_providers: dict[str, dict[str, DashboardAuthProvider]] = {}
+# Bundled dashboard-auth plugins queue their import here; the first gate read runs them.
+_deferred = DeferredLoaders(_log, "dashboard auth")
+
+
+def register_deferred(loader: Callable[[], None]) -> None:
+    """Queue a bundled provider plugin's import for the first read of this registry."""
+    _deferred.register(loader)
 
 
 def _merged(scope: Optional[str] = None) -> dict[str, DashboardAuthProvider]:
@@ -47,6 +56,7 @@ def register_provider(provider: DashboardAuthProvider, *, scope: Optional[str] =
 
 def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[DashboardAuthProvider]:
     """Return the registered provider for ``name``, or None if unknown."""
+    _deferred.materialize()
     with _lock:
         return _merged(scope).get(name)
 
@@ -76,6 +86,7 @@ def restore_registration(
 
 def list_providers(*, scope: Optional[str] = None) -> List[DashboardAuthProvider]:
     """All registered providers, in registration order."""
+    _deferred.materialize()
     with _lock:
         return list(_merged(scope).values())
 
@@ -120,6 +131,7 @@ def unregister_global_provider(name: str, provider: DashboardAuthProvider) -> bo
 
 def clear_providers() -> None:
     """Test-only: drop all registrations."""
+    _deferred.clear()
     with _lock:
         _providers.clear()
         _scoped_providers.clear()

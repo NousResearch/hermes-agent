@@ -462,6 +462,116 @@ def test_review_dependency_wait_reenters_review_after_parent_finishes(conn) -> N
     assert resumed.status == "review"
 
 
+def test_review_dependency_recovery_clears_obsolete_auth_blocker(
+    conn, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resolved prerequisite must not leave a restored review auth-blocked."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    task_id, review = _claimed_review(conn, "Review blocked on a prerequisite")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = ?, last_failure_error = ? WHERE id = ?",
+            (1, "external capability unavailable: authentication required", task_id),
+        )
+    assert kbd.check_respawn_guard(conn, task_id, lane="review") == "blocker_auth"
+
+    prerequisite_id = kb.create_task(conn, title="Restore external capability", assignee="operator")
+    kb.link_tasks(conn, prerequisite_id, task_id)
+    assert kb.block_task(
+        conn,
+        task_id,
+        reason="dependency: waiting for external capability restoration",
+        kind="dependency",
+        expected_run_id=review.current_run_id,
+    )
+    waiting = kb.get_task(conn, task_id)
+    assert waiting is not None
+    assert waiting.status == "todo"
+
+    assert kb.complete_task(conn, prerequisite_id)
+
+    resumed = kb.get_task(conn, task_id)
+    assert resumed is not None
+    assert resumed.status == "review"
+    assert resumed.consecutive_failures == 1
+    assert resumed.last_failure_error is None
+    assert kbd.check_respawn_guard(conn, task_id, lane="review") is None
+
+    dispatch = kbd.dispatch_once(conn, dry_run=True)
+    assert task_id in [spawned[0] for spawned in dispatch.spawned]
+
+
+def test_review_dependency_recovery_preserves_non_blocker_error(conn) -> None:
+    """Ordinary review dependency recovery keeps unrelated failure diagnostics."""
+    task_id, review = _claimed_review(conn, "Review blocked on an ordinary prerequisite")
+    error = "workspace mount is unavailable"
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = ?, last_failure_error = ? WHERE id = ?",
+            (1, error, task_id),
+        )
+
+    prerequisite_id = kb.create_task(conn, title="Restore workspace mount", assignee="operator")
+    kb.link_tasks(conn, prerequisite_id, task_id)
+    assert kb.block_task(
+        conn,
+        task_id,
+        reason="dependency: waiting for workspace restoration",
+        kind="dependency",
+        expected_run_id=review.current_run_id,
+    )
+    assert kb.complete_task(conn, prerequisite_id)
+
+    resumed = kb.get_task(conn, task_id)
+    assert resumed is not None
+    assert resumed.status == "review"
+    assert resumed.consecutive_failures == 1
+    assert resumed.last_failure_error == error
+
+
+def test_review_dependency_recovery_preserves_rate_limit_state(conn) -> None:
+    """A resolved dependency must not erase a still-active rate-limit signal."""
+    task_id, review = _claimed_review(conn, "Review blocked on quota recovery")
+    error = "external capability rate-limited"
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = ?, last_failure_error = ? WHERE id = ?",
+            (1, error, task_id),
+        )
+
+    prerequisite_id = kb.create_task(conn, title="Restore quota", assignee="operator")
+    kb.link_tasks(conn, prerequisite_id, task_id)
+    assert kb.block_task(
+        conn,
+        task_id,
+        reason="dependency: waiting for quota recovery",
+        kind="dependency",
+        expected_run_id=review.current_run_id,
+    )
+    now = int(time.time())
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'reviewer', 'rate_limited', 'rate_limited', ?, ?)",
+            (task_id, now, now + 5),
+        )
+    assert kb.complete_task(conn, prerequisite_id)
+
+    resumed = kb.get_task(conn, task_id)
+    assert resumed is not None
+    assert resumed.status == "review"
+    assert resumed.consecutive_failures == 1
+    assert resumed.last_failure_error == error
+    assert kbd.check_respawn_guard(conn, task_id, lane="review") == "rate_limit_cooldown"
+
+
 def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
     conn,
     monkeypatch: pytest.MonkeyPatch,

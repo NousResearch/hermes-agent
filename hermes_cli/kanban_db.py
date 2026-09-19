@@ -111,6 +111,21 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# Errors that ``check_respawn_guard`` treats as quota/auth blockers. Kept here
+# because dependency recovery must clear only a resolved version of that same
+# signal, not unrelated failure diagnostics.
+_RESPAWN_BLOCKER_RE = re.compile(
+    r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
+    r"unauthorized|forbidden|billing|subscription|"
+    r"access[\s_]denied|permission[\s_]denied|"
+    r"invalid[\s_]api[\s_]key)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_respawn_blocker_error(error: Any) -> bool:
+    return isinstance(error, str) and bool(_RESPAWN_BLOCKER_RE.search(error))
+
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """``VALID_REASONING_EFFORTS`` or ``"none"`` (thinking off), case-insensitive;
@@ -2141,7 +2156,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, last_failure_error "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -2174,8 +2189,31 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
                         "WHERE id = ? AND status = 'blocked'", (resume_status, task_id),
                     )
                 else:
+                    # A review-lane dependency wait is an explicit recovery
+                    # path for the prerequisite that caused the review to
+                    # pause. Once it resolves, its old auth/quota signal must
+                    # not guard the restored review forever. Preserve the
+                    # failure counter: breaker accounting still spans retries.
+                    latest_event = conn.execute(
+                        "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                        "ORDER BY id DESC LIMIT 1", (task_id,),
+                    ).fetchone()
+                    latest_run = conn.execute(
+                        "SELECT outcome FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
+                        "ORDER BY ended_at DESC LIMIT 1", (task_id,),
+                    ).fetchone()
+                    dependency_review_resume = (
+                        resume_status == "review"
+                        and latest_event is not None
+                        and latest_event["kind"] == "dependency_wait"
+                        and _json_dict(_row_get(latest_event, "payload")).get("source_status") == "review"
+                        and _is_respawn_blocker_error(row["last_failure_error"])
+                        and (latest_run is None or latest_run["outcome"] != "rate_limited")
+                    )
                     conn.execute(
-                        "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
+                        "UPDATE tasks SET status = ?"
+                        + (", last_failure_error = NULL" if dependency_review_resume else "")
+                        + " WHERE id = ? AND status = 'todo'",
                         (resume_status, task_id),
                     )
                 _append_event(

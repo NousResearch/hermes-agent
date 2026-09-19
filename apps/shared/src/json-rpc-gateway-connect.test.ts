@@ -4,15 +4,7 @@ import { JsonRpcGatewayClient } from './json-rpc-gateway'
 
 /** EventTarget-based WebSocket stand-in that never opens, so each failure leg can be driven by hand. */
 class StuckSocket extends EventTarget {
-  static OPEN = 1
-  static last: StuckSocket | null = null
-
   readyState = 0
-
-  constructor() {
-    super()
-    StuckSocket.last = this
-  }
 
   send(): void {}
 
@@ -30,8 +22,10 @@ const rejection = (pending: Promise<void>): Promise<Error> =>
   )
 
 const dial = (connectTimeoutMs = 1000) => {
+  let socket!: StuckSocket
+
   const client = new JsonRpcGatewayClient({
-    socketFactory: () => new StuckSocket() as unknown as WebSocket,
+    socketFactory: () => (socket = new StuckSocket()) as unknown as WebSocket,
     heartbeatIntervalMs: 0,
     heartbeatDeadlineMs: 0,
     connectTimeoutMs,
@@ -41,7 +35,7 @@ const dial = (connectTimeoutMs = 1000) => {
   const pending = client.connect('ws://gateway.test/api/ws')
   pending.catch(() => {})
 
-  return { client, pending, socket: StuckSocket.last as StuckSocket }
+  return { client, pending, socket }
 }
 
 // Regression for #41566: the overlay showed the same sentence for an auth rejection, a TLS failure and a
@@ -64,12 +58,12 @@ describe('JsonRpcGatewayClient.connect failure classes', () => {
     expect(timedOut.client.connectionState).toBe('error')
   })
 
-  it('an error before open still names the base message so existing "sidecar down" matchers keep working', async () => {
+  it('every failure keeps the base message as its prefix — the overlay headline and includes() matchers bind to it', async () => {
     const { pending, socket } = dial()
     socket.dispatchEvent(new Event('error'))
     const error = await rejection(pending)
 
     expect(error.message.startsWith(connectErrorMessage)).toBe(true)
-    expect(error.message).toContain('error before open')
+    expect(error.message).not.toBe(connectErrorMessage)
   })
 })

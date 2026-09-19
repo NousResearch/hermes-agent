@@ -1197,11 +1197,16 @@ class AIAgent(
         return truncated
 
     @staticmethod
-    def _deduplicate_tool_calls(tool_calls: list) -> list:
+    def _deduplicate_tool_calls(tool_calls: list, *, preserve_indices: frozenset = frozenset()) -> list:
         """Drop duplicate (tool_name, arguments) pairs in one turn (first wins). Valid JSON arguments are
-        canonicalized so key order/whitespace can't evade dedup; returns the original list when nothing was removed."""
+        canonicalized so key order/whitespace can't evade dedup; returns the original list when nothing was removed.
+        Calls at ``preserve_indices`` are exempt: intentional repeats inside an admitted guarded desktop run
+        (RFC #112639) must survive normalization."""
         seen, unique = set(), []
-        for tc in tool_calls:
+        for idx, tc in enumerate(tool_calls):
+            if idx in preserve_indices:
+                unique.append(tc)
+                continue
             arguments = tc.function.arguments
             try:
                 arguments = json.dumps(json.loads(arguments), separators=(",", ":"), sort_keys=True)

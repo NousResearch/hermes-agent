@@ -16,7 +16,10 @@ import subprocess
 import sys
 import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from tools.computer_use.readiness import ReadinessResult
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
@@ -234,7 +237,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # Sticky target (set by capture()/focus_app(), used by actions): `_active_pid`, `_active_window_id`, `_last_app`,
         # `_last_target` (exact identity for capture_after — Linux app names may be generic, e.g. several unrelated Qt
         # windows all say Qt6Application), `_snapshot_tokens` (element_index -> element_token, attached to actions so
-        # cua-driver reports "stale" instead of silently re-resolving).
+        # cua-driver reports "stale" instead of silently re-resolving), `_snapshot_labels` (element_index ->
+        # (label, role) from the same snapshot, used by guarded-run readiness confirmation so per-action
+        # predicates can name the element without a fresh capture).
         self._clear_active_target()
         # Public session label (one per Hermes run) sent as `session` on every call: owns the cursor color and
         # gives config/recording state a stable owner across transport restarts. Part of the 0.20 runtime contract.
@@ -309,11 +314,15 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
         # context.
         self._snapshot_tokens: Dict[int, str] = {}
+        # Same snapshot lifecycle as the tokens: element_index -> (label, role) of the elements the model
+        # just saw, so readiness predicates can name a target without another capture.
+        self._snapshot_labels: Dict[int, Tuple[str, str]] = {}
 
     def _set_active_target(self, target: Dict[str, Any]) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        self._snapshot_labels = {}  # prior snapshot's labels: same disarm, same pairing hazard
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
@@ -351,6 +360,20 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         payload = dict(args) if args else {}
         payload.setdefault("session", self._session_id)
         return self._session.call_tool(name, payload, timeout=timeout)
+
+    def verify_readiness(self, *, pid: int, window_id: int, expect: List[Dict[str, Any]],
+                         timeout_ms: int = 2000, stable_samples: int = 1,
+                         include_screenshot: bool = False) -> "ReadinessResult":
+        """Bounded readiness check via the driver's ``verify_state`` tool (RFC #112639).
+
+        Fails closed as ``unknown`` when the driver does not advertise the tool.
+        Stated consumer: the guarded desktop-run executor uses this as the
+        per-step confirmation signal instead of a capture + model round trip.
+        """
+        from tools.computer_use.readiness import verify_readiness
+        return verify_readiness(self, pid=pid, window_id=window_id, expect=expect,
+                                timeout_ms=timeout_ms, stable_samples=stable_samples,
+                                include_screenshot=include_screenshot)
 
     def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
         # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit

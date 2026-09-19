@@ -273,6 +273,9 @@ class _CaptureMixin:
                     else _parse_elements_from_tree(tree) if tree else [])
         # Tokens are tied to this snapshot: overwrite the whole map (and clear it when the new capture carries none).
         self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
+        # Same lifecycle for the labels the model just saw: element_index -> (label, role), so
+        # guarded-run readiness confirmation can name a target without another capture.
+        self._snapshot_labels = {e.index: (e.label, e.role) for e in elements}
         return *_image_from_tool_result(gws_out), elements, window_title
 
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,

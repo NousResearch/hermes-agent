@@ -168,13 +168,23 @@ Pairing stores are constructed per served profile.
 ## Per-bot session lanes
 
 Session keys are namespaced by profile (`agent:main` for default,
-`agent:<name>` for named profiles). Adapters carry `_owner_profile`
-(installed at adapter configuration time, before any inbound event) because
-adapter ingress runs before `SessionSource.profile` is stamped;
-`_session_key_profile` resolves source stamp → owner profile → store
-resolver. Text/media batching, active-session tracking, and the busy-session
-guard are all keyed per lane, so two bots sharing a chat do not share a
-session lane.
+`agent:<name>` for named profiles). Every inbound event carries ONE frozen
+`RoutingIdentity` (`gateway/session_identity.py`), resolved by
+`resolve_identity()` at the runner's ingress handlers and pinned on the source
+as a wire-invisible attribute: `transport_profile` (the bot that received it —
+credential, allowlist, `authorization_home`), `runtime_profile` (the routed
+profile that executes — `runtime_home`, key `namespace`, `store_path`) and a
+weak `transport` ref to the receiving adapter. `"default"` is spelled out;
+`None` never means default. Under multiplexing a route to an unserved profile
+raises `IdentityUnresolved` and the event is dropped.
+
+Adapters also carry `_owner_profile` (installed at adapter configuration time,
+before any inbound event) because adapter ingress runs before the runner pins
+the identity; `_session_key_profile` resolves identity → source stamp → owner
+profile → store resolver. Text/media batching, active-session tracking, and the
+busy-session guard are all keyed per lane, so two bots sharing a chat do not
+share a session lane. Copy a source with `session_identity.replace_source`, not
+`dataclasses.replace`, or the copy loses its transport and identity.
 
 ## Control plane
 

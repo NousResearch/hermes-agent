@@ -2307,9 +2307,13 @@ class BasePlatformAdapter(ABC):
     def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
         """Profile namespace for an adapter-derived session key. Ingress runs BEFORE the runner
         stamps ``source.profile``, so without this every bot in a multiplexed gateway shares one
-        ``agent:main:`` lane. Order: ``source.profile`` → ``_owner_profile`` → session-store
-        resolver; getattr-guarded (object.__new__ in tests), type-checked (no MagicMock in the
-        key)."""
+        ``agent:main:`` lane. Order: pinned ``RoutingIdentity`` → ``source.profile`` →
+        ``_owner_profile`` → session-store resolver; getattr-guarded (object.__new__ in tests),
+        type-checked (no MagicMock in the key)."""
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.session_key_profile
         for candidate in (
             getattr(source, "profile", None) if source is not None else None,
             getattr(self, "_owner_profile", None)):

@@ -369,13 +369,20 @@ def _cmd_repair(args: argparse.Namespace) -> int:
             "post_repair_messages": report.post_repair_messages,
             "backup_path": str(report.backup_path) if report.backup_path else None,
             "reindexed": report.reindexed,
+            "backend": report.backend,
         }, ascii=True)
         return 0 if report.status in {"ok", "repaired", "missing"} else 1
 
     if report.status == "missing":
+        if report.backend == "postgres":
+            print("No PostgreSQL schema exists for this board — nothing to repair.")
+            return 0
         print(f"No kanban DB at {report.db_path} — nothing to repair.")
         return 0
     if report.status == "ok":
+        if report.backend == "postgres":
+            print(f"{report.messages[0]} — no repair needed.")
+            return 0
         print(f"{report.db_path}: integrity_check ok — no repair needed.")
         return 0
     if report.status == "repaired":

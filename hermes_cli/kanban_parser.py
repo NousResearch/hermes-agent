@@ -441,15 +441,17 @@ _SPECS = [
              help="Delete worker log files older than N days (default: 30; 0 disables)"),
     ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
-         help="Check kanban.db integrity and auto-repair index-only corruption",
+         help="Check board storage health and repair SQLite index-only corruption",
          description=(
-             "Runs PRAGMA integrity_check on the board's DB and reports the result. When the "
+             "For SQLite, runs PRAGMA integrity_check on the board DB. When the "
              "failure consists only of index-scoped errors ('wrong # of entries in index <name>' / "
              "'row N missing from index <name>'), the corrupt file is quarantined to a "
              ".corrupt.<hash>.bak sibling first and the damaged indexes are rebuilt with REINDEX — "
              "the same narrow auto-repair the connect-time guard applies. Any other corruption "
              "class is reported and left untouched (fail-closed). Exits 0 when the DB is healthy "
-             "or was repaired, non-zero when it is still corrupt."
+             "or was repaired, non-zero when it is still corrupt. For PostgreSQL, verifies that "
+             "the board schema and schema version are reachable; server repair remains an "
+             "operator responsibility."
          )),
 ]
 

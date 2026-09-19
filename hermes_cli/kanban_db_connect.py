@@ -603,6 +603,7 @@ class RepairResult:
     post_repair_messages: list[str] = field(default_factory=list)
     backup_path: Optional[Path] = None
     reindexed: list[str] = field(default_factory=list)
+    backend: str = "sqlite"
 
 
 def repair_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> RepairResult:
@@ -617,12 +618,16 @@ def repair_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) ->
     if str(path) != ":memory:":
         from hermes_cli import kanban_db_postgres as _pg
         if _pg.uses_postgres():
-            with contextlib.closing(_pg.connect(board=board, read_only=True)) as conn:
-                conn.execute("SELECT version FROM kanban_schema_version").fetchone()
+            try:
+                with contextlib.closing(_pg.connect(board=board, read_only=True)) as conn:
+                    conn.execute("SELECT version FROM kanban_schema_version").fetchone()
+            except PermissionError:
+                return RepairResult(status="missing", db_path=path, backend="postgres")
             return RepairResult(
                 status="ok",
                 db_path=path,
                 messages=[f"PostgreSQL schema {_pg.board_schema(board)} is reachable"],
+                backend="postgres",
             )
     try:
         resolved = path.resolve()

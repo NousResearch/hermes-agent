@@ -104,10 +104,10 @@ def admit_api_turn(adapter, **kwargs):
     output_authorizer = kwargs.get('_room_output_authorizer')
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
     if settings.get('room_dispatch') is not None:
-        # Refuse unsupported targets before creating any hidden conversation.
-        check_api_settings(adapter, settings)
-        if not kwargs.get('_room_grant_token'):
-            raise RuntimeStoreError('permission_denied')
+        from gateway.hosted_room_peer import HostedMemberDispatch
+        from gateway.session_api_replay import authenticate_room_retry
+        authenticate_room_retry(adapter, authority, sid,
+            HostedMemberDispatch.from_mapping(settings['room_dispatch']), kwargs.get('_room_grant_token'))
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):
@@ -135,6 +135,17 @@ def admit_api_turn(adapter, **kwargs):
             raise RuntimeStoreError('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
+    if settings.get('room_dispatch') is not None:
+        from gateway.session_api_replay import replay_room_admission
+        row = replay_room_admission(authority, session_id=sid, request_id=request_id, payload=payload)
+        if row is not None:
+            from gateway.session_contract import SessionRef
+            return authority, SessionRef(authority.profile_id, sid), row
+        # NEW-only: keep current catalog/policy and the final dual-store writer
+        # fences. Route preparation will enter here before bind/capture.
+        check_api_settings(adapter, settings)
+        from gateway.session_api import prospective_room_session
+        prospective_room_session(authority, HostedMemberDispatch.from_mapping(settings['room_dispatch']))
     from hermes_state_terminal import retry_terminal_admission
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)

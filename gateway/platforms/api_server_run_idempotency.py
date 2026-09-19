@@ -32,7 +32,8 @@ _MIGRATIONS = {
     "owner_pid": "INTEGER NOT NULL DEFAULT 0",
     "owner_started": "INTEGER NOT NULL DEFAULT 0",
     "retention_until": "REAL NOT NULL DEFAULT 0",
-    "acknowledged_at": "REAL"}
+    "acknowledged_at": "REAL",
+    "room_policy_json": "TEXT"}
 
 
 def _encode_status(status: Dict[str, Any]) -> str:
@@ -53,7 +54,9 @@ def _outcome(row, fingerprint):
 class RunIdempotencyStore:
     """Durable, tenant-scoped reservations for ``POST /v1/runs``: a unique ``(scope, key)`` row
     inserted inside ``BEGIN IMMEDIATE`` so separate workers cannot both admit one request. Only
-    fingerprints and public run status are stored — never request bodies or credentials."""
+    fingerprints, public run status and RoomLink's admitted policy are stored —
+    never request bodies or credentials. The policy reconstructs old normalized
+    fingerprint bytes after canonical payload retirement, not NEW authority."""
 
     RETENTION_SECONDS = 24 * 60 * 60
     ACKNOWLEDGED_RETENTION_SECONDS = 24 * 60 * 60
@@ -131,7 +134,8 @@ class RunIdempotencyStore:
                 raise
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
-                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
+                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
+                room_policy: dict | None = None):
         """Atomically reserve a key; return ``(outcome, stored_record)``."""
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
@@ -147,12 +151,28 @@ class RunIdempotencyStore:
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
-                "owner_pid,owner_started,retention_until,created_at,updated_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "owner_pid,owner_started,retention_until,created_at,updated_at,room_policy_json"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
-                 retention_until, now, now))
+                 retention_until, now, now,
+                 _encode_status(room_policy) if room_policy is not None else None))
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
+
+    def replay_record(self, scope: str, key: str):
+        """Read an authenticated identity without pruning or refreshing it.
+
+        The caller must still compare the original full fingerprint. A missing
+        legacy policy is not permission to normalize using today's catalog.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                _SELECT_BY_KEY.replace('fingerprint,', 'room_policy_json, fingerprint,'),
+                (scope, key)).fetchone()
+        if row is None:
+            return None
+        return dict(_record(*row[2:]), fingerprint=row[1],
+                    room_policy=json.loads(row[0]) if row[0] is not None else None)
 
     def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0):
         """Return ``missing``, ``reused`` or ``conflict`` without reserving."""

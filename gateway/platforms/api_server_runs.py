@@ -353,6 +353,13 @@ def _accepted_response(run_id: str, status: str, gateway_session_key, *, replaye
         {"run_id": run_id, "status": status, "replayed": replayed}, status=202, headers=headers)
 
 
+def _run_fingerprint(body, gateway_session_key):
+    return hashlib.sha256(json.dumps(
+        {"body": body, "gateway_session_key": gateway_session_key or ""},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+
+
 def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> "web.Response":
     """409 for a fingerprint conflict, else a 202 replay of the already-admitted run."""
     if outcome == "conflict":
@@ -483,10 +490,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     idempotency_scope = idempotency_fingerprint = ""
     if idempotency_key:
         idempotency_scope = self._run_idempotency_scope(request)
-        idempotency_fingerprint = hashlib.sha256(json.dumps(
-            {"body": body, "gateway_session_key": gateway_session_key or ""},
-            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        ).encode()).hexdigest()
+        idempotency_fingerprint = _run_fingerprint(body, gateway_session_key)
     raw_input = body.get("input")
     if not raw_input:
         return _json_error(_openai_error, "Missing 'input' field", status=400)
@@ -506,6 +510,14 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         return history_err
     previous_response_id = body.get("previous_response_id")
     session_id = body.get("session_id") or stored_session_id
+    # Ordinary API retries also observe the old receipt before dynamic route
+    # selection. Parsing and the exact normalized-body hash are unchanged.
+    if idempotency_key:
+        outcome, record = self._run_idempotency_store.lookup(
+            idempotency_scope, idempotency_key, idempotency_fingerprint,
+            retention_until=_room_retention_until(request))
+        if outcome == "conflict" or (outcome == "reused" and record is not None):
+            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
     route = self._resolve_route(body.get("model"))
     agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)
     selection_error = self._request_route_conflict_error(
@@ -514,14 +526,17 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         requested_provider=agent_overrides.get("requested_provider"), route=route)
     if selection_error:
         return _json_error(_openai_error, selection_error, status=400)
-    # A lost-acceptance replay must resolve even while the original run holds the last
-    # concurrency slot; this read reserves nothing (the atomic reserve below closes the race).
-    if idempotency_key:
-        outcome, record = self._run_idempotency_store.lookup(
-            idempotency_scope, idempotency_key, idempotency_fingerprint,
-            retention_until=_room_retention_until(request))
-        if outcome == "conflict" or (outcome == "reused" and record is not None):
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+    if room_dispatch is not None:
+        # NEW-only seam: selected-route preflight belongs before this first
+        # mutation (phase2B), never in immutable normalization or replay.
+        from gateway.hosted_room_peer import HostedMemberDispatch
+        from gateway.platforms.api_server_room_dispatch import _room_dispatch_error
+        try:
+            bound = await self._ensure_hosted_member_session(HostedMemberDispatch.from_mapping(room_dispatch))
+            if bound != session_id:
+                raise ValueError('room session identity conflicts with existing data')
+        except Exception as exc:
+            return _room_dispatch_error(exc, _openai_error=_openai_error)
     # Enforce concurrency only for a genuinely new run.
     limited = self._concurrency_limited_response()
     if limited is not None:
@@ -560,7 +575,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
             owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request))
+            retention_until=_room_retention_until(request), room_policy=room_execution_policy)
         if outcome != "created":
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,

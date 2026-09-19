@@ -1,7 +1,6 @@
 """RoomLink dispatch validation and hidden member-session ownership."""
 
 import asyncio
-import hashlib
 import hmac
 import time
 from typing import Any
@@ -22,10 +21,8 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     if db is None:
         raise RuntimeError("session database unavailable")
     title = f"Group: {dispatch.room_id}"
-    seed = (
-        f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
-        f"{dispatch.member_id}\0{dispatch.target_profile}")
-    session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+    from gateway.session_api import hosted_session_id
+    session_id = hosted_session_id(dispatch)
     from gateway.session_authorities import active_authority
     authority = active_authority(self.gateway_runner)
     if authority is not None:
@@ -88,6 +85,19 @@ async def _normalize_room_dispatch(
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:
             raise ValueError("room dispatch target does not match this profile")
+        if body.get("input") not in {None, dispatch.prompt}:
+            raise ValueError("room dispatch input does not match its prompt")
+        expected_key = f"room:{dispatch.task_id}:{dispatch.execution_generation}"
+        if request.headers.get("Idempotency-Key", "").strip() != expected_key:
+            raise ValueError("room dispatch idempotency key is invalid")
+        # Replay is observation under current signed read authority, not NEW
+        # authorization. Never consult the catalog, bind, or capture first.
+        self._room_grant_claims(request, permission="dispatch")
+        verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="status")
+        from gateway.platforms.api_server_room_replay import room_replay, normalized_room_body
+        replay = room_replay(self, request, dispatch, _openai_error=_openai_error)
+        if replay is not None:
+            return body, replay
         _, catalog_map = _local_room_catalog(self, active_profile, local_install)
         catalog = GatewayRoomCatalog.from_mapping(catalog_map)
         if not catalog.text:
@@ -99,23 +109,15 @@ async def _normalize_room_dispatch(
             raise ValueError("room execution policy changed")
         if not hmac.compare_digest(catalog.catalog_digest, dispatch.capability_digest):
             raise ValueError("room capability catalog changed")
-        if body.get("input") not in {None, dispatch.prompt}:
-            raise ValueError("room dispatch input does not match its prompt")
-        expected_key = f"room:{dispatch.task_id}:{dispatch.execution_generation}"
-        if request.headers.get("Idempotency-Key", "").strip() != expected_key:
-            raise ValueError("room dispatch idempotency key is invalid")
         from gateway.platforms.api_server_room_grants import _canonical_room_peer
+        from gateway.session_api import hosted_session_id, prospective_room_session
+        session_id = hosted_session_id(dispatch)
         if _canonical_room_peer(self, active_profile):
             from gateway.session_peer_target import root_target
             owner, _ = root_target(self, active_profile)
+            session_id = prospective_room_session(owner, dispatch)
             # Transport-private evidence, never normalized/persisted caller JSON.
             request._hermes_canonical_room_owner = owner
-        session_id = await self._ensure_hosted_member_session(dispatch)
-        return {
-            "input": dispatch.prompt,
-            "session_id": session_id,
-            "hosted_room_dispatch": dispatch.as_mapping(),
-            "_room_execution_policy": policy.as_mapping(),
-        }, None
+        return normalized_room_body(dispatch, session_id, policy.as_mapping()), None
     except Exception as exc:
         return body, _room_dispatch_error(exc, _openai_error=_openai_error)

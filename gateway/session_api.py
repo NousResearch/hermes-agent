@@ -18,6 +18,42 @@ def declared_api_session(db, key):
     return row[0] if row else None
 
 
+def hosted_session_id(dispatch):
+    identity = (dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile)
+    return 'room_' + hashlib.sha256('\0'.join(identity).encode()).hexdigest()[:32]
+
+
+def prospective_room_session(authority, dispatch):
+    """Derive the canonical identity and reject conflicts without binding it."""
+    sid = hosted_session_id(dispatch)
+    title = 'Group: ' + dispatch.room_id
+    source = SessionSource(platform=Platform.API_SERVER, chat_id=sid, user_id='api', chat_type='dm')
+    route = authority.runner.session_store._generate_session_key(source)
+    with authority.db._read_ctx() as conn:
+        _epoch(conn, authority.epoch)
+        row = conn.execute('SELECT source,title,session_key FROM sessions WHERE id=?', (sid,)).fetchone()
+        if row is not None and (row['source'] != 'bot_room' or row['title'] != title
+                                or row['session_key'] not in (None, '', route)):
+            raise RuntimeStoreError('admission_conflict')
+        if conn.execute('SELECT 1 FROM sessions WHERE title=? AND id!=?', (title, sid)).fetchone():
+            raise RuntimeStoreError('admission_conflict')
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (_BINDING_PREFIX + sid,)).fetchone()
+        if saved is not None:
+            binding = json.loads(saved[0])
+            identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
+            if (binding.get('profile_id') != authority.profile_id or binding.get('session_id') != sid
+                    or binding.get('storage_source') != 'bot_room' or binding.get('room_identity') != identity
+                    or binding.get('route') != route):
+                raise RuntimeStoreError('admission_conflict')
+        routing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?", (route,)).fetchone()
+        if routing is not None and json.loads(routing[0])['session_id'] != sid:
+            raise RuntimeStoreError('admission_conflict')
+    live = authority.sessions.get(sid)
+    if live is not None and live.source != source:
+        raise RuntimeStoreError('admission_conflict')
+    return sid
+
+
 def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None):
     """Only the authenticated API edge may reserve an API source; never public RPC."""
     authority._require_admission_open()
@@ -28,7 +64,7 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
         from gateway.hosted_room_peer import HostedMemberDispatch
         dispatch = HostedMemberDispatch.from_mapping(hosted_dispatch)
         room_identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
-        expected = 'room_' + hashlib.sha256('\0'.join(room_identity).encode()).hexdigest()[:32]
+        expected = hosted_session_id(dispatch)
         if expected != session_id:
             raise RuntimeStoreError('admission_conflict')
         storage_source, title = 'bot_room', f'Group: {dispatch.room_id}'

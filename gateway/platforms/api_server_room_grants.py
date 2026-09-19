@@ -197,6 +197,12 @@ def _decode_request_grant(self, request: "web.Request", *, permission: str) -> d
 
 def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
     claims = _decode_request_grant(self, request, permission=permission)
+    _require_current_room_grant(self, claims)
+    return claims
+
+
+def _require_current_room_grant(self, claims):
+    """Current read authority, shared by HTTP and trusted direct admission."""
     from gateway import hosted_rooms
     paths = (hosted_rooms.default_db_path(),)
     if _canonical_room_peer(self, claims['target_profile']):
@@ -207,7 +213,6 @@ def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict
             raise RoomGrantReauthorizationRequired("room grant is revoked")
         if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims):
             raise RoomGrantReauthorizationRequired("room grant is no longer current")
-    return claims
 
 
 async def _handle_room_member_invitation(

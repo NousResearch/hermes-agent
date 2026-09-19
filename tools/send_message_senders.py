@@ -156,9 +156,10 @@ def _adapter_media_method(ext, voice, force_document=False):
 
 
 async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **kwargs):
-    """Bot API media method by extension: photo (unless forced document), video, voice note,
-    sendAudio (MP3/M4A only), else document."""
-    kind = next((k for exts, k in ((() if force_document else _IMAGE_EXTS, "photo"), (_VIDEO_EXTS, "video"),
+    """Bot API media method by extension: animation for GIF, photo (unless forced document),
+    video, voice note, sendAudio (MP3/M4A only), else document."""
+    kind = next((k for exts, k in ((() if force_document else (".gif",), "animation"),
+                                    (() if force_document else _IMAGE_EXTS, "photo"), (_VIDEO_EXTS, "video"),
                                     (_VOICE_EXTS if is_voice else (), "voice"), (_TELEGRAM_SEND_AUDIO_EXTS, "audio"))
                  if ext in exts), "document")
     return await getattr(bot, f"send_{kind}")(chat_id=chat_id, **{kind: f}, **kwargs)

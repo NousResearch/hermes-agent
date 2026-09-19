@@ -166,6 +166,24 @@ def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     return is_truthy_value(_cfg().get("inherit_mcp_toolsets"), default=True)
 
+def _get_provider_toolsets(provider: str) -> Optional[List[str]]:
+    """Toolsets ``delegation.provider_toolsets`` grants a provider, or None when it grants nothing.
+
+    Capability across a provider boundary is an operator trust decision, never an inference: there is no
+    notion of a "sensitive" toolset in code, only the literal names an operator wrote down. None (no entry
+    at all) and [] (an empty entry) are both "this provider receives nothing" — they differ only in the
+    error text, so a missing config reads as an omission rather than a deliberate denial.
+    """
+    table = _cfg().get("provider_toolsets")
+    if not isinstance(table, dict):
+        return None
+    wanted = str(provider).strip().casefold()
+    for name, allowed in table.items():
+        if str(name).strip().casefold() == wanted:
+            return [str(t) for t in allowed] if isinstance(allowed, list) else []
+    return None
+
+
 def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
@@ -438,19 +456,21 @@ def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
-    routing_cfg: Optional[Dict[str, Any]] = None,
+    routing_cfg: Optional[Dict[str, Any]] = None, override_reasoning_effort: Any = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
-    or is Nous Portal (dual-wire); a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
+    or is multi-wire (Nous Portal, OpenCode) — there a model pin alone changes the wire; a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
     ``override_provider`` clears the parent's ACP transport, fallback chain and OpenRouter routing filters so the
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or _inherit_parent_base_url(parent_agent, parent_agent.base_url)
+    from hermes_cli.models import opencode_model_api_mode, opencode_provider_family
     # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
-    # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
-    # same-provider inheritance would pin the child on the wrong wire — re-derive.
+    # otherwise). Nous Portal and OpenCode are dual-wire within one provider (anthropic/* → Messages, else
+    # chat_completions; OpenCode routes on the model prefix), so same-provider inheritance would pin the child on
+    # the wrong wire — re-derive.
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a different provider than
     # the parent — each provider has its own API surface (e.g. MiniMax uses anthropic_messages, DeepSeek
     # uses chat_completions). Inheriting the parent's mode causes 404 errors when the child routes to the
@@ -463,6 +483,12 @@ def _resolve_child_runtime(
     elif (effective_provider or "").strip().lower() in _NOUS_PROVIDERS:
         from hermes_cli.providers import nous_api_mode
         effective_api_mode = nous_api_mode(effective_model)
+    elif model and opencode_provider_family(effective_provider):
+        # Same multi-wire reason as Nous above: OpenCode picks the wire from the MODEL prefix, so a child
+        # that keeps the parent's provider but pins a different model would inherit the parent model's wire
+        # and 404. Gated on an actual model pin, so a child that pinned nothing still inherits the parent's
+        # api_mode verbatim — including an api_mode the operator set explicitly against the prefix table.
+        effective_api_mode = opencode_model_api_mode(effective_provider, effective_model)
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
@@ -491,16 +517,19 @@ def _resolve_child_runtime(
         # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
         effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
-    # YAML ``false`` must disable thinking, not coerce to "" and inherit.
+    # Reasoning: per-task override_reasoning_effort > delegation.reasoning_effort > parent. Keep the raw
+    # value — a YAML/JSON ``false`` must disable thinking, not coerce to "" and inherit.
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
-        delegation_effort = delegation_cfg.get("reasoning_effort")
+        task_pinned = override_reasoning_effort or override_reasoning_effort is False
+        delegation_effort = override_reasoning_effort if task_pinned else delegation_cfg.get("reasoning_effort")
         if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is None:
-                logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
+                logger.warning("Unknown %s '%s', inheriting parent level",
+                               "per-task reasoning_effort" if task_pinned else "delegation.reasoning_effort",
+                               delegation_effort)
             else:
                 child_reasoning = parsed
     except Exception as exc:

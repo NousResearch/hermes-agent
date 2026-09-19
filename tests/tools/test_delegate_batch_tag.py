@@ -102,6 +102,9 @@ def test_batch_completion_lines_are_attributable_across_two_batches(monkeypatch,
     lines = []
     parent = types.SimpleNamespace(
         session_id="root", model="m", tool_progress_callback=None, _delegate_spinner=None,
+        # Same provider the stubbed resolver returns: this test is about batch tags, not routing, and a
+        # child crossing a provider boundary needs a delegation.provider_toolsets grant it never had.
+        provider="openrouter",
         _safe_print=lambda line: lines.append(line),
     )
     monkeypatch.setattr(

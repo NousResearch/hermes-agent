@@ -1525,7 +1525,12 @@ class GatewayTurnMixin:
 
     def _hmwa_prepend_reasoning(self, agent_result, response, source, _intentional_silence):
         """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
-        requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
+        requires an explicit per-platform opt-in (scratch text, not final-answer content).
+
+        Returns ``(display_text, spoken_text_override)``.  The override carries
+        explicit provenance for auto-TTS instead of asking a shared normalizer
+        to infer which visible text the gateway inserted.
+        """
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
             _show_reasoning_effective = _resolve_gateway_display_bool(
@@ -1539,7 +1544,7 @@ class GatewayTurnMixin:
             )
         last_reasoning = agent_result.get("last_reasoning")
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
-            return response
+            return response, None
         from gateway.stream_consumer_fences import escape_code_fences_for_display
         # Collapse long reasoning to keep messages readable
         lines = last_reasoning.strip().splitlines()
@@ -1559,10 +1564,10 @@ class GatewayTurnMixin:
         if _quote:
             header, prefix, empty = _quote
             _quoted = "\n".join(f"{prefix}{ln}" if ln else empty for ln in display_reasoning.splitlines())
-            return f"{header}\n{_quoted}\n\n{response}"
+            return f"{header}\n{_quoted}\n\n{response}", response
         # Escape ``` inside reasoning so inner fences don't break the outer code block.
         display_reasoning = escape_code_fences_for_display(display_reasoning)
-        return f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+        return f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}", response
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
@@ -1616,6 +1621,19 @@ class GatewayTurnMixin:
         """Make failed-turn delivery explicit without replacing the provider-specific guidance."""
         response = str(response or "").strip()
         return f"{response}\n\n{notice}" if response else notice
+
+    @staticmethod
+    def _hmwa_carry_spoken_response_suffix(spoken_response, response_before, response_after):
+        """Carry gateway-owned post-processing into an explicit spoken payload."""
+        if spoken_response is None or response_after == response_before:
+            return spoken_response
+        before = str(response_before or "")
+        after = str(response_after or "")
+        if after.startswith(before):
+            return f"{spoken_response}{after[len(before):]}"
+        # A future post-processor may replace instead of append. Speaking the
+        # final visible response is safer than silently dropping its warning.
+        return after
 
     def _hmwa_failed_turn_notice(self, agent_result):
         """Choose retry guidance without assuming completed tool effects can be repeated safely."""
@@ -1845,6 +1863,7 @@ class GatewayTurnMixin:
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,
         agent_result, agent_messages, response, _footer_line, _intentional_silence,
+        _spoken_response_override=None,
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
         Returns the text for the adapter to send, or ``None`` when already delivered."""
@@ -1855,15 +1874,24 @@ class GatewayTurnMixin:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             response = ""
 
+        spoken_response = (
+            response if _spoken_response_override is None else _spoken_response_override
+        )
+        if _spoken_response_override is not None:
+            # BasePlatformAdapter owns the non-streaming voice-input fallback,
+            # so carry the same explicit payload across the handler boundary.
+            event._hermes_spoken_response = spoken_response
+
         adapter = self._adapter_for_source(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
         )
         if not _streaming_tts_done and self._should_send_voice_reply(
-            event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
+            event, spoken_response, agent_messages,
+            already_sent=bool(agent_result.get("already_sent")),
         ):
-            await self._send_voice_reply(event, response)
+            await self._send_voice_reply(event, spoken_response)
 
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
@@ -2148,7 +2176,9 @@ class GatewayTurnMixin:
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
             )
-            response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
+            response, _spoken_response_override = self._hmwa_prepend_reasoning(
+                agent_result, response, source, _intentional_silence
+            )
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
@@ -2159,9 +2189,17 @@ class GatewayTurnMixin:
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
             if agent_failed_early and not is_context_overflow_failure:
+                _response_before_failed_notice = response
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
+                _spoken_response_override = self._hmwa_carry_spoken_response_suffix(
+                    _spoken_response_override, _response_before_failed_notice, response
+                )
+            _response_before_compression_reset = response
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
+            )
+            _spoken_response_override = self._hmwa_carry_spoken_response_suffix(
+                _spoken_response_override, _response_before_compression_reset, response
             )
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
@@ -2173,6 +2211,7 @@ class GatewayTurnMixin:
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
+                _spoken_response_override,
             )
 
         except Exception as e:

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from hermes_cli.kanban_reserved import reserved_item_signal
 
 _log = logging.getLogger(__name__)
 
@@ -3204,6 +3205,11 @@ def _route_block(
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        signal = reserved_item_signal(reason)
+        if signal:
+            payload["limit"] = BLOCK_RECURRENCE_LIMIT
+            payload["reserved_signal"] = signal
+            return "blocked", "block_loop_exempted", set_sql, (kind, recurrences), payload
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload

@@ -469,6 +469,13 @@ _server_breaker_opened_at: Dict[Any, float] = {}
 # True while every strike in the current streak was the tool's own error payload (server reachable,
 # call rejected); picks the open-breaker wording, since "unreachable" was false for that case (#11113).
 _server_errors_all_application: Dict[Any, bool] = {}
+# While the breaker is open on application strikes only, every tool that struck in the current
+# streak. The open state then short-circuits THOSE tools, not the whole server: the transport is
+# healthy, so the model's recovery route via the server's other tools must stay open (#47851);
+# #10447's protection against retry storms on the failing calls themselves is preserved. A set, not
+# the most recent striker: scoping to one tool lets a model alternating between two broken tools
+# un-block each with the other's strikes; every struck tool stays blocked instead.
+_server_breaker_application_tool: Dict[Any, set] = {}
 _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 
 # Trust-tier gating (``trust: full | untrusted``): on an untrusted server every write-capable
@@ -485,15 +492,22 @@ _tool_read_only_hints: Dict[Any, Dict[str, bool]] = {}
 _TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 
 
-def _bump_server_error(server_name: str, *, application: bool = False) -> None:
+def _bump_server_error(server_name: str, *, application: bool = False, tool_name: Optional[str] = None) -> None:
     """Count a failure; at the threshold (re)stamp the breaker-open time. Keyed by the calling
     scope's connection so one profile's failing server never opens another profile's breaker.
-    *application*: the call completed and the payload was an error (transport is fine)."""
+    *application*: the call completed and the payload was an error (transport is fine); *tool_name*
+    (application strikes only) scopes the resulting open state to the rejected tools (#47851) —
+    collected across the streak, since only tools that actually struck deserve blocking."""
     from tools.mcp_tool_scope import _resolve_server_key
     key = _resolve_server_key(server_name)
     n = _server_error_counts.get(key, 0) + 1
     _server_error_counts[key] = n
-    _server_errors_all_application[key] = application and (n == 1 or _server_errors_all_application.get(key, False))
+    all_application = application and (n == 1 or _server_errors_all_application.get(key, False))
+    _server_errors_all_application[key] = all_application
+    if not all_application:
+        _server_breaker_application_tool.pop(key, None)
+    if application and tool_name:
+        _server_breaker_application_tool.setdefault(key, set()).add(tool_name)
     if n >= _CIRCUIT_BREAKER_THRESHOLD:
         _server_breaker_opened_at[key] = time.monotonic()
 
@@ -505,6 +519,7 @@ def _reset_server_error(server_name: str) -> None:
     _server_error_counts[key] = 0
     _server_breaker_opened_at.pop(key, None)
     _server_errors_all_application.pop(key, None)
+    _server_breaker_application_tool.pop(key, None)
 
 
 # Servers opted into parallel tool calls, keyed by the consuming profile's own key (``foo-bar``/

@@ -1,5 +1,6 @@
 """Review regressions: owned evidence loss, fair repair, exact generations."""
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
@@ -21,12 +22,13 @@ def damage_terminal(db, row, *, unknown=False):
 
 
 @pytest.mark.parametrize('kind', ['scoped-terminal', 'unknown-terminal', 'scoped-live'])
+@pytest.mark.parametrize('first_opener', ['session', 'raw'])
 @pytest.mark.parametrize('lost', [
     'TABLE logical_attempt_dirty', 'TABLE logical_attempt_coverage',
     'INDEX logical_attempt_dirty_scope', 'INDEX logical_attempt_exact',
     'TRIGGER logical_attempt_terminal_update', 'TRIGGER logical_attempt_live_update',
 ])
-def test_owned_evidence_loss_reopen_requires_bounded_reinventory(tmp_path, monkeypatch, kind, lost):
+def test_owned_evidence_loss_reopen_requires_bounded_reinventory(tmp_path, monkeypatch, kind, first_opener, lost):
     path = tmp_path / 'state.db'
     with SessionDB(path) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
@@ -45,6 +47,15 @@ def test_owned_evidence_loss_reopen_requires_bounded_reinventory(tmp_path, monke
         with pytest.raises(rt.RuntimeStoreError, match='storage_unavailable'):
             lookup(db, sid='old-member')
         db._execute_write(lambda c: c.execute('DROP ' + lost))
+    if first_opener == 'raw':
+        from hermes_state_schema import reconcile_state_schema
+        # Async delegation opens through this shared initializer with tuple rows.
+        # It must invalidate before repairing an owned guard/index, not conceal
+        # that repair from the later SessionDB opener.
+        with sqlite3.connect(path) as conn:
+            assert conn.row_factory is None
+            reconcile_state_schema(conn)
+            assert conn.execute('SELECT count(*) FROM logical_attempt_coverage').fetchone()[0] == 0
     with SessionDB(path) as db:
         with pytest.raises(rt.RuntimeStoreError, match='storage_unavailable'):
             lookup(db, sid='unrelated')

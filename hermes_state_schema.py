@@ -1291,6 +1291,8 @@ def reconcile_state_schema(conn: sqlite3.Connection) -> None:
     reconciliation, so out-of-band openers can never grow a second
     hand-maintained shape for the same durable tables.
     """
+    from hermes_state_logical_attempts import invalidate_before_schema
+    invalidate_before_schema(conn)
     conn.executescript(SCHEMA_SQL)
     # _reconcile_columns only touches the staticmethod _parse_schema_columns,
     # so a bare instance works; reusing it keeps one reconciliation

@@ -1,0 +1,16 @@
+name: iteration-budget-meter
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: f8244d3bb0920779856fc826ab300b1abd12e949
+subdir: plugins/iteration-budget-meter
+description: "Status-bar chip for the focused session per-turn iteration usage (N/60), with a hover tooltip and a click popover of per-request stats."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/plugins/iteration-budget-meter
+version: "1.2.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

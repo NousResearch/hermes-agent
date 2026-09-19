@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -27,6 +28,9 @@ from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
+_DEFAULT_JOIN_TIMEOUT_SECONDS = 1800.0
+_MIN_JOIN_TIMEOUT_SECONDS = 30.0
+_MAX_JOIN_TIMEOUT_SECONDS = 86400.0
 _ROOM_RETENTION_REQUEST_KEY = (
     RequestKey("hermes.room_run_retention_until", float) if RequestKey is not None
     else "hermes.room_run_retention_until")
@@ -371,6 +375,8 @@ class _RunLaunch:
     session_id: str
     gateway_session_key: Optional[str]
     declared_selected: bool
+    delegation_delivery: str
+    delegation_join_timeout_seconds: Optional[float]
     user_message: str
     conversation_history: List[Dict[str, str]]
     # #98619: only continuation paths that reload session history may grant wake authority —
@@ -524,6 +530,31 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             {"body": body, "gateway_session_key": gateway_session_key or ""},
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         ).encode()).hexdigest()
+    delegation_delivery = body.get("delegation_delivery", "background")
+    if not isinstance(delegation_delivery, str) or delegation_delivery not in {"background", "join"}:
+        return _json_error(
+            _openai_error, "delegation_delivery must be 'background' or 'join'",
+            code="invalid_delegation_delivery", status=400)
+    raw_join_timeout = body.get("delegation_join_timeout_seconds")
+    delegation_join_timeout_seconds: Optional[float] = None
+    if delegation_delivery == "join":
+        try:
+            delegation_join_timeout_seconds = (
+                _DEFAULT_JOIN_TIMEOUT_SECONDS if raw_join_timeout is None else float(raw_join_timeout))
+        except (TypeError, ValueError):
+            delegation_join_timeout_seconds = None
+        if (delegation_join_timeout_seconds is None
+                or not math.isfinite(delegation_join_timeout_seconds)
+                or not _MIN_JOIN_TIMEOUT_SECONDS <= delegation_join_timeout_seconds <= _MAX_JOIN_TIMEOUT_SECONDS):
+            return _json_error(
+                _openai_error,
+                f"delegation_join_timeout_seconds must be between {_MIN_JOIN_TIMEOUT_SECONDS:g} and "
+                f"{_MAX_JOIN_TIMEOUT_SECONDS:g}",
+                code="invalid_delegation_join_timeout", status=400)
+    elif raw_join_timeout is not None:
+        return _json_error(
+            _openai_error, "delegation_join_timeout_seconds requires delegation_delivery='join'",
+            code="invalid_delegation_join_timeout", status=400)
     raw_input = body.get("input")
     if not raw_input:
         return _json_error(_openai_error, "Missing 'input' field", status=400)
@@ -593,7 +624,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name),
+        delegation_delivery=delegation_delivery,
+        delegation_join_timeout_seconds=delegation_join_timeout_seconds)
     if idempotency_key:
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
@@ -606,8 +639,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
     launch = _RunLaunch(
-        self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
-        conversation_history, session_history_delivery,
+        self, run_id, q, session_id, gateway_session_key, _declared_selected,
+        delegation_delivery, delegation_join_timeout_seconds, user_message, conversation_history,
+        session_history_delivery,
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
@@ -662,7 +696,8 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 # so it stays default-denied until a merge contract exists for that chain;
                 # likewise a caller-supplied conversation_history is authoritative for the
                 # turn and never reads the delivery row, so it is denied the same way.
-                session_history_delivery="1" if run.session_history_delivery else "")
+                session_history_delivery="1" if run.session_history_delivery else "",
+                delegation_delivery=run.delegation_delivery)
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
             if run.agent_kwargs["room_dispatch"] is not None:
@@ -755,8 +790,34 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-        result, usage = await loop.run_in_executor(
-            None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+        run_sync = lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server)
+        executor = None
+        try:
+            if run.delegation_delivery == "join":
+                # Joined work is finite by contract. Use a daemon executor so an abandoned blocking
+                # transport can never hold gateway shutdown, and cap the entire parent+descendant turn.
+                from tools.daemon_pool import DaemonThreadPoolExecutor
+                executor = DaemonThreadPoolExecutor(max_workers=1)
+                future = loop.run_in_executor(executor, run_sync)
+                result, usage = await asyncio.wait_for(
+                    asyncio.shield(future), timeout=run.delegation_join_timeout_seconds)
+            else:
+                # Preserve the existing unbounded background-delivery behavior for unaware clients.
+                result, usage = await loop.run_in_executor(None, run_sync)
+        except asyncio.TimeoutError:
+            self._stopping_run_ids.add(run_id)
+            with suppress(Exception):
+                _api_server.request_hard_interrupt(agent, "Joined delegation deadline exceeded")
+            _api_server._reap_disconnected_agent_processes(agent, source="api_server_join_timeout")
+            _finish(
+                "failed", error=(
+                    "Joined delegation exceeded its bounded run deadline of "
+                    f"{run.delegation_join_timeout_seconds:g} seconds."),
+                timeout_seconds=run.delegation_join_timeout_seconds)
+            return
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
         if not isinstance(result, dict):
             result = {}
         status, fields = terminal_run_status(result)
@@ -1006,6 +1067,11 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
         # Reap only this run's background processes (epoch-gated inside, so a concurrent
         # run on the same session_id keeps its own); no-op if the run already finished.
         _api_server._reap_disconnected_agent_processes(agent, source="api_server_run_stop")
+    # A joined run owns no detached result delivery. Cancelling its asyncio wrapper terminalizes
+    # immediately; its dedicated daemon executor cannot hold shutdown while cooperative interrupt
+    # recursively unwinds parent and descendants.
+    if status.get("delegation_delivery") == "join" and task is not None and not task.done():
+        task.cancel()
     return web.json_response({"run_id": run_id, "status": "stopping"})
 
 

@@ -230,11 +230,17 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
         return None
 
     try:
-        # Finite sessions cannot route a detached subagent result back to the agent after their turn/process
-        # ends. This includes stateless HTTP requests (#10760) and one-shot Kanban workers (#63169). Fall
-        # back to SYNCHRONOUS execution so the result returns in this same turn instead of handing out a
-        # handle with no durable consumer. Mirrors the pool-at-capacity inline fallback below.
-        from gateway.session_context import async_delivery_supported
+        # A finite API run can explicitly retain delegated children so the
+        # originating parent inspects and integrates their results before it
+        # returns one final response. This policy is request-scoped and does
+        # not depend on caller-chosen session identifiers.
+        from gateway.session_context import async_delivery_supported, delegation_delivery_mode
+        if delegation_delivery_mode() == "join":
+            logger.info(
+                "delegate_task: this finite run owns one verified final — joining delegated work "
+                "synchronously in the originating run."
+            )
+            return None
         if async_delivery_supported():
             return ""
     except Exception:

@@ -56,6 +56,11 @@ _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_U
 # or child-process export: a bound id alone cannot authorize detached delivery.
 _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
 
+# Per-turn delegated-work delivery policy. ``background`` preserves ordinary
+# channel behavior; ``join`` keeps children inside a finite API run so the
+# originating parent can inspect, recover, integrate, and verify before final.
+_SESSION_DELEGATION_DELIVERY = ContextVar("HERMES_SESSION_DELEGATION_DELIVERY", default=_UNSET)
+
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
 _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
@@ -119,7 +124,7 @@ def set_session_vars(
     message_id: str = "", profile: str = "", browser_control_principal: str = "",
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
-    session_history_delivery: str | None = None,
+    session_history_delivery: str | None = None, delegation_delivery: str = "background",
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -140,6 +145,7 @@ def set_session_vars(
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
+    tokens.append(_SESSION_DELEGATION_DELIVERY.set(delegation_delivery))
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
 
@@ -154,6 +160,7 @@ def clear_session_vars(tokens: list) -> None:
         var.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _SESSION_DELEGATION_DELIVERY.set(_UNSET)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -161,12 +168,13 @@ def reset_session_vars() -> None:
     """Reset every session var to ``_UNSET`` ("never bound here") for THIS context.  Call at
     the top of a fresh task *before* it binds: ``create_task`` snapshots the context, so B's
     task inherits A's already-set vars and a subprocess spawned before B binds would read A's
-    identity.  ``_SESSION_ASYNC_DELIVERY`` and ``_SESSION_HISTORY_DELIVERY`` (outside ``_VAR_MAP``)
-    are reset explicitly too."""
+    identity.  ``_SESSION_ASYNC_DELIVERY``, ``_SESSION_HISTORY_DELIVERY``, and
+    ``_SESSION_DELEGATION_DELIVERY`` (outside ``_VAR_MAP``) are reset explicitly too."""
     for var in _VAR_MAP.values():
         var.set(_UNSET)
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _SESSION_DELEGATION_DELIVERY.set(_UNSET)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -222,3 +230,13 @@ def session_history_delivery_supported() -> bool:
 
     Fail closed on omitted bindings; never borrow authority from the environment."""
     return _SESSION_HISTORY_DELIVERY.get() == "1"
+
+
+def delegation_delivery_mode() -> str:
+    """Return the explicit per-turn delegated-work ownership policy.
+
+    Unknown and unbound values preserve the established background behavior.
+    API surfaces validate the wire value before binding it.
+    """
+    value = _SESSION_DELEGATION_DELIVERY.get()
+    return value if value in {"background", "join"} else "background"

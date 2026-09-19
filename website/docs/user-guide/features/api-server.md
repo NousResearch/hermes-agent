@@ -446,6 +446,14 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 
 Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
 
+Delegation keeps its existing detached behavior unless a finite-response client explicitly sends
+`"delegation_delivery": "join"`. Joined runs keep delegated results inside the originating turn and
+apply a mandatory whole-run deadline so a blocked descendant cannot prevent terminal status. The
+default is 1,800 seconds; clients may set `delegation_join_timeout_seconds` from 30 through 86,400.
+Stopping a joined run recursively interrupts its descendants and terminalizes the run without waiting
+for an abandoned blocking transport. Discover the supported modes and timeout range through
+`GET /v1/capabilities`.
+
 For safely retryable creation, send an `Idempotency-Key` header (1–255 visible ASCII characters). Hermes durably reserves the key before starting work. An identical retry returns the original `run_id` with HTTP 202 and `Idempotency-Replayed: true`, including after a gateway restart and after the run has completed, failed, or been cancelled. Reusing the same key with a different JSON payload returns HTTP 409 with code `idempotency_key_conflict`. Keys are isolated by authenticated API profile/credential and retained for 24 hours after their last status update; clients should use unique, unguessable keys and must not reuse them for unrelated operations. Requests without the header retain the legacy behavior and always create a new run.
 
 When `session_id` identifies an existing Hermes session and no explicit

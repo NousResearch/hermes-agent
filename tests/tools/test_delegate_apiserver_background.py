@@ -142,6 +142,26 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
     assert evt["origin_session_id"] == "raw-sid-7"
 
 
+def test_join_delivery_policy_returns_child_before_parent_final(monkeypatch):
+    """An explicit finite-run owner receives the child result inside the parent tool call."""
+    dt = _patch_delegate(monkeypatch)
+    wizard_session = "legacy-human-session-without-client-prefix"
+    monkeypatch.setenv("HERMES_SESSION_ID", wizard_session)
+    set_session_vars(
+        platform="api_server", chat_id=wizard_session, session_key=wizard_session,
+        session_id=wizard_session, async_delivery=False, delegation_delivery="join")
+
+    parsed = json.loads(dt.delegate_task(
+        goal="return evidence to the parent", context="ctx",
+        background=True, parent_agent=_fake_parent()))
+
+    assert parsed.get("status") != "dispatched", parsed
+    assert parsed["results"][0]["status"] == "completed"
+    assert parsed["results"][0]["summary"] == "done: return evidence to the parent"
+    assert "SYNCHRONOUSLY" in parsed["note"]
+    assert process_registry.completion_queue.empty()
+
+
 # ---------------------------------------------------------------------------
 # _current_origin_session_id — the clobber-proof origin capture helper
 # ---------------------------------------------------------------------------

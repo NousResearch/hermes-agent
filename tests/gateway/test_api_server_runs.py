@@ -20,6 +20,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
+from agent.interrupt_control import InterruptControlMixin
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _api_request_profile,
@@ -138,6 +139,48 @@ def _make_slow_agent(**kwargs):
     return mock_agent, ready, interrupted
 
 
+class _InterruptTreeAgent(InterruptControlMixin):
+    """Blocking agent tree that exercises production recursive hard-interrupt propagation."""
+
+    def __init__(self, name: str, children=()):
+        self.name = name
+        self._active_children = list(children)
+        self._active_children_lock = threading.Lock()
+        self._pending_redirect_lock = threading.Lock()
+        self._pending_redirect = None
+        self._pending_steer_lock = threading.Lock()
+        self._pending_steer = None
+        self._tool_worker_threads = set()
+        self._tool_worker_threads_lock = threading.Lock()
+        self._hard_interrupt_requested = threading.Event()
+        self._interrupt_requested = False
+        self._execution_thread_id = None
+        self._interrupt_thread_signal_pending = False
+        self._active_request_abort = None
+        self.api_mode = ""
+        self.quiet_mode = True
+        self.started = threading.Event()
+        self.settled = threading.Event()
+        self._threads = []
+        self.session_prompt_tokens = self.session_completion_tokens = self.session_total_tokens = 0
+
+    def run_conversation(self, **_kwargs):
+        self._threads = [threading.Thread(target=child.run_conversation, daemon=True) for child in self._active_children]
+        for thread in self._threads:
+            thread.start()
+        for child in self._active_children:
+            assert child.started.wait(timeout=5), f"{child.name} did not start"
+        self.started.set()
+        self._hard_interrupt_requested.wait(timeout=10)
+        for thread in self._threads:
+            thread.join(timeout=5)
+        self.settled.set()
+        return {"final_response": "interrupted", "interrupted": True}
+
+    def nodes(self):
+        return [self, *(node for child in self._active_children for node in child.nodes())]
+
+
 @pytest.fixture
 def adapter():
     return _make_adapter()
@@ -205,12 +248,14 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
-    async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
-        """/v1/runs must bind the raw session id as the api_server chat_id
-        (like every other agent-entry route does via _run_agent): the async
-        delegation dispatch reads HERMES_SESSION_CHAT_ID to pick its wake
-        self-post target, and an empty binding forces background delegations
-        on this route back to synchronous execution."""
+    @pytest.mark.parametrize(("delivery_body", "expected_delivery"), [
+        ({}, "background"),
+        ({"delegation_delivery": "join"}, "join"),
+    ])
+    async def test_start_binds_delegation_context(
+        self, adapter, delivery_body, expected_delivery,
+    ):
+        """/v1/runs binds both the wake target and its requested delivery policy."""
         app = _create_runs_app(adapter)
         captured = {}
 
@@ -219,9 +264,11 @@ class TestStartRun:
                 mock_agent = MagicMock()
 
                 def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                    from gateway.session_context import delegation_delivery_mode
                     from tools.async_delegation import _current_origin_session_id
 
                     captured["origin_session_id"] = _current_origin_session_id()
+                    captured["delegation_delivery"] = delegation_delivery_mode()
                     return {"final_response": "done"}
 
                 mock_agent.run_conversation.side_effect = _capture_run
@@ -232,7 +279,7 @@ class TestStartRun:
 
                 resp = await cli.post(
                     "/v1/runs",
-                    json={"input": "hello", "session_id": "runs-raw-sid"},
+                    json={"input": "hello", "session_id": "runs-raw-sid", **delivery_body},
                 )
                 assert resp.status == 202
                 data = await resp.json()
@@ -248,6 +295,82 @@ class TestStartRun:
         assert captured.get("origin_session_id") == "runs-raw-sid", (
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
+        assert captured.get("delegation_delivery") == expected_delivery
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_policy", ["detach-somewhere", None, [], 7])
+    async def test_start_rejects_unknown_delegation_delivery_policy(self, adapter, bad_policy):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs", json={"input": "hello", "delegation_delivery": bad_policy})
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "invalid_delegation_delivery"
+
+    @pytest.mark.asyncio
+    async def test_join_timeout_validation_is_request_scoped(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            background = await cli.post(
+                "/v1/runs", json={"input": "hello", "delegation_join_timeout_seconds": 30})
+            background_body = await background.json()
+            too_short = await cli.post(
+                "/v1/runs", json={
+                    "input": "hello", "delegation_delivery": "join",
+                    "delegation_join_timeout_seconds": 1})
+            too_short_body = await too_short.json()
+
+        assert background.status == 400
+        assert background_body["error"]["code"] == "invalid_delegation_join_timeout"
+        assert too_short.status == 400
+        assert too_short_body["error"]["code"] == "invalid_delegation_join_timeout"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminalizer", ["deadline", "stop"])
+    async def test_joined_run_terminalizes_active_parallel_and_recursive_descendants(
+        self, adapter, monkeypatch, terminalizer,
+    ):
+        import gateway.platforms.api_server_runs as runs
+
+        if terminalizer == "deadline":
+            monkeypatch.setattr(runs, "_MIN_JOIN_TIMEOUT_SECONDS", 0.01)
+        app = _create_runs_app(adapter)
+        grandchild = _InterruptTreeAgent("grandchild")
+        child_a = _InterruptTreeAgent("child-a", [grandchild])
+        child_b = _InterruptTreeAgent("child-b")
+        agent = _InterruptTreeAgent("parent", [child_a, child_b])
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            async with TestClient(TestServer(app)) as cli:
+                body = {"input": "delegate", "delegation_delivery": "join"}
+                if terminalizer == "deadline":
+                    body["delegation_join_timeout_seconds"] = 0.1
+                response = await cli.post("/v1/runs", json=body)
+                run_id = (await response.json())["run_id"]
+                assert await asyncio.to_thread(agent.started.wait, 5), "descendant tree did not start"
+                assert all(node.started.is_set() for node in agent.nodes())
+                if terminalizer == "stop":
+                    stopped = await cli.post(f"/v1/runs/{run_id}/stop")
+                    assert stopped.status == 200
+
+                expected = "failed" if terminalizer == "deadline" else "cancelled"
+                async with asyncio.timeout(5):
+                    while True:
+                        status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                        if status.get("status") == expected:
+                            break
+                        await asyncio.sleep(0.02)
+
+                assert all(await asyncio.gather(*[
+                    asyncio.to_thread(node.settled.wait, 5) for node in agent.nodes()
+                ]))
+                assert all(node._interrupt_requested for node in agent.nodes())
+                assert run_id not in adapter._active_run_tasks
+                if terminalizer == "deadline":
+                    assert status["timeout_seconds"] == 0.1
+                    assert "bounded run deadline" in status["error"]
+
 
     @staticmethod
     async def _wait_completed(cli, run_id: str) -> None:

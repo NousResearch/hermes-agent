@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 
 _attempted: set[str] = set()
 
+# ``memory.provider`` values that are not plugins: the built-in MEMORY.md/USER.md file store.
+# Shared with the pip-deps reader (``hermes_cli.update_cmd_deps``) so both agree that "default"/
+# empty/``builtin``/``none`` need no plugin and must never trip migration or the dep resolver.
+CORE_MEMORY_PROVIDERS = frozenset({"default", "builtin", "none"})
+
 
 def configured_provider(home: Path) -> str:
     """``memory.provider`` of *home*'s effective config, or ``""``."""
@@ -60,7 +65,7 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     update or the agent down with it.
     """
     name = configured_provider(home)
-    if not name or provider_present(name, home):
+    if not name or name in CORE_MEMORY_PROVIDERS or provider_present(name, home):
         return None
     if catalog_source(name) is None:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "

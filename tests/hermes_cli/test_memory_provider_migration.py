@@ -56,3 +56,16 @@ def test_provider_unknown_to_catalog_is_reported_not_installed(home, monkeypatch
     said: list[str] = []
     assert mig.migrate_home(home, install=lambda n: pytest.fail("must not install"), say=said.append) is None
     assert "not in the plugin catalog" in said[0] and "memory.provider" in said[0]
+
+
+@pytest.mark.parametrize("provider", ["default", "builtin", "none"])
+def test_core_memory_providers_never_trip_migration(home, monkeypatch, provider):
+    """The built-in file store is not a plugin: ``default``/``builtin``/``none`` early-return
+    with no install and no warning rather than a dead-end catalog notice (#115113)."""
+    (home / "config.yaml").write_text(f"memory:\n  provider: {provider}\n", encoding="utf-8")
+    monkeypatch.setattr(mig, "catalog_source", lambda name: None)
+    said: list[str] = []
+    assert mig.migrate_home(
+        home, install=lambda n: pytest.fail("must not install"), say=said.append
+    ) is None
+    assert said == []

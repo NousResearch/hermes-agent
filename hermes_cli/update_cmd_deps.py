@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 from hermes_constants import project_venv_dir, venv_python_path
 from hermes_cli._subprocess_compat import bounded_probe_run
+from hermes_cli.memory_provider_migration import CORE_MEMORY_PROVIDERS
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -370,7 +371,7 @@ def _refresh_active_memory_provider_dependencies() -> None:
         provider = str(memory_cfg.get("provider") or "").strip()
 
     # "default"/empty is the built-in file store — no pip deps.
-    if not provider or provider in {"default", "builtin", "none"}:
+    if not provider or provider in CORE_MEMORY_PROVIDERS:
         return
 
     try:

@@ -244,7 +244,7 @@ def assemble_api_request(
     )
     # Usage-anchored override: real prompt_tokens (incl. system + tool schemas) +
     # delta estimate replaces the whole-history heuristic when the anchor is fresh.
-    _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None), route=agent)
     agent._request_pressure_anchored = _anchored_pressure is not None
     if _anchored_pressure is not None:
         request_pressure_tokens = _anchored_pressure

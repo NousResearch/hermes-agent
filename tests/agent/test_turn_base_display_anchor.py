@@ -21,7 +21,7 @@ Covers:
 from types import SimpleNamespace
 
 from agent.model_metadata import estimate_messages_tokens_rough
-from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
+from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor, set_usage_anchor
 
 
 def _msg(role, content, **extra):
@@ -142,6 +142,8 @@ class TestContextBreakdownPrefersTurnBaseAnchor:
                 context_length=1_000_000, last_prompt_tokens=900_000
             ),
         )
+        set_usage_anchor(agent, turn_base, turn_base=True)
+        set_usage_anchor(agent, last_anchor)
         monkeypatch.setattr(
             "agent.system_prompt.build_system_prompt_parts",
             lambda a: {"stable": "sys", "context": "", "volatile": ""},
@@ -165,6 +167,8 @@ class TestContextBreakdownPrefersTurnBaseAnchor:
                 context_length=1_000_000, last_prompt_tokens=1
             ),
         )
+        set_usage_anchor(agent, last_anchor)
+        agent._turn_base_usage_anchor = None
         monkeypatch.setattr(
             "agent.system_prompt.build_system_prompt_parts",
             lambda a: {"stable": "sys", "context": "", "volatile": ""},
@@ -184,6 +188,7 @@ class TestInvalidationSitesClearTurnBaseAnchor:
         agent = SimpleNamespace(_usage_anchor=None, _turn_base_usage_anchor=None, _session_db=None, session_id=None)
         first = capture_usage_anchor(1_000, 10, messages)
         set_usage_anchor(agent, first, turn_base=True)
+        first = agent._turn_base_usage_anchor
         set_usage_anchor(agent, capture_usage_anchor(2_000, 10, messages))
         assert agent._turn_base_usage_anchor is first
         set_usage_anchor(agent, None)

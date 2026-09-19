@@ -264,8 +264,12 @@ def _provider_with_token_endpoint(tmp_path, oauth_config, token_endpoint, monkey
     return provider
 
 
+def _invalid_client_response(token_endpoint):
+    return _fake_response(400, token_endpoint, b'{"error":"invalid_client"}')
+
+
 def test_invalid_client_at_token_endpoint_poisons(tmp_path, monkeypatch):
-    """400 invalid_client on the token endpoint deletes the dead client.json."""
+    """Repeated 400 invalid_client on the token endpoint deletes the dead client.json."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     d = tmp_path / "mcp-tokens"
     d.mkdir(parents=True)
@@ -274,16 +278,55 @@ def test_invalid_client_at_token_endpoint_poisons(tmp_path, monkeypatch):
     provider = _provider_with_token_endpoint(
         tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
     )
-    resp = _fake_response(
-        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_client"}'
-    )
 
-    asyncio.run(provider._maybe_flag_poisoned_client(resp))
+    for _ in range(provider._INVALID_CLIENT_STRIKES_TO_POISON):
+        asyncio.run(provider._maybe_flag_poisoned_client(
+            _invalid_client_response("https://idp.example.com/oauth/token")))
 
     assert not (d / "srv.client.json").exists()
     assert (d / "srv.client.json.bak").exists()
     assert provider._initialized is False
     assert provider.context.client_info is None
+
+
+def test_single_invalid_client_does_not_poison(tmp_path, monkeypatch):
+    """One invalid_client is what a transient AS hiccup looks like. Poisoning on it re-registers a
+    new client_id while the refresh token stays bound to the old one → every later refresh fails
+    and the gateway demands a browser re-auth it cannot perform. The first strike must only count."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    d = tmp_path / "mcp-tokens"
+    d.mkdir(parents=True)
+    (d / "srv.client.json").write_text('{"client_id": "live"}', encoding="utf-8")
+    (d / "srv.json").write_text('{"access_token": "a", "refresh_token": "r"}', encoding="utf-8")
+    provider = _provider_with_token_endpoint(
+        tmp_path, {}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+
+    asyncio.run(provider._maybe_flag_poisoned_client(
+        _invalid_client_response("https://idp.example.com/oauth/token")))
+
+    assert (d / "srv.client.json").exists()
+    assert (d / "srv.json").exists()
+    assert provider._initialized is True
+    assert provider._hermes_invalid_client_strikes == 1
+
+
+def test_token_endpoint_success_resets_invalid_client_strikes(tmp_path, monkeypatch):
+    """A 2xx from the token endpoint proves the client is alive; earlier strikes must not accumulate
+    across hours of healthy refreshes and poison on the next unrelated blip."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    d = tmp_path / "mcp-tokens"
+    d.mkdir(parents=True)
+    (d / "srv.client.json").write_text('{"client_id": "live"}', encoding="utf-8")
+    token_ep = "https://idp.example.com/oauth/token"
+    provider = _provider_with_token_endpoint(tmp_path, {}, token_ep, monkeypatch)
+
+    asyncio.run(provider._maybe_flag_poisoned_client(_invalid_client_response(token_ep)))
+    asyncio.run(provider._maybe_flag_poisoned_client(_fake_response(200, token_ep, b'{"access_token":"x"}')))
+    asyncio.run(provider._maybe_flag_poisoned_client(_invalid_client_response(token_ep)))
+
+    assert (d / "srv.client.json").exists()
+    assert provider._hermes_invalid_client_strikes == 1
 
 
 def test_invalid_client_metadata_does_not_trip(tmp_path, monkeypatch):
@@ -343,6 +386,8 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
 
     provider = _provider_with_token_endpoint(tmp_path, {}, token_ep, monkeypatch)
     provider.context.oauth_metadata = _FakeMeta(token_ep)
+    # One strike already recorded: the bridge-delivered rejection below is the one that poisons.
+    provider._hermes_invalid_client_strikes = provider._INVALID_CLIENT_STRIKES_TO_POISON - 1
 
     sentinel_request = object()
     poison_resp = _fake_response(400, token_ep, b'{"error":"invalid_client"}')

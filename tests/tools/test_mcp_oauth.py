@@ -1226,8 +1226,12 @@ class TestPoisonClientRegistration:
         assert not (d / "srv.meta.json").exists()
         # Backup of the client file kept for recovery.
         assert (d / "srv.client.json.bak").read_text() == '{"client_id": "dead"}'
-        # Tokens are intentionally preserved.
-        assert (d / "srv.json").read_text() == '{"access_token": "keep-me"}'
+        # Tokens go with the client: a refresh token minted under the dead client_id can never
+        # refresh under the re-registered one, so leaving it would strand the server in a
+        # refresh→400→browser-reauth loop rather than the clean "no cached tokens" failure.
+        assert not (d / "srv.json").exists()
+        assert (d / "srv.json.bak").read_text() == '{"access_token": "keep-me"}'
+        assert oct((d / "srv.json.bak").stat().st_mode & 0o777) == oct(0o600)
 
 
 def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):

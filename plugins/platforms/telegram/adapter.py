@@ -4071,6 +4071,24 @@ class TelegramAdapter(BasePlatformAdapter):
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
 
+    async def send_suggested_actions(
+        self, chat_id: str, message: str, actions: list, set_id: str, session_key: str,
+        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """Render tappable follow-up actions as inline buttons: one per action, one per row.
+        Telegram caps callback_data at 64 bytes; keep "sa:<set_id>:<idx>" short. A tap resolves
+        server-side (tools.suggested_actions_gateway.resolve) and injects a synthetic user turn."""
+        def build():
+            text = _html.escape(message)
+            rows = []
+            for idx, action in enumerate(actions):
+                label = action.get("label", "") if isinstance(action, dict) else str(action)
+                rows.append([InlineKeyboardButton(str(label)[:64], callback_data=f"sa:{set_id}:{idx}")])
+            keyboard = InlineKeyboardMarkup(rows) if rows else None
+            return text, keyboard, None
+        return await self._send_prompt(
+            "send_suggested_actions", chat_id, metadata, build, parse_mode=ParseMode.HTML,
+            thread_id=self._metadata_thread_id(metadata))
+
     @staticmethod
     def _provider_get_label():
         try:
@@ -4477,6 +4495,7 @@ class TelegramAdapter(BasePlatformAdapter):
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
+            ("sa:", self._handle_suggested_action_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
                 await handler(query, data, cb)
@@ -4646,6 +4665,65 @@ class TelegramAdapter(BasePlatformAdapter):
             # Entry evicted / gateway restarted between ask and tap.
             await self._notify_clarify_expired(query, user_display)
             logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
+
+    async def _handle_suggested_action_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+        """``sa:<set_id>:<idx>`` — resolve a tapped suggested action and inject it as a fresh
+        user turn via ``handle_message``, the same entry point a typed message uses. Non-blocking:
+        no agent thread was waiting on this tap."""
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid action data.")
+            return
+        set_id, index_token = parts[1], parts[2]
+        if not await self._callback_authorized(query, cb, "⛔ You are not authorized to use this action."):
+            return
+        try:
+            index = int(index_token)
+        except (ValueError, TypeError):
+            await query.answer(text="Invalid action index.")
+            return
+        payload = None
+        label = None
+        try:
+            from tools.suggested_actions_gateway import get_set, resolve
+            payload = resolve(set_id, index)
+            entry = get_set(set_id)
+            if entry is not None:
+                label = entry.label_for(index)
+        except Exception as exc:
+            logger.warning("[%s] suggested-action resolve failed: %s", self.name, exc)
+        if payload is None:
+            await query.answer(text="This action has expired.")
+            with contextlib.suppress(Exception):
+                await query.edit_message_reply_markup(reply_markup=None)
+            return
+        user_display = getattr(query.from_user, "first_name", "User")
+        await query.answer(text=f"✓ {(label or payload)[:60]}")
+        with contextlib.suppress(Exception):
+            original_text = (query.message.text or "") if query.message else ""
+            appended = f"{original_text}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(label or payload)}"
+            await query.edit_message_text(text=appended, parse_mode=ParseMode.HTML, reply_markup=None)
+        chat_id = cb["chat_id"]
+        if not chat_id:
+            logger.warning("[%s] suggested-action tap has no chat_id to route to", self.name)
+            return
+        caller_id = str(getattr(query.from_user, "id", ""))
+        normalized_chat_type = str(cb["chat_type"] or "dm").strip().lower() or "dm"
+        if normalized_chat_type == "private":
+            normalized_chat_type = "dm"
+        elif normalized_chat_type == "supergroup":
+            normalized_chat_type = "group"
+        source = self.build_source(
+            chat_id=str(chat_id), chat_name=None, chat_type=normalized_chat_type,
+            user_id=caller_id or str(chat_id),
+            user_name=str(cb["user_name"]).strip() if cb["user_name"] else None,
+            thread_id=str(cb["thread_id"]) if cb["thread_id"] is not None else None, message_id=None,
+        )
+        event = MessageEvent(text=str(payload), message_type=MessageType.TEXT, source=source, message_id=None)
+        try:
+            await self.handle_message(event)
+        except Exception as exc:
+            logger.error("[%s] suggested-action injection failed: %s", self.name, exc, exc_info=True)
 
     async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``update_prompt:<y|n>`` — forward the answer to the update process."""

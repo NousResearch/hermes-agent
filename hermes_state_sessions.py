@@ -831,6 +831,9 @@ class SessionSessionsMixin:
                 JOIN sessions child ON child.id = a.id
                 JOIN sessions parent ON parent.id = child.parent_session_id
                 WHERE parent.end_reason = 'compression'
+                  AND COALESCE({_sql_json_extract('child.model_config', '$._branched_from')}, '') != parent.id
+                  AND COALESCE({_sql_json_extract('child.model_config', '$._delegate_from')}, '') != parent.id
+                  AND COALESCE(child.source, '') != 'tool'
               ),
               descendants(id) AS (
                 SELECT ?
@@ -840,6 +843,9 @@ class SessionSessionsMixin:
                 JOIN sessions parent ON parent.id = d.id
                 JOIN sessions child ON child.parent_session_id = parent.id
                 WHERE parent.end_reason = 'compression'
+                  AND COALESCE({_sql_json_extract('child.model_config', '$._branched_from')}, '') != parent.id
+                  AND COALESCE({_sql_json_extract('child.model_config', '$._delegate_from')}, '') != parent.id
+                  AND COALESCE(child.source, '') != 'tool'
               ),
               lineage(id) AS (
                 SELECT id FROM ancestors

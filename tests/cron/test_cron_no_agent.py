@@ -410,6 +410,15 @@ def test_no_agent_failure_never_blamed_on_a_provider(error):
     assert "script" in msg.lower()
 
 
+# A reachability probe's real shape: a per-item table whose LAST output line is the summary, so a
+# head-only bound would drop exactly the finding an operator needs.
+_MONITOR_PROBE_FAILURE = (
+    "Script exited with code 1\nstderr:\n\nstdout:\n"
+    + "\n".join(f"lane-{i:02d} 200" for i in range(1, 25))
+    + "\nlane-zz 401\n\n24/25 lanes reachable"
+)
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
@@ -424,3 +433,32 @@ def test_agent_job_provider_classification_unchanged(error, expected):
 
     job = {"name": "daily-digest", "no_agent": False}
     assert expected in _summarize_cron_failure_for_delivery(job, error)
+
+
+@pytest.mark.parametrize(
+    ("job", "error", "expected", "forbidden"),
+    [
+        # The agent path above keeps upstream's wording; the case that is new here is the
+        # SOURCE path, which used to be attributed to a provider.
+        # (b) A MONITOR job's source failure is the probe's own FINDING, never a provider verdict:
+        # the probe prints one line per lane and exits non-zero, so a bare "401" in that table is a
+        # lane's status. The finding (last lane + the summary line) must survive delivery.
+        (
+            {"name": "lane-watch", "no_agent": False, "monitor_script": "lanes.sh"},
+            _MONITOR_PROBE_FAILURE,
+            ("monitor source", "Script exited with code 1", "lane-zz 401", "24/25 lanes reachable"),
+            "provider",
+        ),
+    ],
+)
+def test_failure_attribution_is_mode_and_source_aware(job, error, expected, forbidden):
+    """Regression guard for failure attribution: agent-mode jobs keep the provider-shaped
+    summaries, while a job SOURCE's own failure (pre-run script / monitor probe) is reported as
+    that source's output."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    msg = _summarize_cron_failure_for_delivery(job, error)
+    for fragment in expected:
+        assert fragment in msg, f"missing {fragment!r} in {msg!r}"
+    if forbidden:
+        assert forbidden not in msg.lower(), msg

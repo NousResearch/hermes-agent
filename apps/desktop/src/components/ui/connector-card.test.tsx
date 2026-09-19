@@ -39,8 +39,19 @@ describe('a row in the card', () => {
       markLabel: 'Waiting for your browser…'
     })
 
-    expect(screen.getByRole('img', { name: 'Waiting for your browser…' })).toBeTruthy()
+    const announced = screen.getByRole('status')
+
+    // A row that flips while the user reads the card has to be heard, not just seen.
+    expect(announced.getAttribute('aria-live')).toBe('polite')
+    // The cue repeats the mark's own word here; it is announced once.
+    expect(announced.textContent).toBe('Waiting for your browser…')
     expect(screen.getByRole('button', { name: 'Connect' }).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('announces the mark and the cue together when they say different things', () => {
+    renderRow({ cue: 'in your browser', mark: 'waiting', markLabel: 'Waiting' })
+
+    expect(screen.getByRole('status').textContent).toBe('Waiting. in your browser')
   })
 
   it('holds its verb while it runs', () => {
@@ -56,7 +67,7 @@ describe('a row in the card', () => {
     renderRow({ mark: 'connected', markLabel: 'Connected' })
 
     expect(screen.queryAllByRole('button')).toHaveLength(0)
-    expect(screen.getByRole('img', { name: 'Connected' })).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toBe('Connected')
   })
 })
 

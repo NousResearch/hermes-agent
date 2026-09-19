@@ -731,7 +731,8 @@ def _pending_connection_request_payload(sid: str) -> dict | None:
     from tools.connectors import live
 
     session = _sessions.get(sid)
-    operation = live.current(str(session.get("session_key") or "")) if session else None
+    operation = (live.current(str(session.get("session_key") or ""), profile_home=session.get("profile_home"))
+                 if session else None)
     return operation.request_payload() if operation is not None else None
 
 

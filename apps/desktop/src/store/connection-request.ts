@@ -4,15 +4,28 @@ import type {
   ConnectionRequestPayload,
   ConnectionSettleReason,
   ConnectionTargetAction,
+  ConnectionTargetEnvField,
   ConnectionTargetKind,
   ConnectionTargetState,
   ConnectionUpdatePayload
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import type { ConnectorCardField } from '@/components/ui/connector-card'
+
 import { $gateway } from './gateway'
 
-export type { ConnectionSettleReason, ConnectionTargetAction, ConnectionTargetKind, ConnectionTargetState }
+/** The backend sends ``prompt`` as null when the catalog entry has none; the card takes an absent one. */
+const envFields = (fields: ConnectionTargetEnvField[] | null | undefined): ConnectorCardField[] =>
+  (fields ?? []).map(({ name, prompt, required }) => ({ name, prompt: prompt ?? undefined, required }))
+
+export type {
+  ConnectionSettleReason,
+  ConnectionTargetAction,
+  ConnectionTargetEnvField,
+  ConnectionTargetKind,
+  ConnectionTargetState
+}
 
 /** One target of the operation as the renderer knows it. State comes only from the backend
  *  (`connection.request`, `connectors.operation.status`, `connection.update`); the card never sets it. */
@@ -23,7 +36,12 @@ export interface ConnectionTarget {
   state: ConnectionTargetState
   detail: string
   connectUrl: null | string
+  /** The vendor account of a managed target once a mint named one; empty before that and on MCP targets. */
+  connectionId: string
+  /** Toolkit metadata on connector targets; empty on an MCP target. */
   tools: string[]
+  /** Credentials an MCP install is still waiting for; empty on every other target. */
+  requiredEnv: ConnectorCardField[]
 }
 
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
@@ -32,6 +50,8 @@ export interface ConnectionRequest {
   /** The model's tool call that opened the operation. The card lives on that row and no other. */
   toolCallId: string
   opId: string
+  /** The sequence of the newest frame this cache holds; an older frame for the same op is dropped. */
+  seq: number
   /** Unix seconds; backend-owned. */
   deadlineAt: number
   targets: ConnectionTarget[]
@@ -42,12 +62,11 @@ export interface ConnectionRequest {
   sessionId: string | null
 }
 
-/** Answers the card may give for one target. Anything else the backend refuses (4002). */
+/** Answers the card may give for one target: the user said no, or the user consented and the backend
+ *  does the work. The card never reports an outcome; only the backend moves a target. */
 export type ConnectionTargetOutcome =
   | { name: string; status: 'skipped' }
-  | { name: string; status: 'connected'; tools?: string[] }
-  | { name: string; status: 'initiated' }
-  | { name: string; status: 'failed'; detail?: string }
+  | { env?: Record<string, string>; name: string; status: 'approved' }
 
 export interface ConnectionOutcome {
   targets?: ConnectionTargetOutcome[]
@@ -100,7 +119,9 @@ function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null 
     kind: entry.kind === 'connector' ? 'connector' : 'mcp',
     name,
     state: targetState(entry.state) ?? 'pending',
-    tools: entry.tools ?? []
+    tools: entry.tools ?? [],
+    connectionId: entry.connection_id ?? '',
+    requiredEnv: envFields(entry.required_env)
   }
 }
 
@@ -124,6 +145,7 @@ export function normalizeConnectionRequest(
     deadlineAt: payload.deadline_at,
     opId: payload.op_id,
     receivedAt: Date.now() / 1000,
+    seq: payload.seq,
     sessionId,
     settled: false,
     settledBy: null,
@@ -132,9 +154,14 @@ export function normalizeConnectionRequest(
   }
 }
 
-/** Overlay the authoritative `connectors.operation.status` snapshot on the cached request. */
-export function applyOperationStatus(request: ConnectionRequest, status: ConnectionOperationStatus): ConnectionRequest {
-  if (status.op_id !== request.opId) {
+/** Overlay the authoritative `connectors.operation.status` snapshot on the cached request. Frames for
+ *  another operation, and frames the operation wrote before the one already applied, change nothing:
+ *  the transport can reorder them and an older one would regress a row. */
+export function applyOperationStatus(
+  request: ConnectionRequest,
+  status: ConnectionOperationStatus
+): ConnectionRequest {
+  if (status.op_id !== request.opId || status.seq <= request.seq) {
     return request
   }
 
@@ -151,11 +178,14 @@ export function applyOperationStatus(request: ConnectionRequest, status: Connect
   // Same reference on a no-op so subscribers do not re-render for an identical frame.
   const unchanged =
     request.deadlineAt === status.deadline_at &&
+    request.seq === status.seq &&
     request.settled === status.settled &&
     request.settledBy === settledBy &&
     targets.every((target, index) => target === request.targets[index])
 
-  return unchanged ? request : { ...request, deadlineAt: status.deadline_at, settled: status.settled, settledBy, targets }
+  return unchanged
+    ? request
+    : { ...request, deadlineAt: status.deadline_at, seq: status.seq, settled: status.settled, settledBy, targets }
 }
 
 function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarget): ConnectionTarget {
@@ -164,22 +194,39 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
     connectUrl: live.connect_url ?? target.connectUrl,
     detail: live.detail ?? target.detail,
     state: live.state,
-    tools: live.tools ?? target.tools
+    tools: live.tools ?? target.tools,
+    connectionId: live.connection_id ?? target.connectionId,
+    requiredEnv: live.required_env ? envFields(live.required_env) : target.requiredEnv
   }
 
   const same =
     next.connectUrl === target.connectUrl &&
+    next.connectionId === target.connectionId &&
     next.detail === target.detail &&
     next.state === target.state &&
     next.tools.length === target.tools.length &&
-    next.tools.every((tool, index) => tool === target.tools[index])
+    next.tools.every((tool, index) => tool === target.tools[index]) &&
+    sameEnvFields(next.requiredEnv, target.requiredEnv)
 
   return same ? target : next
 }
 
+// Every frame carries a fresh array, so identity would churn the row and remount its open inputs.
+const sameEnvFields = (next: ConnectorCardField[], previous: ConnectorCardField[]): boolean =>
+  next.length === previous.length &&
+  next.every(
+    (field, index) =>
+      field.name === previous[index].name &&
+      field.prompt === previous[index].prompt &&
+      field.required === previous[index].required
+  )
+
 /** Apply one `connection.update` frame. Every frame carries the operation's full target snapshot, so
  *  the store overlays it; frames for another operation or for a settled request are ignored. */
-export function applyConnectionUpdate(request: ConnectionRequest, update: ConnectionUpdatePayload): ConnectionRequest {
+export function applyConnectionUpdate(
+  request: ConnectionRequest,
+  update: ConnectionUpdatePayload
+): ConnectionRequest {
   if (update.op_id !== request.opId || request.settled) {
     return request
   }

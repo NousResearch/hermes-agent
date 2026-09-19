@@ -52,7 +52,8 @@ const SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-
 const MARKS = {
   connected: { Icon: Check, className: 'text-emerald-600 dark:text-emerald-400' },
   idle: { Icon: CircleIcon, className: 'text-(--ui-text-quaternary)' },
-  waiting: { Icon: Loader2, className: 'animate-spin text-primary' }
+  // The spin is the only motion in the card; a reduced-motion reader keeps the mark, without it.
+  waiting: { Icon: Loader2, className: 'animate-spin text-primary motion-reduce:animate-none' }
 } satisfies Record<ConnectorRowMark, { Icon: typeof Check; className: string }>
 
 export function ConnectorCard({ children, title }: { children: ReactNode; title: string }) {
@@ -78,16 +79,22 @@ export function ConnectorRow({
 }: ConnectorRowProps) {
   const { Icon, className } = MARKS[mark]
   const fields = envOpen ? envFields : []
+  // The mark and the cue are one live region, so a row that flips is announced instead of only seen.
+  // The cue often repeats the mark's own word; then it is said once.
+  const announcement = cue && cue !== markLabel ? `${markLabel}. ${cue}` : markLabel
 
   return (
-    <div className="grid gap-1" data-slot="connector-row">
+    <div className="grid gap-1" data-connector-row={connector.name} data-slot="connector-row" tabIndex={-1}>
       <div className="flex h-8 items-center gap-2.5">
-        <span aria-label={markLabel} className="grid size-4 shrink-0 place-items-center" role="img">
+        <span aria-live="polite" className="grid size-4 shrink-0 place-items-center" role="status">
           <Icon aria-hidden className={cn('size-3.5', className)} />
+          <span className="sr-only">{announcement}</span>
         </span>
         <ConnectorLogo className="size-6 rounded-md text-[0.6875rem]" connector={connector} />
         <span className="truncate leading-(--conversation-line-height)">{connector.title || connector.name}</span>
-        <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-(--ui-text-tertiary)">{cue}</span>
+        <span aria-hidden className="min-w-0 flex-1 truncate text-[0.6875rem] text-(--ui-text-tertiary)">
+          {cue}
+        </span>
         <span className="flex w-22 shrink-0 justify-end">
           {action ? (
             <span className="inline-flex h-6 w-full items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">

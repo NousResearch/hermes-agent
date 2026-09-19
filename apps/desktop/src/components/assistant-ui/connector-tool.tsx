@@ -1,9 +1,10 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ConnectionTargetState } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { sessionRoute } from '@/app/routes'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
@@ -12,12 +13,14 @@ import { useI18n } from '@/i18n'
 import {
   connectorAuthorizationUrl,
   connectorCalls,
+  connectorIconUrl,
   connectorText,
   connectorTitle,
   connectorToolName,
   recordOf
 } from '@/lib/connector-tools'
 import {
+  $connectionRequests,
   type ConnectionRequest,
   type ConnectionTarget,
   continueConnectionRequest,
@@ -29,9 +32,117 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
-interface ConnectorOwner {
+/** Which backend owns the session whose operation this card drives. */
+export interface ConnectorOwner {
   connectionId: null | string
   profile: string
+}
+
+/** Resolve that owner for one stored session, or null when it cannot be resolved. */
+async function connectionOwnerFor(sessionId: string, method: string): Promise<ConnectorOwner | null> {
+  const ambientProfile = $activeGatewayProfile.get()
+
+  try {
+    const scope = await resolveSessionOwner(sessionId)
+    assertSessionOwnerResolved(scope, { method, sessionId })
+
+    return {
+      connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
+      profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Resolve that owner. Null until it resolves and null when it cannot: a card RPC must reach the
+ *  gateway that holds the operation, never whichever one the window happens to have in front. */
+export function useConnectionOwner(sessionId: null | string, active: boolean): ConnectorOwner | null {
+  const [owner, setOwner] = useState<ConnectorOwner | null>(null)
+
+  useEffect(() => {
+    if (!sessionId || !active) {
+      setOwner(null)
+
+      return
+    }
+
+    let cancelled = false
+
+    void connectionOwnerFor(sessionId, 'connectors.connect').then(resolved => {
+      if (!cancelled) {
+        setOwner(resolved)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [active, sessionId])
+
+  return owner
+}
+
+/** The browser leg of a connection came back through `hermes://connections/done`. Show the session
+ *  that opened the operation and tell its backend to read the account now instead of at its next
+ *  tick. Nothing in the link is trusted to move a row: the op id only names which card to show, and
+ *  the backend reads the account itself. An operation this window holds no card for, or one that
+ *  already settled, is ignored: the tab can come back long after Continue, and a stale link must
+ *  not pull the user away from where they are. */
+export async function openConnectionDoneLink(
+  op: string,
+  navigate: (to: string) => void,
+  storedSessionIdFor: (runtimeSessionId: string) => string
+): Promise<void> {
+  const request = Object.values($connectionRequests.get()).find(entry => entry.opId === op)
+
+  if (!request?.sessionId || request.settled) {
+    return
+  }
+
+  const storedId = storedSessionIdFor(request.sessionId)
+  navigate(sessionRoute(storedId))
+
+  const owner = await connectionOwnerFor(storedId, 'connectors.operation.wake')
+
+  if (!owner) {
+    return
+  }
+
+  try {
+    await requestGatewayForAgent(owner.connectionId, owner.profile, 'connectors.operation.wake', {
+      op_id: op,
+      session_id: request.sessionId
+    })
+  } catch {
+    // The wake only shortens the wait. The operation can settle and leave the live registry between
+    // the link and this RPC (4004); the watcher reads the account at its next tick regardless.
+  }
+}
+
+/** Try again for one target of the open operation: one RPC, and the fresh link when the backend
+ *  minted one. The backend re-mints only what is actually dead. */
+export async function reissueConnectionTarget(
+  owner: ConnectorOwner,
+  request: ConnectionRequest,
+  name: string
+): Promise<null | string> {
+  const reply = await requestGatewayForAgent<ToolCallMessagePartProps['result']>(
+    owner.connectionId,
+    owner.profile,
+    'connectors.connect',
+    {
+      connectors: [name],
+      reconnect: true,
+      session_id: request.sessionId
+    },
+    45000
+  )
+
+  const rows = recordOf(reply).targets
+  const minted = Array.isArray(rows) ? rows.map(recordOf).find(row => connectorText(row.name) === name) : undefined
+
+  return connectorAuthorizationUrl(minted?.connect_url)
 }
 
 /** Names requested by a manage_connections part, including an event-projected row. */
@@ -79,40 +190,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
 
   const live = !untargetedStatus && connectionRequestOwnsPart(props, request)
   // Owner routes and hints are keyed by the stored id, not the runtime id the events carry.
-  const ownerSessionId = storedId
-  const [owner, setOwner] = useState<ConnectorOwner | null>(null)
-
-  useEffect(() => {
-    if (!ownerSessionId || !live) {
-      setOwner(null)
-
-      return
-    }
-
-    let cancelled = false
-    const ambientProfile = $activeGatewayProfile.get()
-
-    void resolveSessionOwner(ownerSessionId)
-      .then(scope => {
-        assertSessionOwnerResolved(scope, { method: 'connectors.connect', sessionId: ownerSessionId })
-
-        if (!cancelled) {
-          setOwner({
-            connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
-            profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
-          })
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setOwner(null)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [live, ownerSessionId])
+  const owner = useConnectionOwner(storedId, live)
 
   if (!live || !request) {
     return <ToolFallback {...props} />
@@ -141,7 +219,7 @@ const connected = (copy: ConnectorCopy): SettledWord => ({ meta: copy.connected,
 const notConnected = (copy: ConnectorCopy): SettledWord => ({ meta: copy.notConnected })
 const skipped = (copy: ConnectorCopy): SettledWord => ({ meta: copy.skipped })
 
-const CONNECTOR_CARD_PHASES = {
+export const CONNECTOR_CARD_PHASES = {
   connected: { mark: 'connected', resolved: true, settled: connected, verb: 'none' },
   expired: { mark: 'idle', resolved: false, settled: notConnected, verb: 'reissue' },
   failed: { mark: 'idle', resolved: false, settled: notConnected, verb: 'reissue' },
@@ -152,7 +230,58 @@ const CONNECTOR_CARD_PHASES = {
   unavailable: { mark: 'idle', resolved: true, settled: notConnected, verb: 'none' }
 } satisfies Record<ConnectionTargetState, ConnectorCardPhase>
 
-const MARK_LABEL = {
+// A disabled verb (a working row, a waiting row with no link yet) refuses focus, and the keyboard
+// would land on the document body; so the first control that can take it, else the row itself.
+const FOCUSABLE_IN_ROW = 'button:not([disabled]), [href], input:not([disabled])'
+// The user is typing a credential; a row moving elsewhere on the card must not take the keyboard.
+const EDITABLE = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
+
+function focusChangedRow(card: HTMLElement, name: string): void {
+  const row = [...card.querySelectorAll<HTMLElement>('[data-connector-row]')].find(
+    node => node.dataset.connectorRow === name
+  )
+
+  ;(row?.querySelector<HTMLElement>(FOCUSABLE_IN_ROW) ?? row)?.focus()
+}
+
+/** Move focus to the row the backend changed. Only while the card already holds focus, and never
+ *  out of a field the user is typing in — a transition the user is not looking at must not take
+ *  the keyboard away from wherever they are. */
+export function useConnectorFocusHandoff(
+  targets: readonly ConnectionTarget[],
+  cardRef: RefObject<HTMLDivElement | null>
+): void {
+  const seen = useRef<Map<string, ConnectionTargetState> | null>(null)
+  const states = targets.map(target => `${target.name}=${target.state}`).join('|')
+
+  // The ref holds what the last frame said, for comparison only: nothing renders from it, so it
+  // cannot lag a render the way a mirrored atom would.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    const previous = seen.current
+    seen.current = new Map(targets.map(target => [target.name, target.state]))
+
+    const card = cardRef.current
+
+    const moved = targets.find(target => {
+      const before = previous?.get(target.name)
+
+      return before !== undefined && before !== target.state
+    })
+
+    const active = document.activeElement
+
+    if (!previous || !moved || !card?.contains(active) || active?.matches(EDITABLE)) {
+      return
+    }
+
+    focusChangedRow(card, moved.name)
+    // The target states are the whole input; `states` changes exactly when one of them moves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [states])
+}
+
+export const MARK_LABEL = {
   connected: (copy: ConnectorCopy) => copy.connected,
   idle: (copy: ConnectorCopy) => copy.notConnected,
   waiting: (copy: ConnectorCopy) => copy.waiting
@@ -168,29 +297,18 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   const copy = t.connectors
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
   const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
+  // A DOM handle for the focus handoff, never rendered state.
+  const cardRef = useRef<HTMLDivElement | null>(null)
 
-  // Try again is one RPC on the open operation; the backend re-mints only a dead link. The fresh link
-  // opens at once, and the update frame then paints the row as waiting. A refused re-mint is a click
-  // that changed nothing, so it gets a toast; the row stays as it was.
+  useConnectorFocusHandoff(request.targets, cardRef)
+
+  // The fresh link opens at once, and the update frame then paints the row as waiting. A refused
+  // re-mint is a click that changed nothing, so it gets a toast; the row stays as it was.
   const reissue = async (target: ConnectionTarget): Promise<void> => {
     setReissuing(current => new Set(current).add(target.name))
 
     try {
-      const reply = await requestGatewayForAgent<ToolCallMessagePartProps['result']>(
-        owner.connectionId,
-        owner.profile,
-        'connectors.connect',
-        {
-          connectors: [target.name],
-          reconnect: true,
-          session_id: request.sessionId
-        },
-        45000
-      )
-
-      const rows = recordOf(reply).targets
-      const minted = Array.isArray(rows) ? rows.map(recordOf).find(row => connectorText(row.name) === target.name) : undefined
-      const url = connectorAuthorizationUrl(minted?.connect_url)
+      const url = await reissueConnectionTarget(owner, request, target.name)
 
       if (url) {
         void window.hermesDesktop?.openExternal?.(url)
@@ -216,7 +334,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
 
           return (
             <ConnectorSummary
-              connector={{ name: target.name, title: connectorTitle(target.name) }}
+              connector={{ iconUrl: connectorIconUrl(target.name), name: target.name, title: connectorTitle(target.name) }}
               key={target.name}
               meta={meta}
               tone={tone}
@@ -228,7 +346,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   }
 
   return (
-    <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer>
+    <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer ref={cardRef}>
       <ConnectorCard title={copy.title}>
         {request.targets.map(target => {
           const phase = CONNECTOR_CARD_PHASES[target.state]
@@ -256,7 +374,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
           return (
             <ConnectorRow
               action={action}
-              connector={{ name: target.name, title: connectorTitle(target.name) }}
+              connector={{ iconUrl: connectorIconUrl(target.name), name: target.name, title: connectorTitle(target.name) }}
               cue={phase.mark === 'waiting' ? copy.waiting : undefined}
               key={target.name}
               mark={phase.mark}

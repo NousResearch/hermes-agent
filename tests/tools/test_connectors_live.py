@@ -42,3 +42,34 @@ def test_close_removes_and_is_idempotent():
     live.close(operation)
     live.close(operation)
     assert live.current("s1") is None
+
+
+def test_two_profiles_may_share_a_session_key_without_seeing_each_other(tmp_path):
+    """The registry is keyed by profile home and session key: stored sessions of two multiplexed
+    profiles can carry the same timestamp-based key (P1-14)."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    homes = [tmp_path / "a", tmp_path / "b"]
+    for home in homes:
+        home.mkdir()
+    # The tool thread opens under its turn's profile override; the RPC side names the session's
+    # profile home explicitly (None means the process home, the default profile).
+    first, second = _op(), _op()
+    token = set_hermes_home_override(str(homes[0]))
+    try:
+        live.open(first)
+    finally:
+        reset_hermes_home_override(token)
+    token = set_hermes_home_override(str(homes[1]))
+    try:
+        live.open(second)  # not OperationAlreadyOpen: another profile's session
+    finally:
+        reset_hermes_home_override(token)
+    assert live.current("s1", profile_home=str(homes[0])) is first
+    assert live.current("s1", profile_home=str(homes[1])) is second
+    assert live.get("s1", first.op_id, profile_home=str(homes[1])) is None
+    assert live.current("s1") is None  # the default profile holds nothing
+    live.close(first)
+    live.close(second)
+    assert live.current("s1", profile_home=str(homes[0])) is None
+    assert live.current("s1", profile_home=str(homes[1])) is None

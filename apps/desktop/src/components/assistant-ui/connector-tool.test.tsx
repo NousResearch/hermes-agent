@@ -4,7 +4,13 @@ import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
-import { connectionRequestOwnsPart, ConnectorOffer, ConnectorTool } from '@/components/assistant-ui/connector-tool'
+import { sessionRoute } from '@/app/routes'
+import {
+  connectionRequestOwnsPart,
+  ConnectorOffer,
+  ConnectorTool,
+  openConnectionDoneLink
+} from '@/components/assistant-ui/connector-tool'
 import { I18nProvider } from '@/i18n'
 import {
   $connectionRequests,
@@ -17,6 +23,7 @@ import { $notifications } from '@/store/notifications'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 
 const SESSION_ID = 'session-1'
+const STORED_ID = 'stored-1'
 const OWNER = { connectionId: 'connection-1', profile: 'default' }
 // A null connection id routes the card's own RPCs through the primary gateway socket.
 const PRIMARY_OWNER = { connectionId: null, profile: 'default' }
@@ -24,9 +31,11 @@ const PRIMARY_OWNER = { connectionId: null, profile: 'default' }
 const GMAIL: ConnectionTarget = {
   action: 'connect',
   connectUrl: 'https://connect.example/gmail',
+  connectionId: '',
   detail: '',
   kind: 'connector',
   name: 'gmail',
+  requiredEnv: [],
   state: 'pending',
   tools: []
 }
@@ -34,6 +43,7 @@ const GMAIL: ConnectionTarget = {
 const REQUEST: ConnectionRequest = {
   deadlineAt: 1_800_000_000,
   opId: 'operation-1',
+  seq: 0,
   toolCallId: 'connector-call-1',
   sessionId: SESSION_ID,
   settled: false,
@@ -221,6 +231,106 @@ describe('ConnectorTool operation card', () => {
     // dead: it is matched by id only, never by connector names.
     expect(connectionRequestOwnsPart(props(), { ...REQUEST, opId: 'operation-2', toolCallId: 'connector-call-2' })).toBe(false)
     expect(connectionRequestOwnsPart(props(), REQUEST)).toBe(true)
+  })
+
+  it('a connection deep link shows the session that opened the operation and wakes its watcher', async () => {
+    const request = vi.fn().mockResolvedValue({ status: 'ok' })
+    // SAFETY: the wake calls only `request` on the primary socket; nothing else on the client is touched.
+    setPrimaryGateway({ request } as never)
+    // An owner with no connection id routes through the primary socket, as a local backend does.
+    setSessionOwnerHint(STORED_ID, { connectionId: '', profile: 'default' })
+    setConnectionRequest(REQUEST)
+    const navigate = vi.fn()
+
+    await openConnectionDoneLink('operation-1', navigate, () => STORED_ID)
+
+    expect(navigate).toHaveBeenCalledWith(sessionRoute(STORED_ID))
+
+    const [method, params] = request.mock.calls[0]
+
+    expect(method).toBe('connectors.operation.wake')
+    // The operation is addressed by the runtime session id the card drives it with.
+    expect(params).toEqual({ op_id: 'operation-1', session_id: SESSION_ID })
+  })
+
+  it('a deep link for an operation this window has no card for moves nothing', async () => {
+    const request = vi.fn()
+    // SAFETY: the wake calls only `request` on the primary socket; nothing else on the client is touched.
+    setPrimaryGateway({ request } as never)
+    setConnectionRequest(REQUEST)
+    const navigate = vi.fn()
+
+    await openConnectionDoneLink('operation-9', navigate, () => STORED_ID)
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('a deep link for an operation that already settled moves nothing', async () => {
+    const request = vi.fn()
+    // SAFETY: the wake calls only `request` on the primary socket; nothing else on the client is touched.
+    setPrimaryGateway({ request } as never)
+    setSessionOwnerHint(STORED_ID, { connectionId: '', profile: 'default' })
+    setConnectionRequest({ ...REQUEST, settled: true, settledBy: 'continue' })
+    const navigate = vi.fn()
+
+    // The browser tab can come back long after Continue: a stale link must not pull the user away.
+    await openConnectionDoneLink('operation-1', navigate, () => STORED_ID)
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('a refused wake is not an error: the watcher still ticks', async () => {
+    // 4004 once the operation settled and left the live registry between the link and the RPC.
+    const request = vi.fn().mockRejectedValue(new Error('4004'))
+    // SAFETY: the wake calls only `request` on the primary socket; nothing else on the client is touched.
+    setPrimaryGateway({ request } as never)
+    setSessionOwnerHint(STORED_ID, { connectionId: '', profile: 'default' })
+    setConnectionRequest(REQUEST)
+    const navigate = vi.fn()
+
+    await expect(openConnectionDoneLink('operation-1', navigate, () => STORED_ID)).resolves.toBeUndefined()
+
+    expect(navigate).toHaveBeenCalledWith(sessionRoute(STORED_ID))
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands the keyboard to the row the backend moved, and only while the card holds focus', async () => {
+    const offer = (gmail: ConnectionTarget['state'], notion: ConnectionTarget['state']) => (
+      <I18nProvider configClient={null} initialLocale="en">
+        <ConnectorOffer
+          owner={PRIMARY_OWNER}
+          request={{
+            ...REQUEST,
+            targets: [
+              { ...GMAIL, state: gmail },
+              { ...GMAIL, connectUrl: null, name: 'notion', state: notion }
+            ]
+          }}
+        />
+      </I18nProvider>
+    )
+
+    const { rerender } = render(offer('failed', 'pending'))
+
+    screen.getByRole('button', { name: 'Try again' }).focus()
+    rerender(offer('failed', 'connected'))
+
+    const notionRow = window.document.querySelector<HTMLElement>('[data-connector-row="notion"]')
+
+    // Notion has no verb left, so the row itself takes the focus the changed control would have had.
+    await waitFor(() => {
+      expect(window.document.activeElement).toBe(notionRow)
+    })
+
+    // The user is somewhere else in the app: a backend transition must not take the keyboard.
+    notionRow?.blur()
+    rerender(offer('initiated', 'connected'))
+
+    await waitFor(() => {
+      expect(window.document.activeElement).toBe(window.document.body)
+    })
   })
 
   it('renders a settled operation as three words and no live controls', () => {

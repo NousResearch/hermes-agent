@@ -29,6 +29,17 @@ describe('resolveDeepLinkAction', () => {
     ).toMatchObject({ type: 'plugin-install', legacyHint: 'agent' })
   })
 
+  it('routes a returning connection to its operation, and carries no authority but the op id', () => {
+    expect(
+      resolveDeepLinkAction({ kind: 'connections', name: 'done', params: { op: 'op-7', status: 'connected' } })
+    ).toEqual({ type: 'connection-done', op: 'op-7', status: 'connected' })
+
+    // Without an op there is no operation to show, whatever the status claims.
+    expect(resolveDeepLinkAction({ kind: 'connections', name: 'done', params: { status: 'connected' } })).toEqual({
+      type: 'ignore'
+    })
+  })
+
   it('routes blueprint composer inserts', () => {
     expect(
       resolveDeepLinkAction({

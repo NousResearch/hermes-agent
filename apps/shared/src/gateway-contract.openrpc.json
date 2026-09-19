@@ -619,6 +619,24 @@
       }
     },
     {
+      "name": "connectors.operation.wake",
+      "summary": "The browser leg came back (hermes://connections/done): read the accounts now, not at the next tick.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectionOperationParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectionWakeResult"
+        }
+      }
+    },
+    {
       "name": "cron.manage",
       "summary": "List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store.",
       "params": [
@@ -8308,7 +8326,6 @@
         "description": "``tools/connectors/contract.py::Actor``.",
         "enum": [
           "user",
-          "renderer_flow",
           "backend_watcher",
           "clock"
         ],
@@ -8341,37 +8358,25 @@
         "title": "ConnectionAnswer",
         "type": "object"
       },
+      "ConnectionAnswerStatus": {
+        "description": "What the card says about one row: ``tools/connectors/mcp.py::apply_answer``.",
+        "enum": [
+          "approved",
+          "skipped"
+        ],
+        "title": "ConnectionAnswerStatus",
+        "type": "string"
+      },
       "ConnectionAnswerTarget": {
-        "additionalProperties": true,
-        "description": "One row's answer from the card. ``status`` is what the card observed for that row\n(``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the\nolder spelling of the same field and one of the two is present.",
+        "additionalProperties": false,
+        "description": "One row's answer from the card. ``env`` carries the credential values an install asked for\nthrough ``required_env``.",
         "properties": {
           "name": {
             "title": "Name",
             "type": "string"
           },
           "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Status"
-          },
-          "state": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "State"
+            "$ref": "#/components/schemas/ConnectionAnswerStatus"
           },
           "detail": {
             "anyOf": [
@@ -8385,24 +8390,25 @@
             "default": null,
             "title": "Detail"
           },
-          "tools": {
+          "env": {
             "anyOf": [
               {
-                "items": {
+                "additionalProperties": {
                   "type": "string"
                 },
-                "type": "array"
+                "type": "object"
               },
               {
                 "type": "null"
               }
             ],
             "default": null,
-            "title": "Tools"
+            "title": "Env"
           }
         },
         "required": [
-          "name"
+          "name",
+          "status"
         ],
         "title": "ConnectionAnswerTarget",
         "type": "object"
@@ -8446,6 +8452,10 @@
             "title": "Op Id",
             "type": "string"
           },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
           "deadline_at": {
             "title": "Deadline At",
             "type": "number"
@@ -8487,6 +8497,7 @@
         },
         "required": [
           "op_id",
+          "seq",
           "deadline_at",
           "settled",
           "targets"
@@ -8535,6 +8546,18 @@
             "default": null,
             "title": "Connect Url"
           },
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Id"
+          },
           "attempt": {
             "anyOf": [
               {
@@ -8546,6 +8569,21 @@
             ],
             "default": null,
             "title": "Attempt"
+          },
+          "required_env": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ConnectionTargetEnvField"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Required Env"
           },
           "tools": {
             "anyOf": [
@@ -8592,6 +8630,10 @@
             "title": "Op Id",
             "type": "string"
           },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
           "deadline_at": {
             "title": "Deadline At",
             "type": "number"
@@ -8622,6 +8664,7 @@
         },
         "required": [
           "op_id",
+          "seq",
           "deadline_at",
           "timeout_seconds",
           "targets"
@@ -8706,6 +8749,38 @@
         "title": "ConnectionTargetAction",
         "type": "string"
       },
+      "ConnectionTargetEnvField": {
+        "additionalProperties": false,
+        "description": "One credential an MCP install still needs; the card renders a field per entry and sends the\nvalues back with the approval.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          }
+        },
+        "required": [
+          "name",
+          "required"
+        ],
+        "title": "ConnectionTargetEnvField",
+        "type": "object"
+      },
       "ConnectionTargetKind": {
         "enum": [
           "connector",
@@ -8736,6 +8811,10 @@
           "op_id": {
             "title": "Op Id",
             "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
           },
           "deadline_at": {
             "title": "Deadline At",
@@ -8835,11 +8914,26 @@
         },
         "required": [
           "op_id",
+          "seq",
           "deadline_at",
           "settled",
           "targets"
         ],
         "title": "ConnectionUpdatePayload",
+        "type": "object"
+      },
+      "ConnectionWakeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ConnectionWakeResult",
         "type": "object"
       },
       "ConnectorRow": {
@@ -8962,6 +9056,10 @@
             "title": "Op Id",
             "type": "string"
           },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
           "deadline_at": {
             "title": "Deadline At",
             "type": "number"
@@ -9027,6 +9125,7 @@
         },
         "required": [
           "op_id",
+          "seq",
           "deadline_at",
           "settled",
           "targets"

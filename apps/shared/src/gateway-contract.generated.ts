@@ -466,6 +466,7 @@ export interface ConnectionOperationParams {
 /** ``methods_connectors._operation_view``: the operation's full snapshot. */
 export interface ConnectionOperationStatus {
   op_id: string
+  seq: number
   deadline_at: number
   settled: boolean
   settled_at?: number | null
@@ -482,7 +483,9 @@ export interface ConnectionOperationTarget {
   state: ConnectionTargetState
   detail?: string | null
   connect_url?: string | null
+  connection_id?: string | null
   attempt?: string | null
+  required_env?: ConnectionTargetEnvField[] | null
   tools?: string[] | null
   hint?: string | null
 }
@@ -490,6 +493,15 @@ export type ConnectionTargetKind = 'connector' | 'mcp'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
 /** ``tools/connectors/contract.py::TargetState``. */
 export type ConnectionTargetState = 'pending' | 'initiated' | 'connected' | 'skipped' | 'failed' | 'expired' | 'unavailable' | 'not_connected'
+/** One credential an MCP install still needs; the card renders a field per entry and sends the values back with the approval. */
+export interface ConnectionTargetEnvField {
+  name: string
+  required: boolean
+  prompt?: string | null
+}
+export interface ConnectionWakeResult {
+  status: string
+}
 export interface ConnectionRespondParams {
   profile?: string | null
   session_id: string
@@ -501,15 +513,15 @@ export interface ConnectionAnswer {
   targets?: ConnectionAnswerTarget[]
   settled_by?: ConnectionSettleReason | null
 }
-/** One row's answer from the card. ``status`` is what the card observed for that row (``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the older spelling of the same field and one of the two is present. */
+/** One row's answer from the card. ``env`` carries the credential values an install asked for through ``required_env``. */
 export interface ConnectionAnswerTarget {
   name: string
-  status?: string | null
-  state?: string | null
+  status: ConnectionAnswerStatus
   detail?: string | null
-  tools?: string[] | null
-  [key: string]: unknown
+  env?: Record<string, string> | null
 }
+/** What the card says about one row: ``tools/connectors/mcp.py::apply_answer``. */
+export type ConnectionAnswerStatus = 'approved' | 'skipped'
 export interface ConnectionRespondResult {
   status: string
   settled: boolean
@@ -778,6 +790,7 @@ export interface ConnectorsConnectParams {
 /** The operation the connect opened (or re-minted on): ``tools/connectors/managed.py`` ``_off_desktop_result`` / ``methods_connectors._reissue``. ``status``/``note`` ride along from the tool result when the call ran through ``manage_connections``. */
 export interface ConnectorsConnectResult {
   op_id: string
+  seq: number
   deadline_at: number
   settled: boolean
   settled_at?: number | null
@@ -2554,6 +2567,7 @@ export interface OpenRequestEntry {
 /** ``ConnectionOperation.request_payload``: opens the card; also the ``pending_connection`` resume snapshot so a client that missed the event restores the card with the server's deadline. */
 export interface ConnectionRequestPayload {
   op_id: string
+  seq: number
   deadline_at: number
   timeout_seconds: number
   targets: ConnectionOperationTarget[]
@@ -3812,6 +3826,7 @@ export interface TourStep {
 /** ``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
 export interface ConnectionUpdatePayload {
   op_id: string
+  seq: number
   deadline_at: number
   settled: boolean
   settled_at?: number | null
@@ -3824,7 +3839,7 @@ export interface ConnectionUpdatePayload {
   detail?: string | null
 }
 /** ``tools/connectors/contract.py::Actor``. */
-export type ConnectionActor = 'user' | 'renderer_flow' | 'backend_watcher' | 'clock'
+export type ConnectionActor = 'user' | 'backend_watcher' | 'clock'
 /** ``tui_gateway/entry.py`` (stdio) / ``tui_gateway/ws.py`` (WebSocket) first frame. */
 export interface GatewayReadyPayload {
   skin: SkinPayload
@@ -4257,6 +4272,8 @@ export interface RpcMethods {
   'connectors.list': { params: ConnectorsListParams; result: ConnectorsListResult }
   /** The current snapshot of one open operation on an owned session. */
   'connectors.operation.status': { params: ConnectionOperationParams; result: ConnectionOperationStatus }
+  /** The browser leg came back (hermes://connections/done): read the accounts now, not at the next tick. */
+  'connectors.operation.wake': { params: ConnectionOperationParams; result: ConnectionWakeResult }
   /** List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store. */
   'cron.manage': { params: CronManageParams; result: CronManageResult }
   /** Block/unblock NEW spawns globally (active children keep running); returns the new state. */
@@ -4662,6 +4679,7 @@ export const RPC_METHODS = [
   'connectors.connect',
   'connectors.list',
   'connectors.operation.status',
+  'connectors.operation.wake',
   'cron.manage',
   'delegation.pause',
   'delegation.status',

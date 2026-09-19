@@ -19,6 +19,7 @@ const OWNER = { connectionId: 'connection-1', profile: 'default' }
 const REQUEST: ConnectionRequest = {
   deadlineAt: 1_800_000_000,
   opId: 'operation-1',
+  seq: 0,
   toolCallId: 'connector-call-1',
   sessionId: SESSION_ID,
   settled: false,
@@ -27,18 +28,22 @@ const REQUEST: ConnectionRequest = {
     {
       action: 'connect',
       connectUrl: 'https://connect.example/gmail',
+      connectionId: '',
       detail: '',
       kind: 'connector',
       name: 'gmail',
+      requiredEnv: [],
       state: 'initiated',
       tools: []
     },
     {
       action: 'connect',
       connectUrl: 'https://connect.example/notion',
+      connectionId: '',
       detail: '',
       kind: 'connector',
       name: 'notion',
+      requiredEnv: [],
       state: 'initiated',
       tools: []
     }

@@ -4,6 +4,7 @@ import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
+  caretOffsetInEditor,
   composerPlainText,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
@@ -144,6 +145,38 @@ describe('normalizeComposerEditorDom', () => {
 
     expect(composerPlainText(editor)).toBe('@file:`src/foo.ts`')
     expect(editor.querySelector('br')).toBeNull()
+  })
+
+  it('preserves a live caret anchored in an empty direct text node', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+
+    const leadingLitter = document.createTextNode('')
+    const caretContainer = document.createTextNode('')
+    const trailingLitter = document.createTextNode('')
+    editor.append(leadingLitter, refChipElement('file', '`src/foo.ts`'), caretContainer, trailingLitter)
+
+    const caret = document.createRange()
+    caret.setStart(caretContainer, 0)
+    caret.collapse(true)
+
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    normalizeComposerEditorDom(editor)
+
+    expect(leadingLitter.isConnected).toBe(false)
+    expect(trailingLitter.isConnected).toBe(false)
+    expect(caretContainer.isConnected).toBe(true)
+    expect(editor.contains(selection.getRangeAt(0).startContainer)).toBe(true)
+    expect(selection.getRangeAt(0).startContainer).toBe(caretContainer)
+    expect(composerPlainText(editor)).toBe('@file:`src/foo.ts`')
+
+    selection.removeAllRanges()
+    editor.remove()
   })
 })
 
@@ -379,6 +412,78 @@ describe('deleteSelectionInEditor', () => {
     expect(composerPlainText(editor)).toBe('')
     expect(selection.getRangeAt(0).collapsed).toBe(true)
     expect(deleteSelectionInEditor(editor)).toBe(false)
+
+    editor.remove()
+  })
+})
+
+describe('normalizeComposerEditorDom — caret preservation', () => {
+  it('re-establishes a caret anchored inside a removed phantom tail block', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    document.body.append(editor)
+    editor.focus()
+
+    expect(document.activeElement).toBe(editor)
+
+    const text = document.createTextNode('hi')
+    const tailBlock = document.createElement('div')
+
+    tailBlock.append(document.createElement('br'))
+    editor.append(text, tailBlock)
+
+    const caret = document.createRange()
+    caret.setStart(tailBlock, 0)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    normalizeComposerEditorDom(editor)
+
+    expect(tailBlock.isConnected).toBe(false)
+    expect(selection.isCollapsed).toBe(true)
+
+    const range = selection.getRangeAt(0)
+    expect(editor.contains(range.startContainer)).toBe(true)
+    expect(range.startContainer).toBe(text)
+    expect(range.startOffset).toBe(2)
+
+    editor.remove()
+  })
+
+  it('leaves a still-valid selection untouched', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    document.body.append(editor)
+    editor.focus()
+
+    const br = document.createElement('br')
+    editor.append(refChipElement('file', '`a.ts`'), br)
+
+    const caret = document.createRange()
+    caret.setStart(editor, 1)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    const offsetBefore = caretOffsetInEditor(editor)
+
+    normalizeComposerEditorDom(editor)
+
+    // The trailing <br> after a chip is gone — normalization did mutate — but
+    // the selection was valid, so it must come through untouched.
+    expect(editor.contains(br)).toBe(false)
+
+    const range = selection.getRangeAt(0)
+    expect(range.startContainer).toBe(editor)
+    expect(range.startOffset).toBe(1)
+    expect(caretOffsetInEditor(editor)).toBe(offsetBefore)
 
     editor.remove()
   })

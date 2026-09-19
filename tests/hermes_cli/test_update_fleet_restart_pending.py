@@ -898,3 +898,27 @@ def test_startup_warn_silent_when_completed_update_fleet_restarted_onto_moved_ch
     update_cmd._warn_pending_fleet_restart_on_startup()
 
     assert capsys.readouterr().err == ""
+
+
+def test_marker_with_target_sha_but_no_inventory_defers_to_receipt(monkeypatch):
+    """Regression: a fleet_restart_pending marker the updater wrote with expected_sha but no
+    inventory= line must NOT force a permanent "owed" warning. The receipt-based reconciliation
+    owns the runtime truth; when it reports no stale runtime, _pending_fleet_restart_needed
+    returns False. Without this, a marker left behind by a real `hermes update` (which omits the
+    inventory line) makes the boot-time check warn on every startup even though the gateway is
+    already serving the pulled code.
+    """
+    import hermes_cli.update_receipt as update_receipt
+
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha="00570550f37e9082676955d50f65c7d9ba846cc9"
+    )
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+    # receipt reports no stale runtime (e.g. gateway_restart empty)
+    monkeypatch.setattr(update_receipt, "read_latest_receipt", lambda: {"gateway_restart": {}})
+    try:
+        assert update_cmd_fleet._marker_only_restart_obsolete() is None
+        assert update_cmd_fleet._pending_fleet_restart_needed() is False
+        assert update_cmd_fleet._update_owes_fleet_restart() is False
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()

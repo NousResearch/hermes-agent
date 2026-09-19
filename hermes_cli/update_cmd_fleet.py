@@ -212,10 +212,17 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
         return False
 
 
-def _marker_only_restart_obsolete() -> bool:
+def _marker_only_restart_obsolete() -> "bool | None":
     """Settle only the inventory stored with this marker's target SHA.
 
-    Historical receipts cannot narrow this obligation. Legacy, malformed or unsupported inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
+    Returns True when the obligation is provably met (and clears the marker), False when
+    provably unmet, and None when the marker cannot enumerate its obligation. None defers to
+    the receipt-based reconciliation, which owns the authoritative runtime record. We defer
+    (rather than fail-closed False) specifically for a marker that carries a target SHA but no
+    usable inventory: the updater wrote it without runtimes, and forcing "owed" there produces a
+    permanent warning on every boot. When there is no target SHA to reconcile against we stay
+    fail-closed False. Historical receipts cannot narrow this obligation. Legacy, malformed or
+    unsupported inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -227,10 +234,16 @@ def _marker_only_restart_obsolete() -> bool:
                 return False
             fields[key] = value
         expected_sha = fields.get("expected_sha", "").strip()
-        inventory = json.loads(fields.get("inventory", "null"))
-        if not isinstance(inventory, dict) or inventory.get("version") != 1:
-            return False
-        runtimes = inventory.get("runtimes")
+        inventory_raw = fields.get("inventory")
+        inventory = json.loads(inventory_raw) if inventory_raw is not None else None
+        # A marker with a target SHA but no usable inventory cannot enumerate its obligation;
+        # defer to the receipt-based reconciliation (which owns the authoritative runtime
+        # record) instead of forcing a permanent "owed" warning for a marker the updater wrote
+        # without runtimes. Fail-closed False is kept when there is no target SHA to reconcile
+        # against.
+        if expected_sha and (not isinstance(inventory, dict) or inventory.get("version") != 1):
+            return None
+        runtimes = inventory.get("runtimes") if isinstance(inventory, dict) else None
         if not isinstance(runtimes, list) or not runtimes:
             return False
         owed = set()
@@ -300,7 +313,9 @@ def _pending_fleet_restart_needed(*, receipt: dict | None = None, pending_manual
     # A marker owns its inventory; latest.json can belong to an older update.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
-            return not _marker_only_restart_obsolete()
+            obsolete = _marker_only_restart_obsolete()
+            if obsolete is not None:
+                return not obsolete
     owed = _receipt_owed_gateways(receipt, pending_manual)
     if not _receipt_reports_stale_runtime(receipt):
         return False
@@ -320,7 +335,9 @@ def _update_owes_fleet_restart(*, receipt: dict | None = None, pending_manual: l
     # A completed older receipt cannot discharge an independent marker's inventory.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
-            return not _marker_only_restart_obsolete()
+            obsolete = _marker_only_restart_obsolete()
+            if obsolete is not None:
+                return not obsolete
     owed = _receipt_owed_gateways(receipt, pending_manual)
     if not _receipt_reports_stale_runtime(receipt):
         return False

@@ -22,7 +22,9 @@ from agent.message_sanitization import _sanitize_surrogates
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
 # real content and is not flagged. (#65919)
-_VERIFICATION_CONTINUATION_FLAGS = ("_verification_stop_synthetic", "_pre_verify_synthetic")
+_VERIFICATION_CONTINUATION_FLAGS = (
+    "_verification_stop_synthetic", "_pre_verify_synthetic", "_promise_stop_synthetic",
+)
 
 _SENTENCE_END = {".", "!", "?", "。", "！", "？", "`", ")"}
 
@@ -479,6 +481,20 @@ def finalize_turn(
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 
+    # The promise stop guard exhausted its bounded per-turn continuations and the
+    # delivered text still ends on an action the model announced but never performed:
+    # never present that as a clean completion (the user-facing notice is appended
+    # post-persist, file-mutation-footer style, so it never contaminates the
+    # transcript the next prompt replays).
+    _promise_incomplete_notice = bool(
+        getattr(agent, "_promise_stop_unfulfilled", False)
+        and final_response
+        and not interrupted
+        and not failed
+    )
+    if _promise_incomplete_notice:
+        completed = False
+
     _rollback_interrupted_preflight_display(agent, interrupted)
 
     _cleanup_errors: List[str] = []
@@ -520,6 +536,14 @@ def finalize_turn(
     # Response transforms apply only to real, uninterrupted responses.
     if final_response and not interrupted:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
+    if _promise_incomplete_notice:
+        # Post-persist like the file-mutation footer: the warning surfaces to the user
+        # without being written into the transcript rows the next prompt replays.
+        final_response = str(final_response).rstrip() + (
+            "\n\n⚠️ This turn ended on an action the model announced (“running…”, “fixing…”)"
+            " but never executed — the bounded continuation was exhausted. The task is"
+            " NOT complete; resend or check the last step."
+        )
     if not interrupted:
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
@@ -590,6 +614,10 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if _promise_incomplete_notice:
+        # Machine-readable flag so gateway/desktop surfaces can render their own
+        # incomplete badge instead of parsing the ⚠️ text.
+        result["action_promise_unfulfilled"] = True
     # Persistence failures already set failed=True; also stamp `error` so the gateway
     # surfaces status="error" (desktop can toast) instead of a quiet complete frame, plus
     # the machine-readable cause 'session_persistence_failed:<locked|compression|...>'.

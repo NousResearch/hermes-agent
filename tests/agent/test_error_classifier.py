@@ -899,6 +899,9 @@ class TestClassifyApiError:
         for msg in (
             "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
             "Unrecognized request argument supplied: reasoning_effort",
+            "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
+            "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
+            "'param': 'reasoning_effort'}}",
         ):
             result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
             assert result.reason == FailoverReason.reasoning_mandatory, msg
@@ -908,6 +911,11 @@ class TestClassifyApiError:
             provider="custom", model="kimi-k2-thinking",
         )
         assert gated.reason != FailoverReason.reasoning_mandatory
+        enum_unrelated = classify_api_error(
+            MockAPIError("Invalid option: expected one of 'text'|'json_object'", status_code=400),
+            provider="custom", model="m",
+        )
+        assert enum_unrelated.reason != FailoverReason.reasoning_mandatory
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 

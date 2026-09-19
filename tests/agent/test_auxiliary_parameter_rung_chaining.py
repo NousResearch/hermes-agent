@@ -75,6 +75,12 @@ def test_reasoning_effort_none_unsupported_reversed_wording():
     assert _is_reasoning_field_rejection(
         _Bad400("Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh")
     )
+    # commandcode.ai-style enum rejection: field named only in the structured param tail (#115277).
+    assert _is_reasoning_field_rejection(
+        _Bad400("Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
+                "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
+                "'param': 'reasoning_effort'}}")
+    )
     assert not _is_reasoning_field_rejection(
         _Bad400("The model kimi-k2-thinking is not supported when using this account")
     )

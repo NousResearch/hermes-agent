@@ -474,14 +474,21 @@ _REASONING_FIELD_TOKEN = re.compile(
     r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
 )
 
+# Enum-style phrasing some OpenAI-compat aggregators use to reject a wire control's VALUE
+# (commandcode.ai: "Invalid option: expected one of \"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"")
+# with the field name only in the structured ``'param': 'reasoning_effort'`` tail (#115277).
+_REASONING_ENUM_VALUE_MARKERS = ("invalid option", "expected one of")
+
 
 def is_reasoning_field_rejection(error_msg: str) -> bool:
     """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
     ``thinking``/``think``): the field token plus either a generic unsupported marker ("Unrecognized
-    request argument supplied: reasoning_effort", #112781) or a standalone "unsupported" next to the
+    request argument supplied: reasoning_effort", #112781), a standalone "unsupported" next to the
     field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none' unsupported;
-    use minimal|low|medium|high|xhigh", #114460). The route default is the right answer for such a
-    model, so both the main loop and the auxiliary ladder retry once without the disable.
+    use minimal|low|medium|high|xhigh", #114460), or an enum-style value rejection ("Invalid option:
+    expected one of ...", the field named in the structured ``param`` tail, #115277). The route
+    default is the right answer for such a model, so both the main loop and the auxiliary ladder
+    retry once without the disable.
 
     Known trade-off: a 400 about a thinking *state* ("Function calling is not supported when
     thinking is enabled") also matches — the marker sits right next to the token, so no proximity
@@ -492,7 +499,10 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     if token is None:
         return False
     near = msg[max(0, token.start() - 32):token.end() + 32]
-    return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+    if "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS):
+        return True
+    # Enum-style value rejection (the field token matched above) → same strip-and-retry remedy.
+    return any(m in msg for m in _REASONING_ENUM_VALUE_MARKERS)
 
 
 def _billing_hints(error_msg: str) -> Verdict:

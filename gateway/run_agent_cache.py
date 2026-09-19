@@ -533,6 +533,12 @@ class GatewayAgentCacheMixin:
                 adapter._pending_messages[session_key] = wake
         if state is not None:
             state.persistent.pending_command_text = None
+            # The adapter slot above holds only the FIFO head; the tail lives
+            # on ``conversation.queued_events``. Without clearing it, /stop and
+            # /new dropped the head and let the overflow drain on its own — a
+            # session that keeps running after "⚡ Stopped." (#73060). Discard
+            # the whole chain so the queue means one thing for the session.
+            state.conversation.queued_events = []
         if release_running_state:
             # Guarded release: a message that arrived during the awaits above may already run as
             # the successor generation — the displaced /stop tail must not wipe its slot.

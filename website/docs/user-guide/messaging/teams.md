@@ -106,6 +106,18 @@ TEAMS_ALLOWED_USERS=<your-aad-object-id>
 
 ---
 
+## Preflight checklist
+
+Before saving Teams credentials in the Desktop app, **Test configuration** runs a side-effect-free preflight and turns the result into a small checklist. It gives administrators a faster onboarding signal, makes the next action explicit, and can reduce support handoffs caused by treating every setup problem as the same failure.
+
+The checklist distinguishes:
+
+- **Verified locally** — Hermes validated the submitted identifiers and obtained a Bot Framework token.
+- **Not verifiable in this test** — the token request cannot inspect tenant consent or channel availability; ask a Teams administrator to confirm those items.
+- **Failed** — review the named requirement and run the preflight again.
+
+The preflight does not save configuration, enable Teams, restart the gateway, request OAuth consent, or display tokens, secrets, tenant IDs, or raw provider responses. A passing preflight is therefore an onboarding aid, not proof that the bot is installed in Teams or that end-to-end messaging is working.
+
 ## Step 5: Start the Gateway
 
 **Docker** (must run from the directory that contains `docker-compose.yml` — usually your cloned `hermes-agent` repo, not `~`):

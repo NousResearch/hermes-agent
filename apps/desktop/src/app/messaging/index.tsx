@@ -19,7 +19,10 @@ import {
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type PairingUser,
+  preflightTeamsConfig,
   revokePairing,
+  type TeamsChecklistItem,
+  type TeamsPreflightChecklist,
   type TelegramOnboardingApplyResponse,
   updateMessagingPlatform
 } from '@/hermes'
@@ -650,6 +653,74 @@ function PlatformRow({
   )
 }
 
+function TeamsChecklist({ checklist }: { checklist: TeamsPreflightChecklist }) {
+  const groups: Array<[string, TeamsChecklistItem[]]> = [
+    ['Capacidades', checklist.capabilities],
+    ['Permissões', checklist.permissions]
+  ]
+
+  const statusLabel = (status: TeamsChecklistItem['status']) => {
+    if (status === 'verified') {
+      return 'Verificado localmente'
+    }
+
+    if (status === 'failed') {
+      return 'Falhou'
+    }
+
+    return 'Não verificável neste teste'
+  }
+
+  const statusClass = (status: TeamsChecklistItem['status']) => {
+    if (status === 'verified') {
+      return 'text-primary'
+    }
+
+    if (status === 'failed') {
+      return 'text-destructive'
+    }
+
+    return 'text-amber-600 dark:text-amber-300'
+  }
+
+  const fallbackNextStep = (status: TeamsChecklistItem['status']) => {
+    if (status === 'verified') {
+      return 'Continue with a local send test.'
+    }
+
+    if (status === 'failed') {
+      return 'Review this requirement and run the preflight again.'
+    }
+
+    return 'Ask a Teams administrator to verify this requirement.'
+  }
+
+  return (
+    <section className="mt-3 rounded-md border bg-background/50 p-3" data-testid="teams-preflight-checklist">
+      <p className="font-medium">Checklist do preflight</p>
+      <div className="mt-2 grid gap-3">
+        {groups.map(([label, items]) => (
+          <div key={label}>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+            <div className="mt-1 grid gap-2">
+              {items.map(item => (
+                <div className="rounded border p-2" key={`${label}:${item.name}`}>
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="font-medium">{item.name}</span>
+                    <span className={cn('text-xs font-medium', statusClass(item.status))}>{statusLabel(item.status)}</span>
+                  </div>
+                  {item.note && <p className="mt-1 text-xs text-muted-foreground">{item.note}</p>}
+                  <p className="mt-1 text-xs">Próximo passo: {item.next_step || fallbackNextStep(item.status)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function PlatformDetail({
   approved,
   approving,
@@ -680,6 +751,26 @@ function PlatformDetail({
   const { t } = useI18n()
   const m = t.messaging
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [preflight, setPreflight] = useState<'idle' | 'loading' | 'error' | 'success'>('idle')
+  const [preflightChecklist, setPreflightChecklist] = useState<TeamsPreflightChecklist | null>(null)
+  const [preflightMessage, setPreflightMessage] = useState('')
+
+  async function handleTeamsPreflight() {
+    const config = Object.fromEntries(Object.entries(edits).filter(([, value]) => value.trim()))
+    setPreflight('loading')
+    setPreflightChecklist(null)
+
+    try {
+      const result = await preflightTeamsConfig(config, scopeProfile)
+      setPreflight(result.ok ? 'success' : 'error')
+      setPreflightChecklist(result.checklist || null)
+      setPreflightMessage(result.message)
+    } catch (error) {
+      setPreflight('error')
+      setPreflightChecklist(null)
+      setPreflightMessage(error instanceof Error ? error.message : 'Teams configuration test failed.')
+    }
+  }
 
   const requiredFields = platform.env_vars.filter(field => field.required)
   const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
@@ -708,6 +799,18 @@ function PlatformDetail({
           <PlatformHint platform={platform} />
         </div>
       </header>
+
+      {platform.id === 'teams' && (
+        <section className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+          <p className="font-medium">Teste a configuração do Teams antes de salvar</p>
+          <p className="mt-1 text-muted-foreground">Este teste não habilita o Teams nem reinicia o gateway.</p>
+          <Button className="mt-2" disabled={preflight === 'loading'} onClick={() => void handleTeamsPreflight()} size="sm" variant="secondary">
+            {preflight === 'loading' ? 'Testando…' : 'Testar configuração'}
+          </Button>
+          {preflightMessage && <p className={cn('mt-2', preflight === 'success' ? 'text-primary' : 'text-destructive')}>{preflightMessage}</p>}
+          {preflightChecklist && <TeamsChecklist checklist={preflightChecklist} />}
+        </section>
+      )}
 
       {platform.error_message && <ErrorBanner>{platform.error_message}</ErrorBanner>}
 

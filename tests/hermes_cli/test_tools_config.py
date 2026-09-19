@@ -158,6 +158,18 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
     assert "discord_admin" not in enabled
 
 
+def test_explicit_empty_platform_toolsets_disable_non_configurable_toolsets():
+    """An explicitly empty list is a deny-all selection. ``kanban`` is
+    non-configurable and normally recovered from the platform composite; it
+    must not leak back into an explicitly empty discord/cron surface while
+    staying available on the CLI surface that lists it."""
+    config = {"platform_toolsets": {"cli": ["kanban"], "discord": [], "cron": []}}
+
+    assert _get_platform_tools(config, "cli", include_default_mcp_servers=False) == {"kanban"}
+    assert _get_platform_tools(config, "discord", include_default_mcp_servers=False) == set()
+    assert _get_platform_tools(config, "cron", include_default_mcp_servers=False) == set()
+
+
 
 
 

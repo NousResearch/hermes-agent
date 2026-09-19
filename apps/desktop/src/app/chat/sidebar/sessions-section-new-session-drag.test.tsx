@@ -178,6 +178,7 @@ beforeEach(() => {
 
 describe('Show all sessions', () => {
   const sessions = Array.from({ length: 6 }, (_, index) => ({ id: `session-${index + 1}` }) as SessionInfo)
+
   const renderRows = (items: SessionInfo[]) => (
     <>
       {items.map(item => (
@@ -204,6 +205,7 @@ describe('Show all sessions', () => {
     workspaceOpen.value = true
     $sidebarShowAllSessions.set(true)
     const now = Math.floor(Date.now() / 1000)
+
     const previewSessions = [0, 2, 10, 40].map(
       days =>
         ({

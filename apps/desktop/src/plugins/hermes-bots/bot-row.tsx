@@ -332,7 +332,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 })
                 host.notify({
                   kind: 'info',
-                  message: pinned ? b.bot.unpinnedToast(displayName(bot, current)) : b.bot.pinnedToast(displayName(bot, current))
+                  message: pinned
+                    ? b.bot.unpinnedToast(displayName(bot, current))
+                    : b.bot.pinnedToast(displayName(bot, current))
                 })
               })
               .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))

@@ -676,6 +676,95 @@ class SessionCompressionMixin:
         chain = self.get_compression_chain(session_id)
         return chain[-1] if chain else session_id
 
+    def _compression_child_edges(self) -> Dict[str, List[str]]:
+        """Fetch every traversable compression edge in ONE statement.
+
+        This is ``_CHAIN_STEP_SQL``'s per-hop child query lifted over all
+        compression-ended parents at once: identical child filters (no
+        ``_branched_from`` / ``_delegate_from`` / reset-fork / tool children)
+        and the identical preference ORDER BY (continuing chain first, then
+        still live, then closed; freshest first; higher id breaks ties). Read
+        through ``_read_ctx()`` so it borrows a WAL reader instead of taking
+        the global write lock.
+
+        Returns ``{parent_id: [child_id, ...]}`` with each candidate list
+        already sorted best-first, so an in-memory walk can take
+        ``children[0]`` exactly as the per-hop query's ``LIMIT 1`` would.
+        """
+        query = f"""
+            SELECT parent.id AS parent_id,
+                   child.id AS child_id,
+                   CASE
+                     WHEN child.end_reason = 'compression' THEN 0
+                     WHEN child.ended_at IS NULL THEN 1
+                     ELSE 2
+                   END AS pref,
+                   {_sql_session_last_active("child")} AS child_last_active
+            FROM sessions parent
+            JOIN sessions child ON child.parent_session_id = parent.id
+            WHERE parent.end_reason = 'compression'
+              AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+              AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+              AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+              AND COALESCE(child.source, '') != 'tool'
+            ORDER BY
+              parent.id,
+              pref ASC,
+              child_last_active DESC,
+              child.started_at DESC,
+              child.id DESC
+        """
+        with self._read_ctx() as conn:
+            rows = conn.execute(query).fetchall()
+        # Rows arrive globally ordered by (parent, preference), so grouping in
+        # scan order yields each parent's best-first candidate list.
+        index: Dict[str, List[str]] = {}
+        for row in rows:
+            index.setdefault(row["parent_id"], []).append(row["child_id"])
+        return index
+
+    def _compression_chains(self, root_ids) -> Dict[str, List[str]]:
+        """``get_compression_chain`` for many roots off one batched edge fetch.
+
+        Builds the edge index once (one statement, no write lock), then walks
+        every chain entirely in memory with the per-hop walker's exact hop
+        semantics: repeatedly take the best-ranked child of the current node,
+        stopping on repeats/cycles and bounded at 100 hops like the original
+        walk. Replaces the N+1 pattern that cost one query (and one read-pool
+        checkout) per hop per root.
+        """
+        chains: Dict[str, List[str]] = {}
+        roots = [rid for rid in dict.fromkeys(root_ids or ()) if rid]
+        if not roots:
+            return chains
+        index = self._compression_child_edges()
+        for root_id in roots:
+            current = root_id
+            chain = [current]
+            seen = {current}
+            for _ in range(100):
+                children = index.get(current)
+                if not children:
+                    break
+                next_child = children[0]
+                if not next_child or next_child in seen:
+                    break
+                seen.add(next_child)
+                current = next_child
+                chain.append(next_child)
+            chains[root_id] = chain
+        return chains
+
+    def _resolve_compression_tips(self, root_ids) -> Dict[str, str]:
+        """Resolve every root's live continuation tip without per-hop queries.
+
+        Thin tip-only view over :meth:`_compression_chains`: the in-memory walk
+        reproduces ``get_compression_tip`` hop-for-hop (same child filters, same
+        preference order, same 100-hop/cycle guard) from ONE batched edge fetch.
+        Nodes that start no chain resolve to themselves.
+        """
+        return {root_id: chain[-1] for root_id, chain in self._compression_chains(root_ids).items()}
+
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
         # A reset fork of a compression-ended parent is its own conversation, not the continuation (#114271).

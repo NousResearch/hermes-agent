@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from run_agent import AIAgent
 from tools.skills_tool import (
     _skill_view_with_bump,
     reset_skill_view_dedup,
@@ -84,6 +85,24 @@ class TestSkillViewDedup:
         reset_skill_view_dedup("t-svd")
         r2 = _view("demo-dedup-skill")
         assert "Step one" in r2.get("content", "")
+
+    def test_session_reset_returns_full_content(self, skills_home):
+        previous_task = "t-svd-previous"
+        current_task = "t-svd-current"
+        for task_id in (previous_task, current_task):
+            _view("demo-dedup-skill", task=task_id)
+            assert _view("demo-dedup-skill", task=task_id).get("dedup") is True
+
+        agent = AIAgent.__new__(AIAgent)
+        agent._current_task_id = current_task
+        agent._process_owner_task_ids = {previous_task, current_task}
+        agent.context_compressor = None
+        agent.reset_session_state()
+
+        for task_id in (previous_task, current_task):
+            result = _view("demo-dedup-skill", task=task_id)
+            assert "Step one" in result.get("content", "")
+            assert result.get("dedup") is None
 
     def test_no_task_id_never_dedups(self, skills_home):
         args = {"name": "demo-dedup-skill"}

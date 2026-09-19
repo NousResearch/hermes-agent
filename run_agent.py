@@ -403,6 +403,14 @@ class AIAgent(
         With ``previous_messages`` / ``old_session_id`` / ``carry_over_context`` the context engine gets the
         full transition lifecycle instead of a bare reset.
         """
+        from tools.skills_tool_dedup import reset_skill_view_dedup
+
+        task_ids = set(getattr(self, "_process_owner_task_ids", ()))
+        if current_task_id := getattr(self, "_current_task_id", None):
+            task_ids.add(current_task_id)
+        for task_id in task_ids:
+            reset_skill_view_dedup(task_id)
+
         for counter in (
             "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
             "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",

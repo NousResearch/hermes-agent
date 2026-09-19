@@ -115,6 +115,23 @@ async def test_math_outside_details_still_uses_rich_send():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hr", ["---", "***", "___", "  ---  ", "\n---\n"])
+async def test_horizontal_rule_triggers_rich_send(hr):
+    adapter = _make_adapter()
+    content = f"Above the line\n\n{hr}\n\nBelow the line"
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == content
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble():
     adapter = _make_adapter()
 

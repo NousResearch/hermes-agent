@@ -1279,18 +1279,20 @@ class TelegramAdapter(BasePlatformAdapter):
         return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:
-        """True for constructs MarkdownV2 degrades: pipe tables, task lists, <details>, block math.
+        """True for constructs MarkdownV2 degrades: pipe tables, task lists, horizontal rules, <details>, block math.
         Ordinary replies stay on MarkdownV2 so clients render consistent font weight/spacing.
 
         The rich endpoint is reserved for constructs where raw markdown materially improves output: pipe
         tables (MarkdownV2 has no table syntax and rewrites them into bullet lists), GFM task lists,
-        collapsible ``<details>`` blocks, and block math. Adapted from #45995 (@YonganZhang).
+        horizontal rules (---), collapsible ``<details>`` blocks, and block math. Adapted from #45995 (@YonganZhang).
         """
         if not content:
             return False
         if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
             return True
         if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
+            return True
+        if re.search(r"(?m)^\s*[-*_]{3,}\s*$", content):
             return True
         if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
             return True

@@ -458,14 +458,12 @@ def _capped_structured_content(result):
     truncated JSON string (multi-MB JSON flood guard)."""
     # Hard-cap pathological payloads before they propagate (#56059); ordinary large results pass untouched
     # to the spillover layer.
-    # content and structuredContent are ALTERNATIVES — never both forwarded (ported from
-    # MoonshotAI/kimi-code#3234). Spec-following servers already render their data into content (the
-    # verbatim dual-emit SHOULD, or a faithful human reorganisation), so forwarding both sent the same
-    # information to the model twice. content wins whenever it rendered anything usable; there is no
-    # reliable signal that the structured payload is richer than what the server put in content (semantic
-    # equality misses faithful reorganisations, size ratios misjudge both directions), so no heuristic is
-    # attempted. structuredContent fills in only when the content blocks rendered effectively empty, which
-    # keeps structuredContent-only servers working. Server-level `_meta` is also surfaced (ported from
+    # Duplicate-guarding (ported from MoonshotAI/kimi-code#3234) is narrowed to the deterministic case:
+    # the spec's verbatim dual-emit, where content is the serialized JSON of structuredContent (see
+    # _text_is_verbatim_structured_json). Any other usable text (prose summary, faithful reorganisation)
+    # keeps structuredContent alongside it (#115430) — summary-only content must not destroy the only
+    # machine-readable result. structuredContent fills in when the content blocks rendered effectively
+    # empty, which keeps structuredContent-only servers working. Server-level `_meta` is also surfaced (ported from
     # MoonshotAI/kimi-code#2596): servers return namespaced metadata there (validated contracts,
     # browser-handoff payloads, ...) that was previously invisible to the agent. Protocol-reserved keys are
     # dropped first (kimi-code#2600) — per the MCP spec's key-name rules a prefix is reserved when a
@@ -481,20 +479,35 @@ def _capped_structured_content(result):
     return _truncate_mcp_text_result(as_json) if len(as_json) > _MCP_HARD_RESULT_CAP_CHARS else structured
 
 
+def _text_is_verbatim_structured_json(text_result: str, structured) -> bool:
+    """True when the rendered text is exactly the structured payload serialized as JSON — the
+    spec's backwards-compat dual-emit ("a tool that returns structured content SHOULD also return
+    the serialized JSON in a TextContent block"). Parsing the text yields the same data, which is
+    a deterministic equality, not a richness heuristic: prose summaries and faithful
+    reorganisations fail it, so their ``structuredContent`` survives (#115430 — a summary-only
+    ``content`` must not destroy the only machine-readable result)."""
+    try:
+        return json.loads(text_result) == structured
+    except (TypeError, ValueError):
+        return False
+
+
 def _render_call_tool_result(result, server_name: str) -> str:
-    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are
-    ALTERNATIVES, never both forwarded (kimi-code#3234): spec-following servers already render
-    their data into content, so forwarding both sent it twice. content wins whenever it rendered
-    anything usable (no richness heuristic is attempted — none is reliable); structuredContent
-    fills in only when the blocks rendered effectively empty, keeping structuredContent-only
-    servers working. ``_meta`` minus reserved keys is always surfaced."""
+    """Pure: ``CallToolResult`` -> handler JSON. Duplicate-guarding from kimi-code#3234 still
+    applies, narrowed to the deterministic case: when the text is the spec's verbatim dual-emit
+    of the structured payload, only the text is kept. Any other usable text (prose summary,
+    faithful reorganisation) now keeps ``structuredContent`` alongside it (#115430): servers that
+    put a status summary in ``content`` and the real data in ``structuredContent`` were losing
+    that data irreversibly. structuredContent still fills in when the blocks rendered effectively
+    empty, keeping structuredContent-only servers working. ``_meta`` minus reserved keys is
+    always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
         return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
     text_result, usable_parts = _render_content_blocks(result, server_name)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
-    if structured is not None and usable_parts > 0:
-        structured = None  # drop notices do not count as usable content
+    if structured is not None and usable_parts > 0 and _text_is_verbatim_structured_json(text_result, structured):
+        structured = None  # verbatim dual-emit: content already carries the structured data
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.

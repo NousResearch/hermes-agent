@@ -805,8 +805,21 @@ def _handle_comment(args: dict, **kw) -> str:
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
     author = os.environ.get("HERMES_PROFILE") or "worker"
+    # Authorship provenance: the calling SESSION id, recorded once at call
+    # time. Two agent contexts can share one profile (the bot-mode self-DM
+    # fork incident class) — on a claimed card, the author profile alone
+    # cannot tell the claimant's writer from a fork's. Read TASK-LOCAL first:
+    # gateway session identity lives in ContextVars (gateway.session_context)
+    # so concurrent tasks in one process cannot clobber each other — the
+    # process env can record a different concurrent session or stale state;
+    # it remains the fallback for CLI/cron/test callers with no bound
+    # context. No caller-supplied override: same forgery rule as author.
+    from gateway.session_context import get_session_env
+    session_id = (get_session_env("HERMES_SESSION_ID", "")
+                  or os.environ.get("HERMES_SESSION_ID")) or None
     with _board(args.get("board")) as (kb, conn):
-        cid = kb.add_comment(conn, tid, author=author, body=str(body))
+        cid = kb.add_comment(conn, tid, author=author, body=str(body),
+                             session_id=session_id)
         return _ok(task_id=tid, comment_id=cid)
 
 

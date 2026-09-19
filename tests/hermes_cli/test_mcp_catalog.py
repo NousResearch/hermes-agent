@@ -237,6 +237,14 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        fields = _catalog_entry_json(e, False, False)["required_env"]
+        assert fields == [
+            {"name": spec.name, "prompt": spec.prompt, "required": spec.required, "secret": spec.secret}
+            for spec in e.auth.env
+        ]
+
     def test_http_api_key_builds_bearer_headers_template(self, catalog_dir):
         body = _basic_manifest(
             transport={"type": "http", "url": "https://mcp.example.com/sse"},
@@ -589,8 +597,7 @@ class TestInstall:
         assert "secret-val" not in raw
 
     def test_install_oauth_preregistered_client_writes_oauth_block(self, catalog_dir, monkeypatch):
-        """Vendors without DCR: ``auth.oauth`` lands verbatim in ``mcp_servers.<name>.oauth`` while
-        the credentials it references are prompted into .env — config.yaml stays secret-free."""
+        """OAuth client IDs are saved inline while client secrets remain .env references."""
         auth = {
             "type": "oauth",
             "env": [
@@ -618,8 +625,10 @@ class TestInstall:
             "redirect_host": "localhost", "redirect_port": 27890,
         }
         assert get_env_value("DEMO_CLIENT_SECRET") == "val-for-secret"
+        assert get_env_value("DEMO_CLIENT_ID") is None
         raw = get_config_path().read_text(encoding="utf-8")
         assert "${DEMO_CLIENT_SECRET}" in raw and "val-for-secret" not in raw
+        assert "val-for-id" in raw and "${DEMO_CLIENT_ID}" not in raw
 
         # A ``${VAR}`` the manifest never declares would reach the token endpoint as a literal
         # placeholder (invalid_client): rejected at parse time, like the api_key header contract.
@@ -929,6 +938,66 @@ class TestToolsConfigIncludeMode:
 
 
 class TestShippedCatalog:
+    def test_official_n8n_install_preserves_legacy_bridge(self, monkeypatch, _isolate_hermes_home):
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+        from hermes_cli.mcp_picker import _build_rows
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        entry = mcp_catalog.get_entry("n8n-official")
+        assert entry is not None
+        url_field, = entry.auth.env
+        assert entry.transport.url == "${" + url_field.name + "}"
+        assert url_field.required and not url_field.secret
+        assert not url_field.default
+        assert entry.install is None
+        assert _catalog_entry_json(entry, False, False)["required_env"][0]["secret"] is False
+
+        home = _isolate_hermes_home
+        bridge = home / "mcp-installs" / "n8n" / "server.py"
+        bridge.parent.mkdir(parents=True)
+        bridge.write_text("# Existing user installation\n", encoding="utf-8")
+        legacy = {
+            "command": str(bridge.parent / ".venv" / "bin" / "python"),
+            "args": [str(bridge)], "enabled": False,
+            "tools": {"include": ["list_workflows"]},
+        }
+        config = load_config()
+        config["mcp_servers"] = {"n8n": legacy}
+        save_config(config)
+        save_env_value("N8N_BASE_URL", "https://legacy.example.test")
+        save_env_value("N8N_API_KEY", "synthetic-legacy-key")
+        monkeypatch.setattr(mcp_catalog, "get_env_value", lambda name: None)
+        server_url = "https://automation.example.test/mcp-server/http"
+        prompts = []
+
+        def supply_url(prompt, *, default, password):
+            prompts.append((prompt, password))
+            return server_url
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", supply_url)
+        mcp_catalog.install_entry(entry)
+
+        servers = load_config()["mcp_servers"]
+        assert servers["n8n"] == legacy
+        assert bridge.read_text(encoding="utf-8") == "# Existing user installation\n"
+        assert get_env_value("N8N_BASE_URL") == "https://legacy.example.test"
+        assert get_env_value("N8N_API_KEY") == "synthetic-legacy-key"
+        assert prompts == [(url_field.prompt, False)]
+        official = _resolve_mcp_server_config(servers[entry.name])
+        assert official["url"] == server_url
+        raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["mcp_servers"][entry.name]["url"] == server_url
+        assert url_field.name not in (home / ".env").read_text(encoding="utf-8")
+        assert official["auth"] == "oauth"
+        assert official["enabled"] is True
+        assert not {"command", "args", "headers", "tools"}.intersection(official)
+        rows = {row.name: row for row in _build_rows()}
+        assert rows["n8n"].is_custom
+        assert not rows[entry.name].is_custom
+
     def test_asana_catalog_targets_v2_with_preregistered_client(self, monkeypatch):
         """Asana's V1 ``/sse`` server is retired and V2 has no DCR: the shipped entry must install
         as the V2 Streamable HTTP URL plus a pre-registered client whose credentials are ``${VAR}``

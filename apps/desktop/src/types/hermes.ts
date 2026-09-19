@@ -1637,7 +1637,7 @@ export interface McpCatalogEntry {
   source: string
   transport: string
   auth_type: string
-  required_env: { name: string; prompt: string; required: boolean }[]
+  required_env: { name: string; prompt: string; required: boolean; secret?: boolean }[]
   command: string | null
   args: string[]
   url: string | null

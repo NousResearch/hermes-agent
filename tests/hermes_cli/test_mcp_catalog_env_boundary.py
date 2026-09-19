@@ -71,7 +71,7 @@ def test_catalog_rejects_undeclared_key_before_any_write_or_install(
     monkeypatch.setattr(
         mcp_catalog,
         "install_entry",
-        lambda entry, enable=True: installs.append(entry.name),
+        lambda entry, enable=True, **_kw: installs.append(entry.name),
     )
 
     response = client.post(
@@ -119,7 +119,7 @@ def test_catalog_cannot_declare_reserved_control_key(
     monkeypatch.setattr(
         mcp_catalog,
         "install_entry",
-        lambda entry, enable=True: installs.append(entry.name),
+        lambda entry, enable=True, **_kw: installs.append(entry.name),
     )
 
     response = client.post(
@@ -148,7 +148,7 @@ def test_catalog_accepts_declared_credential(
     monkeypatch.setattr(
         mcp_catalog,
         "install_entry",
-        lambda entry, enable=True: installs.append(entry.name),
+        lambda entry, enable=True, **_kw: installs.append(entry.name),
     )
 
     response = client.post(
@@ -189,6 +189,39 @@ def test_generic_env_endpoint_rejects_protected_key(
     assert not env_path.exists() or protected_key not in env_path.read_text(
         encoding="utf-8"
     )
+
+
+@pytest.mark.parametrize("url", ["https://automation.example.test/mcp-server/http", "", "file:///tmp/mcp"])
+def test_catalog_http_setup_keeps_url_in_config(
+    client: TestClient, catalog_env: Path, monkeypatch: pytest.MonkeyPatch, url: str,
+):
+    from hermes_cli import mcp_catalog
+    from hermes_cli.config import get_config_path
+
+    manifest_path = Path(os.environ["HERMES_OPTIONAL_MCPS"]) / "demo" / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["transport"] = {"type": "http", "url": "${DEMO_SERVER_URL}"}
+    manifest["auth"] = {"type": "oauth", "env": [
+        {"name": "DEMO_SERVER_URL", "prompt": "Server URL", "secret": False},
+    ]}
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    monkeypatch.setattr(mcp_catalog, "_probe_tools", lambda name: None)
+
+    response = client.post("/api/mcp/catalog/install", headers=HEADERS,
+                           json={"name": "demo", "env": {"DEMO_SERVER_URL": url}})
+
+    config_path = get_config_path()
+    if url.startswith("https:"):
+        assert response.status_code == 200, response.text
+        server = yaml.safe_load(config_path.read_text(encoding="utf-8"))["mcp_servers"]["demo"]
+        assert server["url"] == url
+        assert server["auth"] == "oauth"
+    else:
+        assert response.status_code == 400, response.text
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+        assert "demo" not in config.get("mcp_servers", {})
+    env_path = catalog_env / ".env"
+    assert not env_path.exists() or "DEMO_SERVER_URL" not in env_path.read_text(encoding="utf-8")
 
 
 def test_process_supplied_catalog_root_remains_supported(catalog_env: Path):

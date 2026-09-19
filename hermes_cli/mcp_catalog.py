@@ -12,6 +12,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -454,40 +455,57 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
-def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:
-    """Prompt for each env spec; secrets and non-secrets alike go to ~/.hermes/.env."""
+def _prompt_env_vars(
+    specs: List[EnvVarSpec], supplied: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Collect declared setup values; only secrets are persisted to .env."""
     collected: Dict[str, str] = {}
     for spec in specs:
         existing = get_env_value(spec.name)
-        if existing:
-            _say(f"  ✓ {spec.name} already set in .env")
-            collected[spec.name] = existing
-            continue
-        value = _prompt_input(spec.prompt, default=spec.default or None, password=spec.secret)
+        if supplied is not None:
+            value = supplied.get(spec.name, existing or spec.default)
+        else:
+            value = existing or _prompt_input(spec.prompt, default=spec.default or None, password=spec.secret)
         if value:
-            save_env_value(spec.name, value)
+            if spec.secret and value != existing:
+                save_env_value(spec.name, value)
             collected[spec.name] = value
         elif spec.required:
             raise CatalogError(f"{spec.name} is required but no value was provided")
     return collected
 
 
-def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> dict:
-    """Translate a manifest into the ``mcp_servers.<name>`` block format used by hermes_cli/mcp_config.py."""
+def _build_server_config(
+    entry: CatalogEntry, install_dir: Optional[Path], values: Optional[Dict[str, str]] = None,
+) -> dict:
+    """Persist ordinary setup values in config; secret references stay unresolved."""
+    ordinary = {spec.name: values[spec.name] for spec in entry.auth.env
+                if not spec.secret and values is not None and spec.name in values}
+
+    def expand(value: str) -> str:
+        return _ENV_REF_RE.sub(lambda match: ordinary.get(match.group(1), match.group(0)), value)
+
     cfg: dict = {}
     t = entry.transport
     if t.type == "stdio":
-        cfg["command"] = _expand_install_dir(t.command or "", install_dir)
+        cfg["command"] = expand(_expand_install_dir(t.command or "", install_dir))
         if t.args:
-            cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
-        if t.env:
-            cfg["env"] = dict(t.env)
+            cfg["args"] = [expand(_expand_install_dir(a, install_dir)) for a in t.args]
+        env = {key: expand(value) for key, value in t.env.items()}
+        env.update(ordinary)
+        if env:
+            cfg["env"] = env
     elif t.type == "http":
-        cfg["url"] = t.url
+        cfg["url"] = expand(t.url or "")
+        if values is not None:
+            url = urlsplit(cfg["url"])
+            if url.scheme not in ("http", "https") or not url.hostname or _ENV_REF_RE.search(cfg["url"]):
+                raise CatalogError("MCP Server URL must be a complete HTTP or HTTPS URL")
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
             if entry.auth.oauth:
-                cfg["oauth"] = dict(entry.auth.oauth)
+                cfg["oauth"] = {key: expand(value) if isinstance(value, str) else value
+                                for key, value in entry.auth.oauth.items()}
         elif entry.auth.type == "api_key":
             from hermes_cli.mcp_config import _bearer_auth_headers
 
@@ -656,13 +674,10 @@ def _apply_tool_selection(
     _say(f"  ✓ {len(chosen_names)}/{len(probed)} tools enabled.")
 
 
-def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
-    """Install a catalog entry end-to-end.
-
-    Order: git clone + bootstrap (if any); credential prompts (``auth.env``) to .env; write
-    ``mcp_servers.<name>`` (with the ``auth: oauth`` marker and any pre-registered ``oauth`` block); probe + tool checklist (falling back per
-    :func:`_apply_tool_selection`); print post_install notes.
-    """
+def install_entry(
+    entry: CatalogEntry, *, enable: bool = True, env_values: Optional[Dict[str, str]] = None,
+) -> None:
+    """Install a catalog entry, saving secrets to .env and ordinary setup values to config."""
     print()
     _say(f"  Installing MCP '{entry.name}'", Colors.CYAN + Colors.BOLD)
     if entry.description:
@@ -673,10 +688,7 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
 
     install_dir = _do_git_install(entry) if entry.install is not None else None
 
-    if entry.auth.env:
-        print()
-        _say("  Configure credentials:", Colors.CYAN)
-        _prompt_env_vars(entry.auth.env)
+    values = _prompt_env_vars(entry.auth.env, env_values)
     if entry.auth.type == "oauth" and entry.auth.provider:
         # Provider-mediated OAuth relies on the existing `hermes auth <provider>` flow; surface
         # guidance rather than auto-running it to keep install decoupled from provider-auth lifecycle.
@@ -696,7 +708,7 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     prior_selection = _read_prior_tool_list(entry.name, "include")
     prior_exclude = _read_prior_tool_list(entry.name, "exclude")
 
-    server_cfg = _build_server_config(entry, install_dir)
+    server_cfg = _build_server_config(entry, install_dir, values)
     server_cfg["enabled"] = enable
 
     from hermes_cli.mcp_config import _save_mcp_server

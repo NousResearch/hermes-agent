@@ -1529,7 +1529,7 @@ export interface McpCatalogEntry {
   source: string;
   transport: "http" | "stdio";
   auth_type: "api_key" | "oauth" | "none";
-  required_env: Array<{ name: string; prompt: string; required: boolean }>;
+  required_env: Array<{ name: string; prompt: string; required: boolean; secret?: boolean }>;
   // Transport details — what actually connects (http) or runs (stdio).
   command: string | null;
   args: string[];

@@ -93,11 +93,49 @@ available. This change does not migrate existing connections to
 Catalog entries can require:
 
 - **API key** — Hermes prompts at install time and writes the value to
-  `~/.hermes/.env`. Non-secret values (base URLs) go to the same file.
+  `~/.hermes/.env`. Ordinary setup values, such as server URLs and client IDs,
+  are saved in the server's `config.yaml` entry.
 - **OAuth** (remote MCP) — written as `auth: oauth` in your config; the MCP
   client opens a browser on first connection.
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at
   `hermes auth <provider>` if you haven't authenticated already.
+
+### n8n's official MCP server
+
+Install `n8n-official` to connect directly to the MCP server built into your
+n8n Cloud or self-hosted instance. Hermes does not install a bridge or run a
+local n8n process.
+
+1. Ask an n8n instance owner or admin to enable **Settings > Instance-level MCP**.
+2. Select **Connect** and copy the full **Server URL**, ending in
+   `/mcp-server/http`. Use this endpoint rather than the editor URL. Older
+   n8n versions show the endpoint directly on the MCP settings page.
+3. Run `hermes mcp install n8n-official` and enter that URL when prompted.
+   The URL is an ordinary text field, not a password. The catalog saves it
+   as `mcp_servers.n8n-official.url` in the active profile's `config.yaml`.
+   It does not write this URL to `.env`.
+4. Complete browser OAuth. If authorization did not open during installation,
+   run `hermes mcp login n8n-official`. Desktop and dashboard users can install
+   from the catalog, then choose **Authorize** on the configured server.
+5. Review the discovered tools with `hermes mcp configure n8n-official`.
+   Start a new session or use `/reload-mcp` afterward.
+
+The Hermes backend must be able to reach the supplied URL. If n8n restricts
+OAuth callback URLs, its allowlist must permit the callback used by Hermes.
+No n8n API key is required for this OAuth connection.
+
+n8n applies your account permissions and MCP access settings. Search can
+return previews of workflows you can view; workflows must be available in
+MCP for full inspection, execution, or modification. Tools depend on your
+n8n version and permissions, and some can change or execute workflows.
+Hermes discovers the official server's tools instead of applying the retired
+bridge's tool list. See [n8n's connection guide](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
+
+`n8n-official` is a separate configured name from the retired `n8n` bridge.
+Adding it does not overwrite the old connection, credentials, installed files,
+or tool selection. Both can remain configured until you choose to remove one.
+The catalog uses the existing install-then-authorize flow; a failed OAuth
+attempt does not automatically remove the saved server configuration.
 
 ### Tool selection at install time
 

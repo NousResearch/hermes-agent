@@ -169,6 +169,31 @@ class TestCronjobRunExecutesImmediately:
         assert res["success"] is True
         assert m_run.call_args.kwargs["adapters"] is work_adapters
 
+    def test_execute_job_now_fails_instead_of_falling_back_when_owner_resolution_raises(self):
+        """Fail closed: if the owner profile cannot be resolved, the run is marked failed with the
+        error surfaced — it must NOT silently fall back to ``runner.adapters`` (the default bot)."""
+        default_adapters = {"telegram": object()}
+
+        def boom(profile):
+            raise RuntimeError("profile adapters unavailable")
+
+        runner = SimpleNamespace(adapters=default_adapters, _gateway_loop=object(),
+                                 _adapters_for_profile=boom)
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+             patch("gateway.run._gateway_runner_ref", return_value=runner), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.mark_job_run") as m_mark, \
+             patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["claimed"] is True
+        assert res["success"] is False
+        assert "profile adapters unavailable" in res["error"]
+        m_run.assert_not_called()
+        m_mark.assert_called_once()
+        assert m_mark.call_args.args[1] is False
+
     def test_execute_job_now_remains_standalone_without_gateway(self):
         """CLI-only runs retain the standalone delivery path."""
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}

@@ -17,13 +17,23 @@ from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
 
+# Memory-recall tools: read-only memory queries that benefit from the same
+# no-progress guard as file/search tools. Mnemosyne reports as mnemosyne_recall;
+# other providers use different names (supermemory_search, hindsight graph tools, …)
+# so the _is_memory_recall_tool() helper covers suffix/prefix patterns at runtime.
+_MEMORY_RECALL_TOOL_NAMES = frozenset({
+    "mnemosyne_recall", "mnemosyne_search", "mnemosyne_remember",
+    "mnemosyne_stats", "memory", "memory_recall", "memory_search",
+    "supermemory_search", "supermemory_recall",
+})
+
 IDEMPOTENT_TOOL_NAMES = frozenset({
     "read_file", "search_files", "web_search", "web_extract", "session_search", "skill_view", "skills_list",
     "browser_snapshot", "browser_console", "browser_get_images", "mcp_filesystem_read_file",
     "mcp_filesystem_read_text_file", "mcp_filesystem_read_multiple_files", "mcp_filesystem_list_directory",
     "mcp_filesystem_list_directory_with_sizes", "mcp_filesystem_directory_tree", "mcp_filesystem_get_file_info",
     "mcp_filesystem_search_files",
-})
+}) | _MEMORY_RECALL_TOOL_NAMES
 
 MUTATING_TOOL_NAMES = frozenset({
     "terminal", "execute_code", "write_file", "patch", "todo_list", "memory", "skill_manage",
@@ -95,6 +105,22 @@ def _is_non_interactive_platform(platform: str | None) -> bool:
     if not isinstance(platform, str) or not platform.strip():
         return False
     return platform.strip().lower() not in _ATTENDED_PLATFORMS
+
+
+def _is_memory_recall_tool(tool_name: str) -> bool:
+    """True for memory-recall/search tools (covers dynamic provider names)."""
+    if not isinstance(tool_name, str):
+        return False
+    lower = tool_name.lower()
+    if lower in _MEMORY_RECALL_TOOL_NAMES:
+        return True
+    # Suffix/prefix patterns: mnemosyne_recall, *_recall, *_memory_search, memory_*
+    if lower.endswith("_recall") or lower.endswith("_search"):
+        if "memory" in lower or "mnemosyne" in lower or "recall" in lower:
+            return True
+    if lower.startswith("memory") or "mnemosyne" in lower:
+        return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -250,6 +276,10 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked {tool_name}: this read-only call returned the same result {count} times. "
         "Stop repeating it unchanged; use the result already provided or try a different query."
     ),
+    "memory_recall_no_progress_block": (
+        "Blocked {tool_name}: this memory recall returned the same result {count} times across different queries. "
+        "The memory has no more relevant context — stop re-querying it and proceed with the available tools or ask the user."
+    ),
     "same_tool_failure_halt": (
         "Stopped {tool_name}: it failed {count} times this turn. "
         "Stop retrying the same failing tool path and choose a different approach."
@@ -261,6 +291,10 @@ _DECISION_MESSAGES: dict[str, str] = {
     "idempotent_no_progress_warning": (
         "{tool_name} returned the same result {count} times. Use the result already provided "
         "or change the query instead of repeating it unchanged."
+    ),
+    "memory_recall_no_progress_warning": (
+        "{tool_name} returned the same result {count} times across different queries. "
+        "No new memory context is being found — use the tools available to act or ask the user for clarification."
     ),
     "identical_call_streak_halt": (
         "Stopped {tool_name}: the same call with identical arguments returned the same result "
@@ -316,6 +350,12 @@ class ToolCallGuardrailController:
         self._progress_since_failure: dict[ToolCallSignature, bool] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
+        # Cross-query memory-recall no-progress: tracks consecutive recall calls
+        # with the SAME result hash across VARYING queries (e.g. mnemosyne_recall
+        # returning empty each time with different query args — see #112920).
+        # Keyed by tool_name so query-variant loops are caught even when each
+        # signature is unique.
+        self._recall_no_progress: dict[str, tuple[str, int]] = {}
         # Identical-call streak: CONSECUTIVE identical (tool, args, result) calls; any different call or
         # result resets it, so re-reads after edits and varied polling are never flagged.
         # Identical-call loop-breaker state (agent.stall_guards): tracks the CONSECUTIVE streak of identical
@@ -361,6 +401,10 @@ class ToolCallGuardrailController:
         cap_block = self._check_loop_cap(tool_name, args, signature)
         if cap_block is not None or not self.config.hard_stop_enabled:
             return cap_block or allow
+        # Cross-query memory-recall no-progress block (covers query-variant loops like #112920).
+        recall_block = self._recall_no_progress.get(tool_name) if _is_memory_recall_tool(tool_name) else None
+        if recall_block is not None and recall_block[1] >= self.config.no_progress_block_after:
+            return self._decide("block", "memory_recall_no_progress_block", tool_name, recall_block[1], signature)
         # A mutation since this call last failed makes the retry a new experiment.
         exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -418,6 +462,29 @@ class ToolCallGuardrailController:
         if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
+            # A successful mutation also breaks a memory-recall no-progress streak.
+            self._recall_no_progress.clear()
+        # Track cross-query memory-recall no-progress (same result across varying queries).
+        # This catches variant-query recall loops (#112920) where each call has a
+        # unique signature but the same empty result. Failures are excluded — they
+        # use the exact/same-tool failure counters instead.
+        if _is_memory_recall_tool(tool_name):
+            if failed:
+                self._recall_no_progress.pop(tool_name, None)
+            else:
+                result_hash = _result_hash(result)
+                prev = self._recall_no_progress.get(tool_name)
+                recall_count = prev[1] + 1 if prev is not None and prev[0] == result_hash else 1
+                self._recall_no_progress[tool_name] = (result_hash, recall_count)
+                if warnings and recall_count >= self.config.no_progress_warn_after:
+                    return self._decide("warn", "memory_recall_no_progress_warning", tool_name, recall_count, signature)
+                # Any successful non-recall tool resets the recall streak (progress made).
+        elif not failed:
+            # A successful call to a different tool breaks a consecutive recall streak.
+            # Keep the entry but the next recall with a new result will reset; we clear
+            # only if the history suggests the agent moved on to real work.
+            pass
+
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
@@ -431,6 +498,10 @@ class ToolCallGuardrailController:
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
     def _is_idempotent(self, tool_name: str) -> bool:
+        # Memory-recall tools are read-only regardless of mutating config (e.g. generic
+        # "memory" is in MUTATING but mnemosyne_recall must still be guarded).
+        if _is_memory_recall_tool(tool_name):
+            return True
         return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
 
     def observe_call(

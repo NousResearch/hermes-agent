@@ -43,7 +43,7 @@ from tools.delegate_tool_progress import (  # noqa: F401
 from tools.delegate_tool_registry import (  # noqa: F401
     _CONTROL_ACTIONS, _active_subagents, _active_subagents_lock, _capture_gateway_steer_authority,
     _handle_control_action, _is_descendant_of, _owns_subagent_record, _register_subagent, _unregister_subagent,
-    get_subagent_attribution, interrupt_subagent, is_spawn_paused, list_active_subagents, set_spawn_paused,
+    get_subagent_attribution, interrupt_subagent, is_spawn_paused, list_active_subagents, list_observable_subagents, set_spawn_paused,
     steer_subagent,
 )
 from tools.delegate_tool_tasks import (  # noqa: F401

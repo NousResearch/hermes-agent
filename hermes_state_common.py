@@ -236,7 +236,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -557,6 +557,25 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     -- from the canonical schema (#94691).
     origin_session_id TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS delegation_live_subagents (
+    subagent_id TEXT PRIMARY KEY,
+    parent_id TEXT,
+    owner_agent_session_id TEXT,
+    delegation_id TEXT,
+    depth INTEGER NOT NULL,
+    goal TEXT,
+    model TEXT,
+    started_at REAL NOT NULL,
+    status TEXT NOT NULL,
+    tool_count INTEGER NOT NULL DEFAULT 0,
+    last_tool TEXT,
+    owner_pid INTEGER NOT NULL,
+    lease_expires_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_delegation_live_subagents_lease
+    ON delegation_live_subagents(lease_expires_at);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);

@@ -3953,8 +3953,8 @@
         "type": "object"
       },
       "ActiveSubagent": {
-        "additionalProperties": true,
-        "description": "One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record\nis extended by the child runner \u2014 ``missed_steer`` etc. \u2014 so it stays open).",
+        "additionalProperties": false,
+        "description": "Exact observer allowlist: persisted leases are view-only and never carry control or completion data.",
         "properties": {
           "subagent_id": {
             "title": "Subagent Id",
@@ -4055,6 +4055,18 @@
             ],
             "default": null,
             "title": "Tool Count"
+          },
+          "last_tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Tool"
           },
           "owner_agent_session_id": {
             "anyOf": [

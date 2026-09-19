@@ -1588,3 +1588,35 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+
+class TestVaultRedactionScope:
+    def test_registered_value_follows_a_canonical_home_through_a_symlink_alias(
+        self, tmp_path, monkeypatch
+    ):
+        """Exact vault values share one scope when an existing home has two spellings."""
+        from agent import redact
+
+        real_home = tmp_path / "real-home"
+        alias_home = tmp_path / "home-alias"
+        real_home.mkdir()
+        try:
+            alias_home.symlink_to(real_home, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        canary = "vault orchard quokka hummingbird 482"
+        assert redact.redact_sensitive_text(canary, force=True) == canary
+
+        try:
+            monkeypatch.setenv("HERMES_HOME", str(alias_home))
+            redact.register_vault_redaction_value(canary)
+            monkeypatch.setenv("HERMES_HOME", str(real_home))
+
+            result = redact.redact_sensitive_text(f"DOM echoed {canary}", force=True)
+
+            assert canary not in result
+            assert "«redacted-vault-secret»" in result
+        finally:
+            for home in (alias_home, real_home):
+                monkeypatch.setenv("HERMES_HOME", str(home))
+                redact.clear_vault_redaction_values()

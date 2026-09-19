@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import MessageReaction, OpenModel, ProfileParams, SessionParams
+from .common import MessageReaction, ProfileParams, SessionParams
 from .registry import method
 
 # ── billing envelope ──────────────────────────────────────────────────────────────────────────
@@ -358,9 +358,8 @@ method("billing.step_up", params=BillingStepUpParams, result=BillingStepUpResult
 # ── delegation / subagent.steer ───────────────────────────────────────────────────────────────
 
 
-class ActiveSubagent(OpenModel):
-    """One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record
-    is extended by the child runner — ``missed_steer`` etc. — so it stays open)."""
+class ActiveSubagent(Result):
+    """Exact observer allowlist: persisted leases are view-only and never carry control or completion data."""
 
     subagent_id: str
     parent_id: str | None = None
@@ -371,6 +370,7 @@ class ActiveSubagent(OpenModel):
     started_at: float | None = None
     status: str | None = None
     tool_count: int | None = None
+    last_tool: str | None = None
     owner_agent_session_id: str | None = None
 
 

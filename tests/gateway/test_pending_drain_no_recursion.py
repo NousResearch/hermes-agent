@@ -180,7 +180,8 @@ async def test_normal_path_releases_session_guard():
 
 
 @pytest.mark.asyncio
-async def test_drain_task_cancellation_releases_session():
+@pytest.mark.parametrize("cancel_during", ["handler", "callback"])
+async def test_drain_task_cancellation_releases_session(cancel_during):
     """If the in-band drain task is cancelled (e.g. user sent ``/stop``
     mid-drain), the session guard and task registry must still get
     cleaned up — the cancelled drain task's own ``finally`` runs and
@@ -196,6 +197,11 @@ async def test_drain_task_cancellation_releases_session():
 
     turn_started = asyncio.Event()
     drain_hit_handler = asyncio.Event()
+    drain_task_holder = []
+
+    async def post_delivery():
+        drain_hit_handler.set()
+        await asyncio.Event().wait()
 
     async def handler(event):
         if event.text == "M0":
@@ -203,12 +209,16 @@ async def test_drain_task_cancellation_releases_session():
             adapter._pending_messages[sk] = _make_event(text="M1")
             turn_started.set()
             return "ok"
-        # M1 is the drained follow-up — hang so we can cancel the drain task.
+        if event.text == "M2":
+            return "follow-up reply"
+        drain_task_holder.append(asyncio.current_task())
+        if cancel_during == "callback":
+            adapter.register_post_delivery_callback(sk, post_delivery)
+            adapter._pending_messages[sk] = _make_event(text="M2")
+            return "ok"
+        # Hold M1 until the test cancels it, independently of scheduler speed.
         drain_hit_handler.set()
-        try:
-            await asyncio.sleep(0.2)
-        except asyncio.CancelledError:
-            raise
+        await asyncio.Event().wait()
 
     adapter._message_handler = handler
 
@@ -218,7 +228,7 @@ async def test_drain_task_cancellation_releases_session():
     await asyncio.wait_for(drain_hit_handler.wait(), timeout=2)
 
     # Cancel the drain task mid-handler.
-    drain_task = adapter._session_tasks.get(sk)
+    drain_task = drain_task_holder[0]
     assert drain_task is not None, "in-band drain did not install a drain task"
     assert not drain_task.done(), "drain task finished before we could cancel"
     drain_task.cancel()
@@ -239,6 +249,10 @@ async def test_drain_task_cancellation_releases_session():
         "cancelled drain task did not release _session_tasks[sk] — "
         "stale-lock detection will treat the dead task as alive"
     )
+    if cancel_during == "callback":
+        assert any(call.kwargs.get("content") == "follow-up reply"
+                   for call in adapter._send_with_retry.call_args_list)
+        assert sk not in adapter._pending_messages
 
 
 @pytest.mark.asyncio
@@ -261,10 +275,14 @@ async def test_late_arrival_drain_still_fires_when_no_in_band_drain():
 
     results: list[str] = []
     original_stop_typing = getattr(adapter, "stop_typing", None)
+    injected = False
 
     async def injecting_stop_typing(chat_id):
-        # Simulate a message landing during the cleanup awaits.
-        adapter._pending_messages[sk] = _make_event(text="late")
+        nonlocal injected
+        # One late arrival, not a self-replenishing queue on every cleanup.
+        if not injected:
+            injected = True
+            adapter._pending_messages[sk] = _make_event(text="late")
         if original_stop_typing:
             await original_stop_typing(chat_id)
 
@@ -293,3 +311,4 @@ async def test_late_arrival_drain_still_fires_when_no_in_band_drain():
         "late-arrival drain did not spawn a drain task — a message that "
         "landed during cleanup awaits was silently dropped"
     )
+    assert results == ["first", "late"]

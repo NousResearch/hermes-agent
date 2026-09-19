@@ -6,11 +6,18 @@ claimed-run body a manual ``cronjob(action='run')`` uses, instead of
 starting a fresh webhook agent session.
 
 Covers:
-- The referenced job is fired via ``execute_job_for_event`` with the
-  rendered prompt as transient per-run context
+- Admission claims the job synchronously; a worker runs the claimed
+  snapshot with the rendered prompt as transient per-run context
 - The normal webhook agent session is NOT started (``handle_message``
   never called)
-- HTTP returns 202 Accepted immediately
+- HTTP 202 means durable store admission (claim or queued batch), not
+  "a background task was created"
+- Paused/unknown/unrunnable targets are retryable non-2xx and do not
+  consume the delivery ID
+- A busy in-flight job durably queues the wake and still returns 202
+- A claim-exception / store-failure is the same retryable refusal:
+  503 + Retry-After, ID unconsumed, no dispatch;
+  ``execute_job_for_event`` returns the error dict
 - Startup validation rejects routes that set both ``cron_job`` and
   ``deliver_only``
 - ``execute_job_for_event`` resolves refs and fails cleanly on unknowns
@@ -18,6 +25,7 @@ Covers:
 
 import asyncio
 import json
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -58,6 +66,11 @@ async def _drain_background_tasks(adapter: WebhookAdapter) -> None:
 class TestCronJobTrigger:
     @pytest.mark.asyncio
     async def test_post_fires_job_with_event_context(self):
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="sweep reviews", schedule="every 5m", name="review-sweeper"
+        )
         routes = {
             "pr-feedback": {
                 "secret": _INSECURE_NO_AUTH,
@@ -76,8 +89,8 @@ class TestCronJobTrigger:
 
         fired = []
 
-        def _fake_execute(job_ref, extra_prompt=None):
-            fired.append((job_ref, extra_prompt))
+        def _fake_run(claimed_job, extra_prompt=None):
+            fired.append((claimed_job, extra_prompt))
             return {"claimed": True, "success": True, "error": None}
 
         app = _create_app(adapter)
@@ -85,10 +98,7 @@ class TestCronJobTrigger:
             {"number": 7, "review": {"body": "needs tests"}}
         ).encode()
 
-        with patch(
-            "tools.cronjob_tools.execute_job_for_event",
-            side_effect=_fake_execute,
-        ):
+        with patch("tools.cronjob_tools._run_claimed_job", side_effect=_fake_run):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.post(
                     "/webhooks/pr-feedback",
@@ -105,77 +115,302 @@ class TestCronJobTrigger:
                 assert data["cron_job"] == "review-sweeper"
                 await _drain_background_tasks(adapter)
 
-        # Job fired exactly once with the rendered prompt as run context
         assert len(fired) == 1
-        job_ref, extra_prompt = fired[0]
-        assert job_ref == "review-sweeper"
+        claimed_job, extra_prompt = fired[0]
+        assert claimed_job["id"] == job["id"]
+        assert claimed_job.get("fire_claim")
         assert "PR #7 received feedback: needs tests" in extra_prompt
         assert "pull_request_review" in extra_prompt  # event provenance
-
-        # No fresh webhook agent session was started
         assert handle_message_calls == []
 
     @pytest.mark.asyncio
-    async def test_job_failure_does_not_break_http_response(self):
+    async def test_unknown_job_is_retryable_and_does_not_consume_delivery_id(self):
         routes = {
             "flaky": {"secret": _INSECURE_NO_AUTH, "cron_job": "gone-job"}
         }
         adapter = _make_adapter(routes)
         app = _create_app(adapter)
+        headers = {
+            "Content-Type": "application/json",
+            "X-GitHub-Delivery": "delivery-cron-2",
+        }
 
-        def _fail(job_ref, extra_prompt=None):
-            return {
-                "claimed": False,
-                "success": False,
-                "error": "Cron job 'gone-job' not found.",
-            }
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/flaky", data=b"{}", headers=headers)
+            body = await resp.json()
+            assert resp.status == 503
+            assert body.get("error") == "Cron job is not available"
+            assert "gone-job" not in json.dumps(body)
 
-        with patch(
-            "tools.cronjob_tools.execute_job_for_event", side_effect=_fail
-        ):
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.post(
-                    "/webhooks/flaky",
-                    data=b"{}",
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-GitHub-Delivery": "delivery-cron-2",
-                    },
-                )
-                # Fire-and-forget: the POST is accepted even when the job
-                # later fails; the failure is logged, not surfaced.
-                assert resp.status == 202
-                await _drain_background_tasks(adapter)
+            retry = await cli.post("/webhooks/flaky", data=b"{}", headers=headers)
+            retry_body = await retry.json()
+            assert retry.status == 503
+            assert retry_body.get("status") != "duplicate"
 
+        await _drain_background_tasks(adapter)
 
     @pytest.mark.asyncio
     async def test_routed_profile_scope_reaches_the_job_run(self, tmp_path, monkeypatch):
         """/p/<profile>/ routes must fire the job from THAT profile's cron store, not the gateway's
         default home (and route-level skills stay out of the per-run context — the job's own apply)."""
+        from cron.jobs import create_job, use_cron_store
+
         home = tmp_path / ".hermes"
-        (home / "profiles" / "sec").mkdir(parents=True)
+        sec = home / "profiles" / "sec"
+        sec.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
         monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: home / "profiles")
-        adapter = _make_adapter({"ev": {"secret": _INSECURE_NO_AUTH, "cron_job": "sweeper", "profile": "sec",
+        with use_cron_store(sec):
+            job = create_job(prompt="sweep", schedule="every 5m", name="sweeper")
+        adapter = _make_adapter({"ev": {"secret": _INSECURE_NO_AUTH, "cron_job": job["id"], "profile": "sec",
                                         "skills": ["some-skill"], "prompt": "hello {n}"}})
         monkeypatch.setattr(adapter, "_resolve_request_profile", lambda request: "sec")
         monkeypatch.setattr(adapter, "_apply_skills", lambda prompt, skills: pytest.fail("skills applied"))
         seen = []
 
-        def _fake_execute(job_ref, extra_prompt=None):
+        def _fake_run(claimed_job, extra_prompt=None):
             from hermes_constants import get_hermes_home
-            seen.append((get_hermes_home(), extra_prompt))
+            seen.append((get_hermes_home(), extra_prompt, claimed_job.get("id")))
             return {"claimed": True, "success": True, "error": None}
 
-        with patch("tools.cronjob_tools.execute_job_for_event", side_effect=_fake_execute):
+        with patch("tools.cronjob_tools._run_claimed_job", side_effect=_fake_run):
             async with TestClient(TestServer(_create_app(adapter))) as cli:
                 resp = await cli.post("/webhooks/ev", data=b'{"n": 1}',
                                       headers={"Content-Type": "application/json", "X-GitHub-Delivery": "d-3"})
                 assert resp.status == 202
                 await _drain_background_tasks(adapter)
-        assert seen and seen[0][0] == (home / "profiles" / "sec").resolve()
+        assert seen and seen[0][0] == sec.resolve()
         assert "hello 1" in seen[0][1]
+        assert seen[0][2] == job["id"]
+
+
+    @pytest.mark.asyncio
+    async def test_paused_job_is_retryable_and_does_not_consume_delivery_id(self):
+        """A paused cron_job target must not 202 or consume the delivery ID.
+
+        Production 2026-09-17: a Herdr relay treated 202 as durable admission
+        for ``cron_job: 5a6924edf71e`` while that job was paused, ACK'd the
+        producer, and never retried. No controller ran.
+        """
+        from cron.jobs import create_job, get_job
+
+        secret_prompt = "SECRET_CONTROLLER_PROMPT_do_not_leak"
+        paused_reason = "operator paused herdr controller"
+        job = create_job(
+            prompt=secret_prompt,
+            schedule="every 5m",
+            name="herdr-controller",
+            paused=True,
+            paused_reason=paused_reason,
+        )
+        delivery_id = "delivery-paused-5a6924edf71e"
+        adapter = _make_adapter(
+            {
+                "herdr": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "cron_job": job["id"],
+                    "prompt": "event {n}",
+                }
+            }
+        )
+        handle_message_calls = []
+
+        async def _capture(event):
+            handle_message_calls.append(event)
+
+        adapter.handle_message = _capture
+        headers = {
+            "Content-Type": "application/json",
+            "X-GitHub-Delivery": delivery_id,
+        }
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            resp = await cli.post("/webhooks/herdr", data=b'{"n": 1}', headers=headers)
+            body = await resp.json()
+            public = json.dumps(body)
+            assert resp.status == 503
+            assert body.get("status") != "accepted"
+            assert "SECRET_CONTROLLER_PROMPT" not in public
+            assert paused_reason not in public
+            assert body.get("error") == "Cron job is not available"
+
+            retry = await cli.post("/webhooks/herdr", data=b'{"n": 1}', headers=headers)
+            retry_body = await retry.json()
+            assert retry.status == 503
+            assert retry_body.get("status") != "duplicate"
+
+        await _drain_background_tasks(adapter)
+        assert handle_message_calls == []
+        refreshed = get_job(job["id"])
+        assert refreshed is not None
+        assert not refreshed.get("fire_claim")
+
+    @pytest.mark.asyncio
+    async def test_runnable_job_claims_before_202_and_worker_does_not_reclaim(self):
+        """202 is returned only after durable store admission; the worker
+        executes that snapshot and must not claim again. A second distinct
+        event while the claim is held is queued, not dropped."""
+        from cron.jobs import admit_job_event, create_job, get_job
+        from tools import cronjob_tools
+
+        job = create_job(prompt="sweep reviews", schedule="every 5m", name="review-sweeper")
+        original_admit = admit_job_event
+        claim_started = threading.Event()
+        release_claim = threading.Event()
+        admit_calls = []
+        ran = []
+
+        def _blocking_admit(job_ref, **kwargs):
+            admit_calls.append(job_ref)
+            claim_started.set()
+            assert release_claim.wait(timeout=2)
+            return original_admit(job_ref, **kwargs)
+
+        def _fake_run(claimed_job, extra_prompt=None):
+            ran.append((claimed_job, extra_prompt))
+            return {"claimed": True, "success": True, "error": None}
+
+        adapter = _make_adapter(
+            {
+                "pr-feedback": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "cron_job": job["id"],
+                    "prompt": "PR #{number} received feedback",
+                }
+            }
+        )
+        handle_message_calls = []
+
+        async def _capture(event):
+            handle_message_calls.append(event)
+
+        adapter.handle_message = _capture
+
+        with patch.object(cronjob_tools, "admit_job_event", side_effect=_blocking_admit), patch.object(
+            cronjob_tools, "_run_claimed_job", side_effect=_fake_run
+        ):
+            async with TestClient(TestServer(_create_app(adapter))) as cli:
+                request_task = asyncio.create_task(
+                    cli.post(
+                        "/webhooks/pr-feedback",
+                        data=b'{"number": 7}',
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-GitHub-Delivery": "delivery-runnable-1",
+                            "X-GitHub-Event": "pull_request_review",
+                        },
+                    )
+                )
+                assert await asyncio.to_thread(claim_started.wait, 2)
+                await asyncio.sleep(0)
+                assert not request_task.done()
+                release_claim.set()
+                resp = await request_task
+                data = await resp.json()
+                assert resp.status == 202
+                assert data["status"] == "accepted"
+                assert data["cron_job"] == job["id"]
+                busy = await cli.post(
+                    "/webhooks/pr-feedback",
+                    data=b'{"number": 8}',
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-GitHub-Delivery": "delivery-runnable-2",
+                    },
+                )
+                busy_body = await busy.json()
+                assert busy.status == 202
+                assert busy_body.get("status") == "accepted"
+                await _drain_background_tasks(adapter)
+
+        assert admit_calls == [job["id"], job["id"]]
+        assert len(ran) == 1
+        claimed_job, extra_prompt = ran[0]
+        assert claimed_job["id"] == job["id"]
+        assert claimed_job.get("fire_claim")
+        assert "PR #7 received feedback" in extra_prompt
+        assert "pull_request_review" in extra_prompt
+        assert handle_message_calls == []
+        pending = (get_job(job["id"]) or {}).get("pending_event_batch") or {}
+        pending_ctx = " ".join(
+            str(event.get("context") or "")
+            for event in (pending.get("events") or [])
+            if isinstance(event, dict)
+        )
+        assert "PR #8 received feedback" in pending_ctx
+
+    @pytest.mark.asyncio
+    async def test_claim_exception_is_retryable_and_does_not_consume_delivery_id(self):
+        """``_claim_for_manual_run`` may return claimed:true with no snapshot.
+
+        That shape must not KeyError into a bare 500: the producer gets a
+        retryable 503, the delivery ID stays unconsumed, and nothing runs.
+        """
+        from cron.jobs import create_job, get_job
+        from tools import cronjob_tools
+
+        secret_prompt = "SECRET_CLAIM_EXCEPTION_PROMPT_do_not_leak"
+        job = create_job(
+            prompt=secret_prompt, schedule="every 5m", name="claim-exception-target"
+        )
+        delivery_id = "delivery-claim-exception-1"
+        adapter = _make_adapter(
+            {
+                "herdr": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "cron_job": job["id"],
+                    "prompt": "event {n}",
+                }
+            }
+        )
+        handle_message_calls = []
+
+        async def _capture(event):
+            handle_message_calls.append(event)
+
+        adapter.handle_message = _capture
+        ran = []
+
+        def _fake_run(claimed_job, extra_prompt=None):
+            ran.append((claimed_job, extra_prompt))
+            return {"claimed": True, "success": True, "error": None}
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-GitHub-Delivery": delivery_id,
+        }
+
+        with patch.object(
+            cronjob_tools, "admit_job_event", side_effect=OSError("disk")
+        ), patch.object(cronjob_tools, "_run_claimed_job", side_effect=_fake_run):
+            async with TestClient(TestServer(_create_app(adapter))) as cli:
+                resp = await cli.post(
+                    "/webhooks/herdr", data=b'{"n": 1}', headers=headers
+                )
+                body = await resp.json()
+                public = json.dumps(body)
+                assert resp.status == 503
+                assert resp.headers.get("Retry-After") == "60"
+                assert body.get("status") != "accepted"
+                assert body.get("error") == "Cron job is not available"
+                assert "disk" not in public
+                assert "SECRET_CLAIM_EXCEPTION_PROMPT" not in public
+
+                retry = await cli.post(
+                    "/webhooks/herdr", data=b'{"n": 1}', headers=headers
+                )
+                retry_body = await retry.json()
+                assert retry.status == 503
+                assert retry.headers.get("Retry-After") == "60"
+                assert retry_body.get("status") != "duplicate"
+
+        await _drain_background_tasks(adapter)
+        assert handle_message_calls == []
+        assert ran == []
+        refreshed = get_job(job["id"])
+        assert refreshed is not None
+        assert not refreshed.get("fire_claim")
 
 
 # ===================================================================
@@ -206,41 +441,62 @@ class TestExecuteJobForEvent:
     def test_unknown_job_returns_error(self):
         from tools import cronjob_tools
 
-        with patch.object(cronjob_tools, "resolve_job_ref", return_value=None):
-            result = cronjob_tools.execute_job_for_event("nope")
+        result = cronjob_tools.execute_job_for_event("nope")
         assert result["claimed"] is False
         assert result["success"] is False
         assert "not found" in result["error"]
 
     def test_ambiguous_ref_returns_error(self):
-        from cron.jobs import AmbiguousJobReference
+        from cron.jobs import create_job
         from tools import cronjob_tools
 
-        with patch.object(
-            cronjob_tools,
-            "resolve_job_ref",
-            side_effect=AmbiguousJobReference(
-                "x", [{"id": "job-a"}, {"id": "job-b"}]
-            ),
-        ):
-            result = cronjob_tools.execute_job_for_event("x")
+        create_job(prompt="a", schedule="every 5m", name="x")
+        create_job(prompt="b", schedule="every 5m", name="x")
+        result = cronjob_tools.execute_job_for_event("x")
         assert result["claimed"] is False
         assert result["success"] is False
         assert "ambiguous" in result["error"].lower()
 
     def test_resolved_job_fires_with_extra_prompt(self):
+        from cron.jobs import create_job
         from tools import cronjob_tools
 
-        job = {"id": "job-123", "name": "sweeper"}
+        job = create_job(prompt="sweep", schedule="every 5m", name="sweeper")
         with patch.object(
-            cronjob_tools, "resolve_job_ref", return_value=job
-        ), patch.object(
             cronjob_tools,
-            "_execute_job_now",
+            "_run_claimed_job",
             return_value={"claimed": True, "success": True, "error": None},
         ) as mock_exec:
             result = cronjob_tools.execute_job_for_event(
                 "sweeper", extra_prompt="event context"
             )
         assert result["success"] is True
-        mock_exec.assert_called_once_with(job, extra_prompt="event context")
+        assert mock_exec.call_count == 1
+        claimed, kwargs = mock_exec.call_args[0][0], mock_exec.call_args.kwargs
+        if mock_exec.call_args.args[1:]:
+            extra = mock_exec.call_args.args[1]
+        else:
+            extra = kwargs.get("extra_prompt")
+        assert claimed["id"] == job["id"]
+        assert claimed.get("fire_claim")
+        assert extra == "event context"
+
+    def test_claim_exception_returns_error_dict_without_raising(self):
+        """Store-failure results must not KeyError into a run.
+
+        Public contract is the error dict, no run.
+        """
+        from cron.jobs import create_job
+        from tools import cronjob_tools
+
+        create_job(prompt="sweep", schedule="every 5m", name="sweeper")
+        with patch.object(
+            cronjob_tools, "admit_job_event", side_effect=OSError("disk")
+        ), patch.object(
+            cronjob_tools, "_run_claimed_job"
+        ) as mock_exec:
+            result = cronjob_tools.execute_job_for_event("sweeper")
+        assert result["success"] is False
+        assert result.get("error") == "disk"
+        assert "job" not in result
+        mock_exec.assert_not_called()

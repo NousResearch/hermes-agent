@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -32,19 +33,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
+    admit_job_event,
     claim_job_for_fire,
     get_job,
+    resolve_event_run_prompt,
     is_job_runnable,
     list_jobs,
     mark_job_run,
     parse_schedule,
     pause_job,
     remove_job,
+    requeue_claimed_event_batch,
     resolve_job_ref,
     resnapshot_all_unpinned,
     resnapshot_job,
     resume_job,
-    update_job)
+    update_job,
+    _exhausted_oneshot_manual_run_refusal)
 from tools.cronjob_prompt_scan import _scan_cron_prompt
 from tools.cronjob_job_args import (
     _apply_continuity,
@@ -197,7 +202,9 @@ def _claim_for_manual_run(job_id: str, log_label: str):
         elif not is_job_runnable(refreshed):
             reason = "Job is paused/disabled; resume it before running."
         else:
-            reason = "Job is already being fired by the scheduler; not run again."
+            reason = _exhausted_oneshot_manual_run_refusal(refreshed, job_id) or (
+                "Job is already being fired by the scheduler; not run again."
+            )
         return None, {"claimed": False, "success": False, "error": reason}
     except Exception as e:
         logger.error("Failed to claim cron job %s for %s: %s", job_id, log_label, e)
@@ -283,11 +290,16 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # outlived by real jobs, so it alone cannot stop a manual run from double-firing a job the ticker
         # (or another manual run) is still executing.
         if not try_register_running_job(job_id):
+            claim = job.get("fire_claim")
+            fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+            if fire_owner:
+                requeue_claimed_event_batch(job_id, expected_owner=fire_owner)
             return {"claimed": True, "success": False, "error": _ALREADY_RUNNING_ERROR}
         _registered = True
 
         claim = job.get("fire_claim")
         fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
+        extra_prompt = resolve_event_run_prompt(job, extra_prompt)
 
         # Inside the gateway process deliver on the loop that owns clients such as
         # Matrix/aiohttp (a standalone asyncio.run() loop breaks them).
@@ -341,17 +353,57 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         return {"claimed": True, "success": False, "error": str(e)}
 
 
+def admit_job_for_event(
+    job_ref: str,
+    delivery_id: str = "",
+    event_context: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve and durably admit a cron job for an event trigger without running it.
+
+    Webhook ``cron_job`` routes call this synchronously under the routed
+    profile before acknowledging the producer. One atomic store operation
+    either embeds the event batch in a new fire claim, merges it into the
+    pending rerun batch when a live claim already holds the job, or
+    refuses without recording a delivery receipt.
+
+    Returns ``{"claimed": True, "success": True, "job": snapshot}`` on an
+    immediate claim; ``{"claimed": False, "queued": True, "success": True}``
+    when the wake is durably pending; ``{"claimed": False, "duplicate": True}``
+    for a delivery already receipted; or ``{"claimed": False, "success": False,
+    "error": ...}`` for paused/unknown/overflow/write-failure.
+    """
+    delivery_id = str(delivery_id or "").strip()
+    if not delivery_id:
+        delivery_id = f"event-{uuid.uuid4().hex}"
+    try:
+        result = admit_job_event(job_ref, delivery_id=delivery_id, context=event_context or "")
+    except Exception as exc:
+        logger.error("Failed to admit cron job %s for event trigger: %s", job_ref, exc)
+        return {"claimed": False, "success": False, "error": str(exc)}
+    status = result.get("status")
+    if status == "claimed" and isinstance(result.get("job"), dict):
+        return {"claimed": True, "success": True, "job": result["job"]}
+    if status == "queued":
+        return {"claimed": False, "queued": True, "success": True, "error": None}
+    if status == "duplicate":
+        return {"claimed": False, "duplicate": True, "success": True, "error": None}
+    return {
+        "claimed": False,
+        "success": False,
+        "error": result.get("error") or "Cron job is not available",
+    }
+
+
 def execute_job_for_event(
     job_ref: str, extra_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Fire an existing cron job in response to an external event.
 
-    Public entry point for event-driven triggers (the webhook adapter's
-    ``cron_job`` routes). Resolves ``job_ref`` (ID or name) and
-    fires it through the exact same claimed-run body a manual
-    ``cronjob(action='run')`` uses, so at-most-once claiming, in-flight
-    dedupe, delivery, and ``[SILENT]`` handling stay identical across the
-    scheduler / manual / event paths.
+    Public entry point for event-driven triggers. Resolves ``job_ref``
+    (ID or name), acquires the at-most-once fire claim, then runs the
+    claimed snapshot through the same body a manual ``cronjob(action='run')``
+    uses so in-flight dedupe, delivery, and ``[SILENT]`` handling stay
+    identical across the scheduler / manual / event paths.
 
     ``extra_prompt`` is injected as transient per-run context (the job's
     stored prompt is never mutated), exactly like ``action='run'`` with a
@@ -360,17 +412,23 @@ def execute_job_for_event(
     Returns the ``_execute_job_now`` result shape:
     ``{"claimed": bool, "success": bool, "error": str|None}``.
     """
-    try:
-        job = resolve_job_ref(job_ref)
-    except AmbiguousJobReference as e:
-        return {"claimed": False, "success": False, "error": str(e)}
-    if job is None:
+    admitted = admit_job_for_event(job_ref, event_context=extra_prompt)
+    # claimed:true without a job snapshot is the claim-exception dict, not a win.
+    if admitted.get("queued") or admitted.get("duplicate"):
         return {
             "claimed": False,
             "success": False,
-            "error": f"Cron job '{job_ref}' not found.",
+            "queued": bool(admitted.get("queued")),
+            "duplicate": bool(admitted.get("duplicate")),
+            "error": admitted.get("error"),
         }
-    return _execute_job_now(job, extra_prompt=extra_prompt)
+    if not admitted.get("claimed") or not isinstance(admitted.get("job"), dict):
+        return {
+            "claimed": False,
+            "success": False,
+            "error": admitted.get("error"),
+        }
+    return _run_claimed_job(admitted["job"], extra_prompt=extra_prompt)
 
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:

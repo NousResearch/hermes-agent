@@ -3,7 +3,8 @@ Svix, Linear, generic), renders payloads into agent prompts, and routes response
 or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
 secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
 deliver/deliver_extra, deliver_only (rendered prompt IS the message), cron_job (fire an existing cron
-job per event; the rendered prompt is transient per-run context; exclusive with deliver_only). Per-route rate limiting,
+job per event; the rendered prompt is transient per-run context; exclusive with deliver_only; 202
+only after the at-most-once fire claim). Per-route rate limiting,
 idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds a timestamp for
 replay protection; body-only V1 is deprecated but accepted with a warning."""
 
@@ -107,6 +108,12 @@ def _is_known_platform(name: str) -> bool:
 
 def _json_error(message: str, status: int) -> "web.Response":
     return web.json_response({"error": message}, status=status)
+
+
+# Public body for cron_job admission failures. Keep generic: do not echo job
+# lookup errors, pause reasons, or per-run prompt context to the producer.
+_CRON_JOB_UNAVAILABLE = "Cron job is not available"
+_CRON_TRIGGER_RETRY_AFTER = "60"
 
 
 def _peek_session_id(store, session_key: str):
@@ -311,11 +318,16 @@ class WebhookAdapter(BasePlatformAdapter):
         window.append(now)
         return True
 
+    def _delivery_id_seen(self, delivery_id: str, now: float) -> bool:
+        """True when ``delivery_id`` is already inside the idempotency TTL (read-only)."""
+        seen_at = self._seen_deliveries.get(delivery_id)
+        return seen_at is not None and now - seen_at < self._idempotency_ttl
+
     def _record_delivery_id(self, delivery_id: str, now: float) -> bool:
         """Return True when this delivery should be processed."""
-        if (seen_at := self._seen_deliveries.get(delivery_id)) is not None and now - seen_at < self._idempotency_ttl:
+        if self._delivery_id_seen(delivery_id, now):
             return False
-        if seen_at is not None:
+        if delivery_id in self._seen_deliveries:
             self._seen_deliveries.pop(delivery_id, None)
         self._seen_deliveries[delivery_id] = now
         if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
@@ -498,33 +510,77 @@ class WebhookAdapter(BasePlatformAdapter):
                        delivery["deliver"], result.error)
         return web.json_response(failed, status=502)
 
-    def _handle_cron_trigger(self, prompt: str, route_config: dict, route_name: str, event_type: str,
-                             delivery_id: str, profile: Optional[str] = None) -> "web.Response":
+    def _cron_trigger_unavailable(self) -> "web.Response":
+        """Retryable public refusal: the producer must not treat this delivery as consumed."""
+        return web.json_response(
+            {"error": _CRON_JOB_UNAVAILABLE},
+            status=503,
+            headers={"Retry-After": _CRON_TRIGGER_RETRY_AFTER},
+        )
+
+    async def _handle_cron_trigger(self, prompt: str, route_config: dict, route_name: str, event_type: str,
+                                   delivery_id: str, now: float, profile: Optional[str] = None) -> "web.Response":
         """cron_job: fire an EXISTING cron job on this event instead of starting a webhook agent session.
+
         The rendered prompt is transient per-run context (same rail as ``cronjob(action='run', prompt=...)``);
-        the job's own prompt, skills, model and delivery apply. Same auth/rate-limit/filter/script/idempotency
-        pipeline as agent routes; 202 immediately, the run happens on a worker thread."""
+        the job's own prompt, skills, model and delivery apply. Same auth/rate-limit/filter/script pipeline
+        as agent routes. 202 is returned only after a durable store admission under the routed profile
+        (immediate fire claim with the event batch embedded, or a merge into the pending rerun batch).
+        The delivery ID is consumed at that same moment. A claimed snapshot is run without claiming
+        again; a queued wake waits for the in-flight owner to finish. Unknown, paused, disabled,
+        completed, overflow, or store-failure targets are 503 and leave the delivery ID unconsumed.
+        """
         job_ref = str(route_config["cron_job"])
         event_context = (f"This run was triggered by webhook event '{event_type}' on route '{route_name}' "
                          f"(not the schedule).\n\n{prompt}")
         logger.info("[webhook] cron-trigger event=%s route=%s job=%s delivery=%s", event_type, route_name, job_ref,
                     delivery_id)
+        if self._delivery_id_seen(delivery_id, now):
+            logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
+            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
 
-        async def _fire_cron_job() -> None:
+        try:
+            from tools.cronjob_tools import admit_job_for_event
+            # The job store belongs to the ROUTED profile, not the gateway's default home;
+            # to_thread copies contextvars so the scope follows.
+            with self._profile_scope(profile):
+                admitted = await asyncio.to_thread(
+                    admit_job_for_event, job_ref, delivery_id, event_context)
+        except Exception:
+            logger.exception("[webhook] cron-trigger admission failed job=%s route=%s", job_ref, route_name)
+            return self._cron_trigger_unavailable()
+        if admitted.get("duplicate"):
+            self._record_delivery_id(delivery_id, now)
+            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+        if admitted.get("queued"):
+            self._record_delivery_id(delivery_id, now)
+            return web.json_response({"status": "accepted", "route": route_name, "cron_job": job_ref,
+                                      "event": event_type, "delivery_id": delivery_id}, status=202)
+        # claimed:true without a job snapshot is the claim-exception dict, not admission.
+        if not admitted.get("claimed") or not isinstance(admitted.get("job"), dict):
+            logger.warning("[webhook] cron-trigger job=%s route=%s not admitted: %s", job_ref, route_name,
+                           admitted.get("error"))
+            return self._cron_trigger_unavailable()
+
+        claimed_job = admitted["job"]
+        if not self._record_delivery_id(delivery_id, now):
+            # Peek lost a race with another recorder for this ID. We already hold the
+            # fire claim, so dispatch the claimed run rather than stranding it.
+            logger.info("[webhook] cron-trigger delivery %s recorded concurrently after claim", delivery_id)
+
+        async def _run_admitted() -> None:
             try:
-                from tools.cronjob_tools import execute_job_for_event
-                # The job store (cron/jobs.json) and the run belong to the ROUTED profile, not the gateway's
-                # default home; to_thread copies contextvars so the scope follows. A cron job is a full agent
-                # run (minutes) — keep it off the gateway event loop.
+                from tools.cronjob_tools import _run_claimed_job
+                # A cron job is a full agent run (minutes) — keep it off the gateway event loop.
                 with self._profile_scope(profile):
-                    result = await asyncio.to_thread(execute_job_for_event, job_ref, event_context)
+                    result = await asyncio.to_thread(_run_claimed_job, claimed_job, event_context)
                 if not result.get("success"):
                     logger.warning("[webhook] cron-trigger job=%s route=%s did not complete cleanly: %s", job_ref,
                                    route_name, result.get("error"))
             except Exception:
                 logger.exception("[webhook] cron-trigger failed job=%s route=%s", job_ref, route_name)
 
-        task = asyncio.create_task(_fire_cron_job())
+        task = asyncio.create_task(_run_admitted())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return web.json_response({"status": "accepted", "route": route_name, "cron_job": job_ref, "event": event_type,
@@ -614,11 +670,14 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
+        if route_config.get("cron_job"):
+            # cron_job routes consume the delivery ID only after durable fire-claim
+            # admission. Peek/record happen inside _handle_cron_trigger.
+            return await self._handle_cron_trigger(
+                prompt, route_config, route_name, event_type, delivery_id, now, profile)
         if not self._record_delivery_id(delivery_id, now):
             logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
-        if route_config.get("cron_job"):
-            return self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
                                                    profile)

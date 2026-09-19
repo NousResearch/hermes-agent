@@ -436,8 +436,8 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     env / ``browser.cdp_url`` (``/browser connect``); (3) a cloud provider via the legacy ``_get_session_info()``
     so browser_exec shares the SAME session machinery (per-task cache, expiry, reaper, atexit);
     (4) the local engine — ``browser.engine: lightpanda`` or Hermes' packaged Chromium via agent-browser
-    (never the harness's own discovery of the user's installed Chrome); (5) BU direct-API configs → None:
-    the CLI reaches BU cloud natively (BU_AUTOSPAWN). ``session_name`` (BU_NAME) keys the session cache so
+    (never the harness's own discovery of the user's installed Chrome); (5) BU direct-API configs → no CDP
+    endpoint, ``BU_AUTOSPAWN=1``: the CLI reaches BU cloud natively. ``session_name`` (BU_NAME) keys the session cache so
     each name gets its OWN browser — what makes named sessions concurrent-safe.
     """
     if _has_cdp_env(env):
@@ -464,6 +464,10 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
     if provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg()):
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
+        # The harness bootstraps a cloud browser ONLY when BU_AUTOSPAWN is set: a bare BROWSER_USE_API_KEY
+        # makes it hunt for the user's installed Chrome instead ("DevToolsActivePort not found"), a silent
+        # local fallback. Every direct-cloud config (legacy or explicit ``browser.backend``) lands here.
+        env.setdefault("BU_AUTOSPAWN", "1")
         return None
 
     provider_name = type(provider).__name__
@@ -641,11 +645,6 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     workspace = _workspace_dir(task_id)
     if workspace:
         env["BH_AGENT_WORKSPACE"] = workspace
-
-    # BU_AUTOSPAWN makes the CLI start a Browser Use cloud browser when no local
-    # Chrome/CDP endpoint is reachable (their API key authenticates it)
-    if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
-        env["BU_AUTOSPAWN"] = "1"
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()

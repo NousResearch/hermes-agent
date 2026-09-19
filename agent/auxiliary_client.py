@@ -6488,6 +6488,8 @@ def _build_call_kwargs(
         task_reasoning = extra_body.get("reasoning")
         if isinstance(task_reasoning, dict) and "enabled" in task_reasoning:
             reasoning_config = task_reasoning
+            extra_body = dict(extra_body)
+            extra_body.pop("reasoning")
     reasoning_config = clamp_reasoning_config(
         known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)

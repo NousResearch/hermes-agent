@@ -2517,6 +2517,26 @@ class TestAuxiliaryTaskExtraBody:
         assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
         assert "reasoning" not in kwargs["extra_body"]
 
+    def test_task_reasoning_disable_uses_remembered_floor_without_stale_wire(self, monkeypatch):
+        """A remembered mandatory-reasoning floor must replace the task's stale disable shape."""
+        import agent.auxiliary_client as aux
+        import agent.auxiliary_reasoning_floor as floor
+
+        monkeypatch.setattr(floor, "_FLOORED_ROUTES", {("api.example.test", "test-model")})
+        monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda _task: {"reasoning_effort": "none"})
+
+        kwargs = aux._build_call_kwargs(
+            provider="custom",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=aux._get_task_extra_body("compression"),
+            base_url="https://api.example.test/v1",
+            task="compression",
+        )
+
+        assert kwargs["reasoning_effort"] == "low"
+        assert "extra_body" not in kwargs or "reasoning" not in kwargs["extra_body"]
+
     def test_explicit_deepseek_thinking_disable_beats_profile_default(self):
         """An explicit vendor control is authoritative when no normalized config is present."""
         import agent.auxiliary_client as aux

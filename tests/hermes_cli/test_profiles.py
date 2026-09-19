@@ -439,6 +439,34 @@ class TestBackfillProfileEnvs:
     def test_no_profiles_root_is_noop(self, profile_env):
         assert backfill_profile_envs(quiet=True) == []
 
+    def test_strips_channel_credentials_from_the_copy(self, profile_env):
+        """A backfilled .env must not carry the default install's messaging identity: two
+        processes on one MATRIX_DEVICE_ID corrupt the Olm store, and a duplicated bot token
+        makes two gateways fight over one account. Model/provider keys must survive."""
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / ".env").write_text(
+            "# header comment\n"
+            "OPENROUTER_API_KEY=root-key\n"
+            "MATRIX_HOMESERVER=https://matrix.example.org\n"
+            "MATRIX_USER_ID=@bot:example.org\n"
+            "MATRIX_DEVICE_ID=ABCDEFGHIJ\n"
+            "MATRIX_PASSWORD=hunter2\n"
+            "SLACK_BOT_TOKEN=xoxb-root\n"
+        )
+        p = create_profile("old", no_alias=True)
+        (p / ".env").unlink()
+        stripped: dict = {}
+
+        backfilled = backfill_profile_envs(quiet=True, stripped=stripped)
+
+        assert backfilled == ["old"]
+        content = (p / ".env").read_text(encoding="utf-8")
+        assert "OPENROUTER_API_KEY=root-key" in content
+        assert "# header comment" in content
+        for leaked in ("MATRIX_DEVICE_ID", "MATRIX_USER_ID", "MATRIX_PASSWORD", "SLACK_BOT_TOKEN"):
+            assert leaked not in content, f"{leaked} leaked into the backfilled profile .env"
+        assert stripped == {"old": ["matrix", "slack"]}
+
 
 # ===================================================================
 # TestDeleteProfile

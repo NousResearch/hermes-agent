@@ -847,15 +847,22 @@ def _sync_profiles_after_update() -> None:
                 except Exception as pe:
                     print(f"  {p.name}: error ({pe})")
 
-    # Backfill .env for profiles created before .env seeding (copy the default's) so they
-    # keep the credentials they were effectively using.
+    # Backfill .env for profiles created before .env seeding (copy the default's, minus its messaging
+    # credentials) so they keep the credentials they were effectively using.
     with suppress(Exception):
         # See #44792.
         from hermes_cli.profiles import backfill_profile_envs
-        backfilled = backfill_profile_envs(quiet=True)
+        stripped: dict[str, list[str]] = {}
+        backfilled = backfill_profile_envs(quiet=True, stripped=stripped)
         if backfilled:
             print()
             print(f"→ Seeded .env for {len(backfilled)} profile(s) (copied from default): {', '.join(backfilled)}")
+            for name, platforms in sorted(stripped.items()):
+                print(
+                    f"  {name}: messaging credentials NOT copied ({', '.join(platforms)}) — a shared bot "
+                    f"token or device id makes two gateways fight over one account."
+                )
+                print(f"    Configure this profile's own bots:  hermes -p {name} setup")
 
     with suppress(Exception):
         from plugins.memory.honcho.cli import sync_honcho_profiles_quiet

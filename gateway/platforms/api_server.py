@@ -3664,6 +3664,31 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             browser_control_transport_family=browser_control_transport_family,
             async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
 
+    @classmethod
+    def _confirmed_provider_matches(
+        cls, requested_provider: Any, resolved_provider: Any, actual_provider: Any
+    ) -> bool:
+        """Match the route identity with the resolved runtime identity without flattening routing.
+
+        Configured custom providers can legitimately surface as the ``custom`` family or as the
+        configured key on the constructed agent. The request's ``custom:<key>`` remains the
+        authoritative route selector; this comparison only admits its two runtime spellings.
+        """
+        requested = cls._clean_runtime_id(requested_provider, max_len=80)
+        resolved = cls._clean_runtime_id(resolved_provider, max_len=80)
+        actual = cls._clean_runtime_id(actual_provider, max_len=80)
+        if not requested or not actual:
+            return False
+        if actual == requested or (resolved and actual == resolved):
+            return True
+        prefix, separator, custom_key = requested.partition(":")
+        if separator != ":" or prefix.casefold() != "custom" or not custom_key:
+            return False
+        custom_identities = {"custom", custom_key.casefold(), requested.casefold()}
+        if resolved and resolved.casefold() not in custom_identities:
+            return False
+        return actual.casefold() in custom_identities
+
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],
         route_source: str, confirmed_runtime_lock: bool) -> Dict[str, Any]:
@@ -3674,6 +3699,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         raw_model = getattr(agent, "model", "")
         actual_provider = self._clean_runtime_id(raw_provider, max_len=80) if isinstance(raw_provider, str) else ""
         actual_model = self._clean_runtime_id(raw_model) if isinstance(raw_model, str) else ""
+        resolved_provider = self._clean_runtime_id(runtime.get("provider"), max_len=80)
         for key, actual in (("provider", actual_provider), ("model", actual_model)):
             if actual:
                 runtime[key] = actual
@@ -3682,14 +3708,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route = route or {}
         requested_runtime = requested_runtime or {}
         if confirmed_runtime_lock:
-            expected_provider = self._clean_runtime_id(
+            requested_provider = self._clean_runtime_id(
                 route.get("provider") or requested_runtime.get("provider"), max_len=80)
             expected_model = self._clean_runtime_id(route.get("model") or requested_runtime.get("model"))
-            if (expected_provider and actual_provider != expected_provider) or (
+            if (requested_provider and not self._confirmed_provider_matches(
+                    requested_provider, resolved_provider, actual_provider)) or (
                 expected_model and actual_model != expected_model):
                 raise RuntimeError(
                     "confirmed model lock runtime mismatch: "
-                    f"expected provider={expected_provider or '<unspecified>'} "
+                    f"expected provider={requested_provider or '<unspecified>'} "
                     f"model={expected_model or '<unspecified>'}; "
                     f"actual provider={actual_provider or '<unknown>'} "
                     f"model={actual_model or '<unknown>'}")

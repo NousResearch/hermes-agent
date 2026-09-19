@@ -857,6 +857,62 @@ async def test_confirmed_runtime_lock_rejects_actual_runtime_mismatch(adapter, m
         )
 
 
+@pytest.mark.parametrize(
+    ("resolved_provider", "actual_provider"),
+    [("custom", "custom"), ("custom", "my-endpoint")],
+    ids=["custom-family", "configured-key"],
+)
+def test_confirmed_runtime_lock_accepts_custom_provider_identity_aliases(
+    adapter, resolved_provider, actual_provider
+):
+    class FakeAgent:
+        provider = actual_provider
+        model = "some-model"
+        _hermes_api_runtime = {
+            "provider": resolved_provider,
+            "model": "some-model",
+            "route_source": "session_model_lock",
+        }
+
+    runtime = adapter._turn_runtime_metadata(
+        FakeAgent(),
+        route={"provider": "custom:my-endpoint", "model": "some-model"},
+        requested_runtime={"provider": "custom:my-endpoint", "model": "some-model"},
+        route_source="session_model_lock",
+        confirmed_runtime_lock=True,
+    )
+
+    assert runtime["provider"] == actual_provider
+    assert runtime["requested"]["provider"] == "custom:my-endpoint"
+
+
+@pytest.mark.parametrize(
+    ("resolved_provider", "actual_provider"),
+    [("custom", "other-provider"), ("other-provider", "custom")],
+    ids=["actual-unrelated", "resolved-unrelated"],
+)
+def test_confirmed_runtime_lock_keeps_unrelated_provider_mismatch_strict(
+    adapter, resolved_provider, actual_provider
+):
+    class FakeAgent:
+        provider = actual_provider
+        model = "some-model"
+        _hermes_api_runtime = {
+            "provider": resolved_provider,
+            "model": "some-model",
+            "route_source": "session_model_lock",
+        }
+
+    with pytest.raises(RuntimeError, match="confirmed model lock runtime mismatch"):
+        adapter._turn_runtime_metadata(
+            FakeAgent(),
+            route={"provider": "custom:my-endpoint", "model": "some-model"},
+            requested_runtime={"provider": "custom:my-endpoint", "model": "some-model"},
+            route_source="session_model_lock",
+            confirmed_runtime_lock=True,
+        )
+
+
 def test_confirmed_runtime_lock_disables_global_fallback_model(adapter, monkeypatch):
     _patch_api_server_runtime(monkeypatch)
     monkeypatch.setattr(

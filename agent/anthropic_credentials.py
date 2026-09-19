@@ -677,10 +677,14 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
     if api_key:
         return _available_anthropic_token(api_key, model)
     # The pool's claude_code row mirrors the same externally owned refresh grant.
-    return _available_anthropic_token(
-        _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds()),
-        model,
-    )
+    # HERMES_ANTHROPIC_DISABLE_CLAUDE_CODE_FALLTHROUGH skips that fallthrough only: the
+    # profile's own pool is still consulted first, and _read_creds() stays unevaluated.
+    # The local holds either the profile's own pool token or, when the fallthrough runs,
+    # a token read from the Claude Code credentials file -- it is not always pool-derived.
+    token_candidate = _resolve_anthropic_pool_token(skip_borrowed=True)
+    if not token_candidate and not _getenv('HERMES_ANTHROPIC_DISABLE_CLAUDE_CODE_FALLTHROUGH').strip():
+        token_candidate = _resolve_claude_code_token_from_credentials(_read_creds())
+    return _available_anthropic_token(token_candidate, model)
 
 
 def run_oauth_setup_token() -> Optional[str]:

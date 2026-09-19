@@ -1738,7 +1738,18 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         available: List[PooledCredential] = []
         pending_refresh: List[PooledCredential] = []
         sole_credential = self._is_sole_credential()
+        # HERMES_ANTHROPIC_DISABLE_CLAUDE_CODE_FALLTHROUGH (profile-scoped via
+        # _get_secret, anthropic only) drops the borrowed claude_code row here so
+        # every selection path -- initial pick, rotation, refresh, retry -- honours it.
+        _suppress_borrowed = (
+            self.provider == "anthropic"
+            and (_get_secret(
+                "HERMES_ANTHROPIC_DISABLE_CLAUDE_CODE_FALLTHROUGH", ""
+            ) or "").strip()
+        )
         for entry in self._entries:
+            if _suppress_borrowed and entry.source == "claude_code":
+                continue
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load; never lease an
             # unhydrated duplicate as an empty key.

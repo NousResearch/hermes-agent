@@ -12,6 +12,7 @@ import gc
 import os
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -489,6 +490,60 @@ def test_refuse_helper_raises_while_deleted_wal_held(tmp_path, force_wal):
 # macOS has no /proc and no `` (deleted)`` suffix, so these exercise the libproc enumeration
 # (``proc_pidinfo(PROC_PIDLISTFDS)`` + ``proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)``) that supplies
 # each descriptor's ``(st_dev, st_ino)``. The judgement is unchanged: identity, never path text.
+
+
+@pytest.mark.macos_only
+def test_darwin_holder_scan_returns_empty_when_deadline_expires(monkeypatch, tmp_path):
+    """A hung libproc lookup must not keep SessionDB startup waiting."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_targets(*, deadline=None, on_pid=None):
+        entered.set()
+        release.wait()
+        if False:
+            yield None
+
+    monkeypatch.setattr(hermes_state_dbfile, "_iter_darwin_fd_targets", blocked_targets)
+    monkeypatch.setattr(hermes_state_dbfile, "_DARWIN_FD_SCAN_TIMEOUT_SECONDS", 0.01)
+    try:
+        assert hermes_state_dbfile._iter_darwin_sidecar_holders(tmp_path / "state.db") == []
+        assert entered.is_set()
+    finally:
+        release.set()
+
+
+@pytest.mark.macos_only
+def test_darwin_holder_scan_reports_replaced_sidecar_identity(monkeypatch, tmp_path):
+    """A retired sidecar still matches by its libproc identity after replacement."""
+    path = tmp_path / "state.db"
+    sidecar = Path(f"{path}-wal")
+    sidecar.write_bytes(b"retired")
+    retired = sidecar.stat()
+    sidecar.unlink()
+    sidecar.write_bytes(b"replacement")
+
+    def targets(*, deadline=None, on_pid=None):
+        yield os.getpid(), 7, str(sidecar), (retired.st_dev, retired.st_ino)
+
+    monkeypatch.setattr(hermes_state_dbfile, "_iter_darwin_fd_targets", targets)
+    assert hermes_state_dbfile._iter_darwin_sidecar_holders(path) == [(os.getpid(), str(sidecar))]
+
+
+@pytest.mark.macos_only
+def test_darwin_holder_scan_excludes_linked_sidecar_identity(monkeypatch, tmp_path):
+    """The current linked sidecar is never mistaken for a retired generation."""
+    path = tmp_path / "state.db"
+    sidecar = Path(f"{path}-wal")
+    sidecar.write_bytes(b"current")
+    current = sidecar.stat()
+
+    def targets(*, deadline=None, on_pid=None):
+        yield os.getpid(), 7, str(sidecar), (current.st_dev, current.st_ino)
+
+    monkeypatch.setattr(hermes_state_dbfile, "_iter_darwin_fd_targets", targets)
+    assert hermes_state_dbfile._iter_darwin_sidecar_holders(path) == []
+
 
 @pytest.mark.macos_only
 def test_iter_finds_self_after_wal_unlink_on_darwin(tmp_path, force_wal):

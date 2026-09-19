@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import os
 import types
 
@@ -7,26 +9,64 @@ from fastapi.testclient import TestClient
 from hermes_cli import web_server
 
 
-def test_ssh_ownership_endpoint_requires_token_and_returns_exact_nonce(monkeypatch):
+def test_ssh_ownership_valid_challenge_returns_verifiable_protocol_2_proof(monkeypatch):
     token = "t" * 64
     nonce = "0123456789abcdef"
+    challenge = "a" * 64
     monkeypatch.setattr(web_server, "_SESSION_TOKEN", token)
     monkeypatch.setattr(web_server, "_SSH_OWNER_NONCE", nonce)
     web_server.app.state.auth_required = False
     client = TestClient(web_server.app)
 
-    assert client.get("/api/ssh/ownership").status_code == 401
-    response = client.get(
-        "/api/ssh/ownership",
-        headers={"X-Hermes-Session-Token": token},
-    )
+    response = client.get("/api/ssh/ownership", params={"challenge": challenge})
+
     assert response.status_code == 200
-    assert response.json() == {
-        "ok": True,
-        "sshOwnerNonce": nonce,
-        "protocolVersion": 1,
-        "runtimeIntact": True,
-    }
+    payload = response.json()
+    assert set(payload) == {"ok", "protocolVersion", "proof"}
+    assert payload["ok"] is True
+    assert payload["protocolVersion"] == 2
+    canonical = f"{challenge}:{nonce}:{os.getpid()}:2".encode()
+    proof_key = hmac.new(
+        token.encode(), b"hermes-ssh-ownership-v2", hashlib.sha256
+    ).digest()
+    assert hmac.compare_digest(
+        payload["proof"], hmac.new(proof_key, canonical, hashlib.sha256).hexdigest()
+    )
+
+
+def test_ssh_ownership_endpoint_requires_token_and_returns_exact_nonce(
+    tmp_path, monkeypatch
+):
+    token = "t" * 64
+    nonce = "0123456789abcdef"
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", token)
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *args, **kwargs: {"purelib": str(purelib)}),
+    )
+    web_server.app.state.auth_required = False
+    web_server._apply_ssh_owner_nonce(nonce)
+    try:
+        client = TestClient(web_server.app)
+
+        assert client.get("/api/ssh/ownership").status_code == 401
+        response = client.get(
+            "/api/ssh/ownership",
+            headers={"X-Hermes-Session-Token": token},
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "ok": True,
+            "sshOwnerNonce": nonce,
+            "protocolVersion": 2,
+            "runtimeIntact": True,
+            "pid": os.getpid(),
+        }
+    finally:
+        web_server._apply_ssh_owner_nonce(None)
 
 
 def test_ssh_ownership_reports_replaced_runtime(tmp_path, monkeypatch):
@@ -158,3 +198,70 @@ def test_ssh_ownership_endpoint_is_absent_without_owner_nonce(monkeypatch):
         headers={"X-Hermes-Session-Token": token},
     )
     assert response.status_code == 404
+
+
+def test_ssh_owner_nonce_rejects_path_traversal(tmp_path, monkeypatch):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *args, **kwargs: {"purelib": str(purelib)}),
+    )
+
+    web_server._apply_ssh_owner_nonce("../../../../evil")
+    try:
+        assert web_server._SSH_OWNER_NONCE is None
+        assert web_server._SSH_RUNTIME_MARKER is None
+        assert not (tmp_path / "evil").exists()
+        assert list(purelib.iterdir()) == []
+    finally:
+        web_server._apply_ssh_owner_nonce(None)
+
+
+def test_ssh_owner_nonce_sweeps_dead_runtime_markers_only(tmp_path, monkeypatch):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    dead = purelib / ".hermes-ssh-runtime-fedcba9876543210"
+    dead.write_text("pid=4194304\n", encoding="utf-8")
+    live = purelib / ".hermes-ssh-runtime-aa00000000000001"
+    live.write_text(f"pid={os.getpid()}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *args, **kwargs: {"purelib": str(purelib)}),
+    )
+
+    web_server._apply_ssh_owner_nonce("0123456789abcdef")
+    try:
+        current = purelib / ".hermes-ssh-runtime-0123456789abcdef"
+        assert current.is_file()
+        assert not dead.exists()
+        assert live.is_file()
+        assert web_server._SSH_RUNTIME_MARKER == str(current)
+    finally:
+        web_server._apply_ssh_owner_nonce(None)
+
+
+def test_ssh_ownership_fails_closed_without_runtime_identity_baseline(monkeypatch):
+    token = "t" * 64
+
+    def missing_purelib(*args, **kwargs):
+        raise OSError("runtime path unavailable")
+
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", token)
+    monkeypatch.setattr(
+        web_server, "sysconfig", types.SimpleNamespace(get_paths=missing_purelib)
+    )
+    web_server.app.state.auth_required = False
+    web_server._apply_ssh_owner_nonce("0123456789abcdef")
+    try:
+        response = TestClient(web_server.app).get(
+            "/api/ssh/ownership",
+            headers={"X-Hermes-Session-Token": token},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["runtimeIntact"] is False
+    finally:
+        web_server._apply_ssh_owner_nonce(None)

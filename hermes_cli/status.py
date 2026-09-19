@@ -5,6 +5,7 @@ import os
 import sys
 import time
 import importlib.util
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -112,8 +113,16 @@ _TERMINAL_ENV_ROWS = {
     "daytona": (("Daytona Image:", "TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20", False),),
 }
 
-_PLATFORMS = {  # name -> (token env var, home-channel env var or None)
+def _matrix_configured() -> bool:
+    return bool(os.getenv("MATRIX_HOMESERVER", "")) and (
+        bool(os.getenv("MATRIX_ACCESS_TOKEN", "")) or bool(os.getenv("MATRIX_PASSWORD", ""))
+    )
+
+
+_PLATFORMS: dict[str, tuple[str | Callable[[], bool], str | None]] = {
+    # name -> (credential env var or configuration check, home-channel env var or None)
     "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
+    "Matrix": (_matrix_configured, "MATRIX_HOME_ROOM"),
     "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"), "WhatsApp": ("WHATSAPP_ENABLED", None),
     "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
     "Slack": ("SLACK_BOT_TOKEN", None), "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
@@ -197,10 +206,10 @@ def _render_terminal(ctx):
 
 def _render_platforms(ctx):
     _section("Messaging Platforms")
-    for name, (token_var, home_var) in _PLATFORMS.items():
-        has_token = bool(os.getenv(token_var, ""))
+    for name, (credential, home_var) in _PLATFORMS.items():
+        configured = bool(os.getenv(credential, "")) if isinstance(credential, str) else credential()
         home_channel = os.getenv(home_var, "") if home_var else ""
-        _row(name, has_token, _configured(has_token) + (f" (home: {home_channel})" if home_channel else ""))
+        _row(name, configured, _configured(configured) + (f" (home: {home_channel})" if home_channel else ""))
 
     try:  # Plugin-registered platforms
         from gateway.platform_registry import platform_registry

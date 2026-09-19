@@ -2263,34 +2263,23 @@ class TestThresholdTokensCap:
         assert comp.threshold_tokens == 500_000
         assert comp.threshold_tokens_cap is None
 
-    @pytest.mark.parametrize(
-        ("context_length", "expected_threshold"),
-        [
-            (128_000, 96_000),
-            (272_000, 204_000),
-            (400_000, 256_000),
-            (1_000_000, 256_000),
-        ],
-    )
-    def test_default_config_uses_lower_effective_trigger(
-        self, context_length, expected_threshold,
-    ):
-        """The shipped cap bounds large windows without raising smaller triggers."""
+    @pytest.mark.parametrize("context_length", [128_000, 272_000, 400_000, 1_000_000])
+    def test_default_config_uses_lower_effective_trigger(self, context_length):
+        """Shipped defaults: the trigger is the LOWER of the ratio trigger and the absolute cap, so a
+        1M window compacts at the cap while windows whose ratio trigger sits below it are untouched."""
         from hermes_cli.config import DEFAULT_CONFIG
 
+        default_pct = DEFAULT_CONFIG["compression"]["threshold"]
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        with patch(
-            "agent.context_compressor.get_model_context_length",
-            return_value=context_length,
-        ):
+        assert isinstance(default_cap, int) and 0 < default_cap < 1_000_000
+        with patch("agent.context_compressor.get_model_context_length", return_value=context_length):
+            ratio_only = ContextCompressor("model-a", threshold_percent=default_pct, quiet_mode=True)
             comp = ContextCompressor(
-                "model-a",
-                threshold_percent=DEFAULT_CONFIG["compression"]["threshold"],
-                threshold_tokens_cap=default_cap,
-                quiet_mode=True,
+                "model-a", threshold_percent=default_pct, threshold_tokens_cap=default_cap, quiet_mode=True,
             )
-            _ = comp.context_length
+            _ = ratio_only.context_length, comp.context_length
 
+        expected_threshold = min(ratio_only.threshold_tokens, default_cap)
         assert comp.threshold_tokens == expected_threshold
         assert comp.should_compress(expected_threshold - 1) is False
         assert comp.should_compress(expected_threshold) is True
@@ -2349,9 +2338,10 @@ class TestThresholdTokensCap:
             )
             _ = comp.context_length
 
-        assert comp.threshold_tokens == 256_000
+        default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
+        assert comp.threshold_tokens == default_cap
         comp.update_model("model-b", context_length=2_000_000)
-        assert comp.threshold_tokens == 256_000
+        assert comp.threshold_tokens == default_cap
 
 
 

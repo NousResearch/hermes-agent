@@ -1331,17 +1331,22 @@ def _run_no_agent_job(
 
 def _apply_monitor_gate(
     job: dict, job_id: str, job_name: str, extra_prompt: Optional[str],
-) -> tuple[Optional[tuple], Optional[str], Optional[str]]:
+) -> tuple[Optional[tuple], Optional[str], Optional[str], Optional[Any]]:
     """Monitor gate (hash-suppressed change detection). Must run BEFORE any agent machinery so an
     unchanged tick costs no LLM/delivery. Returns ``(early_result | None, extra_prompt,
-    monitor_context)``. Monitor context is runtime data and must remain distinct from a
+    monitor_context, pending_outcome)``. Monitor context is runtime data, distinct from a
     user-authored ``extra_prompt`` so the prompt scanner keeps its strict user-input boundary.
+
+    A changed outcome is evaluated but NOT persisted here: the caller commits it via
+    ``commit_monitor`` once every pre-inference gate has passed, so a run refused before
+    inference (blocked config, provider resolution) leaves the change replayable instead of
+    durably consuming it.
     """
     from cron.monitor import check_monitor, job_has_monitor
 
     if not job_has_monitor(job):
-        return None, extra_prompt, None
-    _mon = check_monitor(job)
+        return None, extra_prompt, None, None
+    _mon = check_monitor(job, persist=False)
     _mon_now = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
     header = _job_doc_header(job_name, job_id, _mon_now, "monitor")
     if not _mon.ok:
@@ -1355,16 +1360,16 @@ def _apply_monitor_gate(
         )
         return (
             False, f"{header}**Status:** monitor source failed\n\n{_mon.error}\n", _mon_alert, _mon.error,
-        ), extra_prompt, None
+        ), extra_prompt, None, None
     if not _mon.changed:
         # Unchanged: silent no_change tick (ledger doc kept; SILENT_MARKER blocks delivery).
         logger.info("Job '%s': monitor output unchanged — suppressing agent run", job_id)
         return (
             True, f"{header}**Status:** no_change (agent run suppressed)\n", SILENT_MARKER, None,
-        ), extra_prompt, None
+        ), extra_prompt, None, None
     # Changed (or first run): pass monitor output through the runtime-data seam. Keep any manual
     # per-run prompt separate: it remains user input and is therefore still strict-scanned.
-    return None, extra_prompt, _mon.context_block
+    return None, extra_prompt, _mon.context_block, _mon
 
 
 @dataclass
@@ -1978,10 +1983,12 @@ _RunResult = tuple[bool, str, str, Optional[str]]
 
 def _prepare_job_prompt(
     job: dict, job_id: str, job_name: str, extra_prompt: Optional[str], cancel_event,
-) -> tuple[Optional[_RunResult], Optional[str]]:
-    """Run every pre-agent gate and build the prompt. Returns ``(early_result, prompt)``: an early
-    result short-circuits ``run_job`` (no_agent job, empty payload, monitor gate, wake gate,
-    injection block, empty prompt); otherwise ``prompt`` is set."""
+) -> tuple[Optional[_RunResult], Optional[str], Optional[Any]]:
+    """Run every pre-agent gate and build the prompt. Returns ``(early_result, prompt,
+    pending_monitor)``: an early result short-circuits ``run_job`` (no_agent job, empty payload,
+    monitor gate, wake gate, injection block, empty prompt); otherwise ``prompt`` is set.
+    ``pending_monitor`` is a changed-but-uncommitted monitor outcome (``persist=False``) that
+    ``run_job`` must commit once its pre-inference gates have passed."""
     # Fail closed on a corrupt config.yaml: defaults would let auto-detection bill a provider the
     # user never chose. no_agent jobs are exempt. Escape hatch: HERMES_IGNORE_USER_CONFIG=1.
     if not job.get("no_agent"):
@@ -1991,21 +1998,22 @@ def _prepare_job_prompt(
             require_parseable_user_config()
         except InvalidUserConfigError as exc:
             logger.error("Job '%s': refusing to run — %s", job_id, exc)
-            return (False, f"# Cron Job: {job_name}\n\nError: {exc}\n", "", str(exc)), None
+            return (False, f"# Cron Job: {job_name}\n\nError: {exc}\n", "", str(exc)), None, None
 
     # no_agent short-circuits BEFORE importing run_agent / opening SessionDB.
     if job.get("no_agent"):
-        return _run_no_agent_job(job, job_id, job_name, cancel_event), None
+        return _run_no_agent_job(job, job_id, job_name, cancel_event), None, None
 
     # Legacy / hand-edited job with nothing to run: pause it instead of waking the LLM every fire.
     from cron.jobs import EMPTY_PAYLOAD_ERROR, job_payload_is_empty
 
     if job_payload_is_empty(job):
-        return _block_and_pause_job(job_id, job_name, EMPTY_PAYLOAD_ERROR), None
+        return _block_and_pause_job(job_id, job_name, EMPTY_PAYLOAD_ERROR), None, None
 
-    _early, extra_prompt, monitor_context = _apply_monitor_gate(job, job_id, job_name, extra_prompt)
+    _early, extra_prompt, monitor_context, pending_monitor = _apply_monitor_gate(
+        job, job_id, job_name, extra_prompt)
     if _early is not None:
-        return _early, None
+        return _early, None, None
 
     # Wake-gate: run the pre-check script BEFORE building the prompt; its result is passed into
     # _build_job_prompt so the script runs only once.
@@ -2032,7 +2040,7 @@ def _prepare_job_prompt(
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
-            return (True, silent_doc, SILENT_MARKER, None), None
+            return (True, silent_doc, SILENT_MARKER, None), None, None
 
     try:
         prompt = _build_job_prompt(
@@ -2057,11 +2065,11 @@ def _prepare_job_prompt(
             "and the match is a false positive, rephrase the content to avoid "
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
-        return (False, blocked_doc, "", str(block_exc)), None
+        return (False, blocked_doc, "", str(block_exc)), None, None
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
-        return (True, "", SILENT_MARKER, None), None
-    return None, prompt
+        return (True, "", SILENT_MARKER, None), None, None
+    return None, prompt, pending_monitor
 
 
 _CRON_DELIVERY_VARS = (
@@ -2294,7 +2302,8 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
-    early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+    early, prompt, pending_monitor = _prepare_job_prompt(
+        job, job_id, job_name, extra_prompt, cancel_event)
     if early is not None:
         return early
     from run_agent import AIAgent
@@ -2322,6 +2331,17 @@ def run_job(
         if setup.blocked is not None:
             return setup.blocked
         model = setup.model
+
+        # The run is now admitted past every pre-inference gate (config parse, payload, monitor,
+        # wake, injection, prompt, preflight, provider/runtime resolution): commit the pending
+        # monitor observation. A refusal above left the change uncommitted and replayable; from
+        # here an inference-time failure still commits — detection time is the state boundary,
+        # so a failed agent run must not re-alert on the same content forever.
+        if pending_monitor is not None:
+            from cron.monitor import commit_monitor
+
+            commit_monitor(job, pending_monitor)
+            pending_monitor = None
 
         # Open state.db only after every early-return gate has passed.
         _session_db = _open_cron_session_db(job)

@@ -160,11 +160,7 @@ class SessionPortabilityMixin:
             existing = self._find_foreign_import_on_conn(conn, origin)
             if existing:
                 return {"session_id": existing, "already_imported": True}
-            # Titles are globally unique within a profile. Preserve a readable
-            # title while giving unrelated conversations with the same text room.
             item = normalized[0]
-            if conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
-                item["session"]["title"] = f"{title} ({session_id[-12:]})"
             self._import_session_row(conn, item["session"], item["messages"], session_id)
             conn.execute("UPDATE sessions SET origin_json = ?, profile_name = ? WHERE id = ?",
                          (json.dumps({"imported_from": origin}), profile, session_id))
@@ -523,6 +519,16 @@ class SessionPortabilityMixin:
             **{col: self._coerce_or(raw.get(col), float, None) for col in _IMPORT_FLOAT_COLS},
             **{col: self._coerce_or(raw.get(col), int, 0) for col in _IMPORT_INT_COLS},
         }
+        # Titles identify sessions locally, not across exported stores. Allocate
+        # a free name under the same write transaction as the imported history.
+        title = params["title"]
+        suffix_number = 2
+        while title is not None and conn.execute(
+            "SELECT 1 FROM sessions WHERE title = ?", (params["title"],)
+        ).fetchone():
+            suffix = f" (imported {suffix_number})"
+            params["title"] = title[:self.MAX_TITLE_LENGTH - len(suffix)] + suffix
+            suffix_number += 1
         conn.execute(_IMPORT_SESSION_INSERT_SQL, params)
         def _json_value(value: Any) -> Any:
             return safe_json_loads(value, default=value) if isinstance(value, str) else value
@@ -570,7 +576,8 @@ class SessionPortabilityMixin:
 
     def import_sessions(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Import sessions exported by :meth:`export_session` or ``export_all``. Existing ids
-        are skipped. A child keeps its parent only when the parent exists or is in the
+        are skipped. Colliding titles receive an imported-number suffix; existing
+        sessions are never renamed. A child keeps its parent only when the parent exists or is in the
         same payload; otherwise it is detached so partial imports pass FK validation.
         Gateway routing, handoff, rewind and other live runtime state are reset: this
         restores history, not ownership of a live channel or process. Export INCLUDES

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -700,7 +701,14 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            logger.debug("[photon] skipping non-JSON inbound line")
+            # Visible without -vv: a line that survives the sidecar but fails
+            # to parse means a user message was dropped, not routine noise.
+            # The payload itself may be user message content — log only its
+            # shape (length + short digest), never a content prefix.
+            logger.warning(
+                "[photon] skipping non-JSON inbound line: len=%d sha256=%s",
+                len(line), hashlib.sha256(line.encode("utf-8", "replace")).hexdigest()[:12],
+            )
             return
         msg_id = event.get("messageId")
         if msg_id and self._dedup.is_duplicate(msg_id):

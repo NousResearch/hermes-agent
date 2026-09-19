@@ -67,6 +67,7 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { escapeLineSeparators } from "./line-separators.mjs";
 import {
   classifyProbeRejection,
   shouldProbe,
@@ -415,6 +416,7 @@ function clearConsumer(res) {
 // connected; if the write fails (consumer vanished mid-flight) we wait for a
 // new consumer and retry, so a message is never silently dropped here.
 async function deliver(line) {
+  line = escapeLineSeparators(line);
   for (;;) {
     await waitForConsumer();
     const res = consumerRes;

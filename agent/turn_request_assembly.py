@@ -182,6 +182,15 @@ def assemble_api_request(
     # they crash json.dumps() inside the OpenAI SDK and trigger the 3-retry cycle.
     _sanitize_messages_surrogates(api_messages)
 
+    # Provider-bound projection of stale tool results: old, large, recoverable results are
+    # replaced by stubs on the wire (their bytes stay on disk and in the canonical
+    # transcript). Runs after every other transcript rewrite and BEFORE the cache plan, so
+    # the plan annotates the bytes that are actually sent and the stub text is final
+    # (whitespace-clean, so the normalization above cannot move it later).
+    from agent.tool_result_projection import project_stale_tool_results
+
+    project_stale_tool_results(agent, api_messages)
+
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
 

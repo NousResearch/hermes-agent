@@ -397,6 +397,87 @@ def test_sweep_drains_a_named_profile_home_under_the_root(adapter, home):
     assert q.queue_depth(lane_home, profile) == 0
 
 
+def test_drained_turn_runs_in_its_target_lane_scope(adapter, home, monkeypatch):
+    """A drained turn resolves its home to the TARGET LANE, never the default one.
+
+    Live evidence: a peer DM into ``profiles/<lane>`` settled ``delivered`` while the
+    lane's Bot Chat never showed the message and the default home grew a fresh
+    "Message from ..." session echoing the sender's own text. ``_run_agent`` scopes a
+    turn with ``_profile_scope(request_profile)``, and ``_api_request_profile`` is
+    UNSET for a drained record -- so ``_profile_scope(None)`` enters the DEFAULT
+    profile's scope under ``multiplex_profiles`` and the lane's session id is applied
+    to the default home's ``state.db``. The drainer must run the turn inside the
+    record's own target scope, and restore it afterwards.
+    """
+    import threading
+
+    from gateway.platforms import api_server_bot_delivery as drain
+    from hermes_constants import get_hermes_home
+
+    profile = "lane-beta"
+    lane_home = home / "profiles" / profile
+    record = q.admit(
+        lane_home,
+        sender_profile="lane-alpha",
+        target_profile=profile,
+        target_session_id="sess-1",
+        idempotency_key=q.validate_idempotency_key("auto:scope:named"),
+        fingerprint="fp",
+        delivery_id="b" * 32,
+        message="hello lane-beta",
+    )
+    assert record["status"] == q.STATUS_QUEUED
+
+    # The adapter's real SessionDB cache, so the turn's home is resolved by the same
+    # code the live gateway uses (`_ensure_session_db_async` -> `get_hermes_home`).
+    adapter._session_db = None
+    adapter._session_dbs = {}
+    adapter._session_db_lock = None
+    adapter._session_db_cache_lock = threading.Lock()
+    adapter._session_db_cache_closed = False
+
+    seen: dict = {}
+
+    async def _history(session_id):
+        seen["history_home"] = str(get_hermes_home())
+        return []
+
+    async def _run_agent(conversation_history=None, **kwargs):
+        # Mirror the real `_run_agent` prologue: capture the request-scoped profile,
+        # enter the profile scope it names, THEN touch home-relative state.
+        request_profile = api._api_request_profile.get()
+        with api.APIServerAdapter._profile_scope(request_profile):
+            seen["run_profile"] = request_profile
+            seen["run_home"] = str(get_hermes_home())
+            db = await adapter._ensure_session_db_async()
+            seen["run_db"] = str(db.db_path)
+            db.create_session("sess-1", source="bot")
+            db.append_message("sess-1", "user", "hello lane-beta")
+        adapter.calls.append(kwargs)
+        return {"final_response": "pong"}, {}
+
+    monkeypatch.setattr(adapter, "_conversation_history_for_session", _history)
+    monkeypatch.setattr(adapter, "_run_agent", _run_agent)
+
+    assert asyncio.run(drain.drain_once(adapter, home)) == 1
+
+    # The turn ran in the LANE's scope: lane profile, lane home, lane state.db.
+    assert seen["run_profile"] == profile
+    assert seen["run_home"] == str(lane_home)
+    assert seen["run_db"] == str(lane_home / "state.db")
+    assert seen["history_home"] == str(lane_home), (
+        "the history read must resolve the lane's state.db, not the default home's")
+    # The row the turn wrote landed in the lane's own Bot Chat...
+    lane_db = adapter._session_dbs[str(lane_home)]
+    assert [(m["role"], m["content"]) for m in lane_db.get_messages("sess-1")] == [
+        ("user", "hello lane-beta")]
+    # ...and the default home gained no session at all from a named lane's delivery.
+    assert not (home / "state.db").exists()
+    # Both the request profile and the home scope are restored after the turn.
+    assert api._api_request_profile.get() is None
+    assert str(get_hermes_home()) == str(home)
+
+
 def test_drain_resessions_a_record_pinned_to_a_dead_session(adapter, home, monkeypatch):
     """DoD #2: a drained record pinned to a dead session runs in the lane's current
     Bot Chat tip instead of dead-lettering forever."""

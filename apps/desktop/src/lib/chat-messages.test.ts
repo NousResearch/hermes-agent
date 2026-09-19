@@ -384,6 +384,23 @@ describe('toChatMessages', () => {
     }
   })
 
+  it('drops the empty hidden placeholder that precedes a mid-turn steer', () => {
+    // When nothing had streamed yet, the runtime appends a content-free
+    // `{role:'assistant', display_kind:'hidden'}` row before the correction,
+    // purely to keep assistant/user alternation legal for provider replay
+    // (agent/conversation_loop.py). The test above pins the LEGACY form, whose
+    // marker text is what keeps it out of the transcript; this one pins the
+    // modern empty form, which has no text to filter on and must be dropped
+    // because it produces no parts at all.
+    const messages = toChatMessages([
+      { role: 'user', content: 'go', timestamp: 1 },
+      { role: 'assistant', content: '', display_kind: 'hidden', timestamp: 2 },
+      { role: 'user', content: 'actually do X', timestamp: 3 }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual(['go', 'actually do X'])
+  })
+
   it('projects persisted composite compaction carriers to their live user turn', () => {
     const messages = toChatMessages([
       {

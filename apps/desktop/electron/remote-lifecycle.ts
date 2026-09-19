@@ -29,6 +29,7 @@ import crypto from 'node:crypto'
 
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
+import { attachSpawnLogDetail } from './spawn-log-excerpt'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -1177,25 +1178,29 @@ async function remoteSupportsSshOwnership(ssh, hermesPath) {
 async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT_MS, isAlive, signal }: any = {}) {
   const deadline = Date.now() + timeoutMs
   const remoteLog = expandRemotePath(logPath)
+  let lastTail = ''
+
+  const readSpawnLog = async () => {
+    try {
+      return await ssh.exec(`cat ${remoteLog} 2>/dev/null || true`)
+    } catch {
+      return ''
+    }
+  }
 
   while (Date.now() < deadline) {
     assertBootstrapNotSuperseded(signal)
 
     if (isAlive && !(await isAlive())) {
+      lastTail = await readSpawnLog()
       const err: any = new Error('Remote dashboard process exited before announcing its port.')
       err.kind = 'spawn-failed'
+      attachSpawnLogDetail(err, lastTail)
       throw err
     }
 
-    let tail
-
-    try {
-      tail = await ssh.exec(`cat ${remoteLog} 2>/dev/null || true`)
-    } catch {
-      tail = ''
-    }
-
-    const m = READY_RE.exec(String(tail || ''))
+    lastTail = await readSpawnLog()
+    const m = READY_RE.exec(String(lastTail || ''))
 
     if (m) {
       return parseInt(m[1], 10)
@@ -1206,6 +1211,7 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT
 
   const err: any = new Error(`Timed out waiting for the remote dashboard to announce its port (${timeoutMs}ms).`)
   err.kind = 'ready-timeout'
+  attachSpawnLogDetail(err, lastTail)
   throw err
 }
 

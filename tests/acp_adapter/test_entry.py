@@ -11,6 +11,10 @@ from acp_adapter import entry
 def test_main_enables_unstable_protocol(monkeypatch):
     calls = {"order": []}
 
+    class FakeAgent:
+        def __init__(self):
+            calls["order"].append("agent")
+
     async def fake_run_agent(agent, **kwargs):
         calls["kwargs"] = kwargs
         calls["order"].append("run")
@@ -18,12 +22,17 @@ def test_main_enables_unstable_protocol(monkeypatch):
     monkeypatch.setattr(entry, "_setup_logging", lambda: None)
     monkeypatch.setattr(entry, "_load_env", lambda: None)
     monkeypatch.setattr(entry, "_preload_stdin_sensitive_dependencies", lambda: calls["order"].append("preload"))
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.start_background_mcp_discovery",
+        lambda **_kwargs: calls["order"].append("mcp"),
+    )
+    monkeypatch.setattr("acp_adapter.server.HermesACPAgent", FakeAgent)
     monkeypatch.setattr(acp, "run_agent", fake_run_agent)
 
     entry.main([])
 
     assert calls["kwargs"]["use_unstable_protocol"] is True
-    assert calls["order"] == ["preload", "run"]
+    assert calls["order"] == ["preload", "mcp", "agent", "run"]
 
 
 def test_preloads_numpy_only_for_holographic_memory(monkeypatch):

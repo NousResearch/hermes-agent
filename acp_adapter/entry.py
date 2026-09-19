@@ -200,6 +200,10 @@ def main(argv: list[str] | None = None) -> None:
     import acp
     from .server import HermesACPAgent
 
+    # This must run before MCP discovery starts its daemon thread: on native Windows, NumPy DLL
+    # initialization can deadlock when another thread already owns the console stdin handle.
+    _preload_stdin_sensitive_dependencies()
+
     # MCP discovery from config.yaml runs in a background daemon thread so the ACP server is
     # responsive immediately (blocking here cost 2-5 s); per-session MCP servers registered via
     # asyncio.to_thread are unaffected. Metadata-only hosts can opt out of the global startup.
@@ -214,7 +218,6 @@ def main(argv: list[str] | None = None) -> None:
         except Exception:
             logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
-    _preload_stdin_sensitive_dependencies()
     agent = HermesACPAgent()
     try:
         asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))

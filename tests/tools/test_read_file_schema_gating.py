@@ -101,20 +101,21 @@ class TestReadFileSchemaStatic(unittest.TestCase):
         self.assertIsNone(url)
 
     def test_coverage_warning_teaching_left_to_the_warning(self):
-        """The response-time warning owns the recovery curriculum."""
+        """The response-time warning owns the recovery curriculum: the
+        schema never pre-teaches it, and the real warning carries the
+        recovery commands."""
         from tools.file_tools import READ_FILE_SCHEMA
 
         desc = READ_FILE_SCHEMA["description"]
         self.assertNotIn("EXTRACTION COVERAGE WARNING", desc)
         self.assertNotIn("NEEDS OCR", desc)
         self.assertNotIn("pdftoppm", desc)
-        import inspect
-        from tools import read_extract
+        from tools.read_extract import _needs_ocr_warning
 
-        src = inspect.getsource(read_extract)
-        self.assertIn("NEEDS OCR", src)
-        self.assertIn("pdftoppm", src)
-        self.assertIn("vision_analyze", src)
+        warning = _needs_ocr_warning("scan.pdf", [2, 3])
+        self.assertIn("NEEDS OCR", warning)
+        self.assertIn("pdftoppm", warning)
+        self.assertIn("vision_analyze", warning)
 
     def test_binary_note_stays_last(self):
         from tools.file_tools import READ_FILE_SCHEMA
@@ -203,17 +204,25 @@ class TestNeedsOcrPath(unittest.TestCase):
         self.assertNotIn("ocr-and-documents", out)
 
     def test_pin_lockstep(self):
-        """pyproject core pin and lazy_deps self-heal pin must match."""
-        import re
+        """pyproject core pin and lazy_deps self-heal pin must match.
+        Parses pyproject as data and imports the lazy spec, so a reformat
+        of either file cannot break or satisfy the contract."""
+        import tomllib
         from pathlib import Path
 
-        py = Path("pyproject.toml").read_text(encoding="utf-8")
-        lz = Path("tools/lazy_deps.py").read_text(encoding="utf-8")
-        m1 = re.search(r'"firecrawl-anydoc==([\d.]+)"', py)
-        m2 = re.search(r'"firecrawl-anydoc==([\d.]+)"', lz)
-        self.assertIsNotNone(m1)
-        self.assertIsNotNone(m2)
-        self.assertEqual(m1.group(1), m2.group(1))
+        from tools.lazy_deps import LAZY_DEPS
+
+        with open(Path("pyproject.toml"), "rb") as fh:
+            py_deps = tomllib.load(fh)["project"]["dependencies"]
+        py_pin = next(
+            (d for d in py_deps if d.startswith("firecrawl-anydoc==")), None,
+        )
+        self.assertIsNotNone(py_pin, "pyproject must pin firecrawl-anydoc")
+        lazy_pins = LAZY_DEPS["tool.doc_extract"]
+        self.assertTrue(any(
+            p.startswith("firecrawl-anydoc==") for p in lazy_pins
+        ), lazy_pins)
+        self.assertIn(py_pin, lazy_pins)
 
 
 if __name__ == "__main__":

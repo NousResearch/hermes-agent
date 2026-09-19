@@ -579,3 +579,20 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
 
 # Image / multimodal parts are deliberately NOT consolidated here: per-adapter handling is
 # format-specific SYNTAX. The one shared image POLICY is ``_strip_images_from_messages``.
+
+
+def compression_recovery_progress(
+    original_len: int, new_len: int, original_bytes: int, new_bytes: int
+) -> bool:
+    """Progress gate for the 413 recovery retry loop.
+
+    A compression pass counts as progress when it either shrank the
+    message array or freed at least 5% of the serialized payload bytes
+    (the yardstick the provider actually rejected, see
+    ``serialized_messages_bytes``).  Kept next to that helper and used
+    by ``turn_overflow`` and its tests, so the loop's decision and
+    the tests can never drift apart.
+    """
+    return new_len < original_len or (
+        new_bytes > 0 and new_bytes < original_bytes * 0.95
+    )

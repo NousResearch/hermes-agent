@@ -108,6 +108,26 @@ def _entry(name: str):
 
 
 class TestManifestParsing:
+    def test_agent_toolkit_catalog_manifest_uses_a_secret_bearer_key(self, monkeypatch):
+        """The hosted Agent Toolkit entry stays declarative and credential-safe."""
+        repository_root = Path(__file__).resolve().parents[2]
+        monkeypatch.setenv("HERMES_OPTIONAL_MCPS", str(repository_root / "optional-mcps"))
+
+        entry = _entry("agent-toolkit")
+
+        assert entry.transport.type == "http"
+        assert entry.transport.url == "https://agent-toolkit.app.baizhi.cloud/mcp"
+        assert entry.auth.type == "api_key"
+        assert [(item.name, item.secret, item.required) for item in entry.auth.env] == [
+            ("MCP_AGENT_TOOLKIT_API_KEY", True, True)
+        ]
+
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        assert _build_server_config(entry, None)["headers"] == {
+            "Authorization": "Bearer ${MCP_AGENT_TOOLKIT_API_KEY}"
+        }
+
     def test_minimal_valid(self, catalog_dir):
         _write_manifest(catalog_dir, "demo", _basic_manifest())
         from hermes_cli.mcp_catalog import list_catalog

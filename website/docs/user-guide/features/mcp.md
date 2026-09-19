@@ -68,6 +68,17 @@ hermes mcp catalog        # plain-text list, scriptable
 hermes mcp install n8n    # install a catalog entry by name
 ```
 
+For example, install Baizhi Cloud Agent Toolkit with:
+
+```bash
+hermes mcp install agent-toolkit
+```
+
+The installer prompts for your Baizhi Cloud API key without putting it in
+chat, saves the secret in the active profile's `.env`, and writes only its
+environment-variable reference to `config.yaml`. Select the tools to expose
+during setup, then start a new Hermes session to load them.
+
 The picker shows each entry with its current status:
 
 ```

@@ -882,6 +882,10 @@ class SearchMixin:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
+        # Terminate rg options before the user-supplied regex.  Shell quoting
+        # preserves one argv token but does not stop a leading ``-`` from being
+        # parsed as an rg flag (for example ``-needle`` or ``--literal``).
+        cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
         cmd_parts.append(self._escape_native_tool_arg(path))

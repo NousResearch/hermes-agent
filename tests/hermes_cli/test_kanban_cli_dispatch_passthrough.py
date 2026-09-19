@@ -19,14 +19,31 @@ import pytest
 
 @pytest.fixture()
 def isolated_kanban_home(monkeypatch):
-    """Spin up a fresh HERMES_HOME with a clean kanban DB."""
+    """Spin up a fresh HERMES_HOME with a clean kanban DB.
+
+    The fresh-import sandbox must restore the pre-test module graph. Leaving
+    the temporary Hermes modules installed makes later test files resolve
+    different singletons than the session fixtures patched, which makes the
+    full suite order-dependent even though each file passes in isolation.
+    """
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    yield test_home
+    module_prefixes = ("hermes_cli", "hermes_state")
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name.startswith(module_prefixes) or name == "hermes_constants"
+    }
+    for name in saved_modules:
+        del sys.modules[name]
+    try:
+        yield test_home
+    finally:
+        for name in list(sys.modules):
+            if name.startswith(module_prefixes) or name == "hermes_constants":
+                del sys.modules[name]
+        sys.modules.update(saved_modules)
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):

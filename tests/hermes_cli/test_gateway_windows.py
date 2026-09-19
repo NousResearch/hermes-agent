@@ -30,6 +30,77 @@ def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
     assert gateway_windows._schtasks_encoding() == "utf-8"
 
 
+# ---------------------------------------------------------------------------
+# _session_status_lines — issue #108077
+#
+# An SSH-initiated gateway restart on Windows silently inherits Session 0
+# (sshd.exe is itself a Session-0 service), which breaks Credential Manager
+# and GUI helpers with no other visible symptom. `hermes gateway status`
+# should surface each PID's session id and warn when one is stuck in
+# Session 0 while an interactive desktop session exists.
+# ---------------------------------------------------------------------------
+
+
+def test_session_status_lines_warns_on_session_zero_gateway():
+    lines = gateway_windows._session_status_lines(
+        sessions={4242: 0}, console_session=1, task_name="Hermes_Gateway"
+    )
+    assert lines[0] == "  Session: PID 4242 -> 0"
+    assert any("Session 0" in line and "schtasks /Run /TN Hermes_Gateway" in line for line in lines)
+
+
+def test_session_status_lines_no_warning_when_gateway_shares_interactive_session():
+    lines = gateway_windows._session_status_lines(
+        sessions={4242: 1}, console_session=1, task_name="Hermes_Gateway"
+    )
+    assert lines == ["  Session: PID 4242 -> 1"]
+    assert not any("⚠" in line for line in lines)
+
+
+def test_session_status_lines_no_warning_without_an_interactive_session():
+    # Nobody logged on (console_session is None) or the console is itself
+    # Session 0 (headless box): a Session-0 gateway is not an accident there.
+    lines = gateway_windows._session_status_lines(
+        sessions={4242: 0}, console_session=None, task_name="Hermes_Gateway"
+    )
+    assert not any("⚠" in line for line in lines)
+
+
+def test_session_status_lines_unresolvable_session_shown_as_unknown():
+    lines = gateway_windows._session_status_lines(
+        sessions={4242: None}, console_session=1, task_name="Hermes_Gateway"
+    )
+    assert lines == ["  Session: PID 4242 -> unknown"]
+
+
+def test_active_console_session_id_recognizes_no_interactive_session(monkeypatch):
+    """``WTSGetActiveConsoleSessionId`` returns the DWORD 0xFFFFFFFF when nobody is
+    logged on. ctypes' default restype is the *signed* c_int, so an unbound call
+    would come back as -1 and never match ``_INVALID_SESSION_ID`` (same class of
+    bug as #71218's GetCurrentProcess truncation) — this fakes that signed/unsigned
+    distinction to prove the wrapper binds restype before comparing.
+    """
+
+    import ctypes as ctypes_module
+
+    class FakeWTSGetActiveConsoleSessionId:
+        restype = None
+
+        def __call__(self):
+            value = 0xFFFFFFFF
+            if self.restype is ctypes_module.c_uint:
+                return value
+            return value - 0x100000000  # signed c_int truncation, ctypes' default
+
+    class FakeKernel32:
+        WTSGetActiveConsoleSessionId = FakeWTSGetActiveConsoleSessionId()
+
+    class FakeWindll:
+        kernel32 = FakeKernel32()
+
+    monkeypatch.setattr(gateway_windows.ctypes, "windll", FakeWindll(), raising=False)
+
+    assert gateway_windows._active_console_session_id() is None
 
 
 @pytest.mark.windows_only

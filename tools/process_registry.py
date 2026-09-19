@@ -518,6 +518,7 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    cron_continuation: Optional[dict] = None     # Cron identity; never a chat route
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
@@ -557,7 +558,7 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "watch_patterns")
+    "parent_session_id", "notify_on_complete", "watch_patterns", "cron_continuation")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -999,8 +1000,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         from contextvars import copy_context
 
         # Reader completion must retain the producer's multiplex profile scope.
+        # Finite cron workers must not exit before their opted-in receipts are
+        # persisted; a non-daemon reader keeps capture alive after the agent turn.
         reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
-                                  daemon=True, name=reader_name)
+                                  daemon=not bool(session.cron_continuation), name=reader_name)
         session._reader_thread = reader
         with self._lock:
             self._prune_if_needed()
@@ -1035,7 +1038,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
+        cron_continuation: Optional[dict] = None) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
@@ -1046,7 +1050,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session = self._new_session(command, task_id, owner_task_id, session_key,
+                                    _resolve_safe_cwd(cwd or os.getcwd()), cron_continuation=cron_continuation)
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1133,12 +1138,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "",
+        cron_continuation: Optional[dict] = None) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd,
+                                    env_ref=env, pid_scope="sandbox", cron_continuation=cron_continuation)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -1162,6 +1169,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if session.exited:
             with self._lock:
                 self._prune_if_needed()
+            if session.cron_continuation:
+                save_completed_result(session)
+                session._completion_event.set()
         else:
             self._track_started(
                 session, self._env_poller_loop, f"proc-poller-{session.id}", (env, log_path, pid_path, exit_path))

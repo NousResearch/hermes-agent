@@ -2784,11 +2784,25 @@ export const ru = defineLocale({
     images: 'Изображения…',
     pasteImage: 'Вставить изображение',
     url: 'URL…',
-    promptSnippets: 'Фрагменты промптов…',
+    promptTemplates: 'Шаблоны промптов…',
     tipPre: 'Подсказка: введите ',
     tipPost: ' чтобы ссылаться на файлы inline.',
-    snippetsTitle: 'Фрагменты промптов',
-    snippetsDesc: 'Выберите стартовый промпт, чтобы вставить в композер.',
+    templatesTitle: 'Шаблоны промптов',
+    templatesDesc: 'Выберите стартовый промпт, чтобы вставить в композер.',
+    templateAdd: 'Добавить шаблон',
+    templateEdit: 'Изменить',
+    templateDelete: 'Удалить',
+    templateMoveUp: 'Переместить вверх',
+    templateMoveDown: 'Переместить вниз',
+    templateReset: 'Сбросить к значениям по умолчанию',
+    templateResetConfirm: 'Сбросить все шаблоны к трём встроенным по умолчанию? Ваши собственные шаблоны будут потеряны.',
+    templateLabelPlaceholder: 'Название',
+    templateDescPlaceholder: 'Описание (необязательно)',
+    templateTextPlaceholder: 'Текст промпта',
+    templateSave: 'Сохранить',
+    templateCancel: 'Отмена',
+    templateEmpty: 'Шаблонов пока нет. Добавьте один, чтобы начать.',
+    templateConfirmDelete: 'Удалить этот шаблон?',
     dropFiles: 'Перетащите файлы, чтобы прикрепить',
     dropSession: 'Перетащите, чтобы связать этот чат',
     mcpSuggestions: {
@@ -2828,7 +2842,7 @@ export const ru = defineLocale({
       done: 'Отмечено для планирования',
       doneTip: 'Отправьте, и агент создаст задачу'
     },
-    snippets: {
+    templates: {
       codeReview: {
         label: 'Рецензия кода',
         description: 'Аудит текущих изменений на предмет регрессий, упущенных граничных случаев и недостающих тестов.',

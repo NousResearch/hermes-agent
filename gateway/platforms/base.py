@@ -2414,6 +2414,27 @@ class BasePlatformAdapter(ABC):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            if getattr(event, "metadata", None):
+                if event.metadata.get("explicit_self_mention"):
+                    existing.metadata["explicit_self_mention"] = True
+                _existing_user_ids = set(existing.metadata.get("discord_mentioned_user_ids") or [])
+                _incoming_user_ids = set(event.metadata.get("discord_mentioned_user_ids") or [])
+                if _incoming_user_ids:
+                    existing.metadata["discord_mentioned_user_ids"] = sorted(
+                        _existing_user_ids | _incoming_user_ids
+                    )
+                _existing_bot_ids = set(existing.metadata.get("discord_mentioned_bot_ids") or [])
+                _incoming_bot_ids = set(event.metadata.get("discord_mentioned_bot_ids") or [])
+                if _incoming_bot_ids:
+                    existing.metadata["discord_mentioned_bot_ids"] = sorted(
+                        _existing_bot_ids | _incoming_bot_ids
+                    )
+                _incoming_raw = event.metadata.get("raw_content")
+                if _incoming_raw:
+                    _existing_raw = existing.metadata.get("raw_content")
+                    existing.metadata["raw_content"] = (
+                        f"{_existing_raw}\n{_incoming_raw}" if _existing_raw else _incoming_raw
+                    )
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():

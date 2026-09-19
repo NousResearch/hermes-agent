@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
@@ -1428,11 +1428,6 @@ def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_fail
     return "⚠️ Rate limited — switching to fallback provider..."
 
 
-_CODEX_APP_SERVER_FALLBACK_REASONS = frozenset({
-    FailoverReason.billing, FailoverReason.rate_limit, FailoverReason.upstream_rate_limit,
-})
-
-
 def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bool:
     """The codex app-server runtime reports a failed turn as ``result["error"]`` text instead of
     raising, so the generic classify -> ``fallback_providers`` chain never saw it (#71633).
@@ -1441,11 +1436,10 @@ def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bo
     error = result.get("error")
     if not error or result.get("interrupted") or not agent._has_pending_fallback():
         return False
-    from agent.error_classifier import classify_api_error
     classified = classify_api_error(
         RuntimeError(str(error)), provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
     )
-    if classified.reason not in _CODEX_APP_SERVER_FALLBACK_REASONS:
+    if classified.reason not in _RATE_LIMIT_REASONS:
         return False
     agent._buffer_diagnostic_status(
         _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False))

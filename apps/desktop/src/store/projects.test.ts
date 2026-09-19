@@ -21,6 +21,8 @@ import {
   enterProject,
   exitProjectScope,
   fetchProjectSessions,
+  isHomeProjectId,
+  moveSessionToHome,
   openProjectCreate,
   pickProjectFolder,
   projectIdForCwd,
@@ -1053,5 +1055,132 @@ describe('tombstone pruning', () => {
     await refreshProjectTree()
 
     expect($removedSessionIds.get().has('sess-1')).toBe(false)
+  })
+})
+
+describe('moveSessionToHome (#80014)', () => {
+  // A session that currently lives inside a named project: it carries that
+  // project's cwd and git identity, both of which the move has to replace.
+  const inProject = {
+    archived: false,
+    cwd: '/home/sonny/projects/alpha',
+    ended_at: null,
+    git_branch: 'feature/alpha',
+    git_repo_root: '/home/sonny/projects/alpha',
+    id: 'sess-a',
+    input_tokens: 0,
+    is_active: true,
+    last_active: 0,
+    message_count: 1,
+    model: null,
+    output_tokens: 0,
+    started_at: 0,
+    title: 'alpha work'
+  }
+
+  const untouched = {
+    ...inProject,
+    cwd: '/home/sonny/projects/beta',
+    git_branch: 'feature/beta',
+    git_repo_root: '/home/sonny/projects/beta',
+    id: 'sess-b',
+    title: 'beta work'
+  }
+
+  // The backend's answer to session.workspace.move. Reassigned per test so a
+  // payload with no cwd can be exercised.
+  let movePayload: Record<string, unknown>
+
+  const request = vi.fn()
+
+  function openGateway() {
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    return gateway
+  }
+
+  const findSession = (id: string) => $sessions.get().find(session => session.id === id)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    movePayload = { branch: null, cwd: '/home/sonny', git_repo_root: null }
+    request.mockReset()
+    // Answer the tree refresh the move fires off with a well-formed payload, so
+    // the assertion on it can never be satisfied by a stray throw.
+    request.mockImplementation(async (method: string) =>
+      method === 'projects.tree'
+        ? { active_id: null, projects: [], scoped_session_ids: [], tree: [] }
+        : movePayload
+    )
+    openGateway()
+    $activeGatewayProfile.set('default')
+    setShowAllProfiles(false)
+    $sessions.set([inProject, untouched] as never)
+  })
+
+  it('re-homes the session by pointing the workspace at the home dir', async () => {
+    await moveSessionToHome('sess-a')
+
+    expect(request).toHaveBeenCalledWith('session.workspace.move', {
+      cwd: '~',
+      session_key: 'sess-a'
+    })
+  })
+
+  it('forwards the owning profile when one is given', async () => {
+    await moveSessionToHome('sess-a', 'coder')
+
+    expect(request).toHaveBeenCalledWith('session.workspace.move', {
+      cwd: '~',
+      profile: 'coder',
+      session_key: 'sess-a'
+    })
+  })
+
+  it('mirrors the backend cwd into the sessions cache before the tree refresh', async () => {
+    await moveSessionToHome('sess-a')
+
+    expect(findSession('sess-a')).toMatchObject({ cwd: '/home/sonny' })
+  })
+
+  it('drops the project git identity, because a Home session belongs to no repo', async () => {
+    // If the stale branch/root survived, the moved row would still render as if it
+    // lived in the project it was just taken out of.
+    await moveSessionToHome('sess-a')
+
+    expect(findSession('sess-a')).toMatchObject({ git_branch: null, git_repo_root: null })
+  })
+
+  it('falls back to the home dir when the backend echoes no cwd', async () => {
+    movePayload = {}
+
+    await moveSessionToHome('sess-a')
+
+    expect(findSession('sess-a')).toMatchObject({ cwd: '~' })
+  })
+
+  it('leaves sessions that were not moved alone', async () => {
+    await moveSessionToHome('sess-a')
+
+    expect(findSession('sess-b')).toMatchObject({
+      cwd: '/home/sonny/projects/beta',
+      git_branch: 'feature/beta'
+    })
+  })
+
+  it('refreshes the project tree so the row leaves the project group', async () => {
+    await moveSessionToHome('sess-a')
+
+    await vi.waitFor(() => {
+      expect(request.mock.calls.map(call => call[0])).toContain('projects.tree')
+    })
+  })
+
+  it('matches the Home sentinel and nothing else', () => {
+    expect(isHomeProjectId(NO_PROJECT_ID)).toBe(true)
+    expect(isHomeProjectId('p_123')).toBe(false)
+    expect(isHomeProjectId(null)).toBe(false)
   })
 })

@@ -109,6 +109,31 @@ class TestIsBotMentioned:
             mention_user_ids=["@hermes:example.org"],
         )
 
+    def test_localpart_collision_hermes_kelly_body(self):
+        """@hermes must not match inside @hermes-kelly localpart text."""
+        assert not self.adapter._is_bot_mentioned("hey @hermes-kelly can you help?")
+
+    def test_m_mentions_only_other_bot_not_hermes(self):
+        """Structured mentions listing only hermes-kelly must not wake hermes."""
+        assert not self.adapter._is_bot_mentioned(
+            "please reply",
+            mention_user_ids=["@hermes-kelly:example.org"],
+        )
+
+    def test_m_mentions_both_bots_activates_hermes(self):
+        """When both bots are in m.mentions, hermes should activate."""
+        assert self.adapter._is_bot_mentioned(
+            "team question",
+            mention_user_ids=[
+                "@hermes:example.org",
+                "@hermes-kelly:example.org",
+            ],
+        )
+
+    def test_explicit_at_hermes_still_matches(self):
+        assert self.adapter._is_bot_mentioned("@hermes help")
+        assert self.adapter._is_bot_mentioned("@hermes:example.org help")
+
 
 class TestStripMention:
     def setup_method(self):
